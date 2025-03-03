@@ -1288,24 +1288,20 @@ def create_demo():
 
 if __name__ == "__main__":
     os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
-    server_port = int(args.server_port)
-
-    if server_port == 0:
-        server_port = int(os.getenv("SERVER_PORT", "7860"))
-
-    server_name = args.server_name
-    if len(server_name) == 0:
-        server_name = os.getenv("SERVER_NAME", "localhost")
-
-        
+    
+    # Get server port from args or environment
+    server_port = int(args.server_port) or int(os.getenv("SERVER_PORT", "7860"))
+    
+    # Get server name from args or environment
+    server_name = args.server_name or os.getenv("SERVER_NAME", "localhost")
+    
     demo = create_demo()
+    
+    # Open browser if requested
     if args.open_browser:
-        import webbrowser 
-        if server_name.startswith("http"):
-            url = server_name 
-        else:
-            url = "http://" + server_name 
-        webbrowser.open(url + ":" + str(server_port), new = 0, autoraise = True)
+        import webbrowser
+        url = server_name if server_name.startswith("http") else f"http://{server_name}"
+        webbrowser.open(f"{url}:{server_port}", new=0, autoraise=True)
 
     demo.launch(server_name=server_name, server_port=server_port, share=args.share)
 

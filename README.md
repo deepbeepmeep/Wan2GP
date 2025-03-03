@@ -159,7 +159,7 @@ You will find prebuilt Loras on https://civitai.com/ or you will be able to buil
 
 ### Profiles (for power users only)
 You can choose between 5 profiles, but two are really relevant here :
-- LowRAM_HighVRAM  (3): loads entirely the model in VRAM, slighty faster, but less VRAM
+- LowRAM_HighVRAM  (3): loads entirely the model in VRAM, slightly faster, but less VRAM
 - LowRAM_LowVRAM  (4): load only the part of the models that is needed, low VRAM and low RAM requirement but slightly slower
 
 

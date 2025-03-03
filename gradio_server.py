@@ -161,8 +161,15 @@ def _parse_args():
     help="vae config mode"
     )    
 
+    parser.add_argument(
+        "--share",
+        action="store_true",
+        help="share the demo"
+    )
 
     args = parser.parse_args()
+    args.ckpt_dir_720p = "../ckpts" # os.path.join("ckpt")
+    args.ckpt_dir_480p = "../ckpts" # os.path.join("ckpt")
     args.ckpt_dir_720p = "../ckpts" # os.path.join("ckpt")
     args.ckpt_dir_480p = "../ckpts" # os.path.join("ckpt")
     assert args.ckpt_dir_720p is not None or args.ckpt_dir_480p is not None, "Please specify at least one checkpoint directory."
@@ -1300,6 +1307,6 @@ if __name__ == "__main__":
             url = "http://" + server_name 
         webbrowser.open(url + ":" + str(server_port), new = 0, autoraise = True)
 
-    demo.launch(server_name=server_name, server_port=server_port)
+    demo.launch(server_name=server_name, server_port=server_port, share=args.share)
 
  

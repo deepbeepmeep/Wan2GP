@@ -57,12 +57,12 @@ def _parse_args():
     )
 
 
-    # parser.add_argument(
-    #     "--lora-dir-i2v",
-    #     type=str,
-    #     default="loras_i2v",
-    #     help="Path to a directory that contains Loras for i2v"
-    # )
+    parser.add_argument(
+        "--lora-dir-i2v",
+        type=str,
+        default="loras_i2v",
+        help="Path to a directory that contains Loras for i2v"
+    )
 
 
     parser.add_argument(
@@ -236,11 +236,9 @@ if args.t2v:
 if args.i2v:
     use_image2video = True
 
-# if use_image2video:
-#     lora_dir =args.lora_dir_i2v
-#     lora_preselected_preset = args.lora_preset_i2v
-# else:
 lora_dir =args.lora_dir
+if use_image2video and len(lora_dir)==0:
+    lora_dir =args.lora_dir_i2v
 if len(lora_dir) ==0:
     lora_dir = "loras_i2v" if use_image2video else "loras"
 lora_preselected_preset = args.lora_preset
@@ -1261,7 +1259,7 @@ def create_demo():
                             label="Images as a starting point for new videos", type ="pil", #file_types= "image", 
                             columns=[3], rows=[1], object_fit="contain", height="auto", selected_index=0, interactive= True, visible=use_image2video)
                 else:
-                    image_to_continue = gr.Image(label= "Image as a starting point for a new video", visible=use_image2video)
+                    image_to_continue = gr.Image(label= "Image as a starting point for a new video", type ="pil", visible=use_image2video)
 
                 prompt = gr.Textbox(label="Prompts (multiple prompts separated by carriage returns will generate multiple videos, lines that starts with # are ignored)", value=default_prompt, lines=3)
                     

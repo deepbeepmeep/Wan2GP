@@ -980,6 +980,19 @@ def generate_video(
                     normalize=True,
                     value_range=(-1, 1))
 
+                configs = {
+                    'prompt': prompt,
+                    'negative_prompt': negative_prompt,
+                    'resolution': resolution,
+                    'video_length': video_length,
+                    'seed': seed,
+                    'num_inference_steps': num_inference_steps,
+                }
+
+                # Save the configs as json format
+                with open(video_path.replace('.mp4', '.json'), 'w') as f:
+                    json.dump(configs, f, indent=4)
+
                 print(f"New video saved to Path: "+video_path)
                 file_list.append(video_path)
                 if video_no < total_video:

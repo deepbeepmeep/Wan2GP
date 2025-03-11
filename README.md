@@ -19,7 +19,7 @@ In this repository, we present **Wan2.1**, a comprehensive and open suite of vid
 
 
 ## 🔥 Latest News!!
-* Mar 10, 2025: 👋 Wan2.1GP v1.5: Official Teachache support + Smart Teacache (find automatically best parameters for a requested speed multiplier), 10% speed boost with no quality loss, improved lora presets (they can now  include prompts and comments to guide the user)
+* Mar 10, 2025: 👋 Wan2.1GP v1.5: Official Teacache support + Smart Teacache (find automatically best parameters for a requested speed multiplier), 10% speed boost with no quality loss, improved lora presets (they can now  include prompts and comments to guide the user)
 * Mar 07, 2025: 👋 Wan2.1GP v1.4: Fix Pytorch compilation, now it is really 20% faster when activated
 * Mar 04, 2025: 👋 Wan2.1GP v1.3: Support for Image to Video with multiples images for different images / prompts combinations (requires *--multiple-images* switch), and added command line *--preload x*  to preload in VRAM x MB of the main diffusion model if you find there is too much unused VRAM and you want to (slightly) accelerate the generation process.
 If you upgrade you will need to do a 'pip install -r requirements.txt' again.

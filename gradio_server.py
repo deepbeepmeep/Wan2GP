@@ -116,32 +116,10 @@ def _parse_args():
     )
 
     parser.add_argument(
-        "--steps",
-        type=int,
-        default=0,
-        help="default denoising steps"
-    )
-
-    parser.add_argument(
-        "--frames",
-        type=int,
-        default=0,
-        help="default number of frames"
-    )
-
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=-1,
-        help="default generation seed"
-    )
-
-    parser.add_argument(
         "--advanced",
         action="store_true",
         help="Access advanced options by default"
     )
-
 
     parser.add_argument(
         "--server-port",
@@ -219,28 +197,6 @@ def _parse_args():
     help="vae config mode"
     )    
 
-    parser.add_argument(
-        "--res",
-        type=str,
-        default="480p",
-        choices=["480p", "720p", "832p", "1024p", "1280p"],
-        help="Default resolution for the video (480p, 720p, 823p, 1024p or 1280p)"
-    )
-
-    parser.add_argument(
-        "--teacache",
-        type=str,
-        default="0",
-        choices=["0", "1.5", "1.75", "2.0", "2.25", "2.5"],
-        help="Default teacache setting"
-    )
-
-    parser.add_argument(
-        "--slg",
-        action="store_true",
-        help="Enable skip guidance"
-    )
-
     args = parser.parse_args()
 
     return args
@@ -271,11 +227,6 @@ preload =int(args.preload)
 force_profile_no = int(args.profile)
 verbose_level = int(args.verbose)
 quantizeTransformer = args.quantize_transformer
-default_seed = args.seed
-default_number_frames = int(args.frames)
-if default_number_frames > 0:
-    default_number_frames = ((default_number_frames - 1) // 4) * 4 + 1 
-default_inference_steps = args.steps
 check_loras = args.check_loras ==1
 advanced = args.advanced
 
@@ -305,6 +256,35 @@ else:
         text = reader.read()
     server_config = json.loads(text)
 
+def get_defaults():
+    global use_image2video, ui_defaults
+    defaults_filename = "i2v_defaults.json" if use_image2video else "t2v_defaults.json"
+    if not Path(defaults_filename).is_file():
+        ui_defaults = {
+            "prompts": "",
+            "resolution": "832x480",
+            "video_length": 81,
+            "num_inference_steps": 30,
+            "seed": -1,
+            "repeat_generation": 1,
+            "guidance_scale": 5.0,
+            "flow_shift": 5.0,
+            "negative_prompt": "",
+            "activated_loras": [],
+            "loras_multipliers": "",
+            "tea_cache": 0.0,
+            "tea_cache_start_step_perc": 0,
+            "RIFLEx_setting": 0,
+            "slg_switch": 0,
+            "slg_layers": [9],
+            "slg_start_perc": 10,
+            "slg_end_perc": 90
+        }
+        with open(defaults_filename, "w", encoding="utf-8") as f:
+            json.dump(ui_defaults, f, indent=4)
+    else:
+        with open(defaults_filename, "r", encoding="utf-8") as f:
+            ui_defaults = json.load(f)
 
 transformer_filename_t2v = server_config["transformer_filename"]
 transformer_filename_i2v = server_config.get("transformer_filename_i2v", transformer_choices_i2v[1]) ########
@@ -344,8 +324,8 @@ if args.t2v_1_3B:
     use_image2video = False
     lock_ui_transformer = False
 
+get_defaults()
 only_allow_edit_in_advanced = False
-
 lora_dir =args.lora_dir
 if use_image2video and len(lora_dir)==0:
     lora_dir =args.lora_dir_i2v
@@ -355,7 +335,6 @@ else:
     root_lora_dir = lora_dir
 lora_dir = get_lora_dir(root_lora_dir)
 lora_preselected_preset = args.lora_preset
-default_tea_cache = float(args.teacache)
 # if args.fast : #or args.fastest
 #     transformer_filename_t2v = transformer_choices_t2v[2]
 #     attention_mode="sage2" if "sage2" in attention_modes_supported else "sage"
@@ -606,26 +585,31 @@ def load_i2v_model(model_filename, value):
 
     return wan_model, pipe
 
-def load_models(i2v,  lora_dir,  lora_preselected_preset ):
-    download_models(transformer_filename_i2v if i2v else transformer_filename_t2v, text_encoder_filename) 
-
+def load_models(i2v, lora_dir, lora_preselected_preset):
+    model_filename = transformer_filename_i2v if i2v else transformer_filename_t2v
+    download_models(model_filename, text_encoder_filename)
     if i2v:
-        res720P= "720p" in transformer_filename_i2v
-        wan_model, pipe = load_i2v_model(transformer_filename_i2v,"720P" if res720P else "480P")
+        res720P = "720p" in model_filename
+        wan_model, pipe = load_i2v_model(model_filename, "720P" if res720P else "480P")
     else:
-        wan_model, pipe = load_t2v_model(transformer_filename_t2v,"")
-
+        wan_model, pipe = load_t2v_model(model_filename, "")
     kwargs = { "extraModelsToQuantize": None}
     if profile == 2 or profile == 4:
         kwargs["budgets"] = { "transformer" : 100 if preload  == 0 else preload, "text_encoder" : 100, "*" : 1000 }
     elif profile == 3:
         kwargs["budgets"] = { "*" : "70%" }
-
-
     offloadobj = offload.profile(pipe, profile_no= profile, compile = compile, quantizeTransformer = quantizeTransformer, loras = "transformer", **kwargs)  
     loras, loras_names, default_loras_choices, default_loras_multis_str, default_prompt, default_lora_preset, loras_presets = setup_loras(pipe["transformer"],  lora_dir, lora_preselected_preset, None)
-
-
+    if "activated_loras" in ui_defaults:
+        lora_filenames = [os.path.basename(lora_path) for lora_path in loras]
+        activated_indices = []
+        for lora_file in ui_defaults["activated_loras"]:
+            try:
+                idx = lora_filenames.index(lora_file)
+                activated_indices.append(str(idx))
+            except ValueError:
+                print(f"Warning: Lora file {lora_file} from config not found in loras directory")
+        ui_defaults["activated_loras"] = activated_indices
     return wan_model, offloadobj, loras, loras_names, default_loras_choices, default_loras_multis_str, default_prompt, default_lora_preset, loras_presets
 
 wan_model, offloadobj,  loras, loras_names, default_loras_choices, default_loras_multis_str, default_prompt, default_lora_preset, loras_presets = load_models(use_image2video, lora_dir, lora_preselected_preset )
@@ -915,15 +899,24 @@ def generate_video(
     slg_start,
     slg_end, 
     state,
-    metadata_choice,
+    image2video,
     progress=gr.Progress() #track_tqdm= True
 
 ):
-    
+
+    global use_image2video, wan_model, offloadobj, loras, loras_names, default_loras_choices, default_loras_multis_str, default_prompt, default_lora_preset, loras_presets
+    if use_image2video != image2video:
+        if offloadobj is not None:
+            offloadobj.release()
+            offloadobj = None
+        wan_model = None
+        lora_dir = get_lora_dir(root_lora_dir)
+        wan_model, offloadobj, loras, loras_names, default_loras_choices, default_loras_multis_str, default_prompt, default_lora_preset, loras_presets = load_models(image2video, lora_dir, lora_preselected_preset)
+        use_image2video = image2video
+
     from PIL import Image
     import numpy as np
     import tempfile
-
 
     if wan_model == None:
         raise gr.Error("Unable to generate a Video while a new configuration is being applied.")
@@ -942,7 +935,7 @@ def generate_video(
 
     if slg_switch == 0:
         slg_layers = None
-    if use_image2video:
+    if image2video:
         if "480p" in  transformer_filename_i2v and width * height > 848*480:
             gr.Info("You must use the 720P image to video model to generate videos with a resolution equivalent to 720P")
             return
@@ -992,7 +985,7 @@ def generate_video(
     prompts = [prompt.strip() for prompt in prompts if len(prompt.strip())>0 and not prompt.startswith("#")]
     if len(prompts) ==0:
         return
-    if use_image2video:
+    if image2video:
         if image_to_continue is not None:
             if isinstance(image_to_continue, list):
                 image_to_continue = [ tup[0] for tup in image_to_continue ]
@@ -1093,7 +1086,7 @@ def generate_video(
         trans.rel_l1_thresh = 0
         trans.teacache_start_step =  int(tea_cache_start_step_perc*num_inference_steps/100)
 
-        if use_image2video:
+        if image2video:
             if '480p' in transformer_filename_i2v: 
                 # teacache_thresholds = [0.13, .19, 0.26]
                 trans.coefficients = [-3.02331670e+02,  2.23948934e+02, -5.25463970e+01,  5.87348440e+00, -2.01973289e-01]
@@ -1164,7 +1157,7 @@ def generate_video(
             torch.cuda.empty_cache()
             wan_model._interrupt = False
             try:
-                if use_image2video:
+                if image2video:
                     samples = wan_model.generate(
                         prompt,
                         image_to_continue[no].convert('RGB'),  
@@ -1277,6 +1270,7 @@ def generate_video(
                     'num_inference_steps': num_inference_steps,
                 }
 
+                metadata_choice = server_config["metadata_choice"]
                 if metadata_choice == "json":
                     with open(video_path.replace('.mp4', '.json'), 'w') as f:
                         json.dump(configs, f, indent=4)
@@ -1385,7 +1379,7 @@ def delete_lset(lset_name):
     return  gr.Dropdown(choices=lset_choices, value= lset_choices[pos][1]), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Checkbox(visible= False)
 
 def refresh_lora_list(lset_name, loras_choices):
-    global loras,loras_names, loras_presets
+    global loras,loras_names, loras_presets, wan_model
     prev_lora_names_selected = [ loras_names[int(i)] for i in loras_choices]
 
     loras, loras_names, _, _, _, _, loras_presets = setup_loras(wan_model.model,  lora_dir, lora_preselected_preset, None)
@@ -1565,7 +1559,6 @@ def switch_prompt_type(state, prompt, wizard_prompt, *prompt_vars):
         state["apply_success"] = 1
         return fill_wizard_prompt(state, prompt, wizard_prompt)
 
-
 visible= False
 def switch_advanced(new_advanced, lset_name):
     global advanced
@@ -1582,15 +1575,12 @@ def switch_advanced(new_advanced, lset_name):
 
 def download_loras():
     from huggingface_hub import  snapshot_download    
-
-
     yield "<B><FONT SIZE=3>Please wait while the Loras are being downloaded</B></FONT>", *[gr.Column(visible=False)] * 2
     log_path = os.path.join(lora_dir, "log.txt")
     if not os.path.isfile(log_path) or True:
         import shutil 
         tmp_path = os.path.join(lora_dir, "tmp_lora_dowload")
-
-        import  shutil, glob
+        import glob
         snapshot_download(repo_id="DeepBeepMeep/Wan2.1",  allow_patterns="loras_i2v/*", local_dir= tmp_path)
         for f in glob.glob(os.path.join(tmp_path, "loras_i2v", "*.*")):
             target_file = os.path.join(lora_dir,  Path(f).parts[-1] )
@@ -1598,437 +1588,239 @@ def download_loras():
                 os.remove(f)
             else:
                 shutil.move(f, lora_dir) 
-
     try:
         os.remove(tmp_path)
     except:
         pass
-    
     yield "<B><FONT SIZE=3>Loras have been completely downloaded</B></FONT>", *[gr.Column(visible=True)] * 2
 
     from datetime import datetime
     dt = datetime.today().strftime('%Y-%m-%d')
     with open( log_path, "w", encoding="utf-8") as writer:
         writer.write(f"Loras downloaded on the {dt} at {time.time()} on the {time.time()}")
-
     return
-def create_demo():
-    css= """
-        .title-with-lines {
-            display: flex;
-            align-items: center;
-            margin: 30px 0;
-        }
-        .line {
-            flex-grow: 1;
-            height: 1px;
-            background-color: #333;
-        }
-        h2 {
-            margin: 0 20px;
-            white-space: nowrap;
-        }
-"""
-    default_flow_shift = get_default_flow(transformer_filename_i2v if use_image2video else transformer_filename_t2v)
-    with gr.Blocks(css=css, theme=gr.themes.Soft(primary_hue="sky", neutral_hue="slate", text_size= "md")) as demo:
-        state_dict = {}
-       
-        if use_image2video:
-            gr.Markdown("<div align=center><H1>Wan 2.1<SUP>GP</SUP> v2.1 - Image To Video <FONT SIZE=4>by <I>DeepBeepMeep</I></FONT> <FONT SIZE=3> (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>Updates</A> / <A HREF='https://github.com/Wan-Video/Wan2.1'>Original by Alibaba</A>)</FONT SIZE=3></H1></div>")
-        else:
-            gr.Markdown("<div align=center><H1>Wan 2.1<SUP>GP</SUP> v2.1 - Text To Video <FONT SIZE=4>by <I>DeepBeepMeep</I></FONT> <FONT SIZE=3> (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>Updates</A> / <A HREF='https://github.com/Wan-Video/Wan2.1'>Original by Alibaba</A>)</FONT SIZE=3></H1></div>")
 
-        gr.Markdown("<FONT SIZE=3>Welcome to Wan 2.1GP a super fast and low VRAM AI Video Generator !</FONT>")
-
-        with gr.Accordion("Click here for some Info on how to use Wan2GP", open = False): # and to download 20+ Loras
-            if use_image2video  and False:
-                pass
-            else:
-                gr.Markdown("The VRAM requirements will depend greatly of the resolution and the duration of the video, for instance :")
-                gr.Markdown("- 848 x 480 with a 14B model: 80 frames (5s) : 8 GB of VRAM")
-                gr.Markdown("- 848 x 480 with the 1.3B model: 80 frames (5s) : 5 GB of VRAM")
-                gr.Markdown("- 1280 x 720 with a 14B model: 80 frames (5s): 11 GB of VRAM")
-                gr.Markdown("It is not recommmended to generate a video longer than 8s (128 frames) even if there is still some VRAM left as some artifacts may appear")
-            gr.Markdown("Please note that if your turn on compilation, the first denoising step of the first video generation will be slow due to the compilation. Therefore all your tests should be done with compilation turned off.")
-
-        with gr.Row(visible= use_image2video):
-            with gr.Row(scale =3):
-                gr.Markdown("<I>Wan2GP's Lora Festival ! Press the following button to download i2v <B>Remade</B> Loras collection (and bonuses Loras). Dont't forget first to make a backup of your Loras just in case.")
-            with gr.Row(scale =1):
-                download_loras_btn = gr.Button("---> Let the Lora's Festival Start !", scale =1)
-        with gr.Row(visible= use_image2video):
-            download_status = gr.Markdown()
-
-        # css = """<STYLE>
-        #         h2 { width: 100%;  text-align: center; border-bottom: 1px solid #000; line-height: 0.1em; margin: 10px 0 20px;  } 
-        #         h2 span {background:#fff;  padding:0 10px; }</STYLE>"""
-        # gr.HTML(css)
-
-        header = gr.Markdown(generate_header(transformer_filename_i2v if use_image2video else transformer_filename_t2v, compile, attention_mode)  )            
-
-        with gr.Accordion("Video Engine Configuration - click here to change it", open = False, visible= not args.lock_config):
-            gr.Markdown("For the changes to be effective you will need to restart the gradio_server. Some choices below may be locked if the app has been launched by specifying a config preset.")
-
-            with gr.Column():
-                index = transformer_choices_t2v.index(transformer_filename_t2v)
-                index = 0 if index ==0 else index
-                transformer_t2v_choice = gr.Dropdown(
-                    choices=[
-                        ("WAN 2.1 1.3B Text to Video 16 bits (recommended)- the small model for fast generations with low VRAM requirements", 0),
-                        ("WAN 2.1 14B Text to Video 16 bits - the default engine in its original glory, offers a slightly better image quality but slower and requires more RAM", 1),
-                        ("WAN 2.1 14B Text to Video quantized to 8 bits (recommended) - the default engine but quantized", 2),
-                    ],
-                    value= index,
-                    label="Transformer model for Text to Video",
-                    interactive= not lock_ui_transformer,   
-                    visible=not use_image2video
-                 )
-
-                index = transformer_choices_i2v.index(transformer_filename_i2v)
-                index = 0 if index ==0 else index
-                transformer_i2v_choice = gr.Dropdown(
-                    choices=[
-                        ("WAN 2.1 - 480p 14B Image to Video 16 bits - the default engine in its original glory, offers a slightly better image quality but slower and requires more RAM", 0),
-                        ("WAN 2.1 - 480p 14B Image to Video quantized to 8 bits (recommended) - the default engine but quantized", 1),
-                        ("WAN 2.1 - 720p 14B Image to Video 16 bits - the default engine in its original glory, offers a slightly better image quality but slower and requires more RAM", 2),
-                        ("WAN 2.1 - 720p 14B Image to Video quantized to 8 bits (recommended) - the default engine but quantized", 3),
-                    ],
-                    value= index,
-                    label="Transformer model for Image to Video",
-                    interactive= not lock_ui_transformer,
-                    visible = use_image2video, ###############
-                 )
-
-                index = text_encoder_choices.index(text_encoder_filename)
-                index = 0 if index ==0 else index
-
-                text_encoder_choice = gr.Dropdown(
-                    choices=[
-                        ("UMT5 XXL 16 bits - unquantized text encoder, better quality uses more RAM", 0),
-                        ("UMT5 XXL quantized to 8 bits - quantized text encoder, slightly worse quality but uses less RAM", 1),
-                    ],
-                    value= index,
-                    label="Text Encoder model"
-                 )
-                save_path_choice = gr.Textbox(
-                    label="Output Folder for Generated Videos",
-                    value=server_config.get("save_path", save_path)
-                )
-                def check(mode): 
-                    if not mode in attention_modes_supported:
-                        return " (NOT INSTALLED)"
-                    else:
-                        return ""
-                attention_choice = gr.Dropdown(
-                    choices=[
-                        ("Auto : pick sage2 > sage > sdpa depending on what is installed", "auto"),
-                        ("Scale Dot Product Attention: default, always available", "sdpa"),
-                        ("Flash" + check("flash")+ ": good quality - requires additional install (usually complex to set up on Windows without WSL)", "flash"),
-                        # ("Xformers" + check("xformers")+ ": good quality - requires additional install (usually complex, may consume less VRAM to set up on Windows without WSL)", "xformers"),
-                        ("Sage" + check("sage")+ ": 30% faster but slightly worse quality - requires additional install (usually complex to set up on Windows without WSL)", "sage"),
-                        ("Sage2" + check("sage2")+ ": 40% faster but slightly worse quality - requires additional install (usually complex to set up on Windows without WSL)", "sage2"),
-                    ],
-                    value= attention_mode,
-                    label="Attention Type",
-                    interactive= not lock_ui_attention
-                 )
-                gr.Markdown("Beware: when restarting the server or changing a resolution or video duration, the first step of generation for a duration / resolution may last a few minutes due to recompilation")
-                compile_choice = gr.Dropdown(
-                    choices=[
-                        ("ON: works only on Linux / WSL", "transformer"),
-                        ("OFF: no other choice if you have Windows without using WSL", "" ),
-                    ],
-                    value= compile,
-                    label="Compile Transformer (up to 50% faster and 30% more frames but requires Linux / WSL and Flash or Sage attention)",
-                    interactive= not lock_ui_compile
-                 )              
-
-
-                vae_config_choice = gr.Dropdown(
-                    choices=[
-                ("Auto", 0),
-                ("Disabled (faster but may require up to 22 GB of VRAM)", 1),
-                ("256 x 256 : If at least 8 GB of VRAM", 2),
-                ("128 x 128 : If at least 6 GB of VRAM", 3),
-                    ],
-                    value= vae_config,
-                    label="VAE Tiling - reduce the high VRAM requirements for VAE decoding and VAE encoding (if enabled it will be slower)"
-                 )
-
-                boost_choice = gr.Dropdown(
-                    choices=[
-                        # ("Auto (ON if Video longer than 5s)", 0),
-                        ("ON", 1), 
-                        ("OFF", 2), 
-                    ],
-                    value=boost,
-                    label="Boost: Give a 10% speed speedup without losing quality at the cost of a litle VRAM (up to 1GB for max frames and resolution)"
-                )
-
-                profile_choice = gr.Dropdown(
-                    choices=[
-                ("HighRAM_HighVRAM, profile 1: at least 48 GB of RAM and 24 GB of VRAM, the fastest for short videos a RTX 3090 / RTX 4090", 1),
-                ("HighRAM_LowVRAM, profile 2 (Recommended): at least 48 GB of RAM and 12 GB of VRAM, the most versatile profile with high RAM, better suited for RTX 3070/3080/4070/4080 or for RTX 3090 / RTX 4090 with large pictures batches or long videos", 2),
-                ("LowRAM_HighVRAM, profile 3: at least 32 GB of RAM and 24 GB of VRAM, adapted for RTX 3090 / RTX 4090 with limited RAM for good speed short video",3),
-                ("LowRAM_LowVRAM, profile 4 (Default): at least 32 GB of RAM and 12 GB of VRAM, if you have little VRAM or want to generate longer videos",4),
-                ("VerylowRAM_LowVRAM, profile 5: (Fail safe): at least 16 GB of RAM and 10 GB of VRAM, if you don't have much it won't be fast but maybe it will work",5)
-                    ],
-                    value= profile,
-                    label="Profile (for power users only, not needed to change it)"
-                 )
-
-                default_ui_choice = gr.Dropdown(
-                    choices=[
-                        ("Text to Video", "t2v"),
-                        ("Image to Video", "i2v"),
-                    ],
-                    value= default_ui,
-                    label="Default mode when launching the App if not '--t2v' ot '--i2v' switch is specified when launching the server ",
-                    # visible= True ############
-                 )                
-
-                metadata_choice = gr.Dropdown(
-                    choices=[
-                        ("Export JSON files", "json"),
-                        ("Add metadata to video", "metadata"),
-                        ("Neither", "none")
-                    ],
-                    value=metadata,
-                    label="Metadata Handling"
-                )
-
-                msg = gr.Markdown()            
-                apply_btn  = gr.Button("Apply Changes")
-
-
-
-        with gr.Row():
-            with gr.Column():
-                with gr.Row(visible= len(loras)>0) as presets_column:
-                    lset_choices = [ (preset, preset) for preset in loras_presets ] + [(get_new_preset_msg(advanced), "")]
-                    with gr.Column(scale=6):
-                        lset_name = gr.Dropdown(show_label=False, allow_custom_value= True, scale=5, filterable=True, choices= lset_choices, value=default_lora_preset)
-                    with gr.Column(scale=1):
-                        # with gr.Column():
-                        with gr.Row(height=17):
-                            apply_lset_btn = gr.Button("Apply Lora Preset", size="sm", min_width= 1)
-                            refresh_lora_btn = gr.Button("Refresh", size="sm", min_width= 1, visible=advanced or not only_allow_edit_in_advanced)
-                            # save_lset_prompt_cbox = gr.Checkbox(label="Save Prompt Comments in Preset", value=False, visible= False)
-                            save_lset_prompt_drop= gr.Dropdown(
-                                choices=[
-                                    ("Save Prompt Comments Only", 0),
-                                    ("Save Full Prompt", 1)
-                                ],  show_label= False, container=False, value =1, visible= False
-                            ) 
-
-                        with gr.Row(height=17, visible=False) as refresh2_row:
-                            refresh_lora_btn2 = gr.Button("Refresh", size="sm", min_width= 1)
-
-                        with gr.Row(height=17, visible=advanced or not only_allow_edit_in_advanced) as preset_buttons_rows:
-                            confirm_save_lset_btn = gr.Button("Go Ahead Save it !", size="sm", min_width= 1, visible=False) 
-                            confirm_delete_lset_btn = gr.Button("Go Ahead Delete it !", size="sm", min_width= 1, visible=False) 
-                            save_lset_btn = gr.Button("Save", size="sm", min_width= 1)
-                            delete_lset_btn = gr.Button("Delete", size="sm", min_width= 1)
-                            cancel_lset_btn = gr.Button("Don't do it !", size="sm", min_width= 1 , visible=False)  
-
-                video_to_continue = gr.Video(label= "Video to continue", visible= use_image2video and False) #######
-                if args.multiple_images:  
-                    image_to_continue = gr.Gallery(
-                            label="Images as a starting point for new videos", type ="pil", #file_types= "image", 
-                            columns=[3], rows=[1], object_fit="contain", height="auto", selected_index=0, interactive= True, visible=use_image2video)
-                else:
-                    image_to_continue = gr.Image(label= "Image as a starting point for a new video", type ="pil", visible=use_image2video)
-
-                advanced_prompt = advanced
-                prompt_vars=[]
-                if advanced_prompt:
-                    default_wizard_prompt, variables, values= None, None, None
-                else:
-                    default_wizard_prompt, variables, values, errors =  extract_wizard_prompt(default_prompt)
-                    advanced_prompt  = len(errors) > 0
-
-                with gr.Column(visible= advanced_prompt) as prompt_column_advanced: #visible= False
-                    prompt = gr.Textbox( visible= advanced_prompt, label="Prompts (each new line of prompt will generate a new video, # lines = comments, ! lines = macros)", value=default_prompt, lines=3)
-
-                with gr.Column(visible=not advanced_prompt and len(variables) > 0) as prompt_column_wizard_vars: #visible= False
-                    gr.Markdown("<B>Please fill the following input fields to adapt automatically the Prompt:</B>")
-                    with gr.Row(): #visible= not advanced_prompt and len(variables) > 0
-                        if not advanced_prompt:
-                            for variable in variables:
-                                value = values.get(variable, "")
-                                prompt_vars.append(gr.Textbox( placeholder=variable, min_width=80, show_label= False, info= variable, visible= True, value= "\n".join(value) ))
-                            state_dict["wizard_prompt"] = 1
-                            state_dict["variables"] = variables                                
-                        for _ in range( PROMPT_VARS_MAX - len(prompt_vars)):
-                            prompt_vars.append(gr.Textbox(visible= False, min_width=80, show_label= False))
-                with gr.Column(not advanced_prompt) as prompt_column_wizard:
-                    wizard_prompt = gr.Textbox(visible = not advanced_prompt, label="Prompts (each new line of prompt will generate a new video, # lines = comments)", value=default_wizard_prompt, lines=3)
-                state = gr.State(state_dict)
-             
-                with gr.Row():
-                    res = args.res
-                    if use_image2video:
-                        resolution = gr.Dropdown(
-                            choices=[
-                                # 720p
-                                ("720p", "1280x720"),
-                                ("480p", "832x480"),
-                            ],
-                            value="1280x720" if res == "720p" else "832x480",
-                            label="Resolution (video will have the same height / width ratio than the original image)"
-                        )
-
-                    else:
-                        resolution = gr.Dropdown(
-                            choices=[
-                                # 720p
-                                ("1280x720 (16:9, 720p)", "1280x720"),
-                                ("720x1280 (9:16, 720p)", "720x1280"), 
-                                ("1024x1024 (4:3, 720p)", "1024x024"),
-                                # ("832x1104 (3:4, 720p)", "832x1104"),
-                                # ("960x960 (1:1, 720p)", "960x960"),
-                                # 480p
-                                # ("960x544 (16:9, 480p)", "960x544"),
-                                ("832x480 (16:9, 480p)", "832x480"),
-                                ("480x832 (9:16, 480p)", "480x832"),
-                                # ("832x624 (4:3, 540p)", "832x624"), 
-                                # ("624x832 (3:4, 540p)", "624x832"),
-                                # ("720x720 (1:1, 540p)", "720x720"),
-                            ],
-                            value={"480p": "832x480","720p": "1280x720","832p": "480x832","1024p": "1024x1024","1280p": "720x1280",}.get(res, "832x480"),
-                            label="Resolution"
-                        )
-
-                with gr.Row():
-                    with gr.Column():
-                        video_length = gr.Slider(5, 193, value=default_number_frames if default_number_frames > 0 else 81, step=4, label="Number of frames (16 = 1s)")
-                    with gr.Column():
-                        num_inference_steps = gr.Slider(1, 100, value=  default_inference_steps if default_inference_steps > 0 else 30, step=1, label="Number of Inference Steps")
-
-                with gr.Row():
-                    max_frames = gr.Slider(1, 100, value=9, step=1, label="Number of input frames to use for Video2World prediction", visible=use_image2video and False) #########
+def generate_video_tab(image2video=False):
+    state_dict = {}
+    gr.Markdown("<div align=center><H1>Wan 2.1<SUP>GP</SUP> v2.1 <FONT SIZE=4>by <I>DeepBeepMeep</I></FONT> <FONT SIZE=3> (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>Updates</A> / <A HREF='https://github.com/Wan-Video/Wan2.1'>Original by Alibaba</A>)</FONT SIZE=3></H1></div>")
+    gr.Markdown("<FONT SIZE=3>Welcome to Wan 2.1GP a super fast and low VRAM AI Video Generator !</FONT>")
     
-
-
-                show_advanced = gr.Checkbox(label="Advanced Mode", value=advanced)
-                with gr.Row(visible=advanced) as advanced_row:
-                    with gr.Column():
-                        seed = gr.Slider(-1, 999999999, value=default_seed, step=1, label="Seed (-1 for random)") 
-                        with gr.Row():
-                            repeat_generation = gr.Slider(1, 25.0, value=1.0, step=1, label="Default Number of Generated Videos per Prompt") 
-                            multi_images_gen_type = gr.Dropdown(
-                                choices=[
-                                    ("Generate every combination of images and texts prompts", 0),
-                                    ("Match images and text prompts", 1),
-                                ], visible= args.multiple_images, label= "Multiple Images as Prompts"
-                            )
-
-                        with gr.Row():
-                            guidance_scale = gr.Slider(1.0, 20.0, value=5.0, step=0.5, label="Guidance Scale", visible=True)
-                            embedded_guidance_scale = gr.Slider(1.0, 20.0, value=6.0, step=0.5, label="Embedded Guidance Scale", visible=False)
-                            flow_shift = gr.Slider(0.0, 25.0, value= default_flow_shift, step=0.1, label="Shift Scale") 
-                        with gr.Row():
-                            negative_prompt = gr.Textbox(label="Negative Prompt", value="")
-                        with gr.Column(visible = len(loras)>0) as loras_column:
-                            gr.Markdown("<B>Loras can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
-                            loras_choices = gr.Dropdown(
-                                choices=[
-                                    (lora_name, str(i) ) for i, lora_name in enumerate(loras_names)
-                                ],
-                                value= default_loras_choices,
-                                multiselect= True,
-                                label="Activated Loras"
-                            )
-                            loras_mult_choices = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by space characters or carriage returns, line that starts with # are ignored", value=default_loras_multis_str)
-
-
-                        with gr.Row():
-                            gr.Markdown("<B>Tea Cache accelerates by skipping intelligently some steps, the more steps are skipped the lower the quality of the video (Tea Cache consumes also VRAM)</B>")
-                        with gr.Row():
-                            tea_cache_setting = gr.Dropdown(
-                                choices=[
-                                    ("Tea Cache Disabled", 0),
-                                    ("around x1.5 speed up", 1.5), 
-                                    ("around x1.75 speed up", 1.75), 
-                                    ("around x2 speed up", 2.0), 
-                                    ("around x2.25 speed up", 2.25), 
-                                    ("around x2.5 speed up", 2.5), 
-                                ],
-                                value=default_tea_cache,
-                                visible=True,
-                                label="Tea Cache Global Acceleration"
-                            )
-                            tea_cache_start_step_perc = gr.Slider(0, 100, value=0, step=1, label="Tea Cache starting moment in % of generation") 
-
-                        gr.Markdown("<B>With Riflex you can generate videos longer than 5s which is the default duration of videos used to train the model</B>")
-                        RIFLEx_setting = gr.Dropdown(
+    with gr.Accordion("Click here for some Info on how to use Wan2GP", open = False):
+        gr.Markdown("The VRAM requirements will depend greatly of the resolution and the duration of the video, for instance :")
+        gr.Markdown("- 848 x 480 with a 14B model: 80 frames (5s) : 8 GB of VRAM")
+        gr.Markdown("- 848 x 480 with the 1.3B model: 80 frames (5s) : 5 GB of VRAM")
+        gr.Markdown("- 1280 x 720 with a 14B model: 80 frames (5s): 11 GB of VRAM")
+        gr.Markdown("It is not recommmended to generate a video longer than 8s (128 frames) even if there is still some VRAM left as some artifacts may appear")
+        gr.Markdown("Please note that if your turn on compilation, the first denoising step of the first video generation will be slow due to the compilation. Therefore all your tests should be done with compilation turned off.")
+    with gr.Row(visible= image2video):
+        with gr.Row(scale =3):
+            gr.Markdown("<I>Wan2GP's Lora Festival ! Press the following button to download i2v <B>Remade</B> Loras collection (and bonuses Loras). Dont't forget first to make a backup of your Loras just in case.")
+        with gr.Row(scale =1):
+            download_loras_btn = gr.Button("---> Let the Lora's Festival Start !", scale =1)
+    with gr.Row(visible= image2video):
+        download_status = gr.Markdown()
+    model_filename = transformer_filename_i2v if image2video else transformer_filename_t2v
+    header = gr.Markdown(generate_header(model_filename, compile, attention_mode))
+    with gr.Row():
+        with gr.Column():
+            with gr.Row(visible= len(loras)>0) as presets_column:
+                lset_choices = [ (preset, preset) for preset in loras_presets ] + [(get_new_preset_msg(advanced), "")]
+                with gr.Column(scale=6):
+                    lset_name = gr.Dropdown(show_label=False, allow_custom_value= True, scale=5, filterable=True, choices= lset_choices, value=default_lora_preset)
+                with gr.Column(scale=1):
+                    with gr.Row(height=17):
+                        apply_lset_btn = gr.Button("Apply Lora Preset", size="sm", min_width= 1)
+                        refresh_lora_btn = gr.Button("Refresh", size="sm", min_width= 1, visible=advanced or not only_allow_edit_in_advanced)
+                        save_lset_prompt_drop= gr.Dropdown(
                             choices=[
-                                ("Auto (ON if Video longer than 5s)", 0),
-                                ("Always ON", 1), 
-                                ("Always OFF", 2), 
-                            ],
-                            value=0,
-                            label="RIFLEx positional embedding to generate long video"
+                                ("Save Prompt Comments Only", 0),
+                                ("Save Full Prompt", 1)
+                            ],  show_label= False, container=False, value =1, visible= False
+                        ) 
+                    with gr.Row(height=17, visible=False) as refresh2_row:
+                        refresh_lora_btn2 = gr.Button("Refresh", size="sm", min_width= 1)
+
+                    with gr.Row(height=17, visible=advanced or not only_allow_edit_in_advanced) as preset_buttons_rows:
+                        confirm_save_lset_btn = gr.Button("Go Ahead Save it !", size="sm", min_width= 1, visible=False) 
+                        confirm_delete_lset_btn = gr.Button("Go Ahead Delete it !", size="sm", min_width= 1, visible=False) 
+                        save_lset_btn = gr.Button("Save", size="sm", min_width= 1)
+                        delete_lset_btn = gr.Button("Delete", size="sm", min_width= 1)
+                        cancel_lset_btn = gr.Button("Don't do it !", size="sm", min_width= 1 , visible=False)  
+            video_to_continue = gr.Video(label= "Video to continue", visible= image2video and False) #######
+            if args.multiple_images:  
+                image_to_continue = gr.Gallery(
+                        label="Images as a starting point for new videos", type ="pil", #file_types= "image", 
+                        columns=[3], rows=[1], object_fit="contain", height="auto", selected_index=0, interactive= True, visible=image2video)
+            else:
+                image_to_continue = gr.Image(label= "Image as a starting point for a new video", type ="pil", visible=image2video)
+            advanced_prompt = advanced
+            prompt_vars=[]
+            if advanced_prompt:
+                default_wizard_prompt, variables, values= None, None, None
+            else:
+                default_wizard_prompt, variables, values, errors =  extract_wizard_prompt(default_prompt)
+                advanced_prompt  = len(errors) > 0
+            with gr.Column(visible= advanced_prompt) as prompt_column_advanced:
+                prompt = gr.Textbox( visible= advanced_prompt, label="Prompts (each new line of prompt will generate a new video, # lines = comments, ! lines = macros)", value=ui_defaults["prompts"], lines=3)
+
+            with gr.Column(visible=not advanced_prompt and len(variables) > 0) as prompt_column_wizard_vars:
+                gr.Markdown("<B>Please fill the following input fields to adapt automatically the Prompt:</B>")
+                with gr.Row():
+                    if not advanced_prompt:
+                        for variable in variables:
+                            value = values.get(variable, "")
+                            prompt_vars.append(gr.Textbox( placeholder=variable, min_width=80, show_label= False, info= variable, visible= True, value= "\n".join(value) ))
+                        state_dict["wizard_prompt"] = 1
+                        state_dict["variables"] = variables                                
+                    for _ in range( PROMPT_VARS_MAX - len(prompt_vars)):
+                        prompt_vars.append(gr.Textbox(visible= False, min_width=80, show_label= False))
+            with gr.Column(not advanced_prompt) as prompt_column_wizard:
+                wizard_prompt = gr.Textbox(visible = not advanced_prompt, label="Prompts (each new line of prompt will generate a new video, # lines = comments)", value=default_wizard_prompt, lines=3)
+            state = gr.State(state_dict)     
+            with gr.Row():
+                if image2video:
+                    resolution = gr.Dropdown(
+                        choices=[
+                            # 720p
+                            ("720p", "1280x720"),
+                            ("480p", "832x480"),
+                        ],
+                        value=ui_defaults["resolution"],
+                        label="Resolution (video will have the same height / width ratio than the original image)"
+                    )
+                else:
+                    resolution = gr.Dropdown(
+                        choices=[
+                            # 720p
+                            ("1280x720 (16:9, 720p)", "1280x720"),
+                            ("720x1280 (9:16, 720p)", "720x1280"), 
+                            ("1024x1024 (4:3, 720p)", "1024x024"),
+                            # ("832x1104 (3:4, 720p)", "832x1104"),
+                            # ("960x960 (1:1, 720p)", "960x960"),
+                            # 480p
+                            # ("960x544 (16:9, 480p)", "960x544"),
+                            ("832x480 (16:9, 480p)", "832x480"),
+                            ("480x832 (9:16, 480p)", "480x832"),
+                            # ("832x624 (4:3, 540p)", "832x624"), 
+                            # ("624x832 (3:4, 540p)", "624x832"),
+                            # ("720x720 (1:1, 540p)", "720x720"),
+                        ],
+                        value=ui_defaults["resolution"],
+                        label="Resolution"
+                    )
+            with gr.Row():
+                with gr.Column():
+                    video_length = gr.Slider(5, 193, value=ui_defaults["video_length"], step=4, label="Number of frames (16 = 1s)")
+                with gr.Column():
+                    num_inference_steps = gr.Slider(1, 100, value=ui_defaults["num_inference_steps"], step=1, label="Number of Inference Steps")
+            with gr.Row():
+                max_frames = gr.Slider(1, 100, value=9, step=1, label="Number of input frames to use for Video2World prediction", visible=image2video and False) #########
+            show_advanced = gr.Checkbox(label="Advanced Mode", value=advanced)
+            with gr.Row(visible=advanced) as advanced_row:
+                with gr.Column():
+                    seed = gr.Slider(-1, 999999999, value=ui_defaults["seed"], step=1, label="Seed (-1 for random)") 
+                    with gr.Row():
+                        repeat_generation = gr.Slider(1, 25.0, value=ui_defaults["repeat_generation"], step=1, label="Default Number of Generated Videos per Prompt") 
+                        multi_images_gen_type = gr.Dropdown(
+                            choices=[
+                                ("Generate every combination of images and texts prompts", 0),
+                                ("Match images and text prompts", 1),
+                            ], visible= args.multiple_images, label= "Multiple Images as Prompts"
                         )
+                    with gr.Row():
+                        guidance_scale = gr.Slider(1.0, 20.0, value=ui_defaults["guidance_scale"], step=0.5, label="Guidance Scale", visible=True)
+                        embedded_guidance_scale = gr.Slider(1.0, 20.0, value=6.0, step=0.5, label="Embedded Guidance Scale", visible=False)
+                        flow_shift = gr.Slider(0.0, 25.0, value=ui_defaults["flow_shift"], step=0.1, label="Shift Scale") 
+                    with gr.Row():
+                        negative_prompt = gr.Textbox(label="Negative Prompt", value=ui_defaults["negative_prompt"])
+                    with gr.Column(visible = len(loras)>0) as loras_column:
+                        gr.Markdown("<B>Loras can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
+                        loras_choices = gr.Dropdown(
+                            choices=[
+                                (lora_name, str(i) ) for i, lora_name in enumerate(loras_names)
+                            ],
+                            value= ui_defaults["activated_loras"],
+                            multiselect= True,
+                            label="Activated Loras"
+                        )
+                        loras_mult_choices = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by space characters or carriage returns, line that starts with # are ignored", value=ui_defaults["loras_multipliers"])
+                    with gr.Row():
+                        gr.Markdown("<B>Tea Cache accelerates by skipping intelligently some steps, the more steps are skipped the lower the quality of the video (Tea Cache consumes also VRAM)</B>")
+                    with gr.Row():
+                        tea_cache_setting = gr.Dropdown(
+                            choices=[
+                                ("Tea Cache Disabled", 0),
+                                ("around x1.5 speed up", 1.5), 
+                                ("around x1.75 speed up", 1.75), 
+                                ("around x2 speed up", 2.0), 
+                                ("around x2.25 speed up", 2.25), 
+                                ("around x2.5 speed up", 2.5), 
+                            ],
+                            value=float(ui_defaults["tea_cache"]),
+                            visible=True,
+                            label="Tea Cache Global Acceleration"
+                        )
+                        tea_cache_start_step_perc = gr.Slider(0, 100, value=ui_defaults["tea_cache_start_step_perc"], step=1, label="Tea Cache starting moment in % of generation") 
 
-
-                        with gr.Row():
-                            gr.Markdown("<B>Experimental: Skip Layer guidance,should improve video quality</B>")
-                        with gr.Row():
-                            slg_switch = gr.Dropdown(
-                                choices=[
-                                    ("OFF", 0),
-                                    ("ON", 1), 
-                                ],
-                                value= 1 if args.slg else 0,
-                                visible=True,
-                                scale = 1,
-                                label="Skip Layer guidance"
-                            )
-                            slg_layers = gr.Dropdown(
-                                choices=[
-                                    (str(i), i ) for i in range(40)
-                                ],
-                                value= [9],
-                                multiselect= True,
-                                label="Skip Layers",
-                                scale= 3
-                            )
-                        with gr.Row():
-                            slg_start_perc = gr.Slider(0, 100, value=10, step=1, label="Denoising Steps % start") 
-                            slg_end_perc = gr.Slider(0, 100, value=90, step=1, label="Denoising Steps % end") 
-
-
-                show_advanced.change(fn=switch_advanced, inputs=[show_advanced, lset_name], outputs=[advanced_row, preset_buttons_rows, refresh_lora_btn, refresh2_row ,lset_name ]).then(
-                    fn=switch_prompt_type, inputs = [state, prompt, wizard_prompt, *prompt_vars], outputs = [prompt, wizard_prompt, prompt_column_advanced, prompt_column_wizard, prompt_column_wizard_vars, *prompt_vars])
-            
-            with gr.Column():
-                gen_status = gr.Text(label="Status", interactive= False) 
-                output = gr.Gallery(
-                        label="Generated videos", show_label=False, elem_id="gallery"
-                    , columns=[3], rows=[1], object_fit="contain", height=450, selected_index=0, interactive= False)
-                generate_btn = gr.Button("Generate")
-                onemore_btn = gr.Button("One More Please !", visible= False)
-                abort_btn = gr.Button("Abort")
-                gen_info = gr.Text(label="Current prompt", visible= False , interactive= False)  #gr.Markdown("Current prompt") #, , 
-
+                    gr.Markdown("<B>With Riflex you can generate videos longer than 5s which is the default duration of videos used to train the model</B>")
+                    RIFLEx_setting = gr.Dropdown(
+                        choices=[
+                            ("Auto (ON if Video longer than 5s)", 0),
+                            ("Always ON", 1), 
+                            ("Always OFF", 2), 
+                        ],
+                        value=ui_defaults["RIFLEx_setting"],
+                        label="RIFLEx positional embedding to generate long video"
+                    )
+                    with gr.Row():
+                        gr.Markdown("<B>Experimental: Skip Layer guidance,should improve video quality</B>")
+                    with gr.Row():
+                        slg_switch = gr.Dropdown(
+                            choices=[
+                                ("OFF", 0),
+                                ("ON", 1), 
+                            ],
+                            value=ui_defaults["slg_switch"],
+                            visible=True,
+                            scale = 1,
+                            label="Skip Layer guidance"
+                        )
+                        slg_layers = gr.Dropdown(
+                            choices=[
+                                (str(i), i ) for i in range(40)
+                            ],
+                            value=ui_defaults["slg_layers"],
+                            multiselect= True,
+                            label="Skip Layers",
+                            scale= 3
+                        )
+                    with gr.Row():
+                        slg_start_perc = gr.Slider(0, 100, value=ui_defaults["slg_start_perc"], step=1, label="Denoising Steps % start") 
+                        slg_end_perc = gr.Slider(0, 100, value=ui_defaults["slg_end_perc"], step=1, label="Denoising Steps % end") 
+            show_advanced.change(fn=switch_advanced, inputs=[show_advanced, lset_name], outputs=[advanced_row, preset_buttons_rows, refresh_lora_btn, refresh2_row ,lset_name ]).then(
+                fn=switch_prompt_type, inputs = [state, prompt, wizard_prompt, *prompt_vars], outputs = [prompt, wizard_prompt, prompt_column_advanced, prompt_column_wizard, prompt_column_wizard_vars, *prompt_vars])
+        with gr.Column():
+            gen_status = gr.Text(label="Status", interactive= False) 
+            output = gr.Gallery(
+                    label="Generated videos", show_label=False, elem_id="gallery"
+                , columns=[3], rows=[1], object_fit="contain", height=450, selected_index=0, interactive= False)
+            generate_btn = gr.Button("Generate")
+            onemore_btn = gr.Button("One More Please !", visible= False)
+            abort_btn = gr.Button("Abort")
+            gen_info = gr.Text(label="Current prompt", visible= False , interactive= False)
         save_lset_btn.click(validate_save_lset, inputs=[lset_name], outputs=[apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn,confirm_save_lset_btn, cancel_lset_btn, save_lset_prompt_drop])
         confirm_save_lset_btn.click(fn=validate_wizard_prompt, inputs =[state, prompt, wizard_prompt, *prompt_vars] , outputs= [prompt]).then(
         save_lset, inputs=[state, lset_name, loras_choices, loras_mult_choices, prompt, save_lset_prompt_drop], outputs=[lset_name, apply_lset_btn,refresh_lora_btn, delete_lset_btn, save_lset_btn, confirm_save_lset_btn, cancel_lset_btn, save_lset_prompt_drop])
         delete_lset_btn.click(validate_delete_lset, inputs=[lset_name], outputs=[apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn,confirm_delete_lset_btn, cancel_lset_btn ])
         confirm_delete_lset_btn.click(delete_lset, inputs=[lset_name], outputs=[lset_name, apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn,confirm_delete_lset_btn, cancel_lset_btn ])
         cancel_lset_btn.click(cancel_lset, inputs=[], outputs=[apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn, confirm_delete_lset_btn,confirm_save_lset_btn, cancel_lset_btn,save_lset_prompt_drop ])
-
         apply_lset_btn.click(apply_lset, inputs=[state, lset_name,loras_choices, loras_mult_choices, prompt], outputs=[loras_choices, loras_mult_choices, prompt]).then(
             fn = fill_wizard_prompt, inputs = [state, prompt, wizard_prompt], outputs = [ prompt, wizard_prompt, prompt_column_advanced, prompt_column_wizard, prompt_column_wizard_vars, *prompt_vars]
         )
-
         refresh_lora_btn.click(refresh_lora_list, inputs=[lset_name,loras_choices], outputs=[lset_name, loras_choices])
         refresh_lora_btn2.click(refresh_lora_list, inputs=[lset_name,loras_choices], outputs=[lset_name, loras_choices])
         download_loras_btn.click(fn=download_loras, inputs=[], outputs=[download_status, presets_column, loras_column]).then(fn=refresh_lora_list, inputs=[lset_name,loras_choices], outputs=[lset_name, loras_choices])
-
         gen_status.change(refresh_gallery, inputs = [state, gen_info], outputs = [output, gen_info] )
-
         abort_btn.click(abort_generation,state,abort_btn )
         output.select(select_video, state, None )
         onemore_btn.click(fn=one_more_video,inputs=[state], outputs= [state])
@@ -2062,16 +1854,139 @@ def create_demo():
                 slg_start_perc,
                 slg_end_perc,
                 state,
-                metadata_choice,
+                gr.State(image2video)
             ],
-            outputs= [gen_status] #,state 
-
+            outputs= [gen_status]
         ).then( 
             finalize_gallery,
             [state], 
             [output , abort_btn, generate_btn, onemore_btn, gen_info]
         )
+    return loras_choices, lset_name
 
+def generate_settings_tab():
+    state_dict = {}
+    state = gr.State(state_dict)
+    gr.Markdown("For the changes to be effective you will need to restart the gradio_server. Some choices below may be locked if the app has been launched by specifying a config preset.")
+    with gr.Column():
+        index = transformer_choices_t2v.index(transformer_filename_t2v)
+        index = 0 if index ==0 else index
+        transformer_t2v_choice = gr.Dropdown(
+            choices=[
+                ("WAN 2.1 1.3B Text to Video 16 bits (recommended)- the small model for fast generations with low VRAM requirements", 0),
+                ("WAN 2.1 14B Text to Video 16 bits - the default engine in its original glory, offers a slightly better image quality but slower and requires more RAM", 1),
+                ("WAN 2.1 14B Text to Video quantized to 8 bits (recommended) - the default engine but quantized", 2),
+            ],
+            value= index,
+            label="Transformer model for Text to Video",
+            interactive= not lock_ui_transformer,   
+            visible=not use_image2video
+         )
+        index = transformer_choices_i2v.index(transformer_filename_i2v)
+        index = 0 if index ==0 else index
+        transformer_i2v_choice = gr.Dropdown(
+            choices=[
+                ("WAN 2.1 - 480p 14B Image to Video 16 bits - the default engine in its original glory, offers a slightly better image quality but slower and requires more RAM", 0),
+                ("WAN 2.1 - 480p 14B Image to Video quantized to 8 bits (recommended) - the default engine but quantized", 1),
+                ("WAN 2.1 - 720p 14B Image to Video 16 bits - the default engine in its original glory, offers a slightly better image quality but slower and requires more RAM", 2),
+                ("WAN 2.1 - 720p 14B Image to Video quantized to 8 bits (recommended) - the default engine but quantized", 3),
+            ],
+            value= index,
+            label="Transformer model for Image to Video",
+            interactive= not lock_ui_transformer,
+            visible = use_image2video,
+         )
+        index = text_encoder_choices.index(text_encoder_filename)
+        index = 0 if index ==0 else index
+        text_encoder_choice = gr.Dropdown(
+            choices=[
+                ("UMT5 XXL 16 bits - unquantized text encoder, better quality uses more RAM", 0),
+                ("UMT5 XXL quantized to 8 bits - quantized text encoder, slightly worse quality but uses less RAM", 1),
+            ],
+            value= index,
+            label="Text Encoder model"
+         )
+        save_path_choice = gr.Textbox(
+            label="Output Folder for Generated Videos",
+            value=server_config.get("save_path", save_path)
+        )
+        def check(mode): 
+            if not mode in attention_modes_supported:
+                return " (NOT INSTALLED)"
+            else:
+                return ""
+        attention_choice = gr.Dropdown(
+            choices=[
+                ("Auto : pick sage2 > sage > sdpa depending on what is installed", "auto"),
+                ("Scale Dot Product Attention: default, always available", "sdpa"),
+                ("Flash" + check("flash")+ ": good quality - requires additional install (usually complex to set up on Windows without WSL)", "flash"),
+                # ("Xformers" + check("xformers")+ ": good quality - requires additional install (usually complex, may consume less VRAM to set up on Windows without WSL)", "xformers"),
+                ("Sage" + check("sage")+ ": 30% faster but slightly worse quality - requires additional install (usually complex to set up on Windows without WSL)", "sage"),
+                ("Sage2" + check("sage2")+ ": 40% faster but slightly worse quality - requires additional install (usually complex to set up on Windows without WSL)", "sage2"),
+            ],
+            value= attention_mode,
+            label="Attention Type",
+            interactive= not lock_ui_attention
+         )
+        gr.Markdown("Beware: when restarting the server or changing a resolution or video duration, the first step of generation for a duration / resolution may last a few minutes due to recompilation")
+        compile_choice = gr.Dropdown(
+            choices=[
+                ("ON: works only on Linux / WSL", "transformer"),
+                ("OFF: no other choice if you have Windows without using WSL", "" ),
+            ],
+            value= compile,
+            label="Compile Transformer (up to 50% faster and 30% more frames but requires Linux / WSL and Flash or Sage attention)",
+            interactive= not lock_ui_compile
+         )              
+        vae_config_choice = gr.Dropdown(
+            choices=[
+        ("Auto", 0),
+        ("Disabled (faster but may require up to 22 GB of VRAM)", 1),
+        ("256 x 256 : If at least 8 GB of VRAM", 2),
+        ("128 x 128 : If at least 6 GB of VRAM", 3),
+            ],
+            value= vae_config,
+            label="VAE Tiling - reduce the high VRAM requirements for VAE decoding and VAE encoding (if enabled it will be slower)"
+         )
+        boost_choice = gr.Dropdown(
+            choices=[
+                # ("Auto (ON if Video longer than 5s)", 0),
+                ("ON", 1), 
+                ("OFF", 2), 
+            ],
+            value=boost,
+            label="Boost: Give a 10% speed speedup without losing quality at the cost of a litle VRAM (up to 1GB for max frames and resolution)"
+        )
+        profile_choice = gr.Dropdown(
+            choices=[
+        ("HighRAM_HighVRAM, profile 1: at least 48 GB of RAM and 24 GB of VRAM, the fastest for short videos a RTX 3090 / RTX 4090", 1),
+        ("HighRAM_LowVRAM, profile 2 (Recommended): at least 48 GB of RAM and 12 GB of VRAM, the most versatile profile with high RAM, better suited for RTX 3070/3080/4070/4080 or for RTX 3090 / RTX 4090 with large pictures batches or long videos", 2),
+        ("LowRAM_HighVRAM, profile 3: at least 32 GB of RAM and 24 GB of VRAM, adapted for RTX 3090 / RTX 4090 with limited RAM for good speed short video",3),
+        ("LowRAM_LowVRAM, profile 4 (Default): at least 32 GB of RAM and 12 GB of VRAM, if you have little VRAM or want to generate longer videos",4),
+        ("VerylowRAM_LowVRAM, profile 5: (Fail safe): at least 16 GB of RAM and 10 GB of VRAM, if you don't have much it won't be fast but maybe it will work",5)
+            ],
+            value= profile,
+            label="Profile (for power users only, not needed to change it)"
+         )
+        default_ui_choice = gr.Dropdown(
+            choices=[
+                ("Text to Video", "t2v"),
+                ("Image to Video", "i2v"),
+            ],
+            value= default_ui,
+            label="Default mode when launching the App if not '--t2v' ot '--i2v' switch is specified when launching the server ",
+         )                
+        metadata_choice = gr.Dropdown(
+            choices=[
+                ("Export JSON files", "json"),
+                ("Add metadata to video", "metadata"),
+                ("Neither", "none")
+            ],
+            value=metadata,
+            label="Metadata Handling"
+        )
+        msg = gr.Markdown()            
+        apply_btn  = gr.Button("Apply Changes")
         apply_btn.click(
                 fn=apply_changes,
                 inputs=[
@@ -2089,28 +2004,90 @@ def create_demo():
                     boost_choice,
                 ],
                 outputs= msg
-            ).then( 
-            update_defaults, 
-            [state, num_inference_steps,  flow_shift,lset_name , loras_choices], 
-            [num_inference_steps,  flow_shift, header, lset_name , loras_choices ]
-                )
+            )
+def on_tab_select(evt: gr.SelectData):
+    global use_image2video, wan_model, offloadobj, loras, loras_names, loras_presets, root_lora_dir, lora_dir
+    new_i2v = evt.index == 1
+    if new_i2v == use_image2video:
+        return [gr.Dropdown(visible=not new_i2v), gr.Dropdown(visible=not new_i2v),
+                gr.Dropdown(visible=new_i2v), gr.Dropdown(visible=new_i2v), gr.Markdown()]
+    if wan_model is not None:
+        if offloadobj is not None:
+            offloadobj.release()
+        offloadobj = None
+        wan_model = None
+        gc.collect()
+        torch.cuda.empty_cache()
+    use_image2video = new_i2v
+    get_defaults()
+    lora_dir = args.lora_dir_i2v if new_i2v and args.lora_dir_i2v else args.lora_dir if not new_i2v and args.lora_dir else "loras_i2v" if new_i2v else "loras"
+    root_lora_dir = lora_dir
+    lora_dir = get_lora_dir(root_lora_dir)
+    wan_model, offloadobj, loras, loras_names, default_loras_choices, default_loras_multis_str, default_prompt, default_lora_preset, loras_presets = load_models(use_image2video, lora_dir, lora_preselected_preset)
+    new_loras_choices = [(name, str(i)) for i, name in enumerate(loras_names)]
+    lset_choices = [(preset, preset) for preset in loras_presets] + [(get_new_preset_msg(advanced), "")]
+    model_filename = transformer_filename_i2v if use_image2video else transformer_filename_t2v
 
-    return demo
+    if new_i2v:
+        return [
+            gr.Dropdown(visible=False),
+            gr.Dropdown(visible=False),
+            gr.Dropdown(choices=new_loras_choices, value=ui_defaults['activated_loras'], visible=True),
+            gr.Dropdown(choices=lset_choices, value=default_lora_preset, visible=True)
+        ]
+    else:
+        return [
+            gr.Dropdown(choices=new_loras_choices, value=ui_defaults['activated_loras'], visible=True),
+            gr.Dropdown(choices=lset_choices, value=default_lora_preset, visible=True),
+            gr.Dropdown(visible=False),
+            gr.Dropdown(visible=False)
+        ]
+
+def create_demo():
+    css = """
+        .title-with-lines {
+            display: flex;
+            align-items: center;
+            margin: 30px 0;
+        }
+        .line {
+            flex-grow: 1;
+            height: 1px;
+            background-color: #333;
+        }
+        h2 {
+            margin: 0 20px;
+            white-space: nowrap;
+        }
+    """
+    with gr.Blocks(css=css, theme=gr.themes.Soft(primary_hue="sky", neutral_hue="slate", text_size="md")) as demo:
+        with gr.Tabs(selected=default_ui) as main_tabs:
+            with gr.Tab("Text To Video", id="t2v") as t2v_tab:
+                t2v_loras_choices, t2v_lset_name = generate_video_tab()
+            with gr.Tab("Image To Video", id="i2v") as i2v_tab:
+                i2v_loras_choices, i2v_lset_name = generate_video_tab(True)
+            with gr.Tab("Settings"):
+                generate_settings_tab()
+        main_tabs.select(
+            fn=on_tab_select,
+            inputs=[],
+            outputs=[
+                t2v_loras_choices, t2v_lset_name,
+                i2v_loras_choices, i2v_lset_name
+            ]
+        )
+        return demo
 
 if __name__ == "__main__":
     os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
     server_port = int(args.server_port)
-
     if os.name == "nt":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     if server_port == 0:
         server_port = int(os.getenv("SERVER_PORT", "7860"))
-
     server_name = args.server_name
     if len(server_name) == 0:
-        server_name = os.getenv("SERVER_NAME", "localhost")
-
-        
+        server_name = os.getenv("SERVER_NAME", "localhost")      
     demo = create_demo()
     if args.open_browser:
         import webbrowser 
@@ -2119,7 +2096,4 @@ if __name__ == "__main__":
         else:
             url = "http://" + server_name 
         webbrowser.open(url + ":" + str(server_port), new = 0, autoraise = True)
-
     demo.launch(server_name=server_name, server_port=server_port, share=args.share, allowed_paths=[save_path])
-
- 

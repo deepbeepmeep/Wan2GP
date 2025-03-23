@@ -286,18 +286,21 @@ text_encoder_choices = ["ckpts/models_t5_umt5-xxl-enc-bf16.safetensors", "ckpts/
 server_config_filename = "gradio_config.json"
 
 if not Path(server_config_filename).is_file():
-    server_config = {"attention_mode" : "auto",  
-                     "transformer_filename": transformer_choices_t2v[0], 
-                     "transformer_filename_i2v": transformer_choices_i2v[1],  ########
-                     "text_encoder_filename" : text_encoder_choices[1],
-                     "save_path": os.path.join(os.getcwd(), "gradio_outputs"),
-                     "compile" : "",
-                     "metadata_type": "metadata",
-                     "default_ui": "t2v",
-                     "boost" : 1,
-                     "vae_config": 0,
-                     "profile" : profile_type.LowRAM_LowVRAM }
-
+    server_config = {
+        "attention_mode": "auto",
+        "transformer_filename": transformer_choices_t2v[0],
+        "transformer_filename_i2v": transformer_choices_i2v[1],
+        "text_encoder_filename": text_encoder_choices[1],
+        "save_path": os.path.join(os.getcwd(), "gradio_outputs"),
+        "compile": "",
+        "metadata_type": "metadata",
+        "default_ui": "t2v",
+        "boost": 1,
+        "vae_config": 0,
+        "profile": profile_type.LowRAM_LowVRAM,
+        "primary_hue": "sky", 
+        "neutral_hue": "slate"
+    }
     with open(server_config_filename, "w", encoding="utf-8") as writer:
         writer.write(json.dumps(server_config))
 else:
@@ -495,9 +498,9 @@ def extract_preset(lset_name, loras):
 
 def  get_default_prompt(i2v):
     if i2v:
-        return "Several giant wooly mammoths approach treading through a snowy meadow, their long wooly fur lightly blows in the wind as they walk, snow covered trees and dramatic snow capped mountains in the distance, mid afternoon light with wispy clouds and a sun high in the distance creates a warm glow, the low camera view is stunning capturing the large furry mammal with beautiful photography, depth of field."
+        return server_config.get("prompt", "Several giant wooly mammoths approach treading through a snowy meadow, their long wooly fur lightly blows in the wind as they walk, snow covered trees and dramatic snow capped mountains in the distance, mid afternoon light with wispy clouds and a sun high in the distance creates a warm glow, the low camera view is stunning capturing the large furry mammal with beautiful photography, depth of field.")
     else:
-        return "A large orange octopus is seen resting on the bottom of the ocean floor, blending in with the sandy and rocky terrain. Its tentacles are spread out around its body, and its eyes are closed. The octopus is unaware of a king crab that is crawling towards it from behind a rock, its claws raised and ready to attack. The crab is brown and spiny, with long legs and antennae. The scene is captured from a wide angle, showing the vastness and depth of the ocean. The water is clear and blue, with rays of sunlight filtering through. The shot is sharp and crisp, with a high dynamic range. The octopus and the crab are in focus, while the background is slightly blurred, creating a depth of field effect."
+        return server_config.get("prompt", "A large orange octopus is seen resting on the bottom of the ocean floor, blending in with the sandy and rocky terrain. Its tentacles are spread out around its body, and its eyes are closed. The octopus is unaware of a king crab that is crawling towards it from behind a rock, its claws raised and ready to attack. The crab is brown and spiny, with long legs and antennae. The scene is captured from a wide angle, showing the vastness and depth of the ocean. The water is clear and blue, with rays of sunlight filtering through. The shot is sharp and crisp, with a high dynamic range. The octopus and the crab are in focus, while the background is slightly blurred, creating a depth of field effect.")
 
     
 def setup_loras(transformer,  lora_dir, lora_preselected_preset, split_linear_modules_map = None):
@@ -665,6 +668,8 @@ def generate_header(model_filename, compile, attention_mode):
     return header
 
 def apply_changes(  state,
+                    primary_hue,
+                    neutral_hue,
                     transformer_t2v_choice,
                     transformer_i2v_choice,
                     text_encoder_choice,
@@ -683,18 +688,21 @@ def apply_changes(  state,
         yield "<DIV ALIGN=CENTER>Unable to change config when a generation is in progress</DIV>"
         return
     global offloadobj, wan_model, loras, loras_names, default_loras_choices, default_loras_multis_str, default_prompt, default_lora_preset, loras_presets
-    server_config = {"attention_mode" : attention_choice,  
-                     "transformer_filename": transformer_choices_t2v[transformer_t2v_choice], 
-                     "transformer_filename_i2v": transformer_choices_i2v[transformer_i2v_choice],  ##########
-                     "text_encoder_filename" : text_encoder_choices[text_encoder_choice],
-                     "save_path" : save_path_choice,
-                     "compile" : compile_choice,
-                     "profile" : profile_choice,
-                     "vae_config" : vae_config_choice,
-                     "metadata_choice": metadata_choice,
-                     "default_ui" : default_ui_choice,
-                     "boost" : boost_choice,
-                       }
+    server_config.update({
+        "primary_hue" : primary_hue,
+        "neutral_hue" : neutral_hue,
+        "attention_mode" : attention_choice,  
+        "transformer_filename": transformer_choices_t2v[transformer_t2v_choice], 
+        "transformer_filename_i2v": transformer_choices_i2v[transformer_i2v_choice],
+        "text_encoder_filename" : text_encoder_choices[text_encoder_choice],
+        "save_path" : save_path_choice,
+        "compile" : compile_choice,
+        "profile" : profile_choice,
+        "vae_config" : vae_config_choice,
+        "metadata_choice": metadata_choice,
+        "default_ui" : default_ui_choice,
+        "boost" : boost_choice,
+    })
 
     if Path(server_config_filename).is_file():
         with open(server_config_filename, "r", encoding="utf-8") as reader:
@@ -919,6 +927,32 @@ def generate_video(
     progress=gr.Progress() #track_tqdm= True
 
 ):
+
+    #Update server_config with all the user-selectable settings
+    server_config.update({
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "resolution": resolution,
+        "video_length": video_length,
+        "seed": seed,
+        "num_inference_steps": num_inference_steps,
+        "guidance_scale": guidance_scale,
+        "flow_shift": flow_shift,
+        "embedded_guidance_scale": embedded_guidance_scale,
+        "repeat_generation": repeat_generation,
+        "multi_images_gen_type": multi_images_gen_type,
+        "tea_cache": tea_cache,
+        "tea_cache_start_step_perc": tea_cache_start_step_perc,
+        "loras_choices": loras_choices,
+        "loras_mult_choices": loras_mult_choices,
+        "RIFLEx_setting": RIFLEx_setting,
+        "slg_switch": slg_switch,
+        "slg_layers": slg_layers,
+        "slg_start": slg_start,
+        "slg_end": slg_end
+    })
+    with open(server_config_filename, "w", encoding="utf-8") as writer:
+        writer.write(json.dumps(server_config))
     
     from PIL import Image
     import numpy as np
@@ -1630,8 +1664,12 @@ def create_demo():
         }
 """
     default_flow_shift = get_default_flow(transformer_filename_i2v if use_image2video else transformer_filename_t2v)
-    with gr.Blocks(css=css, theme=gr.themes.Soft(primary_hue="sky", neutral_hue="slate", text_size= "md")) as demo:
-        state_dict = {}
+    with gr.Blocks(css=css, theme=gr.themes.Soft(
+            primary_hue=server_config.get("primary_hue", "sky"),
+            neutral_hue=server_config.get("neutral_hue", "slate"),
+            text_size="md"
+         )) as demo:
+        state_dict = {}      
        
         if use_image2video:
             gr.Markdown("<div align=center><H1>Wan 2.1<SUP>GP</SUP> v2.1 - Image To Video <FONT SIZE=4>by <I>DeepBeepMeep</I></FONT> <FONT SIZE=3> (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>Updates</A> / <A HREF='https://github.com/Wan-Video/Wan2.1'>Original by Alibaba</A>)</FONT SIZE=3></H1></div>")
@@ -1650,7 +1688,7 @@ def create_demo():
                 gr.Markdown("- 1280 x 720 with a 14B model: 80 frames (5s): 11 GB of VRAM")
                 gr.Markdown("It is not recommmended to generate a video longer than 8s (128 frames) even if there is still some VRAM left as some artifacts may appear")
             gr.Markdown("Please note that if your turn on compilation, the first denoising step of the first video generation will be slow due to the compilation. Therefore all your tests should be done with compilation turned off.")
-
+            
         with gr.Row(visible= use_image2video):
             with gr.Row(scale =3):
                 gr.Markdown("<I>Wan2GP's Lora Festival ! Press the following button to download i2v <B>Remade</B> Loras collection (and bonuses Loras). Dont't forget first to make a backup of your Loras just in case.")
@@ -1668,6 +1706,20 @@ def create_demo():
 
         with gr.Accordion("Video Engine Configuration - click here to change it", open = False, visible= not args.lock_config):
             gr.Markdown("For the changes to be effective you will need to restart the gradio_server. Some choices below may be locked if the app has been launched by specifying a config preset.")
+            
+            with gr.Row():
+                primary_hue = gr.Dropdown(
+                    label="Primary Hue",
+                    choices=["slate", "gray", "zinc", "neutral", "stone", "red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal", "cyan", "sky", "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose"],
+                    value=server_config.get("primary_hue", "sky"),
+                    interactive= not lock_ui_transformer,
+                )
+                neutral_hue = gr.Dropdown(
+                    label="Neutral Hue",
+                    choices=["slate", "gray", "zinc", "neutral", "stone", "red", "orange", "amber", "yellow", "lime", "green", "emerald", "teal", "cyan", "sky", "blue", "indigo", "violet", "purple", "fuchsia", "pink", "rose"],
+                    value=server_config.get("neutral_hue", "slate"),
+                    interactive= not lock_ui_transformer
+                )
 
             with gr.Column():
                 index = transformer_choices_t2v.index(transformer_filename_t2v)
@@ -1874,7 +1926,7 @@ def create_demo():
                                 ("720p", "1280x720"),
                                 ("480p", "832x480"),
                             ],
-                            value="1280x720" if res == "720p" else "832x480",
+                            value=server_config.get("resolution", "1280x720" if res == "720p" else "832x480"),
                             label="Resolution (video will have the same height / width ratio than the original image)"
                         )
 
@@ -1895,15 +1947,15 @@ def create_demo():
                                 # ("624x832 (3:4, 540p)", "624x832"),
                                 # ("720x720 (1:1, 540p)", "720x720"),
                             ],
-                            value={"480p": "832x480","720p": "1280x720","832p": "480x832","1024p": "1024x1024","1280p": "720x1280",}.get(res, "832x480"),
+                            value=server_config.get("resolution", {"480p": "832x480","720p": "1280x720","832p": "480x832","1024p": "1024x1024","1280p": "720x1280",}.get(res, "832x480")),
                             label="Resolution"
                         )
 
                 with gr.Row():
                     with gr.Column():
-                        video_length = gr.Slider(5, 193, value=default_number_frames if default_number_frames > 0 else 81, step=4, label="Number of frames (16 = 1s)")
+                        video_length = gr.Slider(5, 193, value=server_config.get("video_length", default_number_frames if default_number_frames > 0 else 81), step=4, label="Number of frames (16 = 1s)")
                     with gr.Column():
-                        num_inference_steps = gr.Slider(1, 100, value=  default_inference_steps if default_inference_steps > 0 else 30, step=1, label="Number of Inference Steps")
+                        num_inference_steps = gr.Slider(1, 100, value=server_config.get("num_inference_steps", default_inference_steps if default_inference_steps > 0 else 30), step=1, label="Number of Inference Steps")
 
                 with gr.Row():
                     max_frames = gr.Slider(1, 100, value=9, step=1, label="Number of input frames to use for Video2World prediction", visible=use_image2video and False) #########
@@ -1913,33 +1965,33 @@ def create_demo():
                 show_advanced = gr.Checkbox(label="Advanced Mode", value=advanced)
                 with gr.Row(visible=advanced) as advanced_row:
                     with gr.Column():
-                        seed = gr.Slider(-1, 999999999, value=default_seed, step=1, label="Seed (-1 for random)") 
+                        seed = gr.Slider(-1, 999999999, value=server_config.get("seed", default_seed), step=1, label="Seed (-1 for random)") 
                         with gr.Row():
-                            repeat_generation = gr.Slider(1, 25.0, value=1.0, step=1, label="Default Number of Generated Videos per Prompt") 
+                            repeat_generation = gr.Slider(1, 25.0, value=server_config.get("repeat_generation", 1.0), step=1, label="Default Number of Generated Videos per Prompt") 
                             multi_images_gen_type = gr.Dropdown(
                                 choices=[
                                     ("Generate every combination of images and texts prompts", 0),
                                     ("Match images and text prompts", 1),
-                                ], visible= args.multiple_images, label= "Multiple Images as Prompts"
+                                ], value=server_config.get("multi_images_gen_type", 0), visible= args.multiple_images, label= "Multiple Images as Prompts"
                             )
 
                         with gr.Row():
-                            guidance_scale = gr.Slider(1.0, 20.0, value=5.0, step=0.5, label="Guidance Scale", visible=True)
-                            embedded_guidance_scale = gr.Slider(1.0, 20.0, value=6.0, step=0.5, label="Embedded Guidance Scale", visible=False)
-                            flow_shift = gr.Slider(0.0, 25.0, value= default_flow_shift, step=0.1, label="Shift Scale") 
+                            guidance_scale = gr.Slider(1.0, 20.0, value=server_config.get("guidance_scale", 5.0), step=0.5, label="Guidance Scale", visible=True)
+                            embedded_guidance_scale = gr.Slider(1.0, 20.0, value=server_config.get("embedded_guidance_scale", 6.0), step=0.5, label="Embedded Guidance Scale", visible=False)
+                            flow_shift = gr.Slider(0.0, 25.0, value=server_config.get("flow_shift", default_flow_shift), step=0.1, label="Shift Scale") 
                         with gr.Row():
-                            negative_prompt = gr.Textbox(label="Negative Prompt", value="")
+                            negative_prompt = gr.Textbox(label="Negative Prompt", value=server_config.get("negative_prompt", ""))
                         with gr.Column(visible = len(loras)>0) as loras_column:
                             gr.Markdown("<B>Loras can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
                             loras_choices = gr.Dropdown(
                                 choices=[
                                     (lora_name, str(i) ) for i, lora_name in enumerate(loras_names)
                                 ],
-                                value= default_loras_choices,
+                                value=server_config.get("loras_choices", default_loras_choices),
                                 multiselect= True,
                                 label="Activated Loras"
                             )
-                            loras_mult_choices = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by space characters or carriage returns, line that starts with # are ignored", value=default_loras_multis_str)
+                            loras_mult_choices = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by space characters or carriage returns, line that starts with # are ignored", value=server_config.get("loras_mult_choices", default_loras_multis_str))
 
 
                         with gr.Row():
@@ -1954,11 +2006,11 @@ def create_demo():
                                     ("around x2.25 speed up", 2.25), 
                                     ("around x2.5 speed up", 2.5), 
                                 ],
-                                value=default_tea_cache,
+                                value=server_config.get("tea_cache", default_tea_cache),
                                 visible=True,
                                 label="Tea Cache Global Acceleration"
                             )
-                            tea_cache_start_step_perc = gr.Slider(0, 100, value=0, step=1, label="Tea Cache starting moment in % of generation") 
+                            tea_cache_start_step_perc = gr.Slider(0, 100, value=server_config.get("tea_cache_start_step_perc", 0), step=1, label="Tea Cache starting moment in % of generation") 
 
                         gr.Markdown("<B>With Riflex you can generate videos longer than 5s which is the default duration of videos used to train the model</B>")
                         RIFLEx_setting = gr.Dropdown(
@@ -1967,7 +2019,7 @@ def create_demo():
                                 ("Always ON", 1), 
                                 ("Always OFF", 2), 
                             ],
-                            value=0,
+                            value=server_config.get("RIFLEx_setting", 0),
                             label="RIFLEx positional embedding to generate long video"
                         )
 
@@ -1980,7 +2032,7 @@ def create_demo():
                                     ("OFF", 0),
                                     ("ON", 1), 
                                 ],
-                                value= 1 if args.slg else 0,
+                                value=server_config.get("slg_switch", 1 if args.slg else 0),
                                 visible=True,
                                 scale = 1,
                                 label="Skip Layer guidance"
@@ -1989,14 +2041,14 @@ def create_demo():
                                 choices=[
                                     (str(i), i ) for i in range(40)
                                 ],
-                                value= [9],
+                                value=server_config.get("slg_layers", [9]),
                                 multiselect= True,
                                 label="Skip Layers",
                                 scale= 3
                             )
                         with gr.Row():
-                            slg_start_perc = gr.Slider(0, 100, value=10, step=1, label="Denoising Steps % start") 
-                            slg_end_perc = gr.Slider(0, 100, value=90, step=1, label="Denoising Steps % end") 
+                            slg_start_perc = gr.Slider(0, 100, value=server_config.get("slg_start", 10), step=1, label="Denoising Steps % start") 
+                            slg_end_perc = gr.Slider(0, 100, value=server_config.get("slg_end", 90), step=1, label="Denoising Steps % end") 
 
 
                 show_advanced.change(fn=switch_advanced, inputs=[show_advanced, lset_name], outputs=[advanced_row, preset_buttons_rows, refresh_lora_btn, refresh2_row ,lset_name ]).then(
@@ -2062,7 +2114,7 @@ def create_demo():
                 slg_start_perc,
                 slg_end_perc,
                 state,
-                metadata_choice,
+                metadata_choice
             ],
             outputs= [gen_status] #,state 
 
@@ -2076,6 +2128,8 @@ def create_demo():
                 fn=apply_changes,
                 inputs=[
                     state,
+                    primary_hue,
+                    neutral_hue,
                     transformer_t2v_choice,
                     transformer_i2v_choice,
                     text_encoder_choice,

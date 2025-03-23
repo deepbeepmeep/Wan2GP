@@ -256,9 +256,13 @@ else:
         text = reader.read()
     server_config = json.loads(text)
 
+def get_default_flow(model_filename):
+    return 3.0 if "480p" in model_filename else 5.0
+
 def get_defaults():
     global use_image2video, ui_defaults
     defaults_filename = "i2v_defaults.json" if use_image2video else "t2v_defaults.json"
+    model_filename = transformer_filename_i2v if use_image2video else transformer_filename_t2v
     if not Path(defaults_filename).is_file():
         ui_defaults = {
             "prompts": "",
@@ -268,7 +272,7 @@ def get_defaults():
             "seed": -1,
             "repeat_generation": 1,
             "guidance_scale": 5.0,
-            "flow_shift": 5.0,
+            "flow_shift": get_default_flow(model_filename),
             "negative_prompt": "",
             "activated_loras": [],
             "loras_multipliers": "",
@@ -620,9 +624,6 @@ def get_auto_attention():
         if attn in attention_modes_supported:
             return attn
     return "sdpa"
-
-def get_default_flow(model_filename):
-    return 3.0 if "480p" in model_filename else 5.0 
 
 def generate_header(model_filename, compile, attention_mode):
 

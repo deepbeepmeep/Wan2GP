@@ -2805,7 +2805,7 @@ def generate_video_tab(image2video=False):
                 queue_df = gr.DataFrame(
                     headers=["Qty","Prompt", "Length","Steps","", "", "", "", ""],
                     datatype=[ "str","markdown","str", "markdown", "markdown", "markdown", "str", "str", "str"],
-                    column_widths= ["50","", "65","55", "60", "60", "30", "30", "35"],
+                    column_widths= ["5%", None, "7%", "7%", "10%", "10%", "3%", "3%", "3%"],
                     interactive=False,
                     col_count=(9, "fixed"),
                     wrap=True,
@@ -3375,16 +3375,13 @@ def create_demo():
             vertical-align: middle;
             font-size:11px;
         }
-        #xqueue_df table {
+        #queue_df table {
             width: 100%;
             overflow: hidden !important;
         }
-        #xqueue_df::-webkit-scrollbar {
-            display: none !important;
-        }
-        #xqueue_df {
-            scrollbar-width: none !important;
-            -ms-overflow-style: none !important;
+        #queue_df {
+            overflow-x: hidden !important;
+            overflow-y: auto;
         }
         .selection-button {
             display: none;

@@ -3240,11 +3240,18 @@ def on_tab_select(global_state, t2v_state, i2v_state, evt: gr.SelectData):
 
         global_state["last_tab_was_image2video"] = new_i2v
 
-    if(server_config.get("reload_model",2) == 1):
+    if server_config.get("reload_model", 2) == 1:
         queue = gen.get("queue", [])
+        queue_empty = len(queue) == 0
 
-        queue_empty = len(queue) == 0    
-        if queue_empty:
+        is_switching_between_gen_tabs = (
+            last_tab_was_image2video is not None and
+            (new_t2v or new_i2v) and
+            last_tab_was_image2video != new_i2v
+        )
+
+        if is_switching_between_gen_tabs and queue_empty:
+            print("Reloading model due to switch between T2V/I2V tabs.")
             global wan_model, offloadobj
             if wan_model is not None:
                 if offloadobj is not None:

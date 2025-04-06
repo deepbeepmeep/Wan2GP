@@ -42,9 +42,7 @@ task_id = 0
 # tracker_lock = threading.Lock()
 last_model_type = None
 QUEUE_FILENAME = "queue.json"
-global_t2v_state_dict = None
-global_i2v_state_dict = None
-global_state = {}
+global_dict = []
 
 def format_time(seconds):
     if seconds < 60:
@@ -630,40 +628,13 @@ def autoload_queue(state_dict):
 
 def autosave_queue():
     print("Attempting to autosave queue on exit...")
-    global global_t2v_state_dict, global_i2v_state_dict, global_state
+    global global_dict
 
-    active_state_dict = None
-    last_tab_was_i2v = None
-
-    if global_state and 'last_tab_was_image2video' in global_state:
-        last_tab_was_i2v = global_state['last_tab_was_image2video']
-        active_state_dict = global_i2v_state_dict if last_tab_was_i2v else global_t2v_state_dict
-        print(f"Using last active tab info: {'i2v' if last_tab_was_i2v else 't2v'}")
+    if global_dict:
+        print(f"Autosaving queue ({len(global_dict)} items) from state dict...")
+        save_queue_to_json(global_dict, QUEUE_FILENAME)
     else:
-        print("Last active tab info not found, using fallback logic.")
-        if use_image2video and global_i2v_state_dict:
-            active_state_dict = global_i2v_state_dict
-            last_tab_was_i2v = True
-        elif not use_image2video and global_t2v_state_dict:
-            active_state_dict = global_t2v_state_dict
-            last_tab_was_i2v = False
-        elif global_i2v_state_dict:
-            active_state_dict = global_i2v_state_dict
-            last_tab_was_i2v = True
-        elif global_t2v_state_dict:
-            active_state_dict = global_t2v_state_dict
-            last_tab_was_i2v = False
-    if active_state_dict:
-        gen = active_state_dict.get("gen", {})
-        queue = gen.get("queue", [])
-        if queue:
-            tab_name = 'i2v' if last_tab_was_i2v else 't2v'
-            print(f"Autosaving queue ({len(queue)} items) from {tab_name} state dict...")
-            save_queue_to_json(queue, QUEUE_FILENAME)
-        else:
-            print("Queue is empty in the determined active state dictionary, autosave skipped.")
-    else:
-        print(f"Could not determine active state dictionary for autosave. T2V dict exists: {global_t2v_state_dict is not None}, I2V dict exists: {global_i2v_state_dict is not None}, Last active tab known: {last_tab_was_i2v is not None}")
+        print("Queue is empty in the determined active state dictionary, autosave skipped.")
 
 def get_queue_table(queue):
     data = []
@@ -2803,7 +2774,6 @@ def check_refresh_input_type(state):
 def generate_video_tab(image2video=False):
     filename = transformer_filename_i2v if image2video else transformer_filename_t2v
     ui_defaults=  get_default_settings(filename, image2video)
-    global global_t2v_state_dict, global_i2v_state_dict
     state_dict = {}
 
     state_dict["advanced"] = advanced
@@ -2813,10 +2783,6 @@ def generate_video_tab(image2video=False):
     gen = dict()
     gen["queue"] = []
     state_dict["gen"] = gen
-    if image2video:
-        global_i2v_state_dict = state_dict
-    else:
-        global_t2v_state_dict = state_dict
 
     preset_to_load = lora_preselected_preset if use_image2video == image2video else "" 
 
@@ -3641,8 +3607,7 @@ def generate_about_tab():
     gr.Markdown("- <B>Remade_AI</B> : for creating their awesome Loras collection")
     
 
-def on_tab_select(t2v_state, i2v_state, evt: gr.SelectData):
-    global global_state
+def on_tab_select(global_state, t2v_state, i2v_state, evt: gr.SelectData):
     t2v_header = generate_header(transformer_filename_t2v, compile, attention_mode)
     i2v_header = generate_header(transformer_filename_i2v, compile, attention_mode)
     new_t2v = evt.index == 0
@@ -3653,12 +3618,15 @@ def on_tab_select(t2v_state, i2v_state, evt: gr.SelectData):
     t2v_full_sync = gr.Text()
 
     last_tab_was_image2video =global_state.get("last_tab_was_image2video", None)
+    global global_dict
     if last_tab_was_image2video == None or last_tab_was_image2video:
         gen = i2v_state["gen"]
         t2v_state["gen"] = gen
+        global_dict = gen.get("queue", [])
     else:
         gen = t2v_state["gen"]
         i2v_state["gen"] = gen
+        global_dict = gen.get("queue", [])
     if new_t2v or new_i2v:
          global_state['last_tab_was_image2video'] = new_i2v
 
@@ -3991,6 +3959,9 @@ def create_demo():
             gr.Markdown("- 1280 x 720 with a 14B model: 80 frames (5s): 11 GB of VRAM")
             gr.Markdown("It is not recommmended to generate a video longer than 8s (128 frames) even if there is still some VRAM left as some artifacts may appear")
             gr.Markdown("Please note that if your turn on compilation, the first denoising step of the first video generation will be slow due to the compilation. Therefore all your tests should be done with compilation turned off.")
+        state_dict = {}
+        state_dict["last_tab_was_image2video"] = use_image2video
+        global_state = gr.State(state_dict)
 
         with gr.Tabs(selected="i2v" if use_image2video else "t2v") as main_tabs:
             with gr.Tab("Text To Video", id="t2v") as t2v_tab:
@@ -4019,6 +3990,8 @@ def create_demo():
             autoload_queue(active_state_dict)
             gen = get_gen_info(active_state_dict)
             queue = gen.get("queue", [])
+            global global_dict
+            global_dict = queue
             raw_data = get_queue_table(queue)
             is_visible = len(raw_data) > 0
             should_start_processing = bool(queue)
@@ -4076,7 +4049,7 @@ def create_demo():
         )
         main_tabs.select(
             fn=on_tab_select,
-            inputs=[t2v_state, i2v_state],
+            inputs=[global_state, t2v_state, i2v_state],
             outputs=[
                 t2v_loras_column, t2v_loras_choices, t2v_presets_column, t2v_lset_name, t2v_header, t2v_light_sync, t2v_full_sync,
                 i2v_loras_column, i2v_loras_choices, i2v_presets_column, i2v_lset_name, i2v_header, i2v_light_sync, i2v_full_sync

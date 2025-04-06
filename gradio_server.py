@@ -1858,25 +1858,25 @@ def generate_video(
     loaded_image_source1_pil = None
     loaded_image_source2_pil = None
 
-    image_source1_paths = image_source1
+    image_source1_path = image_source1
     image_source2_path = image_source2
 
     loaded_imgs = []
 
-    if image_source1_paths:
-        if not isinstance(image_source1_paths, list):
-             image_source1_paths = [image_source1_paths]
+    if image_source1_path:
+        if not isinstance(image_source1_path, list):
+             image_source1_path = [image_source1_path]
         try:
-             valid_paths = [p for p in image_source1_paths if p and Path(p).is_file()]
+             valid_paths = [p for p in image_source1_path if p and Path(p).is_file()]
              if not valid_paths and image2video:
-                 raise FileNotFoundError(f"Required start image file(s) not found at path(s): {image_source1_paths}")
+                 raise FileNotFoundError(f"Required start image file(s) not found at path(s): {image_source1_path}")
              elif not valid_paths and not image2video:
-                  print(f"Warning: No valid reference images found for VACE at path(s): {image_source1_paths}")
+                  print(f"Warning: No valid reference images found for VACE at path(s): {image_source1_path}")
              else:
                   loaded_imgs = [convert_image(Image.open(p)) for p in valid_paths]
              if image2video:
                  if not loaded_imgs:
-                      raise ValueError(f"Could not load the required start image for I2V task from: {image_source1_paths}")
+                      raise ValueError(f"Could not load the required start image for I2V task from: {image_source1_path}")
                  loaded_image_source1_pil = loaded_imgs[0]
                  if len(loaded_imgs) > 1:
                       print(f"Warning: Multiple start images ({len(loaded_imgs)}) found for a single I2V task. Using only the first one: {valid_paths[0]}")
@@ -1885,7 +1885,7 @@ def generate_video(
              print(f"Error: Image file not found. {e}")
              raise gr.Error(f"Required image file not found: {e}")
         except Exception as e:
-             print(f"Error loading start image file(s) {image_source1_paths}: {e}")
+             print(f"Error loading start image file(s) {image_source1_path}: {e}")
              raise gr.Error(f"Error loading start image file: {e}")
     if image_source2_path and isinstance(image_source2_path, str) and Path(image_source2_path).is_file():
         try:
@@ -3803,6 +3803,7 @@ def create_demo():
             width: 100%;
         }
         #queue_df {
+            scrollbar-width: none !important;
             overflow-x: hidden !important;
             overflow-y: auto;
         }

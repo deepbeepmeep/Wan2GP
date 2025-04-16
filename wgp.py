@@ -33,6 +33,7 @@ import tempfile
 import atexit
 import shutil
 import glob
+from mutagen.mp4 import MP4, MP4Tags
 
 from tqdm import tqdm
 import requests
@@ -52,29 +53,148 @@ task_id = 0
 # progress_tracker = {}
 # tracker_lock = threading.Lock()
 
-# def download_ffmpeg():
-#     if os.name != 'nt': return
-#     exes = ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']
-#     if all(os.path.exists(e) for e in exes): return
-#     api_url = 'https://api.github.com/repos/GyanD/codexffmpeg/releases/latest'
-#     r = requests.get(api_url, headers={'Accept': 'application/vnd.github+json'})
-#     assets = r.json().get('assets', [])
-#     zip_asset = next((a for a in assets if 'essentials_build.zip' in a['name']), None)
-#     if not zip_asset: return
-#     zip_url = zip_asset['browser_download_url']
-#     zip_name = zip_asset['name']
-#     with requests.get(zip_url, stream=True) as resp:
-#         total = int(resp.headers.get('Content-Length', 0))
-#         with open(zip_name, 'wb') as f, tqdm(total=total, unit='B', unit_scale=True) as pbar:
-#             for chunk in resp.iter_content(chunk_size=8192):
-#                 f.write(chunk)
-#                 pbar.update(len(chunk))
-#     with zipfile.ZipFile(zip_name) as z:
-#         for f in z.namelist():
-#             if f.endswith(tuple(exes)) and '/bin/' in f:
-#                 z.extract(f)
-#                 os.rename(f, os.path.basename(f))
-#     os.remove(zip_name)
+def download_ffmpeg():
+    if os.name != 'nt': return
+    exes = ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']
+    if all(os.path.exists(e) for e in exes): return
+    api_url = 'https://api.github.com/repos/GyanD/codexffmpeg/releases/latest'
+    r = requests.get(api_url, headers={'Accept': 'application/vnd.github+json'})
+    assets = r.json().get('assets', [])
+    zip_asset = next((a for a in assets if 'essentials_build.zip' in a['name']), None)
+    if not zip_asset: return
+    zip_url = zip_asset['browser_download_url']
+    zip_name = zip_asset['name']
+    with requests.get(zip_url, stream=True) as resp:
+        total = int(resp.headers.get('Content-Length', 0))
+        with open(zip_name, 'wb') as f, tqdm(total=total, unit='B', unit_scale=True) as pbar:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+                pbar.update(len(chunk))
+    with zipfile.ZipFile(zip_name) as z:
+        for f in z.namelist():
+            if f.endswith(tuple(exes)) and '/bin/' in f:
+                z.extract(f)
+                os.rename(f, os.path.basename(f))
+    os.remove(zip_name)
+
+def extract_parameters_from_video(video_filepath):
+    if not video_filepath or not hasattr(video_filepath, 'name') or not os.path.exists(video_filepath.name):
+        print("No valid video file provided for parameter extraction.")
+        return None, "No valid video file provided."
+
+    filepath = video_filepath.name
+    print(f"Attempting to extract parameters from: {filepath}")
+
+    try:
+        video = MP4(filepath)
+        if isinstance(video.tags, MP4Tags) and '©cmt' in video.tags:
+            comment_tag_value = video.tags['©cmt'][0]
+            params = json.loads(comment_tag_value)
+            print(f"Successfully extracted parameters: {list(params.keys())}")
+            return params
+        else:
+            print("No '©cmt' metadata tag found in the video.")
+            return None
+    except mutagen.MutagenError as e:
+        print(f"Error reading video file with mutagen: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON from metadata: {e}")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred during parameter extraction: {e}")
+        traceback.print_exc()
+        return None
+
+def apply_parameters_to_ui(params_dict, state):
+    if not params_dict or not isinstance(params_dict, dict):
+        print("No parameters provided or invalid format for UI update.")
+        return gr.Info("No parameters loaded or parameters were invalid.")
+
+    print("Applying parameters to UI...")
+    ui_updates = {}
+    current_model_filename = state["model_filename"]
+
+    def get_lora_indices(activated_lora_filenames, state):
+        indices = []
+        loras_full_paths = state.get("loras", [])
+        if not loras_full_paths:
+            print("Warning: Lora list not found in state during parameter application.")
+            return []
+
+        lora_filenames_in_state = [os.path.basename(p) for p in loras_full_paths]
+
+        for filename in activated_lora_filenames:
+            try:
+                idx = lora_filenames_in_state.index(filename)
+                indices.append(str(idx))
+            except ValueError:
+                print(f"Warning: Loaded Lora '{filename}' not found in current Lora list. Skipping.")
+        return indices
+
+
+    ui_updates['prompt'] = gr.update(value=params_dict.get('prompt', ''))
+    ui_updates['negative_prompt'] = gr.update(value=params_dict.get('negative_prompt', ''))
+    ui_updates['resolution'] = gr.update(value=params_dict.get('resolution'))
+    ui_updates['video_length'] = gr.update(value=params_dict.get('video_length'))
+    ui_updates['seed'] = gr.update(value=params_dict.get('seed', -1))
+    ui_updates['num_inference_steps'] = gr.update(value=params_dict.get('num_inference_steps'))
+    ui_updates['guidance_scale'] = gr.update(value=params_dict.get('guidance_scale'))
+    ui_updates['flow_shift'] = gr.update(value=params_dict.get('flow_shift'))
+    # ui_updates['embedded_guidance_scale'] = gr.update(value=params_dict.get('embedded_guidance_scale')) # Hidden? Check UI
+    ui_updates['repeat_generation'] = gr.update(value=params_dict.get('repeat_generation', 1))
+    ui_updates['multi_images_gen_type'] = gr.update(value=params_dict.get('multi_images_gen_type', 0))
+    ui_updates['tea_cache_setting'] = gr.update(value=float(params_dict.get('tea_cache_setting', 0)))
+    ui_updates['tea_cache_start_step_perc'] = gr.update(value=params_dict.get('tea_cache_start_step_perc', 0))
+
+    activated_lora_filenames = params_dict.get('activated_loras', [])
+    lora_indices = get_lora_indices(activated_lora_filenames, state)
+    ui_updates['loras_choices'] = gr.update(value=lora_indices)
+    ui_updates['loras_multipliers'] = gr.update(value=params_dict.get('loras_multipliers', ''))
+
+    ui_updates['image_prompt_type'] = gr.update(value=params_dict.get('image_prompt_type', 'S'))
+    ui_updates['video_prompt_type'] = gr.update(value=params_dict.get('video_prompt_type', ''))
+    ui_updates['keep_frames'] = gr.update(value=params_dict.get('keep_frames', ''))
+    ui_updates['remove_background_image_ref'] = gr.update(value=params_dict.get('remove_background_image_ref', 1))
+
+    ui_updates['sliding_window_repeat'] = gr.update(value=params_dict.get('sliding_window_repeat', 0))
+    ui_updates['sliding_window_overlap'] = gr.update(value=params_dict.get('sliding_window_overlap', 16))
+    ui_updates['sliding_window_discard_last_frames'] = gr.update(value=params_dict.get('sliding_window_discard_last_frames', 4))
+
+    ui_updates['temporal_upsampling'] = gr.update(value=params_dict.get('temporal_upsampling', ''))
+    ui_updates['spatial_upsampling'] = gr.update(value=params_dict.get('spatial_upsampling', ''))
+
+    ui_updates['RIFLEx_setting'] = gr.update(value=params_dict.get('RIFLEx_setting', 0))
+    ui_updates['slg_switch'] = gr.update(value=params_dict.get('slg_switch', 0))
+    slg_layers_val = params_dict.get('slg_layers', [9])
+    if slg_layers_val is None: slg_layers_val = []
+    if isinstance(slg_layers_val, list):
+         slg_layers_val = [str(i) for i in slg_layers_val]
+    ui_updates['slg_layers'] = gr.update(value=slg_layers_val)
+
+    ui_updates['slg_start_perc'] = gr.update(value=params_dict.get('slg_start_perc', 10))
+    ui_updates['slg_end_perc'] = gr.update(value=params_dict.get('slg_end_perc', 90))
+    ui_updates['cfg_star_switch'] = gr.update(value=params_dict.get('cfg_star_switch', 0))
+    ui_updates['cfg_zero_step'] = gr.update(value=params_dict.get('cfg_zero_step', -1))
+
+    ordered_keys = [
+        'prompt', 'negative_prompt', 'resolution', 'video_length', 'seed', 'num_inference_steps',
+        'guidance_scale', 'flow_shift',
+        'repeat_generation', 'multi_images_gen_type',
+        'loras_choices', 'loras_multipliers',
+        'image_prompt_type', 'video_prompt_type', 'keep_frames', 'remove_background_image_ref',
+        'sliding_window_repeat', 'sliding_window_overlap', 'sliding_window_discard_last_frames',
+        'temporal_upsampling', 'spatial_upsampling',
+        'RIFLEx_setting', 'slg_switch', 'slg_layers', 'slg_start_perc', 'slg_end_perc',
+        'cfg_star_switch', 'cfg_zero_step'
+    ]
+    return_values = []
+    for key in ordered_keys:
+        update_instruction = ui_updates.get(key, gr.update())
+        return_values.append(update_instruction)
+
+    print("Parameter application mapping complete.")
+    return tuple(return_values)
 
 def format_time(seconds):
     if seconds < 60:
@@ -2745,7 +2865,6 @@ def generate_video(
                 with open(video_path.replace('.mp4', '.json'), 'w') as f:
                     json.dump(configs, f, indent=4)
             elif metadata_choice == "metadata":
-                from mutagen.mp4 import MP4
                 file = MP4(video_path)
                 file.tags['©cmt'] = [json.dumps(configs)]
                 file.save()
@@ -3502,6 +3621,12 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
     with gr.Row():
         with gr.Column():
+            with gr.Row():
+                 load_params_video_input = gr.File(
+                     label="Load Parameters from Video Metadata",
+                     file_types=[".mp4"],
+                     type="filepath",
+                 )
             with gr.Column(visible=False, elem_id="image-modal-container") as modal_container:
                 with gr.Row(elem_id="image-modal-close-button-row"):
                      close_modal_button = gr.Button("❌", size="sm")
@@ -3847,6 +3972,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                          hidden_force_quit_trigger = gr.Button("force_quit", visible=False, elem_id="force_quit_btn_hidden")
                          hidden_countdown_state = gr.Number(value=-1, visible=False, elem_id="hidden_countdown_state_num")
                          single_hidden_trigger_btn = gr.Button("trigger_countdown", visible=False, elem_id="trigger_info_single_btn")
+                extracted_params_state = gr.State({})
 
             start_quit_timer_js = """
             () => {
@@ -3916,6 +4042,45 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
               }
             }
             """
+
+            updatable_ui_components = [
+                prompt, negative_prompt, resolution, video_length, seed, num_inference_steps,
+                guidance_scale, flow_shift,
+                repeat_generation, multi_images_gen_type,
+                loras_choices, loras_multipliers,
+                image_prompt_type, video_prompt_type, keep_frames, remove_background_image_ref,
+                sliding_window_repeat, sliding_window_overlap, sliding_window_discard_last_frames,
+                temporal_upsampling, spatial_upsampling,
+                RIFLEx_setting, slg_switch, slg_layers, slg_start_perc, slg_end_perc,
+                cfg_star_switch, cfg_zero_step
+            ]
+            load_params_video_input.upload(
+                fn=extract_parameters_from_video,
+                inputs=[load_params_video_input],
+                outputs=[extracted_params_state]
+            ).then(
+                fn=apply_parameters_to_ui,
+                inputs=[extracted_params_state, state],
+                outputs=updatable_ui_components
+            ).then(
+                fn=switch_prompt_type,
+                inputs = [state, wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, *prompt_vars],
+                outputs = [wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, prompt_column_advanced, prompt_column_wizard, prompt_column_wizard_vars, *prompt_vars]
+            ).then(
+                fn=refresh_image_prompt_type,
+                inputs=[state, image_prompt_type],
+                outputs=[image_start, image_end]
+            ).then(
+                fn=lambda vt, vti, vtg: (
+                    *refresh_video_prompt_type_image_refs(vt, vti)[1:],
+                    *refresh_video_prompt_type_video_guide(vt, vtg)[1:]
+                ),
+                inputs=[video_prompt_type, video_prompt_type_image_refs, video_prompt_type_video_guide],
+                outputs=[
+                    image_refs, remove_background_image_ref,
+                    video_guide, keep_frames, video_mask
+                ]
+            )
 
             single_hidden_trigger_btn.click(
                 fn=show_countdown_info_from_state,
@@ -4676,7 +4841,7 @@ def create_demo():
 
 if __name__ == "__main__":
     atexit.register(autosave_queue)
-    # download_ffmpeg()
+    download_ffmpeg()
     # threading.Thread(target=runner, daemon=True).start()
     os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
     server_port = int(args.server_port)

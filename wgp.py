@@ -77,6 +77,147 @@ def download_ffmpeg():
                 os.rename(f, os.path.basename(f))
     os.remove(zip_name)
 
+def batch_get_sorted_images(folder):
+    try:
+        p = Path(folder)
+        if not p.is_dir():
+            return None, f"Error: Folder not found or is not a directory: {folder}"
+        images = sorted(
+            [f for f in p.iterdir() if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg']],
+            key=lambda x: x.stat().st_mtime,
+            reverse=False
+        )
+        return images, None
+    except Exception as e:
+        return None, f"Error accessing folder {folder}: {e}"
+
+def batch_create_task_entry(task_id, start_img_name, end_img_name, prompt, lora, model):
+    image_prompt_type = "SE" if end_img_name else "S"
+
+    params = {
+        "prompt": prompt,
+        "negative_prompt": "",
+        "resolution": "1280x720",
+        "video_length": 81,
+        "seed": -1,
+        "num_inference_steps": 30,
+        "guidance_scale": 5,
+        "flow_shift": 5,
+        "embedded_guidance_scale": 6,
+        "repeat_generation": 1,
+        "multi_images_gen_type": 0,
+        "tea_cache_setting": 0,
+        "tea_cache_start_step_perc": 0,
+        "loras_multipliers": "",
+        "image_prompt_type": image_prompt_type,
+        "image_start": start_img_name,
+        "image_end": end_img_name,
+        "video_prompt_type": "I",
+        "image_refs": None,
+        "video_guide": None,
+        "video_mask": None,
+        "camera_type": 1,
+        "video_source": None,
+        "keep_frames": "",
+        "sliding_window_repeat": 0,
+        "sliding_window_overlap": 16,
+        "sliding_window_discard_last_frames": 4,
+        "remove_background_image_ref": True,
+        "temporal_upsampling": "rife2",
+        "spatial_upsampling": "",
+        "RIFLEx_setting": 0,
+        "slg_switch": 1,
+        "slg_layers": [9],
+        "slg_start_perc": 10,
+        "slg_end_perc": 90,
+        "cfg_star_switch": 1,
+        "cfg_zero_step": -1,
+        "activated_loras": [lora] if lora else [],
+        "model_filename": model
+    }
+
+    return {
+        "id": task_id,
+        "params": params
+    }
+
+def create_batch_queue(folder, prompt, lora_file, model_file, has_end_frames_checkbox, progress=gr.Progress()):
+    if not all([folder, prompt, model_file]):
+         return None, "Error: Folder, Prompt, and Model Filename are required."
+
+    progress(0, desc="Starting batch queue creation...")
+
+    images, error = batch_get_sorted_images(folder)
+    if error:
+        return None, error
+    if not images:
+        return None, "Error: No image files found in the specified folder."
+
+    if has_end_frames_checkbox:
+        if len(images) < 2:
+            return None, "Error: Need at least 2 images (start/end pair) to form a task when 'Folder contains end frames' is checked."
+        if len(images) % 2 != 0:
+             gr.Warning(f"Warning: Found an odd number of images ({len(images)}) in paired mode. The last image will be ignored.")
+             images = images[:-1]
+
+    tasks = []
+    zip_buffer = io.BytesIO()
+    temp_zip_path = None
+
+    try:
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            if has_end_frames_checkbox:
+                num_tasks = len(images) // 2
+                progress(0.1, desc="Processing image pairs...")
+                for i in range(0, len(images) - 1, 2):
+                    task_id = (i // 2) + 1
+                    start_img_path = images[i]
+                    end_img_path = images[i+1]
+
+                    start_arcname = f"task{task_id}_image_start_0{start_img_path.suffix}"
+                    end_arcname = f"task{task_id}_image_end_0{end_img_path.suffix}"
+
+                    task = batch_create_task_entry(task_id, start_arcname, end_arcname, prompt, lora_file, model_file)
+                    tasks.append(task)
+
+                    zipf.write(start_img_path, arcname=start_arcname)
+                    zipf.write(end_img_path, arcname=end_arcname)
+                    progress(0.1 + (0.7 * (task_id / num_tasks)), desc=f"Adding pair {task_id}/{num_tasks}")
+            else:
+                num_tasks = len(images)
+                progress(0.1, desc="Processing single images...")
+                for i, img_path in enumerate(images):
+                    task_id = i + 1
+
+                    start_arcname = f"task{task_id}_image_start_0{img_path.suffix}"
+
+                    task = batch_create_task_entry(task_id, start_arcname, None, prompt, lora_file, model_file)
+                    tasks.append(task)
+
+                    zipf.write(img_path, arcname=start_arcname)
+                    progress(0.1 + (0.7 * (task_id / num_tasks)), desc=f"Adding image {task_id}/{num_tasks}")
+
+            progress(0.8, desc="Writing queue manifest...")
+            json_data = json.dumps(tasks, indent=4)
+            zipf.writestr("queue.json", json_data)
+
+        progress(0.9, desc="Finalizing zip file...")
+        zip_buffer.seek(0)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip", prefix="batch_queue_") as tmp_file:
+            tmp_file.write(zip_buffer.getvalue())
+            temp_zip_path = tmp_file.name
+
+        progress(1, desc="Batch queue created.")
+        return temp_zip_path, f"Successfully created queue.zip with {len(tasks)} task(s)."
+
+    except Exception as e:
+        if temp_zip_path and os.path.exists(temp_zip_path):
+            os.remove(temp_zip_path)
+        traceback.print_exc()
+        return None, f"Error during zip creation: {e}"
+    finally:
+        zip_buffer.close()
+
 def extract_parameters_from_video(video_filepath):
     if not video_filepath or not hasattr(video_filepath, 'name') or not os.path.exists(video_filepath.name):
         print("No valid video file provided for parameter extraction.")
@@ -4867,6 +5008,29 @@ def create_demo():
                         gen_status, output, abort_btn, generate_btn, add_to_queue_btn,
                         gen_info, queue_accordion, video_guide, video_mask, video_prompt_type_video_trigger
                     ) = generate_video_tab(model_choice=model_choice, header=header)
+            with gr.Tab("Extras", id="extras"):
+                gr.Markdown("## Batch Queue Creator")
+                gr.Markdown("Create a `queue.zip` file from a folder containing images, sorted by modification time (oldest first).")
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        batch_folder_input = gr.Textbox(label="Image Folder Path", placeholder="/path/to/your/image_pairs")
+                        batch_prompt_input = gr.Textbox(label="Prompt for all tasks", lines=2)
+                        batch_lora_input = gr.Dropdown(label="LoRA (Optional)", choices=state.get("loras_names", []), value="")
+                        batch_model_input = gr.Dropdown(label="Model Filename", choices=available_model_files, value=transformer_filename)
+                        batch_has_end_frames_cb = gr.Checkbox(label="Folder contains end frames (Required to generate queue)", value=False)
+                        batch_generate_button = gr.Button("Generate Batch Queue")
+                    with gr.Column(scale=1):
+                        batch_status_output = gr.Markdown("")
+                        batch_download_output = gr.DownloadButton(label="Download queue.zip", visible=False, interactive=True)
+                batch_generate_button.click(
+                    fn=create_batch_queue,
+                    inputs=[batch_folder_input, batch_prompt_input, batch_lora_input, batch_model_input, batch_has_end_frames_cb],
+                    outputs=[batch_download_output, batch_status_output]
+                ).then(
+                     fn=lambda filepath: gr.update(visible=bool(filepath), value=filepath),
+                     inputs=[batch_download_output],
+                     outputs=[batch_download_output]
+                 )
             with gr.Tab("Informations", id="info"):
                 generate_info_tab()
             with gr.Tab("Video Mask Creator", id="video_mask_creator") as video_mask_creator:

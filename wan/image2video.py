@@ -319,7 +319,6 @@ class WanI2V:
         arg_c = {
             'context': [context[0]],
             'clip_fea': clip_context,
-            'seq_len': max_seq_len,
             'y': [y],
             'freqs' : freqs,
             'pipeline' : self,
@@ -329,7 +328,6 @@ class WanI2V:
         arg_null = {
             'context': context_null,
             'clip_fea': clip_context,
-            'seq_len': max_seq_len,
             'y': [y],
             'freqs' : freqs,
             'pipeline' : self,
@@ -340,7 +338,6 @@ class WanI2V:
             'context': [context[0]],
             'context2': context_null,
             'clip_fea': clip_context,
-            'seq_len': max_seq_len,
             'y': [y],
             'freqs' : freqs,
             'pipeline' : self,

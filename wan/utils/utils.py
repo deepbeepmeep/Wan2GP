@@ -69,25 +69,21 @@ def remove_background(img, session=None):
 
 
 
-def resize_and_remove_background(img_list, canvas_width, canvas_height, rm_background ):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background ):
     if rm_background:
         session = new_session() 
 
     output_list =[]
     for img in img_list:
         width, height =  img.size 
-        white_canvas = np.full( (canvas_height, canvas_width, 3), 255, dtype= np.uint8 ) 
-        scale = min(canvas_height / height, canvas_width / width)
-        new_height = int(height * scale)
-        new_width = int(width * scale)
+        scale = (budget_height * budget_width / (height * width))**(1/2)
+        new_height = int( round(height * scale / 16) * 16)
+        new_width = int( round(width * scale / 16) * 16)
+
         resized_image= img.resize((new_width,new_height), resample=Image.Resampling.LANCZOS) 
         if rm_background:
             resized_image = remove(resized_image, session=session, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
-        top = (canvas_height - new_height) // 2
-        left = (canvas_width - new_width) // 2
-        white_canvas[top:top + new_height, left:left + new_width, :] =  np.array(resized_image)
-        img = Image.fromarray(white_canvas)
-        output_list.append(img)
+        output_list.append(resized_image)
     return output_list
 
 

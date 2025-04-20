@@ -152,80 +152,43 @@ __all__ = [
 
 def pay_attention(
     qkv_list,
-    # q,
-    # k,
-    # v,
-    q_lens=None,
-    k_lens=None,
     dropout_p=0.,
     softmax_scale=None,
-    q_scale=None,
     causal=False,
     window_size=(-1, -1),
     deterministic=False,
-    dtype=torch.bfloat16,
     version=None,
     force_attention= None,
     cross_attn= False
 ):
-    """
-    q:              [B, Lq, Nq, C1].
-    k:              [B, Lk, Nk, C1].
-    v:              [B, Lk, Nk, C2]. Nq must be divisible by Nk.
-    q_lens:         [B].
-    k_lens:         [B].
-    dropout_p:      float. Dropout probability.
-    softmax_scale:  float. The scaling of QK^T before applying softmax.
-    causal:         bool. Whether to apply causal attention mask.
-    window_size:    (left right). If not (-1, -1), apply sliding window local attention.
-    deterministic:  bool. If True, slightly slower and uses more memory.
-    dtype:          torch.dtype. Apply when dtype of q/k/v is not float16/bfloat16.
-    """
 
     attn = offload.shared_state["_attention"] if force_attention== None else force_attention
     q,k,v = qkv_list
     qkv_list.clear()
 
-    half_dtypes = (torch.float16, torch.bfloat16)
-    assert dtype in half_dtypes
-    assert q.device.type == 'cuda' and q.size(-1) <= 256
 
     # params
     b, lq, lk, out_dtype = q.size(0), q.size(1), k.size(1), q.dtype
+    assert b==1
+    q = q.squeeze(0)
+    k = k.squeeze(0)
+    v = v.squeeze(0)
 
-    def half(x):
-        return x if x.dtype in half_dtypes else x.to(dtype)
-
-    # preprocess query
-    if q_lens is None:
-        q = half(q.flatten(0, 1))
-        q_lens = torch.tensor(
-            [lq] * b, dtype=torch.int32).to(
-                device=q.device, non_blocking=True)
-    else:
-        q = half(torch.cat([u[:v] for u, v in zip(q, q_lens)]))
-
-    # preprocess key, value
-    if k_lens is None:
-        k = half(k.flatten(0, 1))
-        v = half(v.flatten(0, 1))
-        k_lens = torch.tensor(
-            [lk] * b, dtype=torch.int32).to(
-                device=k.device, non_blocking=True)
-    else:
-        k = half(torch.cat([u[:v] for u, v in zip(k, k_lens)]))
-        v = half(torch.cat([u[:v] for u, v in zip(v, k_lens)]))
 
     q = q.to(v.dtype)
     k = k.to(v.dtype)
 
-    if q_scale is not None:
-        q = q * q_scale
+    # if q_scale is not None:
+    #     q = q * q_scale
 
     if version is not None and version == 3 and not FLASH_ATTN_3_AVAILABLE:
         warnings.warn(
             'Flash attention 3 is not available, use flash attention 2 instead.'
         )
+
+    if attn=="sage" or attn=="flash":
+        cu_seqlens_q = torch.tensor([0, lq], dtype=torch.int32, device="cuda")
+        cu_seqlens_k = torch.tensor([0, lk], dtype=torch.int32, device="cuda")
 
     # apply attention
     if attn=="sage":
@@ -233,10 +196,8 @@ def pay_attention(
             q=q,
             k=k,
             v=v,
-            cu_seqlens_q=torch.cat([q_lens.new_zeros([1]), q_lens]).cumsum(
-                0, dtype=torch.int32).to(q.device, non_blocking=True),
-            cu_seqlens_kv=torch.cat([k_lens.new_zeros([1]), k_lens]).cumsum(
-                0, dtype=torch.int32).to(q.device, non_blocking=True),
+            cu_seqlens_q= cu_seqlens_q,
+            cu_seqlens_kv= cu_seqlens_k,
             max_seqlen_q=lq,
             max_seqlen_kv=lk,
         ).unflatten(0, (b, lq))
@@ -314,10 +275,8 @@ def pay_attention(
             q=q,
             k=k,
             v=v,
-            cu_seqlens_q=torch.cat([q_lens.new_zeros([1]), q_lens]).cumsum(
-                0, dtype=torch.int32).to(q.device, non_blocking=True),
-            cu_seqlens_k=torch.cat([k_lens.new_zeros([1]), k_lens]).cumsum(
-                0, dtype=torch.int32).to(q.device, non_blocking=True),
+            cu_seqlens_q= cu_seqlens_q,
+            cu_seqlens_k= cu_seqlens_k,
             seqused_q=None,
             seqused_k=None,
             max_seqlen_q=lq,
@@ -330,10 +289,8 @@ def pay_attention(
             q=q,
             k=k,
             v=v,
-            cu_seqlens_q=torch.cat([q_lens.new_zeros([1]), q_lens]).cumsum(
-                0, dtype=torch.int32).to(q.device, non_blocking=True),
-            cu_seqlens_k=torch.cat([k_lens.new_zeros([1]), k_lens]).cumsum(
-                0, dtype=torch.int32).to(q.device, non_blocking=True),
+            cu_seqlens_q= cu_seqlens_q,
+            cu_seqlens_k= cu_seqlens_k,
             max_seqlen_q=lq,
             max_seqlen_k=lk,
             dropout_p=dropout_p,

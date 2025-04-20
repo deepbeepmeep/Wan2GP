@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from functools import partial
 from mmgp import offload
 import torch
+import torch.nn as nn
 import torch.cuda.amp as amp
 import torch.distributed as dist
 from tqdm import tqdm
@@ -106,6 +107,9 @@ class WanT2V:
         from mmgp import offload
 
         self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False)
+        # offload.load_model_data(self.model, "recam.ckpt")
+        # self.model.cpu()
+        # offload.save_model(self.model, "recam.safetensors")
         if self.dtype == torch.float16 and not "fp16" in model_filename:
             self.model.to(self.dtype) 
         # offload.save_model(self.model, "t2v_fp16.safetensors",do_quantize=True)
@@ -278,7 +282,9 @@ class WanT2V:
                 input_prompt,
                 input_frames= None,
                 input_masks = None,
-                input_ref_images = None,        
+                input_ref_images = None,      
+                source_video=None,
+                target_camera=None,                  
                 context_scale=1.0,
                 size=(1280, 720),
                 frame_num=81,
@@ -340,18 +346,19 @@ class WanT2V:
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
 
-        if not self.t5_cpu:
-            # self.text_encoder.model.to(self.device)
-            context = self.text_encoder([input_prompt], self.device)
-            context_null = self.text_encoder([n_prompt], self.device)
-            if offload_model:
-                self.text_encoder.model.cpu()
-        else:
-            context = self.text_encoder([input_prompt], torch.device('cpu'))
-            context_null = self.text_encoder([n_prompt], torch.device('cpu'))
-            context = [t.to(self.device) for t in context]
-            context_null = [t.to(self.device) for t in context_null]
-        
+        context = self.text_encoder([input_prompt], self.device)
+        context_null = self.text_encoder([n_prompt], self.device)
+        if target_camera != None:
+            size = (source_video.shape[2], source_video.shape[1])
+            source_video = source_video.to(dtype=self.dtype , device=self.device)
+            source_video = source_video.permute(3, 0, 1, 2).div_(127.5).sub_(1.)            
+            source_latents = self.vae.encode([source_video]) #.to(dtype=self.dtype, device=self.device)
+            del source_video
+            # Process target camera (recammaster)
+            from wan.utils.cammmaster_tools import get_camera_embedding
+            cam_emb = get_camera_embedding(target_camera)       
+            cam_emb = cam_emb.to(dtype=self.dtype, device=self.device)
+
         if input_frames != None:
             # vace context encode
             input_frames = [u.to(self.device) for u in input_frames]
@@ -377,22 +384,7 @@ class WanT2V:
         context  = [u.to(self.dtype) for u in context]
         context_null  = [u.to(self.dtype) for u in context_null]
 
-        noise = [
-            torch.randn(
-                target_shape[0],
-                target_shape[1],
-                target_shape[2],
-                target_shape[3],
-                dtype=torch.float32,
-                device=self.device,
-                generator=seed_g)
-        ]
-
-        @contextmanager
-        def noop_no_sync():
-            yield
-
-        no_sync = getattr(self.model, 'no_sync', noop_no_sync)
+        noise = [ torch.randn( *target_shape, dtype=torch.float32, device=self.device, generator=seed_g) ]
 
         # evaluation mode
 
@@ -419,11 +411,24 @@ class WanT2V:
 
         # sample videos
         latents = noise
+        del noise
         batch_size =len(latents)
-        freqs = get_rotary_pos_embed(latents[0].shape[1:], enable_RIFLEx= enable_RIFLEx) 
-        arg_c = {'context': context, 'seq_len': seq_len, 'freqs': freqs, 'pipeline': self}
-        arg_null = {'context': context_null, 'seq_len': seq_len, 'freqs': freqs, 'pipeline': self}
-        arg_both = {'context': context, 'context2': context_null, 'seq_len': seq_len, 'freqs': freqs, 'pipeline': self}
+        if target_camera != None:
+            shape = list(latents[0].shape[1:])
+            shape[0] *= 2
+            freqs = get_rotary_pos_embed(shape, enable_RIFLEx= False) 
+        else:
+            freqs = get_rotary_pos_embed(latents[0].shape[1:], enable_RIFLEx= enable_RIFLEx) 
+        arg_c = {'context': context, 'freqs': freqs, 'pipeline': self}
+        arg_null = {'context': context_null, 'freqs': freqs, 'pipeline': self}
+        arg_both = {'context': context, 'context2': context_null,  'freqs': freqs, 'pipeline': self}
+
+        if target_camera != None:
+            recam_dict = {'cam_emb': cam_emb}
+            arg_c.update(recam_dict)
+            arg_null.update(recam_dict)
+            arg_both.update(recam_dict)
+
         if input_frames != None:
             vace_dict = {'vace_context' : z, 'vace_context_scale' : context_scale}
             arg_c.update(vace_dict)
@@ -435,7 +440,10 @@ class WanT2V:
         if callback != None:
             callback(-1, True)
         for i, t in enumerate(tqdm(timesteps)):
-            latent_model_input = latents
+            if target_camera != None:
+                latent_model_input = [torch.cat([u,v], dim=1) for u,v in zip(latents,source_latents )]
+            else:
+                latent_model_input = latents
             slg_layers_local = None
             if int(slg_start * sampling_steps) <= i < int(slg_end * sampling_steps):
                 slg_layers_local = slg_layers
@@ -443,7 +451,6 @@ class WanT2V:
             offload.set_step_no_for_lora(self.model, i)
             timestep = torch.stack(timestep)
 
-            # self.model.to(self.device)
             if joint_pass:
                 noise_pred_cond, noise_pred_uncond = self.model(
                     latent_model_input, t=timestep,  current_step=i, slg_layers=slg_layers_local, **arg_both)
@@ -459,7 +466,7 @@ class WanT2V:
                 if self._interrupt:
                     return None
 
-            del latent_model_input
+            # del latent_model_input
 
             # CFG Zero *. Thanks to https://github.com/WeichenFan/CFG-Zero-star/
             noise_pred_text = noise_pred_cond
@@ -478,7 +485,7 @@ class WanT2V:
             del noise_pred_uncond
 
             temp_x0 = sample_scheduler.step(
-                noise_pred.unsqueeze(0),
+                noise_pred[:, :target_shape[1]].unsqueeze(0),
                 t,
                 latents[0].unsqueeze(0),
                 return_dict=False,
@@ -490,24 +497,14 @@ class WanT2V:
                 callback(i, False)         
 
         x0 = latents
-        if offload_model:
-            self.model.cpu()
-            torch.cuda.empty_cache()
-        if self.rank == 0:
 
-            if input_frames == None:
-                videos = self.vae.decode(x0, VAE_tile_size)
-            else:
-                videos = self.decode_latent(x0, input_ref_images, VAE_tile_size)
+        if input_frames == None:
+            videos = self.vae.decode(x0, VAE_tile_size)
+        else:
+            videos = self.decode_latent(x0, input_ref_images, VAE_tile_size)
 
-
-        del noise, latents
+        del latents
         del sample_scheduler
-        if offload_model:
-            gc.collect()
-            torch.cuda.synchronize()
-        if dist.is_initialized():
-            dist.barrier()
 
         return videos[0] if self.rank == 0 else None
 

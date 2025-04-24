@@ -1076,12 +1076,13 @@ def sageattn_qk_int8_pv_fp8_cuda_sm90(
 
     q_size = q.size()
     q_device = q.device
-    del q,k
-
+    del q
 
     # pad v to multiple of 128
     # TODO: modify per_channel_fp8 kernel to handle this
     kv_len = k.size(seq_dim)
+    del k
+
     v_pad_len = 128 - (kv_len % 128) if kv_len % 128 != 0 else 0
     if v_pad_len > 0:
         if tensor_layout == "HND":

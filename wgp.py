@@ -4984,11 +4984,27 @@ def create_demo():
     else:
         theme = gr.themes.Soft(font=["Verdana"], primary_hue="sky", neutral_hue="slate", text_size="md")
 
+    initial_lora_dir = get_lora_dir(transformer_filename)
+    try:
+        initial_loras, initial_loras_names, _, _, _, _, _ = setup_loras(
+            transformer_filename, None, initial_lora_dir, "", None
+        )
+        print(f"Found {len(initial_loras_names)} initial loras for default model.")
+    except Exception as e:
+        print(f"Warning: Could not initially load loras for default model '{transformer_filename}': {e}")
+        initial_loras_names = []
+
     with gr.Blocks(css=css, theme=theme, title= "Wan2GP") as demo:
         gr.Markdown("<div align=center><H1>Wan<SUP>GP</SUP> v4.2 <FONT SIZE=4>by <I>DeepBeepMeep</I></FONT> <FONT SIZE=3>") # (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>Updates</A>)</FONT SIZE=3></H1></div>")
         global model_list
 
         tab_state = gr.State({ "tab_no":0 }) 
+
+        dropdown_types = transformer_types if len(transformer_types) > 0 else model_types
+        available_model_files = []
+        for model_type in dropdown_types:
+            choice = get_model_filename(model_type, transformer_quantization)
+            available_model_files.append(choice)
 
         with gr.Tabs(selected="video_gen", ) as main_tabs:
             with gr.Tab("Video Generator", id="video_gen"):
@@ -5010,18 +5026,19 @@ def create_demo():
                     ) = generate_video_tab(model_choice=model_choice, header=header)
             with gr.Tab("Extras", id="extras"):
                 gr.Markdown("## Batch Queue Creator")
-                gr.Markdown("Create a `queue.zip` file from a folder containing images, sorted by modification time (oldest first).")
+                gr.Markdown("Create a `queue.zip` file from a folder containing pairs of start/end images, sorted by modification time (oldest first).")
                 with gr.Row():
                     with gr.Column(scale=3):
                         batch_folder_input = gr.Textbox(label="Image Folder Path", placeholder="/path/to/your/image_pairs")
                         batch_prompt_input = gr.Textbox(label="Prompt for all tasks", lines=2)
-                        batch_lora_input = gr.Dropdown(label="LoRA (Optional)", choices=state.get("loras_names", []), value="")
+                        batch_lora_input = gr.Dropdown(label="LoRA (Optional)", choices=[""] + initial_loras_names, value="")
                         batch_model_input = gr.Dropdown(label="Model Filename", choices=available_model_files, value=transformer_filename)
-                        batch_has_end_frames_cb = gr.Checkbox(label="Folder contains end frames (Required to generate queue)", value=False)
-                        batch_generate_button = gr.Button("Generate Batch Queue")
+                        batch_has_end_frames_cb = gr.Checkbox(label="Folder contains end frames", value=False)
+                        batch_generate_button = gr.Button("Generate Batch Queue (.zip)")
                     with gr.Column(scale=1):
                         batch_status_output = gr.Markdown("")
                         batch_download_output = gr.DownloadButton(label="Download queue.zip", visible=False, interactive=True)
+
                 batch_generate_button.click(
                     fn=create_batch_queue,
                     inputs=[batch_folder_input, batch_prompt_input, batch_lora_input, batch_model_input, batch_has_end_frames_cb],

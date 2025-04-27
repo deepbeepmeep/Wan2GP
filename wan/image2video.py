@@ -352,7 +352,7 @@ class WanI2V:
 
         # self.model.to(self.device)
         if callback != None:
-            callback(-1, True)
+            callback(-1, None, True)
 
         for i, t in enumerate(tqdm(timesteps)):
             offload.set_step_no_for_lora(self.model, i)
@@ -426,7 +426,7 @@ class WanI2V:
             del timestep
 
             if callback is not None:
-                callback(i, False) 
+                callback(i, latent, False) 
 
 
         x0 = [latent.to(self.device, dtype=self.dtype)]

@@ -49,40 +49,14 @@ class WanT2V:
         config,
         checkpoint_dir,
         rank=0,
-        t5_fsdp=False,
-        dit_fsdp=False,
-        use_usp=False,
-        t5_cpu=False,
         model_filename = None,
         text_encoder_filename = None,
         quantizeTransformer = False,
         dtype = torch.bfloat16
     ):
-        r"""
-        Initializes the Wan text-to-video generation model components.
-
-        Args:
-            config (EasyDict):
-                Object containing model parameters initialized from config.py
-            checkpoint_dir (`str`):
-                Path to directory containing model checkpoints
-            device_id (`int`,  *optional*, defaults to 0):
-                Id of target GPU device
-            rank (`int`,  *optional*, defaults to 0):
-                Process rank for distributed training
-            t5_fsdp (`bool`, *optional*, defaults to False):
-                Enable FSDP sharding for T5 model
-            dit_fsdp (`bool`, *optional*, defaults to False):
-                Enable FSDP sharding for DiT model
-            use_usp (`bool`, *optional*, defaults to False):
-                Enable distribution strategy of USP.
-            t5_cpu (`bool`, *optional*, defaults to False):
-                Whether to place T5 model on CPU. Only works without t5_fsdp.
-        """
         self.device = torch.device(f"cuda")
         self.config = config
         self.rank = rank
-        self.t5_cpu = t5_cpu
         self.dtype = dtype
         self.num_train_timesteps = config.num_train_timesteps
         self.param_dtype = config.param_dtype
@@ -419,9 +393,9 @@ class WanT2V:
             freqs = get_rotary_pos_embed(shape, enable_RIFLEx= False) 
         else:
             freqs = get_rotary_pos_embed(latents[0].shape[1:], enable_RIFLEx= enable_RIFLEx) 
-        arg_c = {'context': context, 'freqs': freqs, 'pipeline': self}
-        arg_null = {'context': context_null, 'freqs': freqs, 'pipeline': self}
-        arg_both = {'context': context, 'context2': context_null,  'freqs': freqs, 'pipeline': self}
+        arg_c = {'context': context, 'freqs': freqs, 'pipeline': self, 'callback': callback}
+        arg_null = {'context': context_null, 'freqs': freqs, 'pipeline': self, 'callback': callback}
+        arg_both = {'context': context, 'context2': context_null,  'freqs': freqs, 'pipeline': self, 'callback': callback}
 
         if target_camera != None:
             recam_dict = {'cam_emb': cam_emb}
@@ -438,7 +412,7 @@ class WanT2V:
         if self.model.enable_teacache:
             self.model.compute_teacache_threshold(self.model.teacache_start_step, timesteps, self.model.teacache_multiplier)
         if callback != None:
-            callback(-1, True)
+            callback(-1, None, True)
         for i, t in enumerate(tqdm(timesteps)):
             if target_camera != None:
                 latent_model_input = [torch.cat([u,v], dim=1) for u,v in zip(latents,source_latents )]
@@ -494,7 +468,7 @@ class WanT2V:
             del temp_x0
 
             if callback is not None:
-                callback(i, False)         
+                callback(i, latents[0], False)         
 
         x0 = latents
 

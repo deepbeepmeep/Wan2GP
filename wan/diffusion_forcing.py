@@ -31,6 +31,8 @@ class DTT2V:
         text_encoder_filename = None,
         quantizeTransformer = False,
         dtype = torch.bfloat16,
+        VAE_dtype = torch.float32,
+        mixed_precision_transformer = False,
     ):
         self.device = torch.device(f"cuda")
         self.config = config
@@ -50,24 +52,22 @@ class DTT2V:
         self.vae_stride = config.vae_stride
         self.patch_size = config.patch_size 
 
-        
         self.vae = WanVAE(
-            vae_pth=os.path.join(checkpoint_dir, config.vae_checkpoint),
+            vae_pth=os.path.join(checkpoint_dir, config.vae_checkpoint), dtype= VAE_dtype,
             device=self.device)
 
         logging.info(f"Creating WanModel from {model_filename}")
         from mmgp import offload
         # model_filename = "model.safetensors"
-        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False) #, forcedConfigPath="config.json"
+        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False) #, forcedConfigPath="config.json")
         # offload.load_model_data(self.model, "recam.ckpt")
         # self.model.cpu()
-        if self.dtype == torch.float16 and not "fp16" in model_filename:
-            self.model.to(self.dtype) 
-        # offload.save_model(self.model, "rt1.3B.safetensors", config_file_path="config.json") 
-        # offload.save_model(self.model, "rtint8.safetensors", do_quantize= "config.json") 
+        self.model.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype, True)
+        offload.change_dtype(self.model, dtype, True)
+        # offload.save_model(self.model, "sky_reels2_diffusion_forcing_1.3B_mbf16.safetensors", config_file_path="config.json") 
+        # offload.save_model(self.model, "sky_reels2_diffusion_forcing_720p_14B_quanto_xbf16_int8.safetensors", do_quantize= True, config_file_path="config.json") 
         # offload.save_model(self.model, "rtfp16_int8.safetensors", do_quantize= "config.json") 
-        if self.dtype == torch.float16:
-            self.vae.model.to(self.dtype)
+
         self.model.eval().requires_grad_(False)
 
         self.scheduler = FlowUniPCMultistepScheduler()
@@ -228,11 +228,16 @@ class DTT2V:
         latent_height = height // 8
         latent_width = width // 8
 
-        prompt_embeds = self.text_encoder([prompt], self.device)
-        prompt_embeds  = [u.to(self.dtype).to(self.device) for u in prompt_embeds]
+        if self._interrupt:
+            return None
+        prompt_embeds = self.text_encoder([prompt], self.device)[0]
+        prompt_embeds  = prompt_embeds.to(self.dtype).to(self.device)
         if self.do_classifier_free_guidance:
-            negative_prompt_embeds = self.text_encoder([negative_prompt], self.device)
-            negative_prompt_embeds  = [u.to(self.dtype).to(self.device) for u in negative_prompt_embeds]
+            negative_prompt_embeds = self.text_encoder([negative_prompt], self.device)[0]
+            negative_prompt_embeds  = negative_prompt_embeds.to(self.dtype).to(self.device)
+
+        if self._interrupt:
+            return None
 
         self.scheduler.set_timesteps(num_inference_steps, device=self.device, shift=shift)
         init_timesteps = self.scheduler.timesteps
@@ -305,6 +310,17 @@ class DTT2V:
             del time_steps_comb
         from mmgp import offload
         freqs = get_rotary_pos_embed(latents[0].shape[1 :], enable_RIFLEx= False) 
+        kwrags = {
+            "freqs" :freqs,
+            "fps" : fps_embeds,
+            "causal_block_size" : causal_block_size,
+            "causal_attention" : causal_attention,
+            "callback" : callback,
+            "pipeline" : self,
+        }   
+        kwrags.update(i2v_extra_kwrags)
+
+
         for i, timestep_i in enumerate(tqdm(step_matrix)):
             offload.set_step_no_for_lora(self.model, i)
             update_mask_i = step_update_mask[i]
@@ -323,52 +339,45 @@ class DTT2V:
                     * noise_factor
                 )
                 timestep[:, valid_interval_start:predix_video_latent_length] = timestep_for_noised_condition
-            kwrags = {
+            kwrags.update({
                 "x" : torch.stack([latent_model_input[0]]),
                 "t" : timestep,
-                "freqs" :freqs,
-                "fps" : fps_embeds,
-                "causal_block_size" : causal_block_size,
-                "causal_attention" : causal_attention,
-                "callback" : callback,
-                "pipeline" : self,
                 "current_step" : i,                 
-            }   
-            kwrags.update(i2v_extra_kwrags)
-                
-            if not self.do_classifier_free_guidance:
-                noise_pred = self.model(
-                    context=prompt_embeds,
-                    **kwrags,
-                )[0]
-                if self._interrupt:
-                    return None
-                noise_pred= noise_pred.to(torch.float32)                                                                  
-            else:
-                if joint_pass:
-                    noise_pred_cond, noise_pred_uncond = self.model(
-                        context=prompt_embeds,
-                        context2=negative_prompt_embeds,
+                })
+
+            # with torch.autocast(device_type="cuda"):                
+            if True:
+                if not self.do_classifier_free_guidance:
+                    noise_pred = self.model(
+                        context=[prompt_embeds],
                         **kwrags,
-                    )
-                    if self._interrupt:
-                        return None                
-                else:
-                    noise_pred_cond = self.model(
-                        context=prompt_embeds,
-                        **kwrags,
-                    )[0]
-                    if self._interrupt:
-                        return None                
-                    noise_pred_uncond = self.model(
-                        context=negative_prompt_embeds,
                     )[0]
                     if self._interrupt:
                         return None
-                noise_pred_cond= noise_pred_cond.to(torch.float32)                                          
-                noise_pred_uncond= noise_pred_uncond.to(torch.float32)                                          
-                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
-                del noise_pred_cond, noise_pred_uncond
+                    noise_pred= noise_pred.to(torch.float32)                                                                  
+                else:
+                    if joint_pass:
+                        noise_pred_cond, noise_pred_uncond = self.model(
+                            context= [prompt_embeds, negative_prompt_embeds],
+                            **kwrags,
+                        )
+                        if self._interrupt:
+                            return None                
+                    else:
+                        noise_pred_cond = self.model(
+                            context=[prompt_embeds],
+                            **kwrags,
+                        )[0]
+                        if self._interrupt:
+                            return None                
+                        noise_pred_uncond = self.model(
+                            context=[negative_prompt_embeds],
+                            **kwrags,
+                        )[0]
+                        if self._interrupt:
+                            return None
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    del noise_pred_cond, noise_pred_uncond
             for idx in range(valid_interval_start, valid_interval_end):
                 if update_mask_i[idx].item():
                     latents[0][:, idx] = sample_schedulers[idx].step(

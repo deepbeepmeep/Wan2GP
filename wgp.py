@@ -154,7 +154,7 @@ def create_batch_tasks_from_folder(batch_folder_input, batch_has_end_frames_cb, 
             num_tasks_total = len(images) // 2
             print(f"Processing {num_tasks_total} image pairs...")
             for i in range(0, len(images) - 1, 2):
-                with lock: # Ensure task_id is unique
+                with lock:
                     current_task_id_local = task_id + 1
                     task_id += 1
 
@@ -4264,11 +4264,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             columns=[3], rows=[1], object_fit="contain", height="auto", selected_index=0, interactive= True, visible="E" in image_prompt_type_value, value= ui_defaults.get("image_end", None))
 
             with gr.Accordion("Batch Generator", open=False) as batch_accordion_ui:
-                 batch_folder_input = gr.Textbox(label="Image Folder Path", placeholder="/path/to/your/image_folder")
-                 batch_has_end_frames_cb = gr.Checkbox(label="Folder contains start/end image pairs", value=False)
-                 video_source = gr.Video(visible=False)
-                 model_mode = gr.Dropdown(visible=False)
-                 keep_frames_video_source = gr.Text(visible=False)
+                    batch_folder_input = gr.Textbox(label="Image Folder Path", placeholder="/path/to/your/image_folder")
+                    batch_has_end_frames_cb = gr.Checkbox(label="Folder contains start/end image pairs", value=False)
+                    video_source = gr.Video(visible=False)
+                    model_mode = gr.Dropdown(visible=False)
+                    keep_frames_video_source = gr.Text(visible=False)
 
             with gr.Column(visible= vace or phantom) as video_prompt_column: 
                 video_prompt_type_value= ui_defaults.get("video_prompt_type","")
@@ -4668,6 +4668,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             inputs_names= list(inspect.signature(save_inputs).parameters)[1:-1]
             locals_dict = locals()
             gen_inputs = [locals_dict[k] for k in inputs_names] + [state]
+            gen_inputs_list_for_handler = [locals_dict[k] for k in inputs_names]
             save_settings_btn.click( fn=validate_wizard_prompt, inputs =[state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] , outputs= [prompt]).then(
             save_inputs, inputs =[target_settings] + gen_inputs, outputs = [])
 

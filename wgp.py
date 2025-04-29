@@ -132,83 +132,123 @@ def get_lora_indices(activated_lora_filenames, state):
             print(f"Error processing Lora filename '{filename}': {e}")
     return indices
 
-def apply_parameters_to_ui(params_dict, state):
-    component_keys_map = [
-        ('prompt', ''), ('negative_prompt', ''), ('resolution', '832x480'), ('video_length', 81),
-        ('seed', -1), ('num_inference_steps', 30), ('guidance_scale', 5.0), ('flow_shift', 5.0),
-        ('repeat_generation', 1), ('multi_images_gen_type', 0), ('tea_cache_setting', 0.0), ('tea_cache_start_step_perc', 0),
-        ('loras_choices', []), ('loras_multipliers', ''),
-        ('image_prompt_type', 'S'),
-        ('video_prompt_type_video_guide', ''),
-        ('video_prompt_type_image_refs', ''),
-        ('camera_type', 1),
-        ('keep_frames', ''), ('remove_background_image_ref', 1),
-        ('sliding_window_repeat', 0), ('sliding_window_overlap', 16), ('sliding_window_discard_last_frames', 4),
-        ('temporal_upsampling', ''), ('spatial_upsampling', ''),
-        ('RIFLEx_setting', 0), ('slg_switch', 0), ('slg_layers', []),
-        ('slg_start_perc', 10), ('slg_end_perc', 90),
-        ('cfg_star_switch', 0), ('cfg_zero_step', -1)
-    ]
+def apply_parameters_to_ui(params_dict, state, *components):
+    try:
+        component_param_names = list(inspect.signature(save_inputs).parameters)[1:-1]
+    except NameError:
+        print("CRITICAL ERROR: save_inputs function not defined when apply_parameters_to_ui is called.")
+        return tuple([gr.update()] * len(components))
+
+    num_expected_params = len(component_param_names)
+    num_received_components = len(components)
+
+    updates_list = [gr.update()] * num_received_components
+
+    if num_expected_params != num_received_components:
+         print(f"Warning in apply_parameters_to_ui: Mismatch between expected params ({num_expected_params}) and received components ({num_received_components}). Proceeding by matching names to the expected number of components.")
+
+    param_name_to_expected_index = {name: i for i, name in enumerate(component_param_names)}
 
     if not params_dict or not isinstance(params_dict, dict):
         print("No parameters provided or invalid format for UI update.")
-        return tuple([gr.update()] * len(component_keys_map))
+        return tuple(updates_list)
 
-    ui_update_values = {key: default for key, default in component_keys_map}
+    print(f"Applying parameters: {list(params_dict.keys())}")
 
-    activated_loras = params_dict.get('activated_loras', [])
-    ui_update_values['loras_choices'] = get_lora_indices(activated_loras, state)
-    ui_update_values['loras_multipliers'] = params_dict.get('loras_multipliers', '')
+    lora_choices_comp_name = 'loras_choices'
+    lora_mult_comp_name = 'loras_multipliers'
+    if lora_choices_comp_name in param_name_to_expected_index and lora_mult_comp_name in param_name_to_expected_index:
+        idx_choices = param_name_to_expected_index[lora_choices_comp_name]
+        idx_mult = param_name_to_expected_index[lora_mult_comp_name]
 
-    loaded_video_prompt_type = params_dict.get('video_prompt_type', '')
-    ui_update_values['video_prompt_type_image_refs'] = "I" if "I" in loaded_video_prompt_type else ""
+        if idx_choices < num_received_components and idx_mult < num_received_components:
+            activated_loras = params_dict.get('activated_loras', [])
+            lora_indices = get_lora_indices(activated_loras, state)
+            updates_list[idx_choices] = gr.update(value=lora_indices)
 
-    guide_dd_value = ""
-    guide_letters = "ODPCMV"
-    if "PV" in loaded_video_prompt_type: guide_dd_value = "PV"
-    elif "DV" in loaded_video_prompt_type: guide_dd_value = "DV"
-    elif "CV" in loaded_video_prompt_type: guide_dd_value = "CV"
-    elif "MV" in loaded_video_prompt_type: guide_dd_value = "MV"
-    elif "V" in loaded_video_prompt_type: guide_dd_value = "V"
+            loras_mult_value = params_dict.get('loras_multipliers', '')
+            updates_list[idx_mult] = gr.update(value=loras_mult_value)
+        else:
+             print(f"Warning: Lora component indices ({idx_choices}, {idx_mult}) out of bounds for received components ({num_received_components}).")
 
-    ui_update_values['video_prompt_type_video_guide'] = guide_dd_value
+    vpt_key = 'video_prompt_type'
+    vpt_guide_comp_name = 'video_prompt_type_video_guide'
+    vpt_refs_comp_name = 'video_prompt_type_image_refs'
+
+    if vpt_key in params_dict and vpt_guide_comp_name in param_name_to_expected_index and vpt_refs_comp_name in param_name_to_expected_index:
+        idx_guide = param_name_to_expected_index[vpt_guide_comp_name]
+        idx_refs = param_name_to_expected_index[vpt_refs_comp_name]
+
+        if idx_guide < num_received_components and idx_refs < num_received_components:
+            loaded_video_prompt_type = params_dict.get(vpt_key, '')
+
+            image_refs_value = "I" if "I" in loaded_video_prompt_type else ""
+            updates_list[idx_refs] = gr.update(value=image_refs_value)
+
+            guide_dd_value = ""
+            if "PV" in loaded_video_prompt_type: guide_dd_value = "PV"
+            elif "DV" in loaded_video_prompt_type: guide_dd_value = "DV"
+            elif "CV" in loaded_video_prompt_type: guide_dd_value = "CV"
+            elif "MV" in loaded_video_prompt_type: guide_dd_value = "MV"
+            elif "V" in loaded_video_prompt_type: guide_dd_value = "V"
+            updates_list[idx_guide] = gr.update(value=guide_dd_value)
+        else:
+            print(f"Warning: Video prompt type component indices ({idx_guide}, {idx_refs}) out of bounds for received components ({num_received_components}).")
 
     handled_keys = {'activated_loras', 'loras_multipliers', 'video_prompt_type'}
-    for key, default in component_keys_map:
-        if key in handled_keys or key.startswith('video_prompt_type_'):
+    for key, value in params_dict.items():
+        if key in handled_keys:
             continue
-        if key in params_dict:
-            value = params_dict[key]
+
+        if key in param_name_to_expected_index:
+            idx = param_name_to_expected_index[key]
+
+            if idx >= num_received_components:
+                print(f"Warning: Index {idx} for key '{key}' is out of bounds for received components ({num_received_components}). Skipping update.")
+                continue
+
+            target_component = components[idx]
+            processed_value = value
+
             try:
-                current_type = type(default)
-                if value is None:
-                    value = default
-                    print(f"Parameter '{key}': Received None, using default ({value}).")
-                if current_type == int:
-                    value = int(float(value))
-                elif current_type == float:
-                    value = float(value)
-                elif current_type == str:
-                    value = str(value)
-                elif current_type == list:
-                    if not isinstance(value, list):
-                        print(f"Warning: Parameter '{key}' expected list, got {type(value)}. Using default.")
-                        value = default
-                if key == 'remove_background_image_ref':
-                    value = int(value)
+                if key == 'remove_background_image_ref' and isinstance(target_component, gr.Checkbox):
+                    processed_value = 1 if value == 1 or str(value).lower() == 'true' else 0
+                elif isinstance(target_component, (gr.Slider, gr.Number)):
+                    try:
+                         temp_val = float(value)
+                         processed_value = int(temp_val) if temp_val.is_integer() else temp_val
+                    except (ValueError, TypeError, AttributeError):
+                         print(f"Warning: Could not convert {key} value '{value}' to number. Using raw value.")
+                         processed_value = value
+                elif isinstance(target_component, gr.Dropdown):
+                    is_multiselect = getattr(target_component, 'multiselect', False)
+                    if is_multiselect:
+                        if not isinstance(value, list):
+                             print(f"Warning: Expected list for multiselect {key}, got {type(value)}. Resetting to empty list.")
+                             processed_value = []
+                        else:
+                             processed_value = [str(item) for item in value]
+                    else:
+                         if value is None:
+                              processed_value = ''
+                         else:
+                              processed_value = value
+                elif isinstance(target_component, gr.Textbox):
+                    processed_value = str(value) if value is not None else ""
+                elif isinstance(target_component, gr.Radio):
+                    processed_value = str(value) if value is not None else None
 
-                ui_update_values[key] = value
-            except (ValueError, TypeError, Exception) as e:
-                print(f"Warning: Parameter '{key}': Error processing value '{value}' ({e}). Using default '{default}'.")
-                ui_update_values[key] = default
+            except Exception as e:
+                print(f"Error during type processing for key '{key}' with value '{value}': {e}. Using raw value.")
+                processed_value = value
 
-    updates = []
-    for key, _ in component_keys_map:
-        value_to_set = ui_update_values.get(key)
-        updates.append(gr.update(value=value_to_set))
+            if processed_value is not None:
+                updates_list[idx] = gr.update(value=processed_value)
+            else:
+                updates_list[idx] = gr.update(value="")
 
-    print(f"Parameter application direct updates created ({len(updates)} updates).")
-    return tuple(updates)
+    print(f"Parameter application generated {len(updates_list)} updates.")
+    return tuple(updates_list)
 
 def format_time(seconds):
     if seconds < 60:
@@ -4451,38 +4491,14 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js = get_timer_js()
 
-            updatable_ui_components = [
-                prompt, negative_prompt, resolution, video_length, seed, num_inference_steps,
-                guidance_scale, flow_shift,
-                repeat_generation, multi_images_gen_type, tea_cache_setting, tea_cache_start_step_perc,
-                loras_choices, loras_multipliers,
-                image_prompt_type,
-                video_prompt_type_video_guide,
-                video_prompt_type_image_refs,
-                camera_type,
-                keep_frames,
-                remove_background_image_ref,
-                sliding_window_repeat,
-                sliding_window_overlap,
-                sliding_window_discard_last_frames,
-                temporal_upsampling,
-                spatial_upsampling,
-                RIFLEx_setting,
-                slg_switch,
-                slg_layers,
-                slg_start_perc,
-                slg_end_perc,
-                cfg_star_switch,
-                cfg_zero_step
-            ]
             load_params_video_input.upload(
                 fn=extract_parameters_from_video,
                 inputs=[load_params_video_input],
                 outputs=[extracted_params_state]
             ).then(
                 fn=apply_parameters_to_ui,
-                inputs=[extracted_params_state, state],
-                outputs=updatable_ui_components
+                inputs=[extracted_params_state, state] + gen_inputs,
+                outputs=gen_inputs
             ).then(
                 fn=switch_prompt_type,
                 inputs = [state, wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, *prompt_vars],
@@ -4492,15 +4508,17 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 inputs=[state, image_prompt_type],
                 outputs=[image_start, image_end]
             ).then(
-                fn=lambda vt, vti, vtg: (
-                    *refresh_video_prompt_type_image_refs(vt, vti)[1:],
-                    *refresh_video_prompt_type_video_guide(vt, vtg)[1:]
-                ),
-                inputs=[video_prompt_type, video_prompt_type_image_refs, video_prompt_type_video_guide],
-                outputs=[
-                    image_refs, remove_background_image_ref,
-                    video_guide, keep_frames, video_mask
-                ]
+                 fn=lambda vpt_guide_val, vpt_refs_val: (
+                     gr.update(visible="I" in vpt_refs_val), gr.update(visible="I" in vpt_refs_val),
+                     gr.update(visible="V" in vpt_guide_val or "M" in vpt_guide_val or "P" in vpt_guide_val or "D" in vpt_guide_val or "C" in vpt_guide_val),
+                     gr.update(visible="V" in vpt_guide_val or "M" in vpt_guide_val or "P" in vpt_guide_val or "D" in vpt_guide_val or "C" in vpt_guide_val),
+                     gr.update(visible="M" in vpt_guide_val)
+                 ),
+                 inputs=[video_prompt_type_video_guide, video_prompt_type_image_refs],
+                 outputs=[
+                     image_refs, remove_background_image_ref,
+                     video_guide, keep_frames_video_guide, video_mask
+                 ]
             )
 
             single_hidden_trigger_btn.click(

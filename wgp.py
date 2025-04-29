@@ -4266,10 +4266,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             with gr.Accordion("Batch Generator", open=False) as batch_accordion_ui:
                  batch_folder_input = gr.Textbox(label="Image Folder Path", placeholder="/path/to/your/image_folder")
                  batch_has_end_frames_cb = gr.Checkbox(label="Folder contains start/end image pairs", value=False)
-
-                    video_source = gr.Video(visible=False)
-                    model_mode = gr.Dropdown(visible=False)
-                    keep_frames_video_source = gr.Text(visible=False)
+                 video_source = gr.Video(visible=False)
+                 model_mode = gr.Dropdown(visible=False)
+                 keep_frames_video_source = gr.Text(visible=False)
 
             with gr.Column(visible= vace or phantom) as video_prompt_column: 
                 video_prompt_type_value= ui_defaults.get("video_prompt_type","")

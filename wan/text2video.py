@@ -52,7 +52,9 @@ class WanT2V:
         model_filename = None,
         text_encoder_filename = None,
         quantizeTransformer = False,
-        dtype = torch.bfloat16
+        dtype = torch.bfloat16,
+        VAE_dtype = torch.float32,
+        mixed_precision_transformer = False
     ):
         self.device = torch.device(f"cuda")
         self.config = config
@@ -71,24 +73,23 @@ class WanT2V:
 
         self.vae_stride = config.vae_stride
         self.patch_size = config.patch_size 
-
         
         self.vae = WanVAE(
-            vae_pth=os.path.join(checkpoint_dir, config.vae_checkpoint),
+            vae_pth=os.path.join(checkpoint_dir, config.vae_checkpoint), dtype= VAE_dtype,
             device=self.device)
 
         logging.info(f"Creating WanModel from {model_filename}")
         from mmgp import offload
-
-        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False)
-        # offload.load_model_data(self.model, "recam.ckpt")
+        # model_filename
+        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False ) #, forcedConfigPath= "e:/vace_config.json")
+        # offload.load_model_data(self.model, "e:/vace.safetensors")
+        # offload.load_model_data(self.model, "c:/temp/Phantom-Wan-1.3B.pth")
+        # self.model.to(torch.bfloat16)
         # self.model.cpu()
-        # offload.save_model(self.model, "recam.safetensors")
-        if self.dtype == torch.float16 and not "fp16" in model_filename:
-            self.model.to(self.dtype) 
-        # offload.save_model(self.model, "t2v_fp16.safetensors",do_quantize=True)
-        if self.dtype == torch.float16:
-            self.vae.model.to(self.dtype)
+        self.model.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype, True)
+        offload.change_dtype(self.model, dtype, True)
+        # offload.save_model(self.model, "mvace.safetensors", config_file_path="e:/vace_config.json")
+        # offload.save_model(self.model, "phantom_1.3B.safetensors")
         self.model.eval().requires_grad_(False)
 
 
@@ -252,6 +253,15 @@ class WanT2V:
 
         return self.vae.decode(trimed_zs, tile_size= tile_size)
 
+    def get_vae_latents(self, ref_images, device, tile_size= 0):
+        ref_vae_latents = []
+        for ref_image in ref_images:
+            ref_image = TF.to_tensor(ref_image).sub_(0.5).div_(0.5).to(self.device)
+            img_vae_latent = self.vae.encode([ref_image.unsqueeze(1)], tile_size= tile_size)
+            ref_vae_latents.append(img_vae_latent[0])
+                    
+        return torch.cat(ref_vae_latents, dim=1)
+        
     def generate(self,
                 input_prompt,
                 input_frames= None,
@@ -320,8 +330,15 @@ class WanT2V:
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
 
-        context = self.text_encoder([input_prompt], self.device)
-        context_null = self.text_encoder([n_prompt], self.device)
+        if self._interrupt:
+            return None
+        context = self.text_encoder([input_prompt], self.device)[0]
+        context_null = self.text_encoder([n_prompt], self.device)[0]
+        context = context.to(self.dtype)
+        context_null = context_null.to(self.dtype)
+        input_ref_images_neg = None
+        phantom = False
+
         if target_camera != None:
             size = (source_video.shape[2], source_video.shape[1])
             source_video = source_video.to(dtype=self.dtype , device=self.device)
@@ -346,8 +363,12 @@ class WanT2V:
             target_shape = list(z0[0].shape)
             target_shape[0] = int(target_shape[0] / 2)
         else:
+            if input_ref_images != None: # Phantom Ref images
+                phantom = True
+                input_ref_images = [self.get_vae_latents(input_ref_images, self.device)]
+                input_ref_images_neg = [torch.zeros_like(input_ref_images[0])]
             F = frame_num
-            target_shape = (self.vae.model.z_dim, (F - 1) // self.vae_stride[0] + 1,
+            target_shape = (self.vae.model.z_dim, (F - 1) // self.vae_stride[0] + 1 + (input_ref_images[0].shape[1] if input_ref_images != None else 0),
                             size[1] // self.vae_stride[1],
                             size[0] // self.vae_stride[2])
 
@@ -355,8 +376,8 @@ class WanT2V:
                             (self.patch_size[1] * self.patch_size[2]) *
                             target_shape[1]) 
 
-        context  = [u.to(self.dtype) for u in context]
-        context_null  = [u.to(self.dtype) for u in context_null]
+        if self._interrupt:
+            return None
 
         noise = [ torch.randn( *target_shape, dtype=torch.float32, device=self.device, generator=seed_g) ]
 
@@ -393,21 +414,15 @@ class WanT2V:
             freqs = get_rotary_pos_embed(shape, enable_RIFLEx= False) 
         else:
             freqs = get_rotary_pos_embed(latents[0].shape[1:], enable_RIFLEx= enable_RIFLEx) 
-        arg_c = {'context': context, 'freqs': freqs, 'pipeline': self, 'callback': callback}
-        arg_null = {'context': context_null, 'freqs': freqs, 'pipeline': self, 'callback': callback}
-        arg_both = {'context': context, 'context2': context_null,  'freqs': freqs, 'pipeline': self, 'callback': callback}
+
+        kwargs = {'freqs': freqs, 'pipeline': self, 'callback': callback}
 
         if target_camera != None:
-            recam_dict = {'cam_emb': cam_emb}
-            arg_c.update(recam_dict)
-            arg_null.update(recam_dict)
-            arg_both.update(recam_dict)
+            kwargs.update({'cam_emb': cam_emb})
 
         if input_frames != None:
-            vace_dict = {'vace_context' : z, 'vace_context_scale' : context_scale}
-            arg_c.update(vace_dict)
-            arg_null.update(vace_dict)
-            arg_both.update(vace_dict)
+            kwargs.update({'vace_context' : z, 'vace_context_scale' : context_scale})
+
 
         if self.model.enable_teacache:
             self.model.compute_teacache_threshold(self.model.teacache_start_step, timesteps, self.model.teacache_multiplier)
@@ -424,39 +439,68 @@ class WanT2V:
             timestep = [t]
             offload.set_step_no_for_lora(self.model, i)
             timestep = torch.stack(timestep)
-
+            kwargs["current_step"] = i 
+            kwargs["t"] = timestep 
             if joint_pass:
-                noise_pred_cond, noise_pred_uncond = self.model(
-                    latent_model_input, t=timestep,  current_step=i, slg_layers=slg_layers_local, **arg_both)
+                if phantom:
+                    pos_it, pos_i, neg = self.model(
+                        [torch.cat([latent[:,:-ref_latent.shape[1]], ref_latent], dim=1) for latent, ref_latent in zip(latent_model_input, input_ref_images)],
+                        x_neg = [torch.cat([latent[:,:-ref_latent_neg.shape[1]], ref_latent_neg], dim=1) for latent, ref_latent_neg in zip(latent_model_input, input_ref_images_neg)],  
+                        context = [context, context_null, context_null], **kwargs)
+                else:
+                    noise_pred_cond, noise_pred_uncond = self.model(
+                        latent_model_input, slg_layers=slg_layers_local, context = [context, context_null], **kwargs)
                 if self._interrupt:
                     return None
             else:
-                noise_pred_cond = self.model(
-                    latent_model_input, t=timestep,current_step=i, is_uncond = False, **arg_c)[0]
-                if self._interrupt:
-                    return None               
-                noise_pred_uncond = self.model(
-                    latent_model_input, t=timestep,current_step=i, is_uncond = True, slg_layers=slg_layers_local, **arg_null)[0]
-                if self._interrupt:
-                    return None
+                if phantom:
+                    pos_it = self.model(
+                        [torch.cat([latent[:,:-ref_latent.shape[1]], ref_latent], dim=1) for latent, ref_latent in zip(latent_model_input, input_ref_images)], context = [context], **kwargs
+                        )[0]
+                    if self._interrupt:
+                        return None               
+                    pos_i = self.model(
+                        [torch.cat([latent[:,:-ref_latent.shape[1]], ref_latent], dim=1) for latent, ref_latent in zip(latent_model_input, input_ref_images)],  context = [context_null],**kwargs
+                        )[0]
+                    if self._interrupt:
+                        return None               
+                    neg = self.model(
+                        [torch.cat([latent[:,:-ref_latent_neg.shape[1]], ref_latent_neg], dim=1) for latent, ref_latent_neg in zip(latent_model_input, input_ref_images_neg)], context = [context_null], **kwargs
+                        )[0]
+                    if self._interrupt:
+                        return None               
+                else:
+                    noise_pred_cond = self.model(
+                        latent_model_input, is_uncond = False, context = [context], **kwargs)[0]
+                    if self._interrupt:
+                        return None               
+                    noise_pred_uncond = self.model(
+                        latent_model_input, is_uncond = True, slg_layers=slg_layers_local,context = [context_null], **kwargs)[0]
+                    if self._interrupt:
+                        return None
 
             # del latent_model_input
 
             # CFG Zero *. Thanks to https://github.com/WeichenFan/CFG-Zero-star/
-            noise_pred_text = noise_pred_cond
-            if cfg_star_switch:
-                positive_flat = noise_pred_text.view(batch_size, -1)  
-                negative_flat = noise_pred_uncond.view(batch_size, -1)  
+            if phantom:
+                guide_scale_img= 5.0
+                guide_scale_text= guide_scale #7.5                
+                noise_pred = neg + guide_scale_img * (pos_i - neg) + guide_scale_text * (pos_it - pos_i)
+            else:
+                noise_pred_text = noise_pred_cond
+                if cfg_star_switch:
+                    positive_flat = noise_pred_text.view(batch_size, -1)  
+                    negative_flat = noise_pred_uncond.view(batch_size, -1)  
 
-                alpha = optimized_scale(positive_flat,negative_flat)
-                alpha = alpha.view(batch_size, 1, 1, 1)
+                    alpha = optimized_scale(positive_flat,negative_flat)
+                    alpha = alpha.view(batch_size, 1, 1, 1)
 
-                if (i <= cfg_zero_step):
-                    noise_pred = noise_pred_text*0. # it would be faster not to compute noise_pred...
-                else:
-                    noise_pred_uncond *= alpha
-            noise_pred = noise_pred_uncond + guide_scale * (noise_pred_text - noise_pred_uncond)            
-            del noise_pred_uncond
+                    if (i <= cfg_zero_step):
+                        noise_pred = noise_pred_text*0. # it would be faster not to compute noise_pred...
+                    else:
+                        noise_pred_uncond *= alpha
+                noise_pred = noise_pred_uncond + guide_scale * (noise_pred_text - noise_pred_uncond)            
+            noise_pred_uncond, noise_pred_cond, noise_pred_text, pos_it, pos_i, neg  = None, None, None, None, None, None
 
             temp_x0 = sample_scheduler.step(
                 noise_pred[:, :target_shape[1]].unsqueeze(0),
@@ -473,8 +517,12 @@ class WanT2V:
         x0 = latents
 
         if input_frames == None:
+            if phantom:
+                # phantom post processing
+                x0 = [x0_[:,:-input_ref_images[0].shape[1]] for x0_ in x0]
             videos = self.vae.decode(x0, VAE_tile_size)
         else:
+            # vace post processing
             videos = self.decode_latent(x0, input_ref_images, VAE_tile_size)
 
         del latents

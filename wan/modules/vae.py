@@ -752,7 +752,8 @@ def _video_vae(pretrained_path=None, z_dim=None, device='cpu', **kwargs):
     logging.info(f'loading {pretrained_path}')
     # model.load_state_dict(
     #     torch.load(pretrained_path, map_location=device), assign=True)
-    offload.load_model_data(model, pretrained_path.replace(".pth", "_bf16.safetensors"), writable_tensors= False)    
+    # offload.load_model_data(model, pretrained_path.replace(".pth", "_bf16.safetensors"), writable_tensors= False)    
+    offload.load_model_data(model, pretrained_path.replace(".pth", ".safetensors"), writable_tensors= False)    
     return model
 
 
@@ -782,20 +783,22 @@ class WanVAE:
         self.model = _video_vae(
             pretrained_path=vae_pth,
             z_dim=z_dim,
-        ).eval() #.requires_grad_(False).to(device)
-
+        ).to(dtype).eval() #.requires_grad_(False).to(device)
+    
     def encode(self, videos, tile_size = 256, any_end_frame = False):
         """
         videos: A list of videos each with shape [C, T, H, W].
         """
+        original_dtype = videos[0].dtype
+        
         if tile_size > 0:
-            return [ self.model.spatial_tiled_encode(u.unsqueeze(0), self.scale, tile_size, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
+            return [ self.model.spatial_tiled_encode(u.to(self.dtype).unsqueeze(0), self.scale, tile_size, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
         else:
-            return [ self.model.encode(u.unsqueeze(0), self.scale, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
+            return [ self.model.encode(u.to(self.dtype).unsqueeze(0), self.scale, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
 
 
     def decode(self, zs, tile_size, any_end_frame = False):
         if tile_size > 0:
-            return [ self.model.spatial_tiled_decode(u.unsqueeze(0), self.scale, tile_size, any_end_frame=any_end_frame).clamp_(-1, 1).float().squeeze(0) for u in zs ]
+            return [ self.model.spatial_tiled_decode(u.to(self.dtype).unsqueeze(0), self.scale, tile_size, any_end_frame=any_end_frame).clamp_(-1, 1).float().squeeze(0) for u in zs ]
         else:
-            return [ self.model.decode(u.unsqueeze(0), self.scale, any_end_frame=any_end_frame).clamp_(-1, 1).float().squeeze(0) for u in zs ]
+            return [ self.model.decode(u.to(self.dtype).unsqueeze(0), self.scale, any_end_frame=any_end_frame).clamp_(-1, 1).float().squeeze(0) for u in zs ]

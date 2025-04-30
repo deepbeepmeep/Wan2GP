@@ -33,6 +33,7 @@ import tempfile
 import atexit
 import shutil
 import glob
+from mutagen.mp4 import MP4, MP4Tags
 
 from tqdm import tqdm
 import requests
@@ -52,29 +53,396 @@ task_id = 0
 # progress_tracker = {}
 # tracker_lock = threading.Lock()
 
-# def download_ffmpeg():
-#     if os.name != 'nt': return
-#     exes = ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']
-#     if all(os.path.exists(e) for e in exes): return
-#     api_url = 'https://api.github.com/repos/GyanD/codexffmpeg/releases/latest'
-#     r = requests.get(api_url, headers={'Accept': 'application/vnd.github+json'})
-#     assets = r.json().get('assets', [])
-#     zip_asset = next((a for a in assets if 'essentials_build.zip' in a['name']), None)
-#     if not zip_asset: return
-#     zip_url = zip_asset['browser_download_url']
-#     zip_name = zip_asset['name']
-#     with requests.get(zip_url, stream=True) as resp:
-#         total = int(resp.headers.get('Content-Length', 0))
-#         with open(zip_name, 'wb') as f, tqdm(total=total, unit='B', unit_scale=True) as pbar:
-#             for chunk in resp.iter_content(chunk_size=8192):
-#                 f.write(chunk)
-#                 pbar.update(len(chunk))
-#     with zipfile.ZipFile(zip_name) as z:
-#         for f in z.namelist():
-#             if f.endswith(tuple(exes)) and '/bin/' in f:
-#                 z.extract(f)
-#                 os.rename(f, os.path.basename(f))
-#     os.remove(zip_name)
+def download_ffmpeg():
+    if os.name != 'nt': return
+    exes = ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']
+    if all(os.path.exists(e) for e in exes): return
+    api_url = 'https://api.github.com/repos/GyanD/codexffmpeg/releases/latest'
+    r = requests.get(api_url, headers={'Accept': 'application/vnd.github+json'})
+    assets = r.json().get('assets', [])
+    zip_asset = next((a for a in assets if 'essentials_build.zip' in a['name']), None)
+    if not zip_asset: return
+    zip_url = zip_asset['browser_download_url']
+    zip_name = zip_asset['name']
+    with requests.get(zip_url, stream=True) as resp:
+        total = int(resp.headers.get('Content-Length', 0))
+        with open(zip_name, 'wb') as f, tqdm(total=total, unit='B', unit_scale=True) as pbar:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+                pbar.update(len(chunk))
+    with zipfile.ZipFile(zip_name) as z:
+        for f in z.namelist():
+            if f.endswith(tuple(exes)) and '/bin/' in f:
+                z.extract(f)
+                os.rename(f, os.path.basename(f))
+    os.remove(zip_name)
+
+def batch_get_sorted_images(folder):
+    try:
+        p = Path(folder)
+        if not p.is_dir():
+            return None, f"Error: Folder not found or is not a directory: {folder}"
+        images = sorted(
+            [f for f in p.iterdir() if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg']],
+            key=lambda x: x.stat().st_mtime,
+            reverse=False
+        )
+        return images, None
+    except Exception as e:
+        return None, f"Error accessing folder {folder}: {e}"
+
+def batch_create_task_entry(task_id, start_img_pil, end_img_pil, params_from_ui):
+    image_prompt_type = "SE" if end_img_pil else "S"
+    params = params_from_ui.copy()
+
+    start_img_pil_copy = start_img_pil.copy() if start_img_pil else None
+    end_img_pil_copy = end_img_pil.copy() if end_img_pil else None
+
+    params.update({
+        "image_prompt_type": image_prompt_type,
+        "image_start": start_img_pil_copy,
+        "image_end": end_img_pil_copy,
+    })
+
+    start_b64 = [pil_to_base64_uri(start_img_pil, format="jpeg", quality=70)] if start_img_pil else None
+    end_b64 = [pil_to_base64_uri(end_img_pil, format="jpeg", quality=70)] if end_img_pil else None
+
+    start_image_data_preview = [start_img_pil_copy] if start_img_pil_copy else None
+    end_image_data_preview = [end_img_pil_copy] if end_img_pil_copy else None
+
+    return {
+        "id": task_id,
+        "params": params,
+        "repeats": params.get("repeat_generation", 1),
+        "length": params.get("video_length"),
+        "steps": params.get("num_inference_steps"),
+        "prompt": params.get("prompt", ''),
+        "start_image_data": start_image_data_preview,
+        "end_image_data": end_image_data_preview,
+        "start_image_data_base64": start_b64,
+        "end_image_data_base64": end_b64,
+    }
+
+def create_batch_tasks_from_folder(batch_folder_input, batch_has_end_frames_cb, ui_params):
+    global task_id
+
+    if not batch_folder_input or not batch_folder_input.strip():
+         return [], "Error: Batch Folder Path is required."
+    if not os.path.isdir(batch_folder_input):
+         return [], f"Error: Folder not found or is not a directory: {batch_folder_input}"
+
+    images, error = batch_get_sorted_images(batch_folder_input)
+    if error:
+        return [], error
+    if not images:
+        return [], "Error: No image files found in the specified folder."
+
+    if batch_has_end_frames_cb:
+        if len(images) < 2:
+            return [], "Error: Need at least 2 images (start/end pair) to form a task when 'Folder contains start/end image pairs' is checked."
+        if len(images) % 2 != 0:
+             gr.Warning(f"Warning: Found an odd number of images ({len(images)}) in paired mode. The last image will be ignored.")
+             images = images[:-1]
+
+    tasks_to_add = []
+    current_task_params = prepare_inputs_dict("state", ui_params.copy())
+    current_task_params.pop('lset_name', None)
+
+    try:
+        num_tasks_created = 0
+        if batch_has_end_frames_cb:
+            num_tasks_total = len(images) // 2
+            print(f"Processing {num_tasks_total} image pairs...")
+            for i in range(0, len(images) - 1, 2):
+                with lock:
+                    current_task_id_local = task_id + 1
+                    task_id += 1
+
+                start_img_path = images[i]
+                end_img_path = images[i+1]
+
+                try:
+                    start_img_pil = Image.open(start_img_path)
+                    start_img_pil.load()
+                    start_img_pil = convert_image(start_img_pil)
+
+                    end_img_pil = Image.open(end_img_path)
+                    end_img_pil.load()
+                    end_img_pil = convert_image(end_img_pil)
+
+                    params_for_entry = current_task_params.copy()
+                    params_for_entry['state'] = ui_params['state']
+                    params_for_entry['model_filename'] = ui_params['model_filename']
+
+                    task = batch_create_task_entry(current_task_id_local, start_img_pil, end_img_pil, params_for_entry)
+                    tasks_to_add.append(task)
+                    num_tasks_created += 1
+                    print(f"Added batch task {num_tasks_created}/{num_tasks_total} (Pair: {start_img_path.name}, {end_img_path.name})")
+
+                except Exception as img_e:
+                    gr.Warning(f"Skipping pair due to error loading images ({start_img_path.name}, {end_img_path.name}): {img_e}")
+                finally:
+                    if 'start_img_pil' in locals() and hasattr(start_img_pil, 'close'): start_img_pil.close()
+                    if 'end_img_pil' in locals() and hasattr(end_img_pil, 'close'): end_img_pil.close()
+
+        else:
+            num_tasks_total = len(images)
+            print(f"Processing {num_tasks_total} single images...")
+            for i, img_path in enumerate(images):
+                with lock:
+                    current_task_id_local = task_id + 1
+                    task_id += 1
+
+                try:
+                    start_img_pil = Image.open(img_path)
+                    start_img_pil.load()
+                    start_img_pil = convert_image(start_img_pil)
+                    params_for_entry = current_task_params.copy()
+                    params_for_entry['state'] = ui_params['state']
+                    params_for_entry['model_filename'] = ui_params['model_filename']
+                    task = batch_create_task_entry(current_task_id_local, start_img_pil, None, params_for_entry)
+                    tasks_to_add.append(task)
+                    num_tasks_created += 1
+                    print(f"Added batch task {num_tasks_created}/{num_tasks_total} (Image: {img_path.name})")
+
+                except Exception as img_e:
+                    gr.Warning(f"Skipping image due to error loading ({img_path.name}): {img_e}")
+                finally:
+                     if 'start_img_pil' in locals() and hasattr(start_img_pil, 'close'): start_img_pil.close()
+
+        if not tasks_to_add:
+             return [], "Error: No tasks could be created from the images found."
+
+        print(f"Successfully prepared {len(tasks_to_add)} batch task(s).")
+        return tasks_to_add, None
+
+    except Exception as e:
+        traceback.print_exc()
+        return [], f"Error during batch task creation: {e}"
+
+def handle_generate_or_add(
+    state,
+    model_choice,
+    batch_folder_input,
+    batch_has_end_frames_cb,
+    *args
+    ):
+    gen = get_gen_info(state)
+    queue = gen.setdefault("queue", [])
+    save_inputs_param_names = list(inspect.signature(save_inputs).parameters)[1:-1]
+
+    if len(args) != len(save_inputs_param_names):
+        gr.Error(f"Internal Error: Mismatched number of arguments for handle_generate_or_add. Expected {len(save_inputs_param_names)}, got {len(args)}.")
+        return update_queue_data(queue)
+
+    all_ui_params_dict = dict(zip(save_inputs_param_names, args))
+    all_ui_params_dict['state'] = state
+    all_ui_params_dict['model_filename'] = state["model_filename"]
+
+    batch_folder = batch_folder_input.strip() if batch_folder_input else ""
+
+    if batch_folder:
+        print(f"Batch mode triggered with folder: {batch_folder}")
+        batch_task_params = all_ui_params_dict.copy()
+        batch_task_params.pop('image_start', None)
+        batch_task_params.pop('image_end', None)
+        new_tasks, error = create_batch_tasks_from_folder(
+            batch_folder,
+            batch_has_end_frames_cb,
+            batch_task_params
+        )
+
+        if error:
+            gr.Error(error)
+            return update_queue_data(queue)
+
+        if new_tasks:
+            with lock:
+                queue.extend(new_tasks)
+                gen["prompts_max"] = len([t for t in queue if t is not None and 'id' in t])
+            gr.Info(f"Added {len(new_tasks)} tasks from batch folder '{batch_folder}' to the queue.")
+        else:
+            gr.Warning("Batch folder was specified, but no tasks were added (check folder contents and permissions).")
+
+        return update_queue_data(queue)
+
+    else:
+        print("Standard generation mode triggered.")
+        state["validate_success"] = 1
+        return process_prompt_and_add_tasks(state, model_choice)
+
+def extract_parameters_from_video(video_filepath):
+    if not video_filepath or not hasattr(video_filepath, 'name') or not os.path.exists(video_filepath.name):
+        print("No valid video file provided for parameter extraction.")
+        return None, "No valid video file provided."
+
+    filepath = video_filepath.name
+    print(f"Attempting to extract parameters from: {filepath}")
+
+    try:
+        video = MP4(filepath)
+        if isinstance(video.tags, MP4Tags) and '©cmt' in video.tags:
+            comment_tag_value = video.tags['©cmt'][0]
+            params = json.loads(comment_tag_value)
+            print(f"Successfully extracted parameters: {list(params.keys())}")
+            return params
+        else:
+            print("No '©cmt' metadata tag found in the video.")
+            return None
+    except mutagen.MutagenError as e:
+        print(f"Error reading video file with mutagen: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON from metadata: {e}")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred during parameter extraction: {e}")
+        traceback.print_exc()
+        return None
+
+def get_lora_indices(activated_lora_filenames, state):
+    indices = []
+    loras_full_paths = state.get("loras") if isinstance(state.get("loras"), list) else []
+    if not loras_full_paths:
+        print("Warning: Lora list not found or invalid in state during parameter application.")
+        return []
+
+    lora_filenames_in_state = [os.path.basename(p) for p in loras_full_paths if isinstance(p, str)]
+
+    if not isinstance(activated_lora_filenames, list):
+        print(f"Warning: 'activated_loras' parameter is not a list ({type(activated_lora_filenames)}). Skipping Lora loading.")
+        return []
+
+    for filename in activated_lora_filenames:
+        if not isinstance(filename, str):
+            print(f"Warning: Non-string filename found in activated_loras: {filename}. Skipping.")
+            continue
+        try:
+            idx = lora_filenames_in_state.index(filename)
+            indices.append(str(idx))
+        except ValueError:
+            print(f"Warning: Loaded Lora '{filename}' not found in current Lora list. Skipping.")
+        except Exception as e:
+            print(f"Error processing Lora filename '{filename}': {e}")
+    return indices
+
+def apply_parameters_to_ui(params_dict, state, *components):
+    try:
+        component_param_names = list(inspect.signature(save_inputs).parameters)[1:-1]
+    except NameError:
+        print("CRITICAL ERROR: save_inputs function not defined when apply_parameters_to_ui is called.")
+        return tuple([gr.update()] * len(components))
+
+    num_expected_params = len(component_param_names)
+    num_received_components = len(components)
+
+    updates_list = [gr.update()] * num_received_components
+
+    if num_expected_params != num_received_components:
+         print(f"Warning in apply_parameters_to_ui: Mismatch between expected params ({num_expected_params}) and received components ({num_received_components}). Proceeding by matching names to the expected number of components.")
+
+    param_name_to_expected_index = {name: i for i, name in enumerate(component_param_names)}
+
+    if not params_dict or not isinstance(params_dict, dict):
+        print("No parameters provided or invalid format for UI update.")
+        return tuple(updates_list)
+
+    print(f"Applying parameters: {list(params_dict.keys())}")
+
+    lora_choices_comp_name = 'loras_choices'
+    lora_mult_comp_name = 'loras_multipliers'
+    if lora_choices_comp_name in param_name_to_expected_index and lora_mult_comp_name in param_name_to_expected_index:
+        idx_choices = param_name_to_expected_index[lora_choices_comp_name]
+        idx_mult = param_name_to_expected_index[lora_mult_comp_name]
+
+        if idx_choices < num_received_components and idx_mult < num_received_components:
+            activated_loras = params_dict.get('activated_loras', [])
+            lora_indices = get_lora_indices(activated_loras, state)
+            updates_list[idx_choices] = gr.update(value=lora_indices)
+
+            loras_mult_value = params_dict.get('loras_multipliers', '')
+            updates_list[idx_mult] = gr.update(value=loras_mult_value)
+        else:
+             print(f"Warning: Lora component indices ({idx_choices}, {idx_mult}) out of bounds for received components ({num_received_components}).")
+
+    vpt_key = 'video_prompt_type'
+    vpt_guide_comp_name = 'video_prompt_type_video_guide'
+    vpt_refs_comp_name = 'video_prompt_type_image_refs'
+
+    if vpt_key in params_dict and vpt_guide_comp_name in param_name_to_expected_index and vpt_refs_comp_name in param_name_to_expected_index:
+        idx_guide = param_name_to_expected_index[vpt_guide_comp_name]
+        idx_refs = param_name_to_expected_index[vpt_refs_comp_name]
+
+        if idx_guide < num_received_components and idx_refs < num_received_components:
+            loaded_video_prompt_type = params_dict.get(vpt_key, '')
+
+            image_refs_value = "I" if "I" in loaded_video_prompt_type else ""
+            updates_list[idx_refs] = gr.update(value=image_refs_value)
+
+            guide_dd_value = ""
+            if "PV" in loaded_video_prompt_type: guide_dd_value = "PV"
+            elif "DV" in loaded_video_prompt_type: guide_dd_value = "DV"
+            elif "CV" in loaded_video_prompt_type: guide_dd_value = "CV"
+            elif "MV" in loaded_video_prompt_type: guide_dd_value = "MV"
+            elif "V" in loaded_video_prompt_type: guide_dd_value = "V"
+            updates_list[idx_guide] = gr.update(value=guide_dd_value)
+        else:
+            print(f"Warning: Video prompt type component indices ({idx_guide}, {idx_refs}) out of bounds for received components ({num_received_components}).")
+
+    handled_keys = {'activated_loras', 'loras_multipliers', 'video_prompt_type'}
+    for key, value in params_dict.items():
+        if key in handled_keys:
+            continue
+
+        if key in param_name_to_expected_index:
+            idx = param_name_to_expected_index[key]
+
+            if idx >= num_received_components:
+                print(f"Warning: Index {idx} for key '{key}' is out of bounds for received components ({num_received_components}). Skipping update.")
+                continue
+
+            target_component = components[idx]
+            processed_value = value
+
+            try:
+                if key == 'remove_background_image_ref' and isinstance(target_component, gr.Checkbox):
+                    processed_value = 1 if value == 1 or str(value).lower() == 'true' else 0
+                elif isinstance(target_component, (gr.Slider, gr.Number)):
+                    try:
+                         temp_val = float(value)
+                         processed_value = int(temp_val) if temp_val.is_integer() else temp_val
+                    except (ValueError, TypeError, AttributeError):
+                         print(f"Warning: Could not convert {key} value '{value}' to number. Using raw value.")
+                         processed_value = value
+                elif isinstance(target_component, gr.Dropdown):
+                    is_multiselect = getattr(target_component, 'multiselect', False)
+                    if is_multiselect:
+                        if not isinstance(value, list):
+                             print(f"Warning: Expected list for multiselect {key}, got {type(value)}. Resetting to empty list.")
+                             processed_value = []
+                        else:
+                             processed_value = [str(item) for item in value]
+                    else:
+                         if value is None:
+                              processed_value = ''
+                         else:
+                              processed_value = value
+                elif isinstance(target_component, gr.Textbox):
+                    processed_value = str(value) if value is not None else ""
+                elif isinstance(target_component, gr.Radio):
+                    processed_value = str(value) if value is not None else None
+
+            except Exception as e:
+                print(f"Error during type processing for key '{key}' with value '{value}': {e}. Using raw value.")
+                processed_value = value
+
+            if processed_value is not None:
+                updates_list[idx] = gr.update(value=processed_value)
+            else:
+                updates_list[idx] = gr.update(value="")
+
+    print(f"Parameter application generated {len(updates_list)} updates.")
+    return tuple(updates_list)
 
 def format_time(seconds):
     if seconds < 60:
@@ -3799,6 +4167,12 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
     with gr.Row():
         with gr.Column():
+            with gr.Row():
+                 load_params_video_input = gr.File(
+                     label="Load Parameters from Video Metadata",
+                     file_types=[".mp4"],
+                     type="filepath",
+                 )
             with gr.Column(visible=False, elem_id="image-modal-container") as modal_container:
                 with gr.Row(elem_id="image-modal-close-button-row"):
                      close_modal_button = gr.Button("❌", size="sm")
@@ -3889,6 +4263,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label="Images as ending points for new videos", type ="pil", #file_types= "image", 
                             columns=[3], rows=[1], object_fit="contain", height="auto", selected_index=0, interactive= True, visible="E" in image_prompt_type_value, value= ui_defaults.get("image_end", None))
 
+            with gr.Accordion("Batch Generator", open=False) as batch_accordion_ui:
+                    batch_folder_input = gr.Textbox(label="Image Folder Path", placeholder="/path/to/your/image_folder")
+                    batch_has_end_frames_cb = gr.Checkbox(label="Folder contains start/end image pairs", value=False)
                     video_source = gr.Video(visible=False)
                     model_mode = gr.Dropdown(visible=False)
                     keep_frames_video_source = gr.Text(visible=False)
@@ -4217,6 +4594,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         hidden_force_quit_trigger = gr.Button("force_quit", visible=False, elem_id="force_quit_btn_hidden")
                         hidden_countdown_state = gr.Number(value=-1, visible=False, elem_id="hidden_countdown_state_num")
                         single_hidden_trigger_btn = gr.Button("trigger_countdown", visible=False, elem_id="trigger_info_single_btn")
+                extracted_params_state = gr.State({})
 
         extra_inputs = prompt_vars + [wizard_prompt, wizard_variables_var, wizard_prompt_activated_var, video_prompt_column, image_prompt_column,
                                       prompt_column_advanced, prompt_column_wizard_vars, prompt_column_wizard, lset_name, advanced_row, sliding_window_tab, 
@@ -4290,6 +4668,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             inputs_names= list(inspect.signature(save_inputs).parameters)[1:-1]
             locals_dict = locals()
             gen_inputs = [locals_dict[k] for k in inputs_names] + [state]
+            gen_inputs_list_for_handler = [locals_dict[k] for k in inputs_names]
             save_settings_btn.click( fn=validate_wizard_prompt, inputs =[state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] , outputs= [prompt]).then(
             save_inputs, inputs =[target_settings] + gen_inputs, outputs = [])
 
@@ -4316,8 +4695,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             ).then(fn=save_inputs,
                 inputs =[target_state] + gen_inputs,
                 outputs= None
-            ).then(fn=process_prompt_and_add_tasks,
-                inputs = [state, model_choice],
+            ).then(fn=handle_generate_or_add,
+                inputs = [state, model_choice, batch_folder_input, batch_has_end_frames_cb,*gen_inputs_list_for_handler],
                 outputs= queue_df
             ).then(fn=prepare_generate_video,
                 inputs= [state],
@@ -4373,6 +4752,36 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
 
             start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js = get_timer_js()
+
+            load_params_video_input.upload(
+                fn=extract_parameters_from_video,
+                inputs=[load_params_video_input],
+                outputs=[extracted_params_state]
+            ).then(
+                fn=apply_parameters_to_ui,
+                inputs=[extracted_params_state, state] + gen_inputs,
+                outputs=gen_inputs
+            ).then(
+                fn=switch_prompt_type,
+                inputs = [state, wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, *prompt_vars],
+                outputs = [wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, prompt_column_advanced, prompt_column_wizard, prompt_column_wizard_vars, *prompt_vars]
+            ).then(
+                fn=refresh_image_prompt_type,
+                inputs=[state, image_prompt_type],
+                outputs=[image_start, image_end]
+            ).then(
+                 fn=lambda vpt_guide_val, vpt_refs_val: (
+                     gr.update(visible="I" in vpt_refs_val), gr.update(visible="I" in vpt_refs_val),
+                     gr.update(visible="V" in vpt_guide_val or "M" in vpt_guide_val or "P" in vpt_guide_val or "D" in vpt_guide_val or "C" in vpt_guide_val),
+                     gr.update(visible="V" in vpt_guide_val or "M" in vpt_guide_val or "P" in vpt_guide_val or "D" in vpt_guide_val or "C" in vpt_guide_val),
+                     gr.update(visible="M" in vpt_guide_val)
+                 ),
+                 inputs=[video_prompt_type_video_guide, video_prompt_type_image_refs],
+                 outputs=[
+                     image_refs, remove_background_image_ref,
+                     video_guide, keep_frames_video_guide, video_mask
+                 ]
+            )
 
             single_hidden_trigger_btn.click(
                 fn=show_countdown_info_from_state,
@@ -4430,16 +4839,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                  outputs=[current_gen_column, queue_accordion]
             )
 
-
             add_to_queue_btn.click(fn=validate_wizard_prompt, 
                 inputs =[state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
                 outputs= [prompt]
             ).then(fn=save_inputs,
                 inputs =[target_state] + gen_inputs,
                 outputs= None
-            ).then(fn=process_prompt_and_add_tasks,
-                inputs = [state, model_choice],
-                outputs=queue_df
+            ).then(fn=handle_generate_or_add,
+                inputs = [state, model_choice, batch_folder_input, batch_has_end_frames_cb,*gen_inputs_list_for_handler],
+                outputs= queue_df
             ).then(
                 fn=lambda s: gr.Accordion(open=True) if len(get_gen_info(s).get("queue", [])) > 1 else gr.update(),
                 inputs=[state],
@@ -5076,7 +5484,7 @@ def create_demo():
 
 if __name__ == "__main__":
     atexit.register(autosave_queue)
-    # download_ffmpeg()
+    download_ffmpeg()
     # threading.Thread(target=runner, daemon=True).start()
     os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
     server_port = int(args.server_port)

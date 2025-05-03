@@ -764,8 +764,8 @@ def load_queue_action(filepath, state, evt:gr.EventData):
 
                 primary_preview_pil_list, secondary_preview_pil_list = get_preview_images(params)
 
-                start_b64 = [pil_to_base64_uri(primary_preview_pil_list[0], format="jpeg", quality=70)] if primary_preview_pil_list and primary_preview_pil_list[0] else None
-                end_b64 = [pil_to_base64_uri(secondary_preview_pil_list[0], format="jpeg", quality=70)] if secondary_preview_pil_list and secondary_preview_pil_list[0] else None
+                start_b64 = [pil_to_base64_uri(primary_preview_pil_list[0], format="jpeg", quality=70)] if isinstance(primary_preview_pil_list, list) and primary_preview_pil_list else None
+                end_b64 = [pil_to_base64_uri(secondary_preview_pil_list[0], format="jpeg", quality=70)] if isinstance(secondary_preview_pil_list, list) and secondary_preview_pil_list else None
 
                 top_level_start_image = params.get("image_start") or params.get("image_refs")
                 top_level_end_image = params.get("image_end")

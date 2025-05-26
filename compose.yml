@@ -1,0 +1,17 @@
+services:
+  wan2gp:
+    build: .
+    image: local/wan2gp:latest
+    container_name: wan2gp
+    ports:
+      - 7860:7860
+    volumes:
+      - ./ckpts:/app/wan2gp/ckpts
+      - ./outputs:/app/wan2gp/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

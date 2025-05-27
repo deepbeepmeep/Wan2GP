@@ -6,8 +6,9 @@ services:
     ports:
       - 7860:7860
     volumes:
-      - ./ckpts:/app/wan2gp/ckpts
-      - ./outputs:/app/wan2gp/outputs
+      - ./ckpts:/app/ckpts
+      - ./loras:/app/loras
+      - ./outputs:/app/outputs
     deploy:
       resources:
         reservations:

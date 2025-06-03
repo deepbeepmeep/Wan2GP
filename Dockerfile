@@ -24,4 +24,4 @@ RUN pip install --no-cache-dir torch torchvision torchaudio \
     && pip install --no-cache-dir sageattention==1.0.6
 
 # Default entrypoint
-ENTRYPOINT ["python3.10", "wgp.py", "--t2v-1-3B", "--listen"]
+ENTRYPOINT ["python3.10", "wgp.py", "--listen"]

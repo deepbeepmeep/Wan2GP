@@ -1,18 +1,32 @@
+x-wan2gp-base: &wan2gp-base
+  container_name: Wan2GP
+  build: .
+  image: local/wan2gp:latest
+  ports:
+  - 7860:7860
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
 services:
-  wan2gp:
-    build: .
-    image: local/wan2gp:latest
-    container_name: wan2gp
-    ports:
-      - 7860:7860
+  wan2gp-t2v:
+    <<: *wan2gp-base
+    entrypoint: ["python3.10", "wgp.py", "--t2v", "--listen"]
     volumes:
       - ./ckpts:/app/ckpts
       - ./loras:/app/loras
       - ./outputs:/app/outputs
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    profiles:
+      - t2v
+  wan2gp-i2v:
+    <<: *wan2gp-base
+    entrypoint: ["python3.10", "wgp.py", "--i2v", "--listen"]
+    volumes:
+      - ./ckpts:/app/ckpts
+      - ./loras_i2v:/app/loras_i2v
+      - ./outputs:/app/outputs
+    profiles:
+      - i2v

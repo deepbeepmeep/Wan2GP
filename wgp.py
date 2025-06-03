@@ -43,6 +43,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.4.7"
+WanGP_version = "5.31"
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 
 from importlib.metadata import version
@@ -434,6 +435,7 @@ def process_prompt_and_add_tasks(state, model_choice):
                 "prompt" : single_prompt,
                 "image_start": start,
                 "image_end" : end,
+                "video_source": None,
             }
             inputs.update(extra_inputs) 
             add_video_task(**inputs)
@@ -1523,11 +1525,12 @@ for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion
         os.remove( os.path.join("ckpts" , path))
 
 
-wan_choices_t2v=["ckpts/wan2.1_text2video_1.3B_bf16.safetensors", "ckpts/wan2.1_text2video_14B_bf16.safetensors", "ckpts/wan2.1_text2video_14B_quanto_int8.safetensors", "ckpts/wan2.1_Vace_1.3B_mbf16.safetensors", 
+wan_choices_t2v=["ckpts/wan2.1_text2video_1.3B_bf16.safetensors", "ckpts/wan2.1_text2video_14B_bf16.safetensors", "ckpts/wan2.1_text2video_14B_quanto_int8.safetensors",  
                          "ckpts/wan2.1_recammaster_1.3B_bf16.safetensors", "ckpts/sky_reels2_diffusion_forcing_1.3B_mbf16.safetensors", "ckpts/sky_reels2_diffusion_forcing_14B_bf16.safetensors",
                         "ckpts/sky_reels2_diffusion_forcing_14B_quanto_int8.safetensors",  "ckpts/sky_reels2_diffusion_forcing_720p_14B_mbf16.safetensors","ckpts/sky_reels2_diffusion_forcing_720p_14B_quanto_mbf16_int8.safetensors", 
-                        "ckpts/wan2_1_phantom_1.3B_mbf16.safetensors", "ckpts/wan2.1_Vace_14B_mbf16.safetensors", "ckpts/wan2.1_Vace_14B_quanto_mbf16_int8.safetensors",
+                        "ckpts/wan2.1_Vace_1.3B_mbf16.safetensors", "ckpts/wan2.1_Vace_14B_mbf16.safetensors", "ckpts/wan2.1_Vace_14B_quanto_mbf16_int8.safetensors",
                         "ckpts/wan2.1_moviigen1.1_14B_mbf16.safetensors", "ckpts/wan2.1_moviigen1.1_14B_quanto_mbf16_int8.safetensors",
+                        "ckpts/wan2_1_phantom_1.3B_mbf16.safetensors", "ckpts/wan2.1_phantom_14B_mbf16.safetensors", "ckpts/wan2.1_phantom_14B_quanto_mbf16_int8.safetensors", 
                         ]    
 wan_choices_i2v=["ckpts/wan2.1_image2video_480p_14B_mbf16.safetensors", "ckpts/wan2.1_image2video_480p_14B_quanto_mbf16_int8.safetensors", "ckpts/wan2.1_image2video_720p_14B_mbf16.safetensors",
                         "ckpts/wan2.1_image2video_720p_14B_quanto_mbf16_int8.safetensors", "ckpts/wan2.1_Fun_InP_1.3B_bf16.safetensors", "ckpts/wan2.1_Fun_InP_14B_bf16.safetensors",
@@ -1535,7 +1538,7 @@ wan_choices_i2v=["ckpts/wan2.1_image2video_480p_14B_mbf16.safetensors", "ckpts/w
                         "ckpts/wan2.1_fantasy_speaking_14B_bf16.safetensors"]
 ltxv_choices= ["ckpts/ltxv_0.9.7_13B_dev_bf16.safetensors", "ckpts/ltxv_0.9.7_13B_dev_quanto_bf16_int8.safetensors", "ckpts/ltxv_0.9.7_13B_distilled_lora128_bf16.safetensors"]
 
-hunyuan_choices= ["ckpts/hunyuan_video_720_bf16.safetensors", "ckpts/hunyuan_video_720_quanto_int8.safetensors", "ckpts/hunyuan_video_i2v_720_bf16.safetensors", "ckpts/hunyuan_video_i2v_720_quanto_int8v2.safetensors",
+hunyuan_choices= ["ckpts/hunyuan_video_720_bf16.safetensors", "ckpts/hunyuan_video_720_quanto_int8.safetensors", "ckpts/hunyuan_video_i2v_720_bf16v2.safetensors", "ckpts/hunyuan_video_i2v_720_quanto_int8v2.safetensors",
                  "ckpts/hunyuan_video_custom_720_bf16.safetensors", "ckpts/hunyuan_video_custom_720_quanto_bf16_int8.safetensors" ]
 
 transformer_choices = wan_choices_t2v + wan_choices_i2v + ltxv_choices + hunyuan_choices
@@ -1546,12 +1549,12 @@ def get_dependent_models(model_filename, quantization, dtype_policy ):
         return [get_model_filename("ltxv_13B", quantization, dtype_policy)]
     else:
         return []
-model_types = [ "t2v_1.3B", "t2v", "i2v", "i2v_720p", "flf2v_720p", "vace_1.3B","vace_14B","moviigen", "phantom_1.3B", "fantasy",  "fun_inp_1.3B", "fun_inp", "recam_1.3B",  "sky_df_1.3B", "sky_df_14B", "sky_df_720p_14B", "ltxv_13B", "ltxv_13B_distilled", "hunyuan", "hunyuan_i2v", "hunyuan_custom"]
+model_types = [ "t2v_1.3B", "t2v", "i2v", "i2v_720p", "flf2v_720p", "vace_1.3B","vace_14B","moviigen", "phantom_1.3B", "phantom_14B", "fantasy",  "fun_inp_1.3B", "fun_inp", "recam_1.3B",  "sky_df_1.3B", "sky_df_14B", "sky_df_720p_14B", "ltxv_13B", "ltxv_13B_distilled", "hunyuan", "hunyuan_i2v", "hunyuan_custom"]
 model_signatures = {"t2v": "text2video_14B", "t2v_1.3B" : "text2video_1.3B",   "fun_inp_1.3B" : "Fun_InP_1.3B",  "fun_inp" :  "Fun_InP_14B", 
                     "i2v" : "image2video_480p", "i2v_720p" : "image2video_720p" , "vace_1.3B" : "Vace_1.3B", "vace_14B" : "Vace_14B","recam_1.3B": "recammaster_1.3B", 
                     "flf2v_720p" : "FLF2V_720p", "sky_df_1.3B" : "sky_reels2_diffusion_forcing_1.3B", "sky_df_14B" : "sky_reels2_diffusion_forcing_14B", 
                     "sky_df_720p_14B" : "sky_reels2_diffusion_forcing_720p_14B",  "moviigen" :"moviigen",
-                     "phantom_1.3B" : "phantom_1.3B", "fantasy" : "fantasy", "ltxv_13B" : "ltxv_0.9.7_13B_dev", "ltxv_13B_distilled" : "ltxv_0.9.7_13B_distilled",  "hunyuan" : "hunyuan_video_720", "hunyuan_i2v" : "hunyuan_video_i2v_720", "hunyuan_custom" : "hunyuan_video_custom" }
+                     "phantom_1.3B" : "phantom_1.3B", "phantom_14B" : "phantom_14B", "fantasy" : "fantasy", "ltxv_13B" : "ltxv_0.9.7_13B_dev", "ltxv_13B_distilled" : "ltxv_0.9.7_13B_distilled",  "hunyuan" : "hunyuan_video_720", "hunyuan_i2v" : "hunyuan_video_i2v_720", "hunyuan_custom" : "hunyuan_video_custom" }
 
 
 def get_model_type(model_filename):
@@ -1609,8 +1612,12 @@ def get_model_name(model_filename, description_container = [""]):
         description = "The SkyReels 2 Diffusion Forcing model has been designed to generate very long videos that exceeds the usual 5s limit. You can also use this model to extend any existing video."
     elif "phantom" in model_filename:
         model_name = "Wan2.1 Phantom"
-        model_name += " 14B" if "14B" in model_filename else " 1.3B"
-        description = "The Phantom model is specialized to transfer people or objects of your choice into a generated Video. It produces very nices results when used at 720p."
+        if "14B" in model_filename:
+            model_name += " 14B"
+            description = "The Phantom model is specialized to transfer people or objects of your choice into a generated Video. It seems to produce better results if you keep the original background of the Image Referendes."
+        else:
+            model_name += " 1.3B"
+            description = "The Phantom model is specialized to transfer people or objects of your choice into a generated Video. It produces very nice results when used at 720p."
     elif "fantasy" in model_filename:
         model_name = "Wan2.1 Fantasy Speaking 720p"
         model_name += " 14B" if "14B" in model_filename else " 1.3B"
@@ -1739,11 +1746,12 @@ def get_default_settings(filename):
             })
 
 
-        if get_model_type(filename) in ("phantom_1.3B"):
+        if get_model_type(filename) in ("phantom_1.3B", "phantom_14B"):
             ui_defaults.update({
                 "guidance_scale": 7.5,
                 "flow_shift": 5,
-                "resolution": "1280x720" 
+                "remove_background_images_ref": 0,
+                # "resolution": "1280x720" 
             })
 
         elif get_model_type(filename) in ("hunyuan_custom"):
@@ -2323,13 +2331,13 @@ def apply_changes(  state,
     transformer_dtype_policy = server_config["transformer_dtype_policy"]
     text_encoder_quantization = server_config["text_encoder_quantization"]
     transformer_types = server_config["transformer_types"]
-    state["model_filename"] = get_model_filename(get_model_type(state["model_filename"]), transformer_quantization, transformer_dtype_policy)
-
+    model_filename = get_model_filename(get_model_type(state["model_filename"]), transformer_quantization, transformer_dtype_policy)
+    state["model_filename"] = model_filename
     if all(change in ["attention_mode", "vae_config", "boost", "save_path", "metadata_type", "clear_file_list", "fit_canvas"] for change in changes ):
         model_choice = gr.Dropdown()
     else:
         reload_needed = True
-        model_choice = generate_dropdown_model_list()
+        model_choice = generate_dropdown_model_list(model_filename)
 
     header = generate_header(state["model_filename"], compile=compile, attention_mode= attention_mode)
     return "<DIV ALIGN=CENTER>The new configuration has been succesfully applied</DIV>", header, model_choice, gr.Row(visible= server_config["enhancer_enabled"] == 1)
@@ -2699,6 +2707,8 @@ def generate_video(
     torch.set_grad_enabled(False) 
 
     file_list = gen["file_list"]
+    file_settings_list = gen["file_settings_list"]
+
     prompt_no = gen["prompt_no"]
 
     fit_canvas = server_config.get("fit_canvas", 0)
@@ -2796,7 +2806,8 @@ def generate_video(
     seed = None if seed == -1 else seed
     # negative_prompt = "" # not applicable in the inference
     image2video = test_class_i2v(model_filename)
-    enable_RIFLEx = RIFLEx_setting == 0 and video_length > (6* 16) or RIFLEx_setting == 1
+    current_video_length = video_length
+    enable_RIFLEx = RIFLEx_setting == 0 and current_video_length > (6* 16) or RIFLEx_setting == 1
     # VAE Tiling
     device_mem_capacity = torch.cuda.get_device_properties(None).total_memory / 1048576
 
@@ -2849,7 +2860,7 @@ def generate_video(
     source_video = None
     target_camera = None
     if "recam" in model_filename:
-        source_video = preprocess_video("", width=width, height=height,video_in=video_source, max_frames= video_length, start_frame = 0, fit_canvas= fit_canvas == 1)
+        source_video = preprocess_video("", width=width, height=height,video_in=video_source, max_frames= current_video_length, start_frame = 0, fit_canvas= fit_canvas == 1)
         target_camera = model_mode
 
     audio_proj_split = None
@@ -2859,8 +2870,8 @@ def generate_video(
         from fantasytalking.infer import parse_audio
         import librosa
         duration = librosa.get_duration(path=audio_guide)
-        video_length = min(int(fps * duration // 4) * 4 + 5, video_length)    
-        audio_proj_split, audio_context_lens = parse_audio(audio_guide, num_frames= video_length, fps= fps, device= processing_device  )
+        current_video_length = min(int(fps * duration // 4) * 4 + 5, current_video_length)    
+        audio_proj_split, audio_context_lens = parse_audio(audio_guide, num_frames= current_video_length, fps= fps, device= processing_device  )
         audio_scale = 1.0
 
     import random
@@ -2884,19 +2895,19 @@ def generate_video(
     else:
         reuse_frames = 0
     if (diffusion_forcing or ltxv) and source_video != None:
-        video_length +=  sliding_window_overlap
-    sliding_window = (vace or diffusion_forcing or ltxv) and video_length > sliding_window_size
+        current_video_length +=  sliding_window_overlap
+    sliding_window = (vace or diffusion_forcing or ltxv) and current_video_length > sliding_window_size
 
     discard_last_frames = sliding_window_discard_last_frames
-    default_max_frames_to_generate = video_length
+    default_max_frames_to_generate = current_video_length
     if sliding_window:
-        left_after_first_window = video_length - sliding_window_size + discard_last_frames
+        left_after_first_window = current_video_length - sliding_window_size + discard_last_frames
         initial_total_windows= 1 + math.ceil(left_after_first_window / (sliding_window_size - discard_last_frames - reuse_frames))
-        video_length = sliding_window_size
+        current_video_length = sliding_window_size
     else:
         initial_total_windows = 1
 
-    first_window_video_length = video_length
+    first_window_video_length = current_video_length
     original_prompts = prompts.copy()
     gen["sliding_window"] = sliding_window    
     while not abort: 
@@ -2917,7 +2928,7 @@ def generate_video(
         window_no = 0
         extra_windows = 0
         guide_start_frame = 0
-        video_length = first_window_video_length
+        current_video_length = first_window_video_length
         gen["extra_windows"] = 0
         gen["total_windows"] = 1
         gen["window_no"] = 1
@@ -2967,7 +2978,7 @@ def generate_video(
                 num_frames_generated -= reuse_frames
                 if (max_frames_to_generate - prefix_video_frames_count - num_frames_generated) <  latent_size:
                     break
-                video_length = min(sliding_window_size, ((max_frames_to_generate - num_frames_generated - prefix_video_frames_count + reuse_frames + discard_last_frames) // latent_size) * latent_size + 1 )
+                current_video_length = min(sliding_window_size, ((max_frames_to_generate - num_frames_generated - prefix_video_frames_count + reuse_frames + discard_last_frames) // latent_size) * latent_size + 1 )
 
             total_windows = initial_total_windows + extra_windows
             gen["total_windows"] = total_windows
@@ -3015,11 +3026,11 @@ def generate_video(
 
                     if preprocess_type != None :
                         send_cmd("progress", progress_args)
-                        video_guide_copy = preprocess_video(preprocess_type, width=width, height=height,video_in=video_guide, max_frames= video_length if window_no == 1 else video_length - reuse_frames, start_frame = guide_start_frame, fit_canvas = fit_canvas, target_fps = fps)
+                        video_guide_copy = preprocess_video(preprocess_type, width=width, height=height,video_in=video_guide, max_frames= current_video_length if window_no == 1 else current_video_length - reuse_frames, start_frame = guide_start_frame, fit_canvas = fit_canvas, target_fps = fps)
                 keep_frames_parsed, error = parse_keep_frames_video_guide(keep_frames_video_guide, max_frames_to_generate)
                 if len(error) > 0:
                     raise gr.Error(f"invalid keep frames {keep_frames_video_guide}")
-                keep_frames_parsed = keep_frames_parsed[guide_start_frame: guide_start_frame + video_length]
+                keep_frames_parsed = keep_frames_parsed[guide_start_frame: guide_start_frame + current_video_length]
 
                 if window_no == 1:
                     image_size = (height, width) #  default frame dimensions until it is set by video_src (if there is any)
@@ -3028,13 +3039,18 @@ def generate_video(
                 src_video, src_mask, src_ref_images = wan_model.prepare_source([video_guide_copy],
                                                                         [video_mask_copy ],
                                                                         [image_refs_copy], 
-                                                                        video_length, image_size = image_size, device ="cpu",
+                                                                        current_video_length, image_size = image_size, device ="cpu",
                                                                         original_video= "O" in video_prompt_type,
                                                                         keep_frames=keep_frames_parsed,
                                                                         start_frame = guide_start_frame,
                                                                         pre_src_video = [pre_video_guide],
                                                                         fit_into_canvas = fit_canvas 
                                                                         )
+            if window_no ==  1:                
+                conditioning_latents_size = ( (prefix_video_frames_count-1) // latent_size) + 1 if prefix_video_frames_count > 0 else 0
+            else:
+                conditioning_latents_size = ( (reuse_frames-1) // latent_size) + 1
+
             status = get_latest_status(state)
             gen["progress_status"] = status 
             gen["progress_phase"] = ("Encoding Prompt", -1 )
@@ -3062,7 +3078,7 @@ def generate_video(
                     input_masks = src_mask,
                     input_video= pre_video_guide  if diffusion_forcing or ltxv else source_video,
                     target_camera= target_camera,
-                    frame_num=(video_length // latent_size)* latent_size + 1,
+                    frame_num=(current_video_length // latent_size)* latent_size + 1,
                     height =  height,
                     width = width,
                     fit_into_canvas = fit_canvas == 1,
@@ -3092,6 +3108,7 @@ def generate_video(
                     overlapped_latents = overlapped_latents,
                     return_latent_slice= return_latent_slice,
                     overlap_noise = sliding_window_overlap_noise,
+                    conditioning_latents_size = conditioning_latents_size,
                     model_filename = model_filename,
                 )
             except Exception as e:
@@ -3160,7 +3177,7 @@ def generate_video(
                 if gen.get("extra_windows",0) > 0:
                     sliding_window = True 
                 if sliding_window :
-                    guide_start_frame += video_length
+                    guide_start_frame += current_video_length
                     if discard_last_frames > 0:
                         sample = sample[: , :-discard_last_frames]
                         guide_start_frame -= discard_last_frames
@@ -3259,7 +3276,7 @@ def generate_video(
                 inputs.pop("task")
                 configs = prepare_inputs_dict("metadata", inputs)
                 configs["prompt"] = "\n".join(original_prompts)
-                if prompt_enhancer_image_caption_model != None:
+                if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0:
                     configs["enhanced_prompt"] = "\n".join(prompts)
                 configs["generation_time"] = round(end_time-start_time)
                 metadata_choice = server_config.get("metadata_type","metadata")
@@ -3274,6 +3291,8 @@ def generate_video(
 
                 print(f"New video saved to Path: "+video_path)
                 file_list.append(video_path)
+                file_settings_list.append(configs)
+
                 send_cmd("output")
 
         seed += 1
@@ -3520,6 +3539,7 @@ def process_tasks(state):
     gen = get_gen_info(state)
     clear_file_list = server_config.get("clear_file_list", 0)    
     file_list = gen.get("file_list", [])
+    file_settings_list = gen.get("file_settings_list", [])
     if clear_file_list > 0:
         file_list_current_size = len(file_list)
         keep_file_from = max(file_list_current_size - clear_file_list, 0)
@@ -3527,11 +3547,13 @@ def process_tasks(state):
         choice = gen.get("selected",0)
         choice = max(choice- files_removed, 0)
         file_list = file_list[ keep_file_from: ]
+        file_settings_list = file_settings_list[ keep_file_from: ]
     else:
         file_list = []
         choice = 0
     gen["selected"] = choice         
     gen["file_list"] = file_list    
+    gen["file_settings_list"] = file_settings_list    
 
     start_time = time.time()
 
@@ -4005,12 +4027,12 @@ def prepare_inputs_dict(target, inputs ):
 
     if target == "state":
         return inputs
-    unsaved_params = ["image_start", "image_end", "image_refs", "video_guide", "video_source", "video_mask", "audio_guide", "embedded_guidance_scale"]
+    unsaved_params = ["image_start", "image_end", "image_refs", "video_guide", "video_source", "video_mask", "audio_guide"]
     for k in unsaved_params:
         inputs.pop(k)
 
     model_filename = state["model_filename"]
-    inputs["type"] = "WanGP by DeepBeepMeep - " +  get_model_name(model_filename)
+    inputs["type"] = f"WanGP v{WanGP_version} by DeepBeepMeep - " +  get_model_name(model_filename)
 
     if target == "settings":
         return inputs
@@ -4021,10 +4043,10 @@ def prepare_inputs_dict(target, inputs ):
     if not server_config.get("enhancer_enabled", 0) == 1:
         inputs.pop("prompt_enhancer")
 
-    if not "recam" in model_filename or not "diffusion_forcing" in model_filename:
+    if not "recam" in model_filename and not "diffusion_forcing" in model_filename:
         inputs.pop("model_mode")
 
-    if not "Vace" in model_filename or not "phantom" in model_filename or not "hunyuan_video_custom" in model_filename:
+    if not "Vace" in model_filename and not "phantom" in model_filename and not "hunyuan_video_custom" in model_filename:
         unsaved_params = ["keep_frames_video_guide", "video_prompt_type",  "remove_background_images_ref"]
         for k in unsaved_params:
             inputs.pop(k)
@@ -4035,7 +4057,7 @@ def prepare_inputs_dict(target, inputs ):
             inputs.pop(k)
 
 
-    if not "Vace" in model_filename or "diffusion_forcing" in model_filename or "ltxv" in model_filename:
+    if not "Vace" in model_filename and not "diffusion_forcing" in model_filename and not "ltxv" in model_filename:
         unsaved_params = [ "sliding_window_size", "sliding_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames"]
         for k in unsaved_params:
             inputs.pop(k)
@@ -4043,6 +4065,8 @@ def prepare_inputs_dict(target, inputs ):
     if not "fantasy" in model_filename:
         inputs.pop("audio_guidance_scale")
 
+    if not "hunyuan" in model_filename:
+        inputs.pop("embedded_guidance_scale")
 
     if target == "metadata":
         inputs = {k: v for k,v in inputs.items() if v != None  }
@@ -4055,7 +4079,85 @@ def get_function_arguments(func, locals):
     for k in args_names:
         kwargs[k] = locals[k]
     return kwargs
-            
+
+def export_settings(state):
+    model_filename = state["model_filename"]
+    model_type = get_model_type(model_filename)
+    settings = state[model_type]
+    settings["state"] = state
+    settings = prepare_inputs_dict("metadata", settings)
+    settings["model_filename"] = model_filename 
+    text = json.dumps(settings, indent=4)
+    text_base64 = base64.b64encode(text.encode('utf8')).decode('utf-8')
+    return text_base64
+
+def use_video_settings(state, files):
+    gen = get_gen_info(state)
+    choice = gen.get("selected",-1)
+    file_list = gen.get("file_list", None)
+    if file_list !=None and choice >=0 and len(file_list)>0:
+        file_settings_list = gen["file_settings_list"]
+        configs = file_settings_list[choice]
+        model_filename = configs["model_filename"]
+        model_type = get_model_type(model_filename)
+        defaults = state.get(model_type, None) 
+        defaults = get_default_settings(model_filename) if defaults == None else defaults
+        defaults.update(configs)
+        current_model_filename = state["model_filename"]
+        prompt = configs.get("prompt", "")
+        state[model_type] = defaults
+        gr.Info(f"Settings Loaded from Video with prompt '{prompt[:100]}'")
+        if model_type == get_model_type(current_model_filename):
+            return gr.update(), str(time.time())
+        else:
+            return generate_dropdown_model_list(model_filename), gr.update()
+    else:
+        gr.Info(f"No Video is Selected")
+
+    return gr.update(), gr.update()
+
+def load_settings_from_file(state, file_path):
+    gen = get_gen_info(state)
+    if file_path==None:
+        return gr.update(), gr.update(), None
+
+    configs = None
+    tags = None
+    if file_path.endswith(".json"):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                configs = json.load(f)
+        except:
+            pass
+    else:
+        from mutagen.mp4 import MP4
+        try:
+            file = MP4(file_path)
+            tags = file.tags['©cmt'][0] 
+        except:
+            pass
+        if tags != None:    
+            configs = json.loads(tags)
+    if configs == None:
+        gr.Info("File not supported")
+        return gr.update(), gr.update(), None
+
+    prompt = configs.get("prompt", "")
+    current_model_filename = state["model_filename"]
+    model_filename = configs.get("model_filename", current_model_filename)
+    model_type = get_model_type(model_filename)
+    defaults = state.get(model_type, None) 
+    defaults = get_default_settings(model_filename) if defaults == None else defaults
+    defaults.update(configs)
+    state[model_type]= defaults
+    if tags != None:    
+        gr.Info(f"Settings Loaded from Video generated with prompt '{prompt[:100]}'")
+    else:
+        gr.Info(f"Settings Loaded from Settings file with prompt '{prompt[:100]}'")
+    if model_type == get_model_type(current_model_filename):
+        return gr.update(), str(time.time()), None
+    else:
+        return generate_dropdown_model_list(model_filename), gr.update(), None
 
 def save_inputs(
             target,
@@ -4420,7 +4522,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     if ltxv:
                         model_mode = gr.Dropdown(
                             choices=[
-                            ],
+                            ], value=None, 
                             visible= False
                         )
                     else:
@@ -4470,7 +4572,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             columns=[3], rows=[1], object_fit="contain", height="auto", selected_index=0, interactive= True, visible="E" in image_prompt_type_value, value= ui_defaults.get("image_end", None))
 
                     video_source = gr.Video(visible=False)
-                    model_mode = gr.Dropdown(visible=False)
+                    model_mode = gr.Dropdown(value=None, visible=False)
                     keep_frames_video_source = gr.Text(visible=False)
 
             with gr.Column(visible= vace or phantom or hunyuan_video_custom) as video_prompt_column: 
@@ -4784,14 +4886,19 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             with gr.Row():
                 save_settings_btn = gr.Button("Set Settings as Default", visible = not args.lock_config)
-
+                export_settings_from_file_btn = gr.Button("Export Settings to File", visible = not args.lock_config)
+                use_video_settings_btn = gr.Button("Use Selected Video Settings", visible = not args.lock_config)
+            with gr.Row():
+                settings_file = gr.File(height=41,label="Load Settings From Video / Json")
+                settings_base64_output = gr.Text(interactive= False, visible=False, value = "")
         if not update_form:
             with gr.Column():
                 gen_status = gr.Text(interactive= False, label = "Status")
                 status_trigger = gr.Text(interactive= False, visible=False)
                 output = gr.Gallery( label="Generated videos", show_label=False, elem_id="gallery" , columns=[3], rows=[1], object_fit="contain", height=450, selected_index=0, interactive= False)
                 output_trigger = gr.Text(interactive= False, visible=False)
-                
+                refresh_form_trigger = gr.Text(interactive= False, visible=False)
+
                 generate_btn = gr.Button("Generate")
                 add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible = False)
 
@@ -4891,6 +4998,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 gen["status_display"] = True
                 return time.time()
 
+            start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js = get_js()
+
             status_trigger.change(refresh_status_async, inputs= [state] , outputs= [gen_status], show_progress_on= [gen_status])
 
             output_trigger.change(refresh_gallery,
@@ -4907,8 +5016,49 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             locals_dict = locals()
             gen_inputs = [locals_dict[k] for k in inputs_names] + [state]
             save_settings_btn.click( fn=validate_wizard_prompt, inputs =[state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] , outputs= [prompt]).then(
-            save_inputs, inputs =[target_settings] + gen_inputs, outputs = [])
+                save_inputs, inputs =[target_settings] + gen_inputs, outputs = [])
 
+            use_video_settings_btn.click(fn=validate_wizard_prompt,
+                inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
+                outputs= [prompt]
+            ).then(fn=save_inputs,
+                inputs =[target_state] + gen_inputs,
+                outputs= None
+            ).then( fn=use_video_settings, inputs =[state, output] , outputs= [model_choice, refresh_form_trigger])
+
+            export_settings_from_file_btn.click(fn=validate_wizard_prompt,
+                inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
+                outputs= [prompt]
+            ).then(fn=save_inputs,
+                inputs =[target_state] + gen_inputs,
+                outputs= None
+            ).then(fn=export_settings, 
+                inputs =[state], 
+                outputs= [settings_base64_output]
+            ).then(
+                fn=None,
+                inputs=[settings_base64_output],
+                outputs=None,
+                js=trigger_settings_download_js
+            )
+            
+
+            settings_file.upload(fn=validate_wizard_prompt,
+                inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
+                outputs= [prompt]
+            ).then(fn=save_inputs,
+                inputs =[target_state] + gen_inputs,
+                outputs= None
+            ).then(fn=load_settings_from_file, inputs =[state, settings_file] , outputs= [model_choice, refresh_form_trigger, settings_file])
+
+
+            refresh_form_trigger.change(fn= fill_inputs, 
+                inputs=[state],
+                outputs=gen_inputs + extra_inputs
+            ).then(fn=validate_wizard_prompt,
+                inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars],
+                outputs= [prompt]
+            )                
 
             model_choice.change(fn=validate_wizard_prompt,
                 inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
@@ -4916,10 +5066,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             ).then(fn=save_inputs,
                 inputs =[target_state] + gen_inputs,
                 outputs= None
-                ).then(fn= change_model,
+            ).then(fn= change_model,
                 inputs=[state, model_choice],
                 outputs= [header]
-                ).then(fn= fill_inputs, 
+            ).then(fn= fill_inputs, 
                 inputs=[state],
                 outputs=gen_inputs + extra_inputs
             ).then(fn= preload_model_when_switching, 
@@ -4988,7 +5138,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             )
 
 
-            start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js = get_timer_js()
 
             single_hidden_trigger_btn.click(
                 fn=show_countdown_info_from_state,
@@ -5348,9 +5497,9 @@ def generate_info_tab():
     gr.Markdown("Please note that if your turn on compilation, the first denoising step of the first video generation will be slow due to the compilation. Therefore all your tests should be done with compilation turned off.")
 
 
-def generate_dropdown_model_list():
+def generate_dropdown_model_list(model_filename):
     dropdown_types= transformer_types if len(transformer_types) > 0 else model_types 
-    current_model_type = get_model_type(transformer_filename)
+    current_model_type = get_model_type(model_filename)
     if current_model_type not in dropdown_types:
         dropdown_types.append(current_model_type)
     model_list = []
@@ -5385,7 +5534,7 @@ def select_tab(tab_state, evt:gr.SelectData):
     tab_state["tab_no"] = new_tab_no
     return gr.Tabs() 
 
-def get_timer_js():
+def get_js():
     start_quit_timer_js = """
     () => {
         function findAndClickGradioButton(elemId) {
@@ -5454,9 +5603,41 @@ def get_timer_js():
         }
     }
     """
-    return start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js
 
-def create_demo():
+    trigger_settings_download_js = """
+    (base64String) => {
+        if (!base64String) {
+        console.log("No base64 settings data received, skipping download.");
+        return;
+        }
+        try {
+        const byteCharacters = atob(base64String);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: 'application/text' });
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = 'settings.json';
+        document.body.appendChild(a);
+        a.click();
+
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        console.log("settings download triggered.");
+        } catch (e) {
+        console.error("Error processing base64 data or triggering download:", e);
+        }
+    }
+    """
+    return start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js
+
+def create_ui():
     global vmc_event_handler    
     css = """
         #model_list{
@@ -5699,7 +5880,7 @@ def create_demo():
         theme = gr.themes.Soft(font=["Verdana"], primary_hue="sky", neutral_hue="slate", text_size="md")
 
     with gr.Blocks(css=css, theme=theme, title= "WanGP") as main:
-        gr.Markdown("<div align=center><H1>Wan<SUP>GP</SUP> v5.21 <FONT SIZE=4>by <I>DeepBeepMeep</I></FONT> <FONT SIZE=3>") # (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>Updates</A>)</FONT SIZE=3></H1></div>")
+        gr.Markdown(f"<div align=center><H1>Wan<SUP>GP</SUP> v{WanGP_version} <FONT SIZE=4>by <I>DeepBeepMeep</I></FONT> <FONT SIZE=3>") # (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>Updates</A>)</FONT SIZE=3></H1></div>")
         global model_list
 
         tab_state = gr.State({ "tab_no":0 }) 
@@ -5712,7 +5893,7 @@ def create_demo():
                         model_choice = gr.Dropdown(visible=False, value= get_model_type(transformer_filename))
                     else:
                         gr.Markdown("<div class='title-with-lines'><div class=line width=100%></div></div>")
-                        model_choice = generate_dropdown_model_list()
+                        model_choice = generate_dropdown_model_list(transformer_filename)
                         gr.Markdown("<div class='title-with-lines'><div class=line width=100%></div></div>")
                 with gr.Row():
                     header = gr.Markdown(generate_header(transformer_filename, compile, attention_mode), visible= True)
@@ -5753,7 +5934,7 @@ if __name__ == "__main__":
         server_name = "0.0.0.0"
     if len(server_name) == 0:
         server_name = os.getenv("SERVER_NAME", "localhost")      
-    demo = create_demo()
+    demo = create_ui()
     if args.open_browser:
         import webbrowser 
         if server_name.startswith("http"):

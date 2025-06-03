@@ -114,6 +114,6 @@ def temporal_interpolation(model_path, frames, exp, device ="cuda"):
     model.to(device=device)
 
     with torch.no_grad():    
-        output = process_frames(model, device, frames, exp)
+        output = process_frames(model, device, frames.float(), exp)
 
     return output

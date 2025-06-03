@@ -1113,7 +1113,7 @@ class LTXVideoPipeline(DiffusionPipeline):
                     )
 
                 latent_model_input = (
-                    torch.cat([latents] * num_conds) if num_conds > 1 else latents
+                        torch.cat([latents] * num_conds) if num_conds > 1 else latents
                 )
                 latent_model_input = self.scheduler.scale_model_input(
                     latent_model_input, t

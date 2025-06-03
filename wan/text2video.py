@@ -82,9 +82,9 @@ class WanT2V:
         from mmgp import offload
         # model_filename = "c:/temp/vace1.3/diffusion_pytorch_model.safetensors"
         # model_filename = "vace14B_quanto_bf16_int8.safetensors"
-        # model_filename = "c:/temp/movii/diffusion_pytorch_model-00001-of-00007.safetensors"
-        # config_filename= "c:/temp/movii/config.json"
-        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False) # , forcedConfigPath= config_filename)
+        # model_filename = "c:/temp/phantom/Phantom_Wan_14B-00001-of-00006.safetensors"
+        # config_filename= "c:/temp/phantom/config.json"
+        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False)#, forcedConfigPath= config_filename)
         # offload.load_model_data(self.model, "e:/vace.safetensors")
         # offload.load_model_data(self.model, "c:/temp/Phantom-Wan-1.3B.pth")
         # self.model.to(torch.bfloat16)
@@ -92,8 +92,8 @@ class WanT2V:
         self.model.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype)
         # dtype = torch.bfloat16
         offload.change_dtype(self.model, dtype, True)
-        # offload.save_model(self.model, "wan2.1_moviigen_14B_mbf16.safetensors", config_file_path=config_filename)
-        # offload.save_model(self.model, "wan2.1_moviigen_14B_quanto_fp16_int8.safetensors", do_quantize= True, config_file_path=config_filename)
+        # offload.save_model(self.model, "wan2.1_phantom_14B_mbf16.safetensors", config_file_path=config_filename)
+        # offload.save_model(self.model, "wan2.1_phantom_14B_quanto_fp16_int8.safetensors", do_quantize= True, config_file_path=config_filename)
         self.model.eval().requires_grad_(False)
 
 
@@ -124,7 +124,7 @@ class WanT2V:
             reactive = [i * m + 0 * (1 - m) for i, m in zip(frames, masks)]
             inactive = self.vae.encode(inactive, tile_size = tile_size)
             self.toto = inactive[0].clone() 
-            if overlapped_latents  != None : 
+            if overlapped_latents  != None  : 
                 # inactive[0][:, 0:1] = self.vae.encode([frames[0][:, 0:1]], tile_size = tile_size)[0] # redundant
                 inactive[0][:, 1:overlapped_latents.shape[1] + 1] = overlapped_latents
 
@@ -303,6 +303,7 @@ class WanT2V:
                 overlapped_latents  = None,
                 return_latent_slice = None,
                 overlap_noise = 0,
+                conditioning_latents_size = 0,
                 model_filename = None,
                 **bbargs
                 ):
@@ -445,8 +446,9 @@ class WanT2V:
         if vace:
             ref_images_count = len(input_ref_images[0]) if input_ref_images != None and input_ref_images[0] != None else 0 
             kwargs.update({'vace_context' : z, 'vace_context_scale' : context_scale})
-            if overlapped_latents != None:
+            if overlapped_latents != None :
                 overlapped_latents_size = overlapped_latents.shape[1] + 1
+                # overlapped_latents_size = 3
                 z_reactive = [  zz[0:16, 0:overlapped_latents_size + ref_images_count].clone() for zz in z]
 
 
@@ -456,22 +458,33 @@ class WanT2V:
             self.model.compute_teacache_threshold(self.model.teacache_start_step, timesteps, self.model.teacache_multiplier)
         if callback != None:
             callback(-1, None, True)
+        prev = 50/1000
         for i, t in enumerate(tqdm(timesteps)):
-            if overlapped_latents != None:
+
+            timestep = [t]
+            if overlapped_latents != None :
                 # overlap_noise_factor = overlap_noise *(i/(len(timesteps)-1)) / 1000
                 overlap_noise_factor = overlap_noise / 1000 
+                # overlap_noise_factor = (1000-t )/ 1000  #  overlap_noise / 1000 
+                # latent_noise_factor = 1 #max(min(1,  (t - overlap_noise)  / 1000 ),0)
                 latent_noise_factor = t / 1000
                 for zz, zz_r, ll in zip(z, z_reactive, [latents]):
                     pass
-                    zz[0:16, ref_images_count:overlapped_latents_size + ref_images_count]   = zz_r[:, ref_images_count:]  * (1.0 - overlap_noise_factor) + torch.randn_like(zz_r[:, ref_images_count:] ) * overlap_noise_factor 
-                    ll[:, 0:overlapped_latents_size + ref_images_count]   = zz_r  * (1.0 - latent_noise_factor) + torch.randn_like(zz_r ) * latent_noise_factor 
+                    # zz[0:16, ref_images_count:overlapped_latents_size + ref_images_count]   = zz_r[:, ref_images_count:]  * (1.0 - overlap_noise_factor) + torch.randn_like(zz_r[:, ref_images_count:] ) * overlap_noise_factor 
+                    # ll[:, 0:overlapped_latents_size + ref_images_count]   = zz_r  * (1.0 - latent_noise_factor) + torch.randn_like(zz_r ) * latent_noise_factor 
+
+            if conditioning_latents_size > 0 and overlap_noise > 0:
+                pass
+                overlap_noise_factor = overlap_noise / 1000 
+                latents[:, conditioning_latents_size + ref_images_count:]   = latents[:, conditioning_latents_size + ref_images_count:]  * (1.0 - overlap_noise_factor) + torch.randn_like(latents[:, conditioning_latents_size + ref_images_count:]) * overlap_noise_factor 
+                #timestep = [torch.tensor([t.item()] * (conditioning_latents_size + ref_images_count) + [t.item() - overlap_noise]*(len(timesteps) - conditioning_latents_size - ref_images_count))]
+
             if target_camera != None:
                 latent_model_input = torch.cat([latents, source_latents], dim=1)
             else:
                 latent_model_input = latents
             kwargs["slg_layers"] = slg_layers if int(slg_start * sampling_steps) <= i < int(slg_end * sampling_steps) else None
 
-            timestep = [t]
             offload.set_step_no_for_lora(self.model, i)
             timestep = torch.stack(timestep)
             kwargs["current_step"] = i 

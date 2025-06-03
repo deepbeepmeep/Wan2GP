@@ -21,13 +21,18 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 
 ## 🔥 Latest News!!
-* May 23 2025: 👋 Wan 2.1GP v5.21 : Improvements for Vace: better transitions between Sliding Windows,Support for Image masks in Matanyone, new Extend Video for Vace, different types of automated background removal 
-* May 20 2025: 👋 Wan 2.1GP v5.2 : Added support for Wan CausVid which is a distilled Wan model that can generate nice looking videos in only 4 to 12 steps.
+* May 26 2025: 👋 WanGP v5.31 : Added Phantom 14B, a model that you can use to transfer objects / people in the video. My preference goes to Vace that remains the king of controlnets.
+* May 26 2025: 👋 WanGP v5.3 : Happy with a Video generation and want to do more generations using the same settings but you can't remember what you did or you find it to hard to copy / paste one per one each setting from the file metadata ? Rejoice ! There are now multiple ways to turn this tedious process into a one click task: 
+    - Select one Video recently generated in the Video Gallery and click *Use Selected Video Settings*
+    - Click *Drop File Here*  and select a Video you saved somewhere, if the settings metadata have been saved with the Video you will be able to extract them automatically
+    - Click *Export Settings to File* to save on your harddrive the current settings. You will be able to use them later again by clicking *Drop File Here* and select this time a Settings json file  
+* May 23 2025: 👋 WanGP v5.21 : Improvements for Vace: better transitions between Sliding Windows,Support for Image masks in Matanyone, new Extend Video for Vace, different types of automated background removal 
+* May 20 2025: 👋 WanGP v5.2 : Added support for Wan CausVid which is a distilled Wan model that can generate nice looking videos in only 4 to 12 steps.
  The great thing is that Kijai (Kudos to him !) has created a CausVid Lora that can be combined with any existing Wan t2v model 14B like Wan Vace 14B.
  See instructions below on how to use CausVid.\
  Also as an experiment I have added support for the MoviiGen, the first model that claims to capable to generate 1080p videos (if you have enough VRAM (20GB...) and be ready to wait for a long time...). Don't hesitate to share your impressions on the Discord server.
-* May 18 2025: 👋 Wan 2.1GP v5.1 : Bonus Day, added LTX Video 13B Distilled: generate in less than one minute, very high quality Videos !
-* May 17 2025: 👋 Wan 2.1GP v5.0 : One App to Rule Them All !\
+* May 18 2025: 👋 WanGP v5.1 : Bonus Day, added LTX Video 13B Distilled: generate in less than one minute, very high quality Videos !
+* May 17 2025: 👋 WanGP v5.0 : One App to Rule Them All !\
     Added support for the other great open source architectures:
     - Hunyuan Video : text 2 video (one of the best, if not the best t2v) ,image 2 video and the recently released Hunyuan Custom (very good identify preservation when injecting a person into a video)
     - LTX Video 13B (released last week): very long video support and fast 720p generation.Wan GP version has been greatly optimzed and reduced LTX Video VRAM requirements by 4 !
@@ -37,13 +42,13 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
     - New Integrated prompt enhancer to increase the quality of the generated videos
     You will need one more *pip install -r requirements.txt*
 
-* May 5 2025: 👋 Wan 2.1GP v4.5: FantasySpeaking model, you can animate a talking head using a voice track. This works not only on people but also on objects. Also better seamless transitions between Vace sliding windows for very long videos (see recommended settings). New high quality processing features (mixed 16/32 bits calculation and 32 bitsVAE)
-* April 27 2025: 👋 Wan 2.1GP v4.4: Phantom model support, very good model to transfer people or objects into video, works quite well at 720p and with the number of steps > 30
-* April 25 2025: 👋 Wan 2.1GP v4.3: Added preview mode and support for Sky Reels v2 Diffusion Forcing for high quality "infinite length videos" (see Window Sliding section below).Note that Skyreel uses causal attention that is only supported by Sdpa attention so even if chose an other type of attention, some of the processes will use Sdpa attention. 
+* May 5 2025: 👋 WanGP v4.5: FantasySpeaking model, you can animate a talking head using a voice track. This works not only on people but also on objects. Also better seamless transitions between Vace sliding windows for very long videos (see recommended settings). New high quality processing features (mixed 16/32 bits calculation and 32 bitsVAE)
+* April 27 2025: 👋 WanGP v4.4: Phantom model support, very good model to transfer people or objects into video, works quite well at 720p and with the number of steps > 30
+* April 25 2025: 👋 WanGP v4.3: Added preview mode and support for Sky Reels v2 Diffusion Forcing for high quality "infinite length videos" (see Window Sliding section below).Note that Skyreel uses causal attention that is only supported by Sdpa attention so even if chose an other type of attention, some of the processes will use Sdpa attention. 
 
-* April 18 2025: 👋 Wan 2.1GP v4.2: FLF2V model support, official support from Wan for image2video start and end frames specialized for 720p.  
-* April 17 2025: 👋 Wan 2.1GP v4.1: Recam Master model support, view a video from a different angle. The video to process must be at least 81 frames long and you should set at least 15 steps denoising to get good results.
-* April 13 2025: 👋 Wan 2.1GP v4.0: lots of goodies for you !
+* April 18 2025: 👋 WanGP v4.2: FLF2V model support, official support from Wan for image2video start and end frames specialized for 720p.  
+* April 17 2025: 👋 WanGP v4.1: Recam Master model support, view a video from a different angle. The video to process must be at least 81 frames long and you should set at least 15 steps denoising to get good results.
+* April 13 2025: 👋 WanGP v4.0: lots of goodies for you !
     - A new UI, tabs were replaced by a Dropdown box to easily switch models
     - A new queuing system that lets you stack in a queue as many text2video, imag2video tasks, ... as you want. Each task can rely on complete different generation parameters (different number of frames, steps, loras, ...). Many thanks to **Tophness** for being a big contributor on this new feature
     - Temporal upsampling (Rife) and spatial upsampling (Lanczos) for a smoother video (32 fps or 64 fps) and to enlarge your video by x2 or x4. Check these new advanced options.

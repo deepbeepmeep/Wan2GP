@@ -232,6 +232,14 @@ or
 python wgp.py --attention sdpa
 ```
 
+### Run with Docker
+```sh
+docker compose --profile <profile> up
+```
+With profile:
+* `t2v` for text2video
+* `i2v` for image2video
+
 ### Loras support
 
 

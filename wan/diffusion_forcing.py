@@ -15,6 +15,7 @@ from .modules.model import WanModel
 from .modules.t5 import T5EncoderModel
 from .modules.vae import WanVAE
 from wan.modules.posemb_layers import get_rotary_pos_embed
+from wan.utils.utils import calculate_new_dimensions
 from .utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps)
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
@@ -79,11 +80,11 @@ class DTT2V:
         return self._guidance_scale > 1
 
     def encode_image(
-        self, image: PipelineImageInput, height: int, width: int, num_frames: int, tile_size = 0, causal_block_size = 0
+        self, image_start: PipelineImageInput, height: int, width: int, num_frames: int, tile_size = 0, causal_block_size = 0
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         # prefix_video
-        prefix_video = np.array(image.resize((width, height))).transpose(2, 0, 1)
+        prefix_video = np.array(image_start.resize((width, height))).transpose(2, 0, 1)
         prefix_video = torch.tensor(prefix_video).unsqueeze(1)  # .to(image_embeds.dtype).unsqueeze(1)
         if prefix_video.dtype == torch.uint8:
             prefix_video = (prefix_video.float() / (255.0 / 2.0)) - 1.0
@@ -184,18 +185,19 @@ class DTT2V:
     @torch.no_grad()
     def generate(
         self,
-        prompt: Union[str, List[str]],
-        negative_prompt: Union[str, List[str]] = "",
-        image: PipelineImageInput = None,
+        input_prompt: Union[str, List[str]],
+        n_prompt: Union[str, List[str]] = "",
+        image_start: PipelineImageInput = None,
         input_video = None,
         height: int = 480,
         width: int = 832,
-        num_frames: int = 97,
-        num_inference_steps: int = 50,
+        fit_into_canvas = True,
+        frame_num: int = 97,
+        sampling_steps: int = 50,
         shift: float = 1.0,
-        guidance_scale: float = 5.0,
+        guide_scale: float = 5.0,
         seed: float = 0.0,
-        addnoise_condition: int = 0,
+        overlap_noise: int = 0,
         ar_step: int = 5,
         causal_block_size: int = 5,
         causal_attention: bool = True,
@@ -206,13 +208,14 @@ class DTT2V:
         slg_start = 0.0,
         slg_end = 1.0,
         callback = None,
+        **bbargs
     ):
         self._interrupt = False
         generator = torch.Generator(device=self.device)
         generator.manual_seed(seed)
-        self._guidance_scale = guidance_scale
-        num_frames = max(17, num_frames) # must match causal_block_size for value of 5
-        num_frames = int( round( (num_frames - 17) / 20)* 20 + 17 )
+        self._guidance_scale = guide_scale
+        frame_num = max(17, frame_num) # must match causal_block_size for value of 5
+        frame_num = int( round( (frame_num - 17) / 20)* 20 + 17 )
 
         if ar_step == 0: 
             causal_block_size = 1
@@ -221,31 +224,32 @@ class DTT2V:
         i2v_extra_kwrags = {}
         prefix_video = None
         predix_video_latent_length = 0
+
         if input_video != None:
             _ , _ , height, width  = input_video.shape
-        elif image != None:
-            image = image[0]
-            frame_width, frame_height  = image.size
-            scale = min(height / frame_height, width /  frame_width)
-            height = (int(frame_height * scale) // 16) * 16
-            width = (int(frame_width * scale) // 16) * 16
-            image = np.array(image.resize((width, height))).transpose(2, 0, 1)
-        latent_length = (num_frames - 1) // 4 + 1
+        elif image_start != None:
+            image_start = image_start[0]
+            frame_width, frame_height  = image_start.size
+            height, width = calculate_new_dimensions(height, width, frame_height, frame_width, fit_into_canvas)
+            image_start = np.array(image_start.resize((width, height))).transpose(2, 0, 1)
+
+
+        latent_length = (frame_num - 1) // 4 + 1
         latent_height = height // 8
         latent_width = width // 8
 
         if self._interrupt:
             return None
-        prompt_embeds = self.text_encoder([prompt], self.device)[0]
+        prompt_embeds = self.text_encoder([input_prompt], self.device)[0]
         prompt_embeds  = prompt_embeds.to(self.dtype).to(self.device)
         if self.do_classifier_free_guidance:
-            negative_prompt_embeds = self.text_encoder([negative_prompt], self.device)[0]
+            negative_prompt_embeds = self.text_encoder([n_prompt], self.device)[0]
             negative_prompt_embeds  = negative_prompt_embeds.to(self.dtype).to(self.device)
 
         if self._interrupt:
             return None
 
-        self.scheduler.set_timesteps(num_inference_steps, device=self.device, shift=shift)
+        self.scheduler.set_timesteps(sampling_steps, device=self.device, shift=shift)
         init_timesteps = self.scheduler.timesteps
         fps_embeds = [fps] #* prompt_embeds[0].shape[0]
         fps_embeds = [0 if i == 16 else 1 for i in fps_embeds]
@@ -253,14 +257,14 @@ class DTT2V:
 
         output_video = input_video
 
-        if image is not None or output_video is not None:  # i !=0
+        if image_start is not None or output_video is not None:  # i !=0
             if output_video is not None:
                 prefix_video = output_video.to(self.device)
             else:
                 causal_block_size = 1
                 causal_attention = False
                 ar_step = 0
-                prefix_video = image
+                prefix_video = image_start
                 prefix_video = torch.tensor(prefix_video).unsqueeze(1)  # .to(image_embeds.dtype).unsqueeze(1)
                 if prefix_video.dtype == torch.uint8:
                     prefix_video = (prefix_video.float() / (255.0 / 2.0)) - 1.0
@@ -298,7 +302,7 @@ class DTT2V:
             sample_scheduler = FlowUniPCMultistepScheduler(
                 num_train_timesteps=1000, shift=1, use_dynamic_shifting=False
             )
-            sample_scheduler.set_timesteps(num_inference_steps, device=self.device, shift=shift)
+            sample_scheduler.set_timesteps(sampling_steps, device=self.device, shift=shift)
             sample_schedulers.append(sample_scheduler)
         sample_schedulers_counter = [0] * base_num_frames_iter
 
@@ -313,8 +317,8 @@ class DTT2V:
             for i, timestep_i in enumerate(step_matrix):
                 valid_interval_start, valid_interval_end = valid_interval[i]
                 timestep = timestep_i[None, valid_interval_start:valid_interval_end].clone()
-                if addnoise_condition > 0 and valid_interval_start < predix_video_latent_length:
-                    timestep[:, valid_interval_start:predix_video_latent_length] = addnoise_condition
+                if overlap_noise > 0 and valid_interval_start < predix_video_latent_length:
+                    timestep[:, valid_interval_start:predix_video_latent_length] = overlap_noise
                 time_steps_comb.append(timestep)
             self.model.compute_teacache_threshold(self.model.teacache_start_step, time_steps_comb, self.model.teacache_multiplier)
             del time_steps_comb
@@ -338,9 +342,9 @@ class DTT2V:
             valid_interval_start, valid_interval_end = valid_interval[i]
             timestep = timestep_i[None, valid_interval_start:valid_interval_end].clone()
             latent_model_input = latents[:, valid_interval_start:valid_interval_end, :, :].clone()
-            if addnoise_condition > 0 and valid_interval_start < predix_video_latent_length:
-                noise_factor = 0.001 * addnoise_condition
-                timestep_for_noised_condition = addnoise_condition
+            if overlap_noise > 0 and valid_interval_start < predix_video_latent_length:
+                noise_factor = 0.001 * overlap_noise
+                timestep_for_noised_condition = overlap_noise
                 latent_model_input[:, valid_interval_start:predix_video_latent_length] = (
                     latent_model_input[:, valid_interval_start:predix_video_latent_length]
                     * (1.0 - noise_factor)
@@ -392,7 +396,7 @@ class DTT2V:
                         )[0]
                         if self._interrupt:
                             return None
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + guide_scale * (noise_pred_cond - noise_pred_uncond)
                     del noise_pred_cond, noise_pred_uncond
             for idx in range(valid_interval_start, valid_interval_end):
                 if update_mask_i[idx].item():

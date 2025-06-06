@@ -2,7 +2,8 @@ torch>=2.4.0
 torchvision>=0.19.0
 opencv-python>=4.9.0.80
 diffusers>=0.31.0
-transformers>=4.49.0
+transformers==4.51.3
+#transformers==4.46.3 # was needed by llamallava used by i2v hunyuan before patch
 tokenizers>=0.20.3
 accelerate>=1.1.1
 tqdm
@@ -16,7 +17,7 @@ gradio==5.23.0
 numpy>=1.23.5,<2
 einops
 moviepy==1.0.3
-mmgp==3.4.2
+mmgp==3.4.8
 peft==0.14.0
 mutagen
 pydantic==2.10.6
@@ -29,4 +30,7 @@ segment-anything
 omegaconf
 hydra-core
 librosa
+loguru
+sentencepiece
+av
 # rembg==2.0.65

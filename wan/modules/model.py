@@ -312,8 +312,6 @@ class WanI2VCrossAttention(WanSelfAttention):
         del x
         self.norm_q(q)
         q= q.view(b, -1, n, d)
-        if audio_scale != None:
-            audio_x = self.processor(q, audio_proj, grid_sizes[0], audio_context_lens)
         k = self.k(context)
         self.norm_k(k)
         k = k.view(b, -1, n, d)
@@ -323,6 +321,8 @@ class WanI2VCrossAttention(WanSelfAttention):
         del k,v
         x = pay_attention(qkv_list)
 
+        if audio_scale != None:
+            audio_x = self.processor(q, audio_proj, grid_sizes[0], audio_context_lens)
         k_img = self.k_img(context_img)
         self.norm_k_img(k_img)
         k_img = k_img.view(b, -1, n, d)
@@ -589,6 +589,61 @@ class MLPProj(torch.nn.Module):
 
 
 class WanModel(ModelMixin, ConfigMixin):
+    def preprocess_loras(self, model_filename, sd):
+
+        first = next(iter(sd), None)
+        if first == None:
+            return sd
+        
+        if first.startswith("lora_unet_"):
+            new_sd = {}
+            print("Converting Lora Safetensors format to Lora Diffusers format")
+            alphas = {}
+            repl_list = ["cross_attn", "self_attn", "ffn"]
+            src_list = ["_" + k + "_" for k in repl_list]
+            tgt_list = ["." + k + "." for k in repl_list]
+
+            for k,v in sd.items():
+                k = k.replace("lora_unet_blocks_","diffusion_model.blocks.")
+
+                for s,t in zip(src_list, tgt_list):
+                    k = k.replace(s,t)
+
+                k = k.replace("lora_up","lora_B")
+                k = k.replace("lora_down","lora_A")
+
+                if "alpha" in k:
+                    alphas[k] = v
+                else:
+                    new_sd[k] = v
+
+            new_alphas = {}
+            for k,v in new_sd.items():
+                if "lora_B" in k:
+                    dim = v.shape[1]
+                elif "lora_A" in k:
+                    dim = v.shape[0]
+                else:
+                    continue
+                alpha_key = k[:-len("lora_X.weight")] +"alpha"
+                if alpha_key in alphas:
+                    scale = alphas[alpha_key] / dim
+                    new_alphas[alpha_key] = scale
+                else:
+                    print(f"Lora alpha'{alpha_key}' is missing")
+            new_sd.update(new_alphas)
+            sd = new_sd
+        from wgp import test_class_i2v 
+        if not test_class_i2v(model_filename):
+            new_sd = {}
+            # convert loras for i2v to t2v
+            for k,v in sd.items():
+                if  any(layer in k for layer in ["cross_attn.k_img", "cross_attn.v_img"]):
+                    continue
+                new_sd[k] = v
+            sd = new_sd
+
+        return sd    
     r"""
     Wan diffusion backbone supporting both text-to-video and image-to-video.
     """
@@ -797,11 +852,12 @@ class WanModel(ModelMixin, ConfigMixin):
 
 
     def compute_teacache_threshold(self, start_step, timesteps = None, speed_factor =0): 
-        rescale_func = np.poly1d(self.coefficients)         
+        modulation_dtype = self.time_projection[1].weight.dtype
+        rescale_func = np.poly1d(self.coefficients)
         e_list = []
         for t in timesteps:
             t = torch.stack([t])
-            time_emb =  self.time_embedding( sinusoidal_embedding_1d(self.freq_dim, t.flatten()).to(self.patch_embedding.weight.dtype) )  # b, dim   
+            time_emb =  self.time_embedding( sinusoidal_embedding_1d(self.freq_dim, t.flatten()).to(modulation_dtype) )  # b, dim   
             e_list.append(time_emb)
         best_deltas = None
         best_threshold = 0.01
@@ -962,7 +1018,7 @@ class WanModel(ModelMixin, ConfigMixin):
             hints_list = [None ] *len(x_list)
         else:
             # Vace embeddings
-            c = [self.vace_patch_embedding(u.unsqueeze(0)) for u in vace_context]
+            c = [self.vace_patch_embedding(u.to(self.vace_patch_embedding.weight.dtype).unsqueeze(0)) for u in vace_context]
             c = [u.flatten(2).transpose(1, 2) for u in c]
             c = c[0]
  

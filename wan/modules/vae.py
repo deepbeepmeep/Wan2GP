@@ -784,7 +784,32 @@ class WanVAE:
             pretrained_path=vae_pth,
             z_dim=z_dim,
         ).to(dtype).eval() #.requires_grad_(False).to(device)
-    
+        self.model._model_dtype = dtype
+
+    @staticmethod
+    def get_VAE_tile_size(vae_config, device_mem_capacity, mixed_precision):
+        # VAE Tiling
+        if vae_config == 0:
+            if mixed_precision:
+                device_mem_capacity = device_mem_capacity / 2
+            if device_mem_capacity >= 24000:
+                use_vae_config = 1            
+            elif device_mem_capacity >= 8000:
+                use_vae_config = 2
+            else:          
+                use_vae_config = 3
+        else:
+            use_vae_config = vae_config
+
+        if use_vae_config == 1:
+            VAE_tile_size = 0  
+        elif use_vae_config == 2:
+            VAE_tile_size = 256  
+        else: 
+            VAE_tile_size = 128  
+
+        return  VAE_tile_size
+
     def encode(self, videos, tile_size = 256, any_end_frame = False):
         """
         videos: A list of videos each with shape [C, T, H, W].

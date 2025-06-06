@@ -105,12 +105,6 @@ def load_i2v_model(model_filename, text_encoder_filename, is_720p):
         wan_model = wan.WanI2V(
             config=cfg,
             checkpoint_dir=DATA_DIR,
-            device_id=0,
-            rank=0,
-            t5_fsdp=False,
-            dit_fsdp=False,
-            use_usp=False,
-            i2v720p=True,
             model_filename=model_filename,
             text_encoder_filename=text_encoder_filename
         )
@@ -120,12 +114,6 @@ def load_i2v_model(model_filename, text_encoder_filename, is_720p):
         wan_model = wan.WanI2V(
             config=cfg,
             checkpoint_dir=DATA_DIR,
-            device_id=0,
-            rank=0,
-            t5_fsdp=False,
-            dit_fsdp=False,
-            use_usp=False,
-            i2v720p=False,
             model_filename=model_filename,
             text_encoder_filename=text_encoder_filename
         )
@@ -624,10 +612,12 @@ def main():
     # Actually run the i2v generation
     try:
         sample_frames = wan_model.generate(
-            user_prompt,
-            input_img,
+            input_prompt = user_prompt,
+            image_start = input_img,
             frame_num=frame_count,
-            max_area=MAX_AREA_CONFIGS[f"{width}*{height}"],  # or you can pass your custom
+            width=width,
+            height=height,
+            # max_area=MAX_AREA_CONFIGS[f"{width}*{height}"],  # or you can pass your custom
             shift=args.flow_shift,
             sampling_steps=args.steps,
             guide_scale=args.guidance_scale,

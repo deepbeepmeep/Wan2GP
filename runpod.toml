@@ -1,0 +1,23 @@
+# runpod.toml
+image = "your-username/hyvideo-runpod:latest" # Replace with your actual image name after building and pushing
+
+gpu = "NVIDIA GeForce RTX 3090" # Specify desired GPU type(s)
+container_disk_in_gb = 25
+
+handler_path = "handler.py" # Path to your handler file relative to the Docker image WORKDIR
+
+[workers]
+  min = 0
+  max = 3
+
+[scaling] # Optional: Define scaling behavior based on queue depth or other metrics
+  # Example: Scale up if queue depth is > 5 for 30s
+  # Target a specific number of workers or a percentage of max_workers
+  # queue_depth_target = 5
+  # queue_depth_period_seconds = 30
+  # target_workers = 1 # or target_percent_of_max_workers = 50
+
+# Environment variables for the worker
+# env = { FOO = "bar" }
+
+max_job_duration_ms = 300000 # Maximum duration a job can run (e.g., 5 minutes)

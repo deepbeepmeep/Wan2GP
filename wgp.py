@@ -3346,7 +3346,7 @@ def generate_video(
 
                 send_cmd("output")
 
-        seed += 1
+        seed = random.randint(0, 999999999)
     clear_status(state)
     if temp_filename!= None and  os.path.isfile(temp_filename):
         os.remove(temp_filename)

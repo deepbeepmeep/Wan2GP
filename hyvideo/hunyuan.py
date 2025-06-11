@@ -25,6 +25,7 @@ from wan.utils.utils import resize_lanczos, calculate_new_dimensions
 from hyvideo.data_kits.audio_preprocessor import encode_audio, get_facemask
 from transformers import WhisperModel
 from transformers import AutoFeatureExtractor
+# from faster_whisper import WhisperModel
 from hyvideo.data_kits.face_align import AlignImage
 import librosa
 
@@ -474,11 +475,15 @@ class Inference(object):
 
         if avatar:
             feature_extractor = AutoFeatureExtractor.from_pretrained("ckpts/whisper-tiny/")
-            wav2vec = WhisperModel.from_pretrained("ckpts/whisper-tiny/").to(device="cpu", dtype=torch.float32)
-            wav2vec._model_dtype = torch.float32
-            wav2vec.requires_grad_(False)
-            align_instance = AlignImage("cuda", det_path="ckpts/det_align/detface.pt")
-            align_instance.facedet.model.to("cpu")
+            # wav2vec = WhisperModel.from_pretrained("ckpts/whisper-tiny/").to(device="cpu", dtype=torch.float32)
+            wav2vec = WhisperModel.from_pretrained("ckpts/whisper-tiny/").to(device="cuda", dtype=torch.bfloat16)
+            # wav2vec._model_dtype = torch.float32
+            # model = WhisperModel("tiny", device="cuda", compute_type="int8")
+            wav2vec.eval()
+            # wav2vec.requires_grad_(False)
+            align_instance = AlignImage("cuda", det_path="ckpts/det_align/detface.onnx")
+            # align_instance.facedet.model.to("cpu")
+            # align_instance.facedet.model.eval()
 
             adapt_avatar_model(model)
 
@@ -867,9 +872,6 @@ class HunyuanVideoSampler(Inference):
             if self.avatar:
                 w, h = input_ref_images.size
                 target_height, target_width = calculate_new_dimensions(target_height, target_width, h, w, fit_into_canvas)
-                if target_width != w or target_height != h:
-                    input_ref_images = input_ref_images.resize((target_width,target_height), resample=Image.Resampling.LANCZOS) 
-
                 concat_dict = {'mode': 'timecat', 'bias': -1} 
                 freqs_cos, freqs_sin = self.get_rotary_pos_embed_new(129, target_height, target_width, concat_dict)
             else:
@@ -899,14 +901,14 @@ class HunyuanVideoSampler(Inference):
             uncond_pixel_value_llava = pixel_value_llava.clone()
 
             pixel_value_ref = pixel_value_ref.unsqueeze(0)
-            self.align_instance.facedet.model.to("cuda")
+            # self.align_instance.facedet.model.to("cuda")
             face_masks = get_facemask(pixel_value_ref.to("cuda")*255, self.align_instance, area=3.0) 
             # iii = (face_masks.squeeze(0).squeeze(0).permute(1,2,0).repeat(1,1,3)*255).cpu().numpy().astype(np.uint8)
             # image = Image.fromarray(iii)
             # image.save("mask.png")
             # jjj = (pixel_value_ref.squeeze(0).squeeze(0).permute(1,2,0)*255).cpu().numpy().astype(np.uint8)
 
-            self.align_instance.facedet.model.to("cpu")
+            # self.align_instance.facedet.model.to("cpu")
             # pixel_value_ref = pixel_value_ref.clone().repeat(1,129,1,1,1)
 
             pixel_value_ref = pixel_value_ref.repeat(1,1+4*2,1,1,1)

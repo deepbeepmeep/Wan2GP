@@ -46,7 +46,8 @@ def resample(video_fps, video_frames_count, max_target_frames_count, target_fps,
     while True:
         if max_target_frames_count != 0 and len(frame_ids) >= max_target_frames_count :
             break
-        add_frames_count = math.ceil( (target_time -cur_time) / video_frame_duration )
+        diff = round( (target_time -cur_time) / video_frame_duration , 5)
+        add_frames_count = math.ceil( diff)
         frame_no += add_frames_count
         if frame_no >= video_frames_count:             
             break

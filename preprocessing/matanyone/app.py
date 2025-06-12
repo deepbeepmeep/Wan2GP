@@ -517,10 +517,14 @@ def export_image(image_refs, image_output):
     image_refs.append( image_output)
     return image_refs
 
-def export_to_current_video_engine(foreground_video_output, alpha_video_output):
+def export_to_current_video_engine(model_type, foreground_video_output, alpha_video_output):
     gr.Info("Masked Video Input and Full Mask transferred to Current Video Engine For Inpainting")
     # return "MV#" + str(time.time()), foreground_video_output, alpha_video_output
-    return foreground_video_output, alpha_video_output
+    if "custom_edit" in model_type:
+        return gr.update(), alpha_video_output
+    else:
+        return foreground_video_output, alpha_video_output
+
 
 def teleport_to_video_tab():
     return gr.Tabs(selected="video_gen")
@@ -675,7 +679,7 @@ def display(tabs, model_choice, vace_video_input, vace_video_mask, vace_image_re
                 export_to_vace_video_14B_btn.click( fn=teleport_to_vace_14B, inputs=[], outputs=[tabs, model_choice]).then(
                     fn=export_to_current_video_engine, inputs= [foreground_video_output, alpha_video_output], outputs= [video_prompt_video_guide_trigger, vace_video_input, vace_video_mask])
                 
-                export_to_current_video_engine_btn.click(  fn=export_to_current_video_engine, inputs= [foreground_video_output, alpha_video_output], outputs= [vace_video_input, vace_video_mask]).then( #video_prompt_video_guide_trigger, 
+                export_to_current_video_engine_btn.click(  fn=export_to_current_video_engine, inputs= [model_choice, foreground_video_output, alpha_video_output], outputs= [vace_video_input, vace_video_mask]).then( #video_prompt_video_guide_trigger, 
                     fn=teleport_to_video_tab, inputs= [], outputs= [tabs])
 
 

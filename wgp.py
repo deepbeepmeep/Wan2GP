@@ -33,6 +33,7 @@ import tempfile
 import atexit
 import shutil
 import glob
+import cv2
 from transformers.utils import logging
 logging.set_verbosity_error
 
@@ -43,7 +44,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.4.8"
-WanGP_version = "5.41"
+WanGP_version = "5.5"
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 
 from importlib.metadata import version
@@ -184,11 +185,17 @@ def process_prompt_and_add_tasks(state, model_choice):
         gr.Info("You must use the 14B model to generate videos with a resolution equivalent to 720P")
         return
 
-    if "diffusion_forcing" in model_filename or "ltxv" in model_filename or "Vace" in model_filename:
+    if "diffusion_forcing" in model_filename or "ltxv" in model_filename or "Vace" in model_filename or "hunyuan_video_custom_edit" in model_filename:
         video_length = inputs["video_length"]
         sliding_window_size = inputs["sliding_window_size"]
         if  video_length > sliding_window_size:
             gr.Info(f"The Number of Frames to generate ({video_length}) is greater than the Sliding Window Size ({sliding_window_size}) , multiple Windows will be generated")
+
+    if "hunyuan_video_custom_edit" in model_filename:
+        keep_frames_video_guide= inputs["keep_frames_video_guide"] 
+        if len(keep_frames_video_guide) > 0: 
+            gr.Info("Filtering Frames with this model is not supported")
+            return
 
     if "phantom" in model_filename or "hunyuan_video_custom" in model_filename or "hunyuan_video_avatar" in model_filename:
         image_refs = inputs["image_refs"]
@@ -1552,6 +1559,8 @@ ltxv_choices= ["ckpts/ltxv_0.9.7_13B_dev_bf16.safetensors", "ckpts/ltxv_0.9.7_13
 
 hunyuan_choices= ["ckpts/hunyuan_video_720_bf16.safetensors", "ckpts/hunyuan_video_720_quanto_int8.safetensors", "ckpts/hunyuan_video_i2v_720_bf16v2.safetensors", "ckpts/hunyuan_video_i2v_720_quanto_int8v2.safetensors",
                  "ckpts/hunyuan_video_custom_720_bf16.safetensors", "ckpts/hunyuan_video_custom_720_quanto_bf16_int8.safetensors",
+                 "ckpts/hunyuan_video_custom_audio_720_bf16.safetensors", "ckpts/hunyuan_video_custom_audio_720_quanto_bf16_int8.safetensors",
+                 "ckpts/hunyuan_video_custom_edit_720_bf16.safetensors", "ckpts/hunyuan_video_custom_edit_720_quanto_bf16_int8.safetensors",
                  "ckpts/hunyuan_video_avatar_720_bf16.safetensors", "ckpts/hunyuan_video_avatar_720_quanto_bf16_int8.safetensors",
                  ]
 
@@ -1563,13 +1572,14 @@ def get_dependent_models(model_filename, quantization, dtype_policy ):
         return [get_model_filename("ltxv_13B", quantization, dtype_policy)]
     else:
         return []
-model_types = [ "t2v_1.3B", "t2v", "i2v", "i2v_720p", "flf2v_720p", "vace_1.3B","vace_14B","moviigen", "phantom_1.3B", "phantom_14B", "fantasy",  "fun_inp_1.3B", "fun_inp", "recam_1.3B",  "sky_df_1.3B", "sky_df_14B", "sky_df_720p_14B", "ltxv_13B", "ltxv_13B_distilled", "hunyuan", "hunyuan_i2v", "hunyuan_custom", "hunyuan_avatar"]
+model_types = [ "t2v_1.3B", "t2v", "i2v", "i2v_720p", "flf2v_720p", "vace_1.3B","vace_14B","moviigen", "phantom_1.3B", "phantom_14B", "fantasy",  "fun_inp_1.3B", "fun_inp", "recam_1.3B",  "sky_df_1.3B", "sky_df_14B", "sky_df_720p_14B", "ltxv_13B", "ltxv_13B_distilled", "hunyuan", "hunyuan_i2v", "hunyuan_custom", "hunyuan_custom_audio", "hunyuan_custom_edit", "hunyuan_avatar"]
 model_signatures = {"t2v": "text2video_14B", "t2v_1.3B" : "text2video_1.3B",   "fun_inp_1.3B" : "Fun_InP_1.3B",  "fun_inp" :  "Fun_InP_14B", 
                     "i2v" : "image2video_480p", "i2v_720p" : "image2video_720p" , "vace_1.3B" : "Vace_1.3B", "vace_14B" : "Vace_14B","recam_1.3B": "recammaster_1.3B", 
                     "flf2v_720p" : "FLF2V_720p", "sky_df_1.3B" : "sky_reels2_diffusion_forcing_1.3B", "sky_df_14B" : "sky_reels2_diffusion_forcing_14B", 
                     "sky_df_720p_14B" : "sky_reels2_diffusion_forcing_720p_14B",  "moviigen" :"moviigen",
                     "phantom_1.3B" : "phantom_1.3B", "phantom_14B" : "phantom_14B", "fantasy" : "fantasy", "ltxv_13B" : "ltxv_0.9.7_13B_dev", "ltxv_13B_distilled" : "ltxv_0.9.7_13B_distilled", 
-                    "hunyuan" : "hunyuan_video_720", "hunyuan_i2v" : "hunyuan_video_i2v_720", "hunyuan_custom" : "hunyuan_video_custom", "hunyuan_avatar" : "hunyuan_video_avatar"  }
+                    "hunyuan" : "hunyuan_video_720", "hunyuan_i2v" : "hunyuan_video_i2v_720", "hunyuan_custom" : "hunyuan_video_custom_720", "hunyuan_custom_audio" : "hunyuan_video_custom_audio", "hunyuan_custom_edit" : "hunyuan_video_custom_edit",
+                    "hunyuan_avatar" : "hunyuan_video_avatar"  }
 
 
 def get_model_type(model_filename):
@@ -1653,8 +1663,15 @@ def get_model_name(model_filename, description_container = [""]):
         model_name = "Hunyuan Video image2video 720p 13B"
         description = "A good looking image 2 video model, but not so good in prompt adherence."
     elif "hunyuan_video_custom" in model_filename:
-        model_name = "Hunyuan Video Custom 720p 13B"
-        description = "The Hunyuan Video Custom model is probably the best model  to transfer people (only people for the momment) as it is quite good to keep their identity. However it is slow as to get good results, you need to generate 720p videos with 30 steps."
+        if "audio" in model_filename:
+            model_name = "Hunyuan Video Custom Audio 720p 13B"
+            description = "The Hunyuan Video Custom Audio model can be used to generate scenes of a person speaking given a Reference Image and a Recorded Voice or Song. The reference image is not a start image and therefore one can represent the person in a different context.The video length can be anything up to 10s. It is also quite good to generate no sound Video based on a person."
+        elif "edit" in model_filename:
+            model_name = "Hunyuan Video Custom Edit 720p 13B"
+            description = "The Hunyuan Video Custom Edit model can be used to do Video inpainting on a person (add accessories or completely replace the person). You will need in any case to define a Video Mask which will indicate which area of the Video should be edited."
+        else:
+            model_name = "Hunyuan Video Custom 720p 13B"
+            description = "The Hunyuan Video Custom model is probably the best model to transfer people (only people for the momment) as it is quite good to keep their identity. However it is slow as to get good results, you need to generate 720p videos with 30 steps."
     elif "hunyuan_video_avatar" in model_filename:
         model_name = "Hunyuan Video Avatar 720p 13B"
         description = "With the Hunyuan Video Avatar model you can animate a person based on the content of an audio input. Please note that the video generator works by processing 128 frames segment at a time (even if you ask less). The good news is that it will concatenate multiple segments for long video generation (max 3 segments recommended as the quality will get worse)."
@@ -1777,6 +1794,13 @@ def get_default_settings(filename):
                 "guidance_scale": 7.5,
                 "flow_shift": 13,
                 "resolution": "1280x720",
+            })
+        elif get_model_type(filename) in ("hunyuan_custom_edit"):
+            ui_defaults.update({
+                "guidance_scale": 7.5,
+                "flow_shift": 13,
+                "video_prompt_type": "MV",
+                "sliding_window_size": 129,
             })
         elif get_model_type(filename) in ("hunyuan_avatar"):
             ui_defaults.update({
@@ -2570,18 +2594,95 @@ def convert_image(image):
     image = image.convert('RGB')
     return cast(Image, ImageOps.exif_transpose(image))
 
-def get_resampled_video(video_in, start_frame, max_frames, target_fps):
+def get_resampled_video(video_in, start_frame, max_frames, target_fps, bridge='torch'):
     from wan.utils.utils import resample
 
     import decord
-    decord.bridge.set_bridge('torch')
+    decord.bridge.set_bridge(bridge)
     reader = decord.VideoReader(video_in)
     
-    fps = reader.get_avg_fps()
+    fps = round(reader.get_avg_fps())
 
     frame_nos = resample(fps, len(reader), max_target_frames_count= max_frames, target_fps=target_fps, start_target_frame= start_frame)
     frames_list = reader.get_batch(frame_nos)
+    # print(f"frame nos: {frame_nos}")
     return frames_list
+
+def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,  max_frames, start_frame=0, fit_canvas = False, target_fps = 16, block_size= 16, expand_scale = 2, pose_enhance = True, to_bbox = False):
+    if not input_video_path or not input_mask_path:
+        return None, None
+
+    from preprocessing.dwpose.pose import PoseBodyFaceVideoAnnotator
+    cfg_dict = {
+        "DETECTION_MODEL": "ckpts/pose/yolox_l.onnx",
+        "POSE_MODEL": "ckpts/pose/dw-ll_ucoco_384.onnx",
+        "RESIZE_SIZE": 1024
+    }
+    dwpose = PoseBodyFaceVideoAnnotator(cfg_dict)
+
+    video = get_resampled_video(input_video_path, start_frame, max_frames, target_fps)
+    mask_video = get_resampled_video(input_mask_path, start_frame, max_frames, target_fps)
+
+    if len(video) == 0 or len(mask_video) == 0:
+        return None, None
+
+    frame_height, frame_width, _ = video[0].shape
+
+    if fit_canvas :
+        scale1  = min(height / frame_height, width /  frame_width)
+        scale2  = min(height / frame_width, width /  frame_height)
+        scale = max(scale1, scale2)
+    else:
+        scale =   ((height * width ) /  (frame_height * frame_width))**(1/2)
+
+    height = (int(frame_height * scale) // block_size) * block_size
+    width = (int(frame_width * scale) // block_size) * block_size
+
+    num_frames = min(len(video), len(mask_video))
+
+    masked_frames = []
+    masks = []
+    for frame_idx in range(num_frames):
+        frame = Image.fromarray(video[frame_idx].cpu().numpy()) #.asnumpy()
+        mask = Image.fromarray(mask_video[frame_idx].cpu().numpy()) #.asnumpy()
+        frame = frame.resize((width, height), resample=Image.Resampling.LANCZOS) 
+        mask = mask.resize((width, height), resample=Image.Resampling.LANCZOS) 
+        frame = np.array(frame) 
+        mask = np.array(mask)
+
+        if len(mask.shape) == 3 and mask.shape[2] == 3:
+            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+
+        if expand_scale != 0:
+            kernel_size = abs(expand_scale)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            op_expand = cv2.dilate if expand_scale > 0 else cv2.erode
+            mask = op_expand(mask, kernel, iterations=3)
+
+        _, mask = cv2.threshold(mask, 127.5, 255, cv2.THRESH_BINARY)
+        if to_bbox and np.sum(mask == 255) > 0:
+            x0, y0, x1, y1 = mask_to_xyxy_box(mask)
+            mask = mask * 0
+            mask[y0:y1, x0:x1] = 255
+
+        inverse_mask = mask == 0
+        if pose_enhance:
+            pose_img = dwpose.forward([frame])[0]
+            masked_frame = np.where(inverse_mask[..., None], frame, pose_img) 
+        else:
+            masked_frame = frame * (inverse_mask[..., None].astype(frame.dtype))
+
+        mask = torch.from_numpy(mask) # to be commented if save one video enabled
+        masked_frame = torch.from_numpy(masked_frame) # to be commented if save one video debug enabled
+        masks.append(mask)
+        masked_frames.append(masked_frame)
+
+
+    # from preprocessing.dwpose.pose import save_one_video
+    # save_one_video("masked_frames.mp4", masked_frames, fps=target_fps, quality=8, macro_block_size=None)
+    # save_one_video("masks.mp4", masks, fps=target_fps, quality=8, macro_block_size=None)
+
+    return torch.stack(masked_frames), torch.stack(masks)
 
 def preprocess_video(process_type, height, width, video_in, max_frames, start_frame=0, fit_canvas = False, target_fps = 16, block_size = 16):
 
@@ -2600,9 +2701,6 @@ def preprocess_video(process_type, height, width, video_in, max_frames, start_fr
 
     new_height = (int(frame_height * scale) // block_size) * block_size
     new_width = (int(frame_width * scale) // block_size) * block_size
-    # if fit_canvas :
-    #     new_height = height
-    #     new_width = width
 
     processed_frames_list = []
     for frame in frames_list:
@@ -2857,12 +2955,14 @@ def generate_video(
     hunyuan_t2v = "hunyuan_video_720" in model_filename
     hunyuan_i2v = "hunyuan_video_i2v" in model_filename
     hunyuan_custom = "hunyuan_video_custom" in model_filename
+    hunyuan_custom_audio =  hunyuan_custom and "audio" in model_filename
+    hunyuan_custom_edit =  hunyuan_custom and "edit" in model_filename
     hunyuan_avatar = "hunyuan_video_avatar" in model_filename
     fantasy = "fantasy" in model_filename
-    if diffusion_forcing or hunyuan_t2v or hunyuan_i2v or hunyuan_custom:
-        fps = 24
-    elif hunyuan_avatar:
+    if hunyuan_avatar or hunyuan_custom_audio:
         fps = 25
+    elif diffusion_forcing or hunyuan_t2v or hunyuan_i2v or hunyuan_custom:
+        fps = 24
     elif fantasy:
         fps = 23
     elif ltxv:
@@ -2913,7 +3013,7 @@ def generate_video(
     audio_proj_split = None
     audio_scale = None
     audio_context_lens = None
-    if (fantasy or hunyuan_avatar) and audio_guide != None:
+    if (fantasy or hunyuan_avatar or hunyuan_custom_audio) and audio_guide != None:
         from fantasytalking.infer import parse_audio
         import librosa
         duration = librosa.get_duration(path=audio_guide)
@@ -2921,6 +3021,12 @@ def generate_video(
         if fantasy:
             audio_proj_split, audio_context_lens = parse_audio(audio_guide, num_frames= current_video_length, fps= fps, device= processing_device  )
             audio_scale = 1.0
+
+    if hunyuan_custom_edit and video_guide != None:
+        import cv2
+        cap = cv2.VideoCapture(video_guide)
+        length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        current_video_length = min(current_video_length, length)
 
     import random
     if seed == None or seed <0:
@@ -2938,13 +3044,10 @@ def generate_video(
     repeat_no = 0
     extra_generation = 0
     initial_total_windows = 0
-    if diffusion_forcing or vace or ltxv:
-        reuse_frames = min(sliding_window_size - 4, sliding_window_overlap)
-    else:
-        reuse_frames = 0
     if (diffusion_forcing or ltxv) and source_video != None:
         current_video_length +=  sliding_window_overlap
-    sliding_window = (vace or diffusion_forcing or ltxv) and current_video_length > sliding_window_size
+    sliding_window = (vace or diffusion_forcing or ltxv or hunyuan_custom_edit) and current_video_length > sliding_window_size
+    reuse_frames = min(sliding_window_size - 4, sliding_window_overlap) if sliding_window else 0
 
     discard_last_frames = sliding_window_discard_last_frames
     default_max_frames_to_generate = current_video_length
@@ -3094,6 +3197,10 @@ def generate_video(
                                                                         pre_src_video = [pre_video_guide],
                                                                         fit_into_canvas = fit_canvas 
                                                                         )
+            elif hunyuan_custom_edit:
+                progress_args = [0, get_latest_status(state,"Extracting Open Pose Information and Expanding Mask")]
+                send_cmd("progress", progress_args)
+                src_video, src_mask = preprocess_video_with_mask(video_guide,  video_mask, height=height, width = width, max_frames= current_video_length if window_no == 1 else current_video_length - reuse_frames, start_frame = guide_start_frame, fit_canvas = fit_canvas, target_fps = fps, pose_enhance = "P" in  video_prompt_type)
             if window_no ==  1:                
                 conditioning_latents_size = ( (prefix_video_frames_count-1) // latent_size) + 1 if prefix_video_frames_count > 0 else 0
             else:
@@ -3124,7 +3231,7 @@ def generate_video(
                     input_frames = src_video,
                     input_ref_images=  src_ref_images,
                     input_masks = src_mask,
-                    input_video= pre_video_guide  if diffusion_forcing or ltxv else source_video,
+                    input_video= pre_video_guide  if diffusion_forcing or ltxv or hunyuan_custom_edit else source_video,
                     target_camera= target_camera,
                     frame_num=(current_video_length // latent_size)* latent_size + 1,
                     height =  height,
@@ -3693,12 +3800,12 @@ def process_tasks(state):
 
 def get_generation_status(prompt_no, prompts_max, repeat_no, repeat_max, window_no, total_windows):
     if prompts_max == 1:        
-        if repeat_max == 1:
+        if repeat_max <= 1:
             status = ""
         else:
             status = f"Sample {repeat_no}/{repeat_max}"
     else:
-        if repeat_max == 1:
+        if repeat_max <= 1:
             status = f"Prompt {prompt_no}/{prompts_max}"
         else:
             status = f"Prompt {prompt_no}/{prompts_max}, Sample {repeat_no}/{repeat_max}"
@@ -4111,7 +4218,7 @@ def prepare_inputs_dict(target, inputs ):
             inputs.pop(k)
 
 
-    if not "Vace" in model_filename and not "diffusion_forcing" in model_filename and not "ltxv" in model_filename:
+    if not "Vace" in model_filename and not "diffusion_forcing" in model_filename and not "ltxv" in model_filename and not "hunyuan_custom_edit" in model_filename:
         unsaved_params = [ "sliding_window_size", "sliding_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames"]
         for k in unsaved_params:
             inputs.pop(k)
@@ -4556,8 +4663,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             hunyuan_t2v = "hunyuan_video_720" in model_filename
             hunyuan_i2v = "hunyuan_video_i2v" in model_filename
             hunyuan_video_custom = "hunyuan_video_custom" in model_filename
+            hunyuan_video_custom_audio = hunyuan_video_custom  and "audio" in model_filename
+            hunyuan_video_custom_edit = hunyuan_video_custom  and "edit" in model_filename
             hunyuan_video_avatar = "hunyuan_video_avatar" in model_filename
-            sliding_window_enabled = vace or diffusion_forcing or ltxv
+            sliding_window_enabled = vace or diffusion_forcing or ltxv or hunyuan_video_custom_edit
             new_line_text = "each new line of prompt will be used for a window" if sliding_window_enabled else "each new line of prompt will generate a new video"
 
             with gr.Column(visible= test_class_i2v(model_filename) or diffusion_forcing or ltxv or recammaster) as image_prompt_column: 
@@ -4630,7 +4739,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     model_mode = gr.Dropdown(value=None, visible=False)
                     keep_frames_video_source = gr.Text(visible=False)
 
-            with gr.Column(visible= vace or phantom or hunyuan_video_custom or hunyuan_video_avatar) as video_prompt_column: 
+            with gr.Column(visible= vace or phantom or hunyuan_video_custom or hunyuan_video_avatar or hunyuan_video_custom_edit ) as video_prompt_column: 
                 video_prompt_type_value= ui_defaults.get("video_prompt_type","")
                 video_prompt_type = gr.Text(value= video_prompt_type_value, visible= False)
                 with gr.Row():
@@ -4644,6 +4753,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 ("Extend Video", "OV"),
                                 ("Video contains Open Pose, Depth, Black & White, Inpainting ", "V"),
                                 ("Control Video and Mask video for Inpainting ", "MV"),
+                            ],
+                            value=filter_letters(video_prompt_type_value, "ODPCMV"),
+                            label="Video to Video", scale = 3, visible= True
+                        )
+                    elif hunyuan_video_custom_edit:
+                        video_prompt_type_video_guide = gr.Dropdown(
+                            choices=[
+                                ("Inpaint Control Video in area defined by Mask", "MV"),
+                                ("Inpaint and Transfer Human Motion from the Control Video in area defined by Mask", "PMV"),
                             ],
                             value=filter_letters(video_prompt_type_value, "ODPCMV"),
                             label="Video to Video", scale = 3, visible= True
@@ -4686,7 +4804,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
 
                 video_mask = gr.Video(label= "Video Mask (for Inpainting or Outpaing, white pixels = Mask)", visible= "M" in video_prompt_type_value, value= ui_defaults.get("video_mask", None)) 
-            audio_guide = gr.Audio(value= ui_defaults.get("audio_guide", None), type="filepath", label="Voice to follow", show_download_button= True, visible= fantasy or hunyuan_video_avatar )
+            audio_guide = gr.Audio(value= ui_defaults.get("audio_guide", None), type="filepath", label="Voice to follow", show_download_button= True, visible= fantasy or hunyuan_video_avatar or hunyuan_video_custom_audio   )
 
             advanced_prompt = advanced_ui
             prompt_vars=[]
@@ -4775,9 +4893,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     video_length = gr.Slider(17, 737, value=ui_defaults.get("video_length", 81), step=4, label="Number of frames (16 = 1s)", interactive= True)
                 elif fantasy:
                     video_length = gr.Slider(5, 233, value=ui_defaults.get("video_length", 81), step=4, label="Number of frames (23 = 1s)", interactive= True)
-                elif hunyuan_video_avatar:
+                elif hunyuan_video_avatar or hunyuan_video_custom_audio:
                     video_length = gr.Slider(5, 401, value=ui_defaults.get("video_length", 81), step=4, label="Number of frames (25 = 1s)", interactive= True)
-                elif hunyuan_t2v or hunyuan_i2v:
+                elif hunyuan_t2v or hunyuan_i2v or hunyuan_video_custom:
                     video_length = gr.Slider(5, 337, value=ui_defaults.get("video_length", 97), step=4, label="Number of frames (24 = 1s)", interactive= True)
                 else:
                     video_length = gr.Slider(5, 193, value=ui_defaults.get("video_length", 81), step=4, label="Number of frames (16 = 1s)", interactive= True)
@@ -4915,17 +5033,22 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         if diffusion_forcing:
                             sliding_window_size = gr.Slider(37, 137, value=ui_defaults.get("sliding_window_size", 97), step=20, label="Sliding Window Size (recommended to keep it at 97)")
                             sliding_window_overlap = gr.Slider(17, 97, value=ui_defaults.get("sliding_window_overlap",17), step=20, label="Windows Frames Overlap (needed to maintain continuity between windows, a higher value will require more windows)")
-                            sliding_window_overlap_noise = gr.Slider(0, 100, value=ui_defaults.get("sliding_window_overlap_noise",20), step=1, label="Noise to be added to overlapped frames to reduce blur effect")
+                            sliding_window_overlap_noise = gr.Slider(0, 100, value=ui_defaults.get("sliding_window_overlap_noise",20), step=1, label="Noise to be added to overlapped frames to reduce blur effect", visible = True)
                             sliding_window_discard_last_frames = gr.Slider(0, 20, value=ui_defaults.get("sliding_window_discard_last_frames", 0), step=4, visible = False)
                         elif ltxv:
                             sliding_window_size = gr.Slider(41, 257, value=ui_defaults.get("sliding_window_size", 129), step=8, label="Sliding Window Size")
                             sliding_window_overlap = gr.Slider(9, 97, value=ui_defaults.get("sliding_window_overlap",9), step=8, label="Windows Frames Overlap (needed to maintain continuity between windows, a higher value will require more windows)")
-                            sliding_window_overlap_noise = gr.Slider(0, 100, value=ui_defaults.get("sliding_window_overlap_noise",20), step=1, label="Noise to be added to overlapped frames to reduce blur effect")
+                            sliding_window_overlap_noise = gr.Slider(0, 100, value=ui_defaults.get("sliding_window_overlap_noise",20), step=1, label="Noise to be added to overlapped frames to reduce blur effect", visible = False)
                             sliding_window_discard_last_frames = gr.Slider(0, 20, value=ui_defaults.get("sliding_window_discard_last_frames", 0), step=4, visible = False)
+                        elif hunyuan_video_custom_edit:
+                            sliding_window_size = gr.Slider(5, 257, value=ui_defaults.get("sliding_window_size", 129), step=4, label="Sliding Window Size")
+                            sliding_window_overlap = gr.Slider(1, 97, value=ui_defaults.get("sliding_window_overlap",5), step=4, label="Windows Frames Overlap (needed to maintain continuity between windows, a higher value will require more windows)")
+                            sliding_window_overlap_noise = gr.Slider(0, 150, value=ui_defaults.get("sliding_window_overlap_noise",20), step=1, label="Noise to be added to overlapped frames to reduce blur effect", visible = False)
+                            sliding_window_discard_last_frames = gr.Slider(0, 20, value=ui_defaults.get("sliding_window_discard_last_frames", 0), step=4, label="Discard Last Frames of a Window (that may have bad quality)", visible = True)
                         else:
                             sliding_window_size = gr.Slider(5, 137, value=ui_defaults.get("sliding_window_size", 81), step=4, label="Sliding Window Size")
                             sliding_window_overlap = gr.Slider(1, 97, value=ui_defaults.get("sliding_window_overlap",5), step=4, label="Windows Frames Overlap (needed to maintain continuity between windows, a higher value will require more windows)")
-                            sliding_window_overlap_noise = gr.Slider(0, 150, value=ui_defaults.get("sliding_window_overlap_noise",20), step=1, label="Noise to be added to overlapped frames to reduce blur effect")
+                            sliding_window_overlap_noise = gr.Slider(0, 150, value=ui_defaults.get("sliding_window_overlap_noise",20), step=1, label="Noise to be added to overlapped frames to reduce blur effect" , visible = True)
                             sliding_window_discard_last_frames = gr.Slider(0, 20, value=ui_defaults.get("sliding_window_discard_last_frames", 8), step=4, label="Discard Last Frames of a Window (that may have bad quality)", visible = True)
 
 

@@ -295,7 +295,10 @@ def apply_rotary_emb( qklist,
 def get_nd_rotary_pos_embed_new(rope_dim_list, start, *args, theta=10000., use_real=False, 
                             theta_rescale_factor: Union[float, List[float]]=1.0,
                             interpolation_factor: Union[float, List[float]]=1.0,
-                            concat_dict={}
+                            concat_dict={},
+                            k = 4,
+                            L_test = 66,
+                            enable_riflex = True
                             ):
 
     grid = get_meshgrid_nd(start, *args, dim=len(rope_dim_list))   # [3, W, H, D] / [2, W, H]
@@ -327,9 +330,17 @@ def get_nd_rotary_pos_embed_new(rope_dim_list, start, *args, theta=10000., use_r
     # use 1/ndim of dimensions to encode grid_axis
     embs = []
     for i in range(len(rope_dim_list)):
-        emb = get_1d_rotary_pos_embed(rope_dim_list[i], grid[i].reshape(-1), theta, use_real=use_real,
-                                      theta_rescale_factor=theta_rescale_factor[i],
-                                      interpolation_factor=interpolation_factor[i])    # 2 x [WHD, rope_dim_list[i]]
+        # === RIFLEx modification start ===
+        # apply RIFLEx for time dimension
+        if i == 0 and enable_riflex:
+            emb = get_1d_rotary_pos_embed_riflex(rope_dim_list[i], grid[i].reshape(-1), theta, use_real=True, k=k, L_test=L_test)
+        # === RIFLEx modification end ===
+        else:
+            emb = get_1d_rotary_pos_embed(rope_dim_list[i], grid[i].reshape(-1), theta, use_real=True, theta_rescale_factor=theta_rescale_factor[i],interpolation_factor=interpolation_factor[i],)
+
+        # emb = get_1d_rotary_pos_embed(rope_dim_list[i], grid[i].reshape(-1), theta, use_real=use_real,
+        #                               theta_rescale_factor=theta_rescale_factor[i],
+        #                        w       interpolation_factor=interpolation_factor[i])    # 2 x [WHD, rope_dim_list[i]]
         
         embs.append(emb)
 

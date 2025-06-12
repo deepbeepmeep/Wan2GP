@@ -591,7 +591,10 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
         attention_mode: Optional[str] = "sdpa",
+        video_condition: bool = False,
+        audio_condition: bool = False,
         avatar = False,
+        custom = False,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -606,7 +609,11 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         self.rope_dim_list = rope_dim_list
         self.i2v_condition_type = i2v_condition_type
         self.attention_mode = attention_mode
-        
+        self.video_condition = video_condition
+        self.audio_condition = audio_condition
+        self.avatar = avatar
+        self.custom = custom
+
         # Text projection. Default to linear projection.
         # Alternative: TokenRefiner. See more details (LI-DiT): http://arxiv.org/abs/2406.11831
         self.use_attention_mask = use_attention_mask
@@ -710,44 +717,56 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
             get_activation_layer("silu"),
             **factory_kwargs,
         )
-        avatar_audio = avatar
-        if avatar_audio:
-            self.ref_in = PatchEmbed(
-                self.patch_size, self.in_channels, self.hidden_size, **factory_kwargs
-                )
 
-            # -------------------- audio_proj_model --------------------
-            self.audio_proj = AudioProjNet2(seq_len=10, blocks=5, channels=384, intermediate_dim=1024, output_dim=3072, context_tokens=4)
-            
-            # -------------------- motion-embeder --------------------
-            self.motion_exp = TimestepEmbedder(
-                    self.hidden_size // 4,
-                    get_activation_layer("silu"),
-                    **factory_kwargs
-                )
-            self.motion_pose = TimestepEmbedder(
-                    self.hidden_size // 4,
-                    get_activation_layer("silu"),
-                    **factory_kwargs
-                )
+        if self.video_condition:
+            self.bg_in = PatchEmbed(
+                self.patch_size, self.in_channels * 2, self.hidden_size, **factory_kwargs
+            )
+            self.bg_proj = nn.Linear(self.hidden_size, self.hidden_size)
 
-            self.fps_proj = TimestepEmbedder(
-                    self.hidden_size,
-                    get_activation_layer("silu"),
-                    **factory_kwargs
-                )
-            
-            self.before_proj = nn.Linear(self.hidden_size, self.hidden_size)
+        if audio_condition:
+            if avatar:
+                self.ref_in = PatchEmbed(
+                    self.patch_size, self.in_channels, self.hidden_size, **factory_kwargs
+                    )
 
-            # -------------------- audio_insert_model --------------------
-            self.double_stream_list = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
-            self.single_stream_list = []
+                # -------------------- audio_proj_model --------------------
+                self.audio_proj = AudioProjNet2(seq_len=10, blocks=5, channels=384, intermediate_dim=1024, output_dim=3072, context_tokens=4)
+                
+                # -------------------- motion-embeder --------------------
+                self.motion_exp = TimestepEmbedder(
+                        self.hidden_size // 4,
+                        get_activation_layer("silu"),
+                        **factory_kwargs
+                    )
+                self.motion_pose = TimestepEmbedder(
+                        self.hidden_size // 4,
+                        get_activation_layer("silu"),
+                        **factory_kwargs
+                    )
+
+                self.fps_proj = TimestepEmbedder(
+                        self.hidden_size,
+                        get_activation_layer("silu"),
+                        **factory_kwargs
+                    )
+                
+                self.before_proj = nn.Linear(self.hidden_size, self.hidden_size)
+
+                # -------------------- audio_insert_model --------------------
+                self.double_stream_list = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
+                audio_block_name = "audio_adapter_blocks"
+            elif custom:
+                self.audio_proj = AudioProjNet2(seq_len=10, blocks=5, channels=384, intermediate_dim=1024, output_dim=3072, context_tokens=4)
+                self.double_stream_list = [1, 3, 5, 7, 9, 11]
+                audio_block_name = "audio_models"
+
             self.double_stream_map = {str(i): j for j, i in enumerate(self.double_stream_list)}
+            self.single_stream_list = []
             self.single_stream_map = {str(i): j+len(self.double_stream_list) for j, i in enumerate(self.single_stream_list)}
-            
-            self.audio_adapter_blocks = nn.ModuleList([
+            setattr(self, audio_block_name,  nn.ModuleList([
                 PerceiverAttentionCA(dim=3072, dim_head=1024, heads=33) for _ in range(len(self.double_stream_list) + len(self.single_stream_list))
-            ])
+            ]))
 
 
 
@@ -798,6 +817,8 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         motion_pose = None,
         fps = None,
         face_mask = None,
+        audio_strength = None,
+        bg_latents = None,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
     
         img = x
@@ -854,12 +875,16 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
 
         # Embed image and text.
         img, shape_mask = self.img_in(img)
-        if audio_prompts != None:
+        if self.avatar:
             ref_latents_first = ref_latents[:, :, :1].clone()
             ref_latents,_ = self.ref_in(ref_latents)
             ref_latents_first,_ = self.img_in(ref_latents_first)
-        elif ref_latents != None:
-            ref_latents, _ = self.img_in(ref_latents)
+        elif self.custom:
+            if ref_latents != None:
+                ref_latents, _ = self.img_in(ref_latents)
+            if bg_latents is not None and self.video_condition:
+                bg_latents, _ = self.bg_in(bg_latents)
+                img += self.bg_proj(bg_latents)
 
         if self.text_projection == "linear":
             txt = self.txt_in(txt)
@@ -870,7 +895,7 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
                 f"Unsupported text_projection: {self.text_projection}"
             )
 
-        if audio_prompts != None:
+        if self.avatar:
             img += self.before_proj(ref_latents)
             ref_length = ref_latents_first.shape[-2]          # [b s c]
             img = torch.cat([ref_latents_first, img], dim=-2) # t c
@@ -956,7 +981,10 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
                         if audio_adapter != None:
                             real_img = img[i:i+1,ref_length:].view(1, ot, -1, 3072)  
                             real_img = audio_adapter(audio_feature_all_insert[i:i+1], real_img).view(1, -1, 3072)
-                            real_img *= face_mask[i:i+1]
+                            if face_mask != None:
+                                real_img *= face_mask[i:i+1]
+                            if audio_strength != None and audio_strength != 1:
+                                real_img *= audio_strength
                             img[i:i+1, ref_length:] += real_img
                             real_img = None
 
@@ -1095,6 +1123,27 @@ HUNYUAN_VIDEO_CONFIG = {
         "hidden_size": 3072,
         "heads_num": 24,
         "mlp_width_ratio": 4,
+        'custom' : True
+    },
+    'HYVideo-T/2-custom-audio': {                                                                       #   9.0B   / 12.5B
+        "mm_double_blocks_depth": 20,
+        "mm_single_blocks_depth": 40,
+        "rope_dim_list": [16, 56, 56],
+        "hidden_size": 3072,
+        "heads_num": 24,
+        "mlp_width_ratio": 4,
+        'custom' : True,
+        'audio_condition' : True,        
+    },
+    'HYVideo-T/2-custom-edit': {                                                                       #   9.0B   / 12.5B
+        "mm_double_blocks_depth": 20,
+        "mm_single_blocks_depth": 40,
+        "rope_dim_list": [16, 56, 56],
+        "hidden_size": 3072,
+        "heads_num": 24,
+        "mlp_width_ratio": 4,
+        'custom' : True,
+        'video_condition' : True,        
     },
     'HYVideo-T/2-avatar': {                                                                       #   9.0B   / 12.5B
         'mm_double_blocks_depth': 20,
@@ -1104,6 +1153,7 @@ HUNYUAN_VIDEO_CONFIG = {
         'heads_num': 24,
         'mlp_width_ratio': 4,
         'avatar': True,
+        'audio_condition' : True,
     },
     
 }

@@ -33,4 +33,5 @@ librosa
 loguru
 sentencepiece
 av
+opencv-python
 # rembg==2.0.65

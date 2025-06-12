@@ -236,13 +236,13 @@ def patched_llava_forward(
         image_hidden_states=image_features if pixel_values is not None else None,
     )
 
-def adapt_avatar_model(model):
+def adapt_model(model, audio_block_name):
     modules_dict= { k: m for k, m in model.named_modules()}
     for model_layer, avatar_layer in model.double_stream_map.items():
-        module = modules_dict[f"audio_adapter_blocks.{avatar_layer}"]
+        module = modules_dict[f"{audio_block_name}.{avatar_layer}"]
         target = modules_dict[f"double_blocks.{model_layer}"]
         setattr(target, "audio_adapter", module )
-    delattr(model, "audio_adapter_blocks")
+    delattr(model, audio_block_name)
 
 class DataPreprocess(object):
     def __init__(self):
@@ -330,17 +330,25 @@ class Inference(object):
         precision = "bf16"
         vae_precision = "fp32" if VAE_dtype == torch.float32 else "bf16" 
         embedded_cfg_scale = 6
+        filepath = model_filepath[0]
         i2v_condition_type = None
-        i2v_mode = "i2v" in model_filepath[0]
+        i2v_mode = "i2v" in filepath 
         custom = False
+        custom_audio = False
         avatar = False 
         if i2v_mode:
             model_id = "HYVideo-T/2"
             i2v_condition_type = "token_replace"
-        elif "custom" in model_filepath[0]:
-            model_id = "HYVideo-T/2-custom"
+        elif "custom" in filepath:
+            if "audio" in filepath:
+                model_id = "HYVideo-T/2-custom-audio"
+                custom_audio = True
+            elif "edit" in filepath:
+                model_id = "HYVideo-T/2-custom-edit"
+            else: 
+                model_id = "HYVideo-T/2-custom"
             custom = True
-        elif "avatar" in model_filepath[0]:
+        elif "avatar" in filepath :
             model_id = "HYVideo-T/2-avatar"
             text_len = 256
             avatar = True
@@ -377,11 +385,11 @@ class Inference(object):
         from mmgp import offload
         # model = Inference.load_state_dict(args, model, model_filepath)
 
-        # model_filepath ="c:/temp/avatar/mp_rank_00_model_states.pt"
+        # model_filepath ="c:/temp/hc/mp_rank_00_model_states_video.pt"
         offload.load_model_data(model, model_filepath, pinToMemory = pinToMemory, partialPinning = partialPinning)
         pass
-        # offload.save_model(model, "hunyuan_video_avatar_720_bf16.safetensors")
-        # offload.save_model(model, "hunyuan_video_avatar_720_quanto_bf16_int8.safetensors", do_quantize= True)
+        # offload.save_model(model, "hunyuan_video_avatar_edit_720_bf16.safetensors")
+        # offload.save_model(model, "hunyuan_video_avatar_edit_720_quanto_bf16_int8.safetensors", do_quantize= True)
 
         model.mixed_precision = mixed_precision_transformer
 
@@ -473,8 +481,9 @@ class Inference(object):
         wav2vec = None
         align_instance = None
 
-        if avatar:
+        if avatar or custom_audio:
             feature_extractor = AutoFeatureExtractor.from_pretrained("ckpts/whisper-tiny/")
+
             # wav2vec = WhisperModel.from_pretrained("ckpts/whisper-tiny/").to(device="cpu", dtype=torch.float32)
             wav2vec = WhisperModel.from_pretrained("ckpts/whisper-tiny/").to(device="cuda", dtype=torch.bfloat16)
             # wav2vec._model_dtype = torch.float32
@@ -605,7 +614,7 @@ class HunyuanVideoSampler(Inference):
  
         return pipeline
 
-    def get_rotary_pos_embed_new(self, video_length, height, width, concat_dict={}):
+    def get_rotary_pos_embed_new(self, video_length, height, width, concat_dict={}, enable_riflex = False):
         target_ndim = 3
         ndim = 5 - 2
         latents_size = [(video_length-1)//4+1 , height//8, width//8]
@@ -633,7 +642,10 @@ class HunyuanVideoSampler(Inference):
                                                     theta=256, 
                                                     use_real=True,
                                                     theta_rescale_factor=1,
-                                                    concat_dict=concat_dict)
+                                                    concat_dict=concat_dict,
+                                                    L_test = (video_length - 1) // 4 + 1,
+                                                    enable_riflex = enable_riflex
+                                                    )
         return freqs_cos, freqs_sin
         
     def get_rotary_pos_embed(self, video_length, height, width, enable_riflex = False):
@@ -692,6 +704,9 @@ class HunyuanVideoSampler(Inference):
         input_prompt,
         input_ref_images = None,
         audio_guide = None,
+        input_frames = None,
+        input_masks = None,
+        input_video = None,        
         fps = 24,
         height=192,
         width=336,
@@ -706,13 +721,14 @@ class HunyuanVideoSampler(Inference):
         num_videos_per_prompt=1,
         i2v_resolution="720p",
         image_start=None,
-        enable_riflex = False,
+        enable_RIFLEx = False,
         i2v_condition_type: str = "token_replace",
         i2v_stability=True,
         VAE_tile_size = None,
         joint_pass = False,
         cfg_star_switch = False,
         fit_into_canvas = True,
+        conditioning_latents_size = 0,
         **kwargs,
     ):
 
@@ -782,6 +798,7 @@ class HunyuanVideoSampler(Inference):
         target_height = align_to(height, 16)
         target_width = align_to(width, 16)
         target_frame_num = frame_num
+        audio_strength = 1
 
         if input_ref_images  != None:
             # ip_cfg_scale = 3.0
@@ -867,7 +884,7 @@ class HunyuanVideoSampler(Inference):
         # ========================================================================
 
         if input_ref_images == None:
-            freqs_cos, freqs_sin = self.get_rotary_pos_embed(target_frame_num, target_height, target_width, enable_riflex)
+            freqs_cos, freqs_sin = self.get_rotary_pos_embed(target_frame_num, target_height, target_width, enable_RIFLEx)
         else:
             if self.avatar:
                 w, h = input_ref_images.size
@@ -875,8 +892,13 @@ class HunyuanVideoSampler(Inference):
                 concat_dict = {'mode': 'timecat', 'bias': -1} 
                 freqs_cos, freqs_sin = self.get_rotary_pos_embed_new(129, target_height, target_width, concat_dict)
             else:
+                if input_frames != None:
+                    target_height, target_width = input_frames.shape[-3:-1]
+                elif input_video != None:
+                    target_height, target_width = input_video.shape[-2:]
+
                 concat_dict = {'mode': 'timecat-w', 'bias': -1} 
-                freqs_cos, freqs_sin = self.get_rotary_pos_embed_new(target_frame_num, target_height, target_width, concat_dict)
+                freqs_cos, freqs_sin = self.get_rotary_pos_embed_new(target_frame_num, target_height, target_width, concat_dict, enable_RIFLEx)
 
         n_tokens = freqs_cos.shape[0]
 
@@ -894,7 +916,35 @@ class HunyuanVideoSampler(Inference):
 
         ref_latents, uncond_audio_prompts, audio_prompts, face_masks, motion_exp, motion_pose = None, None, None, None, None, None
 
-        if audio_guide != None:
+
+        bg_latents = None
+        if input_video != None:
+            pixel_value_bg = input_video.unsqueeze(0)
+            pixel_value_mask =  torch.zeros_like(input_video).unsqueeze(0)
+        if input_frames != None:
+            pixel_value_video_bg = input_frames.permute(-1,0,1,2).unsqueeze(0).float()
+            pixel_value_video_mask = input_masks.unsqueeze(-1).repeat(1,1,1,3).permute(-1,0,1,2).unsqueeze(0).float()
+            pixel_value_video_bg = pixel_value_video_bg.div_(127.5).add_(-1.)
+            if input_video != None:
+                pixel_value_bg = torch.cat([pixel_value_bg, pixel_value_video_bg], dim=2)
+                pixel_value_mask = torch.cat([ pixel_value_mask, pixel_value_video_mask], dim=2)
+            else:
+                pixel_value_bg = pixel_value_video_bg
+                pixel_value_mask = pixel_value_video_mask
+            pixel_value_video_mask, pixel_value_video_bg  = None, None
+        if input_video != None or input_frames != None:
+            if pixel_value_bg.shape[2] < frame_num:
+                padding_shape = list(pixel_value_bg.shape[0:2]) + [frame_num-pixel_value_bg.shape[2]] +  list(pixel_value_bg.shape[3:])  
+                pixel_value_bg = torch.cat([pixel_value_bg, torch.full(padding_shape, -1, dtype=pixel_value_bg.dtype, device= pixel_value_bg.device ) ], dim=2)
+                pixel_value_mask = torch.cat([ pixel_value_mask, torch.full(padding_shape, 255, dtype=pixel_value_mask.dtype, device= pixel_value_mask.device ) ], dim=2)
+
+            bg_latents = self.vae.encode(pixel_value_bg).latent_dist.sample()                
+            pixel_value_mask = pixel_value_mask.div_(127.5).add_(-1.)             
+            mask_latents = self.vae.encode(pixel_value_mask).latent_dist.sample()
+            bg_latents = torch.cat([bg_latents, mask_latents], dim=1)
+            bg_latents.mul_(self.vae.config.scaling_factor)
+
+        if self.avatar:
             if n_prompt == None or len(n_prompt) == 0:
                 n_prompt = "Aerial view, aerial view, overexposed, low quality, deformation, a poor composition, bad hands, bad teeth, bad eyes, bad limbs, distortion, blurring, Lens changes"
 
@@ -932,28 +982,33 @@ class HunyuanVideoSampler(Inference):
                 # from wan.utils.utils import cache_video
                 # cache_video( tensor=image, save_file="decode.mp4", fps=25, nrow=1, normalize=True, value_range=(-1, 1))
 
+            motion_pose = np.array([25] * 4)
+            motion_exp = np.array([30] * 4)
+            motion_pose = torch.from_numpy(motion_pose).unsqueeze(0)
+            motion_exp = torch.from_numpy(motion_exp).unsqueeze(0)
 
             face_masks = torch.nn.functional.interpolate(face_masks.float().squeeze(2), 
                                                     (ref_latents.shape[-2], 
                                                     ref_latents.shape[-1]), 
                                                     mode="bilinear").unsqueeze(2).to(dtype=ref_latents.dtype)
-            
+
+
+        if audio_guide != None:            
             audio_input, audio_len = get_audio_feature(self.feature_extractor, audio_guide, duration = frame_num/fps )
             audio_prompts = audio_input[0]
             weight_dtype = audio_prompts.dtype
-            
-            motion_pose = np.array([25] * 4)
-            motion_exp = np.array([30] * 4)
-            motion_pose = torch.from_numpy(motion_pose).unsqueeze(0)
-            motion_exp = torch.from_numpy(motion_exp).unsqueeze(0)
+            if self.custom:
+                audio_len = min(audio_len, frame_num)
+                audio_input = audio_input[:, :audio_len]
             audio_prompts = encode_audio(self.wav2vec, audio_prompts.to(dtype=self.wav2vec.dtype), fps, num_frames=audio_len) 
             audio_prompts = audio_prompts.to(self.model.dtype)
-            if audio_prompts.shape[1] <= 129:
-                audio_prompts = torch.cat([audio_prompts, torch.zeros_like(audio_prompts[:, :1]).repeat(1,129-audio_prompts.shape[1], 1, 1, 1)], dim=1)
+            segment_size = 129 if self.avatar else frame_num
+            if audio_prompts.shape[1] <= segment_size:
+                audio_prompts = torch.cat([audio_prompts, torch.zeros_like(audio_prompts[:, :1]).repeat(1,segment_size-audio_prompts.shape[1], 1, 1, 1)], dim=1)
             else:
                 audio_prompts = torch.cat([audio_prompts, torch.zeros_like(audio_prompts[:, :1]).repeat(1, 5, 1, 1, 1)], dim=1)
             uncond_audio_prompts = torch.zeros_like(audio_prompts[:,:129])
-            # target_frame_num = min(target_frame_num, audio_len)
+
         samples = self.pipeline(
             prompt=input_prompt,
             height=target_height,
@@ -977,6 +1032,9 @@ class HunyuanVideoSampler(Inference):
             motion_exp=motion_exp, 
             motion_pose=motion_pose, 
             fps= torch.from_numpy(np.array(fps)), 
+
+            bg_latents = bg_latents,
+            audio_strength = audio_strength,
 
             denoise_strength=denoise_strength,
             ip_cfg_scale=ip_cfg_scale,             

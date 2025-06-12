@@ -908,6 +908,10 @@ class HunyuanVideoAudioPipeline(DiffusionPipeline):
                 second element is a list of `bool`s indicating whether the corresponding generated image contains
                 "not-safe-for-work" (nsfw) content.
         """
+
+        if self._interrupt:
+            return [None]
+
         callback = kwargs.pop("callback", None)
         callback_steps = kwargs.pop("callback_steps", None)
         if callback_steps is not None:
@@ -956,7 +960,6 @@ class HunyuanVideoAudioPipeline(DiffusionPipeline):
         self._guidance_rescale = guidance_rescale
         self._clip_skip = clip_skip
         self._cross_attention_kwargs = cross_attention_kwargs
-        self._interrupt = False
 
         # 2. Define call parameters
         if prompt is not None and isinstance(prompt, str):

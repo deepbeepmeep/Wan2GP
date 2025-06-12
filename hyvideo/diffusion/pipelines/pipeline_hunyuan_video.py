@@ -774,7 +774,10 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         # uncond_ref_latents: Optional[torch.Tensor] = None,
         pixel_value_llava: Optional[torch.Tensor] = None,
         uncond_pixel_value_llava: Optional[torch.Tensor] = None,
+        bg_latents: Optional[torch.Tensor] = None,
+        audio_prompts: Optional[torch.Tensor] = None,
         ip_cfg_scale: float = 0.0,
+        audio_strength: float = 1.0,
         use_deepcache: int = 1,
         num_videos_per_prompt: Optional[int] = 1,
         eta: float = 0.0,
@@ -922,6 +925,9 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         #         "Passing `callback_steps` as an input argument to `__call__` is deprecated, consider using `callback_on_step_end`",
         #     )
 
+
+        if self._interrupt:
+            return [None]
         if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
 
@@ -968,7 +974,6 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         self._guidance_rescale = guidance_rescale
         self._clip_skip = clip_skip
         self._cross_attention_kwargs = cross_attention_kwargs
-        self._interrupt = False
 
         # 2. Define call parameters
         if prompt is not None and isinstance(prompt, str):
@@ -1056,6 +1061,12 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                 if prompt_mask[0].sum() > 575:
                     prompt_mask[0] = torch.cat([torch.ones((1, prompt_mask[0].sum() - 575)).to(prompt_mask), 
                                                 torch.zeros((1, prompt_mask.shape[1] - prompt_mask[0].sum() + 575)).to(prompt_mask)], dim=1)
+
+            if bg_latents is not None:
+                bg_latents = torch.cat([bg_latents, bg_latents], dim=0)
+
+            if audio_prompts is not None:
+                audio_prompts = torch.cat([torch.zeros_like(audio_prompts), audio_prompts], dim=0)
 
         if ip_cfg_scale>0:
             prompt_embeds = torch.cat([prompt_embeds, prompt_embeds[1:]])
@@ -1263,6 +1274,9 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                                 pipeline=self,
                                 x_id=j,
                                 step_no=i,
+                                bg_latents=bg_latents[j].unsqueeze(0) if bg_latents!=None else None,
+                                audio_prompts=audio_prompts[j].unsqueeze(0) if audio_prompts!=None else None,
+                                audio_strength=audio_strength,
                                 callback = callback,
                             )
                             if self._interrupt:
@@ -1292,6 +1306,9 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                             guidance=guidance_expand,
                             pipeline=self,
                             step_no=i,
+                            bg_latents=bg_latents,
+                            audio_prompts=audio_prompts,
+                            audio_strength=audio_strength,
                             callback = callback,
                         )
                         if self._interrupt:

@@ -95,6 +95,7 @@ pip install -r requirements.txt
 
 **Run the application:**
 ```bash
+# If you are in mainland China and cannot download model directly, try prepend HF_ENDPOINT=https://hf-mirror.com
 python wgp.py  # Text-to-video (default)
 python wgp.py --i2v  # Image-to-video
 ```

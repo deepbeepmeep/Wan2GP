@@ -1,22 +1,23 @@
 import os
 import sys
 import torch
-from .detface import DetFace
+from .detface_2 import DetFace2
 
 class AlignImage(object):
     def __init__(self, device='cuda', det_path=''):
-        self.facedet = DetFace(pt_path=det_path, confThreshold=0.5, nmsThreshold=0.45, device=device)
+        self.facedet = DetFace2(path=det_path, conf_thres=0.5, iou_thres=0.45, device=device)
 
     @torch.no_grad()
     def __call__(self, im, maxface=False):
-        bboxes, kpss, scores = self.facedet.detect(im)
+        # bboxes, kpss, scores = self.facedet.detect(im)
+        bboxes, scores, classids, landmarks = self.facedet.detect(srcimg=im)
         face_num = bboxes.shape[0]
 
         five_pts_list = []
         scores_list = []
         bboxes_list = []
         for i in range(face_num):
-            five_pts_list.append(kpss[i].reshape(5,2))
+            five_pts_list.append(landmarks[i])
             scores_list.append(scores[i])
             bboxes_list.append(bboxes[i])
 

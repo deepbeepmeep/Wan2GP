@@ -29,6 +29,9 @@ class DTT2V:
         checkpoint_dir,
         rank=0,
         model_filename = None,
+        model_type = None,
+        base_model_type = None,
+        save_quantized = False,
         text_encoder_filename = None,
         quantizeTransformer = False,
         dtype = torch.bfloat16,
@@ -61,7 +64,9 @@ class DTT2V:
         from mmgp import offload
         # model_filename = "model.safetensors"
         # model_filename = "c:/temp/diffusion_pytorch_model-00001-of-00006.safetensors"
-        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False) # , forcedConfigPath="c:/temp/config _df720.json")
+        base_config_file = f"configs/{base_model_type}.json"
+        forcedConfigPath = base_config_file if len(model_filename) > 1 else None
+        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer, writable_tensors= False , forcedConfigPath=forcedConfigPath)
         # offload.load_model_data(self.model, "recam.ckpt")
         # self.model.cpu()
         # dtype = torch.float16
@@ -72,6 +77,9 @@ class DTT2V:
         # offload.save_model(self.model, "rtfp16_int8.safetensors", do_quantize= "config.json") 
 
         self.model.eval().requires_grad_(False)
+        if save_quantized:            
+            from wgp import save_quantized_model
+            save_quantized_model(self.model, model_type, model_filename[0], dtype, base_config_file)
 
         self.scheduler = FlowUniPCMultistepScheduler()
 
@@ -228,7 +236,7 @@ class DTT2V:
         if input_video != None:
             _ , _ , height, width  = input_video.shape
         elif image_start != None:
-            image_start = image_start[0]
+            image_start = image_start
             frame_width, frame_height  = image_start.size
             height, width = calculate_new_dimensions(height, width, frame_height, frame_width, fit_into_canvas)
             image_start = np.array(image_start.resize((width, height))).transpose(2, 0, 1)
@@ -309,7 +317,7 @@ class DTT2V:
         updated_num_steps=  len(step_matrix)
         if callback != None:
             callback(-1, None, True, override_num_inference_steps = updated_num_steps)
-        if self.model.enable_teacache:
+        if self.model.enable_cache:
             x_count = 2 if self.do_classifier_free_guidance else 1
             self.model.previous_residual = [None] * x_count 
             time_steps_comb = []
@@ -320,7 +328,7 @@ class DTT2V:
                 if overlap_noise > 0 and valid_interval_start < predix_video_latent_length:
                     timestep[:, valid_interval_start:predix_video_latent_length] = overlap_noise
                 time_steps_comb.append(timestep)
-            self.model.compute_teacache_threshold(self.model.teacache_start_step, time_steps_comb, self.model.teacache_multiplier)
+            self.model.compute_teacache_threshold(self.model.cache_start_step, time_steps_comb, self.model.teacache_multiplier)
             del time_steps_comb
         from mmgp import offload
         freqs = get_rotary_pos_embed(latents.shape[1 :], enable_RIFLEx= False) 

@@ -354,21 +354,29 @@ def video_matting(video_state, end_slider, matting_type, interactive_state, mask
     foreground, alpha = matanyone(matanyone_processor, following_frames, template_mask*255, r_erode=erode_kernel_size, r_dilate=dilate_kernel_size)
     output_frames = []
     foreground_mat = matting_type == "Foreground"
-    for frame_origin, frame_alpha in zip(following_frames, alpha):
-        if foreground_mat:
-            frame_alpha[frame_alpha > 127] = 255
-            frame_alpha[frame_alpha <= 127] = 0
-        else:
+    if not foreground_mat:
+        new_alpha = []
+        for frame_alpha in alpha:
             frame_temp = frame_alpha.copy()
             frame_alpha[frame_temp > 127] = 0
             frame_alpha[frame_temp <= 127] = 255
+            new_alpha.append(frame_alpha)
+        alpha = new_alpha
+    # for frame_origin, frame_alpha in zip(following_frames, alpha):
+    #     if foreground_mat:
+    #         frame_alpha[frame_alpha > 127] = 255
+    #         frame_alpha[frame_alpha <= 127] = 0
+    #     else:
+    #         frame_temp = frame_alpha.copy()
+    #         frame_alpha[frame_temp > 127] = 0
+    #         frame_alpha[frame_temp <= 127] = 255
 
-        output_frame = np.bitwise_and(frame_origin, 255-frame_alpha)
-        frame_grey = frame_alpha.copy()
-        frame_grey[frame_alpha == 255] = 127
-        output_frame += frame_grey
-        output_frames.append(output_frame)
-    foreground = output_frames
+    #     output_frame = np.bitwise_and(frame_origin, 255-frame_alpha)
+    #     frame_grey = frame_alpha.copy()
+    #     frame_grey[frame_alpha == 255] = 127
+    #     output_frame += frame_grey
+    #     output_frames.append(output_frame)
+    foreground = following_frames
 
     if not os.path.exists("mask_outputs"):
         os.makedirs("mask_outputs")
@@ -465,6 +473,7 @@ def load_unload_models(selected):
     global model
     global matanyone_model 
     if selected:
+        # print("Matanyone Tab Selected")
         if model_loaded:
             model.samcontroler.sam_controler.model.to(arg_device)
             matanyone_model.to(arg_device)
@@ -494,6 +503,7 @@ def load_unload_models(selected):
                 matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
             model_loaded  = True
     else:
+        # print("Matanyone Tab UnSelected")
         import gc
         model.samcontroler.sam_controler.model.to("cpu")
         matanyone_model.to("cpu")
@@ -517,10 +527,14 @@ def export_image(image_refs, image_output):
     image_refs.append( image_output)
     return image_refs
 
-def export_to_current_video_engine(foreground_video_output, alpha_video_output):
+def export_to_current_video_engine(model_type, foreground_video_output, alpha_video_output):
     gr.Info("Masked Video Input and Full Mask transferred to Current Video Engine For Inpainting")
     # return "MV#" + str(time.time()), foreground_video_output, alpha_video_output
-    return foreground_video_output, alpha_video_output
+    if "custom_edit" in model_type and False:
+        return gr.update(), alpha_video_output
+    else:
+        return foreground_video_output, alpha_video_output
+
 
 def teleport_to_video_tab():
     return gr.Tabs(selected="video_gen")
@@ -675,7 +689,7 @@ def display(tabs, model_choice, vace_video_input, vace_video_mask, vace_image_re
                 export_to_vace_video_14B_btn.click( fn=teleport_to_vace_14B, inputs=[], outputs=[tabs, model_choice]).then(
                     fn=export_to_current_video_engine, inputs= [foreground_video_output, alpha_video_output], outputs= [video_prompt_video_guide_trigger, vace_video_input, vace_video_mask])
                 
-                export_to_current_video_engine_btn.click(  fn=export_to_current_video_engine, inputs= [foreground_video_output, alpha_video_output], outputs= [vace_video_input, vace_video_mask]).then( #video_prompt_video_guide_trigger, 
+                export_to_current_video_engine_btn.click(  fn=export_to_current_video_engine, inputs= [model_choice, foreground_video_output, alpha_video_output], outputs= [vace_video_input, vace_video_mask]).then( #video_prompt_video_guide_trigger, 
                     fn=teleport_to_video_tab, inputs= [], outputs= [tabs])
 
 

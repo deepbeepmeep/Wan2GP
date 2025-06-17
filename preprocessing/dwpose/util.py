@@ -4,7 +4,7 @@ import math
 import numpy as np
 import matplotlib
 import cv2  
-matplotlib.use('TkAgg')
+# matplotlib.use('TkAgg')
 
 eps = 0.01
 

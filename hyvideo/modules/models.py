@@ -19,6 +19,7 @@ from .token_refiner import SingleTokenRefiner
 import numpy as np
 from mmgp import offload
 from wan.modules.attention import pay_attention
+from .audio_adapters import AudioProjNet2, PerceiverAttentionCA
 
 def get_linear_split_map():
     hidden_size = 3072
@@ -492,8 +493,8 @@ class MMSingleStreamBlock(nn.Module):
         return img, txt
 
 class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
-    def preprocess_loras(self, model_filename, sd):
-        if not "i2v" in model_filename:
+    def preprocess_loras(self, model_type, sd):
+        if model_type != "i2v" :
             return sd
         new_sd = {}
         for k,v in sd.items():
@@ -589,7 +590,11 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         use_attention_mask: bool = True,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
-        attention_mode: Optional[str] = "sdpa"
+        attention_mode: Optional[str] = "sdpa",
+        video_condition: bool = False,
+        audio_condition: bool = False,
+        avatar = False,
+        custom = False,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -604,7 +609,11 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         self.rope_dim_list = rope_dim_list
         self.i2v_condition_type = i2v_condition_type
         self.attention_mode = attention_mode
-        
+        self.video_condition = video_condition
+        self.audio_condition = audio_condition
+        self.avatar = avatar
+        self.custom = custom
+
         # Text projection. Default to linear projection.
         # Alternative: TokenRefiner. See more details (LI-DiT): http://arxiv.org/abs/2406.11831
         self.use_attention_mask = use_attention_mask
@@ -709,6 +718,57 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
             **factory_kwargs,
         )
 
+        if self.video_condition:
+            self.bg_in = PatchEmbed(
+                self.patch_size, self.in_channels * 2, self.hidden_size, **factory_kwargs
+            )
+            self.bg_proj = nn.Linear(self.hidden_size, self.hidden_size)
+
+        if audio_condition:
+            if avatar:
+                self.ref_in = PatchEmbed(
+                    self.patch_size, self.in_channels, self.hidden_size, **factory_kwargs
+                    )
+
+                # -------------------- audio_proj_model --------------------
+                self.audio_proj = AudioProjNet2(seq_len=10, blocks=5, channels=384, intermediate_dim=1024, output_dim=3072, context_tokens=4)
+                
+                # -------------------- motion-embeder --------------------
+                self.motion_exp = TimestepEmbedder(
+                        self.hidden_size // 4,
+                        get_activation_layer("silu"),
+                        **factory_kwargs
+                    )
+                self.motion_pose = TimestepEmbedder(
+                        self.hidden_size // 4,
+                        get_activation_layer("silu"),
+                        **factory_kwargs
+                    )
+
+                self.fps_proj = TimestepEmbedder(
+                        self.hidden_size,
+                        get_activation_layer("silu"),
+                        **factory_kwargs
+                    )
+                
+                self.before_proj = nn.Linear(self.hidden_size, self.hidden_size)
+
+                # -------------------- audio_insert_model --------------------
+                self.double_stream_list = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
+                audio_block_name = "audio_adapter_blocks"
+            elif custom:
+                self.audio_proj = AudioProjNet2(seq_len=10, blocks=5, channels=384, intermediate_dim=1024, output_dim=3072, context_tokens=4)
+                self.double_stream_list = [1, 3, 5, 7, 9, 11]
+                audio_block_name = "audio_models"
+
+            self.double_stream_map = {str(i): j for j, i in enumerate(self.double_stream_list)}
+            self.single_stream_list = []
+            self.single_stream_map = {str(i): j+len(self.double_stream_list) for j, i in enumerate(self.single_stream_list)}
+            setattr(self, audio_block_name,  nn.ModuleList([
+                PerceiverAttentionCA(dim=3072, dim_head=1024, heads=33) for _ in range(len(self.double_stream_list) + len(self.single_stream_list))
+            ]))
+
+
 
     def lock_layers_dtypes(self, dtype = torch.float32):
         layer_list = [self.final_layer, self.final_layer.linear, self.final_layer.adaLN_modulation[1]]
@@ -750,11 +810,19 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         guidance: torch.Tensor = None,  # Guidance for modulation, should be cfg_scale x 1000.
         pipeline=None,
         x_id = 0,
+        step_no = 0,
         callback = None,
+        audio_prompts = None,
+        motion_exp = None,
+        motion_pose = None,
+        fps = None,
+        face_mask = None,
+        audio_strength = None,
+        bg_latents = None,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
     
         img = x
-        batch_no, _, ot, oh, ow = x.shape
+        bsz, _, ot, oh, ow = x.shape
         del x
         txt = text_states   
         tt, th, tw = (
@@ -765,6 +833,17 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
 
         # Prepare modulation vectors.
         vec = self.time_in(t)
+        if motion_exp != None:
+            vec += self.motion_exp(motion_exp.view(-1)).view(bsz, -1)     # (b, 3072)
+        if motion_pose != None:
+            vec += self.motion_pose(motion_pose.view(-1)).view(bsz, -1)  # (b, 3072)
+        if fps != None:
+            vec += self.fps_proj(fps)   # (b, 3072)
+        if audio_prompts != None:
+            audio_feature_all = self.audio_proj(audio_prompts)
+            audio_feature_pad = audio_feature_all[:,:1].repeat(1,3,1,1) 
+            audio_feature_all_insert = torch.cat([audio_feature_pad, audio_feature_all], dim=1).view(bsz, ot, 16, 3072)
+            audio_feature_all = None
 
         if self.i2v_condition_type == "token_replace":
             token_replace_t = torch.zeros_like(t)
@@ -777,7 +856,6 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
             # token_replace_mask_txt = None
 
         # text modulation
-        # vec = vec + self.vector_in(text_states_2)
         vec_2 = self.vector_in(text_states_2)
         del text_states_2
         vec += vec_2
@@ -793,12 +871,21 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
                 )
 
             # our timestep_embedding is merged into guidance_in(TimestepEmbedder)
-            vec = vec + self.guidance_in(guidance)
+            vec += self.guidance_in(guidance)
 
         # Embed image and text.
-        img = self.img_in(img)
-        if ref_latents != None:
-            ref_latents = self.img_in(ref_latents)
+        img, shape_mask = self.img_in(img)
+        if self.avatar:
+            ref_latents_first = ref_latents[:, :, :1].clone()
+            ref_latents,_ = self.ref_in(ref_latents)
+            ref_latents_first,_ = self.img_in(ref_latents_first)
+        elif self.custom:
+            if ref_latents != None:
+                ref_latents, _ = self.img_in(ref_latents)
+            if bg_latents is not None and self.video_condition:
+                bg_latents, _ = self.bg_in(bg_latents)
+                img += self.bg_proj(bg_latents)
+
         if self.text_projection == "linear":
             txt = self.txt_in(txt)
         elif self.text_projection == "single_refiner":
@@ -808,7 +895,18 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
                 f"Unsupported text_projection: {self.text_projection}"
             )
 
-        if ref_latents == None:
+        if self.avatar:
+            img += self.before_proj(ref_latents)
+            ref_length = ref_latents_first.shape[-2]          # [b s c]
+            img = torch.cat([ref_latents_first, img], dim=-2) # t c
+            img_len = img.shape[1]
+            mask_len = img_len - ref_length
+            if face_mask.shape[2] == 1:
+                face_mask = face_mask.repeat(1,1,ot,1,1)  # repeat if number of mask frame is 1
+            face_mask = torch.nn.functional.interpolate(face_mask, size=[ot, shape_mask[-2], shape_mask[-1]], mode="nearest")
+            # face_mask = face_mask.view(-1,mask_len,1).repeat(1,1,img.shape[-1]).type_as(img)
+            face_mask = face_mask.view(-1,mask_len,1).type_as(img)
+        elif ref_latents == None:
             ref_length  = None
         else:
             ref_length = ref_latents.shape[-2]
@@ -824,17 +922,17 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         freqs_cis = (freqs_cos, freqs_sin) if freqs_cos is not None else None
         
 
-        if self.enable_teacache:
+        if self.enable_cache:
             if x_id == 0:
                 self.should_calc = True
                 inp = img[0:1] 
-                vec_ = vec 
+                vec_ = vec[0:1] 
                 ( img_mod1_shift, img_mod1_scale, _ , _ , _ , _ , ) = self.double_blocks[0].img_mod(vec_).chunk(6, dim=-1)
                 normed_inp = self.double_blocks[0].img_norm1(inp)
                 normed_inp = normed_inp.to(torch.bfloat16)
                 modulated_inp = modulate( normed_inp, shift=img_mod1_shift, scale=img_mod1_scale )
                 del normed_inp, img_mod1_shift, img_mod1_scale
-                if self.teacache_counter <= self.teacache_start_step or self.teacache_counter == self.num_steps-1:
+                if step_no <= self.cache_start_step or step_no == self.num_steps-1:
                     self.accumulated_rel_l1_distance = 0
                 else: 
                     coefficients = [7.33226126e+02, -4.01131952e+02,  6.75869174e+01, -3.14987800e+00, 9.61237896e-02]
@@ -846,20 +944,17 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
                     else:
                         self.accumulated_rel_l1_distance = 0
                 self.previous_modulated_input = modulated_inp  
-                self.teacache_counter += 1
-                if self.teacache_counter == self.num_steps:
-                    self.teacache_counter = 0
         else:
             self.should_calc = True
 
         if not self.should_calc:
             img += self.previous_residual[x_id]
         else:
-            if self.enable_teacache:            
+            if self.enable_cache:            
                 self.previous_residual[x_id] = None
                 ori_img = img[0:1].clone()
             # --------------------- Pass through DiT blocks ------------------------
-            for _, block in enumerate(self.double_blocks):
+            for layer_num, block in enumerate(self.double_blocks):
                 for i in range(len(img)):
                     if callback != None:
                         callback(-1, None, False, True)
@@ -880,6 +975,19 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
 
                     img[i], txt[i] = block(*double_block_args)
                     double_block_args = None
+                    # insert audio feature to img 
+                    if audio_prompts != None: 
+                        audio_adapter = getattr(self.double_blocks[layer_num], "audio_adapter", None)
+                        if audio_adapter != None:
+                            real_img = img[i:i+1,ref_length:].view(1, ot, -1, 3072)  
+                            real_img = audio_adapter(audio_feature_all_insert[i:i+1], real_img).view(1, -1, 3072)
+                            if face_mask != None:
+                                real_img *= face_mask[i:i+1]
+                            if audio_strength != None and audio_strength != 1:
+                                real_img *= audio_strength
+                            img[i:i+1, ref_length:] += real_img
+                            real_img = None
+
 
             for _, block in enumerate(self.single_blocks):
                 for i in range(len(img)):
@@ -906,7 +1014,7 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
                     single_block_args = None
 
             # img = x[:, :img_seq_len, ...]
-            if self.enable_teacache:
+            if self.enable_cache:
                 if len(img) > 1:
                     self.previous_residual[0] = torch.empty_like(img)
                     for i, (x, residual) in enumerate(zip(img, self.previous_residual[0])):
@@ -932,6 +1040,7 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         img = torch.cat(img_list)
         img_list = None
 
+        # img = self.unpatchify(img, tt, th, tw)
         img = self.unpatchify(img, tt, th, tw)
 
         return img
@@ -1014,6 +1123,37 @@ HUNYUAN_VIDEO_CONFIG = {
         "hidden_size": 3072,
         "heads_num": 24,
         "mlp_width_ratio": 4,
+        'custom' : True
+    },
+    'HYVideo-T/2-custom-audio': {                                                                       #   9.0B   / 12.5B
+        "mm_double_blocks_depth": 20,
+        "mm_single_blocks_depth": 40,
+        "rope_dim_list": [16, 56, 56],
+        "hidden_size": 3072,
+        "heads_num": 24,
+        "mlp_width_ratio": 4,
+        'custom' : True,
+        'audio_condition' : True,        
+    },
+    'HYVideo-T/2-custom-edit': {                                                                       #   9.0B   / 12.5B
+        "mm_double_blocks_depth": 20,
+        "mm_single_blocks_depth": 40,
+        "rope_dim_list": [16, 56, 56],
+        "hidden_size": 3072,
+        "heads_num": 24,
+        "mlp_width_ratio": 4,
+        'custom' : True,
+        'video_condition' : True,        
+    },
+    'HYVideo-T/2-avatar': {                                                                       #   9.0B   / 12.5B
+        'mm_double_blocks_depth': 20,
+        'mm_single_blocks_depth': 40,
+        'rope_dim_list': [16, 56, 56],
+        'hidden_size': 3072,
+        'heads_num': 24,
+        'mlp_width_ratio': 4,
+        'avatar': True,
+        'audio_condition' : True,
     },
     
 }

@@ -551,8 +551,8 @@ def main():
 
     # Setup tea cache if needed
     trans = wan_model.model
-    trans.enable_teacache = (args.teacache > 0)
-    if trans.enable_teacache:
+    trans.enable_cache = (args.teacache > 0)
+    if trans.enable_cache:
         if "480p" in args.transformer_file:
             # example from your code
             trans.coefficients = [-3.02331670e+02,  2.23948934e+02, -5.25463970e+01, 5.87348440e+00, -2.01973289e-01]
@@ -582,10 +582,10 @@ def main():
     enable_riflex = args.riflex
 
     # If teacache => reset counters
-    if trans.enable_teacache:
+    if trans.enable_cache:
         trans.teacache_counter = 0
         trans.teacache_multiplier = args.teacache
-        trans.teacache_start_step = int(args.teacache_start * args.steps / 100.0)
+        trans.cache_start_step = int(args.teacache_start * args.steps / 100.0)
         trans.num_steps = args.steps
         trans.teacache_skipped_steps = 0
         trans.previous_residual_uncond = None
@@ -655,7 +655,7 @@ def main():
         raise RuntimeError("No frames were returned (maybe generation was aborted or failed).")
 
     # If teacache was used, we can see how many steps were skipped
-    if trans.enable_teacache:
+    if trans.enable_cache:
         print(f"TeaCache skipped steps: {trans.teacache_skipped_steps} / {args.steps}")
 
     # Save result

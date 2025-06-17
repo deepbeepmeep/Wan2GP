@@ -17,7 +17,7 @@ gradio==5.23.0
 numpy>=1.23.5,<2
 einops
 moviepy==1.0.3
-mmgp==3.4.7
+mmgp==3.4.9
 peft==0.14.0
 mutagen
 pydantic==2.10.6
@@ -29,8 +29,11 @@ timm
 segment-anything
 omegaconf
 hydra-core
-librosa
+librosa==0.11.0
 loguru
 sentencepiece
 av
+opencv-python
+pygame>=2.1.0
+sounddevice>=0.4.0
 # rembg==2.0.65

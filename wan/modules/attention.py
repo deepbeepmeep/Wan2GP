@@ -194,6 +194,11 @@ def pay_attention(
 
     q = q.to(v.dtype)
     k = k.to(v.dtype)
+
+    if attn == "chipmunk":
+        from src.chipmunk.modules import SparseDiffMlp, SparseDiffAttn
+        from src.chipmunk.util import LayerCounter, GLOBAL_CONFIG
+
     if b > 1 and k_lens != None and attn in ("sage2", "sdpa"):
         assert attention_mask == None
         # Poor's man var k len attention

@@ -5,7 +5,7 @@ import functools
 from typing import List, Optional, Tuple, Union
 
 from pathlib import Path
-
+from einops import rearrange
 import torch
 import torch.distributed as dist
 from hyvideo.constants import PROMPT_TEMPLATE, NEGATIVE_PROMPT, PRECISION_TO_TYPE, NEGATIVE_PROMPT_I2V
@@ -16,11 +16,34 @@ from hyvideo.utils.data_utils import align_to, get_closest_ratio, generate_crop_
 from hyvideo.modules.posemb_layers import get_nd_rotary_pos_embed, get_nd_rotary_pos_embed_new 
 from hyvideo.diffusion.schedulers import FlowMatchDiscreteScheduler
 from hyvideo.diffusion.pipelines import HunyuanVideoPipeline
+from hyvideo.diffusion.pipelines import HunyuanVideoAudioPipeline
 from PIL import Image
 import numpy as np
 import torchvision.transforms as transforms
 import cv2
 from wan.utils.utils import resize_lanczos, calculate_new_dimensions
+from hyvideo.data_kits.audio_preprocessor import encode_audio, get_facemask
+from transformers import WhisperModel
+from transformers import AutoFeatureExtractor
+from hyvideo.data_kits.face_align import AlignImage
+import librosa
+
+def get_audio_feature(feature_extractor, audio_path, duration):
+    audio_input, sampling_rate = librosa.load(audio_path, duration=duration, sr=16000)
+    assert sampling_rate == 16000
+
+    audio_features = []
+    window = 750*640
+    for i in range(0, len(audio_input), window):
+        audio_feature = feature_extractor(audio_input[i:i+window], 
+                                        sampling_rate=sampling_rate, 
+                                        return_tensors="pt", 
+                                        device="cuda"
+                                        ).input_features
+        audio_features.append(audio_feature)
+
+    audio_features = torch.cat(audio_features, dim=-1)
+    return audio_features, len(audio_input) // 640
 
 def pad_image(crop_img, size, color=(255, 255, 255), resize_ratio=1):
     crop_h, crop_w = crop_img.shape[:2]
@@ -212,6 +235,14 @@ def patched_llava_forward(
         image_hidden_states=image_features if pixel_values is not None else None,
     )
 
+def adapt_model(model, audio_block_name):
+    modules_dict= { k: m for k, m in model.named_modules()}
+    for model_layer, avatar_layer in model.double_stream_map.items():
+        module = modules_dict[f"{audio_block_name}.{avatar_layer}"]
+        target = modules_dict[f"double_blocks.{model_layer}"]
+        setattr(target, "audio_adapter", module )
+    delattr(model, audio_block_name)
+
 class DataPreprocess(object):
     def __init__(self):
         self.llava_size = (336, 336)
@@ -223,12 +254,18 @@ class DataPreprocess(object):
             ]
         )
 
-    def get_batch(self, image , size):
+    def get_batch(self, image , size, pad = False):
         image = np.asarray(image)
-        llava_item_image = pad_image(image.copy(), self.llava_size)
+        if pad:
+            llava_item_image = pad_image(image.copy(), self.llava_size)
+        else:
+            llava_item_image = image.copy()
         uncond_llava_item_image = np.ones_like(llava_item_image) * 255
-        cat_item_image = pad_image(image.copy(), size)
 
+        if pad:
+            cat_item_image = pad_image(image.copy(), size)
+        else:
+            cat_item_image = image.copy()
         llava_item_tensor = self.llava_transform(Image.fromarray(llava_item_image.astype(np.uint8)))
         uncond_llava_item_tensor = self.llava_transform(Image.fromarray(uncond_llava_item_image))
         cat_item_tensor = torch.from_numpy(cat_item_image.copy()).permute((2, 0, 1)) / 255.0
@@ -243,6 +280,8 @@ class Inference(object):
     def __init__(        
         self,
         i2v,
+        custom,
+        avatar,
         enable_cfg,
         vae,
         vae_kwargs,
@@ -250,9 +289,14 @@ class Inference(object):
         model,
         text_encoder_2=None,
         pipeline=None,
+        feature_extractor=None,
+        wav2vec=None,
+        align_instance=None,
         device=None,
     ):
         self.i2v = i2v
+        self.custom = custom
+        self.avatar = avatar
         self.enable_cfg = enable_cfg
         self.vae = vae
         self.vae_kwargs = vae_kwargs
@@ -263,12 +307,15 @@ class Inference(object):
         self.model = model
         self.pipeline = pipeline
 
+        self.feature_extractor=feature_extractor
+        self.wav2vec=wav2vec
+        self.align_instance=align_instance
+
         self.device = "cuda"
 
 
-
     @classmethod
-    def from_pretrained(cls, model_filepath, text_encoder_filepath, dtype = torch.bfloat16, VAE_dtype = torch.float16, mixed_precision_transformer =torch.bfloat16 , **kwargs):
+    def from_pretrained(cls, model_filepath, model_type, base_model_type, text_encoder_filepath,  dtype = torch.bfloat16, VAE_dtype = torch.float16, mixed_precision_transformer =torch.bfloat16 , quantizeTransformer = False, save_quantized = False, **kwargs):
 
         device = "cuda" 
 
@@ -282,17 +329,33 @@ class Inference(object):
         precision = "bf16"
         vae_precision = "fp32" if VAE_dtype == torch.float32 else "bf16" 
         embedded_cfg_scale = 6
+        filepath = model_filepath[0]
         i2v_condition_type = None
-        i2v_mode = "i2v" in model_filepath[0]
+        i2v_mode = False
         custom = False
-        if i2v_mode:
+        custom_audio = False
+        avatar = False 
+        if base_model_type == "hunyuan_i2v":
             model_id = "HYVideo-T/2"
             i2v_condition_type = "token_replace"
-        elif "custom" in model_filepath[0]:
+            i2v_mode = True
+        elif base_model_type == "hunyuan_custom":
             model_id = "HYVideo-T/2-custom"
             custom = True
+        elif base_model_type == "hunyuan_custom_audio":
+            model_id = "HYVideo-T/2-custom-audio"
+            custom_audio = True
+            custom = True
+        elif base_model_type == "hunyuan_custom_edit":
+            model_id = "HYVideo-T/2-custom-edit"
+            custom = True
+        elif base_model_type == "hunyuan_avatar":
+            model_id = "HYVideo-T/2-avatar"
+            text_len = 256
+            avatar = True
         else:
             model_id = "HYVideo-T/2-cfgdistill"
+
 
         if i2v_mode and i2v_condition_type == "latent_concat":
             in_channels = latent_channels * 2 + 1
@@ -323,12 +386,15 @@ class Inference(object):
         from mmgp import offload
         # model = Inference.load_state_dict(args, model, model_filepath)
 
-        # model_filepath ="c:/temp/hc/mp_rank_00_model_states.pt"
-        offload.load_model_data(model, model_filepath, pinToMemory = pinToMemory, partialPinning = partialPinning)
+        # model_filepath ="c:/temp/hc/mp_rank_00_model_states_video.pt"
+        offload.load_model_data(model, model_filepath, do_quantize= quantizeTransformer and not save_quantized, pinToMemory = pinToMemory, partialPinning = partialPinning)
         pass
-        # offload.save_model(model, "hunyuan_video_custom_720_bf16.safetensors")
-        # offload.save_model(model, "hunyuan_video_custom_720_quanto_bf16_int8.safetensors", do_quantize= True)
-
+        # offload.save_model(model, "hunyuan_video_avatar_edit_720_bf16.safetensors")
+        # offload.save_model(model, "hunyuan_video_avatar_edit_720_quanto_bf16_int8.safetensors", do_quantize= True)
+        if save_quantized:            
+            from wgp import save_quantized_model
+            save_quantized_model(model, model_type, filepath, dtype, None)
+            
         model.mixed_precision = mixed_precision_transformer
 
         if model.mixed_precision :
@@ -338,9 +404,12 @@ class Inference(object):
 
         # ============================= Build extra models ========================
         # VAE
-        if custom:
+        if custom or avatar:
             vae_configpath = "ckpts/hunyuan_video_custom_VAE_config.json"
             vae_filepath = "ckpts/hunyuan_video_custom_VAE_fp32.safetensors"
+        # elif avatar:
+        #     vae_configpath = "ckpts/config_vae_avatar.json"
+        #     vae_filepath = "ckpts/vae_avatar.pt"
         else:
             vae_configpath = "ckpts/hunyuan_video_VAE_config.json"
             vae_filepath = "ckpts/hunyuan_video_VAE_fp32.safetensors"
@@ -350,6 +419,7 @@ class Inference(object):
 
         vae, _, s_ratio, t_ratio = load_vae( "884-16c-hy", vae_path= vae_filepath, vae_config_path= vae_configpath, vae_precision= vae_precision, device= "cpu", )
 
+        vae._model_dtype =  torch.float32 if VAE_dtype == torch.float32 else  (torch.float16 if avatar else torch.bfloat16)
         vae._model_dtype =  torch.float32 if VAE_dtype == torch.float32 else  torch.bfloat16
         vae_kwargs = {"s_ratio": s_ratio, "t_ratio": t_ratio}
         enable_cfg = False
@@ -359,7 +429,7 @@ class Inference(object):
             tokenizer = "llm-i2v"
             prompt_template = "dit-llm-encode-i2v"
             prompt_template_video = "dit-llm-encode-video-i2v"
-        elif custom :
+        elif custom or avatar :
             text_encoder = "llm-i2v"
             tokenizer = "llm-i2v"
             prompt_template = "dit-llm-encode"
@@ -411,14 +481,35 @@ class Inference(object):
             device="cpu",
         )
 
+        feature_extractor = None
+        wav2vec = None
+        align_instance = None
+
+        if avatar or custom_audio:
+            feature_extractor = AutoFeatureExtractor.from_pretrained("ckpts/whisper-tiny/")
+            wav2vec = WhisperModel.from_pretrained("ckpts/whisper-tiny/").to(device="cpu", dtype=torch.float32)
+            wav2vec._model_dtype = torch.float32
+            wav2vec.requires_grad_(False)
+        if avatar:
+            align_instance = AlignImage("cuda", det_path="ckpts/det_align/detface.pt")
+            align_instance.facedet.model.to("cpu")
+            adapt_model(model, "audio_adapter_blocks")
+        elif custom_audio:
+            adapt_model(model, "audio_models")
+
         return cls(
             i2v=i2v_mode,
+            custom=custom,
+            avatar=avatar,
             enable_cfg = enable_cfg,
             vae=vae,
             vae_kwargs=vae_kwargs,
             text_encoder=text_encoder,
             text_encoder_2=text_encoder_2,
             model=model,
+            feature_extractor=feature_extractor,
+            wav2vec=wav2vec,
+            align_instance=align_instance,
             device=device,
         )
 
@@ -428,6 +519,8 @@ class HunyuanVideoSampler(Inference):
     def __init__(
         self,
         i2v,
+        custom,
+        avatar,
         enable_cfg,
         vae,
         vae_kwargs,
@@ -435,10 +528,15 @@ class HunyuanVideoSampler(Inference):
         model,
         text_encoder_2=None,
         pipeline=None,
+        feature_extractor=None,
+        wav2vec=None,
+        align_instance=None,
         device=0,
     ):
         super().__init__(
             i2v,
+            custom,
+            avatar,
             enable_cfg,
             vae,
             vae_kwargs,
@@ -446,12 +544,16 @@ class HunyuanVideoSampler(Inference):
             model,
             text_encoder_2=text_encoder_2,
             pipeline=pipeline,
+            feature_extractor=feature_extractor,
+            wav2vec=wav2vec,
+            align_instance=align_instance,
             device=device,
         )
 
         self.i2v_mode = i2v
         self.enable_cfg = enable_cfg
         self.pipeline = self.load_diffusion_pipeline(
+            avatar = self.avatar,
             vae=self.vae,
             text_encoder=self.text_encoder,
             text_encoder_2=self.text_encoder_2,
@@ -474,6 +576,7 @@ class HunyuanVideoSampler(Inference):
 
     def load_diffusion_pipeline(
         self,
+        avatar,
         vae,
         text_encoder,
         text_encoder_2,
@@ -491,18 +594,28 @@ class HunyuanVideoSampler(Inference):
                 solver="euler",
             )
 
-        pipeline = HunyuanVideoPipeline(
-            vae=vae,
-            text_encoder=text_encoder,
-            text_encoder_2=text_encoder_2,
-            transformer=model,
-            scheduler=scheduler,
-            progress_bar_config=progress_bar_config,
-        )
+        if avatar:
+            pipeline = HunyuanVideoAudioPipeline(
+                vae=vae,
+                text_encoder=text_encoder,
+                text_encoder_2=text_encoder_2,
+                transformer=model,
+                scheduler=scheduler,
+                progress_bar_config=progress_bar_config,
+            )
+        else:
+            pipeline = HunyuanVideoPipeline(
+                vae=vae,
+                text_encoder=text_encoder,
+                text_encoder_2=text_encoder_2,
+                transformer=model,
+                scheduler=scheduler,
+                progress_bar_config=progress_bar_config,
+            )
  
         return pipeline
 
-    def get_rotary_pos_embed_new(self, video_length, height, width, concat_dict={}):
+    def get_rotary_pos_embed_new(self, video_length, height, width, concat_dict={}, enable_riflex = False):
         target_ndim = 3
         ndim = 5 - 2
         latents_size = [(video_length-1)//4+1 , height//8, width//8]
@@ -530,7 +643,10 @@ class HunyuanVideoSampler(Inference):
                                                     theta=256, 
                                                     use_real=True,
                                                     theta_rescale_factor=1,
-                                                    concat_dict=concat_dict)
+                                                    concat_dict=concat_dict,
+                                                    L_test = (video_length - 1) // 4 + 1,
+                                                    enable_riflex = enable_riflex
+                                                    )
         return freqs_cos, freqs_sin
         
     def get_rotary_pos_embed(self, video_length, height, width, enable_riflex = False):
@@ -588,6 +704,11 @@ class HunyuanVideoSampler(Inference):
         self,
         input_prompt,
         input_ref_images = None,
+        audio_guide = None,
+        input_frames = None,
+        input_masks = None,
+        input_video = None,        
+        fps = 24,
         height=192,
         width=336,
         frame_num=129,
@@ -601,13 +722,14 @@ class HunyuanVideoSampler(Inference):
         num_videos_per_prompt=1,
         i2v_resolution="720p",
         image_start=None,
-        enable_riflex = False,
+        enable_RIFLEx = False,
         i2v_condition_type: str = "token_replace",
         i2v_stability=True,
         VAE_tile_size = None,
         joint_pass = False,
         cfg_star_switch = False,
         fit_into_canvas = True,
+        conditioning_latents_size = 0,
         **kwargs,
     ):
 
@@ -617,13 +739,11 @@ class HunyuanVideoSampler(Inference):
             self.vae.tile_sample_min_size = VAE_tile_size["tile_sample_min_size"]
             self.vae.tile_latent_min_size = VAE_tile_size["tile_latent_min_size"]
             self.vae.tile_overlap_factor = VAE_tile_size["tile_overlap_factor"]
+            self.vae.enable_tiling()
 
         i2v_mode= self.i2v_mode
         if not self.enable_cfg:
             guide_scale=1.0
-
-
-        out_dict = dict()
 
         # ========================================================================
         # Arguments: seed
@@ -663,7 +783,6 @@ class HunyuanVideoSampler(Inference):
         seed_everything(seed)
         generator = [torch.Generator("cuda").manual_seed(seed) for seed in seeds]
         # generator = [torch.Generator(self.device).manual_seed(seed) for seed in seeds]
-        out_dict["seeds"] = seeds
 
         # ========================================================================
         # Arguments: target_width, target_height, target_frame_num
@@ -680,8 +799,7 @@ class HunyuanVideoSampler(Inference):
         target_height = align_to(height, 16)
         target_width = align_to(width, 16)
         target_frame_num = frame_num
-
-        out_dict["size"] = (target_height, target_width, target_frame_num)
+        audio_strength = 1
 
         if input_ref_images  != None:
             # ip_cfg_scale = 3.0
@@ -767,30 +885,134 @@ class HunyuanVideoSampler(Inference):
         # ========================================================================
 
         if input_ref_images == None:
-            freqs_cos, freqs_sin = self.get_rotary_pos_embed(target_frame_num, target_height, target_width, enable_riflex)
+            freqs_cos, freqs_sin = self.get_rotary_pos_embed(target_frame_num, target_height, target_width, enable_RIFLEx)
         else:
-            concat_dict = {'mode': 'timecat-w', 'bias': -1} 
-            freqs_cos, freqs_sin = self.get_rotary_pos_embed_new(target_frame_num, target_height, target_width, concat_dict)
+            if self.avatar:
+                w, h = input_ref_images.size
+                target_height, target_width = calculate_new_dimensions(target_height, target_width, h, w, fit_into_canvas)
+                if target_width != w or target_height != h:
+                    input_ref_images = input_ref_images.resize((target_width,target_height), resample=Image.Resampling.LANCZOS) 
+
+                concat_dict = {'mode': 'timecat', 'bias': -1} 
+                freqs_cos, freqs_sin = self.get_rotary_pos_embed_new(129, target_height, target_width, concat_dict)
+            else:
+                if input_frames != None:
+                    target_height, target_width = input_frames.shape[-3:-1]
+                elif input_video != None:
+                    target_height, target_width = input_video.shape[-2:]
+
+                concat_dict = {'mode': 'timecat-w', 'bias': -1} 
+                freqs_cos, freqs_sin = self.get_rotary_pos_embed_new(target_frame_num, target_height, target_width, concat_dict, enable_RIFLEx)
 
         n_tokens = freqs_cos.shape[0]
-
 
         callback = kwargs.pop("callback", None)
         callback_steps = kwargs.pop("callback_steps", None)
         # ========================================================================
         # Pipeline inference
         # ========================================================================
-        start_time = time.time()
 
-
-        #     "pixel_value_llava": llava_item_tensor.unsqueeze(0),
-        #     "uncond_pixel_value_llava": uncond_llava_item_tensor.unsqueeze(0),
-        #     'pixel_value_ref': cat_item_tensor.unsqueeze(0), 
+        pixel_value_llava, uncond_pixel_value_llava, pixel_value_ref =  None, None, None
         if input_ref_images  == None:
-            pixel_value_llava, uncond_pixel_value_llava, pixel_value_ref = None, None, None
             name = None
         else:
-            pixel_value_llava, uncond_pixel_value_llava, pixel_value_ref =  DataPreprocess().get_batch(input_ref_images, (target_width, target_height))
+            pixel_value_llava, uncond_pixel_value_llava, pixel_value_ref =  DataPreprocess().get_batch(input_ref_images, (target_width, target_height), pad = self.custom)
+
+        ref_latents, uncond_audio_prompts, audio_prompts, face_masks, motion_exp, motion_pose = None, None, None, None, None, None
+
+
+        bg_latents = None
+        if input_video != None:
+            pixel_value_bg = input_video.unsqueeze(0)
+            pixel_value_mask =  torch.zeros_like(input_video).unsqueeze(0)
+        if input_frames != None:
+            pixel_value_video_bg = input_frames.permute(-1,0,1,2).unsqueeze(0).float()
+            pixel_value_video_mask = input_masks.unsqueeze(-1).repeat(1,1,1,3).permute(-1,0,1,2).unsqueeze(0).float()
+            pixel_value_video_bg = pixel_value_video_bg.div_(127.5).add_(-1.)
+            if input_video != None:
+                pixel_value_bg = torch.cat([pixel_value_bg, pixel_value_video_bg], dim=2)
+                pixel_value_mask = torch.cat([ pixel_value_mask, pixel_value_video_mask], dim=2)
+            else:
+                pixel_value_bg = pixel_value_video_bg
+                pixel_value_mask = pixel_value_video_mask
+            pixel_value_video_mask, pixel_value_video_bg  = None, None
+        if input_video != None or input_frames != None:
+            if pixel_value_bg.shape[2] < frame_num:
+                padding_shape = list(pixel_value_bg.shape[0:2]) + [frame_num-pixel_value_bg.shape[2]] +  list(pixel_value_bg.shape[3:])  
+                pixel_value_bg = torch.cat([pixel_value_bg, torch.full(padding_shape, -1, dtype=pixel_value_bg.dtype, device= pixel_value_bg.device ) ], dim=2)
+                pixel_value_mask = torch.cat([ pixel_value_mask, torch.full(padding_shape, 255, dtype=pixel_value_mask.dtype, device= pixel_value_mask.device ) ], dim=2)
+
+            bg_latents = self.vae.encode(pixel_value_bg).latent_dist.sample()                
+            pixel_value_mask = pixel_value_mask.div_(127.5).add_(-1.)             
+            mask_latents = self.vae.encode(pixel_value_mask).latent_dist.sample()
+            bg_latents = torch.cat([bg_latents, mask_latents], dim=1)
+            bg_latents.mul_(self.vae.config.scaling_factor)
+
+        if self.avatar:
+            if n_prompt == None or len(n_prompt) == 0:
+                n_prompt = "Aerial view, aerial view, overexposed, low quality, deformation, a poor composition, bad hands, bad teeth, bad eyes, bad limbs, distortion, blurring, Lens changes"
+
+            uncond_pixel_value_llava = pixel_value_llava.clone()
+
+            pixel_value_ref = pixel_value_ref.unsqueeze(0)
+            self.align_instance.facedet.model.to("cuda")
+            face_masks = get_facemask(pixel_value_ref.to("cuda")*255, self.align_instance, area=3.0) 
+            # iii = (face_masks.squeeze(0).squeeze(0).permute(1,2,0).repeat(1,1,3)*255).cpu().numpy().astype(np.uint8)
+            # image = Image.fromarray(iii)
+            # image.save("mask.png")
+            # jjj = (pixel_value_ref.squeeze(0).squeeze(0).permute(1,2,0)*255).cpu().numpy().astype(np.uint8)
+
+            self.align_instance.facedet.model.to("cpu")
+            # pixel_value_ref = pixel_value_ref.clone().repeat(1,129,1,1,1)
+
+            pixel_value_ref = pixel_value_ref.repeat(1,1+4*2,1,1,1)
+            pixel_value_ref = pixel_value_ref * 2 - 1 
+            pixel_value_ref_for_vae = rearrange(pixel_value_ref, "b f c h w -> b c f h w")
+
+            vae_dtype = self.vae.dtype
+            with torch.autocast(device_type="cuda", dtype=vae_dtype, enabled=vae_dtype != torch.float32):
+                ref_latents = self.vae.encode(pixel_value_ref_for_vae).latent_dist.sample()
+                ref_latents = torch.cat( [ref_latents[:,:, :1], ref_latents[:,:, 1:2].repeat(1,1,31,1,1),  ref_latents[:,:, -1:]], dim=2)
+                pixel_value_ref, pixel_value_ref_for_vae = None, None
+
+                if hasattr(self.vae.config, 'shift_factor') and self.vae.config.shift_factor:
+                    ref_latents.sub_(self.vae.config.shift_factor).mul_(self.vae.config.scaling_factor)
+                else:
+                    ref_latents.mul_(self.vae.config.scaling_factor)
+
+                # out_latents= ref_latents / self.vae.config.scaling_factor
+                # image = self.vae.decode(out_latents, return_dict=False, generator=generator)[0]
+                # image = image.clamp(-1, 1)
+                # from wan.utils.utils import cache_video
+                # cache_video( tensor=image, save_file="decode.mp4", fps=25, nrow=1, normalize=True, value_range=(-1, 1))
+
+            motion_pose = np.array([25] * 4)
+            motion_exp = np.array([30] * 4)
+            motion_pose = torch.from_numpy(motion_pose).unsqueeze(0)
+            motion_exp = torch.from_numpy(motion_exp).unsqueeze(0)
+
+            face_masks = torch.nn.functional.interpolate(face_masks.float().squeeze(2), 
+                                                    (ref_latents.shape[-2], 
+                                                    ref_latents.shape[-1]), 
+                                                    mode="bilinear").unsqueeze(2).to(dtype=ref_latents.dtype)
+
+
+        if audio_guide != None:            
+            audio_input, audio_len = get_audio_feature(self.feature_extractor, audio_guide, duration = frame_num/fps )
+            audio_prompts = audio_input[0]
+            weight_dtype = audio_prompts.dtype
+            if self.custom:
+                audio_len = min(audio_len, frame_num)
+                audio_input = audio_input[:, :audio_len]
+            audio_prompts = encode_audio(self.wav2vec, audio_prompts.to(dtype=self.wav2vec.dtype), fps, num_frames=audio_len) 
+            audio_prompts = audio_prompts.to(self.model.dtype)
+            segment_size = 129 if self.avatar else frame_num
+            if audio_prompts.shape[1] <= segment_size:
+                audio_prompts = torch.cat([audio_prompts, torch.zeros_like(audio_prompts[:, :1]).repeat(1,segment_size-audio_prompts.shape[1], 1, 1, 1)], dim=1)
+            else:
+                audio_prompts = torch.cat([audio_prompts, torch.zeros_like(audio_prompts[:, :1]).repeat(1, 5, 1, 1, 1)], dim=1)
+            uncond_audio_prompts = torch.zeros_like(audio_prompts[:,:129])
+
         samples = self.pipeline(
             prompt=input_prompt,
             height=target_height,
@@ -803,9 +1025,21 @@ class HunyuanVideoSampler(Inference):
             generator=generator,
             output_type="pil",
             name = name,
-            pixel_value_llava = pixel_value_llava, 
-            uncond_pixel_value_llava=uncond_pixel_value_llava, 
-            pixel_value_ref=pixel_value_ref,
+
+            pixel_value_ref = pixel_value_ref,
+            ref_latents=ref_latents,                            # [1, 16, 1, h//8, w//8]
+            pixel_value_llava=pixel_value_llava,                # [1, 3, 336, 336]
+            uncond_pixel_value_llava=uncond_pixel_value_llava,
+            face_masks=face_masks,                              # [b f h w]
+            audio_prompts=audio_prompts, 
+            uncond_audio_prompts=uncond_audio_prompts, 
+            motion_exp=motion_exp, 
+            motion_pose=motion_pose, 
+            fps= torch.from_numpy(np.array(fps)), 
+
+            bg_latents = bg_latents,
+            audio_strength = audio_strength,
+
             denoise_strength=denoise_strength,
             ip_cfg_scale=ip_cfg_scale,             
             freqs_cis=(freqs_cos, freqs_sin),
@@ -825,9 +1059,9 @@ class HunyuanVideoSampler(Inference):
             callback = callback,
             callback_steps = callback_steps,
         )[0]
-        gen_time = time.time() - start_time
+
         if samples == None:
             return None
-        samples = samples.sub_(0.5).mul_(2).squeeze(0)
+        samples = samples.squeeze(0)
 
         return samples

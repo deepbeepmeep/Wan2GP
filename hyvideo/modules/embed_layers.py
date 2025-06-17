@@ -53,10 +53,11 @@ class PatchEmbed(nn.Module):
 
     def forward(self, x):
         x = self.proj(x)
+        shape = x.shape
         if self.flatten:
             x = x.flatten(2).transpose(1, 2)  # BCHW -> BNC
         x = self.norm(x)
-        return x
+        return x, shape
 
 
 class TextProjection(nn.Module):

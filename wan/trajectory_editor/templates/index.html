@@ -1,0 +1,571 @@
+<!-- Copyright (c) 2024-2025 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License. -->
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Track Point Editor</title>
+  <style>
+    .btn-row {
+      display: flex;
+      align-items: center;
+      margin: 8px 0;
+    }
+    .btn-row > * { margin-right: 12px; }
+    body { font-family: sans-serif; margin: 16px; }
+    #topControls, #bottomControls { margin-bottom: 12px; }
+    button, input, select, label { margin: 4px; }
+    #canvas { border:1px solid #ccc; display: block; margin: auto; }
+    #canvas { cursor: crosshair; }
+    #trajProgress { width: 200px; height: 16px; margin-left:12px; }
+  </style>
+</head>
+<body>
+  <h2>Track Point Editor</h2>
+
+  <!-- Top controls -->
+  <div id="topControls" class="btn-row">
+    <input type="file" id="fileInput" accept="image/*">
+    <button id="storeBtn">Store Tracks</button>
+  </div>
+
+  <!-- Main drawing canvas -->
+  <canvas id="canvas"></canvas>
+
+  <!-- Track controls -->
+  <div id="bottomControls">
+    <div class="btn-row">
+      <button id="addTrackBtn">Add Freehand Track</button>
+      <button id="deleteLastBtn">Delete Last Track</button>
+      <progress id="trajProgress" max="121" value="0" style="display:none;"></progress>
+    </div>
+    <div class="btn-row">
+      <button id="placeCircleBtn">Place Circle</button>
+      <button id="addCirclePointBtn">Add Circle Point</button>
+      <label>Radius:
+        <input type="range" id="radiusSlider" min="10" max="800" value="50" style="display:none;">
+      </label>
+    </div>
+    <div class="btn-row">
+      <button id="addStaticBtn">Add Static Point</button>
+      <label>Static Frames:
+        <input type="number" id="staticFramesInput" value="121" min="1" style="width:60px">
+      </label>
+    </div>
+    <div class="btn-row">
+      <select id="trackSelect" style="min-width:160px;"></select>
+      <div id="colorIndicator"
+            style="
+              width:16px;
+              height:16px;
+              border:1px solid #444;
+              display:inline-block;
+              vertical-align:middle;
+              margin-left:8px;
+              pointer-events:none;
+              visibility:hidden;
+            ">
+      </div>
+      <button id="deleteTrackBtn">Delete Selected</button>
+      <button id="editTrackBtn">Edit Track</button>
+      <button id="duplicateTrackBtn">Duplicate Track</button>
+    </div>
+    <!-- Global motion offset -->
+    <div class="btn-row">
+      <label>Motion X (px/frame):
+        <input type="number" id="motionXInput" value="0" style="width:60px">
+      </label>
+      <label>Motion Y (px/frame):
+        <input type="number" id="motionYInput" value="0" style="width:60px">
+      </label>
+      <button id="applySelectedMotionBtn">Add to Selected</button>
+      <button id="applyAllMotionBtn">Add to All</button>
+    </div>
+  </div>
+
+  
+  <script>
+  // ——— DOM refs —————————————————————————————————————————
+  const canvas            = document.getElementById('canvas'),
+        ctx               = canvas.getContext('2d'),
+        fileIn            = document.getElementById('fileInput'),
+        storeBtn          = document.getElementById('storeBtn'),
+        addTrackBtn       = document.getElementById('addTrackBtn'),
+        deleteLastBtn     = document.getElementById('deleteLastBtn'),
+        placeCircleBtn    = document.getElementById('placeCircleBtn'),
+        addCirclePointBtn = document.getElementById('addCirclePointBtn'),
+        addStaticBtn      = document.getElementById('addStaticBtn'),
+        staticFramesInput = document.getElementById('staticFramesInput'),
+        radiusSlider      = document.getElementById('radiusSlider'),
+        trackSelect       = document.getElementById('trackSelect'),
+        deleteTrackBtn    = document.getElementById('deleteTrackBtn'),
+        editTrackBtn      = document.getElementById('editTrackBtn'),
+        duplicateTrackBtn = document.getElementById('duplicateTrackBtn'),
+        trajProg          = document.getElementById('trajProgress'),
+        colorIndicator    = document.getElementById('colorIndicator'),
+        motionXInput            = document.getElementById('motionXInput'),
+        motionYInput            = document.getElementById('motionYInput'),
+        applySelectedMotionBtn  = document.getElementById('applySelectedMotionBtn'),
+        applyAllMotionBtn       = document.getElementById('applyAllMotionBtn');
+
+  let img, image_id, ext, origW, origH,
+      scaleX=1, scaleY=1;
+
+  // track data
+  let free_tracks = [], current_track = [], drawing=false, motionCounter=0;
+  let circle=null, static_trajs=[];
+  let mode='', selectedTrack=null, editMode=false, editInfo=null, duplicateBuffer=null;
+  const COLORS=['red','green','blue','cyan','magenta','yellow','black'],
+        FIXED_LENGTH=121,
+        editSigma = 5/Math.sqrt(2*Math.log(2));
+
+  // ——— Upload & scale image ————————————————————————————
+  fileIn.addEventListener('change', async e => {
+    const f = e.target.files[0]; if (!f) return;
+    const fd = new FormData(); fd.append('image',f);
+    const res = await fetch('/upload_image',{method:'POST',body:fd});
+    const js = await res.json();
+    image_id=js.image_id; ext=js.ext;
+    origW=js.orig_width; origH=js.orig_height;
+    if(origW>=origH){
+      canvas.width=800; canvas.height=Math.round(origH*800/origW);
+    } else {
+      canvas.height=800; canvas.width=Math.round(origW*800/origH);
+    }
+    scaleX=origW/canvas.width; scaleY=origH/canvas.height;
+    img=new Image(); img.src=js.image_url;
+    img.onload=()=>{
+      free_tracks=[]; current_track=[];
+      circle=null; static_trajs=[];
+      mode=selectedTrack=''; editMode=false; editInfo=null; duplicateBuffer=null;
+      trajProg.style.display='none';
+      radiusSlider.style.display='none';
+      trackSelect.innerHTML='';
+      redraw();
+    };
+  });
+
+  // ——— Store tracks + depth —————————————————————————
+  storeBtn.onclick = async () => {
+    if(!image_id) return alert('Load an image first');
+    const fh = free_tracks.map(tr=>tr.map(p=>({x:p.x*scaleX,y:p.y*scaleY}))),
+          ct = (circle?.trajectories||[]).map(tr=>tr.map(p=>({x:p.x*scaleX,y:p.y*scaleY}))),
+          st = static_trajs.map(tr=>tr.map(p=>({x:p.x*scaleX,y:p.y*scaleY})));
+    const payload = {
+      image_id, ext,
+      tracks: fh,
+      circle_trajectories: ct.concat(st)
+    };
+    const res = await fetch('/store_tracks',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const js = await res.json();
+    img.src=js.overlay_url;
+    img.onload=()=>ctx.drawImage(img,0,0,canvas.width,canvas.height);
+
+    // reset UI
+    free_tracks=[]; circle=null; static_trajs=[];
+    mode=selectedTrack=''; editMode=false; editInfo=null; duplicateBuffer=null;
+    trajProg.style.display='none';
+    radiusSlider.style.display='none';
+    trackSelect.innerHTML='';
+    redraw();
+  };
+
+  // ——— Control buttons —————————————————————————————
+  addTrackBtn.onclick = ()=>{
+    mode='free'; drawing=true; current_track=[]; motionCounter=0;
+    trajProg.max=FIXED_LENGTH; trajProg.value=0;
+    trajProg.style.display='inline-block';
+  };
+  deleteLastBtn.onclick = ()=>{
+    if(drawing){
+      drawing=false; current_track=[]; trajProg.style.display='none';
+    } else if(free_tracks.length){
+      free_tracks.pop(); updateTrackSelect(); redraw();
+    }
+    updateColorIndicator();
+  };
+  placeCircleBtn.onclick    = ()=>{ mode='placeCircle'; drawing=false; };
+  addCirclePointBtn.onclick = ()=>{ if(!circle) alert('Place circle first'); else mode='addCirclePt'; };
+  addStaticBtn.onclick      = ()=>{ mode='placeStatic'; };
+  duplicateTrackBtn.onclick = ()=>{
+    if(!selectedTrack) return alert('Select a track first');
+    const arr = selectedTrack.type==='free'
+              ? free_tracks[selectedTrack.idx]
+              : selectedTrack.type==='circle'
+                ? circle.trajectories[selectedTrack.idx]
+                : static_trajs[selectedTrack.idx];
+    duplicateBuffer = arr.map(p=>({x:p.x,y:p.y}));
+    mode='duplicate'; canvas.style.cursor='copy';
+  };
+
+  radiusSlider.oninput = ()=>{
+    if(!circle) return;
+    circle.radius = +radiusSlider.value;
+    circle.trajectories.forEach((traj,i)=>{
+      const θ = circle.angles[i];
+      traj.push({
+        x: circle.cx + Math.cos(θ)*circle.radius,
+        y: circle.cy + Math.sin(θ)*circle.radius
+      });
+    });
+    if(selectedTrack?.type==='circle')
+      trajProg.value = circle.trajectories[selectedTrack.idx].length;
+    redraw();
+  };
+
+  deleteTrackBtn.onclick = ()=>{
+    if(!selectedTrack) return;
+    const {type,idx} = selectedTrack;
+    if(type==='free')    free_tracks.splice(idx,1);
+    else if(type==='circle'){
+      circle.trajectories.splice(idx,1);
+      circle.angles.splice(idx,1);
+    } else {
+      static_trajs.splice(idx,1);
+    }
+    selectedTrack=null;
+    trajProg.style.display='none';
+    updateTrackSelect();
+    redraw();
+    updateColorIndicator();
+  };
+
+  editTrackBtn.onclick = ()=>{
+    if(!selectedTrack) return alert('Select a track first');
+    editMode=!editMode;
+    editTrackBtn.textContent = editMode?'Stop Editing':'Edit Track';
+  };
+
+  // ——— Track select & depth init —————————————————————
+  function updateTrackSelect(){
+    trackSelect.innerHTML='';
+    free_tracks.forEach((_,i)=>{
+      const o=document.createElement('option');
+      o.value=JSON.stringify({type:'free',idx:i});
+      o.textContent=`Point ${i+1}`;
+      trackSelect.appendChild(o);
+    });
+    if(circle){
+      circle.trajectories.forEach((_,i)=>{
+        const o=document.createElement('option');
+        o.value=JSON.stringify({type:'circle',idx:i});
+        o.textContent=`CirclePt ${i+1}`;
+        trackSelect.appendChild(o);
+      });
+    }
+    static_trajs.forEach((_,i)=>{
+      const o=document.createElement('option');
+      o.value=JSON.stringify({type:'static',idx:i});
+      o.textContent=`StaticPt ${i+1}`;
+      trackSelect.appendChild(o);
+    });
+    if(trackSelect.options.length){
+      trackSelect.selectedIndex=0;
+      trackSelect.onchange();
+    }
+    updateColorIndicator();
+  }
+
+  function applyMotionToTrajectory(traj, dx, dy) {
+    traj.forEach((pt, frameIdx) => {
+      pt.x += dx * frameIdx;
+      pt.y += dy * frameIdx;
+    });
+  }
+
+  applySelectedMotionBtn.onclick = () => {
+  if (!selectedTrack) {
+    return alert('Please select a track first');
+  }
+  const dx = parseFloat(motionXInput.value) || 0;
+  const dy = parseFloat(motionYInput.value) || 0;
+
+  // pick the underlying array
+  let arr = null;
+  if (selectedTrack.type === 'free') {
+    arr = free_tracks[selectedTrack.idx];
+  } else if (selectedTrack.type === 'circle') {
+    arr = circle.trajectories[selectedTrack.idx];
+  } else { // 'static'
+    arr = static_trajs[selectedTrack.idx];
+  }
+
+  applyMotionToTrajectory(arr, dx, dy);
+  redraw();
+};
+
+// 2) Add motion to every track on the canvas
+applyAllMotionBtn.onclick = () => {
+  const dx = parseFloat(motionXInput.value) || 0;
+  const dy = parseFloat(motionYInput.value) || 0;
+
+  // freehand tracks
+  free_tracks.forEach(tr => applyMotionToTrajectory(tr, dx, dy));
+  // circle‑based tracks
+  if (circle) {
+    circle.trajectories.forEach(tr => applyMotionToTrajectory(tr, dx, dy));
+  }
+  // static points (now will move over frames)
+  static_trajs.forEach(tr => applyMotionToTrajectory(tr, dx, dy));
+
+  redraw();
+};
+
+  trackSelect.onchange = ()=>{
+    if(!trackSelect.value){
+      selectedTrack=null;
+      trajProg.style.display='none';
+      return;
+    }
+    selectedTrack = JSON.parse(trackSelect.value);
+
+    if(selectedTrack.type==='circle'){
+      trajProg.style.display='inline-block';
+      trajProg.max=FIXED_LENGTH;
+      trajProg.value=circle.trajectories[selectedTrack.idx].length;
+    } else if(selectedTrack.type==='free'){
+      trajProg.style.display='inline-block';
+      trajProg.max=FIXED_LENGTH;
+      trajProg.value=free_tracks[selectedTrack.idx].length;
+    } else {
+      trajProg.style.display='none';
+    }
+    updateColorIndicator();
+  };
+
+  // ——— Canvas drawing ————————————————————————————————
+  canvas.addEventListener('mousedown', e=>{
+    const r=canvas.getBoundingClientRect(),
+          x=e.clientX-r.left, y=e.clientY-r.top;
+
+    // place circle
+    if(mode==='placeCircle'){
+      circle={cx:x,cy:y,radius:50,angles:[],trajectories:[]};
+      radiusSlider.max=Math.min(canvas.width,canvas.height)|0;
+      radiusSlider.value=50; radiusSlider.style.display='inline';
+      mode=''; updateTrackSelect(); redraw(); return;
+    }
+    // add circle point
+    if(mode==='addCirclePt'){
+      const dx=x-circle.cx, dy=y-circle.cy;
+      const θ=Math.atan2(dy,dx);
+      const px=circle.cx+Math.cos(θ)*circle.radius;
+      const py=circle.cy+Math.sin(θ)*circle.radius;
+      circle.angles.push(θ);
+      circle.trajectories.push([{x:px,y:py}]);
+      mode=''; updateTrackSelect(); redraw(); return;
+    }
+    // add static
+    if (mode === 'placeStatic') {
+      // how many frames to “hold” the point
+      const len = parseInt(staticFramesInput.value, 10) || FIXED_LENGTH;
+      // duplicate the click‐point len times
+      const traj = Array.from({ length: len }, () => ({ x, y }));
+      // push into free_tracks so it's drawn & edited just like any freehand curve
+      free_tracks.push(traj);
+
+      // reset state
+      mode = '';
+      updateTrackSelect();
+      redraw();
+      return;
+    }
+    // duplicate
+    if(mode==='duplicate' && duplicateBuffer){
+      const orig = duplicateBuffer;
+      // click defines translation by first point
+      const dx = x - orig[0].x, dy = y - orig[0].y;
+      const newTr = orig.map(p=>({x:p.x+dx, y:p.y+dy}));
+      free_tracks.push(newTr);
+      mode=''; duplicateBuffer=null; canvas.style.cursor='crosshair';
+      updateTrackSelect(); redraw(); return;
+    }
+    // editing
+    if(editMode && selectedTrack){
+      const arr = selectedTrack.type==='free'
+                ? free_tracks[selectedTrack.idx]
+                : selectedTrack.type==='circle'
+                  ? circle.trajectories[selectedTrack.idx]
+                  : static_trajs[selectedTrack.idx];
+      let best=0,bd=Infinity;
+      arr.forEach((p,i)=>{
+        const d=(p.x-x)**2+(p.y-y)**2;
+        if(d<bd){ bd=d; best=i; }
+      });
+      editInfo={ trackType:selectedTrack.type,
+                 trackIdx:selectedTrack.idx,
+                 ptIdx:best,
+                 startX:x, startY:y };
+      return;
+    }
+    // freehand start
+    if(mode==='free'){
+      drawing=true; motionCounter=0;
+      current_track=[{x,y}];
+      redraw();
+    }
+  });
+
+  canvas.addEventListener('mousemove', e=>{
+    const r=canvas.getBoundingClientRect(),
+          x=e.clientX-r.left, y=e.clientY-r.top;
+    // edit mode
+    if(editMode && editInfo){
+      const dx=x-editInfo.startX,
+            dy=y-editInfo.startY;
+      const {trackType,trackIdx,ptIdx} = editInfo;
+      const arr = trackType==='free'
+                ? free_tracks[trackIdx]
+                : trackType==='circle'
+                  ? circle.trajectories[trackIdx]
+                  : static_trajs[trackIdx];
+      arr.forEach((p,i)=>{
+        const d=i-ptIdx;
+        const w=Math.exp(-0.5*(d*d)/(editSigma*editSigma));
+        p.x+=dx*w; p.y+=dy*w;
+      });
+      editInfo.startX=x; editInfo.startY=y;
+      if(selectedTrack?.type==='circle')
+        trajProg.value=circle.trajectories[selectedTrack.idx].length;
+      redraw(); return;
+    }
+    // freehand draw
+    if(drawing && (e.buttons&1)){
+      motionCounter++;
+      if(motionCounter%2===0){
+        current_track.push({x,y});
+        trajProg.value = Math.min(current_track.length, trajProg.max);
+        redraw();
+      }
+    }
+  });
+
+  canvas.addEventListener('mouseup', ()=>{
+    if(editMode && editInfo){ editInfo=null; return; }
+    if(drawing){
+      free_tracks.push(current_track.slice());
+      drawing=false; current_track=[];
+      updateTrackSelect(); redraw();
+    }
+  });
+
+  function updateColorIndicator() {
+    const idx = trackSelect.selectedIndex;
+    if (idx < 0) {
+      colorIndicator.style.visibility = 'hidden';
+      return;
+    }
+    // Pick the color by index
+    const col = COLORS[idx % COLORS.length];
+    colorIndicator.style.backgroundColor = col;
+    colorIndicator.style.visibility = 'visible';
+  }
+  
+  // ——— redraw ———
+  function redraw(){
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (img.complete) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    // set a fatter line for all strokes
+    ctx.lineWidth = 2;
+
+    // — freehand (and static‑turned‑freehand) tracks —
+    free_tracks.forEach((tr, i) => {
+      const col = COLORS[i % COLORS.length];
+      ctx.strokeStyle = col;
+      ctx.fillStyle   = col;
+
+      if (tr.length === 0) return;
+
+      // check if every point equals the first
+      const allSame = tr.every(p => p.x === tr[0].x && p.y === tr[0].y);
+
+      if (allSame) {
+        // draw a filled circle for a “static” dot
+        ctx.beginPath();
+        ctx.arc(tr[0].x, tr[0].y, 4, 0, 2 * Math.PI);
+        ctx.fill();
+      } else {
+        // normal polyline
+        ctx.beginPath();
+        tr.forEach((p, j) =>
+          j ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)
+        );
+        ctx.stroke();
+      }
+    });
+
+    if(drawing && current_track.length){
+      ctx.strokeStyle='black';
+      ctx.beginPath();
+      current_track.forEach((p,j)=>
+        j? ctx.lineTo(p.x,p.y): ctx.moveTo(p.x,p.y));
+      ctx.stroke();
+    }
+
+    // — circle trajectories —
+    if (circle) {
+      // circle outline
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth   = 1;
+      ctx.beginPath();
+      ctx.arc(circle.cx, circle.cy, circle.radius, 0, 2 * Math.PI);
+      ctx.stroke();
+
+      circle.trajectories.forEach((tr, i) => {
+        const col = COLORS[(free_tracks.length + i) % COLORS.length];
+        ctx.strokeStyle = col;
+        ctx.fillStyle   = col;
+        ctx.lineWidth   = 2;
+
+        if (tr.length <= 1) {
+          // single‑point circle trajectory → dot
+          ctx.beginPath();
+          ctx.arc(tr[0].x, tr[0].y, 4, 0, 2 * Math.PI);
+          ctx.fill();
+        } else {
+          // normal circle track
+          ctx.beginPath();
+          tr.forEach((p, j) =>
+            j ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)
+          );
+          ctx.stroke();
+
+          // white handle at last point
+          const lp = tr[tr.length - 1];
+          ctx.fillStyle = 'white';
+          ctx.beginPath();
+          ctx.arc(lp.x, lp.y, 4, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+      });
+    }
+
+    // — static_trajs (if you still use them separately) —
+    static_trajs.forEach((tr, i) => {
+      const p = tr[0];
+      ctx.fillStyle = 'orange';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 5, 0, 2 * Math.PI);
+      ctx.fill();
+    });
+  }
+  </script>
+</body>
+</html>

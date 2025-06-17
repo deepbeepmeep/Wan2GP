@@ -11,6 +11,8 @@ from typing import Union,Optional
 from mmgp import offload
 from .attention import pay_attention
 from torch.backends.cuda import sdp_kernel
+# from src.chipmunk.modules import SparseDiffMlp, SparseDiffAttn
+# from src.chipmunk.util import LayerCounter, GLOBAL_CONFIG
 
 __all__ = ['WanModel']
 
@@ -172,6 +174,11 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
+        # Only initialize SparseDiffAttn if this is not a subclass initialization
+        # if self.__class__ == WanSelfAttention:
+        #     layer_num, layer_counter = LayerCounter.build_for_layer(is_attn_sparse=True, is_mlp_sparse=False)
+        #     self.attn = SparseDiffAttn(layer_num, layer_counter)
+
     def forward(self, xlist, grid_sizes, freqs, block_mask = None):
         r"""
         Args:
@@ -197,7 +204,10 @@ class WanSelfAttention(nn.Module):
         del q,k
 
         q,k = apply_rotary_emb(qklist, freqs, head_first=False)
-        if block_mask == None:
+        chipmunk = offload.shared_state["_chipmunk"] 
+        if chipmunk:
+            x = self.attn(q, k, v)
+        elif block_mask == None:
             qkv_list = [q,k,v]
             del q,k,v
             x = pay_attention(
@@ -589,7 +599,7 @@ class MLPProj(torch.nn.Module):
 
 
 class WanModel(ModelMixin, ConfigMixin):
-    def preprocess_loras(self, model_filename, sd):
+    def preprocess_loras(self, model_type, sd):
 
         first = next(iter(sd), None)
         if first == None:
@@ -634,7 +644,7 @@ class WanModel(ModelMixin, ConfigMixin):
             new_sd.update(new_alphas)
             sd = new_sd
         from wgp import test_class_i2v 
-        if not test_class_i2v(model_filename):
+        if not test_class_i2v(model_type):
             new_sd = {}
             # convert loras for i2v to t2v
             for k,v in sd.items():
@@ -954,6 +964,16 @@ class WanModel(ModelMixin, ConfigMixin):
                 x_list[i] = x
         x, y = None, None
 
+        offload.shared_state["_chipmunk"] = False
+        chipmunk = offload.shared_state["_chipmunk"] 
+        if chipmunk:
+            voxel_shape = (4, 6, 8)
+            for x in x_list:
+                from src.chipmunk.ops.voxel import voxel_chunk_no_padding, reverse_voxel_chunk_no_padding
+                x = x.unsqueeze(-1)
+                x_og_shape = x.shape
+                x = voxel_chunk_no_padding(x, voxel_shape).squeeze(-1).transpose(1, 2)
+            x = None
 
         block_mask = None
         if causal_attention and causal_block_size > 0 and False: # NEVER WORKED
@@ -1027,11 +1047,11 @@ class WanModel(ModelMixin, ConfigMixin):
             del c
 
         should_calc = True
-        if self.enable_teacache: 
+        if self.enable_cache: 
             if x_id != 0:
                 should_calc = self.should_calc
             else:
-                if current_step <= self.teacache_start_step or current_step == self.num_steps-1:
+                if current_step <= self.cache_start_step or current_step == self.num_steps-1:
                     should_calc = True
                     self.accumulated_rel_l1_distance = 0
                 else:
@@ -1057,7 +1077,7 @@ class WanModel(ModelMixin, ConfigMixin):
                 x += self.previous_residual[x_id]
             x = None
         else:
-            if self.enable_teacache:
+            if self.enable_cache:
                 if joint_pass:
                     self.previous_residual = [ None ] * len(self.previous_residual)
                 else:
@@ -1084,7 +1104,7 @@ class WanModel(ModelMixin, ConfigMixin):
                         del x
                     del context, hints
 
-            if self.enable_teacache:
+            if self.enable_cache:
                 if joint_pass:
                     for i, (x, ori, is_source) in enumerate(zip(x_list, ori_hidden_states, is_source_x)) :
                         if i == 0 or is_source and i != last_x_idx  :
@@ -1101,6 +1121,10 @@ class WanModel(ModelMixin, ConfigMixin):
                 residual, ori_hidden_states = None, None
 
         for i, x in enumerate(x_list):
+            if chipmunk:
+                x = reverse_voxel_chunk_no_padding(x.transpose(1, 2).unsqueeze(-1), x_og_shape, voxel_shape).squeeze(-1)
+                x = x.flatten(2).transpose(1, 2)
+
             # head
             x = self.head(x, e)
 

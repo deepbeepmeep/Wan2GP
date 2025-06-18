@@ -101,15 +101,23 @@ git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
 conda create -n wan2gp python=3.10.9
 conda activate wan2gp
-pip install torch==2.6.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu124
+pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu124
 pip install -r requirements.txt
 ```
-
-**Run the application:**
+**Run the application**
 ```bash
-python wgp.py  # Text-to-video (default)
-python wgp.py --i2v  # Image-to-video
+python wgp.py
 ```
+
+**Run with Docker**
+```sh
+docker compose --profile <profile> up
+```
+With profile:
+* `t2v` for text2video
+* `i2v` for image2video
+
+
 
 ## 📦 Installation
 

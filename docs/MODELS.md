@@ -27,7 +27,7 @@ Please note that that the term *Text2Video* refers to the underlying Wan archite
 - **VRAM**: 6GB minimum
 - **Features**: Motion transfer, object injection, inpainting
 - **Best for**: Advanced video manipulation
-- **Command**: `python wgp.py --vace-1.3B`
+- **Command**: `python wgp.py --vace-1-3B`
 
 #### Wan Vace 14B
 - **Type**: Large ControlNet model

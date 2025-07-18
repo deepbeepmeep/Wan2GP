@@ -4738,11 +4738,15 @@ def generate_video(
                     if metadata_choice == "json":
                         with open(path.replace(f'.{extension}', '.json'), 'w') as f:
                             json.dump(configs, f, indent=4)
-                    elif metadata_choice == "metadata" and not is_image:
-                        from mutagen.mp4 import MP4
-                        file = MP4(path)
-                        file.tags['©cmt'] = [json.dumps(configs)]
-                        file.save()
+                    elif metadata_choice == "metadata":
+                        if is_image:
+                            with Image.open(path) as img:
+                                img.save(path, comment=json.dumps(configs))
+                        else:
+                            from mutagen.mp4 import MP4
+                            file = MP4(path)
+                            file.tags['©cmt'] = [json.dumps(configs)]
+                            file.save()
                     if is_image:
                         print(f"New image saved to Path: "+ path)
                     else:
@@ -5448,7 +5452,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
 
             return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, get_unique_id(), gr.update(), gr.update()
         else:
-            configs, any_video_file = get_settings_from_file(state, os.path.join(get_lora_dir(current_model_type), lset_name), True, True, True)
+            configs, _ = get_settings_from_file(state, os.path.join(get_lora_dir(current_model_type), lset_name), True, True, True)
             if configs == None:
                 gr.Info("File not supported")
                 return [gr.update()] * 7
@@ -5902,8 +5906,14 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
             tags = file.tags['©cmt'][0] 
         except:
             pass
-        if tags != None:    
-            configs = json.loads(tags)
+    elif file_path.endswith(".jpg"):
+        try:
+            with Image.open(file_path) as img:
+                tags = img.info["comment"]
+        except:
+            pass
+    if tags is not None:
+        configs = json.loads(tags)
     if configs == None:
         return None, False
 
@@ -5938,7 +5948,7 @@ def load_settings_from_file(state, file_path):
     if file_path==None:
         return gr.update(), gr.update(), None
 
-    configs, any_video_file = get_settings_from_file(state, file_path, True, True, True)
+    configs, any_video_or_image_file = get_settings_from_file(state, file_path, True, True, True)
     if configs == None:
         gr.Info("File not supported")
         return gr.update(), gr.update(), None
@@ -5946,9 +5956,10 @@ def load_settings_from_file(state, file_path):
     current_model_type = state["model_type"]
     model_type = configs["model_type"]
     prompt = configs.get("prompt", "")
+    is_image = configs.get("is_image", False)
 
-    if any_video_file:    
-        gr.Info(f"Settings Loaded from Video generated with prompt '{prompt[:100]}'")
+    if any_video_or_image_file:    
+        gr.Info(f"Settings Loaded from {'Image' if is_image else 'Video'} generated with prompt '{prompt[:100]}'")
     else:
         gr.Info(f"Settings Loaded from Settings file with prompt '{prompt[:100]}'")
 
@@ -7136,7 +7147,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 save_settings_btn = gr.Button("Set Settings as Default", visible = not args.lock_config)
                 export_settings_from_file_btn = gr.Button("Export Settings to File")
             with gr.Row():
-                settings_file = gr.File(height=41,label="Load Settings From Video / Json")
+                settings_file = gr.File(height=41,label="Load Settings From Video / Image / JSON")
                 settings_base64_output = gr.Text(interactive= False, visible=False, value = "")
                 settings_filename =  gr.Text(interactive= False, visible=False, value = "")
             
@@ -7621,7 +7632,7 @@ def generate_configuration_tab(state, blocks, header, model_choice, prompt_enhan
                 metadata_choice = gr.Dropdown(
                     choices=[
                         ("Export JSON files", "json"),
-                        ("Add metadata to video", "metadata"),
+                        ("Embed metadata (Exif tag)", "metadata"),
                         ("Neither", "none")
                     ],
                     value=server_config.get("metadata_type", "metadata"),

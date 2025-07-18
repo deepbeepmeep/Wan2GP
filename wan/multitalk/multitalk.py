@@ -22,6 +22,7 @@ from einops import rearrange
 import soundfile as sf
 import re
 import math
+from global_config import MAIN_MODELS_DIR
 
 def custom_init(device, wav2vec):    
     audio_encoder = Wav2Vec2Model.from_pretrained(wav2vec, local_files_only=True).to(device)
@@ -168,8 +169,8 @@ def process_tts_multi(text, save_dir, voice1, voice2):
 
 
 def get_full_audio_embeddings(audio_guide1 = None, audio_guide2 = None, combination_type ="add", num_frames =  0, fps = 25, sr = 16000):
-    wav2vec_feature_extractor, audio_encoder= custom_init('cpu', "ckpts/chinese-wav2vec2-base")
-    # wav2vec_feature_extractor, audio_encoder= custom_init('cpu', "ckpts/wav2vec")
+    wav2vec_feature_extractor, audio_encoder= custom_init('cpu', MAIN_MODELS_DIR + "/chinese-wav2vec2-base")
+    # wav2vec_feature_extractor, audio_encoder= custom_init('cpu', MAIN_MODELS_DIR + "/wav2vec")
 
     new_human_speech1, new_human_speech2, sum_human_speechs = audio_prepare_multi(audio_guide1, audio_guide2, combination_type, duration= num_frames / fps)
     audio_embedding_1 = get_embedding(new_human_speech1, wav2vec_feature_extractor, audio_encoder, sr=sr, fps= fps)

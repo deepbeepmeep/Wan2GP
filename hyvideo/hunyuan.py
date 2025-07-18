@@ -27,6 +27,7 @@ from transformers import WhisperModel
 from transformers import AutoFeatureExtractor
 from hyvideo.data_kits.face_align import AlignImage
 import librosa
+from global_config import MAIN_MODELS_DIR
 
 def get_audio_feature(feature_extractor, audio_path, duration):
     audio_input, sampling_rate = librosa.load(audio_path, duration=duration, sr=16000)
@@ -405,16 +406,16 @@ class Inference(object):
         # ============================= Build extra models ========================
         # VAE
         if custom or avatar:
-            vae_configpath = "ckpts/hunyuan_video_custom_VAE_config.json"
-            vae_filepath = "ckpts/hunyuan_video_custom_VAE_fp32.safetensors"
+            vae_configpath = "" + MAIN_MODELS_DIR + "\/hunyuan_video_custom_VAE_config.json"
+            vae_filepath = "" + MAIN_MODELS_DIR + "\/hunyuan_video_custom_VAE_fp32.safetensors"
         # elif avatar:
-        #     vae_configpath = "ckpts/config_vae_avatar.json"
-        #     vae_filepath = "ckpts/vae_avatar.pt"
+        #     vae_configpath = "" + MAIN_MODELS_DIR + "\/config_vae_avatar.json"
+        #     vae_filepath = "" + MAIN_MODELS_DIR + "\/vae_avatar.pt"
         else:
-            vae_configpath = "ckpts/hunyuan_video_VAE_config.json"
-            vae_filepath = "ckpts/hunyuan_video_VAE_fp32.safetensors"
+            vae_configpath = "" + MAIN_MODELS_DIR + "\/hunyuan_video_VAE_config.json"
+            vae_filepath = "" + MAIN_MODELS_DIR + "\/hunyuan_video_VAE_fp32.safetensors"
 
-    # config = AutoencoderKLCausal3D.load_config("ckpts/hunyuan_video_VAE_config.json")
+    # config = AutoencoderKLCausal3D.load_config("" + MAIN_MODELS_DIR + "\/hunyuan_video_VAE_config.json")
     # config = AutoencoderKLCausal3D.load_config("c:/temp/hvae/config_vae.json")
 
         vae, _, s_ratio, t_ratio = load_vae( "884-16c-hy", vae_path= vae_filepath, vae_config_path= vae_configpath, vae_precision= vae_precision, device= "cpu", )
@@ -486,12 +487,12 @@ class Inference(object):
         align_instance = None
 
         if avatar or custom_audio:
-            feature_extractor = AutoFeatureExtractor.from_pretrained("ckpts/whisper-tiny/")
-            wav2vec = WhisperModel.from_pretrained("ckpts/whisper-tiny/").to(device="cpu", dtype=torch.float32)
+            feature_extractor = AutoFeatureExtractor.from_pretrained("" + MAIN_MODELS_DIR + "\/whisper-tiny/")
+            wav2vec = WhisperModel.from_pretrained("" + MAIN_MODELS_DIR + "\/whisper-tiny/").to(device="cpu", dtype=torch.float32)
             wav2vec._model_dtype = torch.float32
             wav2vec.requires_grad_(False)
         if avatar:
-            align_instance = AlignImage("cuda", det_path="ckpts/det_align/detface.pt")
+            align_instance = AlignImage("cuda", det_path="" + MAIN_MODELS_DIR + "\/det_align/detface.pt")
             align_instance.facedet.model.to("cpu")
             adapt_model(model, "audio_adapter_blocks")
         elif custom_audio:

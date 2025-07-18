@@ -44,6 +44,7 @@ logging.set_verbosity_error
 from preprocessing.matanyone  import app as matanyone_app
 from tqdm import tqdm
 import requests
+import global_config
 
 
 global_queue_ref = []
@@ -1357,6 +1358,14 @@ def _parse_args():
         help="Path to settings folder"
     )
 
+    parser.add_argument(
+        "--main-models-dir",
+        type=str,
+        default=global_config.MAIN_MODELS_DIR,
+        help="Path to Wan2GP models folder"
+    )
+    
+
 
     # parser.add_argument(
     #     "--lora-preset-i2v",
@@ -1549,6 +1558,10 @@ def _parse_args():
     )    
 
     args = parser.parse_args()
+    
+	# overiding glboals
+    global_config.MAIN_MODELS_DIR = args.main_models_dir
+    
 
     return args
 
@@ -1619,10 +1632,10 @@ if os.path.isfile("t2v_settings.json"):
 if not os.path.isfile(server_config_filename) and os.path.isfile("gradio_config.json"):
     shutil.move("gradio_config.json", server_config_filename) 
 
-if not os.path.isdir("ckpts/umt5-xxl/"):
-    os.makedirs("ckpts/umt5-xxl/")
-src_move = [ "ckpts/models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "ckpts/models_t5_umt5-xxl-enc-bf16.safetensors", "ckpts/models_t5_umt5-xxl-enc-quanto_int8.safetensors" ]
-tgt_move = [ "ckpts/xlm-roberta-large/", "ckpts/umt5-xxl/", "ckpts/umt5-xxl/"]
+if not os.path.isdir(global_config.MAIN_MODELS_DIR + "/umt5-xxl/"):
+    os.makedirs(global_config.MAIN_MODELS_DIR + "/umt5-xxl/")
+src_move = [ global_config.MAIN_MODELS_DIR + "/models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", global_config.MAIN_MODELS_DIR + "/models_t5_umt5-xxl-enc-bf16.safetensors", global_config.MAIN_MODELS_DIR + "/models_t5_umt5-xxl-enc-quanto_int8.safetensors" ]
+tgt_move = [ global_config.MAIN_MODELS_DIR + "/xlm-roberta-large/", global_config.MAIN_MODELS_DIR + "/umt5-xxl/", global_config.MAIN_MODELS_DIR + "/umt5-xxl/"]
 for src,tgt in zip(src_move,tgt_move):
     if os.path.isfile(src):
         try:
@@ -1666,16 +1679,16 @@ for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion
 "wan2.1_text2video_14B_bf16.safetensors", "wan2.1_text2video_14B_quanto_int8.safetensors",
 "wan2.1_Vace_14B_mbf16.safetensors", "wan2.1_Vace_14B_quanto_mbf16_int8.safetensors", "wan2.1_FLF2V_720p_14B_quanto_int8.safetensors", "wan2.1_FLF2V_720p_14B_bf16.safetensors"
 ]:
-    if Path(os.path.join("ckpts" , path)).is_file():
+    if Path(os.path.join(global_config.MAIN_MODELS_DIR + "" , path)).is_file():
         print(f"Removing old version of model '{path}'. A new version of this model will be downloaded next time you use it.")
-        os.remove( os.path.join("ckpts" , path))
+        os.remove( os.path.join(global_config.MAIN_MODELS_DIR + "" , path))
 
 models_def = {}
 
 modules_files = {
-    "vace_14B" : ["ckpts/wan2.1_Vace_14B_module_mbf16.safetensors", "ckpts/wan2.1_Vace_14B_module_quanto_mbf16_int8.safetensors", "ckpts/wan2.1_Vace_14B_module_quanto_mfp16_int8.safetensors"],
-    "fantasy": ["ckpts/wan2.1_fantasy_speaking_14B_bf16.safetensors"],
-    "multitalk": ["ckpts/wan2.1_multitalk_14B_mbf16.safetensors", "ckpts/wan2.1_multitalk_14B_quanto_mbf16_int8.safetensors", "ckpts/wan2.1_multitalk_14B_quanto_mfp16_int8.safetensors"]
+    "vace_14B" : [global_config.MAIN_MODELS_DIR + "/wan2.1_Vace_14B_module_mbf16.safetensors", global_config.MAIN_MODELS_DIR + "/wan2.1_Vace_14B_module_quanto_mbf16_int8.safetensors", global_config.MAIN_MODELS_DIR + "/wan2.1_Vace_14B_module_quanto_mfp16_int8.safetensors"],
+    "fantasy": [global_config.MAIN_MODELS_DIR + "/wan2.1_fantasy_speaking_14B_bf16.safetensors"],
+    "multitalk": [global_config.MAIN_MODELS_DIR + "/wan2.1_multitalk_14B_mbf16.safetensors", global_config.MAIN_MODELS_DIR + "/wan2.1_multitalk_14B_quanto_mbf16_int8.safetensors", global_config.MAIN_MODELS_DIR + "/wan2.1_multitalk_14B_quanto_mfp16_int8.safetensors"]
 }
 
 # unused
@@ -1843,7 +1856,7 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", is_m
             if len(stack) > 10: raise Exception(f"Circular Reference in Model URLs dependencies: {stack}")
             return get_model_filename(URLs, quantization=quantization, dtype_policy=dtype_policy, stack = stack + [URLs])
         else:
-            choices = [ ("ckpts/" + os.path.basename(path) if path.startswith("http") else path)  for path in URLs ]
+            choices = [ (global_config.MAIN_MODELS_DIR + "/" + os.path.basename(path) if path.startswith("http") else path)  for path in URLs ]
     if len(quantization) == 0:
         quantization = "bf16"
 
@@ -2246,28 +2259,28 @@ def get_loras_preprocessor(transformer, model_type):
 
 
 def get_wan_text_encoder_filename(text_encoder_quantization):
-    text_encoder_filename = "ckpts/umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors"
+    text_encoder_filename = global_config.MAIN_MODELS_DIR + "/umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors"
     if text_encoder_quantization =="int8":
         text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_int8") 
     return text_encoder_filename
 
 def get_ltxv_text_encoder_filename(text_encoder_quantization):
-    text_encoder_filename = "ckpts/T5_xxl_1.1/T5_xxl_1.1_enc_bf16.safetensors"
+    text_encoder_filename = global_config.MAIN_MODELS_DIR + "/T5_xxl_1.1/T5_xxl_1.1_enc_bf16.safetensors"
     if text_encoder_quantization =="int8":
         text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8") 
     return text_encoder_filename
 
 def get_hunyuan_text_encoder_filename(text_encoder_quantization):
     if text_encoder_quantization =="int8":
-        text_encoder_filename = "ckpts/llava-llama-3-8b/llava-llama-3-8b-v1_1_vlm_quanto_int8.safetensors"
+        text_encoder_filename = global_config.MAIN_MODELS_DIR + "/llava-llama-3-8b/llava-llama-3-8b-v1_1_vlm_quanto_int8.safetensors"
     else:
-        text_encoder_filename = "ckpts/llava-llama-3-8b/llava-llama-3-8b-v1_1_vlm_fp16.safetensors"
+        text_encoder_filename = global_config.MAIN_MODELS_DIR + "/llava-llama-3-8b/llava-llama-3-8b-v1_1_vlm_fp16.safetensors"
 
     return text_encoder_filename
 
 
 def process_files_def(repoId, sourceFolderList, fileList):
-    targetRoot = "ckpts/" 
+    targetRoot = global_config.MAIN_MODELS_DIR + "/" 
     for sourceFolder, files in zip(sourceFolderList,fileList ):
         if len(files)==0:
             if not Path(targetRoot + sourceFolder).exists():
@@ -2333,14 +2346,14 @@ def download_models(model_filename, model_type):
             onefile = os.path.basename(url_parts[-1])
             sourceFolder = os.path.dirname(url_parts[-1])
             if len(sourceFolder) == 0:
-                hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = "ckpts/")
+                hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = global_config.MAIN_MODELS_DIR + "/")
             else:
-                target_path = "ckpts/temp/" + sourceFolder
+                target_path = global_config.MAIN_MODELS_DIR + "/temp/" + sourceFolder
                 if not os.path.exists(target_path):
                     os.makedirs(target_path)
-                hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = "ckpts/temp/", subfolder=sourceFolder)
-                shutil.move(os.path.join( "ckpts", "temp" , sourceFolder , onefile), "ckpts/")
-                shutil.rmtree("ckpts/temp")
+                hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = global_config.MAIN_MODELS_DIR + "/temp/", subfolder=sourceFolder)
+                shutil.move(os.path.join( global_config.MAIN_MODELS_DIR + "", "temp" , sourceFolder , onefile), global_config.MAIN_MODELS_DIR + "/")
+                shutil.rmtree(global_config.MAIN_MODELS_DIR + "/temp")
         else:
             urlretrieve(url,filename, create_progress_hook(filename))
 
@@ -2368,7 +2381,7 @@ def download_models(model_filename, model_type):
         model_loras = get_model_recursive_prop(model_type, "loras", return_list= True)
 
         for url in preload_URLs + model_loras:
-            filename = "ckpts/" + url.split("/")[-1]
+            filename = global_config.MAIN_MODELS_DIR + "/" + url.split("/")[-1]
             if not os.path.isfile(filename ): 
                 if not url.startswith("http"):
                     raise Exception(f"File '{filename}' to preload was not found locally and no URL was provided to download it. Please add an URL in the model definition file.")
@@ -2534,7 +2547,7 @@ def load_wan_model(model_filename, model_type, base_model_type, model_def, quant
 
     wan_model = model_factory(
         config=cfg,
-        checkpoint_dir="ckpts",
+        checkpoint_dir=global_config.MAIN_MODELS_DIR + "",
         model_filename=model_filename,
         model_type = model_type,        
         model_def = model_def,
@@ -2575,7 +2588,7 @@ def load_flux_model(model_filename, model_type, base_model_type, model_def, quan
     from flux.flux_main  import model_factory
 
     flux_model = model_factory(
-        checkpoint_dir="ckpts",
+        checkpoint_dir=global_config.MAIN_MODELS_DIR + "",
         model_filename=model_filename,
         model_type = model_type, 
         base_model_type=base_model_type,
@@ -2697,10 +2710,10 @@ def load_models(model_type):
     global prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
     if server_config.get("enhancer_enabled", 0) == 1:
         from transformers import ( AutoModelForCausalLM, AutoProcessor, AutoTokenizer, LlamaForCausalLM )
-        prompt_enhancer_image_caption_model = AutoModelForCausalLM.from_pretrained( "ckpts/Florence2", trust_remote_code=True)
-        prompt_enhancer_image_caption_processor = AutoProcessor.from_pretrained( "ckpts/Florence2", trust_remote_code=True)
-        prompt_enhancer_llm_model = offload.fast_load_transformers_model("ckpts/Llama3_2/Llama3_2_quanto_bf16_int8.safetensors") #, configKwargs= {"_attn_implementation" :"XXXsdpa"}
-        prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained("ckpts/Llama3_2")
+        prompt_enhancer_image_caption_model = AutoModelForCausalLM.from_pretrained( global_config.MAIN_MODELS_DIR + "/Florence2", trust_remote_code=True)
+        prompt_enhancer_image_caption_processor = AutoProcessor.from_pretrained( global_config.MAIN_MODELS_DIR + "/Florence2", trust_remote_code=True)
+        prompt_enhancer_llm_model = offload.fast_load_transformers_model(global_config.MAIN_MODELS_DIR + "/Llama3_2/Llama3_2_quanto_bf16_int8.safetensors") #, configKwargs= {"_attn_implementation" :"XXXsdpa"}
+        prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained(global_config.MAIN_MODELS_DIR + "/Llama3_2")
         pipe["prompt_enhancer_image_caption_model"] = prompt_enhancer_image_caption_model
         pipe["prompt_enhancer_llm_model"] = prompt_enhancer_llm_model
         prompt_enhancer_image_caption_model._model_dtype = torch.float
@@ -3290,15 +3303,15 @@ def get_preprocessor(process_type, inpaint_color):
     if process_type=="pose":
         from preprocessing.dwpose.pose import PoseBodyFaceVideoAnnotator
         cfg_dict = {
-            "DETECTION_MODEL": "ckpts/pose/yolox_l.onnx",
-            "POSE_MODEL": "ckpts/pose/dw-ll_ucoco_384.onnx",
+            "DETECTION_MODEL": global_config.MAIN_MODELS_DIR + "/pose/yolox_l.onnx",
+            "POSE_MODEL": global_config.MAIN_MODELS_DIR + "/pose/dw-ll_ucoco_384.onnx",
             "RESIZE_SIZE": 1024
         }
         anno_ins = lambda img: PoseBodyFaceVideoAnnotator(cfg_dict).forward(img)
     elif process_type=="depth":
         # from preprocessing.midas.depth import DepthVideoAnnotator
         # cfg_dict = {
-        #     "PRETRAINED_MODEL": "ckpts/depth/dpt_hybrid-midas-501f0c75.pt"
+        #     "PRETRAINED_MODEL": global_config.MAIN_MODELS_DIR + "/depth/dpt_hybrid-midas-501f0c75.pt"
         # }
         # anno_ins = lambda img: DepthVideoAnnotator(cfg_dict).forward(img)[0]
 
@@ -3306,12 +3319,12 @@ def get_preprocessor(process_type, inpaint_color):
 
         if server_config.get("depth_anything_v2_variant", "vitl") == "vitl":
             cfg_dict = {
-                "PRETRAINED_MODEL": "ckpts/depth/depth_anything_v2_vitl.pth",
+                "PRETRAINED_MODEL": global_config.MAIN_MODELS_DIR + "/depth/depth_anything_v2_vitl.pth",
                 'MODEL_VARIANT': 'vitl'
             }
         else:
             cfg_dict = {
-                "PRETRAINED_MODEL": "ckpts/depth/depth_anything_v2_vitb.pth",
+                "PRETRAINED_MODEL": global_config.MAIN_MODELS_DIR + "/depth/depth_anything_v2_vitb.pth",
                 'MODEL_VARIANT': 'vitb',
             }
 
@@ -3323,13 +3336,13 @@ def get_preprocessor(process_type, inpaint_color):
     elif process_type=="scribble":
         from preprocessing.scribble import ScribbleVideoAnnotator
         cfg_dict = {
-                "PRETRAINED_MODEL": "ckpts/scribble/netG_A_latest.pth"
+                "PRETRAINED_MODEL": global_config.MAIN_MODELS_DIR + "/scribble/netG_A_latest.pth"
             }
         anno_ins = lambda img: ScribbleVideoAnnotator(cfg_dict).forward(img)
     elif process_type=="flow":
         from preprocessing.flow import FlowVisAnnotator
         cfg_dict = {
-                "PRETRAINED_MODEL": "ckpts/flow/raft-things.pth"
+                "PRETRAINED_MODEL": global_config.MAIN_MODELS_DIR + "/flow/raft-things.pth"
             }
         anno_ins = lambda img: FlowVisAnnotator(cfg_dict).forward(img)
     elif process_type=="inpaint":
@@ -3647,10 +3660,10 @@ def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling
         if previous_last_frame != None:
             sample = torch.cat([previous_last_frame, sample], dim=1)
             previous_last_frame = sample[:, -1:].clone()
-            sample = temporal_interpolation( os.path.join("ckpts", "flownet.pkl"), sample, exp, device=processing_device)
+            sample = temporal_interpolation( os.path.join(global_config.MAIN_MODELS_DIR + "", "flownet.pkl"), sample, exp, device=processing_device)
             sample = sample[:, 1:]
         else:
-            sample = temporal_interpolation( os.path.join("ckpts", "flownet.pkl"), sample, exp, device=processing_device)
+            sample = temporal_interpolation( os.path.join(global_config.MAIN_MODELS_DIR + "", "flownet.pkl"), sample, exp, device=processing_device)
             previous_last_frame = sample[:, -1:].clone()
 
         output_fps = output_fps * 2**exp
@@ -3853,7 +3866,7 @@ def edit_video(
 def get_transformer_loras(model_type):
     model_def = get_model_def(model_type)
     transformer_loras_filenames = get_model_recursive_prop(model_type, "loras", return_list=True)
-    transformer_loras_filenames = [ "ckpts/" + os.path.basename(filename) for filename in transformer_loras_filenames]
+    transformer_loras_filenames = [ global_config.MAIN_MODELS_DIR + "/" + os.path.basename(filename) for filename in transformer_loras_filenames]
     transformer_loras_multipliers = get_model_recursive_prop(model_type, "loras_multipliers", return_list=True) + [1.] * len(transformer_loras_filenames)
     transformer_loras_multipliers = transformer_loras_multipliers[:len(transformer_loras_filenames)]
     return transformer_loras_filenames, transformer_loras_multipliers
@@ -4149,7 +4162,7 @@ def generate_video(
             any_background_ref = "K" in video_prompt_type 
             if remove_background_images_ref > 0:
                 send_cmd("progress", [0, get_latest_status(state, "Removing Images References Background")])
-            os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
+            os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), global_config.MAIN_MODELS_DIR + "", "rembg")
             from wan.utils.utils import resize_and_remove_background
             image_refs[nb_frames_positions:]  = resize_and_remove_background(image_refs[nb_frames_positions:] , width, height, remove_background_images_ref > 0, any_background_ref, fit_into_canvas= not (vace or hunyuan_avatar) ) # no fit for vace ref images as it is done later
             update_task_thumbnails(task, locals())

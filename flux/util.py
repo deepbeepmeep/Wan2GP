@@ -14,8 +14,10 @@ from safetensors.torch import load_file as load_sft
 from flux.model import Flux, FluxLoraWrapper, FluxParams
 from flux.modules.autoencoder import AutoEncoder, AutoEncoderParams
 from flux.modules.conditioner import HFEmbedder
+from global_config import MAIN_MODELS_DIR
 
-CHECKPOINTS_DIR = Path("checkpoints")
+# CHECKPOINTS_DIR = Path("checkpoints")
+CHECKPOINTS_DIR = MAIN_MODELS_DIR + "/flux_checkpoints"
 CHECKPOINTS_DIR.mkdir(exist_ok=True)
 BFL_API_KEY = os.getenv("BFL_API_KEY")
 

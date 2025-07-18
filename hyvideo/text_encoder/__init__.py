@@ -15,6 +15,7 @@ from transformers.utils import ModelOutput
 
 from ..constants import TEXT_ENCODER_PATH, TOKENIZER_PATH
 from ..constants import PRECISION_TO_TYPE
+from global_config import MAIN_MODELS_DIR
 
 
 def use_default(value, default):
@@ -188,7 +189,7 @@ class TextEncoder(nn.Module):
 
         if "llm" in text_encoder_type:
             from mmgp import offload
-            forcedConfigPath=  None if "i2v" in text_encoder_type  else "ckpts/llava-llama-3-8b/config.json"
+            forcedConfigPath=  None if "i2v" in text_encoder_type  else MAIN_MODELS_DIR + "/llava-llama-3-8b/config.json"
             self.model= offload.fast_load_transformers_model(self.model_path, modelPrefix="language_model" if forcedConfigPath != None else None,  forcedConfigPath=forcedConfigPath)
             if forcedConfigPath != None:
                 self.model.final_layer_norm = self.model.model.norm

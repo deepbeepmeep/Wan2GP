@@ -22,6 +22,7 @@ warnings.filterwarnings("ignore", message=".*Module 'speechbrain.pretrained'.*",
 # logging.getLogger('speechbrain.utils.checkpoints').setLevel(logging.WARNING)
 os.environ["SB_LOG_LEVEL"] = "WARNING"   
 import speechbrain
+from global_config import MAIN_MODELS_DIR
 
 def xprint(t = None):
     if verbose_output:
@@ -46,8 +47,8 @@ class OptimizedPyannote31SpeakerSeparator:
         """
         Initialize with Pyannote 3.1 pipeline with tunable VAD sensitivity.
         """
-        embedding_path = "ckpts/pyannote/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
-        segmentation_path = "ckpts/pyannote/pytorch_model_segmentation-3.0.bin"
+        embedding_path = MAIN_MODELS_DIR + "/pyannote/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
+        segmentation_path = MAIN_MODELS_DIR + "/pyannote/pytorch_model_segmentation-3.0.bin"
 
 
         xprint(f"Loading segmentation model from: {segmentation_path}")

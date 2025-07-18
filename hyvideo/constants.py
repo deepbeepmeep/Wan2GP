@@ -1,5 +1,6 @@
 import os
 import torch
+from global_config import MAIN_MODELS_DIR
 
 __all__ = [
     "C_SCALE",
@@ -105,7 +106,7 @@ NORMALIZATION_TYPE = {"layer", "rms"}
 ACTIVATION_TYPE = {"relu", "silu", "gelu", "gelu_tanh"}
 
 # =================== Model Path =====================
-MODEL_BASE = os.getenv("MODEL_BASE", "./ckpts")
+MODEL_BASE = os.getenv("MODEL_BASE", MAIN_MODELS_DIR)
 
 # =================== Data =======================
 DATA_TYPE = {"image", "video", "image_video"}

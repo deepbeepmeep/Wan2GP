@@ -8,7 +8,7 @@ from segment_anything import sam_model_registry, SamPredictor, SamAutomaticMaskG
 import matplotlib.pyplot as plt
 import PIL
 from .mask_painter import mask_painter
-
+from global_config import MAIN_MODELS_DIR
 
 class BaseSegmenter:
     def __init__(self, SAM_checkpoint, model_type, device='cuda:0'):
@@ -30,9 +30,9 @@ class BaseSegmenter:
             self.model = sam_model_registry[model_type](checkpoint=SAM_checkpoint)
         from mmgp import offload
         # self.model.to(torch.float16)
-        # offload.save_model(self.model, "ckpts/mask/sam_vit_h_4b8939_fp16.safetensors")
+        # offload.save_model(self.model, MAIN_MODELS_DIR + "/mask/sam_vit_h_4b8939_fp16.safetensors")
         
-        offload.load_model_data(self.model, "ckpts/mask/sam_vit_h_4b8939_fp16.safetensors")
+        offload.load_model_data(self.model, MAIN_MODELS_DIR + "/mask/sam_vit_h_4b8939_fp16.safetensors")
         self.model.to(torch.float32) # need to be optimized, if not f32 crappy precision
         self.model.to(device=self.device)
         self.predictor = SamPredictor(self.model)

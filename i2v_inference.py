@@ -14,13 +14,14 @@ from wan.configs import MAX_AREA_CONFIGS, WAN_CONFIGS
 from wan.modules.attention import get_attention_modes
 from wan.utils.utils import cache_video
 from mmgp import offload, safetensors2, profile_type
+from global_config import MAIN_MODELS_DIR
 
 try:
     import triton
 except ImportError:
     pass
 
-DATA_DIR = "ckpts"
+DATA_DIR = MAIN_MODELS_DIR
 
 # --------------------------------------------------
 # HELPER FUNCTIONS
@@ -257,7 +258,7 @@ def expand_list_over_steps(short_list, num_steps):
 
 def download_models_if_needed(transformer_filename_i2v, text_encoder_filename, local_folder=DATA_DIR):
     """
-    Checks if all required WAN 2.1 i2v files exist locally under 'ckpts/'.
+    Checks if all required WAN 2.1 i2v files exist locally under DATA_DIR.
     If not, downloads them from a Hugging Face Hub repo.
     Adjust the 'repo_id' and needed files as appropriate.
     """

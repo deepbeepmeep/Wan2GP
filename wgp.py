@@ -42,9 +42,11 @@ import cv2
 from transformers.utils import logging
 logging.set_verbosity_error
 from preprocessing.matanyone  import app as matanyone_app
+from collections import deque
 from tqdm import tqdm
 import requests
-
+import psutil
+import pynvml
 
 global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
@@ -69,6 +71,14 @@ unique_id = 0
 unique_id_lock = threading.Lock()
 offloadobj = None
 wan_model = None
+
+# Initialize NVIDIA Management Library (NVML) for GPU monitoring
+try:
+    pynvml.nvmlInit()
+    nvml_initialized = True
+except pynvml.NVMLError:
+    print("Warning: Could not initialize NVML. GPU stats will not be available.")
+    nvml_initialized = False
 
 def get_unique_id():
     global unique_id  
@@ -101,15 +111,17 @@ def download_ffmpeg():
     os.remove(zip_name)
 
 def format_time(seconds):
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    elif seconds < 3600:
-        minutes = seconds / 60
-        return f"{minutes:.1f}m"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    elif seconds >= 60:
+        return f"{minutes}m {secs:02d}s"
     else:
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        return f"{hours}h {minutes}m"
+        return f"{seconds:.1f}s"
+        
 def pil_to_base64_uri(pil_image, format="png", quality=75):
     if pil_image is None:
         return None
@@ -2888,6 +2900,7 @@ def get_gen_info(state):
 def build_callback(state, pipe, send_cmd, status, num_inference_steps):
     gen = get_gen_info(state)
     gen["num_inference_steps"] = num_inference_steps
+    start_time = time.time()
     def callback(step_idx, latent, force_refresh, read_state = False, override_num_inference_steps = -1, pass_no = -1):
         refresh_id =  gen.get("refresh", -1)
         if force_refresh or step_idx >= 0:
@@ -2927,7 +2940,9 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps):
                     phase = f"Denoising {pass_no}th Pass"
                     
             gen["progress_phase"] = (phase, step_idx)
-        status_msg = merge_status_context(status, phase)      
+        
+        elapsed_time = time.time() - start_time
+        status_msg = merge_status_context(status, f"{phase} | {format_time(elapsed_time)}")      
         if step_idx >= 0:
             progress_args = [(step_idx , num_inference_steps) , status_msg  ,  num_inference_steps]
         else:
@@ -5129,9 +5144,9 @@ def process_tasks(state):
     gen["prompt"] = ""
     end_time = time.time()
     if abort:
-        status = f"Video generation was aborted. Total Generation Time: {end_time-start_time:.1f}s" 
+        status = f"Video generation was aborted. Total Generation Time: {format_time(end_time-start_time)}" 
     else:
-        status = f"Total Generation Time: {end_time-start_time:.1f}s" 
+        status = f"Total Generation Time: {format_time(end_time-start_time)}" 
         # Play notification sound when video generation completed successfully
         try:
             if server_config.get("notification_sound_enabled", 1):
@@ -5175,7 +5190,12 @@ def merge_status_context(status="", context=""):
     elif len(context) == 0:
         return status
     else:
-        return status + " - " + context
+        # Check if context already contains the time
+        if "|" in context:
+            parts = context.split("|")
+            return f"{status} - {parts[0].strip()} | {parts[1].strip()}"
+        else:
+            return f"{status} - {context}"
 
 def clear_status(state):
     gen = get_gen_info(state)
@@ -6483,6 +6503,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         delete_lset_btn = gr.Button("Delete", size="sm", min_width= 1, visible = True)
                         cancel_lset_btn = gr.Button("Don't do it !", size="sm", min_width= 1 , visible=False)  
                         #confirm_save_lset_btn, confirm_delete_lset_btn, save_lset_btn, delete_lset_btn, cancel_lset_btn
+            
+
             if not update_form:
                 state = gr.State(state_dict)     
             trigger_refresh_input_type = gr.Text(interactive= False, visible= False)
@@ -8024,9 +8046,116 @@ def get_js():
     """
     return start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js
 
+def update_system_stats():
+    # Get the initial disk IO counters before the loop starts
+    last_disk_io = psutil.disk_io_counters()
+    
+    # Set a reasonable maximum speed for the bar graph display.
+    # 100 MB/s will represent a 100% full bar.
+    MAX_SSD_SPEED_MB_S = 100.0
+
+    while True:
+        # Get CPU and RAM stats
+        cpu_percent = psutil.cpu_percent(interval=1) # This provides our 1-second delay
+        memory_info = psutil.virtual_memory()
+        ram_percent = memory_info.percent
+        ram_used_gb = memory_info.used / (1024**3)
+        ram_total_gb = memory_info.total / (1024**3)
+        
+        # Get new disk IO counters and calculate the read/write speed in MB/s
+        current_disk_io = psutil.disk_io_counters()
+        read_mb_s = (current_disk_io.read_bytes - last_disk_io.read_bytes) / (1024**2)
+        write_mb_s = (current_disk_io.write_bytes - last_disk_io.write_bytes) / (1024**2)
+        total_disk_speed = read_mb_s + write_mb_s
+        
+        # Update the last counters for the next loop
+        last_disk_io = current_disk_io
+
+        # Calculate the bar height as a percentage of our defined max speed
+        ssd_bar_height = min(100.0, (total_disk_speed / MAX_SSD_SPEED_MB_S) * 100)
+
+        # Get GPU stats if the library was initialized successfully
+        if nvml_initialized:
+            try:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0) # Assuming GPU 0
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                gpu_percent = util.gpu
+                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                vram_percent = (mem_info.used / mem_info.total) * 100
+                vram_used_gb = mem_info.used / (1024**3)
+                vram_total_gb = mem_info.total / (1024**3)
+            except pynvml.NVMLError:
+                # Handle cases where GPU might be asleep or driver issues
+                gpu_percent, vram_percent, vram_used_gb, vram_total_gb = 0, 0, 0, 0
+        else:
+            # Set default values if NVML failed to load
+            gpu_percent, vram_percent, vram_used_gb, vram_total_gb = 0, 0, 0, 0
+
+        stats_html = f"""
+        <div style="display: flex; justify-content: center; align-items: flex-start; gap: 15px; padding: 0px 0; height: 100px;">
+            
+            <!-- CPU Stat Block -->
+            <div class="stats-label" style="text-align: center; font-family: sans-serif;">
+                <div class="stats-bar-background" style="width: 60px; height: 60px; border-radius: 8px; overflow: hidden; position: relative;">
+                    <div style="position: absolute; bottom: 0; left: 0; width: 100%; background-color: #0d6efd; height: {cpu_percent}%;"></div>
+                </div>
+                <div style="margin-top: 5px; font-size: 11px; font-weight: bold;">CPU: {cpu_percent:.1f}%</div>
+            </div>
+
+            <!-- RAM Stat Block -->
+            <div class="stats-label" style="text-align: center; font-family: sans-serif;">
+                <div class="stats-bar-background" style="width: 60px; height: 60px; border-radius: 8px; overflow: hidden; position: relative;">
+                    <div style="position: absolute; bottom: 0; left: 0; width: 100%; background-color: #0d6efd; height: {ram_percent}%;"></div>
+                </div>
+                <div style="margin-top: 5px; font-size: 11px; font-weight: bold;">RAM {ram_percent:.1f}%</div>
+                <div style="font-size: 10px; margin-top: -2px;">{ram_used_gb:.1f}/{ram_total_gb:.1f} GB</div>
+            </div>
+
+            <!-- SSD Activity Stat Block -->
+            <div class="stats-label" style="text-align: center; font-family: sans-serif;">
+                <div class="stats-bar-background" style="width: 60px; height: 60px; border-radius: 8px; overflow: hidden; position: relative;">
+                    <div style="position: absolute; bottom: 0; left: 0; width: 100%; background-color: #0d6efd; height: {ssd_bar_height}%;"></div>
+                </div>
+                <div style="margin-top: 5px; font-size: 11px; font-weight: bold;">SSD R/W</div>
+                <div style="font-size: 10px; margin-top: -2px;">{read_mb_s:.1f}/{write_mb_s:.1f} MB/s</div>
+            </div>
+
+            <!-- GPU Stat Block -->
+            <div class="stats-label" style="text-align: center; font-family: sans-serif;">
+                <div class="stats-bar-background" style="width: 60px; height: 60px; border-radius: 8px; overflow: hidden; position: relative;">
+                    <div style="position: absolute; bottom: 0; left: 0; width: 100%; background-color: #0d6efd; height: {gpu_percent}%;"></div>
+                </div>
+                <div style="margin-top: 5px; font-size: 11px; font-weight: bold;">GPU: {gpu_percent:.1f}%</div>
+            </div>
+
+            <!-- VRAM Stat Block -->
+            <div class="stats-label" style="text-align: center; font-family: sans-serif;">
+                <div class="stats-bar-background" style="width: 60px; height: 60px; border-radius: 8px; overflow: hidden; position: relative;">
+                    <div style="position: absolute; bottom: 0; left: 0; width: 100%; background-color: #0d6efd; height: {vram_percent}%;"></div>
+                </div>
+                <div style="margin-top: 5px; font-size: 11px; font-weight: bold;">VRAM {vram_percent:.1f}%</div>
+                <div style="font-size: 10px; margin-top: -2px;">{vram_used_gb:.1f}/{vram_total_gb:.1f} GB</div>
+            </div>
+
+        </div>
+        """
+        yield stats_html
+
 def create_ui():
     global vmc_event_handler    
     css = """
+        .stats-label { color: black; }
+        .dark .stats-label { color: white; }
+        .stats-bar-background {
+            background-color: #E5E7EB; /* A nice light grey for light mode */
+            border: 1px solid #D1D5DB;
+        }
+        .dark .stats-bar-background {
+            background-color: #374151; /* Your preferred dark grey for dark mode */
+            border: 1px solid #4b5563;
+        }
+
+        .postprocess div,
         .postprocess div,  
         .postprocess span,    
         .postprocess label,
@@ -8363,7 +8492,19 @@ def create_ui():
                         model_choice = generate_dropdown_model_list(transformer_type)
                         gr.Markdown("<div class='title-with-lines'><div class=line width=100%></div></div>")
                 with gr.Row():
-                    header = gr.Markdown(generate_header(transformer_type, compile, attention_mode), visible= True)
+                    with gr.Column(scale=3):
+                        header = gr.Markdown(generate_header(transformer_type, compile, attention_mode), visible= True)
+                    
+                    # This new structure uses a nested row with spacers to properly center the stats block
+                    with gr.Column(scale=3):
+                        with gr.Row():
+                            
+                            with gr.Column(min_width=380): # This column holds the stats and has a minimum width
+                                system_stats_display = gr.HTML()
+
+                            gr.Column()  # This is an empty spacer column on the right
+                            
+                            gr.Column()  # This is an empty spacer column on the right
                 with gr.Row():
                     (   state, loras_choices, lset_name, state,
                         video_guide, image_guide, video_mask, image_mask, image_refs, prompt_enhancer_row, mmaudio_tab, PP_MMAudio_col
@@ -8380,6 +8521,7 @@ def create_ui():
             with gr.Tab("About"):
                 generate_about_tab()
 
+        main.load(update_system_stats, None, system_stats_display)
         main_tabs.select(fn=select_tab, inputs= [tab_state], outputs= main_tabs, trigger_mode="multiple")
         return main
 
@@ -8406,5 +8548,5 @@ if __name__ == "__main__":
         else:
             url = "http://" + server_name 
         webbrowser.open(url + ":" + str(server_port), new = 0, autoraise = True)
-    demo.launch(server_name=server_name, server_port=server_port, share=args.share, allowed_paths=[save_path])
+    demo.launch(server_name=server_name, server_port=server_port, share=args.share, allowed_paths=[save_path], inbrowser=True)
 # Lucky me !!!

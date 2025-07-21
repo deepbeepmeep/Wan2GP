@@ -2417,7 +2417,7 @@ def download_models(model_filename, model_type):
         model_files = {
             "repoId" : "DeepBeepMeep/LTX_Video", 
             "sourceFolderList" :  ["T5_xxl_1.1",  ""  ],
-            "fileList" : [ ["added_tokens.json", "special_tokens_map.json", "spiece.model", "tokenizer_config.json"] + computeList(text_encoder_filename), ["ltxv_0.9.7_VAE.safetensors", "ltxv_0.9.7_spatial_upscaler.safetensors", "ltxv_scheduler.json"] + computeList(model_filename) ]   
+            "fileList" : [ ["added_tokens.json", "special_tokens_map.json", "spiece.model", "tokenizer_config.json"] + computeList(text_encoder_filename), ["ltxv_0.9.8_VAE.safetensors", "ltxv_0.9.8_spatial_upscaler.safetensors", "ltxv_scheduler.json"] + computeList(model_filename) ]   
         }
     elif model_family == "hunyuan":
         text_encoder_filename = get_hunyuan_text_encoder_filename(text_encoder_quantization)    

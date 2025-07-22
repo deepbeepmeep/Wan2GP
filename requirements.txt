@@ -1,49 +1,50 @@
 torch>=2.4.0
 torchvision>=0.19.0
-opencv-python>=4.9.0.80
-diffusers>=0.31.0
-transformers==4.51.3
-#transformers==4.46.3 # was needed by llamallava used by i2v hunyuan before patch
-tokenizers>=0.20.3
 accelerate>=1.1.1
-tqdm
-imageio
-easydict
-ftfy
+av
 dashscope
-imageio-ffmpeg
-# flash_attn    
-gradio==5.23.0   
-numpy>=1.23.5,<2
-einops
-moviepy==1.0.3
-mmgp==3.5.1
-peft==0.15.0
-mutagen
-pydantic==2.10.6
 decord
-onnxruntime-gpu
-rembg[gpu]==2.0.65
-matplotlib
-timm
-segment-anything
-omegaconf
+diffusers>=0.31.0
+easydict
+einops
+ffmpeg-python
+ftfy
+gradio==5.23.0
 hydra-core
+imageio
+imageio-ffmpeg
 librosa==0.11.0
 loguru
-sentencepiece
-av
-opencv-python
-pygame>=2.1.0
-sounddevice>=0.4.0
-# rembg==2.0.65
-torchdiffeq >= 0.2.5
-tensordict >= 0.6.1
-open_clip_torch >= 2.29.0
-pyloudnorm
+matplotlib
 misaki
-soundfile
-ffmpeg-python
+mmgp==3.5.1
+moviepy==1.0.3
+mutagen
+numpy>=1.23.5,<2
+omegaconf
+onnxruntime-gpu
+open_clip_torch >= 2.29.0
+opencv-python>=4.9.0.80
+peft==0.15.0
+psutil
 pyannote.audio
-# num2words
-# spacy
+pydantic==2.10.6
+pygame>=2.1.0
+pyloudnorm
+pynvml
+rembg[gpu]==2.0.65
+segment-anything
+sentencepiece
+sounddevice>=0.4.0
+soundfile
+tensordict >= 0.6.1
+timm
+tokenizers>=0.20.3
+torchdiffeq >= 0.2.5
+tqdm
+transformers==4.51.3
+#flash_attn
+#num2words
+#rembg==2.0.65
+#spacy
+#transformers==4.46.3 # was needed by llamallava used by i2v hunyuan before patch

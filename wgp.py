@@ -1462,7 +1462,7 @@ def _parse_args():
         "--perc-reserved-mem-max",
         type=float,
         default=0,
-        help="percent of RAM allocated to Reserved RAM"
+        help="%% of RAM allocated to Reserved RAM"
     )
 
 

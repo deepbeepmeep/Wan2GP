@@ -4478,7 +4478,7 @@ def generate_video(
                 src_ref_images  = image_refs
             elif phantom:
                 src_ref_images = image_refs.copy() if image_refs != None else None
-            elif window_no == 1 and (video_source != None and len(video_source) > 0 or image_start != None) and (diffusion_forcing or ltxv or vace):
+            elif window_no == 1 and (video_source != None and len(video_source) > 0 or (not ltxv and image_start != None)) and (diffusion_forcing or ltxv or vace):
                 if "L" in image_prompt_type:
                     from wan.utils.utils import get_video_frame
                     refresh_preview["video_source"] = get_video_frame(video_source, 0)
@@ -6789,7 +6789,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 elif diffusion_forcing or ltxv:
                     image_prompt_type_value= ui_defaults.get("image_prompt_type","T")
                     # image_prompt_type = gr.Radio( [("Start Video with Image", "S"),("Start and End Video with Images", "SE"), ("Continue Video", "V"),("Text Prompt Only", "T")], value =image_prompt_type_value, label="Location", show_label= False, visible= True, scale= 3)
-                    image_prompt_type = gr.Radio( [("Text Prompt Only", "T"),("Start Video with Image", "S"),("Continue Video", "V")], value =image_prompt_type_value, label="Location", show_label= False, visible= True , scale= 3)
+                    image_prompt_type = gr.Radio( [("Text Prompt Only", "T"),("Start Video with Image", "S"),("Start and End Video with Images", "SE"),("Continue Video", "V")], value =image_prompt_type_value, label="Location", show_label= False, visible= True , scale= 3)
 
                     # image_start = gr.Image(label= "Image as a starting point for a new video", type ="pil",value= ui_defaults.get("image_start", None), visible= "S" in image_prompt_type_value )
                     image_start = gr.Gallery(preview= True,

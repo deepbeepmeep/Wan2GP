@@ -110,7 +110,7 @@ class model_factory:
                         stiched = stitch_images(stiched, new_img)
                     input_ref_images  = [stiched]
             else:
-                input_ref_images = None
+                input_ref_images = []
 
             inp, height, width = prepare_kontext(
                 t5=self.t5,

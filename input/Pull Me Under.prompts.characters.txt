@@ -1,0 +1,15 @@
+# Casting Prompts: The Woman
+
+## Prompt 1: In Character
+A portrait of the woman, a figure of intense and captivating presence from a modern urban gothic romance. She is in her mid-20s, with sharp, intelligent dark eyes that hold a hint of danger. Her dark hair is styled in a sleek, wet-look bob that frames her face, which features high cheekbones and a defined jawline. Her expression is a subtle, knowing smirk. She's in a dimly lit, high-rise apartment at night, with the blurred bokeh of city lights visible behind her. She wears a black leather jacket over a dark silk camisole, adorned with delicate but edgy silver chain necklaces. The lighting is dramatic, with a strong key light creating deep shadows, emphasizing her enigmatic and powerful aura. [Camera: Cinematic portrait, medium close-up, shallow depth of field]
+
+## Prompt 2: Passport Photo
+A high-quality, neutral background passport photograph of the woman. She is in her mid-20s, with dark hair pulled back neatly. Her expression is neutral, yet her sharp, intelligent eyes still convey a sense of intensity and confidence. The lighting is clean, even, and professional, with no dramatic shadows. She is wearing a simple, dark-colored crew neck shirt. The image is crisp, modern, and meets the standards for official identification, yet her strong features and direct gaze make it compelling. [Camera: Standard passport photo, front view, clean lighting]
+
+# Casting Prompts: The Man
+
+## Prompt 1: In Character
+A portrait of the man, the willing captive in a passionate, all-consuming urban gothic romance. He is in his late 20s, handsome but with a slightly disheveled, world-weary look. His intense, searching eyes suggest a creative soul, perhaps a writer or artist. His dark, wavy hair is tousled, as if he's been running his hands through it. He's standing in a rain-slicked city alley at night, the wet brick wall behind him illuminated by a single, harsh overhead light. He wears a worn-in, dark denim jacket over a simple grey t-shirt. His expression is one of complete surrender and fascination, his gaze fixed on something just out of frame. [Camera: Cinematic portrait, medium shot, gritty, atmospheric lighting]
+
+## Prompt 2: Passport Photo
+A high-quality, neutral background passport photograph of the man. He is in his late 20s, with his dark, wavy hair neatly combed. His expression is neutral and direct for the camera. The lighting is bright and even, characteristic of a standard identification photo, removing any dramatic shadows. He has a hint of a five-o'clock shadow, but appears clean-shaven otherwise. He is wearing a simple, dark-colored collared shirt. The photo is sharp, well-lit, and professional, capturing his strong facial structure and intense eyes in a straightforward manner. [Camera: Standard passport photo, front view, clean lighting]

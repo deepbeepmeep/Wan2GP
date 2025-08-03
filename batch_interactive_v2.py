@@ -1,19 +1,16 @@
 import os
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from PIL import Image
-import torch
-
-# --- Project-specific Imports ---
-# These imports hook into the actual project code.
-import wgp
-from wan.utils.utils import get_video_info, convert_image
-from mmgp import offload, profile_type
+import argparse
+import tempfile
+import time
 
 # --- Configuration ---
-INPUT_DIR = "input"
-OUTPUT_DIR = "output/batch_interactive"
+VENV_PYTHON = os.path.join("venv", "Scripts", "python.exe")
 
 # --- Helper Functions ---
 
@@ -65,7 +62,7 @@ def select_images_for_scene(folder):
             print("Please enter a number.")
     return selected_paths
 
-def select_injection_mode():
+def select_injection_mode(non_interactive=False):
     """Lets the user choose an image injection mode."""
     modes = {
         "1": {"name": "Start Image (i2v)", "type": "S"},
@@ -74,6 +71,9 @@ def select_injection_mode():
         "4": {"name": "Inject Landscape then People", "type": "KI"},
         "5": {"name": "Text-to-Video (No Images)", "type": ""}
     }
+    if non_interactive:
+        return modes["5"]
+        
     print("\nSelect an image injection mode:")
     for key, value in modes.items():
         print(f"  {key}: {value['name']}")
@@ -92,70 +92,80 @@ def parse_prompts(filepath):
             line = line.strip()
             if not line:
                 continue
-            match = re.match(r'\['(.*?)'\]\s*(.*)', line)
+            match = re.match(r'\[(.*?)\]\s+(.*)', line)
             if match:
                 timestamp, prompt_text = match.groups()
                 scenes.append({"ts": timestamp.strip(), "prompt": prompt_text.strip()})
     return scenes
 
-def initialize_model(params):
-    """Loads and initializes the model based on wgp.py logic."""
-    print("\n--- Initializing Model ---")
+def run_generation(params, output_dir):
+    """Runs wgp.py with the given parameters using subprocess."""
     
-    wgp.load_models_config()
+    env = os.environ.copy()
+    env["WGP_PARAMS"] = json.dumps(params)
 
-    model_type = params.get('model_type')
-    if not model_type:
-        raise ValueError("model_type not found in parameters JSON.")
+    command = [
+        VENV_PYTHON,
+        "wgp.py",
+    ]
+    
+    start_time = time.time()
 
-    model_def = wgp.get_model_def(model_type)
-    if not model_def:
-        raise ValueError(f"Could not find model definition for '{model_type}'.")
-
-    print(f"Loading model: {model_def.get('name')}")
-
-    wgp.wan_model = wgp.get_wan_model(model_type, params)
-    if wgp.wan_model is None:
-        raise RuntimeError("wgp.get_wan_model failed to return a model object.")
+    try:
+        print("\n--- Running Generation ---")
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', env=env)
         
-    wgp.wan_model.to(wgp.processing_device)
+        for line in iter(process.stdout.readline, ''):
+            print(line, end='')
+        
+        process.wait()
+        if process.returncode != 0:
+            print(f"\n--- Generation Failed (Exit Code: {process.returncode}) ---")
+            return None
+
+    except FileNotFoundError:
+        print(f"ERROR: Could not find '{VENV_PYTHON}'. Make sure the virtual environment is set up correctly.")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        return None
+
+    # Find the newest file created after the generation started
+    files = [os.path.join(output_dir, f) for f in os.listdir(output_dir)]
+    files = [f for f in files if os.path.isfile(f) and os.path.getmtime(f) > start_time]
     
-    pipe = wgp.get_pipe(wgp.wan_model)
-    wgp.offloadobj = offload.profile(
-        pipe,
-        profile_no=wgp.server_config.get("profile", profile_type.LowRAM_LowVRAM),
-        compile="",
-        quantizeTransformer=False 
-    )
-    
-    print("Model initialized successfully.")
-    return wgp.wan_model
+    if files:
+        return max(files, key=os.path.getmtime)
+    return None
+
 
 # --- Main Workflow ---
 
 def main():
     """Main function to drive the interactive generation."""
+    parser = argparse.ArgumentParser(description="Interactive video generation from a storyboard.")
+    parser.add_argument("--input-dir", type=str, default="input", help="Directory for input files.")
+    parser.add_argument("--output-dir", type=str, default="output/batch_interactive", help="Directory for output files.")
+    parser.add_argument("--storyboard", type=str, default="Pull Me Under.prompts.txt", help="Storyboard file name.")
+    parser.add_argument("--params", type=str, default="first-shot.json", help="Base parameters file name.")
+    parser.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode.")
+    args = parser.parse_args()
+
+    input_dir = args.input_dir
+    output_dir = args.output_dir
     
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    os.makedirs(INPUT_DIR, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(input_dir, exist_ok=True)
 
     try:
-        with open(os.path.join(INPUT_DIR, "first-shot.json"), 'r') as f:
+        with open(os.path.join(input_dir, args.params), 'r') as f:
             base_params = json.load(f)
-        print("Loaded base parameters from 'first-shot.json'.")
+        print(f"Loaded base parameters from '{args.params}'.")
     except FileNotFoundError:
-        print("ERROR: 'input/first-shot.json' not found. Exiting.")
+        print(f"ERROR: '{os.path.join(input_dir, args.params)}' not found. Exiting.")
         return
 
-    try:
-        wan_model = initialize_model(base_params)
-    except Exception as e:
-        print(f"\nFATAL: Model initialization failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return
-
-    storyboard_file = os.path.join(INPUT_DIR, "Pull Me Under.prompts.txt")
+    storyboard_file = os.path.join(input_dir, args.storyboard)
     if not os.path.exists(storyboard_file):
         print(f"ERROR: Storyboard file not found at {storyboard_file}")
         return
@@ -170,56 +180,56 @@ def main():
             print("\nScene Prompt:")
             print(f"  {scene_data['prompt']}")
             
-            mode_selection = select_injection_mode()
+            mode_selection = select_injection_mode(args.non_interactive)
             
             selected_image_paths = []
-            if mode_selection['type']:
-                selected_image_paths = select_images_for_scene(INPUT_DIR)
+            if mode_selection['type'] and not args.non_interactive:
+                selected_image_paths = select_images_for_scene(input_dir)
 
             gen_kwargs = base_params.copy()
-            gen_kwargs['input_prompt'] = scene_data['prompt']
+            gen_kwargs['prompt'] = scene_data['prompt']
             gen_kwargs['image_prompt_type'] = mode_selection['type']
-            # The generate function saves the file itself based on other params,
-            # so we don't need to specify an output file here.
             
-            pil_images = [convert_image(Image.open(p)) for p in selected_image_paths]
-
-            if 'S' in mode_selection['type'] and pil_images:
-                gen_kwargs['image_start'] = pil_images[0]
-                if len(pil_images) > 1:
-                    gen_kwargs['image_refs'] = pil_images[1:]
-            elif 'I' in mode_selection['type'] and pil_images:
-                gen_kwargs['image_refs'] = pil_images
+            if selected_image_paths:
+                if 'S' in mode_selection['type']:
+                    gen_kwargs['image_start'] = selected_image_paths[0]
+                    if len(selected_image_paths) > 1:
+                        gen_kwargs['image_refs'] = selected_image_paths[1:]
+                elif 'I' in mode_selection['type']:
+                    gen_kwargs['image_refs'] = selected_image_paths
             
             print("\nFinal parameters for this scene:")
             print(f"  Mode: {mode_selection['name']}")
             if selected_image_paths:
                 print(f"  Images: {', '.join([Path(p).name for p in selected_image_paths])}")
             
-            user_choice = get_confirmation("Generate this scene? (y/n/r): ")
-            if user_choice == 'n': break
-            if user_choice == 'r': continue
+            if not args.non_interactive:
+                user_choice = get_confirmation("Generate this scene? (y/n/r): ")
+                if user_choice == 'n': break
+                if user_choice == 'r': continue
 
-            try:
-                # The generate function returns the path to the output video
-                output_video_path = wan_model.generate(**gen_kwargs)
+            output_video_path = run_generation(gen_kwargs, output_dir)
+            
+            if output_video_path:
                 print(f"Scene clip saved to: {output_video_path}")
                 
-                regen_choice = get_confirmation("Accept this video? (y/n/r): ")
-                if regen_choice == 'y':
+                if not args.non_interactive:
+                    regen_choice = get_confirmation("Accept this video? (y/n/r): ")
+                    if regen_choice == 'y':
+                        confirmed = True
+                    elif regen_choice == 'n':
+                        break 
+                else:
                     confirmed = True
-                    # Frame extraction logic would go here
-                elif regen_choice == 'n':
-                    break 
-            except Exception as e:
-                print(f"ERROR: Generation failed: {e}")
-                import traceback
-                traceback.print_exc()
-                if get_user_input("Try again? (y/n): ").lower() != 'y':
+            else:
+                if not args.non_interactive:
+                    if get_user_input("Try again? (y/n): ").lower() != 'y':
+                        break
+                else:
                     break
     
     print("\n=== SCRIPT FINISHED ===")
-    print(f"All generated clips are in: {OUTPUT_DIR}")
+    print(f"All generated clips are in: {output_dir}")
 
 if __name__ == "__main__":
     main()

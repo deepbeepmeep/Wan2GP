@@ -1,19 +1,22 @@
-import os
-import json
-import subprocess
-import re
-from pathlib import Path
+from PIL import Image
 
 # --- Configuration ---
 INPUT_DIR = "input"
 OUTPUT_DIR = "output/batch_interactive"
 I2V_SCRIPT = "i2v_inference.py"
-# A placeholder for a text-to-image script/method.
-# For now, we will simulate this by using i2v with a generic start image.
-T2I_SCRIPT = "i2v_inference.py" 
-T2I_PLACEHOLDER_IMAGE = "assets/logo.png" # A generic, existing image
+TEMP_BLACK_IMAGE = os.path.join(OUTPUT_DIR, "_temp_black.png")
 
 # --- Helper Functions ---
+
+def create_black_image(width, height, filepath):
+    """Creates and saves a black PNG image."""
+    try:
+        img = Image.new('RGB', (width, height), 'black')
+        img.save(filepath)
+        return filepath
+    except Exception as e:
+        print(f"Error creating black image: {e}")
+        return None
 
 def get_user_input(prompt):
     """Gets input from the user."""
@@ -27,29 +30,42 @@ def get_confirmation(prompt="Confirm? (y/n/r) 'y' to accept, 'n' to skip, 'r' to
             return choice
         print("Invalid input. Please enter 'y', 'n', or 'r'.")
 
-def select_files_from_folder(folder, prompt="Select a file by number (or press Enter to skip):"):
-    """Lets the user select a file from a folder."""
-    files = [f for f in os.listdir(folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-    if not files:
+def select_images_for_scene(folder):
+    """Lets the user select multiple image files from a folder."""
+    all_images = [f for f in os.listdir(folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    if not all_images:
         print(f"No images found in '{folder}'.")
-        return None
-    
-    print("\nAvailable images:")
-    for i, f in enumerate(files):
-        print(f"  {i+1}: {f}")
-    
+        return []
+
+    selected_paths = []
     while True:
-        selection = get_user_input(f"{prompt} ")
+        print("\nAvailable images:")
+        # Filter out already selected images
+        available_images = [f for f in all_images if os.path.join(folder, f) not in selected_paths]
+        if not available_images:
+            print("All available images have been selected.")
+            break
+
+        for i, f in enumerate(available_images):
+            print(f"  {i+1}: {f}")
+
+        if selected_paths:
+            print(f"\nSelected: {', '.join([Path(p).name for p in selected_paths])}")
+
+        selection = get_user_input("Select an image by number to add it, or press Enter to finish: ")
         if not selection:
-            return None
+            break # Done selecting
+
         try:
             index = int(selection) - 1
-            if 0 <= index < len(files):
-                return os.path.join(folder, files[index])
+            if 0 <= index < len(available_images):
+                selected_path = os.path.join(folder, available_images[index])
+                selected_paths.append(selected_path)
             else:
                 print("Invalid number.")
         except ValueError:
             print("Please enter a number.")
+    return selected_paths
 
 def extract_frame(video_path, output_dir):
     """Extracts a frame from a video using ffmpeg."""
@@ -89,16 +105,7 @@ def extract_frame(video_path, output_dir):
 
 def run_generation(args):
     """Runs a generation script and returns True on success."""
-    # This is a placeholder for now. We'd need a real t2i script.
-    is_t2i = "--t2i-mode" in args
-    if is_t2i:
-        script = T2I_SCRIPT
-        # Add placeholder image for our simulation
-        args.extend(["--input-image", T2I_PLACEHOLDER_IMAGE])
-        args.remove("--t2i-mode")
-    else:
-        script = I2V_SCRIPT
-
+    script = I2V_SCRIPT
     command = ["python", script] + args
     print("---" * 10)
     print(f'Running command: {" ".join(command)}')
@@ -152,7 +159,7 @@ def main():
         print("ERROR: 'input/first-shot.json' not found. Exiting.")
         return
 
-    # --- Step 1: Scene Generation ---
+    # --- Step 1: SCENE GENERATION ---
     print("\n=== STEP 1: SCENE GENERATION ===")
     storyboard_file = os.path.join(INPUT_DIR, "Pull Me Under.prompts.txt")
     if os.path.exists(storyboard_file):
@@ -167,17 +174,31 @@ def main():
                 print(f"  {scene_data['prompt']}")
                 
                 # Interactive Image Selection
-                print("\nSelect images to use for this scene:")
-                start_image = select_files_from_folder(INPUT_DIR, "Select a START image (for i2v):")
+                selected_images = select_images_for_scene(INPUT_DIR)
                 
-                if not start_image:
-                    print("A start image is required for i2v. Skipping scene.")
-                    break
+                start_image = None
+                if not selected_images:
+                    print("\nNo images selected. This will be a text-to-video generation.")
+                    print("A temporary black image will be used as a placeholder.")
+                    # Create a black image based on resolution in params
+                    width, height = map(int, base_params.get("resolution", "832x480").split('x'))
+                    start_image = create_black_image(width, height, TEMP_BLACK_IMAGE)
+                    if not start_image:
+                        print("Could not create placeholder image. Skipping scene.")
+                        break
+                else:
+                    start_image = selected_images[0]
+                    if len(selected_images) > 1:
+                        print("\nNOTE: Multiple images selected.")
+                        print(f"Using '{Path(start_image).name}' as the primary input image.")
+                        print("The other selected images are noted but not used by the current generation script.")
 
-                # Here you could add more selections for end_image, ref_image etc. 
                 
                 print("\nFinal parameters for this scene:")
-                print(f"  Start Image: {start_image}")
+                if len(selected_images) > 0:
+                    print(f"  Input Images: {', '.join([Path(p).name for p in selected_images])}")
+                else:
+                    print("  Input Images: None (Text-to-Video)")
                 print(f"  Prompt: {scene_data['prompt']}")
                 
                 user_choice = get_confirmation("Generate this scene? (y/n/r): ")
@@ -214,6 +235,10 @@ def main():
     
     print("\n=== SCRIPT FINISHED ===")
     print(f"All generated clips are in: {OUTPUT_DIR}")
+    # Clean up the temporary black image if it exists
+    if os.path.exists(TEMP_BLACK_IMAGE):
+        os.remove(TEMP_BLACK_IMAGE)
 
 if __name__ == "__main__":
     main()
+

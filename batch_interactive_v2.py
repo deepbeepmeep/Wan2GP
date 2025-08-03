@@ -1,26 +1,26 @@
+import os
+import json
+import re
+from pathlib import Path
 from PIL import Image
+import torch
+
+# --- Project-specific Imports ---
+# These imports hook into the actual project code.
+import wgp
+from wan.utils.utils import get_video_info, convert_image
+from mmgp import offload, profile_type
 
 # --- Configuration ---
 INPUT_DIR = "input"
 OUTPUT_DIR = "output/batch_interactive"
-I2V_SCRIPT = "i2v_inference.py"
-TEMP_BLACK_IMAGE = os.path.join(OUTPUT_DIR, "_temp_black.png")
 
 # --- Helper Functions ---
 
-def create_black_image(width, height, filepath):
-    """Creates and saves a black PNG image."""
-    try:
-        img = Image.new('RGB', (width, height), 'black')
-        img.save(filepath)
-        return filepath
-    except Exception as e:
-        print(f"Error creating black image: {e}")
-        return None
-
-def get_user_input(prompt):
-    """Gets input from the user."""
-    return input(prompt).strip()
+def get_user_input(prompt, default=None):
+    """Gets input from the user, with an optional default value."""
+    response = input(f"{prompt} ").strip()
+    return response if response else default
 
 def get_confirmation(prompt="Confirm? (y/n/r) 'y' to accept, 'n' to skip, 'r' to regenerate: "):
     """Gets user confirmation (yes/no/regenerate)."""
@@ -40,7 +40,6 @@ def select_images_for_scene(folder):
     selected_paths = []
     while True:
         print("\nAvailable images:")
-        # Filter out already selected images
         available_images = [f for f in all_images if os.path.join(folder, f) not in selected_paths]
         if not available_images:
             print("All available images have been selected.")
@@ -54,93 +53,83 @@ def select_images_for_scene(folder):
 
         selection = get_user_input("Select an image by number to add it, or press Enter to finish: ")
         if not selection:
-            break # Done selecting
+            break
 
         try:
             index = int(selection) - 1
             if 0 <= index < len(available_images):
-                selected_path = os.path.join(folder, available_images[index])
-                selected_paths.append(selected_path)
+                selected_paths.append(os.path.join(folder, available_images[index]))
             else:
                 print("Invalid number.")
         except ValueError:
             print("Please enter a number.")
     return selected_paths
 
-def extract_frame(video_path, output_dir):
-    """Extracts a frame from a video using ffmpeg."""
-    try:
-        # Get video duration to validate frame number
-        ffprobe_cmd = [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", video_path
-        ]
-        duration_str = subprocess.check_output(ffprobe_cmd).decode('utf-8').strip()
-        duration = float(duration_str)
-        
-        timestamp = get_user_input(f"Enter timestamp (in seconds, 0 to {duration:.2f}) to extract frame: ")
-        frame_time = float(timestamp)
-
-        if not (0 <= frame_time <= duration):
-            print("Invalid timestamp.")
-            return
-
-        output_filename = f"{Path(video_path).stem}_frame_at_{frame_time:.2f}s.png"
-        output_path = os.path.join(output_dir, output_filename)
-        
-        ffmpeg_cmd = [
-            "ffmpeg", "-i", video_path, "-ss", str(frame_time),
-            "-vframes", "1", output_path
-        ]
-        
-        print(f"Running ffmpeg: {' '.join(ffmpeg_cmd)}")
-        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-        print(f"Successfully extracted frame to: {output_path}")
-
-    except FileNotFoundError:
-        print("ERROR: ffmpeg or ffprobe not found. Please ensure they are installed and in your PATH.")
-    except (subprocess.CalledProcessError, ValueError) as e:
-        print(f"ERROR: Frame extraction failed. {e}")
-
-
-def run_generation(args):
-    """Runs a generation script and returns True on success."""
-    script = I2V_SCRIPT
-    command = ["python", script] + args
-    print("---" * 10)
-    print(f'Running command: {" ".join(command)}')
-    try:
-        subprocess.run(command, check=True)
-        print("---" * 10)
-        return True
-    except FileNotFoundError:
-        print(f"ERROR: '{script}' not found.")
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: Generation script failed with exit code {e.returncode}.")
-    print("---" * 10)
-    return False
-
+def select_injection_mode():
+    """Lets the user choose an image injection mode."""
+    modes = {
+        "1": {"name": "Start Image (i2v)", "type": "S"},
+        "2": {"name": "Reference Images (for style/subject)", "type": "I"},
+        "3": {"name": "Start Image + Reference Images", "type": "SI"},
+        "4": {"name": "Inject Landscape then People", "type": "KI"},
+        "5": {"name": "Text-to-Video (No Images)", "type": ""}
+    }
+    print("\nSelect an image injection mode:")
+    for key, value in modes.items():
+        print(f"  {key}: {value['name']}")
+    
+    while True:
+        choice = get_user_input("Enter mode number: ", default="5")
+        if choice in modes:
+            return modes[choice]
+        print("Invalid selection.")
 
 def parse_prompts(filepath):
-    """
-    Parses storyboard files, treating each line as a separate prompt.
-    """
+    """Parses storyboard files, treating each line as a separate prompt."""
     scenes = []
     with open(filepath, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            
-            # Use regex to find the timestamp and the prompt text
-            match = re.match(r'\[(.*?)\]\s*(.*)', line)
+            match = re.match(r'\['(.*?)'\]\s*(.*)', line)
             if match:
                 timestamp, prompt_text = match.groups()
-                scenes.append({
-                    "ts": timestamp.strip(),
-                    "prompt": prompt_text.strip()
-                })
+                scenes.append({"ts": timestamp.strip(), "prompt": prompt_text.strip()})
     return scenes
+
+def initialize_model(params):
+    """Loads and initializes the model based on wgp.py logic."""
+    print("\n--- Initializing Model ---")
+    
+    wgp.load_models_config()
+
+    model_type = params.get('model_type')
+    if not model_type:
+        raise ValueError("model_type not found in parameters JSON.")
+
+    model_def = wgp.get_model_def(model_type)
+    if not model_def:
+        raise ValueError(f"Could not find model definition for '{model_type}'.")
+
+    print(f"Loading model: {model_def.get('name')}")
+
+    wgp.wan_model = wgp.get_wan_model(model_type, params)
+    if wgp.wan_model is None:
+        raise RuntimeError("wgp.get_wan_model failed to return a model object.")
+        
+    wgp.wan_model.to(wgp.processing_device)
+    
+    pipe = wgp.get_pipe(wgp.wan_model)
+    wgp.offloadobj = offload.profile(
+        pipe,
+        profile_no=wgp.server_config.get("profile", profile_type.LowRAM_LowVRAM),
+        compile="",
+        quantizeTransformer=False 
+    )
+    
+    print("Model initialized successfully.")
+    return wgp.wan_model
 
 # --- Main Workflow ---
 
@@ -150,7 +139,6 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(INPUT_DIR, exist_ok=True)
 
-    # Load base parameters from JSON
     try:
         with open(os.path.join(INPUT_DIR, "first-shot.json"), 'r') as f:
             base_params = json.load(f)
@@ -159,86 +147,79 @@ def main():
         print("ERROR: 'input/first-shot.json' not found. Exiting.")
         return
 
-    # --- Step 1: SCENE GENERATION ---
-    print("\n=== STEP 1: SCENE GENERATION ===")
+    try:
+        wan_model = initialize_model(base_params)
+    except Exception as e:
+        print(f"\nFATAL: Model initialization failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+
     storyboard_file = os.path.join(INPUT_DIR, "Pull Me Under.prompts.txt")
-    if os.path.exists(storyboard_file):
-        scenes = parse_prompts(storyboard_file)
+    if not os.path.exists(storyboard_file):
+        print(f"ERROR: Storyboard file not found at {storyboard_file}")
+        return
+        
+    scenes = parse_prompts(storyboard_file)
 
-        for i, scene_data in enumerate(scenes):
-            print(f"\n--- Preparing Scene {i+1}/{len(scenes)} (Timestamp: {scene_data['ts']}) ---")
+    for i, scene_data in enumerate(scenes):
+        print(f"\n--- Preparing Scene {i+1}/{len(scenes)} (Timestamp: {scene_data['ts']}) ---")
+        
+        confirmed = False
+        while not confirmed:
+            print("\nScene Prompt:")
+            print(f"  {scene_data['prompt']}")
             
-            confirmed = False
-            while not confirmed:
-                print("Scene Prompt:")
-                print(f"  {scene_data['prompt']}")
-                
-                # Interactive Image Selection
-                selected_images = select_images_for_scene(INPUT_DIR)
-                
-                start_image = None
-                if not selected_images:
-                    print("\nNo images selected. This will be a text-to-video generation.")
-                    print("A temporary black image will be used as a placeholder.")
-                    # Create a black image based on resolution in params
-                    width, height = map(int, base_params.get("resolution", "832x480").split('x'))
-                    start_image = create_black_image(width, height, TEMP_BLACK_IMAGE)
-                    if not start_image:
-                        print("Could not create placeholder image. Skipping scene.")
-                        break
-                else:
-                    start_image = selected_images[0]
-                    if len(selected_images) > 1:
-                        print("\nNOTE: Multiple images selected.")
-                        print(f"Using '{Path(start_image).name}' as the primary input image.")
-                        print("The other selected images are noted but not used by the current generation script.")
+            mode_selection = select_injection_mode()
+            
+            selected_image_paths = []
+            if mode_selection['type']:
+                selected_image_paths = select_images_for_scene(INPUT_DIR)
 
+            gen_kwargs = base_params.copy()
+            gen_kwargs['input_prompt'] = scene_data['prompt']
+            gen_kwargs['image_prompt_type'] = mode_selection['type']
+            # The generate function saves the file itself based on other params,
+            # so we don't need to specify an output file here.
+            
+            pil_images = [convert_image(Image.open(p)) for p in selected_image_paths]
+
+            if 'S' in mode_selection['type'] and pil_images:
+                gen_kwargs['image_start'] = pil_images[0]
+                if len(pil_images) > 1:
+                    gen_kwargs['image_refs'] = pil_images[1:]
+            elif 'I' in mode_selection['type'] and pil_images:
+                gen_kwargs['image_refs'] = pil_images
+            
+            print("\nFinal parameters for this scene:")
+            print(f"  Mode: {mode_selection['name']}")
+            if selected_image_paths:
+                print(f"  Images: {', '.join([Path(p).name for p in selected_image_paths])}")
+            
+            user_choice = get_confirmation("Generate this scene? (y/n/r): ")
+            if user_choice == 'n': break
+            if user_choice == 'r': continue
+
+            try:
+                # The generate function returns the path to the output video
+                output_video_path = wan_model.generate(**gen_kwargs)
+                print(f"Scene clip saved to: {output_video_path}")
                 
-                print("\nFinal parameters for this scene:")
-                if len(selected_images) > 0:
-                    print(f"  Input Images: {', '.join([Path(p).name for p in selected_images])}")
-                else:
-                    print("  Input Images: None (Text-to-Video)")
-                print(f"  Prompt: {scene_data['prompt']}")
-                
-                user_choice = get_confirmation("Generate this scene? (y/n/r): ")
-                if user_choice == 'n':
-                    print("Skipping scene.")
+                regen_choice = get_confirmation("Accept this video? (y/n/r): ")
+                if regen_choice == 'y':
+                    confirmed = True
+                    # Frame extraction logic would go here
+                elif regen_choice == 'n':
+                    break 
+            except Exception as e:
+                print(f"ERROR: Generation failed: {e}")
+                import traceback
+                traceback.print_exc()
+                if get_user_input("Try again? (y/n): ").lower() != 'y':
                     break
-
-                output_file = os.path.join(OUTPUT_DIR, f"scene_A_{i+1:03d}.mp4")
-                gen_args = [
-                    "--input-image", start_image,
-                    "--output-file", output_file,
-                    "--prompt", scene_data['prompt'],
-                    "--resolution", base_params.get("resolution", "832x480"),
-                    "--steps", str(base_params.get("num_inference_steps", "30")),
-                    "--frames", str(base_params.get("video_length", "65")),
-                    # Add other params from first-shot.json as needed
-                    "--guidance-scale", str(base_params.get("guidance_scale", "5.0")),
-                ]
-
-                if run_generation(gen_args):
-                    print(f"Scene clip saved to: {output_file}")
-                    regen_choice = get_confirmation("Accept this video? (y/n/r): ")
-                    if regen_choice == 'y':
-                        confirmed = True
-                        extract_f_choice = get_user_input("Extract a frame for future reference? (y/n): ").lower()
-                        if extract_f_choice == 'y':
-                            extract_frame(output_file, INPUT_DIR)
-                    elif regen_choice == 'n':
-                        break # Skip scene
-                else:
-                    print("Generation failed.")
-                    if get_user_input("Try again? (y/n): ").lower() != 'y':
-                        break
     
     print("\n=== SCRIPT FINISHED ===")
     print(f"All generated clips are in: {OUTPUT_DIR}")
-    # Clean up the temporary black image if it exists
-    if os.path.exists(TEMP_BLACK_IMAGE):
-        os.remove(TEMP_BLACK_IMAGE)
 
 if __name__ == "__main__":
     main()
-

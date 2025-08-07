@@ -535,7 +535,7 @@ def video_matting(video_state,video_input, end_slider, matting_type, interactive
     file_name= video_state["video_name"]
     file_name = ".".join(file_name.split(".")[:-1]) 
  
-    from wan.utils.utils import extract_audio_tracks, combine_video_with_audio_tracks, cleanup_temp_audio_files    
+    from shared.utils.utils import extract_audio_tracks, combine_video_with_audio_tracks, cleanup_temp_audio_files    
     source_audio_tracks, audio_metadata  = extract_audio_tracks(video_input)
     output_fg_path =  f"./mask_outputs/{file_name}_fg.mp4"
     output_fg_temp_path =  f"./mask_outputs/{file_name}_fg_tmp.mp4"

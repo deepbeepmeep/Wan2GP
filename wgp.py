@@ -4270,7 +4270,7 @@ def generate_video(
         if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0:
             text_encoder_max_tokens = 256
             send_cmd("progress", [0, get_latest_status(state, "Enhancing Prompt")])
-            from ltx_video.utils.prompt_enhance_utils import generate_cinematic_prompt
+            from models.ltx_video.utils.prompt_enhance_utils import generate_cinematic_prompt
             prompt_images = []
             if "I" in prompt_enhancer:
                 if image_start != None:

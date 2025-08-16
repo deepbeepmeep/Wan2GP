@@ -3890,7 +3890,6 @@ class DynamicClass:
 def generate_video(
     task,
     send_cmd,
-    queue,
     image_mode,
     prompt,
     negative_prompt,    
@@ -4719,7 +4718,6 @@ def generate_video(
                 from shared.utils.utils import truncate_for_filesystem
                 extension = "jpg" if is_image else "mp4" 
 
-                filename = queue[0]['params'].get('filename')
                 if filename:
                     video_path = get_available_filename(save_path, filename, force_extension=f".{extension}", treat_as_stem=True)
                     file_name = os.path.basename(video_path)
@@ -4946,7 +4944,7 @@ def process_tasks(state):
         send_cmd = com_stream.output_queue.push
         def generate_video_error_handler():
             try:
-                generate_video(task, send_cmd, queue, **params)
+                generate_video(task, send_cmd,  **params)
             except Exception as e:
                 tb = traceback.format_exc().split('\n')[:-1] 
                 print('\n'.join(tb))

@@ -4714,12 +4714,14 @@ def generate_video(
 
                 filename = queue[0]['params'].get('filename')
                 if filename:
-                    file_name = filename
+                    video_path = get_available_filename(save_path, filename)
+                    file_name = os.path.basename(video_path)
                 elif os.name == 'nt':
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt,50)).strip()}.{extension}"
+                    video_path = os.path.join(save_path, file_name)
                 else:
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt,100)).strip()}.{extension}"
-                video_path = os.path.join(save_path, file_name)
+                    video_path = os.path.join(save_path, file_name)
                 any_mmaudio = MMAudio_setting != 0 and server_config.get("mmaudio_enabled", 0) != 0 and sample.shape[1] >=fps
 
                 if is_image:    
@@ -5931,6 +5933,7 @@ def save_inputs(
             sample_solver,
             embedded_guidance_scale,
             repeat_generation,
+            filename,
             multi_prompts_gen_type,
             multi_images_gen_type,
             skip_steps_cache_type,
@@ -7005,6 +7008,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 NAG_alpha = gr.Slider(0.0, 2.0, value=ui_defaults.get("NAG_alpha",.5), step=0.1, label="NAG Alpha", visible = True)
                         with gr.Row():
                             repeat_generation = gr.Slider(1, 25.0, value=ui_defaults.get("repeat_generation",1), step=1, label="Num. of Generated Videos per Prompt", visible = not image_outputs) 
+                            filename = gr.Textbox(label="Output File Name", value=ui_defaults.get("filename",""))
                             multi_images_gen_type = gr.Dropdown( value=ui_defaults.get("multi_images_gen_type",0), 
                                 choices=[
                                     ("Generate every combination of images and texts", 0),

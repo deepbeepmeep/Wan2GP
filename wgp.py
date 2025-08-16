@@ -4712,7 +4712,10 @@ def generate_video(
                 from shared.utils.utils import truncate_for_filesystem
                 extension = "jpg" if is_image else "mp4" 
 
-                if os.name == 'nt':
+                filename = queue[0]['params'].get('filename')
+                if filename:
+                    file_name = filename
+                elif os.name == 'nt':
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt,50)).strip()}.{extension}"
                 else:
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt,100)).strip()}.{extension}"
@@ -4781,6 +4784,8 @@ def generate_video(
                     "transformer_loras_multipliers" : transformer_loras_multipliers
                     })                
                 configs = prepare_inputs_dict("metadata", inputs, model_type)
+                if filename:
+                    configs["filename"] = filename
                 if sliding_window: configs["window_no"] = window_no
                 configs["prompt"] = "\n".join(original_prompts)
                 if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0:

@@ -3657,9 +3657,14 @@ def any_audio_track(model_type):
     base_model_type = get_base_model_type(model_type)
     return base_model_type in ["fantasy", "hunyuan_avatar", "hunyuan_custom_audio"] or get_model_def(model_type).get("multitalk_class", False)
 
-def get_available_filename(target_path, video_source, suffix = "", force_extension = None):
-    name, extension =  os.path.splitext(os.path.basename(video_source))
-    if force_extension != None:
+def get_available_filename(target_path, video_source, suffix = "", force_extension = None, treat_as_stem=False):
+    if treat_as_stem:
+        name = os.path.basename(video_source)
+        extension = ""
+    else:
+        name, extension =  os.path.splitext(os.path.basename(video_source))
+
+    if force_extension is not None:
         extension = force_extension
     name+= suffix
     full_path= os.path.join(target_path, f"{name}{extension}")
@@ -3885,6 +3890,7 @@ class DynamicClass:
 def generate_video(
     task,
     send_cmd,
+    queue,
     image_mode,
     prompt,
     negative_prompt,    
@@ -3902,6 +3908,7 @@ def generate_video(
     sample_solver,
     embedded_guidance_scale,
     repeat_generation,
+    filename,
     multi_prompts_gen_type,
     multi_images_gen_type,
     skip_steps_cache_type,
@@ -4714,7 +4721,7 @@ def generate_video(
 
                 filename = queue[0]['params'].get('filename')
                 if filename:
-                    video_path = get_available_filename(save_path, filename)
+                    video_path = get_available_filename(save_path, filename, force_extension=f".{extension}", treat_as_stem=True)
                     file_name = os.path.basename(video_path)
                 elif os.name == 'nt':
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt,50)).strip()}.{extension}"
@@ -4939,7 +4946,7 @@ def process_tasks(state):
         send_cmd = com_stream.output_queue.push
         def generate_video_error_handler():
             try:
-                generate_video(task, send_cmd,  **params)
+                generate_video(task, send_cmd, queue, **params)
             except Exception as e:
                 tb = traceback.format_exc().split('\n')[:-1] 
                 print('\n'.join(tb))

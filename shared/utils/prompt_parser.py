@@ -1,6 +1,6 @@
 import re
 
-def process_template(input_text):
+def process_template(input_text, keep_comments = False):
     """
     Process a text template with macro instructions and variable substitution.
     Supports multiple values for variables to generate multiple output versions.
@@ -28,9 +28,12 @@ def process_template(input_text):
         line_number += 1
         
         # Skip empty lines or comments
-        if not line or line.startswith('#'):
+        if not line:
             continue
-            
+
+        if line.startswith('#') and not keep_comments:
+            continue
+
         # Handle macro instructions
         if line.startswith('!'):
             # Process any accumulated template lines before starting a new macro
@@ -106,13 +109,14 @@ def process_template(input_text):
         
         # Handle template lines
         else:
-            # Check for unknown variables in template line
-            var_references = re.findall(r'\{([^}]+)\}', line)
-            for var_ref in var_references:
-                if var_ref not in current_variables:
-                    error_message = f"Unknown variable '{{{var_ref}}}' in template\nLine: '{orig_line}'"
-                    return "", error_message
-            
+            if not line.startswith('#'):
+                # Check for unknown variables in template line
+                var_references = re.findall(r'\{([^}]+)\}', line)
+                for var_ref in var_references:
+                    if var_ref not in current_variables:
+                        error_message = f"Unknown variable '{{{var_ref}}}' in template\nLine: '{orig_line}'"
+                        return "", error_message
+                
             # Add to current template lines
             current_template_lines.append(line)
     

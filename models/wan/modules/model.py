@@ -767,6 +767,15 @@ class WanModel(ModelMixin, ConfigMixin):
         if first == None:
             return sd
 
+        new_sd = {}
+
+        # for k,v in sd.items():
+        #     if k.endswith("modulation.diff"):
+        #         pass
+        #     else:
+        #         new_sd[ k] = v
+        # sd = new_sd
+
         # if first.startswith("blocks."):
         #     new_sd = {}
         #     for k,v in sd.items():

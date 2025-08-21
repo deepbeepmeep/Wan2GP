@@ -13,7 +13,8 @@ class family_handler():
             "image_outputs" : True,
             "sample_solvers":[
                             ("Default", "default"),
-                            ("Lightning", "lightning")]
+                            ("Lightning", "lightning")],
+            "guidance_max_phases" : 1,
         }
 
 
@@ -21,7 +22,7 @@ class family_handler():
 
     @staticmethod
     def query_supported_types():
-        return ["qwen_image_20B"]
+        return ["qwen_image_20B", "qwen_image_edit_20B"]
 
     @staticmethod
     def query_family_maps():
@@ -41,7 +42,7 @@ class family_handler():
         return  {  
             "repoId" : "DeepBeepMeep/Qwen_image", 
             "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
-            "fileList" : [ ["qwen_vae.safetensors", "qwen_vae_config.json"], ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json"] + computeList(text_encoder_filename)  ]
+            "fileList" : [ ["qwen_vae.safetensors", "qwen_vae_config.json"], ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json"] + computeList(text_encoder_filename)  ]
             }
 
     @staticmethod

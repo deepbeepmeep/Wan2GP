@@ -12,9 +12,7 @@ class family_handler():
     def query_model_def(base_model_type, model_def):
         LTXV_config = model_def.get("LTXV_config", "")
         distilled= "distilled" in LTXV_config 
-        extra_model_def = {
-            "no_guidance": True,		
-        }
+        extra_model_def = {}
         if distilled:
             extra_model_def.update({
             "lock_inference_steps": True,

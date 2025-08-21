@@ -7,6 +7,9 @@ def test_class_i2v(base_model_type):
 def test_class_1_3B(base_model_type):    
     return base_model_type in [ "vace_1.3B", "t2v_1.3B", "recam_1.3B","phantom_1.3B","fun_inp_1.3B"]
 
+def test_multitalk(base_model_type):
+    return base_model_type in ["multitalk", "vace_multitalk_14B", "i2v_2_2_multitalk"]
+
 class family_handler():
 
     @staticmethod
@@ -79,11 +82,11 @@ class family_handler():
             extra_model_def["no_steps_skipping"] = True
         i2v =  test_class_i2v(base_model_type)
         extra_model_def["i2v_class"] = i2v
-        extra_model_def["multitalk_class"] = base_model_type in ["multitalk", "vace_multitalk_14B", "i2v_2_2_multitalk"]
+        extra_model_def["multitalk_class"] = test_multitalk(base_model_type)
         vace_class = base_model_type in ["vace_14B", "vace_1.3B", "vace_multitalk_14B"] 
         extra_model_def["vace_class"] = vace_class
 
-        if base_model_type in ["multitalk", "vace_multitalk_14B", "i2v_2_2_multitalk"]:
+        if test_multitalk(base_model_type):
             fps = 25
         elif base_model_type in ["fantasy"]:
             fps = 23
@@ -92,7 +95,7 @@ class family_handler():
         else:
             fps = 16
         extra_model_def["fps"] =fps
-
+        multiple_submodels = "URLs2" in model_def
         if vace_class: 
             frames_minimum, frames_steps =  17, 4
         else:
@@ -101,12 +104,13 @@ class family_handler():
         "frames_minimum" : frames_minimum,
         "frames_steps" : frames_steps, 
         "sliding_window" : base_model_type in ["multitalk", "t2v", "fantasy"] or test_class_i2v(base_model_type) or vace_class,  #"ti2v_2_2",
-        "guidance_max_phases" : 2,
+        "multiple_submodels" : multiple_submodels,
+        "guidance_max_phases" : 3,
         "skip_layer_guidance" : True,        
         "cfg_zero" : True,
         "cfg_star" : True,
         "adaptive_projected_guidance" : True,  
-        "tea_cache" : not (base_model_type in ["i2v_2_2", "ti2v_2_2" ] or "URLs2" in model_def),
+        "tea_cache" : not (base_model_type in ["i2v_2_2", "ti2v_2_2" ] or multiple_submodels),
         "mag_cache" : True,
         "sample_solvers":[
                             ("unipc", "unipc"),
@@ -157,8 +161,7 @@ class family_handler():
     @staticmethod
     def get_rgb_factors(base_model_type ):
         from shared.RGB_factors import get_rgb_factors
-        if base_model_type == "ti2v_2_2": return None, None
-        latent_rgb_factors, latent_rgb_factors_bias = get_rgb_factors("wan")
+        latent_rgb_factors, latent_rgb_factors_bias = get_rgb_factors("wan", base_model_type)
         return latent_rgb_factors, latent_rgb_factors_bias
     
     @staticmethod
@@ -218,6 +221,10 @@ class family_handler():
         if ui_defaults.get("sample_solver", "") == "": 
             ui_defaults["sample_solver"] = "unipc"
 
+        if settings_version < 2.24:
+            if model_def.get("multiple_submodels", False) or ui_defaults.get("switch_threshold", 0) > 0:
+                ui_defaults["guidance_phases"] = 2
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
@@ -233,7 +240,6 @@ class family_handler():
             ui_defaults.update({
                 "guidance_scale": 5.0,
                 "flow_shift": 7, # 11 for 720p
-                "audio_guidance_scale": 4,
                 "sliding_window_discard_last_frames" : 4,
                 "sample_solver" : "euler",
                 "adaptive_switch" : 1,
@@ -258,4 +264,10 @@ class family_handler():
                 "image_prompt_type": "T", 
             })
 
-            
+        if test_multitalk(base_model_type):
+            ui_defaults["audio_guidance_scale"] = 4
+
+        if model_def.get("multiple_submodels", False):
+            ui_defaults["guidance_phases"] = 2
+
+ 

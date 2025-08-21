@@ -12,10 +12,24 @@ from .transformer_qwenimage import QwenImageTransformer2DModel
 
 from diffusers.utils import logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
-from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, AutoTokenizer
+from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, AutoTokenizer, Qwen2VLProcessor
 from .autoencoder_kl_qwenimage import AutoencoderKLQwenImage
 from diffusers import FlowMatchEulerDiscreteScheduler
 from .pipeline_qwenimage import QwenImagePipeline
+from PIL import Image
+from shared.utils.utils import calculate_new_dimensions
+
+def stitch_images(img1, img2):
+    # Resize img2 to match img1's height
+    width1, height1 = img1.size
+    width2, height2 = img2.size
+    new_width2 = int(width2 * height1 / height2)
+    img2_resized = img2.resize((new_width2, height1), Image.Resampling.LANCZOS)
+    
+    stitched = Image.new('RGB', (width1 + new_width2, height1))
+    stitched.paste(img1, (0, 0))
+    stitched.paste(img2_resized, (width1, 0))
+    return stitched
 
 class model_factory():
     def __init__(
@@ -35,9 +49,16 @@ class model_factory():
     
 
         transformer_filename = model_filename[0]
-        tokenizer = AutoTokenizer.from_pretrained(os.path.join(checkpoint_dir,"Qwen2.5-VL-7B-Instruct")) 
+        processor = None
+        tokenizer = None
+        if base_model_type == "qwen_image_edit_20B":
+            processor = Qwen2VLProcessor.from_pretrained(os.path.join(checkpoint_dir,"Qwen2.5-VL-7B-Instruct"))
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(os.path.join(checkpoint_dir,"Qwen2.5-VL-7B-Instruct"))
 
-        with open("configs/qwen_image_20B.json", 'r', encoding='utf-8') as f:
+
+        base_config_file = "configs/qwen_image_20B.json" 
+        with open(base_config_file, 'r', encoding='utf-8') as f:
             transformer_config = json.load(f)
         transformer_config.pop("_diffusers_version")
         transformer_config.pop("_class_name")
@@ -46,8 +67,21 @@ class model_factory():
         from accelerate import init_empty_weights
         with init_empty_weights():
             transformer = QwenImageTransformer2DModel(**transformer_config)
-        offload.load_model_data(transformer, transformer_filename)
+        source =  model_def.get("source", None)
+
+        if source is not None:
+            offload.load_model_data(transformer, source)
+        else:
+            offload.load_model_data(transformer, transformer_filename)
         # transformer = offload.fast_load_transformers_model("transformer_quanto.safetensors", writable_tensors= True , modelClass=QwenImageTransformer2DModel, defaultConfigPath="transformer_config.json")
+
+        if not source is None:
+            from wgp import save_model
+            save_model(transformer, model_type, dtype, None)
+
+        if save_quantized:
+            from wgp import save_quantized_model
+            save_quantized_model(transformer, model_type, model_filename[0], dtype, base_config_file)
 
         text_encoder = offload.fast_load_transformers_model(text_encoder_filename,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration,  defaultConfigPath= os.path.join(checkpoint_dir, "Qwen2.5-VL-7B-Instruct", "config.json"))
         # text_encoder = offload.fast_load_transformers_model(text_encoder_filename, do_quantize=True,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration, defaultConfigPath="text_encoder_config.json", verboseLevel=2)
@@ -56,11 +90,12 @@ class model_factory():
 
         vae = offload.fast_load_transformers_model( os.path.join(checkpoint_dir,"qwen_vae.safetensors"), writable_tensors= True , modelClass=AutoencoderKLQwenImage, defaultConfigPath=os.path.join(checkpoint_dir,"qwen_vae_config.json"))
         
-        self.pipeline = QwenImagePipeline(vae, text_encoder, tokenizer, transformer)
+        self.pipeline = QwenImagePipeline(vae, text_encoder, tokenizer, transformer, processor)
         self.vae=vae
         self.text_encoder=text_encoder
         self.tokenizer=tokenizer
         self.transformer=transformer
+        self.processor = processor
 
     def generate(
         self,
@@ -141,19 +176,31 @@ class model_factory():
         if n_prompt is None or len(n_prompt) == 0:
             n_prompt=  "text, watermark, copyright, blurry, low resolution"
 
+        if input_ref_images is not None:
+            # image stiching method
+            stiched = input_ref_images[0]
+            if "K" in video_prompt_type :
+                w, h = input_ref_images[0].size
+                height, width = calculate_new_dimensions(height, width, h, w, fit_into_canvas)
+
+            for new_img in input_ref_images[1:]:
+                stiched = stitch_images(stiched, new_img)
+            input_ref_images  = [stiched]
+
         image = self.pipeline(
-        prompt=input_prompt,
-        negative_prompt=n_prompt,
-        width=width,
-        height=height,
-        num_inference_steps=sampling_steps,
-        num_images_per_prompt = batch_size,
-        true_cfg_scale=guide_scale,
-        callback = callback,
-        pipeline=self,
-        loras_slists=loras_slists,
-        joint_pass = joint_pass,
-        generator=torch.Generator(device="cuda").manual_seed(seed)
+            prompt=input_prompt,
+            negative_prompt=n_prompt,
+            image = input_ref_images,
+            width=width,
+            height=height,
+            num_inference_steps=sampling_steps,
+            num_images_per_prompt = batch_size,
+            true_cfg_scale=guide_scale,
+            callback = callback,
+            pipeline=self,
+            loras_slists=loras_slists,
+            joint_pass = joint_pass,
+            generator=torch.Generator(device="cuda").manual_seed(seed)
         )        
         if image is None: return None
         return image.transpose(0, 1)

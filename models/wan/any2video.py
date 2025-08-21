@@ -393,7 +393,11 @@ class WanAny2V:
         sampling_steps=50,
         guide_scale=5.0,
         guide2_scale = 5.0,
+        guide3_scale = 5.0,
         switch_threshold = 0,
+        switch2_threshold = 0,
+        guide_phases= 1 ,
+        model_switch_phase = 1,
         n_prompt="",
         seed=-1,
         callback = None,
@@ -427,6 +431,7 @@ class WanAny2V:
         prefix_frames_count = 0,
         image_mode = 0,
         window_no = 0,
+        set_header_text = None,
         **bbargs
                 ):
         
@@ -745,16 +750,25 @@ class WanAny2V:
 
         # init denoising
         updated_num_steps= len(timesteps)
-        if callback != None:
-            from shared.utils.loras_mutipliers import update_loras_slists
-            model_switch_step = updated_num_steps
-            for i, t in enumerate(timesteps):
-                if t <= switch_threshold:
-                    model_switch_step = i
-                    break
-            update_loras_slists(self.model, loras_slists, updated_num_steps, model_switch_step= model_switch_step)
-            if self.model2 is not None: update_loras_slists(self.model2, loras_slists, updated_num_steps, model_switch_step= model_switch_step)
-            callback(-1, None, True, override_num_inference_steps = updated_num_steps)
+
+        denoising_extra = ""
+        from shared.utils.loras_mutipliers import update_loras_slists, get_model_switch_steps
+
+        phase_switch_step, phase_switch_step2, phases_description = get_model_switch_steps(timesteps, updated_num_steps, guide_phases, 0 if self.model2 is None else model_switch_phase, switch_threshold, switch2_threshold )
+        if len(phases_description) > 0:  set_header_text(phases_description)
+        guidance_switch_done =  guidance_switch2_done = False
+        if guide_phases > 1: denoising_extra = f"Phase 1/{guide_phases} High Noise" if self.model2 is not None else f"Phase 1/{guide_phases}"
+        def update_guidance(step_no, t, guide_scale, new_guide_scale, guidance_switch_done, switch_threshold, trans, phase_no, denoising_extra):
+            if guide_phases >= phase_no and not guidance_switch_done and t <= switch_threshold:
+                if model_switch_phase == phase_no-1 and self.model2 is not None: trans = self.model2
+                guide_scale, guidance_switch_done = new_guide_scale, True
+                denoising_extra = f"Phase {phase_no}/{guide_phases} {'Low Noise' if trans == self.model2 else 'High Noise'}" if self.model2 is not None else f"Phase {phase_no}/{guide_phases}"
+                callback(step_no-1, denoising_extra = denoising_extra)
+            return guide_scale, guidance_switch_done, trans, denoising_extra
+        update_loras_slists(self.model, loras_slists, updated_num_steps, phase_switch_step= phase_switch_step, phase_switch_step2= phase_switch_step2)
+        if self.model2 is not None: update_loras_slists(self.model2, loras_slists, updated_num_steps, phase_switch_step= phase_switch_step, phase_switch_step2= phase_switch_step2)
+        callback(-1, None, True, override_num_inference_steps = updated_num_steps, denoising_extra = denoising_extra)
+
 
         if sample_scheduler != None:
             scheduler_kwargs = {} if isinstance(sample_scheduler, FlowMatchScheduler) else {"generator": seed_g}
@@ -766,16 +780,12 @@ class WanAny2V:
             text_momentumbuffer  = MomentumBuffer(apg_momentum) 
             audio_momentumbuffer = MomentumBuffer(apg_momentum) 
 
-        guidance_switch_done = False
 
         # denoising
         trans = self.model
         for i, t in enumerate(tqdm(timesteps)):
-            if not guidance_switch_done and t <= switch_threshold:
-                guide_scale = guide2_scale
-                if self.model2 is not None: trans = self.model2
-                guidance_switch_done = True
- 
+            guide_scale, guidance_switch_done, trans, denoising_extra = update_guidance(i, t, guide_scale, guide2_scale, guidance_switch_done, switch_threshold, trans, 2, denoising_extra)
+            guide_scale, guidance_switch2_done, trans, denoising_extra = update_guidance(i, t, guide_scale, guide3_scale, guidance_switch2_done, switch2_threshold, trans, 3, denoising_extra)
             offload.set_step_no_for_lora(trans, i)
             timestep = torch.stack([t])
 
@@ -920,7 +930,7 @@ class WanAny2V:
                 if trim_frames > 0:  latents_preview=  latents_preview[:, :,:-trim_frames]
                 if image_outputs: latents_preview=  latents_preview[:, :,:1]
                 if len(latents_preview) > 1: latents_preview = latents_preview.transpose(0,2)
-                callback(i, latents_preview[0], False)
+                callback(i, latents_preview[0], False, denoising_extra =denoising_extra )
                 latents_preview = None
 
         if timestep_injection:

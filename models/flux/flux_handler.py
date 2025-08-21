@@ -15,9 +15,7 @@ class family_handler():
             "image_outputs" : True,
             "no_negative_prompt" : True,
         }
-        if flux_schnell:
-            model_def_output["no_guidance"] = True
-        else:
+        if not flux_schnell:
             model_def_output["embedded_guidance"] = True
             
 

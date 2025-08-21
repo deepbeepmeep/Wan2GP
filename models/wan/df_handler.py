@@ -24,6 +24,8 @@ class family_handler():
         extra_model_def["sliding_window"] = True
         extra_model_def["skip_layer_guidance"] = True
         extra_model_def["tea_cache"] = True
+        extra_model_def["guidance_max_phases"] = 1
+
         return extra_model_def 
 
     @staticmethod

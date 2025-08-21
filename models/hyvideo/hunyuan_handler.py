@@ -42,7 +42,11 @@ class family_handler():
         extra_model_def["frames_minimum"] = 5
         extra_model_def["frames_steps"] = 4
         extra_model_def["sliding_window"] = False
-        extra_model_def["embedded_guidance"] = base_model_type in ["hunyuan", "hunyuan_i2v"]
+        if base_model_type in ["hunyuan", "hunyuan_i2v"]:
+            extra_model_def["embedded_guidance"] = True
+        else:
+            extra_model_def["guidance_max_phases"] = 1
+
         extra_model_def["cfg_star"] =  base_model_type in [ "hunyuan_avatar", "hunyuan_custom_audio", "hunyuan_custom_edit", "hunyuan_custom"]
         extra_model_def["tea_cache"] = True
         extra_model_def["mag_cache"] = True

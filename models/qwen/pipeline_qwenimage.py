@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
 import torch, json
-
+import math
 from diffusers.image_processor import VaeImageProcessor
 from .transformer_qwenimage import QwenImageTransformer2DModel
 
@@ -28,6 +28,7 @@ from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, Aut
 from .autoencoder_kl_qwenimage import AutoencoderKLQwenImage
 from diffusers import FlowMatchEulerDiscreteScheduler
 from PIL import Image
+from shared.utils.utils import calculate_new_dimensions
 
 XLA_AVAILABLE = False
 
@@ -686,13 +687,17 @@ class QwenImagePipeline(): #DiffusionPipeline
             image = image[0] if isinstance(image, list) else image
             image_height, image_width = self.image_processor.get_default_height_width(image)
             aspect_ratio = image_width / image_height
-            if True :
+            if False :
                 _, image_width, image_height = min(
                     (abs(aspect_ratio - w / h), w, h) for w, h in PREFERRED_QWENIMAGE_RESOLUTIONS
                 )
             image_width = image_width // multiple_of * multiple_of
             image_height = image_height // multiple_of * multiple_of
-            # image = self.image_processor.resize(image, image_height, image_width)
+            ref_height, ref_width = 1568, 672
+            if height * width < ref_height * ref_width: ref_height , ref_width = height , width  
+            if image_height * image_width > ref_height * ref_width:
+                image_height, image_width = calculate_new_dimensions(ref_height, ref_width, image_height, image_width, False, block_size=multiple_of)
+
             image = image.resize((image_width,image_height), resample=Image.Resampling.LANCZOS) 
             prompt_image = image
             image = self.image_processor.preprocess(image, image_height, image_width)

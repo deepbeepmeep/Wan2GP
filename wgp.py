@@ -55,8 +55,8 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.5.10"
-WanGP_version = "8.0"
-settings_version = 2.24
+WanGP_version = "8.01"
+settings_version = 2.25
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 
@@ -2071,6 +2071,7 @@ def get_default_settings(model_type):
         model_def = get_model_def(model_type)
         base_model_type = get_base_model_type(model_type)
         ui_defaults = {
+            "settings_version" : settings_version,
             "prompt": get_default_prompt(i2v),
             "resolution": "1280x720" if "720" in base_model_type else "832x480",
             "video_length": 81,
@@ -6601,9 +6602,9 @@ def get_resolution_choices(current_resolution_choice, model_resolutions= None):
             ("1920x832 (21:9)", "1920x832"),
             ("832x1920 (9:21)", "832x1920"),
             # 720p
+            ("1024x1024 (1:1)", "1024x1024"),
             ("1280x720 (16:9)", "1280x720"),
             ("720x1280 (9:16)", "720x1280"), 
-            ("1024x1024 (1:1)", "1024x1024"),
             ("1280x544 (21:9)", "1280x544"),
             ("544x1280 (9:21)", "544x1280"),
             ("1104x832 (4:3)", "1104x832"),
@@ -7109,10 +7110,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         video_prompt_type_image_refs = gr.Dropdown(
                             choices=[
                                 ("None", ""),
-                                ("Conditional Images are People / Objects", "I"),
                                 ("Conditional Images is first Main Subject / Landscape and may be followed by People / Objects", "KI"),
+                                ("Conditional Images are People / Objects", "I"),
                                 ],
-                            value=filter_letters(video_prompt_type_value, "KFI"),
+                            value=filter_letters(video_prompt_type_value, "KI"),
                             visible = True,
                             show_label=False,
                             label="Reference Images Combination Method", scale = 2

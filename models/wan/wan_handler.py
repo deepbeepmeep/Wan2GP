@@ -222,8 +222,13 @@ class family_handler():
             ui_defaults["sample_solver"] = "unipc"
 
         if settings_version < 2.24:
-            if model_def.get("multiple_submodels", False) or ui_defaults.get("switch_threshold", 0) > 0:
+            if (model_def.get("multiple_submodels", False) or ui_defaults.get("switch_threshold", 0) > 0) and ui_defaults.get("guidance_phases",0)<2:
                 ui_defaults["guidance_phases"] = 2
+
+        if settings_version == 2.24 and ui_defaults.get("guidance_phases",0) ==2:
+            mult = model_def.get("loras_multipliers","")
+            if len(mult)> 1 and len(mult[0].split(";"))==3: ui_defaults["guidance_phases"] = 3
+
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):

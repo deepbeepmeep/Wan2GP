@@ -53,8 +53,7 @@ class model_factory():
         tokenizer = None
         if base_model_type == "qwen_image_edit_20B":
             processor = Qwen2VLProcessor.from_pretrained(os.path.join(checkpoint_dir,"Qwen2.5-VL-7B-Instruct"))
-        else:
-            tokenizer = AutoTokenizer.from_pretrained(os.path.join(checkpoint_dir,"Qwen2.5-VL-7B-Instruct"))
+        tokenizer = AutoTokenizer.from_pretrained(os.path.join(checkpoint_dir,"Qwen2.5-VL-7B-Instruct"))
 
 
         base_config_file = "configs/qwen_image_20B.json" 

@@ -31,7 +31,7 @@ from shared.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from .modules.posemb_layers import get_rotary_pos_embed
 from shared.utils.vace_preprocessor import VaceVideoProcessor
 from shared.utils.basic_flowmatch import FlowMatchScheduler
-from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions
+from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
 from mmgp import safetensors2
 
@@ -127,8 +127,12 @@ class WanAny2V:
         # model_filename[1] = xmodel_filename
 
         source =  model_def.get("source", None)
-
-        if source is not None:
+        module_source =  model_def.get("module_source", None)
+        if module_source is not None:
+            model_filename = [] + model_filename
+            model_filename[1] = module_source
+            self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath)
+        elif source is not None:
             self.model = offload.fast_load_transformers_model(source, modelClass=WanModel, writable_tensors= False, forcedConfigPath= base_config_file)
         elif self.transformer_switch:
             shared_modules= {}
@@ -153,7 +157,12 @@ class WanAny2V:
         self.model.eval().requires_grad_(False)
         if self.model2 is not None:
             self.model2.eval().requires_grad_(False)
-        if not source is None:
+        if module_source is not None:
+            from wgp import save_model
+            from mmgp.safetensors2 import torch_load_file
+            filter = list(torch_load_file(module_source))
+            save_model(self.model, model_type, dtype, None, is_module=True, filter=filter)
+        elif not source is None:
             from wgp import save_model
             save_model(self.model, model_type, dtype, None)
 
@@ -432,6 +441,7 @@ class WanAny2V:
         image_mode = 0,
         window_no = 0,
         set_header_text = None,
+        pre_video_frame = None,
         **bbargs
                 ):
         
@@ -500,36 +510,57 @@ class WanAny2V:
         vace = model_type in ["vace_1.3B","vace_14B", "vace_multitalk_14B"]
         phantom = model_type in ["phantom_1.3B", "phantom_14B"]
         fantasy = model_type in ["fantasy"]
-        multitalk = model_type in ["multitalk", "vace_multitalk_14B", "i2v_2_2_multitalk"]
+        multitalk = model_type in ["multitalk", "infinitetalk", "vace_multitalk_14B", "i2v_2_2_multitalk"]
+        infinitetalk = model_type in ["infinitetalk"]
         recam = model_type in ["recam_1.3B"]
         ti2v = model_type in ["ti2v_2_2"]
         start_step_no = 0
         ref_images_count = 0
         trim_frames = 0
         extended_overlapped_latents = None
+        no_noise_latents_injection = infinitetalk
         timestep_injection = False
         lat_frames = int((frame_num - 1) // self.vae_stride[0]) + 1
         # image2video 
-        if model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "fantasy", "multitalk", "i2v_2_2_multitalk", "flf2v_720p"]:
+        if model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "fantasy", "multitalk", "infinitetalk", "i2v_2_2_multitalk", "flf2v_720p"]:
             any_end_frame = False
             if image_start is None:
-                _ , preframes_count, height, width = input_video.shape
+                if infinitetalk:
+                    if pre_video_frame is None:
+                        new_shot = True
+                    else:
+                        if input_ref_images is None:
+                            input_ref_images, new_shot = [pre_video_frame], False
+                        else:
+                            input_ref_images, new_shot = [img.resize(pre_video_frame.size, resample=Image.Resampling.LANCZOS) for img in input_ref_images], True
+                    if input_ref_images is None: raise Exception("Missing Reference Image")
+                    image_ref = convert_image_to_tensor(input_ref_images[ min(window_no, len(input_ref_images))-1 ])
+                    if new_shot and window_no <= len(input_ref_images):  
+                        input_video = image_ref.unsqueeze(1)
+                    _ , preframes_count, height, width = input_video.shape
+                input_video = input_video.to(device=self.device).to(dtype= self.VAE_dtype)
+                if infinitetalk:
+                    image_for_clip = image_ref.to(input_video)
+                    control_pre_frames_count = 1 
+                    control_video = image_for_clip.unsqueeze(1)
+                else:
+                    image_for_clip = input_video[:, -1]
+                    control_pre_frames_count = preframes_count
+                    control_video = input_video
                 lat_h, lat_w = height // self.vae_stride[1], width // self.vae_stride[2]
                 if hasattr(self, "clip"):
                     clip_image_size = self.clip.model.image_size
-                    clip_image = resize_lanczos(input_video[:, -1], clip_image_size, clip_image_size)[:, None, :, :]
+                    clip_image = resize_lanczos(image_for_clip, clip_image_size, clip_image_size)[:, None, :, :]
                     clip_context = self.clip.visual([clip_image]) if model_type != "flf2v_720p" else self.clip.visual([clip_image , clip_image ])
                     clip_image = None
                 else:
                     clip_context = None
-                input_video = input_video.to(device=self.device).to(dtype= self.VAE_dtype)
-                enc =  torch.concat( [input_video, torch.zeros( (3, frame_num-preframes_count, height, width), 
-                                     device=self.device, dtype= self.VAE_dtype)], 
-                                     dim = 1).to(self.device)
-                color_reference_frame = input_video[:, -1:].clone()
-                input_video = None
+                enc =  torch.concat( [control_video, torch.zeros( (3, frame_num-control_pre_frames_count, height, width), 
+                                    device=self.device, dtype= self.VAE_dtype)], 
+                                    dim = 1).to(self.device)
+                color_reference_frame = image_for_clip.unsqueeze(1).clone()
             else:
-                preframes_count = 1
+                preframes_count = control_pre_frames_count = 1
                 any_end_frame = image_end is not None 
                 add_frames_for_end_image = any_end_frame and model_type == "i2v"
                 if any_end_frame:
@@ -576,30 +607,34 @@ class WanAny2V:
                             torch.zeros( (3, frame_num-1, height, width), device=self.device, dtype= self.VAE_dtype)
                     ], dim=1).to(self.device)
 
-                image_start = image_end = image_start_frame = img_end_frame = None
+                image_start = image_end = image_start_frame = img_end_frame = image_for_clip = image_ref = None
 
             msk = torch.ones(1, frame_num, lat_h, lat_w, device=self.device)
             if any_end_frame:
-                msk[:, preframes_count: -1] = 0
+                msk[:, control_pre_frames_count: -1] = 0
                 if add_frames_for_end_image:
                     msk = torch.concat([ torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:-1], torch.repeat_interleave(msk[:, -1:], repeats=4, dim=1) ], dim=1)
                 else:
                     msk = torch.concat([ torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:] ], dim=1)
             else:
-                msk[:, preframes_count:] = 0
+                msk[:, control_pre_frames_count:] = 0
                 msk = torch.concat([ torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:] ], dim=1)
             msk = msk.view(1, msk.shape[1] // 4, 4, lat_h, lat_w)
             msk = msk.transpose(1, 2)[0]
 
-
             lat_y = self.vae.encode([enc], VAE_tile_size, any_end_frame= any_end_frame and add_frames_for_end_image)[0]
+            y = torch.concat([msk, lat_y])
             overlapped_latents_frames_num = int(1 + (preframes_count-1) // 4)
-            if overlapped_latents != None:
+            # if overlapped_latents != None:
+            if overlapped_latents_frames_num > 0:
                 # disabled because looks worse
                 if False and overlapped_latents_frames_num > 1: lat_y[:, :, 1:overlapped_latents_frames_num]  = overlapped_latents[:, 1:]
+                if infinitetalk:
+                    lat_y = self.vae.encode([input_video], VAE_tile_size)[0]
                 extended_overlapped_latents = lat_y[:, :overlapped_latents_frames_num].clone().unsqueeze(0)
-            y = torch.concat([msk, lat_y])
-            lat_y = None
+            # if control_pre_frames_count != pre_frames_count:
+
+            lat_y = input_video = None
             kwargs.update({ 'y': y})
             if not clip_context is None:
                 kwargs.update({'clip_fea': clip_context})
@@ -813,8 +848,10 @@ class WanAny2V:
                 noise = None
 
             if extended_overlapped_latents != None:
-                latent_noise_factor = t / 1000
-                latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents  * (1.0 - latent_noise_factor) + torch.randn_like(extended_overlapped_latents ) * latent_noise_factor 
+                if no_noise_latents_injection:
+                    latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents 
+                else:
+                    latent_noise_factor = t / 1000
                 if vace:
                     overlap_noise_factor = overlap_noise / 1000 
                     for zz in z:

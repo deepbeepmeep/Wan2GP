@@ -220,6 +220,9 @@ def prepare_kontext(
     target_width: int | None = None,
     target_height: int | None = None,
     bs: int = 1,
+    neg_prompt: str | list[str] = None,
+    real_guidance_scale = False,
+
 ) -> tuple[dict[str, Tensor], int, int]:
     # load and encode the conditioning image
     if bs == 1 and not isinstance(prompt, str):
@@ -279,8 +282,16 @@ def prepare_kontext(
     )
 
     return_dict = prepare(t5, clip, img, prompt)
+    if real_guidance_scale != 1:
+        temp_dict = prepare(t5, clip, img, neg_prompt)
+        return_dict["neg_txt"]=  temp_dict["txt"]
+        return_dict["neg_txt_ids"]=  temp_dict["txt_ids"]
+    else:
+        return_dict["neg_txt"]=  None
+        return_dict["neg_txt_ids"]=  None
     return_dict["img_cond_seq"] = img_cond_seq
     return_dict["img_cond_seq_ids"] = img_cond_seq_ids
+
     return return_dict, target_height, target_width
 
 
@@ -326,7 +337,10 @@ def denoise(
     # sampling parameters
     timesteps: list[float],
     guidance: float = 4.0,
+    real_guidance_scale = None,
     # extra img tokens (channel-wise)
+    neg_txt: Tensor = None,
+    neg_txt_ids: Tensor= None,
     img_cond: Tensor | None = None,
     # extra img tokens (sequence-wise)
     img_cond_seq: Tensor | None = None,
@@ -335,6 +349,7 @@ def denoise(
     pipeline=None,
     loras_slists=None,
     unpack_latent = None,
+    joint_pass= False,
 ):
 
     kwargs = {'pipeline': pipeline, 'callback': callback}
@@ -360,27 +375,54 @@ def denoise(
         if img_cond is not None:
             img_input = torch.cat((img, img_cond), dim=-1)
         if img_cond_seq is not None:
-            assert (
-                img_cond_seq_ids is not None
-            ), "You need to provide either both or neither of the sequence conditioning"
             img_input = torch.cat((img_input, img_cond_seq), dim=1)
             img_input_ids = torch.cat((img_input_ids, img_cond_seq_ids), dim=1)
-        pred = model(
-            img=img_input,
-            img_ids=img_input_ids,
-            txt=txt,
-            txt_ids=txt_ids,
-            y=vec,
-            timesteps=t_vec,
-            guidance=guidance_vec,
-            **kwargs
-        )
-        if pred == None: return None
+        if not joint_pass or real_guidance_scale == 1:
+            pred = model(
+                img=img_input,
+                img_ids=img_input_ids,
+                txt_list=[txt],
+                txt_ids_list=[txt_ids],
+                y=vec,
+                timesteps=t_vec,
+                guidance=guidance_vec,
+                **kwargs
+            )[0]
+            if pred == None: return None
+            if real_guidance_scale> 1:
+                neg_pred = model(
+                    img=img_input,
+                    img_ids=img_input_ids,
+                    txt_list=[neg_txt],
+                    txt_ids_list=[neg_txt_ids],
+                    y=vec,
+                    timesteps=t_vec,
+                    guidance=guidance_vec,
+                    **kwargs
+                )[0]
+                if neg_pred == None: return None
+        else:
+            pred, neg_pred = model(
+                img=img_input,
+                img_ids=img_input_ids,
+                txt_list=[txt, neg_txt],
+                txt_ids_list=[txt_ids, neg_txt_ids],
+                y=vec,
+                timesteps=t_vec,
+                guidance=guidance_vec,
+                **kwargs
+            )
+            if pred == None: return None
+
 
         if img_input_ids is not None:
             pred = pred[:, : img.shape[1]]
+        if real_guidance_scale > 1:
+            if img_input_ids is not None:
+                neg_pred = neg_pred[:, : img.shape[1]]
+            pred = neg_pred + real_guidance_scale * (pred - neg_pred)
 
-            img += (t_prev - t_curr) * pred
+        img += (t_prev - t_curr) * pred
         if callback is not None:
             preview = unpack_latent(img).transpose(0,1)
             callback(i, preview, False)         

@@ -3,7 +3,9 @@
         "name": "Vace ControlNet 14B",
         "architecture": "vace_14B",
         "modules": [
-            "vace_14B"
+			["https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_Vace_14B_module_mbf16.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_Vace_14B_module_quanto_mbf16_int8.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_Vace_14B_module_quanto_mfp16_int8.safetensors"]
         ],
         "description": "The Vace ControlNet model is a powerful model that allows you to control the content of the generated video based of additional custom data : pose or depth video, images or objects you want to see in the video.",
         "URLs": "t2v"

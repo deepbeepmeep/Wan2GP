@@ -11,11 +11,14 @@ class family_handler():
     def query_model_def(base_model_type, model_def):
         flux_model = model_def.get("flux-model", "flux-dev")
         flux_schnell = flux_model == "flux-schnell" 
+        flux_chroma = flux_model == "flux-chroma" 
         model_def_output = {
             "image_outputs" : True,
-            "no_negative_prompt" : True,
+            "no_negative_prompt" : not flux_chroma,
         }
-        if not flux_schnell:
+        if flux_chroma:
+            model_def_output["guidance_max_phases"] = 1
+        elif not flux_schnell:
             model_def_output["embedded_guidance"] = True
             
 

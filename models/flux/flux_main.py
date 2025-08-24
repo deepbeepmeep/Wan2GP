@@ -50,6 +50,8 @@ class model_factory:
         self.VAE_dtype = VAE_dtype
         self.dtype = dtype
         torch_device = "cpu"
+        self.guidance_max_phases = model_def.get("guidance_max_phases", 0) 
+
         # model_filename = ["c:/temp/flux1-schnell.safetensors"] 
         
         self.t5 = load_t5(torch_device, text_encoder_filename, max_length=512)
@@ -83,22 +85,27 @@ class model_factory:
             self,
             seed: int | None = None,
             input_prompt: str = "replace the logo with the text 'Black Forest Labs'",
+            n_prompt: str = None,
             sampling_steps: int = 20,
             input_ref_images = None,
             width= 832,
             height=480,
             embedded_guidance_scale: float = 2.5,
+            guide_scale = 2.5,
             fit_into_canvas = None,
             callback = None,
             loras_slists = None,
             batch_size = 1,
             video_prompt_type = "",
+            joint_pass = False,            
             **bbargs
     ):
-            
             if self._interrupt:
                 return None
-
+            if self.guidance_max_phases < 1:
+                guide_scale = 1
+            if n_prompt is None or len(n_prompt) == 0:
+                n_prompt = "low quality, ugly, unfinished, out of focus, deformed, disfigure, blurry, smudged, restricted palette, flat colors"
             device="cuda"
             if "I" in video_prompt_type and input_ref_images != None and len(input_ref_images) > 0: 
                 if "K" in video_prompt_type and False :
@@ -122,6 +129,7 @@ class model_factory:
                 t5=self.t5,
                 clip=self.clip,
                 prompt=input_prompt,
+                neg_prompt= n_prompt,
                 ae=self.vae,
                 img_cond_list=input_ref_images,
                 target_width=width,
@@ -129,13 +137,14 @@ class model_factory:
                 bs=batch_size,
                 seed=seed,
                 device=device,
+                real_guidance_scale=guide_scale,
             )
 
             timesteps = get_schedule(sampling_steps, inp["img"].shape[1], shift=(self.name != "flux-schnell"))
             def unpack_latent(x):
                 return unpack(x.float(), height, width) 
             # denoise initial noise
-            x = denoise(self.model, **inp, timesteps=timesteps, guidance=embedded_guidance_scale, callback=callback, pipeline=self, loras_slists= loras_slists, unpack_latent = unpack_latent)
+            x = denoise(self.model, **inp, timesteps=timesteps, guidance=embedded_guidance_scale, real_guidance_scale =guide_scale, callback=callback, pipeline=self, loras_slists= loras_slists, unpack_latent = unpack_latent, joint_pass = joint_pass)
             if x==None: return None
             # decode latents to pixel space
             x = unpack_latent(x)

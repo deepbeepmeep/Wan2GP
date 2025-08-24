@@ -138,6 +138,10 @@ def remove_background(img, session=None):
     img = remove(img, session=session, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
     return torch.from_numpy(np.array(img).astype(np.float32) / 255.0).movedim(-1, 0)
 
+
+def convert_image_to_tensor(image):
+    return torch.from_numpy(np.array(image).astype(np.float32)).div_(127.5).sub_(1.).movedim(-1, 0)
+
 def convert_tensor_to_image(t, frame_no = -1):    
     t = t[:, frame_no] if frame_no >= 0 else t
     return Image.fromarray(t.clone().add_(1.).mul_(127.5).permute(1,2,0).to(torch.uint8).cpu().numpy())

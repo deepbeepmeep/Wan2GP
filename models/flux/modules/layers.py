@@ -116,6 +116,15 @@ class ModulationOut:
     scale: Tensor
     gate: Tensor
 
+class ChromaModulationOut(ModulationOut):
+    @classmethod
+    def from_offset(cls, tensor: torch.Tensor, offset: int = 0):
+        return cls(
+            shift=tensor[:, offset : offset + 1, :],
+            scale=tensor[:, offset + 1 : offset + 2, :],
+            gate=tensor[:, offset + 2 : offset + 3, :],
+        )
+
 
 def split_mlp(mlp, x, divide = 8):
     x_shape = x.shape
@@ -146,13 +155,15 @@ class Modulation(nn.Module):
 
 
 class DoubleStreamBlock(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, mlp_ratio: float, qkv_bias: bool = False):
+    def __init__(self, hidden_size: int, num_heads: int, mlp_ratio: float, qkv_bias: bool = False, chroma_modulation = False):
         super().__init__()
 
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.num_heads = num_heads
         self.hidden_size = hidden_size
-        self.img_mod = Modulation(hidden_size, double=True)
+        self.chroma_modulation = chroma_modulation
+        if not chroma_modulation:
+            self.img_mod = Modulation(hidden_size, double=True)
         self.img_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.img_attn = SelfAttention(dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias)
 
@@ -163,7 +174,8 @@ class DoubleStreamBlock(nn.Module):
             nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
         )
 
-        self.txt_mod = Modulation(hidden_size, double=True)
+        if not chroma_modulation:
+            self.txt_mod = Modulation(hidden_size, double=True)
         self.txt_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.txt_attn = SelfAttention(dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias)
 
@@ -175,8 +187,11 @@ class DoubleStreamBlock(nn.Module):
         )
 
     def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor) -> tuple[Tensor, Tensor]:
-        img_mod1, img_mod2 = self.img_mod(vec)
-        txt_mod1, txt_mod2 = self.txt_mod(vec)
+        if self.chroma_modulation:
+            (img_mod1, img_mod2), (txt_mod1, txt_mod2) = vec
+        else:
+            img_mod1, img_mod2 = self.img_mod(vec)
+            txt_mod1, txt_mod2 = self.txt_mod(vec)
 
         # prepare image for attention
         img_modulated = self.img_norm1(img)
@@ -250,10 +265,12 @@ class SingleStreamBlock(nn.Module):
         num_heads: int,
         mlp_ratio: float = 4.0,
         qk_scale: float | None = None,
+        chroma_modulation = False,
     ):
         super().__init__()
         self.hidden_dim = hidden_size
         self.num_heads = num_heads
+        self.chroma_modulation = chroma_modulation
         head_dim = hidden_size // num_heads
         self.scale = qk_scale or head_dim**-0.5
 
@@ -269,10 +286,14 @@ class SingleStreamBlock(nn.Module):
         self.pre_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
 
         self.mlp_act = nn.GELU(approximate="tanh")
-        self.modulation = Modulation(hidden_size, double=False)
+        if not chroma_modulation:
+            self.modulation = Modulation(hidden_size, double=False)
 
     def forward(self, x: Tensor, vec: Tensor, pe: Tensor) -> Tensor:
-        mod, _ = self.modulation(vec)
+        if self.chroma_modulation:
+            mod = vec
+        else:
+            mod, _ = self.modulation(vec)
         x_mod = self.pre_norm(x)
         x_mod.mul_(1 + mod.scale)
         x_mod.add_(mod.shift)
@@ -316,14 +337,42 @@ class SingleStreamBlock(nn.Module):
 
 
 class LastLayer(nn.Module):
-    def __init__(self, hidden_size: int, patch_size: int, out_channels: int):
+    def __init__(self, hidden_size: int, patch_size: int, out_channels: int, chroma_modulation = False):
         super().__init__()
+        self.chroma_modulation = chroma_modulation
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
-        self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True))
+        if not chroma_modulation:        
+            self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True))
 
     def forward(self, x: Tensor, vec: Tensor) -> Tensor:
-        shift, scale = self.adaLN_modulation(vec).chunk(2, dim=1)
-        x = (1 + scale[:, None, :]) * self.norm_final(x) + shift[:, None, :]
+        if self.chroma_modulation:
+            shift, scale = vec
+            shift = shift.squeeze(1)
+            scale = scale.squeeze(1)            
+        else:
+            shift, scale = self.adaLN_modulation(vec).chunk(2, dim=1)
+        # x = (1 + scale[:, None, :]) * self.norm_final(x) + shift[:, None, :]
+        x = torch.addcmul(shift[:, None, :], 1 + scale[:, None, :], self.norm_final(x))
         x = self.linear(x)
+        return x
+
+
+class DistilledGuidance(nn.Module):
+    def __init__(self, in_dim: int, out_dim: int, hidden_dim: int, n_layers = 5):
+        super().__init__()
+        self.in_proj = nn.Linear(in_dim, hidden_dim, bias=True)
+        self.layers = nn.ModuleList([MLPEmbedder(hidden_dim, hidden_dim) for x in range( n_layers)])
+        self.norms = nn.ModuleList([RMSNorm(hidden_dim) for x in range( n_layers)])
+        self.out_proj = nn.Linear(hidden_dim, out_dim)
+
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.in_proj(x)
+
+        for layer, norms in zip(self.layers, self.norms):
+            x = x + layer(norms(x))
+
+        x = self.out_proj(x)
+
         return x

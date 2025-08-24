@@ -1,0 +1,16 @@
+{
+    "model": {
+        "name": "Infinitetalk Multi Speakers 480p",
+        "architecture": "infinitetalk",
+        "modules": [
+            [
+                "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_infinitetalk_multi_14B_mbf16.safetensors",
+                "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_infinitetalk_multi_14B_quanto_mfp16_int8.safetensors",
+                "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_infinitetalk_multi_14B_quanto_mbf16_int8.safetensors"
+            ]
+        ],
+        "description": "The Infinitetalk model is an improved version of Multitalk that supports very long videos. This is the multi speakers version.",
+		"multi_speakers_only": true,		
+        "URLs": "i2v"
+    }
+}

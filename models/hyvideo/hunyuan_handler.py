@@ -50,6 +50,12 @@ class family_handler():
         extra_model_def["cfg_star"] =  base_model_type in [ "hunyuan_avatar", "hunyuan_custom_audio", "hunyuan_custom_edit", "hunyuan_custom"]
         extra_model_def["tea_cache"] = True
         extra_model_def["mag_cache"] = True
+
+        if base_model_type in ["hunyuan_avatar"]: extra_model_def["no_background_removal"] = True
+
+        if base_model_type in ["hunyuan_custom", "hunyuan_custom_edit", "hunyuan_audio", "hunyuan_avatar"]:
+            extra_model_def["one_image_ref_needed"] = True
+
         return extra_model_def
 
     @staticmethod

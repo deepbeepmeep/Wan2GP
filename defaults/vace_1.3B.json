@@ -3,8 +3,10 @@
 	{
 		"name": "Vace ControlNet 1.3B",
 		"architecture" : "vace_1.3B",
-		"modules": ["vace_1.3B"],
-		"description": "The Vace ControlNet model is a powerful model that allows you to control the content of the generated video based of additional custom data : pose or depth video, images or objects you want to see in the video.",
+	    "modules": [
+			["https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_Vace_1_3B_module.safetensors"]
+        ],
+	"description": "The Vace ControlNet model is a powerful model that allows you to control the content of the generated video based of additional custom data : pose or depth video, images or objects you want to see in the video.",
 		"URLs": "t2v_1.3B"
 	}
 }

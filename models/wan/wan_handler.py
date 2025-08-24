@@ -2,13 +2,13 @@ import torch
 import numpy as np
 
 def test_class_i2v(base_model_type):    
-    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "i2v_2_2_multitalk" ] #"hunyuan_i2v",
+    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk" ]
 
 def test_class_1_3B(base_model_type):    
     return base_model_type in [ "vace_1.3B", "t2v_1.3B", "recam_1.3B","phantom_1.3B","fun_inp_1.3B"]
 
 def test_multitalk(base_model_type):
-    return base_model_type in ["multitalk", "vace_multitalk_14B", "i2v_2_2_multitalk"]
+    return base_model_type in ["multitalk", "vace_multitalk_14B", "i2v_2_2_multitalk", "infinitetalk"]
 
 class family_handler():
 
@@ -64,17 +64,6 @@ class family_handler():
             text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_int8") 
         return text_encoder_filename
 
-
-
-    @staticmethod
-    def query_modules_files():
-        return {
-            "vace_14B" : ["ckpts/wan2.1_Vace_14B_module_mbf16.safetensors", "ckpts/wan2.1_Vace_14B_module_quanto_mbf16_int8.safetensors", "ckpts/wan2.1_Vace_14B_module_quanto_mfp16_int8.safetensors"],
-            "vace_1.3B" : ["ckpts/wan2.1_Vace_1_3B_module.safetensors"],
-            "fantasy": ["ckpts/wan2.1_fantasy_speaking_14B_bf16.safetensors"],
-            "multitalk": ["ckpts/wan2.1_multitalk_14B_mbf16.safetensors", "ckpts/wan2.1_multitalk_14B_quanto_mbf16_int8.safetensors", "ckpts/wan2.1_multitalk_14B_quanto_mfp16_int8.safetensors"]
-}
-
     @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {}
@@ -103,7 +92,7 @@ class family_handler():
         extra_model_def.update({
         "frames_minimum" : frames_minimum,
         "frames_steps" : frames_steps, 
-        "sliding_window" : base_model_type in ["multitalk", "t2v", "fantasy"] or test_class_i2v(base_model_type) or vace_class,  #"ti2v_2_2",
+        "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "fantasy"] or test_class_i2v(base_model_type) or vace_class,  #"ti2v_2_2",
         "multiple_submodels" : multiple_submodels,
         "guidance_max_phases" : 3,
         "skip_layer_guidance" : True,        
@@ -112,18 +101,22 @@ class family_handler():
         "adaptive_projected_guidance" : True,  
         "tea_cache" : not (base_model_type in ["i2v_2_2", "ti2v_2_2" ] or multiple_submodels),
         "mag_cache" : True,
+        "first_ref_is_start_image": base_model_type in ["infinitetalk"],
         "sample_solvers":[
                             ("unipc", "unipc"),
                             ("euler", "euler"),
                             ("dpm++", "dpm++"),
                             ("flowmatch causvid", "causvid"), ]
         })
+        if base_model_type in ["infinitetalk"]: 
+            extra_model_def["no_background_removal"] = True
+            # extra_model_def["at_least_one_image_ref_needed"] = True
 
         return extra_model_def
         
     @staticmethod
     def query_supported_types():
-        return ["multitalk", "fantasy", "vace_14B", "vace_multitalk_14B",
+        return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_multitalk_14B",
                     "t2v_1.3B", "t2v", "vace_1.3B", "phantom_1.3B", "phantom_14B", 
                     "recam_1.3B", 
                     "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "flf2v_720p", "fun_inp_1.3B", "fun_inp"]
@@ -250,6 +243,17 @@ class family_handler():
                 "adaptive_switch" : 1,
             })
 
+        elif base_model_type in ["infinitetalk"]:
+            ui_defaults.update({
+                "guidance_scale": 5.0,
+                "flow_shift": 7, # 11 for 720p
+                "sliding_window_overlap" : 9,
+                "sample_solver" : "euler",
+                "video_prompt_type": "KI",
+                "remove_background_images_ref" : 0,
+                "adaptive_switch" : 1,
+            })
+
         elif base_model_type in ["phantom_1.3B", "phantom_14B"]:
             ui_defaults.update({
                 "guidance_scale": 7.5,
@@ -274,5 +278,14 @@ class family_handler():
 
         if model_def.get("multiple_submodels", False):
             ui_defaults["guidance_phases"] = 2
-
- 
+    
+    @staticmethod
+    def validate_generative_settings(base_model_type, model_def, inputs):
+        if base_model_type in ["infinitetalk"]:
+            video_source = inputs["video_source"]
+            image_refs = inputs["image_refs"]
+            video_prompt_type = inputs["video_prompt_type"]
+            image_prompt_type = inputs["image_prompt_type"]
+            if ("V" in image_prompt_type or "L" in image_prompt_type) and image_refs is None:
+                video_prompt_type = video_prompt_type.replace("I", "").replace("K","")
+                inputs["video_prompt_type"] = video_prompt_type 

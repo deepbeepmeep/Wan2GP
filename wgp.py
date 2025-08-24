@@ -17,7 +17,7 @@ import numpy as np
 import importlib
 from shared.utils import notification_sound
 from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_loras_multipliers
-from shared.utils.utils import convert_tensor_to_image, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions
+from shared.utils.utils import convert_tensor_to_image, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files,  save_video, save_image
 from shared.utils.audio_video import save_image_metadata, read_image_metadata
 from shared.match_archi import match_nvidia_architecture
@@ -55,7 +55,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.5.10"
-WanGP_version = "8.01"
+WanGP_version = "8.1"
 settings_version = 2.25
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -73,6 +73,23 @@ unique_id = 0
 unique_id_lock = threading.Lock()
 gen_lock = threading.Lock()
 offloadobj = enhancer_offloadobj = wan_model = None
+reload_needed = True
+
+def release_model():
+    global wan_model, offloadobj, reload_needed
+    wan_model = None
+    if offloadobj is not None:
+        offloadobj.release()
+        offloadobj = None
+        torch.cuda.empty_cache()
+        gc.collect()
+        try:
+            torch._C._host_emptyCache()
+        except:
+            pass
+        reload_needed = True
+    else:
+        gc.collect()
 
 def get_unique_id():
     global unique_id  
@@ -180,6 +197,7 @@ def process_prompt_and_add_tasks(state, model_choice):
         queue = gen.get("queue", [])
         return get_queue_table(queue)
     model_def = get_model_def(model_type)
+    model_handler = get_model_handler(model_type)
     image_outputs = inputs["image_mode"] == 1
     any_steps_skipping = model_def.get("tea_cache", False) or model_def.get("mag_cache", False)
     model_type = get_base_model_type(model_type)
@@ -240,6 +258,11 @@ def process_prompt_and_add_tasks(state, model_choice):
         queue= gen.get("queue", [])
         return update_queue_data(queue)
 
+    if hasattr(model_handler, "validate_generative_settings"):
+        error = model_handler.validate_generative_settings(model_type, model_def, inputs)
+        if error is not None and len(error) > 0:
+            gr.Info(error)
+            return
     if inputs.get("cfg_star_switch", 0) != 0 and inputs.get("apg_switch", 0) != 0:
         gr.Info("Adaptive Progressive Guidance and Classifier Free Guidance Star can not be set at the same time")
         return 
@@ -386,20 +409,16 @@ def process_prompt_and_add_tasks(state, model_choice):
         if not "I" in video_prompt_type and not not "V" in video_prompt_type:
             gr.Info("To get good results with Multitalk and two people speaking, it is recommended to set a Reference Frame or a Control Video (potentially truncated) that contains the two people one on each side")
 
-    # if len(filter_letters(image_prompt_type, "VL")) > 0 :
-    #     if "R" in audio_prompt_type:
-    #         gr.Info("Remuxing is not yet supported if there is a video source")
-    #         audio_prompt_type= audio_prompt_type.replace("R" ,"")
-        # if "A" in audio_prompt_type:
-        #     gr.Info("Creating an Audio track is not yet supported if there is a video source")
-        #     return
-
-    if model_type in ["hunyuan_custom", "hunyuan_custom_edit", "hunyuan_audio", "hunyuan_avatar"]:
+    if model_def.get("one_image_ref_needed", False):
         if image_refs  == None :
             gr.Info("You must provide an Image Reference") 
             return
         if len(image_refs) > 1:
-            gr.Info("Only one Image Reference (a person) is supported for the moment by Hunyuan Custom / Avatar") 
+            gr.Info("Only one Image Reference (a person) is supported for the moment by this model") 
+            return
+    if model_def.get("at_least_one_image_ref_needed", False):
+        if image_refs  == None :
+            gr.Info("You must provide at least one Image Reference") 
             return
         
     if "I" in video_prompt_type:
@@ -1903,15 +1922,24 @@ def get_model_name(model_type, description_container = [""]):
 def get_model_record(model_name):
     return f"WanGP v{WanGP_version} by DeepBeepMeep - " +  model_name
 
-def get_model_recursive_prop(model_type, prop = "URLs", return_list = True,  stack= []):
+def get_model_recursive_prop(model_type, prop = "URLs", sub_prop_name = None, return_list = True,  stack= []):
     model_def = models_def.get(model_type, None)
     if model_def != None: 
         prop_value = model_def.get(prop, None)
         if prop_value == None:
             return []
+        if sub_prop_name is not None:
+            if sub_prop_name == "_list":
+                if not isinstance(prop_value,list) or len(prop_value) != 1:
+                    raise Exception(f"Sub property value for property {prop} of model type {model_type} should be a list of size 1")
+                prop_value = prop_value[0]
+            else:
+                if not isinstance(prop_value,dict) and not sub_prop_name in prop_value:
+                    raise Exception(f"Invalid sub property value {sub_prop_name} for property {prop} of model type {model_type}")
+                prop_value = prop_value[sub_prop_name]
         if isinstance(prop_value, str):
             if len(stack) > 10: raise Exception(f"Circular Reference in Model {prop} dependencies: {stack}")
-            return get_model_recursive_prop(prop_value, prop = prop, stack = stack + [prop_value] )
+            return get_model_recursive_prop(prop_value, prop = prop, sub_prop_name =sub_prop_name, stack = stack + [prop_value] )
         else:
             return prop_value
     else:
@@ -1924,10 +1952,21 @@ def get_model_recursive_prop(model_type, prop = "URLs", return_list = True,  sta
 def get_model_filename(model_type, quantization ="int8", dtype_policy = "", module_type = None, submodel_no = 1, stack=[]):
     if module_type is not None:
         base_model_type = get_base_model_type(model_type) 
-        model_type_handler = model_types_handlers[base_model_type]
-        modules_files = model_type_handler.query_modules_files() if hasattr(model_type_handler, "query_modules_files") else {}         
-        choices = modules_files.get(module_type, None)
-        if choices == None: raise Exception(f"Invalid Module Id '{module_type}'")
+        # model_type_handler = model_types_handlers[base_model_type]
+        # modules_files = model_type_handler.query_modules_files() if hasattr(model_type_handler, "query_modules_files") else {}
+        if isinstance(module_type, list):
+            URLs = module_type
+        else:
+            if "#" not in module_type:
+                sub_prop_name = "_list"
+            else:
+                pos = module_type.rfind("#")
+                sub_prop_name =  module_type[pos+1:]
+                module_type = module_type[:pos]  
+            URLs = get_model_recursive_prop(module_type, "modules", sub_prop_name =sub_prop_name, return_list= False)
+
+        # choices = modules_files.get(module_type, None)
+        # if choices == None: raise Exception(f"Invalid Module Id '{module_type}'")
     else:
         key_name = "URLs" if submodel_no  <= 1 else f"URLs{submodel_no}"
 
@@ -1937,8 +1976,8 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
         if isinstance(URLs, str):
             if len(stack) > 10: raise Exception(f"Circular Reference in Model {key_name} dependencies: {stack}")
             return get_model_filename(URLs, quantization=quantization, dtype_policy=dtype_policy, submodel_no = submodel_no, stack = stack + [URLs])
-        else:
-            choices = [ ("ckpts/" + os.path.basename(path) if path.startswith("http") else path)  for path in URLs ]
+
+    choices = [ ("ckpts/" + os.path.basename(path) if path.startswith("http") else path)  for path in URLs ]
     if len(quantization) == 0:
         quantization = "bf16"
 
@@ -2238,21 +2277,35 @@ if  args.compile: #args.fastest or
     lock_ui_compile = True
 
 
-def save_model(model, model_type, dtype,  config_file, submodel_no = 1):
+def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_module = False, filter = None, no_fp16_main_model = True ):
     model_def = get_model_def(model_type)
+    # To save module and quantized modules
+    # 1) set Transformer Model Quantization Type to 16 bits
+    # 2) insert in def module_source : path and "model_fp16.safetensors in URLs"
+    # 3) Generate (only quantized fp16 will be created)
+    # 4) replace in def module_source : path and "model_bf16.safetensors in URLs"
+    # 5) Generate (both bf16 and quantized bf16 will be created)
     if model_def == None: return
-    url_key = "URLs" if submodel_no <=1 else "URLs" + str(submodel_no)
+    if is_module:
+        url_key = "modules"
+        source_key = "module_source"
+    else:
+        url_key = "URLs" if submodel_no <=1 else "URLs" + str(submodel_no)
+        source_key = "source"
     URLs= model_def.get(url_key, None)
     if URLs is None: return
     if isinstance(URLs, str):
         print("Unable to save model for a finetune that references external files")
         return
-    from mmgp import offload
-    if dtype == torch.bfloat16:
-         dtypestr= "bf16"
-    else:
-         dtypestr= "fp16"
+    from mmgp import offload    
+    dtypestr= "bf16" if dtype == torch.bfloat16 else "fp16"
+    if no_fp16_main_model: dtypestr = dtypestr.replace("fp16", "bf16")
     model_filename = None
+    if is_module:
+        if not isinstance(URLs,list) or len(URLs) != 1:
+            print("Target Module files are missing")
+            return 
+        URLs= URLs[0]
     for url in URLs:
         if "quanto" not in url and dtypestr in url:
             model_filename = os.path.basename(url)
@@ -2260,17 +2313,38 @@ def save_model(model, model_type, dtype,  config_file, submodel_no = 1):
     if model_filename is None:
         print(f"No target filename with bf16 or fp16 in its name is mentioned in {url_key}")
         return
-    if not os.path.isfile(model_filename):
-        offload.save_model(model, os.path.join("ckpts",model_filename),  config_file_path=config_file)
+
+    finetune_file = os.path.join(os.path.dirname(model_def["path"]) , model_type + ".json")
+    with open(finetune_file, 'r', encoding='utf-8') as reader:
+        saved_finetune_def = json.load(reader)
+
+    update_model_def = False
+    model_filename = os.path.join("ckpts",model_filename)
+    quanto_dtypestr= "bf16" if dtype == torch.bfloat16 else "fp16"
+    if ("m" + dtypestr) in model_filename: 
+        dtypestr = "m" + dtypestr 
+        quanto_dtypestr = "m" + quanto_dtypestr 
+    if not os.path.isfile(model_filename) and (not no_fp16_main_model or dtype == torch.bfloat16):
+        offload.save_model(model, model_filename, config_file_path=config_file, filter_sd=filter)
         print(f"New model file '{model_filename}' had been created for finetune Id '{model_type}'.")
-        finetune_file = os.path.join(os.path.dirname(model_def["path"]) , model_type + ".json")
-        with open(finetune_file, 'r', encoding='utf-8') as reader:
-            saved_finetune_def = json.load(reader)
-        del saved_finetune_def["model"]["source"]
-        del model_def["source"]
+        del saved_finetune_def["model"][source_key]
+        del model_def[source_key]
+        print(f"The 'source' entry has been removed in the '{finetune_file}' definition file.")
+        update_model_def = True
+
+    if is_module:
+        quanto_filename = model_filename.replace(dtypestr, "quanto_" + quanto_dtypestr + "_int8" )
+        if hasattr(model, "_quanto_map"):
+            print("unable to generate quantized module, the main model should at full 16 bits before quantization can be done")
+        elif not os.path.isfile(quanto_filename):
+            offload.save_model(model, quanto_filename, config_file_path=config_file, do_quantize= True, filter_sd=filter)
+            print(f"New quantized file '{quanto_filename}' had been created for finetune Id '{model_type}'.")
+            model_def[url_key][0].append(quanto_filename) 
+            saved_finetune_def["model"][url_key][0].append(quanto_filename)
+            update_model_def = True
+    if update_model_def:
         with open(finetune_file, "w", encoding="utf-8") as writer:
             writer.write(json.dumps(saved_finetune_def, indent=4))
-        print(f"The 'source' entry has been removed in the '{finetune_file}' definition file.")
 
 def save_quantized_model(model, model_type, model_filename, dtype,  config_file, submodel_no = 1):
     if "quanto" in model_filename: return
@@ -2414,18 +2488,19 @@ def download_models(model_filename = None, model_type= None, module_type = None,
     model_def = get_model_def(model_type)
     
     source = model_def.get("source", None)
+    module_source = model_def.get("module_source", None)
     model_type_handler = model_types_handlers[base_model_type]
                
-    key_name = "URLs" if submodel_no  <= 1 else f"URLs{submodel_no}"
-    if source is not None:
+    if source is not None and module_type is None or module_source is not None and module_type is not None:
         model_filename = None
-    elif module_type is not None:
-        modules_files = model_type_handler.query_modules_files() if hasattr(model_type_handler, "query_modules_files") else {}
-        if module_type not in modules_files:
-            raise Exception(f"Unknown module {model_type} for model type {model_type}") 
     else:
         if not os.path.isfile(model_filename):
-            URLs = get_model_recursive_prop(model_type, key_name, return_list= False)
+            if module_type is not None:
+                key_name = "modules"
+                URLs = module_type
+            else:
+                key_name = "URLs" if submodel_no  <= 1 else f"URLs{submodel_no}"
+                URLs = get_model_recursive_prop(model_type, key_name, return_list= False)
             if isinstance(URLs, str):
                 raise Exception("Missing model " + URLs)
             use_url = model_filename 
@@ -2761,6 +2836,13 @@ def generate_header(model_type, compile, attention_mode):
 
     return header
 
+def release_RAM():
+    if gen_in_progress:
+        gr.Info("Unable to release RAM when a Generation is in Progress")
+    else:
+        release_model()
+        gr.Info("Models stored in RAM have been released")
+
 def apply_changes(  state,
                     transformer_types_choices,
                     transformer_dtype_policy_choice,
@@ -2997,9 +3079,8 @@ def refresh_gallery(state): #, msg
     choice = gen.get("selected",0)
     header_text = gen.get("header_text", "")
     in_progress = "in_progress" in gen
-    if in_progress:
-        if gen.get("last_selected", True):
-            choice = max(len(file_list) - 1,0)  
+    if gen.get("last_selected", True) and file_list is not None:
+        choice = max(len(file_list) - 1,0)  
 
     queue = gen.get("queue", [])
     abort_interactive = not gen.get("abort", False)
@@ -4097,16 +4178,19 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, overri
         enhancer_offloadobj = offload.profile(pipe, profile_no= profile, **kwargs)  
 
     original_image_refs = inputs["image_refs"]
+    if original_image_refs is not None:
+        original_image_refs = [ convert_image(tup[0]) for tup in original_image_refs ]        
     is_image = inputs["image_mode"] == 1
     seed = inputs["seed"]
     seed = set_seed(seed)
     enhanced_prompts = []
     for i, (one_prompt, one_image) in enumerate(zip(original_prompts, image_start)):
+        start_images = [one_image] if one_image is not None else None
         status = f'Please Wait While Enhancing Prompt' if num_prompts==1 else f'Please Wait While Enhancing Prompt #{i+1}'
         progress((i , num_prompts), desc=status, total= num_prompts)
 
         try:
-            enhanced_prompt = process_prompt_enhancer(prompt_enhancer, [one_prompt],  [one_image], original_image_refs, is_image, seed )    
+            enhanced_prompt = process_prompt_enhancer(prompt_enhancer, [one_prompt],  start_images, original_image_refs, is_image, seed )    
         except Exception as e:
             enhancer_offloadobj.unload_all()
             with gen_lock:
@@ -4276,10 +4360,7 @@ def generate_video(
         
     if model_type !=  transformer_type or reload_needed or override_profile>0 and override_profile != loaded_profile or override_profile<0 and default_profile != loaded_profile:
         wan_model = None
-        if offloadobj is not None:
-            offloadobj.release()
-            offloadobj = None
-        gc.collect()
+        release_model()
         send_cmd("status", f"Loading model {get_model_name(model_type)}...")
         wan_model, offloadobj = load_models(model_type, override_profile)
         send_cmd("status", "Model loaded")
@@ -4391,6 +4472,11 @@ def generate_video(
         control_audio_tracks, _  = extract_audio_tracks(video_guide)
     if video_source is not None:
         source_audio_tracks, source_audio_metadata = extract_audio_tracks(video_source)
+        video_fps, _, _, video_frames_count = get_video_info(video_source)
+        video_source_duration = video_frames_count / video_fps
+    else:
+        video_source_duration = 0
+
     reset_control_aligment = "T" in video_prompt_type
 
     if test_any_sliding_window(model_type) :
@@ -4430,7 +4516,7 @@ def generate_video(
                 send_cmd("progress", [0, get_latest_status(state, "Removing Images References Background")])
             os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
             from shared.utils.utils import resize_and_remove_background
-            image_refs[nb_frames_positions:]  = resize_and_remove_background(image_refs[nb_frames_positions:] , width, height, remove_background_images_ref > 0, any_background_ref, fit_into_canvas= not (vace or hunyuan_avatar or flux or qwen) ) # no fit for vace ref images as it is done later
+            image_refs[nb_frames_positions:]  = resize_and_remove_background(image_refs[nb_frames_positions:] , width, height, remove_background_images_ref > 0, any_background_ref, fit_into_canvas= False if (vace or hunyuan_avatar or flux or qwen) else fit_canvas ) # no fit for vace ref images as it is done later
             update_task_thumbnails(task, locals())
             send_cmd("output")
     joint_pass = boost ==1 #and profile != 1 and profile != 3  
@@ -4481,6 +4567,7 @@ def generate_video(
                     audio_guide, audio_guide2  = get_available_filename(save_path, audio_guide, "_tmp1", ".wav"),  get_available_filename(save_path, audio_guide, "_tmp2", ".wav")
                 extract_dual_audio(original_audio_guide, audio_guide, audio_guide2 )
             output_new_audio_filepath = original_audio_guide
+
         current_video_length = min(int(fps * duration //latent_size) * latent_size + latent_size + 1, current_video_length)
         if fantasy:
             # audio_proj_split_full, audio_context_lens_full = parse_audio(audio_guide, num_frames= max_source_video_frames, fps= fps,  padded_frames_for_embeddings= (reuse_frames if reset_control_aligment else 0), device= processing_device  )
@@ -4488,7 +4575,8 @@ def generate_video(
         elif multitalk:
             from models.wan.multitalk.multitalk import get_full_audio_embeddings
             # pad audio_proj_full if aligned to beginning of window to simulate source window overlap
-            audio_proj_full, output_new_audio_data = get_full_audio_embeddings(audio_guide1 = audio_guide, audio_guide2= audio_guide2, combination_type= combination_type , num_frames= max_source_video_frames, sr= audio_sampling_rate, fps =fps, padded_frames_for_embeddings = (reuse_frames if reset_control_aligment else 0)) 
+            min_audio_duration =  current_video_length/fps if reset_control_aligment else video_source_duration + current_video_length/fps
+            audio_proj_full, output_new_audio_data = get_full_audio_embeddings(audio_guide1 = audio_guide, audio_guide2= audio_guide2, combination_type= combination_type , num_frames= max_source_video_frames, sr= audio_sampling_rate, fps =fps, padded_frames_for_embeddings = (reuse_frames if reset_control_aligment else 0), min_audio_duration = min_audio_duration) 
             if output_new_audio_filepath is not None: output_new_audio_data = None
         if not args.save_speakers and "X" in audio_prompt_type:
             os.remove(audio_guide)
@@ -4538,7 +4626,7 @@ def generate_video(
         repeat_no +=1
         gen["repeat_no"] = repeat_no
         src_video, src_mask, src_ref_images = None, None, None
-        prefix_video = None
+        prefix_video = pre_video_frame = None
         source_video_overlap_frames_count = 0 # number of frames overalapped in source video for first window
         source_video_frames_count = 0  # number of frames to use in source video (processing starts source_video_overlap_frames_count frames before )
         frames_already_processed = None
@@ -4598,13 +4686,13 @@ def generate_video(
             image_start_tensor = image_end_tensor = None
             if window_no == 1 and (video_source is not None or image_start is not None):
                 if image_start is not None:
-                    new_height, new_width = calculate_new_dimensions(height, width, image_start.height, image_start.width, fit_canvas, 32)
+                    new_height, new_width = calculate_new_dimensions(height, width, image_start.height, image_start.width, sample_fit_canvas, block_size = block_size)
                     image_start_tensor = image_start.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
-                    image_start_tensor = torch.from_numpy(np.array(image_start_tensor).astype(np.float32)).div_(127.5).sub_(1.).movedim(-1, 0)
+                    image_start_tensor = convert_image_to_tensor(image_start_tensor)
                     pre_video_guide =  prefix_video = image_start_tensor.unsqueeze(1)
                     if image_end is not None:
                         image_end_tensor = image_end.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
-                        image_end_tensor = torch.from_numpy(np.array(image_end_tensor).astype(np.float32)).div_(127.5).sub_(1.).movedim(-1, 0)
+                        image_end_tensor  = convert_image_to_tensor(image_end_tensor)
                 else:
                     if "L" in image_prompt_type:
                         from shared.utils.utils import get_video_frame
@@ -4613,6 +4701,7 @@ def generate_video(
                     prefix_video  = prefix_video.permute(3, 0, 1, 2)
                     prefix_video  = prefix_video.float().div_(127.5).sub_(1.) # c, f, h, w
                     pre_video_guide =  prefix_video[:, -reuse_frames:]
+                pre_video_frame = convert_tensor_to_image(prefix_video[:, -1])
                 source_video_overlap_frames_count = pre_video_guide.shape[1]
                 source_video_frames_count = prefix_video.shape[1]
                 if sample_fit_canvas != None: image_size  = pre_video_guide.shape[-2:]
@@ -4835,6 +4924,7 @@ def generate_video(
                     window_no = window_no, 
                     offloadobj = offloadobj,
                     set_header_text= set_header_text,
+                    pre_video_frame = pre_video_frame,
                 )
             except Exception as e:
                 if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:
@@ -6393,10 +6483,7 @@ def preload_model_when_switching(state):
         model_type = state["model_type"] 
         if  model_type !=  transformer_type:
             wan_model = None
-            if offloadobj is not None:
-                offloadobj.release()
-                offloadobj = None
-            gc.collect()
+            release_model()            
             model_filename = get_model_name(model_type)
             yield f"Loading model {model_filename}..."
             wan_model, offloadobj = load_models(model_type)
@@ -6406,15 +6493,11 @@ def preload_model_when_switching(state):
     return gr.Text()
 
 def unload_model_if_needed(state):
-    global reload_needed, wan_model, offloadobj
+    global wan_model
     if "U" in preload_model_policy:
         if wan_model != None:
             wan_model = None
-            if offloadobj is not None:
-                offloadobj.release()
-                offloadobj = None
-            gc.collect()
-            reload_needed=  True
+            release_model()
 
 def all_letters(source_str, letters):
     for letter in letters:
@@ -6838,7 +6921,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             vace = test_vace_module(base_model_type)
             phantom = base_model_type in ["phantom_1.3B", "phantom_14B"]
             fantasy = base_model_type in ["fantasy"]
-            multitalk = model_def.get("multitalk_class", False)            
+            multitalk = model_def.get("multitalk_class", False)
+            infinitetalk =  base_model_type in ["infinitetalk"]
             hunyuan_t2v = "hunyuan_video_720" in model_filename
             hunyuan_i2v = "hunyuan_video_i2v" in model_filename
             hunyuan_video_custom = "hunyuan_video_custom" in model_filename
@@ -6877,7 +6961,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
 
             with gr.Column(visible= test_class_i2v(model_type) or hunyuan_i2v or diffusion_forcing or ltxv or recammaster or vace or ti2v_2_2) as image_prompt_column: 
-                if vace:
+                if vace or infinitetalk:
                     image_prompt_type_value= ui_defaults.get("image_prompt_type","")
                     image_prompt_type_value = "" if image_prompt_type_value == "S" else image_prompt_type_value
                     image_prompt_type = gr.Radio( [("New Video", ""),("Continue Video File", "V"),("Continue Last Video", "L")], value =image_prompt_type_value, label="Source Video", show_label= False, visible= not image_outputs , scale= 3)
@@ -6980,7 +7064,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     model_mode = gr.Dropdown(value=None, visible=False)
                     keep_frames_video_source = gr.Text(visible=False)
 
-            with gr.Column(visible= vace or phantom or hunyuan_video_custom or hunyuan_video_avatar or hunyuan_video_custom_edit or t2v or ltxv or flux and model_reference_image or qwen and model_reference_image) as video_prompt_column: 
+            with gr.Column(visible= vace or phantom or hunyuan_video_custom or hunyuan_video_avatar or hunyuan_video_custom_edit or t2v or ltxv or infinitetalk or flux and model_reference_image or qwen and model_reference_image) as video_prompt_column: 
                 video_prompt_type_value= ui_defaults.get("video_prompt_type","")
                 video_prompt_type = gr.Text(value= video_prompt_type_value, visible= False)
                 any_control_video = True
@@ -7120,8 +7204,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         )
                     else:
                         video_prompt_type_image_refs = gr.Dropdown(
-                            choices=[ ("Start / Ref Image", "I")],
-                            value="I",
+                            choices=[ ("Start", "KI"),("Ref Image", "I")],
+                            value="KI" if model_def.get("first_ref_is_start_image", False) else "I",
                             visible = False,
                             label="Start / Reference Images", scale = 2
                         )
@@ -7148,8 +7232,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 video_mask = gr.Video(label= "Video Mask Area (for Inpainting, white = Control Area, black = Unchanged)", visible= (not image_outputs) and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , value= ui_defaults.get("video_mask", None)) 
 
                 mask_expand = gr.Slider(-10, 50, value=ui_defaults.get("mask_expand", 0), step=1, label="Expand / Shrink Mask Area", visible= "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value )
-                any_reference_image = vace or phantom or hunyuan_video_custom or hunyuan_video_avatar or (flux or qwen) and model_reference_image
-                image_refs = gr.Gallery(preview= True, label ="Start Image" if hunyuan_video_avatar else "Reference Images",
+                any_reference_image = vace or phantom or hunyuan_video_custom or hunyuan_video_avatar or infinitetalk or (flux or qwen) and model_reference_image
+                image_refs = gr.Gallery(preview= True, label ="Start Image" if hunyuan_video_avatar else "Reference Images" + (" (each Image will start a new Clip)" if infinitetalk else ""),
                         type ="pil",   show_label= True,
                         columns=[3], rows=[1], object_fit="contain", height="auto", selected_index=0, interactive= True, visible= "I" in video_prompt_type_value, 
                         value= ui_defaults.get("image_refs", None),
@@ -7162,21 +7246,27 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         ("Remove Backgrounds only behind People / Objects except main Subject / Landscape" if (flux or qwen) else "Remove Backgrounds only behind People / Objects" , 1),
                     ],
                     value=ui_defaults.get("remove_background_images_ref",1),
-                    label="Automatic Removal of Background of People or Objects (Only)", scale = 3, visible= "I" in video_prompt_type_value and not hunyuan_video_avatar
+                    label="Automatic Removal of Background of People or Objects (Only)", scale = 3, visible= "I" in video_prompt_type_value and not  model_def.get("no_background_removal", False) 
                 )
 
             any_audio_voices_support = any_audio_track(base_model_type) 
             audio_prompt_type_value = ui_defaults.get("audio_prompt_type", "A" if any_audio_voices_support else "") 
             audio_prompt_type = gr.Text(value= audio_prompt_type_value, visible= False)
             if any_audio_voices_support:
-                audio_prompt_type_sources = gr.Dropdown(
-                    choices=[
-                        ("None", ""),
-                        ("One Person Speaking Only", "A"),
+                any_single_speaker = not model_def.get("multi_speakers_only", False)
+                if not any_single_speaker and "A" in audio_prompt_type_value and not ("B" in audio_prompt_type_value or "X" in audio_prompt_type_value): audio_prompt_type_value = del_in_sequence(audio_prompt_type_value, "XCPAB")
+                any_multi_speakers = not model_def.get("one_speaker_only", False)
+                if not any_multi_speakers: audio_prompt_type_value = del_in_sequence(audio_prompt_type_value, "XCPB")
+
+                speaker_choices=[("None", "")]
+                if any_single_speaker: speaker_choices += [("One Person Speaking Only", "A")]
+                if any_multi_speakers:speaker_choices += [
                         ("Two speakers, Auto Separation of Speakers (will work only if there is little background noise)", "XA"),
                         ("Two speakers, Speakers Audio sources are assumed to be played in a Row", "CAB"),
-                        ("Two speakers, Speakers Audio sources are assumed to be played in Parallel", "PAB"),
-                    ],
+                        ("Two speakers, Speakers Audio sources are assumed to be played in Parallel", "PAB")
+                    ]
+                audio_prompt_type_sources = gr.Dropdown(
+                    choices=speaker_choices,
                     value= filter_letters(audio_prompt_type_value, "XCPAB"),
                     label="Voices", scale = 3, visible = multitalk and not image_outputs
                 )
@@ -7574,7 +7664,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             ],
                             value=filter_letters(video_prompt_type_value, "T"),
                             label="Control Video / Control Audio temporal alignment when any Source Video",
-                            visible = vace or ltxv or t2v
+                            visible = vace or ltxv or t2v or infinitetalk
                         )
 
                         multi_prompts_gen_type = gr.Dropdown(
@@ -8334,6 +8424,10 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                     label="Profile (for power users only, not needed to change it)"
                 )
                 preload_in_VRAM_choice = gr.Slider(0, 40000, value=server_config.get("preload_in_VRAM", 0), step=100, label="Number of MB of Models that are Preloaded in VRAM (0 will use Profile default)")
+
+                release_RAM_btn  = gr.Button("Force Release RAM")
+                release_RAM_btn.click(fn=release_RAM)
+
             with gr.Tab("Extensions"):
                 enhancer_enabled_choice = gr.Dropdown(
                     choices=[
@@ -8432,7 +8526,7 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
 
 
         
-        msg = gr.Markdown()            
+        msg = gr.Markdown() 
         apply_btn  = gr.Button("Apply Changes")
         apply_btn.click(
                 fn=apply_changes,

@@ -4516,6 +4516,7 @@ def generate_video(
                 h, w = get_outpainting_full_area_dimensions(h,w, outpainting_dims)
             default_image_size = calculate_new_dimensions(height, width, h, w, fit_canvas)
             fit_canvas = None
+            # if there is a source video and a background image ref, the height/width ratio will need to be processed later by the code for the model (we dont know the source video dimensions at this point)
         if len(image_refs) > nb_frames_positions:  
             any_background_ref = "K" in video_prompt_type 
             if remove_background_images_ref > 0:
@@ -7210,7 +7211,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         )
                     else:
                         video_prompt_type_image_refs = gr.Dropdown(
-                            choices=[ ("Start", "KI"),("Ref Image", "I")],
+                            choices=[ ("None", ""),("Start", "KI"),("Ref Image", "I")],
                             value=filter_letters(video_prompt_type_value, "KI"),
                             visible = False,
                             label="Start / Reference Images", scale = 2

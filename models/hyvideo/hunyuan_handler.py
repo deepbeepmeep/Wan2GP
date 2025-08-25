@@ -173,5 +173,5 @@ class family_handler():
                 "remove_background_images_ref": 0,
                 "skip_steps_start_step_perc": 25, 
                 "video_length": 129,
-                "video_prompt_type": "I",
+                "video_prompt_type": "KI",
             })

@@ -55,8 +55,8 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.5.10"
-WanGP_version = "8.1"
-settings_version = 2.25
+WanGP_version = "8.11"
+settings_version = 2.26
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 
@@ -2073,7 +2073,10 @@ def fix_settings(model_type, ui_defaults):
                 video_prompt_type = video_prompt_type.replace("I", "KI")
         if remove_background_images_ref != 0:
             remove_background_images_ref = 1
-    if base_model_type in ["hunyuan_avatar"]: remove_background_images_ref = 0
+    if base_model_type in ["hunyuan_avatar"]: 
+        remove_background_images_ref = 0
+        if settings_version < 2.26:
+            if not "K" in video_prompt_type: video_prompt_type = video_prompt_type.replace("I", "KI")
     ui_defaults["remove_background_images_ref"] = remove_background_images_ref
 
     ui_defaults["video_prompt_type"] = video_prompt_type
@@ -4494,6 +4497,9 @@ def generate_video(
     frames_to_inject = []
     any_background_ref = False
     outpainting_dims = None if video_guide_outpainting== None or len(video_guide_outpainting) == 0 or video_guide_outpainting == "0 0 0 0" or video_guide_outpainting.startswith("#") else [int(v) for v in video_guide_outpainting.split(" ")] 
+    # Output Video Ratio Priorities:
+    # Source Video or Start Image > Control Video > Image Ref (background or positioned frames only) >  UI Width, Height
+    # Image Ref (non background and non positioned frames) are boxed in a white canvas in order to keep their own width/height ratio
 
     if image_refs is not None and len(image_refs) > 0:
         frames_positions_list = [ int(pos)-1 for pos in frames_positions.split(" ")] if frames_positions is not None and len(frames_positions)> 0 else []
@@ -4516,7 +4522,7 @@ def generate_video(
                 send_cmd("progress", [0, get_latest_status(state, "Removing Images References Background")])
             os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
             from shared.utils.utils import resize_and_remove_background
-            image_refs[nb_frames_positions:]  = resize_and_remove_background(image_refs[nb_frames_positions:] , width, height, remove_background_images_ref > 0, any_background_ref, fit_into_canvas= False if (vace or hunyuan_avatar or flux or qwen) else fit_canvas ) # no fit for vace ref images as it is done later
+            image_refs[nb_frames_positions:]  = resize_and_remove_background(image_refs[nb_frames_positions:] , width, height, remove_background_images_ref > 0, any_background_ref, fit_into_canvas= not (any_background_ref or vace) ) # no fit for vace ref images as it is done later
             update_task_thumbnails(task, locals())
             send_cmd("output")
     joint_pass = boost ==1 #and profile != 1 and profile != 3  
@@ -7205,7 +7211,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     else:
                         video_prompt_type_image_refs = gr.Dropdown(
                             choices=[ ("Start", "KI"),("Ref Image", "I")],
-                            value="KI" if model_def.get("first_ref_is_start_image", False) else "I",
+                            value=filter_letters(video_prompt_type_value, "KI"),
                             visible = False,
                             label="Start / Reference Images", scale = 2
                         )

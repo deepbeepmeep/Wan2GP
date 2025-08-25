@@ -101,7 +101,6 @@ class family_handler():
         "adaptive_projected_guidance" : True,  
         "tea_cache" : not (base_model_type in ["i2v_2_2", "ti2v_2_2" ] or multiple_submodels),
         "mag_cache" : True,
-        "first_ref_is_start_image": base_model_type in ["infinitetalk"],
         "sample_solvers":[
                             ("unipc", "unipc"),
                             ("euler", "euler"),

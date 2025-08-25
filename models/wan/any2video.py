@@ -537,7 +537,7 @@ class WanAny2V:
                     image_ref = convert_image_to_tensor(input_ref_images[ min(window_no, len(input_ref_images))-1 ])
                     if new_shot and window_no <= len(input_ref_images):  
                         input_video = image_ref.unsqueeze(1)
-                    _ , preframes_count, height, width = input_video.shape
+                _ , preframes_count, height, width = input_video.shape
                 input_video = input_video.to(device=self.device).to(dtype= self.VAE_dtype)
                 if infinitetalk:
                     image_for_clip = image_ref.to(input_video)

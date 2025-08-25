@@ -85,6 +85,11 @@ def audio_prepare_multi(left_path, right_path, audio_type = "add", sample_rate=1
     if audio_type=='para':
         new_human_speech1 = human_speech_array1
         new_human_speech2 = human_speech_array2
+        if len(new_human_speech1) != len(new_human_speech2):
+            if len(new_human_speech1) < len(new_human_speech2):
+                new_human_speech1 = np.pad(new_human_speech1, (0, len(new_human_speech2) - len(new_human_speech1)))
+            else:
+                new_human_speech2 = np.pad(new_human_speech2, (0, len(new_human_speech1) - len(new_human_speech2)))
     elif audio_type=='add':
         new_human_speech1 = np.concatenate([human_speech_array1[: human_speech_array1.shape[0]], np.zeros(human_speech_array2.shape[0])]) 
         new_human_speech2 = np.concatenate([np.zeros(human_speech_array1.shape[0]), human_speech_array2[:human_speech_array2.shape[0]]])

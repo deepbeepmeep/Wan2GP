@@ -414,11 +414,11 @@ def process_prompt_and_add_tasks(state, model_choice):
             gr.Info("You must provide an Image Reference") 
             return
         if len(image_refs) > 1:
-            gr.Info("Only one Image Reference (a person) is supported for the moment by this model") 
+            gr.Info("Only one Image Reference (a person) is supported for the moment by this model")
             return
     if model_def.get("at_least_one_image_ref_needed", False):
         if image_refs  == None :
-            gr.Info("You must provide at least one Image Reference") 
+            gr.Info("You must provide at least one Image Reference")
             return
         
     if "I" in video_prompt_type:
@@ -1962,7 +1962,7 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
             else:
                 pos = module_type.rfind("#")
                 sub_prop_name =  module_type[pos+1:]
-                module_type = module_type[:pos]  
+                module_type = module_type[:pos]
             URLs = get_model_recursive_prop(module_type, "modules", sub_prop_name =sub_prop_name, return_list= False)
 
         # choices = modules_files.get(module_type, None)
@@ -2073,7 +2073,7 @@ def fix_settings(model_type, ui_defaults):
                 video_prompt_type = video_prompt_type.replace("I", "KI")
         if remove_background_images_ref != 0:
             remove_background_images_ref = 1
-    if base_model_type in ["hunyuan_avatar"]: 
+    if base_model_type in ["hunyuan_avatar"]:
         remove_background_images_ref = 0
         if settings_version < 2.26:
             if not "K" in video_prompt_type: video_prompt_type = video_prompt_type.replace("I", "KI")
@@ -2300,14 +2300,14 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
     if isinstance(URLs, str):
         print("Unable to save model for a finetune that references external files")
         return
-    from mmgp import offload    
+    from mmgp import offload
     dtypestr= "bf16" if dtype == torch.bfloat16 else "fp16"
     if no_fp16_main_model: dtypestr = dtypestr.replace("fp16", "bf16")
     model_filename = None
     if is_module:
         if not isinstance(URLs,list) or len(URLs) != 1:
             print("Target Module files are missing")
-            return 
+            return
         URLs= URLs[0]
     for url in URLs:
         if "quanto" not in url and dtypestr in url:
@@ -2324,9 +2324,9 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
     update_model_def = False
     model_filename = os.path.join("ckpts",model_filename)
     quanto_dtypestr= "bf16" if dtype == torch.bfloat16 else "fp16"
-    if ("m" + dtypestr) in model_filename: 
-        dtypestr = "m" + dtypestr 
-        quanto_dtypestr = "m" + quanto_dtypestr 
+    if ("m" + dtypestr) in model_filename:
+        dtypestr = "m" + dtypestr
+        quanto_dtypestr = "m" + quanto_dtypestr
     if not os.path.isfile(model_filename) and (not no_fp16_main_model or dtype == torch.bfloat16):
         offload.save_model(model, model_filename, config_file_path=config_file, filter_sd=filter)
         print(f"New model file '{model_filename}' had been created for finetune Id '{model_type}'.")
@@ -2342,7 +2342,7 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
         elif not os.path.isfile(quanto_filename):
             offload.save_model(model, quanto_filename, config_file_path=config_file, do_quantize= True, filter_sd=filter)
             print(f"New quantized file '{quanto_filename}' had been created for finetune Id '{model_type}'.")
-            model_def[url_key][0].append(quanto_filename) 
+            model_def[url_key][0].append(quanto_filename)
             saved_finetune_def["model"][url_key][0].append(quanto_filename)
             update_model_def = True
     if update_model_def:
@@ -3075,9 +3075,41 @@ def abort_generation(state):
         return gr.Button(interactive=  True)
 
 
+def cleanup_missing_files(gen):
+    file_list = gen.get("file_list", [])
+    file_settings_list = gen.get("file_settings_list", [])
+
+    if not file_list:
+        return 0
+
+    original_count = len(file_list)
+
+    valid_items = [
+        (file_path, file_settings_list[i] if i < len(file_settings_list) else None)
+        for i, file_path in enumerate(file_list)
+        if os.path.exists(file_path)
+    ]
+
+    removed_count = original_count - len(valid_items)
+
+    if removed_count > 0:
+        print(f"Gallery refresh: Removed {removed_count} missing file(s) from view.")
+        if valid_items:
+            gen["file_list"], gen["file_settings_list"] = zip(*valid_items)
+            gen["file_list"] = list(gen["file_list"])
+            gen["file_settings_list"] = list(gen["file_settings_list"])
+        else:
+            gen["file_list"] = []
+            gen["file_settings_list"] = []
+
+    return removed_count
+
 
 def refresh_gallery(state): #, msg
     gen = get_gen_info(state)
+
+    # Clean up any missing files first
+    cleanup_missing_files(gen)
 
     # gen["last_msg"] = msg
     file_list = gen.get("file_list", None)      
@@ -3085,7 +3117,10 @@ def refresh_gallery(state): #, msg
     header_text = gen.get("header_text", "")
     in_progress = "in_progress" in gen
     if gen.get("last_selected", True) and file_list is not None:
-        choice = max(len(file_list) - 1,0)  
+        choice = max(len(file_list) - 1,0)
+
+    # Ensure choice is valid after cleanup
+    choice = min(choice, len(file_list) - 1 if file_list else 0)
 
     queue = gen.get("queue", [])
     abort_interactive = not gen.get("abort", False)
@@ -3212,6 +3247,10 @@ def select_video(state, input_file_list, event_data: gr.EventData):
     if len(file_list) > 0:
         configs = file_settings_list[choice]
         file_name = file_list[choice]
+        if not os.path.exists(file_name):
+            gr.Warning(f"File not found: {os.path.basename(file_name)}. It may have been moved or deleted.")
+            visible = False
+            return choice, get_default_video_info(), gr.update(visible=visible), gr.update(visible=visible), gr.update(visible=visible) , gr.update(visible=visible)
         values = [  os.path.basename(file_name)]
         labels = [ "File Name"]
         misc_values= []
@@ -4179,7 +4218,7 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, overri
 
     original_image_refs = inputs["image_refs"]
     if original_image_refs is not None:
-        original_image_refs = [ convert_image(tup[0]) for tup in original_image_refs ]        
+        original_image_refs = [ convert_image(tup[0]) for tup in original_image_refs ]
     is_image = inputs["image_mode"] == 1
     seed = inputs["seed"]
     seed = set_seed(seed)
@@ -4190,7 +4229,7 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, overri
         progress((i , num_prompts), desc=status, total= num_prompts)
 
         try:
-            enhanced_prompt = process_prompt_enhancer(prompt_enhancer, [one_prompt],  start_images, original_image_refs, is_image, seed )    
+            enhanced_prompt = process_prompt_enhancer(prompt_enhancer, [one_prompt],  start_images, original_image_refs, is_image, seed )
         except Exception as e:
             enhancer_offloadobj.unload_all()
             with gen_lock:
@@ -4513,7 +4552,7 @@ def generate_video(
             default_image_size = calculate_new_dimensions(height, width, h, w, fit_canvas)
             fit_canvas = None
             # if there is a source video and a background image ref, the height/width ratio will need to be processed later by the code for the model (we dont know the source video dimensions at this point)
-        if len(image_refs) > nb_frames_positions:  
+        if len(image_refs) > nb_frames_positions:
             any_background_ref = "K" in video_prompt_type 
             if remove_background_images_ref > 0:
                 send_cmd("progress", [0, get_latest_status(state, "Removing Images References Background")])
@@ -4579,7 +4618,7 @@ def generate_video(
             from models.wan.multitalk.multitalk import get_full_audio_embeddings
             # pad audio_proj_full if aligned to beginning of window to simulate source window overlap
             min_audio_duration =  current_video_length/fps if reset_control_aligment else video_source_duration + current_video_length/fps
-            audio_proj_full, output_new_audio_data = get_full_audio_embeddings(audio_guide1 = audio_guide, audio_guide2= audio_guide2, combination_type= combination_type , num_frames= max_source_video_frames, sr= audio_sampling_rate, fps =fps, padded_frames_for_embeddings = (reuse_frames if reset_control_aligment else 0), min_audio_duration = min_audio_duration) 
+            audio_proj_full, output_new_audio_data = get_full_audio_embeddings(audio_guide1 = audio_guide, audio_guide2= audio_guide2, combination_type= combination_type , num_frames= max_source_video_frames, sr= audio_sampling_rate, fps =fps, padded_frames_for_embeddings = (reuse_frames if reset_control_aligment else 0), min_audio_duration = min_audio_duration)
             if output_new_audio_filepath is not None: output_new_audio_data = None
         if not args.save_speakers and "X" in audio_prompt_type:
             os.remove(audio_guide)
@@ -6479,7 +6518,7 @@ def preload_model_when_switching(state):
         model_type = state["model_type"] 
         if  model_type !=  transformer_type:
             wan_model = None
-            release_model()            
+            release_model()
             model_filename = get_model_name(model_type)
             yield f"Loading model {model_filename}..."
             wan_model, offloadobj = load_models(model_type)
@@ -7060,7 +7099,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     model_mode = gr.Dropdown(value=None, visible=False)
                     keep_frames_video_source = gr.Text(visible=False)
 
-            with gr.Column(visible= vace or phantom or hunyuan_video_custom or hunyuan_video_avatar or hunyuan_video_custom_edit or t2v or ltxv or infinitetalk or flux and model_reference_image or qwen and model_reference_image) as video_prompt_column: 
+            with gr.Column(visible= vace or phantom or hunyuan_video_custom or hunyuan_video_avatar or hunyuan_video_custom_edit or t2v or ltxv or infinitetalk or flux and model_reference_image or qwen and model_reference_image) as video_prompt_column:
                 video_prompt_type_value= ui_defaults.get("video_prompt_type","")
                 video_prompt_type = gr.Text(value= video_prompt_type_value, visible= False)
                 any_control_video = True
@@ -7242,7 +7281,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         ("Remove Backgrounds only behind People / Objects except main Subject / Landscape" if (flux or qwen) else "Remove Backgrounds only behind People / Objects" , 1),
                     ],
                     value=ui_defaults.get("remove_background_images_ref",1),
-                    label="Automatic Removal of Background of People or Objects (Only)", scale = 3, visible= "I" in video_prompt_type_value and not  model_def.get("no_background_removal", False) 
+                    label="Automatic Removal of Background of People or Objects (Only)", scale = 3, visible= "I" in video_prompt_type_value and not  model_def.get("no_background_removal", False)
                 )
 
             any_audio_voices_support = any_audio_track(base_model_type) 
@@ -8521,7 +8560,7 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
 
 
         
-        msg = gr.Markdown() 
+        msg = gr.Markdown()
         apply_btn  = gr.Button("Apply Changes")
         apply_btn.click(
                 fn=apply_changes,

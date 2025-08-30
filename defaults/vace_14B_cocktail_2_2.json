@@ -17,6 +17,7 @@
 		"loras_multipliers": [1, 0.2, 0.5, 0.5],
 		"group": "wan2_2"
     },
+	"guidance_phases": 2,	
     "num_inference_steps": 10,
     "guidance_scale": 1,
     "guidance2_scale": 1,

@@ -12,6 +12,7 @@ class family_handler():
         flux_model = model_def.get("flux-model", "flux-dev")
         flux_schnell = flux_model == "flux-schnell" 
         flux_chroma = flux_model == "flux-chroma" 
+        flux_uso = flux_model == "flux-dev-uso"
         model_def_output = {
             "image_outputs" : True,
             "no_negative_prompt" : not flux_chroma,
@@ -20,7 +21,17 @@ class family_handler():
             model_def_output["guidance_max_phases"] = 1
         elif not flux_schnell:
             model_def_output["embedded_guidance"] = True
-            
+        if flux_uso :
+            model_def_output["any_image_refs_relative_size"] = True
+            model_def_output["no_background_removal"] = True
+
+            model_def_output["image_ref_choices"] = {
+                "choices":[("No Reference Image", ""),("First Image is a Reference Image, and then the next ones (up to two) are Style Images", "I"),
+                            ("Up to two Images are Style Images", "IJ")],
+                "default": "I",
+                "letters_filter": "IJ",
+                "label": "Reference Images / Style Images"
+            }
 
         return model_def_output
 
@@ -53,8 +64,8 @@ class family_handler():
         return [
             {  
             "repoId" : "DeepBeepMeep/Flux", 
-            "sourceFolderList" :  [""],
-            "fileList" : [ ["flux_vae.safetensors"] ]   
+            "sourceFolderList" :  ["siglip-so400m-patch14-384", "",],
+            "fileList" : [ ["config.json", "preprocessor_config.json", "model.safetensors"], ["flux_vae.safetensors"] ]   
             },
             {  
             "repoId" : "DeepBeepMeep/LTX_Video", 
@@ -90,15 +101,21 @@ class family_handler():
 
         pipe = { "transformer": flux_model.model, "vae" : flux_model.vae, "text_encoder" : flux_model.clip, "text_encoder_2" : flux_model.t5}
 
+        if flux_model.vision_encoder is not None:
+            pipe["siglip_model"] = flux_model.vision_encoder 
+        if flux_model.feature_embedder is not None:
+            pipe["feature_embedder"] = flux_model.feature_embedder 
         return flux_model, pipe
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
+        flux_model = model_def.get("flux-model", "flux-dev")
+        flux_uso = flux_model == "flux-dev-uso"
         ui_defaults.update({
             "embedded_guidance":  2.5,
         })            
         if model_def.get("reference_image", False):
             ui_defaults.update({
-                "video_prompt_type": "KI",
+                "video_prompt_type": "I" if flux_uso else "KI",
             })
 

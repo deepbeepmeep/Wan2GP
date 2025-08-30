@@ -1,0 +1,9 @@
+{
+    "model": {
+        "name": "Vace Standin 14B",
+        "architecture": "vace_standin_14B",
+        "modules": [ "vace_14B", "standin"],
+        "description": "The Vace ControlNet model is a powerful model that allows you to control the content of the generated video based of additional custom data : pose or depth video, images or objects you want to see in the video.",
+        "URLs": "t2v"
+    }
+}

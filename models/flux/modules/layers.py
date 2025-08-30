@@ -11,7 +11,8 @@ def get_linear_split_map():
     hidden_size = 3072
     split_linear_modules_map =  {
                                 "qkv" : {"mapped_modules" : ["q", "k", "v"] , "split_sizes": [hidden_size, hidden_size, hidden_size]},
-                                "linear1" : {"mapped_modules" : ["linear1_attn_q", "linear1_attn_k", "linear1_attn_v", "linear1_mlp"] , "split_sizes":  [hidden_size, hidden_size, hidden_size, 7*hidden_size- 3*hidden_size]}
+                                "linear1" : {"mapped_modules" : ["linear1_attn_q", "linear1_attn_k", "linear1_attn_v", "linear1_mlp"] , "split_sizes":  [hidden_size, hidden_size, hidden_size, 7*hidden_size- 3*hidden_size]},
+                                "linear1_qkv" : {"mapped_modules" : ["linear1_attn_q", "linear1_attn_k", "linear1_attn_v"] , "split_sizes":  [hidden_size, hidden_size, hidden_size]},
                                 }
     return split_linear_modules_map
 
@@ -376,3 +377,133 @@ class DistilledGuidance(nn.Module):
         x = self.out_proj(x)
 
         return x
+    
+
+class SigLIPMultiFeatProjModel(torch.nn.Module):
+    """
+    SigLIP Multi-Feature Projection Model for processing style features from different layers 
+    and projecting them into a unified hidden space.
+    
+    Args:
+        siglip_token_nums (int): Number of SigLIP tokens, default 257
+        style_token_nums (int): Number of style tokens, default 256  
+        siglip_token_dims (int): Dimension of SigLIP tokens, default 1536
+        hidden_size (int): Hidden layer size, default 3072
+        context_layer_norm (bool): Whether to use context layer normalization, default False
+    """
+    
+    def __init__(
+        self,
+        siglip_token_nums: int = 257,
+        style_token_nums: int = 256,
+        siglip_token_dims: int = 1536,
+        hidden_size: int = 3072,
+        context_layer_norm: bool = False,
+    ):
+        super().__init__()
+        
+        # High-level feature processing (layer -2)
+        self.high_embedding_linear = nn.Sequential(
+            nn.Linear(siglip_token_nums, style_token_nums), 
+            nn.SiLU()
+        )
+        self.high_layer_norm = (
+            nn.LayerNorm(siglip_token_dims) if context_layer_norm else nn.Identity()
+        )
+        self.high_projection = nn.Linear(siglip_token_dims, hidden_size, bias=True)
+        
+        # Mid-level feature processing (layer -11)
+        self.mid_embedding_linear = nn.Sequential(
+            nn.Linear(siglip_token_nums, style_token_nums), 
+            nn.SiLU()
+        )
+        self.mid_layer_norm = (
+            nn.LayerNorm(siglip_token_dims) if context_layer_norm else nn.Identity()
+        )
+        self.mid_projection = nn.Linear(siglip_token_dims, hidden_size, bias=True)
+        
+        # Low-level feature processing (layer -20)
+        self.low_embedding_linear = nn.Sequential(
+            nn.Linear(siglip_token_nums, style_token_nums), 
+            nn.SiLU()
+        )
+        self.low_layer_norm = (
+            nn.LayerNorm(siglip_token_dims) if context_layer_norm else nn.Identity()
+        )
+        self.low_projection = nn.Linear(siglip_token_dims, hidden_size, bias=True)
+
+    def forward(self, siglip_outputs):
+        """
+        Forward pass function
+        
+        Args:
+            siglip_outputs: Output from SigLIP model, containing hidden_states
+            
+        Returns:
+            torch.Tensor: Concatenated multi-layer features with shape [bs, 3*style_token_nums, hidden_size]
+        """
+        dtype = next(self.high_embedding_linear.parameters()).dtype
+        
+        # Process high-level features (layer -2)
+        high_embedding = self._process_layer_features(
+            siglip_outputs.hidden_states[-2],
+            self.high_embedding_linear,
+            self.high_layer_norm,
+            self.high_projection,
+            dtype
+        )
+        
+        # Process mid-level features (layer -11)
+        mid_embedding = self._process_layer_features(
+            siglip_outputs.hidden_states[-11],
+            self.mid_embedding_linear,
+            self.mid_layer_norm,
+            self.mid_projection,
+            dtype
+        )
+        
+        # Process low-level features (layer -20)
+        low_embedding = self._process_layer_features(
+            siglip_outputs.hidden_states[-20],
+            self.low_embedding_linear,
+            self.low_layer_norm,
+            self.low_projection,
+            dtype
+        )
+        
+        # Concatenate features from all layers
+        return torch.cat((high_embedding, mid_embedding, low_embedding), dim=1)
+    
+    def _process_layer_features(
+        self, 
+        hidden_states: torch.Tensor,
+        embedding_linear: nn.Module,
+        layer_norm: nn.Module,
+        projection: nn.Module,
+        dtype: torch.dtype
+    ) -> torch.Tensor:
+        """
+        Helper function to process features from a single layer
+        
+        Args:
+            hidden_states: Input hidden states [bs, seq_len, dim]
+            embedding_linear: Embedding linear layer
+            layer_norm: Layer normalization
+            projection: Projection layer
+            dtype: Target data type
+            
+        Returns:
+            torch.Tensor: Processed features [bs, style_token_nums, hidden_size]
+        """
+        # Transform dimensions: [bs, seq_len, dim] -> [bs, dim, seq_len] -> [bs, dim, style_token_nums] -> [bs, style_token_nums, dim]
+        embedding = embedding_linear(
+            hidden_states.to(dtype).transpose(1, 2)
+        ).transpose(1, 2)
+        
+        # Apply layer normalization
+        embedding = layer_norm(embedding)
+        
+        # Project to target hidden space
+        embedding = projection(embedding)
+        
+        return embedding

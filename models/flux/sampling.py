@@ -13,6 +13,8 @@ from .modules.conditioner import HFEmbedder
 from .modules.image_embedders import CannyImageEncoder, DepthImageEncoder, ReduxImageEncoder
 from .util import PREFERED_KONTEXT_RESOLUTIONS
 from einops import rearrange, repeat
+from typing import Literal
+import torchvision.transforms.functional as TVF
 
 
 def get_noise(
@@ -35,19 +37,9 @@ def get_noise(
     )
 
 
-def prepare(t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[str]) -> dict[str, Tensor]:
-    bs, c, h, w = img.shape
+def prepare_prompt(t5: HFEmbedder, clip: HFEmbedder, bs: int, prompt: str | list[str], neg: bool = False, device: str = "cuda") -> dict[str, Tensor]:
     if bs == 1 and not isinstance(prompt, str):
         bs = len(prompt)
-
-    img = rearrange(img, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
-    if img.shape[0] == 1 and bs > 1:
-        img = repeat(img, "1 ... -> bs ...", bs=bs)
-
-    img_ids = torch.zeros(h // 2, w // 2, 3)
-    img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // 2)[:, None]
-    img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // 2)[None, :]
-    img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
 
     if isinstance(prompt, str):
         prompt = [prompt]
@@ -61,102 +53,31 @@ def prepare(t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[st
         vec = repeat(vec, "1 ... -> bs ...", bs=bs)
 
     return {
-        "img": img,
-        "img_ids": img_ids.to(img.device),
-        "txt": txt.to(img.device),
-        "txt_ids": txt_ids.to(img.device),
-        "vec": vec.to(img.device),
+        "neg_txt" if neg else "txt": txt.to(device),
+        "neg_txt_ids" if neg else "txt_ids": txt_ids.to(device),
+        "neg_vec" if neg else "vec": vec.to(device),
     }
 
 
-def prepare_control(
-    t5: HFEmbedder,
-    clip: HFEmbedder,
-    img: Tensor,
-    prompt: str | list[str],
-    ae: AutoEncoder,
-    encoder: DepthImageEncoder | CannyImageEncoder,
-    img_cond_path: str,
-) -> dict[str, Tensor]:
-    # load and encode the conditioning image
-    bs, _, h, w = img.shape
-    if bs == 1 and not isinstance(prompt, str):
-        bs = len(prompt)
+def prepare_img( img: Tensor) -> dict[str, Tensor]:
+    bs, c, h, w = img.shape
 
-    img_cond = Image.open(img_cond_path).convert("RGB")
+    img = rearrange(img, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
+    if img.shape[0] == 1 and bs > 1:
+        img = repeat(img, "1 ... -> bs ...", bs=bs)
 
-    width = w * 8
-    height = h * 8
-    img_cond = img_cond.resize((width, height), Image.Resampling.LANCZOS)
-    img_cond = np.array(img_cond)
-    img_cond = torch.from_numpy(img_cond).float() / 127.5 - 1.0
-    img_cond = rearrange(img_cond, "h w c -> 1 c h w")
+    img_ids = torch.zeros(h // 2, w // 2, 3)
+    img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // 2)[:, None]
+    img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // 2)[None, :]
+    img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
 
-    with torch.no_grad():
-        img_cond = encoder(img_cond)
-        img_cond = ae.encode(img_cond)
-
-    img_cond = img_cond.to(torch.bfloat16)
-    img_cond = rearrange(img_cond, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
-    if img_cond.shape[0] == 1 and bs > 1:
-        img_cond = repeat(img_cond, "1 ... -> bs ...", bs=bs)
-
-    return_dict = prepare(t5, clip, img, prompt)
-    return_dict["img_cond"] = img_cond
-    return return_dict
+    return {
+        "img": img,
+        "img_ids": img_ids.to(img.device),
+    }
 
 
-def prepare_fill(
-    t5: HFEmbedder,
-    clip: HFEmbedder,
-    img: Tensor,
-    prompt: str | list[str],
-    ae: AutoEncoder,
-    img_cond_path: str,
-    mask_path: str,
-) -> dict[str, Tensor]:
-    # load and encode the conditioning image and the mask
-    bs, _, _, _ = img.shape
-    if bs == 1 and not isinstance(prompt, str):
-        bs = len(prompt)
 
-    img_cond = Image.open(img_cond_path).convert("RGB")
-    img_cond = np.array(img_cond)
-    img_cond = torch.from_numpy(img_cond).float() / 127.5 - 1.0
-    img_cond = rearrange(img_cond, "h w c -> 1 c h w")
-
-    mask = Image.open(mask_path).convert("L")
-    mask = np.array(mask)
-    mask = torch.from_numpy(mask).float() / 255.0
-    mask = rearrange(mask, "h w -> 1 1 h w")
-
-    with torch.no_grad():
-        img_cond = img_cond.to(img.device)
-        mask = mask.to(img.device)
-        img_cond = img_cond * (1 - mask)
-        img_cond = ae.encode(img_cond)
-        mask = mask[:, 0, :, :]
-        mask = mask.to(torch.bfloat16)
-        mask = rearrange(
-            mask,
-            "b (h ph) (w pw) -> b (ph pw) h w",
-            ph=8,
-            pw=8,
-        )
-        mask = rearrange(mask, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
-        if mask.shape[0] == 1 and bs > 1:
-            mask = repeat(mask, "1 ... -> bs ...", bs=bs)
-
-    img_cond = img_cond.to(torch.bfloat16)
-    img_cond = rearrange(img_cond, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
-    if img_cond.shape[0] == 1 and bs > 1:
-        img_cond = repeat(img_cond, "1 ... -> bs ...", bs=bs)
-
-    img_cond = torch.cat((img_cond, mask), dim=-1)
-
-    return_dict = prepare(t5, clip, img, prompt)
-    return_dict["img_cond"] = img_cond.to(img.device)
-    return return_dict
 
 
 def prepare_redux(
@@ -210,9 +131,6 @@ def prepare_redux(
 
 
 def prepare_kontext(
-    t5: HFEmbedder,
-    clip: HFEmbedder,
-    prompt: str | list[str],
     ae: AutoEncoder,
     img_cond_list: list,
     seed: int,
@@ -220,17 +138,15 @@ def prepare_kontext(
     target_width: int | None = None,
     target_height: int | None = None,
     bs: int = 1,
-    neg_prompt: str | list[str] = None,
-    real_guidance_scale = False,
 
 ) -> tuple[dict[str, Tensor], int, int]:
     # load and encode the conditioning image
-    if bs == 1 and not isinstance(prompt, str):
-        bs = len(prompt)
 
     img_cond_seq = None
     img_cond_seq_ids = None
     if img_cond_list == None: img_cond_list = []
+    height_offset = 0
+    width_offset = 0
     for cond_no, img_cond in enumerate(img_cond_list): 
         width, height = img_cond.size
         aspect_ratio = width / height
@@ -257,10 +173,12 @@ def prepare_kontext(
         # image ids are the same as base image with the first dimension set to 1
         # instead of 0
         img_cond_ids = torch.zeros(height // 2, width // 2, 3)
-        img_cond_ids[..., 0] = cond_no + 1
-        img_cond_ids[..., 1] = img_cond_ids[..., 1] + torch.arange(height // 2)[:, None]
-        img_cond_ids[..., 2] = img_cond_ids[..., 2] + torch.arange(width // 2)[None, :]
+        img_cond_ids[..., 0] = 1
+        img_cond_ids[..., 1] = img_cond_ids[..., 1] + torch.arange(height // 2)[:, None] + height_offset
+        img_cond_ids[..., 2] = img_cond_ids[..., 2] + torch.arange(width // 2)[None, :] + width_offset
         img_cond_ids = repeat(img_cond_ids, "h w c -> b (h w) c", b=bs)
+        height_offset +=  height // 2 
+        width_offset +=  width // 2
 
         if target_width is None:
             target_width = 8 * width
@@ -272,6 +190,10 @@ def prepare_kontext(
         else:
             img_cond_seq, img_cond_seq_ids  =  torch.cat([img_cond_seq, img_cond_latents], dim=1), torch.cat([img_cond_seq_ids, img_cond_ids], dim=1)
         
+    return_dict = {
+        "img_cond_seq": img_cond_seq,
+        "img_cond_seq_ids": img_cond_seq_ids,
+    }
     img = get_noise(
         bs,
         target_height,
@@ -280,17 +202,7 @@ def prepare_kontext(
         dtype=torch.bfloat16,
         seed=seed,
     )
-
-    return_dict = prepare(t5, clip, img, prompt)
-    if real_guidance_scale != 1:
-        temp_dict = prepare(t5, clip, img, neg_prompt)
-        return_dict["neg_txt"]=  temp_dict["txt"]
-        return_dict["neg_txt_ids"]=  temp_dict["txt_ids"]
-    else:
-        return_dict["neg_txt"]=  None
-        return_dict["neg_txt_ids"]=  None
-    return_dict["img_cond_seq"] = img_cond_seq
-    return_dict["img_cond_seq_ids"] = img_cond_seq_ids
+    return_dict.update(prepare_img(img))
 
     return return_dict, target_height, target_width
 
@@ -341,10 +253,13 @@ def denoise(
     # extra img tokens (channel-wise)
     neg_txt: Tensor = None,
     neg_txt_ids: Tensor= None,
+    neg_vec: Tensor = None,
     img_cond: Tensor | None = None,
     # extra img tokens (sequence-wise)
     img_cond_seq: Tensor | None = None,
     img_cond_seq_ids: Tensor | None = None,
+    siglip_embedding = None,
+    siglip_embedding_ids = None,
     callback=None,
     pipeline=None,
     loras_slists=None,
@@ -352,7 +267,8 @@ def denoise(
     joint_pass= False,
 ):
 
-    kwargs = {'pipeline': pipeline, 'callback': callback}
+    kwargs = {'pipeline': pipeline, 'callback': callback, "img_len" : img.shape[1], "siglip_embedding": siglip_embedding, "siglip_embedding_ids": siglip_embedding_ids}
+
     if callback != None:
         callback(-1, None, True)
 
@@ -383,7 +299,7 @@ def denoise(
                 img_ids=img_input_ids,
                 txt_list=[txt],
                 txt_ids_list=[txt_ids],
-                y=vec,
+                y_list=[vec],
                 timesteps=t_vec,
                 guidance=guidance_vec,
                 **kwargs
@@ -395,7 +311,7 @@ def denoise(
                     img_ids=img_input_ids,
                     txt_list=[neg_txt],
                     txt_ids_list=[neg_txt_ids],
-                    y=vec,
+                    y_list=[neg_vec],
                     timesteps=t_vec,
                     guidance=guidance_vec,
                     **kwargs
@@ -407,19 +323,14 @@ def denoise(
                 img_ids=img_input_ids,
                 txt_list=[txt, neg_txt],
                 txt_ids_list=[txt_ids, neg_txt_ids],
-                y=vec,
+                y_list=[vec, neg_vec],
                 timesteps=t_vec,
                 guidance=guidance_vec,
                 **kwargs
             )
             if pred == None: return None
 
-
-        if img_input_ids is not None:
-            pred = pred[:, : img.shape[1]]
         if real_guidance_scale > 1:
-            if img_input_ids is not None:
-                neg_pred = neg_pred[:, : img.shape[1]]
             pred = neg_pred + real_guidance_scale * (pred - neg_pred)
 
         img += (t_prev - t_curr) * pred
@@ -429,6 +340,82 @@ def denoise(
 
 
     return img
+
+def prepare_multi_ip(
+    ae: AutoEncoder,
+    img_cond_list: list,
+    seed: int,
+    device: torch.device,
+    target_width: int | None = None,
+    target_height: int | None = None,
+    bs: int = 1,
+    pe: Literal["d", "h", "w", "o"] = "d",
+) -> dict[str, Tensor]:
+    ref_imgs = img_cond_list
+    assert pe in ["d", "h", "w", "o"]
+
+    ref_imgs = [
+        ae.encode(
+            (TVF.to_tensor(ref_img) * 2.0 - 1.0)
+            .unsqueeze(0)
+            .to(device, torch.float32)
+        ).to(torch.bfloat16)
+        for ref_img in img_cond_list
+    ]
+
+    img = get_noise( bs, target_height, target_width, device=device, dtype=torch.bfloat16, seed=seed)
+    bs, c, h, w = img.shape
+    # tgt img
+    img = rearrange(img, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
+    if img.shape[0] == 1 and bs > 1:
+        img = repeat(img, "1 ... -> bs ...", bs=bs)
+
+    img_ids = torch.zeros(h // 2, w // 2, 3)
+    img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // 2)[:, None]
+    img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // 2)[None, :]
+    img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
+    img_cond_seq = img_cond_seq_ids = None
+    pe_shift_w, pe_shift_h = w // 2, h // 2
+    for cond_no, ref_img in enumerate(ref_imgs):
+        _, _, ref_h1, ref_w1 = ref_img.shape
+        ref_img = rearrange(
+            ref_img, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2
+        )
+        if ref_img.shape[0] == 1 and bs > 1:
+            ref_img = repeat(ref_img, "1 ... -> bs ...", bs=bs)
+        ref_img_ids1 = torch.zeros(ref_h1 // 2, ref_w1 // 2, 3)
+        # img id分别在宽高偏移各自最大值
+        h_offset = pe_shift_h if pe in {"d", "h"} else 0
+        w_offset = pe_shift_w if pe in {"d", "w"} else 0
+        ref_img_ids1[..., 1] = (
+            ref_img_ids1[..., 1] + torch.arange(ref_h1 // 2)[:, None] + h_offset
+        )
+        ref_img_ids1[..., 2] = (
+            ref_img_ids1[..., 2] + torch.arange(ref_w1 // 2)[None, :] + w_offset
+        )
+        ref_img_ids1 = repeat(ref_img_ids1, "h w c -> b (h w) c", b=bs)
+
+        if target_width is None:
+            target_width = 8 * ref_w1
+        if target_height is None:
+            target_height = 8 * ref_h1
+        ref_img_ids1 = ref_img_ids1.to(device)
+        if cond_no == 0:
+            img_cond_seq, img_cond_seq_ids  = ref_img, ref_img_ids1
+        else:
+            img_cond_seq, img_cond_seq_ids  =  torch.cat([img_cond_seq, ref_img], dim=1), torch.cat([img_cond_seq_ids, ref_img_ids1], dim=1)
+
+
+        # 更新pe shift
+        pe_shift_h += ref_h1 // 2
+        pe_shift_w += ref_w1 // 2
+
+    return {
+        "img": img,
+        "img_ids": img_ids.to(img.device),
+        "img_cond_seq": img_cond_seq,
+        "img_cond_seq_ids": img_cond_seq_ids,
+    }, target_height, target_width
 
 
 def unpack(x: Tensor, height: int, width: int) -> Tensor:

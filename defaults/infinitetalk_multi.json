@@ -9,7 +9,7 @@
                 "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_infinitetalk_multi_14B_quanto_mbf16_int8.safetensors"
             ]
         ],
-        "description": "The Infinitetalk model is an improved version of Multitalk that supports very long videos. This is the multi speakers version.",
+        "description": "The Infinitetalk model is an improved version of Multitalk that supports very long videos. This is the multi speakers version.Sliding Window size must be 81 frames to get smooth transitions between shots",
 		"multi_speakers_only": true,		
         "URLs": "i2v"
     }

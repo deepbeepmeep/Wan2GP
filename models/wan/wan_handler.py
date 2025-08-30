@@ -10,6 +10,9 @@ def test_class_1_3B(base_model_type):
 def test_multitalk(base_model_type):
     return base_model_type in ["multitalk", "vace_multitalk_14B", "i2v_2_2_multitalk", "infinitetalk"]
 
+def test_standin(base_model_type):
+    return base_model_type in ["standin", "vace_standin_14B"]
+
 class family_handler():
 
     @staticmethod
@@ -72,7 +75,8 @@ class family_handler():
         i2v =  test_class_i2v(base_model_type)
         extra_model_def["i2v_class"] = i2v
         extra_model_def["multitalk_class"] = test_multitalk(base_model_type)
-        vace_class = base_model_type in ["vace_14B", "vace_1.3B", "vace_multitalk_14B"] 
+        extra_model_def["standin_class"] = test_standin(base_model_type)
+        vace_class = base_model_type in ["vace_14B", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B"] 
         extra_model_def["vace_class"] = vace_class
 
         if test_multitalk(base_model_type):
@@ -101,6 +105,7 @@ class family_handler():
         "adaptive_projected_guidance" : True,  
         "tea_cache" : not (base_model_type in ["i2v_2_2", "ti2v_2_2" ] or multiple_submodels),
         "mag_cache" : True,
+        "keep_frames_video_guide_not_supported": base_model_type in ["infinitetalk"],
         "sample_solvers":[
                             ("unipc", "unipc"),
                             ("euler", "euler"),
@@ -115,8 +120,8 @@ class family_handler():
         
     @staticmethod
     def query_supported_types():
-        return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_multitalk_14B",
-                    "t2v_1.3B", "t2v", "vace_1.3B", "phantom_1.3B", "phantom_14B", 
+        return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_multitalk_14B", "vace_standin_14B",
+                    "t2v_1.3B", "standin", "t2v", "vace_1.3B", "phantom_1.3B", "phantom_14B", 
                     "recam_1.3B", 
                     "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "flf2v_720p", "fun_inp_1.3B", "fun_inp"]
 
@@ -130,8 +135,8 @@ class family_handler():
         }
 
         models_comp_map = { 
-                    "vace_14B" : [ "vace_multitalk_14B"],
-                    "t2v" : [ "vace_14B", "vace_1.3B" "vace_multitalk_14B", "t2v_1.3B", "phantom_1.3B","phantom_14B"],
+                    "vace_14B" : [ "vace_multitalk_14B", "vace_standin_14B"],
+                    "t2v" : [ "vace_14B", "vace_1.3B" "vace_multitalk_14B", "t2v_1.3B", "phantom_1.3B","phantom_14B", "standin"],
                     "i2v" : [ "fantasy", "multitalk", "flf2v_720p" ],
                     "i2v_2_2" : ["i2v_2_2_multitalk"],
                     "fantasy": ["multitalk"],
@@ -221,7 +226,15 @@ class family_handler():
             mult = model_def.get("loras_multipliers","")
             if len(mult)> 1 and len(mult[0].split(";"))==3: ui_defaults["guidance_phases"] = 3
 
-
+        if settings_version < 2.27:
+            if base_model_type in "infinitetalk":
+                guidance_scale = ui_defaults.get("guidance_scale", None)
+                if guidance_scale == 1:
+                    ui_defaults["audio_guidance_scale"]= 1
+                video_prompt_type = ui_defaults.get("video_prompt_type", "")
+                if "I" in video_prompt_type:
+                    video_prompt_type = video_prompt_type.replace("KI", "QKI")
+                    ui_defaults["video_prompt_type"] = video_prompt_type 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
@@ -248,11 +261,19 @@ class family_handler():
                 "flow_shift": 7, # 11 for 720p
                 "sliding_window_overlap" : 9,
                 "sample_solver" : "euler",
-                "video_prompt_type": "KI",
+                "video_prompt_type": "QKI",
                 "remove_background_images_ref" : 0,
                 "adaptive_switch" : 1,
             })
 
+        elif base_model_type in ["standin"]:
+            ui_defaults.update({
+                "guidance_scale": 5.0,
+                "flow_shift": 7, # 11 for 720p
+                "sliding_window_overlap" : 9,
+                "video_prompt_type": "I",
+                "remove_background_images_ref" : 1,
+            })
         elif base_model_type in ["phantom_1.3B", "phantom_14B"]:
             ui_defaults.update({
                 "guidance_scale": 7.5,

@@ -137,7 +137,10 @@ def get_meshgrid_nd(start, *args, dim=2):
     axis_grid = []
     for i in range(dim):
         a, b, n = start[i], stop[i], num[i]
-        g = torch.linspace(a, b, n + 1, dtype=torch.float32)[:n]
+        if a == b:
+            g = torch.tensor([a], dtype=torch.float32 )
+        else:
+            g = torch.linspace(a, b, n + 1, dtype=torch.float32)[:n]
         axis_grid.append(g)
     grid = torch.meshgrid(*axis_grid, indexing="ij")  # dim x [W, H, D]
     grid = torch.stack(grid, dim=0)  # [dim, W, H, D]
@@ -297,16 +300,15 @@ def apply_rotary_emb( qklist,
 
     return xq_out, xk_out
 def get_nd_rotary_pos_embed(
-    rope_dim_list,
     start,
     *args,
     theta=10000.0,
-    use_real=False,
+    use_real=True,
     theta_rescale_factor: Union[float, List[float]] = 1.0,
     interpolation_factor: Union[float, List[float]] = 1.0,
     k = 6,
     L_test = 66,
-    enable_riflex = True
+    enable_riflex = False
 ):
     """
     This is a n-d version of precompute_freqs_cis, which is a RoPE for tokens with n-d structure.
@@ -326,6 +328,13 @@ def get_nd_rotary_pos_embed(
     Returns:
         pos_embed (torch.Tensor): [HW, D/2]
     """
+    head_dim = 128
+    rope_dim_list = [44, 42, 42]
+    if rope_dim_list is None:
+        rope_dim_list = [head_dim // target_ndim for _ in range(target_ndim)]
+    assert (
+        sum(rope_dim_list) == head_dim
+    ), "sum(rope_dim_list) should equal to head_dim of attention layer"
 
     grid = get_meshgrid_nd(
         start, *args, dim=len(rope_dim_list)
@@ -454,15 +463,7 @@ def get_rotary_pos_embed(latents_size, enable_RIFLEx = False):
 
     if len(rope_sizes) != target_ndim:
         rope_sizes = [1] * (target_ndim - len(rope_sizes)) + rope_sizes  # time axis
-    head_dim = 128
-    rope_dim_list = [44, 42, 42]
-    if rope_dim_list is None:
-        rope_dim_list = [head_dim // target_ndim for _ in range(target_ndim)]
-    assert (
-        sum(rope_dim_list) == head_dim
-    ), "sum(rope_dim_list) should equal to head_dim of attention layer"
     freqs_cos, freqs_sin = get_nd_rotary_pos_embed(
-        rope_dim_list,
         rope_sizes,
         theta=10000,
         use_real=True,

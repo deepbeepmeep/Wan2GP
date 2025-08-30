@@ -92,13 +92,44 @@ def get_video_info(video_path):
     
     return fps, width, height, frame_count
 
-def get_video_frame(file_name, frame_no):
-    decord.bridge.set_bridge('torch')
-    reader = decord.VideoReader(file_name)
+def get_video_frame(file_name: str, frame_no: int, return_last_if_missing: bool = False, return_PIL = True) -> torch.Tensor:
+    """Extract nth frame from video as PyTorch tensor normalized to [-1, 1]."""
+    cap = cv2.VideoCapture(file_name)
+    
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {file_name}")
+    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    # Handle out of bounds
+    if frame_no >= total_frames or frame_no < 0:
+        if return_last_if_missing:
+            frame_no = total_frames - 1
+        else:
+            cap.release()
+            raise IndexError(f"Frame {frame_no} out of bounds (0-{total_frames-1})")
+    
+    # Get frame
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+    ret, frame = cap.read()
+    cap.release()
+    
+    if not ret:
+        raise ValueError(f"Failed to read frame {frame_no}")
+    
+    # Convert BGR->RGB, reshape to (C,H,W), normalize to [-1,1]
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    if return_PIL:
+          return Image.fromarray(frame)
+    else:
+        return (torch.from_numpy(frame).permute(2, 0, 1).float() / 127.5) - 1.0
+# def get_video_frame(file_name, frame_no):
+#     decord.bridge.set_bridge('torch')
+#     reader = decord.VideoReader(file_name)
 
-    frame = reader.get_batch([frame_no]).squeeze(0)
-    img = Image.fromarray(frame.numpy().astype(np.uint8))
-    return img
+#     frame = reader.get_batch([frame_no]).squeeze(0)
+#     img = Image.fromarray(frame.numpy().astype(np.uint8))
+#     return img
 
 def convert_image_to_video(image):
     if image is None:
@@ -174,18 +205,19 @@ def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims
     if (margin_left + width) > final_width or outpainting_right == 0: margin_left = final_width - width
     return height, width, margin_top, margin_left
 
-def calculate_new_dimensions(canvas_height, canvas_width, height, width, fit_into_canvas, block_size = 16):
+def calculate_new_dimensions(canvas_height, canvas_width, image_height, image_width, fit_into_canvas, block_size = 16):
     if fit_into_canvas == None:
-        return height, width
+        # return image_height, image_width
+        return canvas_height, canvas_width
     if fit_into_canvas:
-        scale1  = min(canvas_height / height, canvas_width / width)
-        scale2  = min(canvas_width / height, canvas_height / width)
+        scale1  = min(canvas_height / image_height, canvas_width / image_width)
+        scale2  = min(canvas_width / image_height, canvas_height / image_width)
         scale = max(scale1, scale2) 
     else:
-        scale = (canvas_height * canvas_width / (height * width))**(1/2)
+        scale = (canvas_height * canvas_width / (image_height * image_width))**(1/2)
 
-    new_height = round( height * scale / block_size) * block_size
-    new_width = round( width * scale / block_size) * block_size
+    new_height = round( image_height * scale / block_size) * block_size
+    new_width = round( image_width * scale / block_size) * block_size
     return new_height, new_width
 
 def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, ignore_first, fit_into_canvas = False ):

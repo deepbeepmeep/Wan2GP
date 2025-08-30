@@ -6,8 +6,10 @@ from glob import iglob
 from mmgp import offload as offload
 import torch
 from shared.utils.utils import calculate_new_dimensions
-from .sampling import denoise, get_schedule, prepare_kontext, unpack
+from .sampling import denoise, get_schedule, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack
 from .modules.layers import get_linear_split_map
+from transformers import SiglipVisionModel, SiglipImageProcessor
+
 from .util import (
     aspect_ratio_to_height_width,
     load_ae,
@@ -65,6 +67,26 @@ class model_factory:
 
         self.vae = load_ae(self.name, device=torch_device)
 
+        siglip_processor = siglip_model = feature_embedder = None
+        if self.name == 'flux-dev-uso':
+            siglip_path = "ckpts/siglip-so400m-patch14-384"
+            siglip_processor = SiglipImageProcessor.from_pretrained(siglip_path)
+            siglip_model = SiglipVisionModel.from_pretrained(siglip_path)
+            siglip_model.eval().to("cpu")
+            if len(model_filename) > 1:
+                from .modules.layers import SigLIPMultiFeatProjModel                
+                feature_embedder = SigLIPMultiFeatProjModel(
+                    siglip_token_nums=729,
+                    style_token_nums=64,
+                    siglip_token_dims=1152,
+                    hidden_size=3072, #self.hidden_size,
+                    context_layer_norm=True,
+                )
+                offload.load_model_data(feature_embedder, model_filename[1])
+        self.vision_encoder = siglip_model
+        self.vision_encoder_processor = siglip_processor
+        self.feature_embedder = feature_embedder
+   
         # offload.change_dtype(self.model, dtype, True)
         # offload.save_model(self.model, "flux-dev.safetensors")
 
@@ -97,22 +119,30 @@ class model_factory:
             loras_slists = None,
             batch_size = 1,
             video_prompt_type = "",
-            joint_pass = False,            
+            joint_pass = False,
+            image_refs_relative_size = 100,       
             **bbargs
     ):
             if self._interrupt:
                 return None
-            if self.guidance_max_phases < 1:
-                guide_scale = 1
-            if n_prompt is None or len(n_prompt) == 0:
-                n_prompt = "low quality, ugly, unfinished, out of focus, deformed, disfigure, blurry, smudged, restricted palette, flat colors"
+            if self.guidance_max_phases < 1: guide_scale = 1
+            if n_prompt is None or len(n_prompt) == 0: n_prompt = "low quality, ugly, unfinished, out of focus, deformed, disfigure, blurry, smudged, restricted palette, flat colors"
             device="cuda"
-            if "I" in video_prompt_type and input_ref_images != None and len(input_ref_images) > 0: 
-                if "K" in video_prompt_type and False :
-                    # image latents tiling method
-                    w, h = input_ref_images[0].size
-                    height, width = calculate_new_dimensions(height, width, h, w, fit_into_canvas)
-                else:
+            flux_dev_uso = self.name in ['flux-dev-uso']
+            image_stiching =  not self.name in ['flux-dev-uso']
+
+            input_ref_images = [] if input_ref_images is None else input_ref_images[:]
+            ref_style_imgs = []
+
+            if "I" in video_prompt_type and len(input_ref_images) > 0: 
+                if flux_dev_uso :
+                    if "J" in video_prompt_type:
+                        ref_style_imgs = input_ref_images
+                        input_ref_images = []
+                    elif len(input_ref_images) > 1 :
+                        ref_style_imgs = input_ref_images[-1:]
+                        input_ref_images = input_ref_images[:-1]
+                if image_stiching:
                     # image stiching method
                     stiched = input_ref_images[0]
                     if "K" in video_prompt_type :
@@ -122,27 +152,61 @@ class model_factory:
                     for new_img in input_ref_images[1:]:
                         stiched = stitch_images(stiched, new_img)
                     input_ref_images  = [stiched]
+                else:
+                    first_ref = 0
+                    if "K" in video_prompt_type:
+                        # image latents tiling method
+                        w, h = input_ref_images[0].size
+                        height, width = calculate_new_dimensions(height, width, h, w, fit_into_canvas)
+                        input_ref_images[0] = input_ref_images[0].resize((width, height), resample=Image.Resampling.LANCZOS) 
+                        first_ref = 1
+
+                    for i in range(first_ref,len(input_ref_images)):
+                        w, h = input_ref_images[i].size
+                        image_height, image_width = calculate_new_dimensions(int(height*image_refs_relative_size/100), int(width*image_refs_relative_size/100), h, w, fit_into_canvas)
+                        input_ref_images[0] = input_ref_images[0].resize((image_width, image_height), resample=Image.Resampling.LANCZOS) 
             else:
                 input_ref_images = None
 
-            inp, height, width = prepare_kontext(
-                t5=self.t5,
-                clip=self.clip,
-                prompt=input_prompt,
-                neg_prompt= n_prompt,
-                ae=self.vae,
-                img_cond_list=input_ref_images,
-                target_width=width,
-                target_height=height,
-                bs=batch_size,
-                seed=seed,
-                device=device,
-                real_guidance_scale=guide_scale,
-            )
+            if flux_dev_uso :
+                inp, height, width = prepare_multi_ip(
+                    ae=self.vae,
+                    img_cond_list=input_ref_images,
+                    target_width=width,
+                    target_height=height,
+                    bs=batch_size,
+                    seed=seed,
+                    device=device,
+                )
+            else:
+                inp, height, width = prepare_kontext(
+                    ae=self.vae,
+                    img_cond_list=input_ref_images,
+                    target_width=width,
+                    target_height=height,
+                    bs=batch_size,
+                    seed=seed,
+                    device=device,
+                )
+
+            inp.update(prepare_prompt(self.t5, self.clip, batch_size, input_prompt))
+            if guide_scale != 1:
+                inp.update(prepare_prompt(self.t5, self.clip, batch_size, n_prompt, neg = True, device=device))
 
             timesteps = get_schedule(sampling_steps, inp["img"].shape[1], shift=(self.name != "flux-schnell"))
+
+            ref_style_imgs = [self.vision_encoder_processor(img, return_tensors="pt").to(self.device) for img in ref_style_imgs]
+            if self.feature_embedder is not None and ref_style_imgs is not None and len(ref_style_imgs) > 0 and self.vision_encoder is not None:
+                # processing style feat into textural hidden space
+                siglip_embedding = [self.vision_encoder(**emb, output_hidden_states=True) for emb in ref_style_imgs]
+                siglip_embedding = torch.cat([self.feature_embedder(emb) for emb in siglip_embedding], dim=1)
+                siglip_embedding_ids = torch.zeros( siglip_embedding.shape[0], siglip_embedding.shape[1], 3 ).to(device)
+                inp["siglip_embedding"] = siglip_embedding
+                inp["siglip_embedding_ids"] = siglip_embedding_ids
+
             def unpack_latent(x):
                 return unpack(x.float(), height, width) 
+
             # denoise initial noise
             x = denoise(self.model, **inp, timesteps=timesteps, guidance=embedded_guidance_scale, real_guidance_scale =guide_scale, callback=callback, pipeline=self, loras_slists= loras_slists, unpack_latent = unpack_latent, joint_pass = joint_pass)
             if x==None: return None

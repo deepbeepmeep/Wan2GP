@@ -19,6 +19,22 @@ from ..multitalk.multitalk_utils import get_attn_map_with_target
 __all__ = ['WanModel']
 
 
+def get_cache(cache_name):
+    all_cache = offload.shared_state.get("_cache",  None)
+    if all_cache is None:
+        all_cache = {}
+        offload.shared_state["_cache"]=  all_cache
+    cache = offload.shared_state.get(cache_name, None)
+    if cache is None:
+        cache = {}
+        offload.shared_state[cache_name] = cache
+    return cache
+
+def clear_caches():
+    all_cache = offload.shared_state.get("_cache",  None)
+    if all_cache is not None:
+        all_cache.clear()
+
 def sinusoidal_embedding_1d(dim, position):
     # preprocess
     assert dim % 2 == 0
@@ -92,6 +108,32 @@ def relative_l1_distance(last_tensor, current_tensor):
     norm = torch.abs(last_tensor).mean()
     relative_l1_distance = l1_distance / norm
     return relative_l1_distance.to(torch.float32)
+
+class LoRALinearLayer(nn.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        rank: int = 128,
+        dtype: Optional[torch.dtype] = torch.float32,
+    ):
+        super().__init__()
+        self.down = nn.Linear(in_features, rank, bias=False,  dtype=dtype)
+        self.up = nn.Linear(rank, out_features, bias=False,  dtype=dtype)
+        self.rank = rank
+        self.out_features = out_features
+        self.in_features = in_features
+
+        nn.init.normal_(self.down.weight, std=1 / rank)
+        nn.init.zeros_(self.up.weight)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        orig_dtype = hidden_states.dtype
+        dtype = self.down.weight.dtype
+
+        down_hidden_states = self.down(hidden_states.to(dtype))
+        up_hidden_states = self.up(down_hidden_states)
+        return up_hidden_states.to(orig_dtype)
 
 class WanRMSNorm(nn.Module):
 
@@ -244,7 +286,7 @@ class WanSelfAttention(nn.Module):
         else:
             return x, None
     
-    def forward(self, xlist, grid_sizes, freqs, block_mask = None, ref_target_masks = None, ref_images_count = 0):
+    def forward(self, xlist, grid_sizes, freqs, block_mask = None, ref_target_masks = None, ref_images_count = 0, standin_phase =-1):
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
@@ -257,19 +299,28 @@ class WanSelfAttention(nn.Module):
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
 
         # query, key, value function
-        q = self.q(x)
+        q, k, v = self.q(x), self.k(x), self.v(x)
+        if standin_phase == 1:
+            q += self.q_loras(x)
+            k += self.k_loras(x)
+            v += self.v_loras(x)
         self.norm_q(q)
-        q = q.view(b, s, n, d) 
-        k = self.k(x)
         self.norm_k(k)
-        k = k.view(b, s, n, d) 
-        v = self.v(x).view(b, s, n, d)
+        q,k,v = q.view(b, s, n, d), k.view(b, s, n, d), v.view(b, s, n, d)
         del x
         qklist = [q,k]
         del q,k
 
         q,k = apply_rotary_emb(qklist, freqs, head_first=False)
 
+        if standin_phase >= 1:
+            standin_cache = get_cache("standin")
+            if standin_phase == 1:
+                standin_cache[self.block_no] = (k,v)
+            elif standin_phase == 2:
+                k_ip, v_ip = standin_cache[self.block_no]
+                k, v = torch.concat([k, k_ip], dim=1), torch.concat([v, v_ip], dim=1)
+                del k_ip, v_ip
         if ref_target_masks != None:
             x_ref_attn_map = get_attn_map_with_target(q, k , grid_sizes, ref_target_masks=ref_target_masks, ref_images_count = ref_images_count)
         else:
@@ -289,6 +340,7 @@ class WanSelfAttention(nn.Module):
             x = pay_attention(
                 qkv_list,
                 window_size=self.window_size)
+
         else:
             with sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
                 x = (
@@ -461,6 +513,7 @@ class WanAttentionBlock(nn.Module):
         multitalk_audio=None,
         multitalk_masks=None,
         ref_images_count=0,
+        standin_phase=-1,
     ):
         r"""
         Args:
@@ -504,7 +557,7 @@ class WanAttentionBlock(nn.Module):
 
         xlist = [x_mod.to(attention_dtype)]
         del x_mod
-        y, x_ref_attn_map = self.self_attn( xlist, grid_sizes, freqs, block_mask = block_mask, ref_target_masks = multitalk_masks, ref_images_count = ref_images_count)
+        y, x_ref_attn_map = self.self_attn( xlist, grid_sizes, freqs, block_mask = block_mask, ref_target_masks = multitalk_masks, ref_images_count = ref_images_count, standin_phase= standin_phase, )
         y = y.to(dtype)
 
         if cam_emb != None: y = self.projector(y)
@@ -513,11 +566,13 @@ class WanAttentionBlock(nn.Module):
         x.addcmul_(y, e[2])
         x, y = restore_latent_shape(x), restore_latent_shape(y)
         del y
-        y = self.norm3(x)
-        y = y.to(attention_dtype)
-        ylist= [y]
-        del y
-        x += self.cross_attn(ylist, context, grid_sizes, audio_proj, audio_scale, audio_context_lens).to(dtype)
+
+        if context is not None:
+            y = self.norm3(x)
+            y = y.to(attention_dtype)
+            ylist= [y]
+            del y
+            x += self.cross_attn(ylist, context, grid_sizes, audio_proj, audio_scale, audio_context_lens).to(dtype)
 
         if multitalk_audio != None:
             # cross attn of multitalk audio
@@ -853,6 +908,7 @@ class WanModel(ModelMixin, ConfigMixin):
                  vae_scale=4, # vae timedownsample scale
                  norm_input_visual=True,
                  norm_output_audio=True,
+                 standin= False,
                  ):
 
         super().__init__()
@@ -976,6 +1032,11 @@ class WanModel(ModelMixin, ConfigMixin):
             for block in self.blocks:
                 block.cross_attn.processor = WanCrossAttentionProcessor(fantasytalking_dim, dim)
 
+        if standin:
+            for block in self.blocks:
+                block.self_attn.q_loras = LoRALinearLayer(dim, dim, rank=128)
+                block.self_attn.k_loras = LoRALinearLayer(dim, dim, rank=128)
+                block.self_attn.v_loras = LoRALinearLayer(dim, dim, rank=128)
 
     def lock_layers_dtypes(self, hybrid_dtype = None, dtype = torch.float32):
         layer_list = [self.head, self.head.head, self.patch_embedding]
@@ -1155,8 +1216,9 @@ class WanModel(ModelMixin, ConfigMixin):
         audio_scale=None,
         multitalk_audio = None,
         multitalk_masks = None,
-        ref_images_count = 0,    
-
+        ref_images_count = 0,
+        standin_freqs = None,
+        standin_ref = None,
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
         modulation_dtype = self.time_projection[1].weight.dtype
@@ -1220,6 +1282,18 @@ class WanModel(ModelMixin, ConfigMixin):
         offload.shared_state["embed_sizes"] = grid_sizes 
         offload.shared_state["step_no"] = current_step 
         offload.shared_state["max_steps"] = max_steps
+        if current_step == 0 and x_id == 0: clear_caches()
+        # arguments
+
+        kwargs = dict(
+            grid_sizes=grid_sizes,
+            freqs=freqs,
+            cam_emb = cam_emb,
+            block_mask = block_mask,
+            audio_proj=audio_proj,
+            audio_context_lens=audio_context_lens,
+            ref_images_count=ref_images_count,
+            )
 
         _flag_df = t.dim() == 2
 
@@ -1227,6 +1301,16 @@ class WanModel(ModelMixin, ConfigMixin):
             sinusoidal_embedding_1d(self.freq_dim, t.flatten()).to(modulation_dtype)  # self.patch_embedding.weight.dtype)
         )  # b, dim        
         e0 = self.time_projection(e).unflatten(1, (6, self.dim)).to(e.dtype)
+
+        standin_x = None
+        if standin_ref is not None:
+            standin_cache_enabled = False
+            kwargs["standin_phase"] = 2
+            if (current_step == 0 or not standin_cache_enabled) and x_id == 0:
+                standin_x = self.patch_embedding(standin_ref).to(modulation_dtype).flatten(2).transpose(1, 2)
+                standin_e = self.time_embedding( sinusoidal_embedding_1d(self.freq_dim, torch.zeros_like(t)).to(modulation_dtype) )
+                standin_e0 = self.time_projection(standin_e).unflatten(1, (6, self.dim)).to(e.dtype)
+                standin_e = standin_ref = None
 
         if self.inject_sample_info and fps!=None:
             fps = torch.tensor(fps, dtype=torch.long, device=device)
@@ -1254,8 +1338,9 @@ class WanModel(ModelMixin, ConfigMixin):
         if multitalk_audio != None:
             multitalk_audio_list = []
             for audio in multitalk_audio:
-                audio = self.audio_proj(*audio) 
-                audio = torch.concat(audio.split(1), dim=2).to(context[0])
+                if audio is not None:
+                    audio = self.audio_proj(*audio) 
+                    audio = torch.concat(audio.split(1), dim=2).to(context[0])
                 multitalk_audio_list.append(audio)
             audio = None
         else:
@@ -1271,17 +1356,6 @@ class WanModel(ModelMixin, ConfigMixin):
         else:
             audio_scale_list = [None] * len(x_list)
 
-            # arguments
-
-        kwargs = dict(
-            grid_sizes=grid_sizes,
-            freqs=freqs,
-            cam_emb = cam_emb,
-            block_mask = block_mask,
-            audio_proj=audio_proj,
-            audio_context_lens=audio_context_lens,
-            ref_images_count=ref_images_count,
-            )
 
         if vace_context == None:
             hints_list = [None ] *len(x_list)
@@ -1378,8 +1452,9 @@ class WanModel(ModelMixin, ConfigMixin):
                 if pipeline._interrupt:
                     return [None] * len(x_list)
 
-                # if (x_id != 0 or joint_pass) and slg_layers is not None and block_idx in slg_layers:
-                #     if not joint_pass or not x_should_calc[0]:
+                if standin_x is not None:
+                    if not standin_cache_enabled and x_id ==0 : get_cache("standin").clear()
+                    standin_x = block(standin_x, context = None, grid_sizes = None, e= standin_e0, freqs = standin_freqs, standin_phase = 1)
 
                 if slg_layers is not None and block_idx in slg_layers:
                     if x_id != 0 or not x_should_calc[0]:

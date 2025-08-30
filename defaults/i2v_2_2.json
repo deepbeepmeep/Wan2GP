@@ -16,6 +16,7 @@
 		],
 		"group": "wan2_2"		
 	},
+	"guidance_phases": 2,	
 	"switch_threshold" : 900,
 	"guidance_scale" : 3.5,
 	"guidance2_scale" : 3.5,

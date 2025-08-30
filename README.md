@@ -13,13 +13,13 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 - Auto download of the required model adapted to your specific architecture
 - Tools integrated to facilitate Video Generation : Mask Editor, Prompt Enhancer, Temporal and Spatial Generation, MMAudio, Video Browser, Pose / Depth / Flow extractor
 - Loras Support to customize each model
-- Queuing system : make your shopping list of videos to generate and come back later 
+- Queuing system : make your shopping list of videos to generate and come back later
 
 **Discord Server to get Help from Other Users and show your Best Videos:** https://discord.gg/g7efUW9jGV
 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
-## 🔥 Latest Updates : 
+## 🔥 Latest Updates :
 ### August 29 2025: WanGP v8.2 -  Here Goes Your Weekend
 
 - **InfiniteTalk Video to Video**: this feature can be used for Video Dubbing. Keep in mind that it is a *Sparse Video to Video*, that is internally only image is used by Sliding Window. However thanks to the new *Smooth Transition* mode, each new clip is connected to the previous and all the camera work is done by InfiniteTalk. If you dont get any transition, increase the number of frames of a Sliding Window (81 frames recommended)
@@ -30,7 +30,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 ### August 24 2025: WanGP v8.1 -  the RAM Liberator
 
-- **Reserved RAM entirely freed when switching models**, you should get much less out of memory related to RAM. I have also added a button in *Configuration / Performance* that will release most of the RAM used by WanGP if you want to use another application without quitting WanGP 
+- **Reserved RAM entirely freed when switching models**, you should get much less out of memory related to RAM. I have also added a button in *Configuration / Performance* that will release most of the RAM used by WanGP if you want to use another application without quitting WanGP
 - **InfiniteTalk** support: improved version of Multitalk that supposedly supports very long video generations based on an audio track. Exists in two flavors (*Single Speaker* and *Multi Speakers*) but doesnt seem to be compatible with Vace. One key new feature compared to Multitalk is that you can have different visual shots associated to the same audio: each Reference frame you provide you will be associated to a new Sliding Window. If only Reference frame is provided, it will be used for all windows. When Continuing a video, you can either continue the current shot (no Reference Frame) or add new shots (one or more Reference Frames).\
 If you are not into audio, you can use still this model to generate infinite long image2video, just select "no speaker". Last but not least, Infinitetalk works works with all the Loras accelerators.
 - **Flux Chroma 1 HD** support: uncensored flux based model and lighter than Flux (8.9B versus 12B) and can fit entirely in VRAM with only 16 GB of VRAM. Unfortunalely it is not distilled and you will need CFG at minimum 20 steps
@@ -40,7 +40,7 @@ If you are not into audio, you can use still this model to generate infinite lon
 - **Qwen Image Edit** : Flux Kontext challenger (prompt driven image edition). Best results (including Identity preservation) will be obtained at 720p. Beyond you may get image outpainting and / or lose identity preservation. Below 720p prompt adherence will be worse. Qwen Image Edit works with Qwen Lora Lightning 4 steps. I have also unlocked all the resolutions for Qwen models. Bonus Zone: support for multiple image compositions but identity preservation won't be as good.
 - **On demand Prompt Enhancer** (needs to be enabled in Configuration Tab) that you can use to Enhance a Text Prompt before starting a Generation. You can refine the Enhanced Prompt or change the original Prompt.
 - Choice of a **Non censored Prompt Enhancer**. Beware this is one is VRAM hungry and will require 12 GB of VRAM to work
-- **Memory Profile customizable per model** : useful to set for instance Profile 3 (preload the model entirely in VRAM) with only Image Generation models, if you have 24 GB of VRAM. In that case Generation will be much faster because with Image generators (contrary to Video generators) as a lot of time is wasted in offloading 
+- **Memory Profile customizable per model** : useful to set for instance Profile 3 (preload the model entirely in VRAM) with only Image Generation models, if you have 24 GB of VRAM. In that case Generation will be much faster because with Image generators (contrary to Video generators) as a lot of time is wasted in offloading
 - **Expert Guidance Mode**: change the Guidance during the generation up to 2 times. Very useful with Wan 2.2 Ligthning to reduce the slow motion effect. The idea is to insert a CFG phase before the 2 accelerated phases that follow and have no Guidance. I have added the finetune *Wan2.2 Vace Lightning 3 Phases 14B* with a prebuilt configuration. Please note that it is a 8 steps process although the lora lightning is 4 steps. This expert guidance mode is also available with Wan 2.1.
 
 *WanGP 8.01 update, improved Qwen Image Edit Identity Preservation*
@@ -57,7 +57,7 @@ Generation Settings are stored in each of the above regardless of the format (th
 
 Also you can now choose different output directories for images and videos.
 
-unexpected luck: fixed lightning 8 steps for Qwen, and lightning 4 steps for Wan 2.2, now you just need 1x multiplier no weird numbers. 
+unexpected luck: fixed lightning 8 steps for Qwen, and lightning 4 steps for Wan 2.2, now you just need 1x multiplier no weird numbers.
 *update 7.777 : oops got a crash a with FastWan ? Luck comes and goes, try a new update, maybe you will have a better chance this time*
 *update 7.7777 : Sometime good luck seems to last forever. For instance what if Qwen Lightning 4 steps could also work with WanGP ?*
 - https://huggingface.co/lightx2v/Qwen-Image-Lightning/resolve/main/Qwen-Image-Lightning-4steps-V1.0-bf16.safetensors (Qwen Lightning 4 steps)
@@ -65,7 +65,7 @@ unexpected luck: fixed lightning 8 steps for Qwen, and lightning 4 steps for Wan
 
 
 ### August 10 2025: WanGP v7.76 - Faster than the VAE ...
-We have a funny one here today: FastWan 2.2 5B, the Fastest Video Generator, only 20s to generate 121 frames at 720p. The snag is that VAE is twice as slow... 
+We have a funny one here today: FastWan 2.2 5B, the Fastest Video Generator, only 20s to generate 121 frames at 720p. The snag is that VAE is twice as slow...
 Thanks to Kijai for extracting the Lora that is used to build the corresponding finetune.
 
 *WanGP 7.76: fixed the messed up I did to i2v models (loras path was wrong for Wan2.2 and Clip broken)*
@@ -78,7 +78,7 @@ Mag Cache support for all the Wan2.2 models Don't forget to set guidance to 1 an
 ### August 8 2025: WanGP v7.73 - Qwen Rebirth
 Ever wondered what impact not using Guidance has on a model that expects it ? Just look at Qween Image in WanGP 7.71 whose outputs were erratic. Somehow I had convinced myself that Qwen was a distilled model. In fact Qwen was dying for a negative prompt. And in WanGP 7.72 there is at last one for him.
 
-As Qwen is not so picky after all I have added also quantized text encoder which reduces the RAM requirements of Qwen by 10 GB (the text encoder quantized version produced garbage before) 
+As Qwen is not so picky after all I have added also quantized text encoder which reduces the RAM requirements of Qwen by 10 GB (the text encoder quantized version produced garbage before)
 
 Unfortunately still the Sage bug for older GPU architectures. Added Sdpa fallback for these architectures.
 
@@ -91,7 +91,7 @@ This release comes with two new models :
 - Qwen Image: a Commercial grade Image generator capable to inject full sentences in the generated Image while still offering incredible visuals
 - Wan 2.2 TextImage to Video 5B: the last Wan 2.2 needed if you want to complete your Wan 2.2 collection (loras for this folder can be stored in "\loras\5B"     )
 
-There is catch though, they are very picky if you want to get good generations: first they both need lots of steps (50 ?) to show what they have to offer. Then for Qwen Image I had to hardcode the supported resolutions, because if you try anything else, you will get garbage. Likewise Wan 2.2 5B will remind you of Wan 1.0 if you don't ask for at least  720p. 
+There is catch though, they are very picky if you want to get good generations: first they both need lots of steps (50 ?) to show what they have to offer. Then for Qwen Image I had to hardcode the supported resolutions, because if you try anything else, you will get garbage. Likewise Wan 2.2 5B will remind you of Wan 1.0 if you don't ask for at least  720p.
 
 *7.71 update: Added VAE Tiling for both Qwen Image and Wan 2.2 TextImage to Video 5B, for low VRAM during a whole gen.*
 
@@ -104,7 +104,7 @@ With this new version you won't have any excuse if there is no sound in your vid
 
 Also, on top of MMaudio and the various sound driven models I have added the ability to use your own soundtrack.
 
-As a result you can apply a different sound source on each new video segment when doing a *Continue Video*. 
+As a result you can apply a different sound source on each new video segment when doing a *Continue Video*.
 
 For instance:
 - first video part: use Multitalk with two people speaking
@@ -148,7 +148,7 @@ I am really convinced that Vace can do everything the other models can do and in
 
 Here are some new Vace improvements:
 - I have provided a default finetune named *Vace Cocktail*  which is a model created on the fly using the Wan text 2 video model and the Loras used to build FusioniX. The weight of the *Detail Enhancer* Lora has been reduced to improve identity preservation. Copy the model definition in *defaults/vace_14B_cocktail.json* in the *finetunes/* folder to change the Cocktail composition. Cocktail contains already some Loras acccelerators so no need to add on top a Lora Accvid, Causvid or Fusionix, ... . The whole point of Cocktail is to be able  to build you own FusioniX (which originally is a combination of 4 loras) but without the inconvenient of FusioniX.
-- Talking about identity preservation, it tends to go away when one generates a single Frame instead of a Video which is shame for our Vace photoshop. But there is a solution : I have added an Advanced Quality option, that tells WanGP to generate a little more than a frame (it will still keep only the first frame). It will be a little slower but you will be amazed how Vace Cocktail combined with this option will preserve identities (bye bye *Phantom*). 
+- Talking about identity preservation, it tends to go away when one generates a single Frame instead of a Video which is shame for our Vace photoshop. But there is a solution : I have added an Advanced Quality option, that tells WanGP to generate a little more than a frame (it will still keep only the first frame). It will be a little slower but you will be amazed how Vace Cocktail combined with this option will preserve identities (bye bye *Phantom*).
 - As in practise I have observed one switches frequently between *Vace text2video* and *Vace text2image* I have put them in the same place they are now just one tab away, no need to reload the model. Likewise *Wan text2video* and *Wan tex2image* have been merged.
 - Color fixing when using Sliding Windows. A new postprocessing *Color Correction* applied automatically by default (you can disable it in the *Advanced tab Sliding Window*) will try to match the colors of the new window with that of the previous window. It doesnt fix all the unwanted artifacts of the new window but at least this makes the transition smoother. Thanks to the multitalk team for the original code.
 
@@ -160,14 +160,14 @@ Also you will enjoy our new real time statistics (CPU / GPU usage, RAM / VRAM us
 
 - LTX Video upgraded to version 0.9.8: you can now generate 1800 frames (1 min of video !) in one go without a sliding window. With the distilled model it will take only 5 minutes with a RTX 4090 (you will need 22 GB of VRAM though). I have added options to select higher humber frames if you want to experiment (go to Configuration Tab / General / Increase the Max Number of Frames, change the value and restart the App)
 
-- LTX Video ControlNet : it is a Control Net that allows you for instance to transfer a Human motion or Depth from a control video. It is not as powerful as Vace but can produce interesting things especially as now you can generate quickly a 1 min video. Under the scene IC-Loras (see below) for Pose, Depth and Canny are automatically loaded for you, no need to add them. 
+- LTX Video ControlNet : it is a Control Net that allows you for instance to transfer a Human motion or Depth from a control video. It is not as powerful as Vace but can produce interesting things especially as now you can generate quickly a 1 min video. Under the scene IC-Loras (see below) for Pose, Depth and Canny are automatically loaded for you, no need to add them.
 
 - LTX IC-Lora support: these are special Loras that consumes a conditional image or video
 Beside the pose, depth and canny IC-Loras transparently loaded there is the *detailer* (https://huggingface.co/Lightricks/LTX-Video-ICLoRA-detailer-13b-0.9.8) which is basically an upsampler. Add the *detailer* as a Lora and use LTX Raw Format as control net choice to use it.
 
 - Matanyone is now also for the GPU Poor as its VRAM requirements have been divided by 2! (7.12 shadow update)
 
-- Easier way to select video resolution 
+- Easier way to select video resolution
 
 
 ### July 15 2025: WanGP v7.0 is an AI Powered Photoshop
@@ -193,7 +193,7 @@ Also in the news:
 ### July 10 2025: WanGP v6.7, is NAG a game changer ? you tell me
 Maybe you knew that already but most *Loras accelerators* we use today (Causvid, FusioniX) don't use *Guidance* at all (that it is *CFG* is set to 1). This helps to get much faster generations but the downside is that *Negative Prompts* are completely ignored (including the default ones set by the models). **NAG** (https://github.com/ChenDarYen/Normalized-Attention-Guidance) aims to solve that by injecting the *Negative Prompt* during the *attention* processing phase.
 
-So WanGP 6.7 gives you NAG, but not any NAG, a *Low VRAM* implementation, the default one ends being VRAM greedy. You will find NAG in the *General* advanced tab for most Wan models. 
+So WanGP 6.7 gives you NAG, but not any NAG, a *Low VRAM* implementation, the default one ends being VRAM greedy. You will find NAG in the *General* advanced tab for most Wan models.
 
 Use NAG especially when Guidance is set to 1. To turn it on set the **NAG scale** to something around 10. There are other NAG parameters **NAG tau** and **NAG alpha** which I recommend to change only if you don't get good results by just playing with the NAG scale. Don't hesitate to share on this discord server the best combinations for these 3 parameters.
 
@@ -219,8 +219,8 @@ Also, of interest too:
 
 ### July 2 2025: WanGP v6.5.1, WanGP takes care of you: lots of quality of life features:
 - View directly inside WanGP the properties (seed, resolutions, length, most settings...) of the past generations
-- In one click use the newly generated video as a Control Video or Source Video to be continued 
-- Manage multiple settings for the same model and switch between them using a dropdown box 
+- In one click use the newly generated video as a Control Video or Source Video to be continued
+- Manage multiple settings for the same model and switch between them using a dropdown box
 - WanGP will keep the last generated videos in the Gallery and will remember the last model you used if you restart the app but kept the Web page open
 - Custom resolutions : add a file in the WanGP folder with the list of resolutions you want to see in WanGP (look at the instruction readme in this folder)
 
@@ -247,6 +247,33 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 - [🔗 Related Projects](#-related-projects)
 
 ## 🚀 Quick Start
+
+### 🐳 Docker:
+
+**For Debian-based systems (Ubuntu, Debian, etc.):**
+
+```bash
+./run-docker-cuda-deb.sh
+```
+
+This automated script will:
+
+- Detect your GPU model and VRAM automatically
+- Select optimal CUDA architecture for your GPU
+- Install NVIDIA Docker runtime if needed
+- Build a Docker image with all dependencies
+- Run WanGP with optimal settings for your hardware
+
+**Docker environment includes:**
+
+- NVIDIA CUDA 12.4.1 with cuDNN support
+- PyTorch 2.6.0 with CUDA 12.4 support
+- SageAttention compiled for your specific GPU architecture
+- Optimized environment variables for performance (TF32, threading, etc.)
+- Automatic cache directory mounting for faster subsequent runs
+- Current directory mounted in container - all downloaded models, loras, generated videos and files are saved locally
+
+**Supported GPUs:** RTX 50XX, RTX 40XX, RTX 30XX, RTX 20XX, GTX 16XX, GTX 10XX, Tesla V100, A100, H100, and more.
 
 **One-click installation:** Get started instantly with [Pinokio App](https://pinokio.computer/)
 
@@ -317,4 +344,4 @@ https://www.youtube.com/watch?v=T5jNiEhf9xk
 
 <p align="center">
 Made with ❤️ by DeepBeepMeep
-</p> 
+</p>

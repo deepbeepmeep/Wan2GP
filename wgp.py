@@ -1,4 +1,8 @@
 import os
+# # os.environ.pop("TORCH_LOGS", None)  # make sure no env var is suppressing/overriding
+# os.environ["TORCH_LOGS"]= "recompiles"
+import torch._logging as tlog
+# tlog.set_logs(recompiles=True, guards=True, graph_breaks=True)    
 import time
 import sys
 import threading
@@ -55,7 +59,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.5.10"
-WanGP_version = "8.2"
+WanGP_version = "8.21"
 settings_version = 2.27
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -4314,10 +4318,6 @@ def generate_video(
     model_filename,
     mode,
 ):
-    # import os
-    # os.environ.pop("TORCH_LOGS", None)  # make sure no env var is suppressing/overriding
-    # import torch._logging as tlog
-    # tlog.set_logs(recompiles=True, guards=True, graph_breaks=True)    
 
 
 

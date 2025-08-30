@@ -1306,7 +1306,7 @@ class WanModel(ModelMixin, ConfigMixin):
         if standin_ref is not None:
             standin_cache_enabled = False
             kwargs["standin_phase"] = 2
-            if (current_step == 0 or not standin_cache_enabled) and x_id == 0:
+            if current_step == 0 or not standin_cache_enabled :
                 standin_x = self.patch_embedding(standin_ref).to(modulation_dtype).flatten(2).transpose(1, 2)
                 standin_e = self.time_embedding( sinusoidal_embedding_1d(self.freq_dim, torch.zeros_like(t)).to(modulation_dtype) )
                 standin_e0 = self.time_projection(standin_e).unflatten(1, (6, self.dim)).to(e.dtype)
@@ -1453,7 +1453,7 @@ class WanModel(ModelMixin, ConfigMixin):
                     return [None] * len(x_list)
 
                 if standin_x is not None:
-                    if not standin_cache_enabled and x_id ==0 : get_cache("standin").clear()
+                    if not standin_cache_enabled: get_cache("standin").clear()
                     standin_x = block(standin_x, context = None, grid_sizes = None, e= standin_e0, freqs = standin_freqs, standin_phase = 1)
 
                 if slg_layers is not None and block_idx in slg_layers:

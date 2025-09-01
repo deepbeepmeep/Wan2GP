@@ -47,9 +47,13 @@ def matanyone(processor, frames_np, mask, r_erode=0, r_dilate=0, n_warmup=10):
 
     frames = []
     phas = []
+    i = 0
     for ti, frame_single in tqdm.tqdm(enumerate(frames_np)):
         image = to_tensor(frame_single).cuda().float()
-
+        if i % 10 ==0:
+            pass
+            # torch.cuda.empty_cache()
+        i += 1
         if ti == 0:
             output_prob = processor.step(image, mask, objects=objects)      # encode given mask
             output_prob = processor.step(image, first_frame_pred=True)      # clear past memory for warmup frames

@@ -1,0 +1,11 @@
+{
+	"model":
+	{
+		"name": "Fun InP image2video 1.3B",
+		"architecture" : "fun_inp_1.3B",
+		"description": "The Fun model is an alternative image 2 video that supports out the box End Image fixing (contrary to the original Wan image 2 video model). The 1.3B adds also image 2 to video capability  to the 1.3B model.",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_Fun_InP_1.3B_bf16.safetensors"
+		]
+	}
+}

@@ -1,0 +1,11 @@
+{
+	"model":
+	{
+		"name": "Wan2.1 Text2video 1.3B",
+		"architecture" : "t2v_1.3B",
+		"description": "The light version of the original Wan Text 2 Video model. Most other models have been built on top of it",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_text2video_1.3B_mbf16.safetensors"
+		]
+	}
+}

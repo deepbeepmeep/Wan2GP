@@ -1,0 +1,11 @@
+{
+	"model":
+	{
+		"name": "ReCamMaster 1.3B",
+		"architecture" : "recam_1.3B",
+		"description": "The Recam Master in theory should allow you to replay a video by applying a different camera movement. The model supports only video that are at least 81 frames long (any frame beyond will be ignored)",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_recammaster_1.3B_bf16.safetensors"
+		]
+	}
+}

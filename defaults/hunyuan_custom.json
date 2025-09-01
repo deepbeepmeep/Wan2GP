@@ -1,0 +1,12 @@
+{
+	"model":
+	{
+		"name": "Hunyuan Video Custom 720p 13B",
+		"architecture" : "hunyuan_custom",
+		"description": "The Hunyuan Video Custom model is probably the best model to transfer people (only people for the moment) as it is quite good to keep their identity. However it is slow as to get good results, you need to generate 720p videos with 30 steps.",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/hunyuan_video_custom_720_bf16.safetensors",
+			"https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/hunyuan_video_custom_720_quanto_bf16_int8.safetensors"
+		]
+	}
+}

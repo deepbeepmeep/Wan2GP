@@ -1,0 +1,41 @@
+{
+    "model": {
+        "name": "Vace Multitalk FusioniX 14B",
+        "architecture": "vace_multitalk_14B",
+        "modules": [
+            "vace_14B",
+            "multitalk"
+        ],
+        "description": "Vace control model enhanced using multiple open-source components and LoRAs to boost motion realism, temporal consistency, and expressive detail. And it that's not sufficient Vace is combined with Multitalk.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/Wan14BT2VFusioniX_fp16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/Wan14BT2VFusioniX_quanto_bf16_int8.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/Wan14BT2VFusioniX_quanto_fp16_int8.safetensors"
+        ],
+        "auto_quantize": true
+    },
+    "negative_prompt": "",
+    "prompt": "",
+    "resolution": "832x480",
+    "video_length": 81,
+    "seed": -1,
+    "num_inference_steps": 10,
+    "guidance_scale": 1,
+    "flow_shift": 5,
+    "embedded_guidance_scale": 6,
+    "repeat_generation": 1,
+    "multi_images_gen_type": 0,
+    "tea_cache_setting": 0,
+    "tea_cache_start_step_perc": 0,
+    "loras_multipliers": "",
+    "temporal_upsampling": "",
+    "spatial_upsampling": "",
+    "RIFLEx_setting": 0,
+    "slg_switch": 0,
+    "slg_start_perc": 10,
+    "slg_end_perc": 90,
+    "cfg_star_switch": 0,
+    "cfg_zero_step": -1,
+    "prompt_enhancer": "",
+    "activated_loras": []
+}

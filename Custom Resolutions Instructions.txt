@@ -1,0 +1,16 @@
+You can override the choice of Resolutions offered by WanGP, if you create a file "resolutions.json" in the main WanGP folder.
+This file is composed of a list of 2 elements sublists. Each 2 elements sublist should have the format ["Label", "WxH"] where W, H are respectively the Width and Height of the resolution. Please make sure that W and H are multiples of 16. The letter "x" should be placed inbetween these two dimensions.
+
+Here is below a sample "resolutions.json" file :
+
+[
+	["1280x720 (16:9, 720p)", "1280x720"],
+	["720x1280 (9:16, 720p)", "720x1280"], 
+	["1024x1024 (1:1, 720p)", "1024x1024"],
+	["1280x544 (21:9, 720p)", "1280x544"],
+	["544x1280 (9:21, 720p)", "544x1280"],
+	["1104x832 (4:3, 720p)", "1104x832"],
+	["832x1104 (3:4, 720p)", "832x1104"],
+    ["960x960 (1:1, 720p)", "960x960"],
+    ["832x480 (16:9, 480p)", "832x480"]
+]

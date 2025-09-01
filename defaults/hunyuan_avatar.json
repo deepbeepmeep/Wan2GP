@@ -1,0 +1,12 @@
+{
+	"model":
+	{
+		"name": "Hunyuan Video Avatar 720p 13B",
+		"architecture" : "hunyuan_avatar",
+		"description": "With the Hunyuan Video Avatar model you can animate a person based on the content of an audio input. Please note that the video generator works by processing 128 frames segment at a time (even if you ask less). The good news is that it will concatenate multiple segments for long video generation (max 3 segments recommended as the quality will get worse).",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/hunyuan_video_avatar_720_bf16.safetensors",
+			"https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/hunyuan_video_avatar_720_quanto_bf16_int8.safetensors"
+		]
+	}
+}

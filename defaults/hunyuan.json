@@ -1,0 +1,12 @@
+{
+	"model":
+	{
+		"name": "Hunyuan Video Text2video 720p 13B",
+		"architecture" : "hunyuan",
+		"description": "Probably the best text 2 video model available.",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/hunyuan_video_720_bf16.safetensors",
+			"https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/hunyuan_video_720_quanto_int8.safetensors"
+		]
+	}
+}

@@ -1,0 +1,14 @@
+{
+	"model":
+	{
+		"name": "SkyReels2 Diffusion Forcing 720p 14B",
+		"architecture" : "sky_df_14B",
+		"description": "The SkyReels 2 Diffusion Forcing model has been designed to generate very long videos that exceeds the usual 5s limit. You can also use this model to extend any existing video.",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/sky_reels2_diffusion_forcing_720p_14B_mbf16.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/sky_reels2_diffusion_forcing_720p_14B_quanto_mbf16_int8.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/sky_reels2_diffusion_forcing_720p_14B_quanto_mfp16_int8.safetensors"
+		]
+	},
+    "resolution": "1280x720"	
+}

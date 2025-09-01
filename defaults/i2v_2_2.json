@@ -1,0 +1,25 @@
+{
+	"model":
+	{
+		"name": "Wan2.2 Image2video 14B",
+		"architecture" : "i2v_2_2",
+		"description": "Wan 2.2 Image 2 Video model. Contrary to the Wan Image2video 2.1 this model is structurally close to the t2v model. You will need consequently to store Loras for this model in the t2v Lora Folder.",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_image2video_14B_high_mbf16.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_image2video_14B_high_quanto_mbf16_int8.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_image2video_14B_high_quanto_mfp16_int8.safetensors"
+		],
+		"URLs2": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_image2video_14B_low_mbf16.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_image2video_14B_low_quanto_mbf16_int8.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_image2video_14B_low_quanto_mfp16_int8.safetensors"
+		],
+		"group": "wan2_2"		
+	},
+	"guidance_phases": 2,	
+	"switch_threshold" : 900,
+	"guidance_scale" : 3.5,
+	"guidance2_scale" : 3.5,
+	"flow_shift" : 5
+	
+}

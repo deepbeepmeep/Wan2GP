@@ -1,0 +1,41 @@
+{
+    "model": {
+        "name": "Vace Self-Forcing 14B",
+        "architecture": "vace_14B",
+        "modules": [
+            "vace_14B"
+        ],
+        "description": "This model is a combination of Vace and an advanced text-to-video generation model. This approach allows the model to generate videos with significantly fewer inference steps (4 or 8 steps) and without classifier-free guidance, substantially reducing video generation time while maintaining high quality outputs.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_StepDistill-CfgDistill_14B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_StepDistill-CfgDistill_14B_quanto_bf16_int8.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_StepDistill-CfgDistill_14B_quanto_fp16_int8.safetensors"
+        ],
+		"author": "https://huggingface.co/lightx2v/Wan2.1-T2V-14B-StepDistill-CfgDistill",
+        "auto_quantize": true
+    },
+    "negative_prompt": "",
+    "prompt": "",
+    "resolution": "832x480",
+    "video_length": 81,
+    "seed": -1,
+    "num_inference_steps": 4,
+    "guidance_scale": 1,
+    "flow_shift": 3,
+    "embedded_guidance_scale": 6,
+    "repeat_generation": 1,
+    "multi_images_gen_type": 0,
+    "tea_cache_setting": 0,
+    "tea_cache_start_step_perc": 0,
+    "loras_multipliers": "",
+    "temporal_upsampling": "",
+    "spatial_upsampling": "",
+    "RIFLEx_setting": 0,
+    "slg_switch": 0,
+    "slg_start_perc": 10,
+    "slg_end_perc": 90,
+    "cfg_star_switch": 0,
+    "cfg_zero_step": -1,
+    "prompt_enhancer": "",
+    "activated_loras": []
+}

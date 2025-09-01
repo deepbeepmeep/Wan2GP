@@ -1,0 +1,19 @@
+{
+    "model": {
+        "name": "Flux 1 Dev USO 12B",
+        "architecture": "flux",
+        "description": "FLUX.1 Dev USO is a model specialized to Edit Images with a specialization in Style Transfers (up to two).",
+		"modules": [ ["https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1-dev-USO_projector_bf16.safetensors"]],
+        "URLs": "flux",
+		"loras": ["https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1-dev-USO_dit_lora_bf16.safetensors"],
+		"image_outputs": true,		
+		"reference_image": true,		
+		"flux-model": "flux-dev-uso"		
+    },
+	"prompt": "add a hat",
+	"embedded_guidance_scale": 4,
+    "resolution": "1024x1024",
+    "batch_size": 1
+}
+
+	

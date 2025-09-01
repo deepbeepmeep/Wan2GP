@@ -1,0 +1,16 @@
+{
+	"model":
+	{
+		"name": "MoviiGen 1080p 14B",
+		"architecture" : "t2v",
+		"description": "MoviiGen 1.1, a cutting-edge video generation model that excels in cinematic aesthetics and visual quality. Use it to generate videos in 720p or 1080p in the 21:9 ratio.",
+		"URLs": [
+             "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_moviigen1.1_14B_mbf16.safetensors", 
+			 "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_moviigen1.1_14B_quanto_mbf16_int8.safetensors", 
+			 "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_moviigen1.1_14B_quanto_mfp16_int8.safetensors"
+		],
+		"auto_quantize": true
+	},
+    "resolution": "1280x720",
+    "video_length": 81
+}

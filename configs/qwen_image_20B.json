@@ -1,0 +1,18 @@
+{
+  "_class_name": "QwenImageTransformer2DModel",
+  "_diffusers_version": "0.34.0.dev0",
+  "attention_head_dim": 128,
+  "axes_dims_rope": [
+    16,
+    56,
+    56
+  ],
+  "guidance_embeds": false,
+  "in_channels": 64,
+  "joint_attention_dim": 3584,
+  "num_attention_heads": 24,
+  "num_layers": 60,
+  "out_channels": 16,
+  "patch_size": 2,
+  "pooled_projection_dim": 768
+}

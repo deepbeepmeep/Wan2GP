@@ -1,0 +1,12 @@
+{
+	"model":
+	{
+		"name": "Hunyuan Video Custom Edit 720p 13B",
+		"architecture" : "hunyuan_custom_edit",
+		"description": "The Hunyuan Video Custom Edit model can be used to do Video inpainting on a person (add accessories or completely replace the person). You will need in any case to define a Video Mask which will indicate which area of the Video should be edited.",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/hunyuan_video_custom_edit_720_bf16.safetensors",
+			"https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/hunyuan_video_custom_edit_720_quanto_bf16_int8.safetensors"
+		]
+	}
+}

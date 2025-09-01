@@ -1,0 +1,11 @@
+{
+	"model":
+	{
+		"name": "Phantom 1.3B",
+		"architecture" : "phantom_1.3B",
+		"description": "The Phantom model is specialized in transferring people or objects of your choice into a generated Video. It produces very nice results when used at 720p.",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2_1_phantom_1.3B_mbf16.safetensors"
+		]
+	}
+}

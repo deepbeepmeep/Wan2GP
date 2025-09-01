@@ -1,0 +1,18 @@
+{
+	"model":
+	{
+		"name": "Wan2.2 Multitalk 14B",
+		"architecture" : "i2v_2_2_multitalk",
+		"description": "The Multitalk module of Wan 2.1 has been combined with the Wan 2.2 image 2 video. It lets you have up to two people have a conversation.",
+		"modules": ["multitalk"],
+		"URLs": "i2v_2_2",
+		"URLs2": "i2v_2_2",
+		"group": "wan2_2",
+		"visible": false
+	},
+	"switch_threshold" : 900,
+	"guidance_scale" : 3.5,
+	"guidance2_scale" : 3.5,
+	"flow_shift" : 5
+	
+}

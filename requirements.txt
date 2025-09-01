@@ -1,39 +1,61 @@
-torch>=2.4.0
-torchvision>=0.19.0
-opencv-python>=4.9.0.80
-diffusers>=0.31.0
-transformers==4.51.3
-#transformers==4.46.3 # was needed by llamallava used by i2v hunyuan before patch
+# Core AI stack
+diffusers==0.34.0
+transformers==4.53.1
 tokenizers>=0.20.3
 accelerate>=1.1.1
 tqdm
 imageio
-easydict
-ftfy
-dashscope
 imageio-ffmpeg
-# flash_attn    
-gradio==5.23.0   
-numpy>=1.23.5,<2
 einops
-moviepy==1.0.3
-mmgp==3.4.9
-peft==0.14.0
-mutagen
-pydantic==2.10.6
-decord
-onnxruntime-gpu
-rembg[gpu]==2.0.65
-matplotlib
-timm
-segment-anything
-omegaconf
-hydra-core
-librosa==0.11.0
-loguru
 sentencepiece
+open_clip_torch>=2.29.0
+
+# Video & media
+moviepy==1.0.3
 av
-opencv-python
+ffmpeg-python
 pygame>=2.1.0
 sounddevice>=0.4.0
-# rembg==2.0.65
+soundfile
+mutagen
+pyloudnorm
+librosa==0.11.0
+
+# UI & interaction
+gradio==5.23.0
+dashscope
+loguru
+
+# Vision & segmentation
+opencv-python>=4.9.0.80
+segment-anything
+rembg[gpu]==2.0.65
+onnxruntime-gpu
+decord
+timm
+
+# Config & orchestration
+omegaconf
+hydra-core
+easydict
+pydantic==2.10.6
+
+# Math & modeling
+torchdiffeq>=0.2.5
+tensordict>=0.6.1
+mmgp==3.5.10
+peft==0.15.0
+matplotlib
+
+# Utilities
+ftfy
+piexif
+pynvml
+misaki
+
+# Optional / commented out
+# transformers==4.46.3  # for llamallava pre-patch
+# rembg==2.0.65         # non-GPU fallback
+# huggingface_hub[hf_xet]  # slows down everything
+# num2words
+# spacy

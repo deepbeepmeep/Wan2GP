@@ -1,17 +1,46 @@
-FREE for Non Commercial USE
+WanGP NON-COMMERCIAL EVALUATION LICENSE 1.0
 
-You are free to:
-- Share — copy and redistribute the material in any medium or format
-- Adapt — remix, transform, and build upon the material
-The licensor cannot revoke these freedoms as long as you follow the license terms.
+Definitions
+1.1 “Software” means the source code, binaries, libraries, utilities and UI released under this license.
+1.2 “Output” means images, videos or other media produced by running the Software.
+1.3 “Commercial Use” means:
+a) selling, sublicensing, renting, leasing, or otherwise distributing the Software, in whole or in part, for a fee or other consideration; or
+b) offering the Software (or any derivative) as part of a paid product or hosted service; or
+c) using the Software (or any derivative) to provide cloud-based or backend services, where end users access or pay for those services.
 
-Under the following terms:
-- Attribution — You must give appropriate credit , provide a link to the license, and indicate if changes were made . You may do so in any reasonable manner, but not in any way that suggests the licensor endorses you or your use.
-NonCommercial — You may not use the material for commercial purposes .
+License Grant
+Subject to Section 3:
+a) You are granted a worldwide, non-exclusive, royalty-free, revocable license to use, reproduce, modify and distribute the Software for non-commercial purposes only.
+b) You are granted a worldwide, non-exclusive, royalty-free, irrevocable license to use, reproduce, modify and distribute the Output for any purpose, including commercial sale, provided that any commercial distribution of the Output includes a clear notice that the Output was produced (in whole or in part) using WanGP, along with a hyperlink to the WanGP application’s About tab or repository.
 
-- No additional restrictions — You may not apply legal terms or technological measures that legally restrict others from doing anything the license permits.
-Notices:
+Restrictions
+3.1 You MAY NOT distribute, sublicense or otherwise make available the Software (or any derivative) for Commercial Use.
+3.2 You MAY sell, license or otherwise commercially exploit the Output without restriction.
+3.3 If you wish to use the Software for Commercial Use, you must obtain a separate commercial license from the Licensor.
 
-- You do not have to comply with the license for elements of the material in the public domain or where your use is permitted by an applicable exception or limitation .
+Third-Party Components 4.1 The Software includes components licensed under various open-source licenses (e.g., Apache 2.0, MIT, BSD). 4.2 You must comply with all applicable terms of those third-party licenses, including preservation of copyright notices, inclusion of required license texts, and patent-grant provisions. 4.3 You can find the full text of each third-party license via the “About” tab in the WanGP application, which provides links to their original GitHub repositories.
 
-No warranties are given. The license may not give you all of the permissions necessary for your intended use. For example, other rights such as publicity, privacy, or moral rights may limit how you use the material.
+Attribution
+5.1 You must give appropriate credit by including:
+• a copy of this license (or a link to it), and
+• a notice that your use is based on “WanGP”.
+5.2 You may do so in any reasonable manner, but not in any way that suggests the Licensor endorses you or your use.
+
+Disclaimer of Warranty & Liability
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE.
+
+Commercial Licensing The Licensor may offer commercial licenses for the Software, which grant rights to use the Software for Commercial Use. Please contact [deepbeepmeep@yahoo.com] for terms and pricing.
+
+Effective Date & Previous Versions
+8.1 This license is effective as of the date the LICENSE file is updated in the WanGP repository.
+8.2 Any copies of the Software obtained under prior license terms before this Effective Date remain governed by those prior terms; such granted rights are irrevocable.
+8.3 Use of the Software after the release of any subsequent version by the Licensor is subject to the terms of the then-current license, unless a separate agreement is in place.
+
+Acceptable Use / Moral Clause
+9.1 You MAY NOT use the Software or the Output to facilitate or produce content that is illegal, harmful, violent, harassing, defamatory, fraudulent, or otherwise violates applicable laws or fundamental human rights.
+9.2 You MAY NOT deploy the Software or Output in contexts that promote hate speech, extremist ideology, human rights abuses, or other actions that could foreseeably cause significant harm to individuals or groups.
+9.3 The Licensor reserves the right to terminate the rights granted under this license if a licensee materially breaches this Acceptable Use clause.
+
+END OF LICENSE
+

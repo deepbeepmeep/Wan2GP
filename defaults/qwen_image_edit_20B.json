@@ -1,0 +1,19 @@
+{
+    "model": {
+        "name": "Qwen Image Edit 20B",
+        "architecture": "qwen_image_edit_20B",
+        "description": "Qwen Image Edit is a generative model that can generate very high quality images with long texts in it. Best results will be at 720p. Use it to edit a Subject or combine multiple Subjects. ",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_edit_20B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_edit_20B_quanto_bf16_int8.safetensors"
+        ],
+        "attention": {
+            "<89": "sdpa"
+        },
+        "reference_image": true,
+        "image_outputs": true
+    },
+    "prompt": "add a hat",
+    "resolution": "1280x720",
+    "batch_size": 1
+}

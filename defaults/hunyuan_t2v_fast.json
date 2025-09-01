@@ -1,0 +1,31 @@
+{
+  "model": {
+    "name": "Hunyuan Video FastHunyuan 720p 13B",
+    "architecture": "hunyuan",
+    "description": "Fast Hunyuan is an accelerated HunyuanVideo model. It can sample high quality videos with 6 diffusion steps.",
+    "URLs": [
+      "https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/fast_hunyuan_video_720_quanto_int8.safetensors"
+    ],
+    "preload_URLs": [
+      "https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/fast_hunyuan_video_720_quanto_int8_map.json"
+    ],
+    "auto_quantize": true
+  },
+  "negative_prompt": "",
+  "resolution": "832x480",
+  "video_length": 81,
+  "seed": 42,
+  "num_inference_steps": 6,
+  "flow_shift": 17,
+  "embedded_guidance_scale": 6,
+  "repeat_generation": 1,
+  "loras_multipliers": "",
+  "temporal_upsampling": "",
+  "spatial_upsampling": "",
+  "RIFLEx_setting": 0,
+  "slg_start_perc": 10,
+  "slg_end_perc": 90,
+  "prompt_enhancer": "",
+  "activated_loras": [
+  ]
+}

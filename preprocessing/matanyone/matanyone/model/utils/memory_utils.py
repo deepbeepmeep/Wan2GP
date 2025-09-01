@@ -34,24 +34,38 @@ def get_similarity(mk: torch.Tensor,
         uncert_mask = uncert_mask.expand(-1, 64, -1)
         qk = qk * uncert_mask
         qe = qe * uncert_mask
-
+    # Behold the work of DeeBeepMeep the Code Butcher !
     if qe is not None:
         # See XMem's appendix for derivation
         mk = mk.transpose(1, 2)
         a_sq = (mk.pow(2) @ qe)
-        two_ab = 2 * (mk @ (qk * qe))
+        two_ab =  mk @ (qk * qe)
+        two_ab *= 2
+        two_ab.sub_(a_sq)
+        del a_sq
         b_sq = (qe * qk.pow(2)).sum(1, keepdim=True)
-        similarity = (-a_sq + two_ab - b_sq)
+        two_ab.sub_(b_sq)
+        similarity = two_ab
+        del b_sq, two_ab 
+        # similarity = (-a_sq + two_ab - b_sq)
     else:
         # similar to STCN if we don't have the selection term
         a_sq = mk.pow(2).sum(1).unsqueeze(2)
-        two_ab = 2 * (mk.transpose(1, 2) @ qk)
-        similarity = (-a_sq + two_ab)
+        two_ab = mk.transpose(1, 2) @ qk
+        two_ab *= 2
+        two_ab.sub_(a_sq)
+        del a_sq
+        similarity = two_ab
+        del two_ab 
+        # similarity = (-a_sq + two_ab)
 
     if ms is not None:
-        similarity = similarity * ms / math.sqrt(CK)  # B*N*HW
+        similarity *= ms
+        similarity /=  math.sqrt(CK)
+        # similarity = similarity * ms / math.sqrt(CK)  # B*N*HW
     else:
-        similarity = similarity / math.sqrt(CK)  # B*N*HW
+        similarity /=  math.sqrt(CK)
+        # similarity = similarity / math.sqrt(CK)  # B*N*HW
 
     return similarity
 

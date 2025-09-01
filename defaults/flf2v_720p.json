@@ -1,0 +1,16 @@
+{
+	"model":
+	{
+		"name": "First Last Frame to Video 720p (FLF2V) 14B",
+		"architecture" : "flf2v_720p",
+		"visible" : true,
+		"description": "The First Last Frame 2 Video model is the official model Image 2 Video model that supports Start and End frames.",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_FLF2V_720p_14B_mbf16.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_FLF2V_720p_14B_quanto_mbf16_int8.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_FLF2V_720p_14B_quanto_mfp16_int8.safetensors"
+		],
+		"auto_quantize": true
+	},
+    "resolution": "1280x720"
+}

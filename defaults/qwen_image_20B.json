@@ -1,0 +1,21 @@
+{
+    "model": {
+        "name": "Qwen Image 20B",
+        "architecture": "qwen_image_20B",
+        "description": "Qwen Image is generative model that will generate very high quality images. It is one of the few models capable to generate in the image very long texts.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_20B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_20B_quanto_bf16_int8.safetensors"
+        ],
+		"xresolutions":  [ ["1328x1328 (1:1)", "1328x1328"],
+						["1664x928 (16:9)", "1664x928"],
+						["928x1664 (9:16)", "928x1664"],
+						["1472x1140 (4:3)", "1472x1140"],
+						["1140x1472 (3:4)", "1140x1472"]],
+		"attention": {"<89" : "sdpa"},
+        "image_outputs": true
+    },
+    "prompt": "draw a hat",
+    "resolution": "1280x720",
+    "batch_size": 1
+}

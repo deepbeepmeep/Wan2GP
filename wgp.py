@@ -4745,7 +4745,7 @@ def generate_video(
                     raise gr.Error(f"invalid keep frames {keep_frames_video_guide}")
                 keep_frames_parsed = keep_frames_parsed[aligned_guide_start_frame: aligned_guide_end_frame ]
             if infinitetalk and video_guide is not None:
-                src_image = get_video_frame(video_guide, aligned_guide_start_frame-1, return_last_if_missing = True, return_PIL = True)
+                src_image = get_video_frame(video_guide, aligned_guide_start_frame, return_last_if_missing = True, return_PIL = True)
                 new_height, new_width = calculate_new_dimensions(image_size[0], image_size[1], src_image.height, src_image.width, sample_fit_canvas, block_size = block_size)
                 src_image = src_image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS)
                 refresh_preview["video_guide"] = src_image  

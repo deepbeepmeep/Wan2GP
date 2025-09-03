@@ -20,6 +20,18 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
 ## 🔥 Latest Updates : 
+### September 2 2025: WanGP v8.31 - At last the pain stops
+
+- This single new feature should give you the strength to face all the potential bugs of this new release:
+**Images Management (multiple additions or deletions, reordering) for Start Images / End Images / Images References.**  
+
+- Unofficial **Video to Video (Non Sparse this time) for InfinitTalk**. Use the Strength Noise slider to decide how much motion of the original window you want to keep. I have also *greatly reduced the VRAM requirements for Multitalk / Infinitalk* (especially the multispeakers version & when generating at 1080p). 
+
+- **Experimental Sage 3 Attention support**: you will need to deserve this one, first you need a Blackwell GPU (RTX50xx) and request an access to Sage 3 Github repo, then you will have to compile Sage 3, install it and cross your fingers ...
+
+
+*update 8.31: one shouldnt talk about bugs if one doesn't want to attract bugs*
+
 ### August 29 2025: WanGP v8.21 -  Here Goes Your Weekend
 
 - **InfiniteTalk Video to Video**: this feature can be used for Video Dubbing. Keep in mind that it is a *Sparse Video to Video*, that is internally only image is used by Sliding Window. However thanks to the new *Smooth Transition* mode, each new clip is connected to the previous and all the camera work is done by InfiniteTalk. If you dont get any transition, increase the number of frames of a Sliding Window (81 frames recommended)

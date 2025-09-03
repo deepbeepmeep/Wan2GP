@@ -221,13 +221,16 @@ class SingleStreamAttention(nn.Module):
         self.add_q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.add_k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
 
-    def forward(self, x: torch.Tensor, encoder_hidden_states: torch.Tensor, shape=None, enable_sp=False, kv_seq=None) -> torch.Tensor:
+    def forward(self, xlist: torch.Tensor, encoder_hidden_states: torch.Tensor, shape=None, enable_sp=False, kv_seq=None) -> torch.Tensor:
         N_t, N_h, N_w = shape
 
+        x = xlist[0]
+        xlist.clear()
         x = rearrange(x, "B (N_t S) C -> (B N_t) S C", N_t=N_t)
         # get q for hidden_state
         B, N, C = x.shape
         q = self.q_linear(x)
+        del x
         q_shape = (B, N, self.num_heads, self.head_dim)
         q = q.view(q_shape).permute((0, 2, 1, 3))
 
@@ -247,9 +250,6 @@ class SingleStreamAttention(nn.Module):
         q = rearrange(q, "B H M K -> B M H K")
         encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
         encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
-
-        attn_bias = None
-        # x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=attn_bias, op=None,)
         qkv_list = [q, encoder_k, encoder_v]
         q = encoder_k = encoder_v = None
         x = pay_attention(qkv_list)
@@ -302,7 +302,7 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         self.rope_1d = RotaryPositionalEmbedding1D(self.head_dim)
 
     def forward(self, 
-                x: torch.Tensor, 
+                xlist: torch.Tensor, 
                 encoder_hidden_states: torch.Tensor, 
                 shape=None, 
                 x_ref_attn_map=None,
@@ -310,14 +310,17 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         
         encoder_hidden_states = encoder_hidden_states.squeeze(0)
         if x_ref_attn_map == None:
-            return super().forward(x, encoder_hidden_states, shape)
+            return super().forward(xlist, encoder_hidden_states, shape)
 
         N_t, _, _ = shape 
+        x = xlist[0]
+        xlist.clear()
         x = rearrange(x, "B (N_t S) C -> (B N_t) S C", N_t=N_t) 
 
         # get q for hidden_state
         B, N, C = x.shape
         q = self.q_linear(x) 
+        del x
         q_shape = (B, N, self.num_heads, self.head_dim) 
         q = q.view(q_shape).permute((0, 2, 1, 3))
 
@@ -339,7 +342,9 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         normalized_pos = normalized_map[range(x_ref_attn_map.size(1)), max_indices] # N 
 
         q = rearrange(q, "(B N_t) H S C -> B H (N_t S) C", N_t=N_t)
-        q = self.rope_1d(q, normalized_pos)
+        qlist = [q]
+        del q
+        q = self.rope_1d(qlist, normalized_pos, "q")
         q = rearrange(q, "B H (N_t S) C -> (B N_t) H S C", N_t=N_t)
 
         _, N_a, _ = encoder_hidden_states.shape 
@@ -347,7 +352,7 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         encoder_kv_shape = (B, N_a, 2, self.num_heads, self.head_dim)
         encoder_kv = encoder_kv.view(encoder_kv_shape).permute((2, 0, 3, 1, 4)) 
         encoder_k, encoder_v = encoder_kv.unbind(0) 
-
+        del encoder_kv
         if self.qk_norm:
             encoder_k = self.add_k_norm(encoder_k)
 
@@ -356,13 +361,14 @@ class SingleStreamMutiAttention(SingleStreamAttention):
         per_frame[per_frame.size(0)//2:] = (self.rope_h2[0] + self.rope_h2[1]) / 2
         encoder_pos = torch.concat([per_frame]*N_t, dim=0)
         encoder_k = rearrange(encoder_k, "(B N_t) H S C -> B H (N_t S) C", N_t=N_t)
-        encoder_k = self.rope_1d(encoder_k, encoder_pos)
+        enclist = [encoder_k]
+        del encoder_k
+        encoder_k = self.rope_1d(enclist, encoder_pos, "encoder_k")
         encoder_k = rearrange(encoder_k, "B H (N_t S) C -> (B N_t) H S C", N_t=N_t)
  
         q = rearrange(q, "B H M K -> B M H K")
         encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
         encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
-        # x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=None, op=None,)
         qkv_list = [q, encoder_k, encoder_v]
         q = encoder_k = encoder_v = None
         x = pay_attention(qkv_list)

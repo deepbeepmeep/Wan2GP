@@ -19,7 +19,8 @@ from PIL import Image
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 from .distributed.fsdp import shard_model
-from .modules.model import WanModel, clear_caches
+from .modules.model import WanModel
+from mmgp.offload import get_cache, clear_caches
 from .modules.t5 import T5EncoderModel
 from .modules.vae import WanVAE
 from .modules.vae2_2 import Wan2_2_VAE
@@ -496,6 +497,8 @@ class WanAny2V:
         text_len = self.model.text_len
         context = torch.cat([context, context.new_zeros(text_len -context.size(0), context.size(1)) ]).unsqueeze(0) 
         context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0) 
+        if input_video is not None: height, width = input_video.shape[-2:]
+
         # NAG_prompt =  "static, low resolution, blurry"
         # context_NAG = self.text_encoder([NAG_prompt], self.device)[0]
         # context_NAG = context_NAG.to(self.dtype)
@@ -530,9 +533,10 @@ class WanAny2V:
             if image_start is None:
                 if infinitetalk:
                     if input_frames is not None:
-                        image_ref = input_frames[:, -1]
-                        if input_video is None: input_video = input_frames[:, -1:] 
+                        image_ref = input_frames[:, 0]
+                        if input_video is None: input_video = input_frames[:, 0:1]
                         new_shot = "Q" in video_prompt_type
+                        denoising_strength = 0.5
                     else:
                         if pre_video_frame is None:
                             new_shot = True
@@ -888,6 +892,7 @@ class WanAny2V:
                     latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents 
                 else:
                     latent_noise_factor = t / 1000
+                    latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents  * (1.0 - latent_noise_factor) + torch.randn_like(extended_overlapped_latents ) * latent_noise_factor 
                 if vace:
                     overlap_noise_factor = overlap_noise / 1000 
                     for zz in z:

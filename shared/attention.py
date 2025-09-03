@@ -3,6 +3,7 @@ import torch
 from importlib.metadata import version
 from mmgp import offload
 import torch.nn.functional as F
+import warnings
 
 major, minor = torch.cuda.get_device_capability(None)
 bfloat16_supported =  major >= 8 
@@ -42,33 +43,50 @@ except ImportError:
     sageattn_varlen_wrapper = None
 
 
-import warnings
-
 try:
-    from sageattention import sageattn
-    from .sage2_core import sageattn as alt_sageattn, is_sage2_supported
+    from .sage2_core import sageattn as sageattn2, is_sage2_supported
     sage2_supported =  is_sage2_supported()
 except ImportError:
-    sageattn = None
-    alt_sageattn = None
+    sageattn2 = None
     sage2_supported = False
-# @torch.compiler.disable()
-def sageattn_wrapper(
+@torch.compiler.disable()
+def sageattn2_wrapper(
         qkv_list,
         attention_length
     ):
     q,k, v = qkv_list
-    if True:
-        qkv_list = [q,k,v]
-        del q, k ,v
-        o = alt_sageattn(qkv_list, tensor_layout="NHD")
-    else:
-        o = sageattn(q, k, v, tensor_layout="NHD")
-        del q, k ,v
-
+    qkv_list = [q,k,v]
+    del q, k ,v
+    o = sageattn2(qkv_list, tensor_layout="NHD")
     qkv_list.clear()
 
     return o
+
+try:
+    from sageattn import sageattn_blackwell as sageattn3
+except ImportError:
+    sageattn3 = None
+
+@torch.compiler.disable()
+def sageattn3_wrapper(
+        qkv_list,
+        attention_length
+    ):
+    q,k, v = qkv_list
+    # qkv_list = [q,k,v]
+    # del q, k ,v
+    # o = sageattn3(qkv_list, tensor_layout="NHD")
+    q = q.transpose(1,2)
+    k = k.transpose(1,2)
+    v = v.transpose(1,2)
+    o = sageattn3(q, k, v)
+    o = o.transpose(1,2)
+    qkv_list.clear()
+
+    return o
+
+     
+
 
 # try:
 # if True:
@@ -94,7 +112,7 @@ def sageattn_wrapper(
 
     #     return o
 # except ImportError:
-#     sageattn = sageattn_qk_int8_pv_fp8_window_cuda
+#     sageattn2 = sageattn_qk_int8_pv_fp8_window_cuda
 
 @torch.compiler.disable()
 def sdpa_wrapper(
@@ -124,21 +142,28 @@ def get_attention_modes():
         ret.append("xformers")
     if sageattn_varlen_wrapper != None:
         ret.append("sage")
-    if sageattn != None and version("sageattention").startswith("2") :
+    if sageattn2 != None and version("sageattention").startswith("2") :
         ret.append("sage2")
+    if sageattn3 != None: # and version("sageattention").startswith("3") :
+        ret.append("sage3")
         
     return ret
 
 def get_supported_attention_modes():
     ret = get_attention_modes()
+    major, minor = torch.cuda.get_device_capability()
+    if  major < 10:
+        if "sage3" in ret:
+            ret.remove("sage3")
+
     if not sage2_supported:
         if "sage2" in ret:
             ret.remove("sage2")
 
-    major, minor = torch.cuda.get_device_capability()
     if  major < 7:
         if "sage" in ret:
             ret.remove("sage")
+
     return ret
 
 __all__ = [
@@ -201,7 +226,7 @@ def pay_attention(
         from src.chipmunk.modules import SparseDiffMlp, SparseDiffAttn
         from src.chipmunk.util import LayerCounter, GLOBAL_CONFIG
 
-    if b > 1 and k_lens != None and attn in ("sage2", "sdpa"):
+    if b > 1 and k_lens != None and attn in ("sage2", "sage3", "sdpa"):
         assert attention_mask == None
         # Poor's man var k len attention
         assert q_lens == None
@@ -234,7 +259,7 @@ def pay_attention(
             q_chunks, k_chunks, v_chunks = None, None, None
             o = torch.cat(o, dim = 0)
             return o
-    elif (q_lens != None or k_lens != None) and attn in ("sage2", "sdpa"):
+    elif (q_lens != None or k_lens != None) and attn in ("sage2", "sage3", "sdpa"):
         assert b == 1
         szq = q_lens[0].item() if q_lens != None else lq
         szk = k_lens[0].item() if k_lens != None else lk
@@ -284,13 +309,19 @@ def pay_attention(
             max_seqlen_q=lq,
             max_seqlen_kv=lk,
         ).unflatten(0, (b, lq))
+    elif attn=="sage3":
+        import math
+        if cross_attn or True:
+            qkv_list = [q,k,v]
+            del q,k,v
+            x = sageattn3_wrapper(qkv_list, lq)
     elif attn=="sage2":
         import math
         if cross_attn or True:
             qkv_list = [q,k,v]
             del q,k,v
 
-            x = sageattn_wrapper(qkv_list, lq) #.unsqueeze(0)
+            x = sageattn2_wrapper(qkv_list, lq) #.unsqueeze(0)
         # else:
         #     layer =  offload.shared_state["layer"]
         #     embed_sizes = offload.shared_state["embed_sizes"] 

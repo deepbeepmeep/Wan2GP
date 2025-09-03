@@ -16,7 +16,7 @@ import torchvision
 import binascii
 import os.path as osp
 from skimage import color
-
+from mmgp.offload import get_cache, clear_caches
 
 VID_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv")
 ASPECT_RATIO_627 = {
@@ -73,41 +73,69 @@ def normalize_and_scale(column, source_range, target_range, epsilon=1e-8):
 
 
 # @torch.compile
-def calculate_x_ref_attn_map(visual_q, ref_k, ref_target_masks, ref_images_count, mode='mean', attn_bias=None):
-    
-    ref_k = ref_k.to(visual_q.dtype).to(visual_q.device)
+def calculate_x_ref_attn_map_per_head(visual_q, ref_k, ref_target_masks, ref_images_count, attn_bias=None):
+    dtype = visual_q.dtype
+    ref_k = ref_k.to(dtype).to(visual_q.device)
+    scale = 1.0 / visual_q.shape[-1] ** 0.5
+    visual_q = visual_q * scale
+    visual_q = visual_q.transpose(1, 2)
+    ref_k = ref_k.transpose(1, 2)
+    visual_q_shape = visual_q.shape
+    visual_q = visual_q.view(-1, visual_q_shape[-1] )
+    number_chunks = visual_q_shape[-2]*ref_k.shape[-2] /  53090100 * 2
+    chunk_size =  int(visual_q_shape[-2] / number_chunks)
+    chunks =torch.split(visual_q, chunk_size)
+    maps_lists = [ [] for _ in ref_target_masks]  
+    for q_chunk  in chunks:
+        attn = q_chunk @ ref_k.transpose(-2, -1)
+        x_ref_attn_map_source = attn.softmax(-1) # B, H, x_seqlens, ref_seqlens
+        del attn
+        ref_target_masks = ref_target_masks.to(dtype)
+        x_ref_attn_map_source = x_ref_attn_map_source.to(dtype)
+
+        for class_idx, ref_target_mask in enumerate(ref_target_masks):
+            ref_target_mask = ref_target_mask[None, None, None, ...]
+            x_ref_attnmap = x_ref_attn_map_source * ref_target_mask
+            x_ref_attnmap = x_ref_attnmap.sum(-1) / ref_target_mask.sum() # B, H, x_seqlens, ref_seqlens --> B, H, x_seqlens
+            maps_lists[class_idx].append(x_ref_attnmap)
+
+        del x_ref_attn_map_source
+
+    x_ref_attn_maps = []
+    for class_idx, maps_list in enumerate(maps_lists):
+        attn_map_fuse = torch.concat(maps_list, dim= -1)
+        attn_map_fuse = attn_map_fuse.view(1, visual_q_shape[1], -1).squeeze(1)
+        x_ref_attn_maps.append( attn_map_fuse )
+
+
+    return torch.concat(x_ref_attn_maps, dim=0)
+
+def calculate_x_ref_attn_map(visual_q, ref_k, ref_target_masks, ref_images_count):
+    dtype = visual_q.dtype
+    ref_k = ref_k.to(dtype).to(visual_q.device)
     scale = 1.0 / visual_q.shape[-1] ** 0.5
     visual_q = visual_q * scale
     visual_q = visual_q.transpose(1, 2)
     ref_k = ref_k.transpose(1, 2)
     attn = visual_q @ ref_k.transpose(-2, -1)
 
-    if attn_bias is not None: attn += attn_bias
-
     x_ref_attn_map_source = attn.softmax(-1) # B, H, x_seqlens, ref_seqlens
-
+    del attn
     x_ref_attn_maps = []
-    ref_target_masks = ref_target_masks.to(visual_q.dtype)
-    x_ref_attn_map_source = x_ref_attn_map_source.to(visual_q.dtype)
+    ref_target_masks = ref_target_masks.to(dtype)
+    x_ref_attn_map_source = x_ref_attn_map_source.to(dtype)
 
     for class_idx, ref_target_mask in enumerate(ref_target_masks):
         ref_target_mask = ref_target_mask[None, None, None, ...]
         x_ref_attnmap = x_ref_attn_map_source * ref_target_mask
         x_ref_attnmap = x_ref_attnmap.sum(-1) / ref_target_mask.sum() # B, H, x_seqlens, ref_seqlens --> B, H, x_seqlens
         x_ref_attnmap = x_ref_attnmap.permute(0, 2, 1) # B, x_seqlens, H
-       
-        if mode == 'mean':
-            x_ref_attnmap = x_ref_attnmap.mean(-1) # B, x_seqlens
-        elif mode == 'max':
-            x_ref_attnmap = x_ref_attnmap.max(-1) # B, x_seqlens
-        
+        x_ref_attnmap = x_ref_attnmap.mean(-1) # B, x_seqlens       (mean of heads)
         x_ref_attn_maps.append(x_ref_attnmap)
     
-    del attn
     del x_ref_attn_map_source
 
     return torch.concat(x_ref_attn_maps, dim=0)
-
 
 def get_attn_map_with_target(visual_q, ref_k, shape, ref_target_masks=None, split_num=10, ref_images_count = 0):
     """Args:
@@ -120,6 +148,11 @@ def get_attn_map_with_target(visual_q, ref_k, shape, ref_target_masks=None, spli
     N_t, N_h, N_w = shape
     
     x_seqlens = N_h * N_w
+    if x_seqlens <= 1508:
+        split_num = 10 # 540p
+    else:
+        split_num = 20 if x_seqlens <= 3600 else 40 # 720p / 1080p
+
     ref_k     = ref_k[:, :x_seqlens]
     if ref_images_count > 0 :
         visual_q_shape = visual_q.shape 
@@ -133,9 +166,14 @@ def get_attn_map_with_target(visual_q, ref_k, shape, ref_target_masks=None, spli
 
     split_chunk = heads // split_num
     
-    for i in range(split_num):
-        x_ref_attn_maps_perhead = calculate_x_ref_attn_map(visual_q[:, :, i*split_chunk:(i+1)*split_chunk, :], ref_k[:, :, i*split_chunk:(i+1)*split_chunk, :], ref_target_masks, ref_images_count)
-        x_ref_attn_maps += x_ref_attn_maps_perhead
+    if split_chunk == 1:
+        for i in range(split_num):
+            x_ref_attn_maps_perhead = calculate_x_ref_attn_map_per_head(visual_q[:, :, i:(i+1), :], ref_k[:, :, i:(i+1), :], ref_target_masks, ref_images_count)
+            x_ref_attn_maps += x_ref_attn_maps_perhead
+    else:
+        for i in range(split_num):
+            x_ref_attn_maps_perhead = calculate_x_ref_attn_map(visual_q[:, :, i*split_chunk:(i+1)*split_chunk, :], ref_k[:, :, i*split_chunk:(i+1)*split_chunk, :], ref_target_masks, ref_images_count)
+            x_ref_attn_maps += x_ref_attn_maps_perhead
     
     x_ref_attn_maps /= split_num
     return x_ref_attn_maps
@@ -158,7 +196,6 @@ class RotaryPositionalEmbedding1D(nn.Module):
         self.base = 10000
 
 
-    @lru_cache(maxsize=32)
     def precompute_freqs_cis_1d(self, pos_indices):
 
         freqs = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2)[: (self.head_dim // 2)].float() / self.head_dim))
@@ -167,7 +204,7 @@ class RotaryPositionalEmbedding1D(nn.Module):
         freqs = repeat(freqs, "... n -> ... (n r)", r=2)
         return freqs
 
-    def forward(self, x, pos_indices):
+    def forward(self, qlist, pos_indices, cache_entry = None):
         """1D RoPE.
 
         Args:
@@ -176,16 +213,26 @@ class RotaryPositionalEmbedding1D(nn.Module):
         Returns:
             query with the same shape as input.
         """
-        freqs_cis = self.precompute_freqs_cis_1d(pos_indices)
-
-        x_ = x.float()
-
-        freqs_cis = freqs_cis.float().to(x.device)
-        cos, sin = freqs_cis.cos(), freqs_cis.sin()
-        cos, sin = rearrange(cos, 'n d -> 1 1 n d'), rearrange(sin, 'n d -> 1 1 n d')
-        x_ = (x_ * cos) + (rotate_half(x_) * sin)
-
-        return x_.type_as(x)
+        xq= qlist[0]
+        qlist.clear()
+        cache = get_cache("multitalk_rope")
+        freqs_cis= cache.get(cache_entry, None)
+        if freqs_cis is None:
+            freqs_cis = cache[cache_entry] = self.precompute_freqs_cis_1d(pos_indices)
+        cos, sin = freqs_cis.cos().unsqueeze(0).unsqueeze(0), freqs_cis.sin().unsqueeze(0).unsqueeze(0)
+        # cos, sin = rearrange(cos, 'n d -> 1 1 n d'), rearrange(sin, 'n d -> 1 1 n d')
+        # real * cos - imag * sin
+        # imag * cos + real * sin
+        xq_dtype = xq.dtype
+        xq_out = xq.to(torch.float)
+        xq = None        
+        xq_rot = rotate_half(xq_out)
+        xq_out *= cos
+        xq_rot *= sin
+        xq_out += xq_rot
+        del xq_rot
+        xq_out = xq_out.to(xq_dtype)
+        return xq_out 
     
 
 

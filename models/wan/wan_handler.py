@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import gradio as gr
 
 def test_class_i2v(base_model_type):    
     return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk" ]
@@ -115,6 +116,11 @@ class family_handler():
         if base_model_type in ["infinitetalk"]: 
             extra_model_def["no_background_removal"] = True
             # extra_model_def["at_least_one_image_ref_needed"] = True
+
+
+        # if base_model_type in ["phantom_1.3B", "phantom_14B"]: 
+        #     extra_model_def["one_image_ref_needed"] = True
+
 
         return extra_model_def
         
@@ -235,6 +241,14 @@ class family_handler():
                 if "I" in video_prompt_type:
                     video_prompt_type = video_prompt_type.replace("KI", "QKI")
                     ui_defaults["video_prompt_type"] = video_prompt_type 
+
+        if settings_version < 2.28:
+            if base_model_type in "infinitetalk":
+                video_prompt_type = ui_defaults.get("video_prompt_type", "")
+                if "U" in video_prompt_type:
+                    video_prompt_type = video_prompt_type.replace("U", "RU")
+                    ui_defaults["video_prompt_type"] = video_prompt_type 
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
@@ -309,3 +323,11 @@ class family_handler():
             if ("V" in image_prompt_type or "L" in image_prompt_type) and image_refs is None:
                 video_prompt_type = video_prompt_type.replace("I", "").replace("K","")
                 inputs["video_prompt_type"] = video_prompt_type 
+
+
+        if base_model_type in ["vace_standin_14B"]:
+            image_refs = inputs["image_refs"]
+            video_prompt_type = inputs["video_prompt_type"]
+            if image_refs is not None and  len(image_refs) == 1 and "K" in video_prompt_type:
+                gr.Info("Warning, Ref Image for Standin Missing: if 'Landscape and then People or Objects' is selected beside the Landscape Image Ref there should be another Image Ref that contains a Face.")
+                    

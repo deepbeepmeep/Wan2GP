@@ -15,6 +15,7 @@ class family_handler():
                             ("Default", "default"),
                             ("Lightning", "lightning")],
             "guidance_max_phases" : 1,
+            "lock_image_refs_ratios": True,
         }
 
 

@@ -60,8 +60,8 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.5.12"
-WanGP_version = "8.32"
-settings_version = 2.28
+WanGP_version = "8.33"
+settings_version = 2.29
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 
@@ -3313,6 +3313,7 @@ def select_video(state, input_file_list, event_data: gr.EventData):
                 if not all_letters(src, pos): return False
                 if neg is not None and any_letters(src, neg): return False
                 return True
+            image_outputs = configs.get("image_mode",0) == 1
             map_video_prompt  = {"V" : "Control Video", ("VA", "U") : "Mask Video", "I" : "Reference Images"}
             map_image_prompt  = {"V" : "Source Video", "L" : "Last Video", "S" : "Start Image", "E" : "End Image"}
             map_audio_prompt  = {"A" : "Audio Source", "B" : "Audio Source #2"}
@@ -3364,6 +3365,7 @@ def select_video(state, input_file_list, event_data: gr.EventData):
                     if multiple_submodels:
                         video_guidance_scale += f" + Model Switch at {video_switch_threshold if video_model_switch_phase ==1 else video_switch_threshold2}"
             video_flow_shift = configs.get("flow_shift", None)
+            if image_outputs: video_flow_shift = None 
             video_video_guide_outpainting = configs.get("video_guide_outpainting", "")
             video_outpainting = ""
             if len(video_video_guide_outpainting) > 0  and not video_video_guide_outpainting.startswith("#") \
@@ -4551,7 +4553,8 @@ def generate_video(
                 send_cmd("progress", [0, get_latest_status(state, "Removing Images References Background")])
             os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
             from shared.utils.utils import resize_and_remove_background
-            image_refs[nb_frames_positions:]  = resize_and_remove_background(image_refs[nb_frames_positions:] , width, height, remove_background_images_ref > 0, any_background_ref, fit_into_canvas= not (any_background_ref or vace or standin) ) # no fit for vace ref images as it is done later
+            # keep image ratios if there is a background image ref (we will let the model preprocessor decide what to do) but remove bg if requested
+            image_refs[nb_frames_positions:]  = resize_and_remove_background(image_refs[nb_frames_positions:] , width, height, remove_background_images_ref > 0, any_background_ref, fit_into_canvas= not (any_background_ref or model_def.get("lock_image_refs_ratios", False)) ) # no fit for vace ref images as it is done later
             update_task_thumbnails(task, locals())
             send_cmd("output")
     joint_pass = boost ==1 #and profile != 1 and profile != 3  
@@ -5924,6 +5927,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if target == "settings":
         return inputs
 
+    image_outputs = inputs.get("image_mode",0) == 1
+
     pop=[]    
     if "force_fps" in inputs and len(inputs["force_fps"])== 0:
         pop += ["force_fps"]
@@ -5989,7 +5994,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if guidance_max_phases < 3 or guidance_phases < 3:
         pop += ["guidance3_scale", "switch_threshold2", "model_switch_phase"]
 
-    if ltxv:
+    if ltxv or image_outputs:
         pop += ["flow_shift"]
 
     if model_def.get("no_negative_prompt", False) :
@@ -6889,11 +6894,15 @@ def detect_auto_save_form(state, evt:gr.SelectData):
         return gr.update()
 
 def compute_video_length_label(fps, current_video_length):
-    return f"Number of frames ({fps} frames = 1s), current duration: {(current_video_length / fps):.1f}s",  
+    if fps is None:
+        return f"Number of frames"
+    else:
+        return f"Number of frames ({fps} frames = 1s), current duration: {(current_video_length / fps):.1f}s",  
 
-def refresh_video_length_label(state, current_video_length):
-    fps = get_model_fps(get_base_model_type(state["model_type"]))
-    return gr.update(label= compute_video_length_label(fps, current_video_length))
+def refresh_video_length_label(state, current_video_length, force_fps, video_guide, video_source):
+    base_model_type = get_base_model_type(state["model_type"])
+    computed_fps = get_computed_fps(force_fps, base_model_type , video_guide, video_source )
+    return gr.update(label= compute_video_length_label(computed_fps, current_video_length))
 
 def generate_video_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_choice = None, header = None, main = None, main_tabs= None):
     global inputs_names #, advanced
@@ -7482,8 +7491,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     
                     current_video_length = ui_defaults.get("video_length", 81 if get_model_family(base_model_type)=="wan" else 97)
 
+                    computed_fps = get_computed_fps(ui_defaults.get("force_fps",""), base_model_type , video_guide, video_source )
                     video_length = gr.Slider(min_frames, get_max_frames(737 if test_any_sliding_window(base_model_type) else 337), value=current_video_length, 
-                         step=frames_step, label=compute_video_length_label(fps, current_video_length) , visible = True, interactive= True)
+                         step=frames_step, label=compute_video_length_label(computed_fps, current_video_length) , visible = True, interactive= True)
 
             with gr.Row(visible = not lock_inference_steps) as inference_steps_row:                                       
                 num_inference_steps = gr.Slider(1, 100, value=ui_defaults.get("num_inference_steps",30), step=1, label="Number of Inference Steps", visible = True)
@@ -7657,7 +7667,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             
 
                     with gr.Column(visible = (t2v or vace) and not fantasy) as audio_prompt_type_remux_row:
-                        gr.Markdown("<B>You may transfer the exising audio tracks of a Control Video</B>")
+                        gr.Markdown("<B>You may transfer the existing audio tracks of a Control Video</B>")
                         audio_prompt_type_remux = gr.Dropdown(
                             choices=[
                                 ("No Remux", ""),
@@ -7969,7 +7979,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
         extra_inputs = prompt_vars + [wizard_prompt, wizard_variables_var, wizard_prompt_activated_var, video_prompt_column, image_prompt_column,
                                       prompt_column_advanced, prompt_column_wizard_vars, prompt_column_wizard, lset_name, save_lset_prompt_drop, advanced_row, speed_tab, audio_tab, mmaudio_col, quality_tab,
                                       sliding_window_tab, misc_tab, prompt_enhancer_row, inference_steps_row, skip_layer_guidance_row, audio_guide_row, RIFLEx_setting_col,
-                                      video_prompt_type_video_guide, video_prompt_type_video_guide_alt, video_prompt_type_video_mask, video_prompt_type_image_refs, apg_col, audio_prompt_type_sources, audio_prompt_type_remux_row,
+                                      video_prompt_type_video_guide, video_prompt_type_video_guide_alt, video_prompt_type_video_mask, video_prompt_type_image_refs, apg_col, audio_prompt_type_sources,  audio_prompt_type_remux, audio_prompt_type_remux_row,
                                       video_guide_outpainting_col,video_guide_outpainting_top, video_guide_outpainting_bottom, video_guide_outpainting_left, video_guide_outpainting_right,
                                       video_guide_outpainting_checkbox, video_guide_outpainting_row, show_advanced, video_info_to_control_video_btn, video_info_to_video_source_btn, sample_solver_row,
                                       video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab, PP_MMAudio_row, PP_custom_audio_row, 
@@ -7989,7 +7999,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             resolution.change(fn=record_last_resolution, inputs=[state, resolution])
 
 
-            video_length.release(fn=refresh_video_length_label, inputs=[state, video_length ], outputs = video_length, trigger_mode="always_last" )
+            # video_length.release(fn=refresh_video_length_label, inputs=[state, video_length ], outputs = video_length, trigger_mode="always_last" )
+            gr.on(triggers=[video_length.release, force_fps.change, video_guide.change, video_source.change], fn=refresh_video_length_label, inputs=[state, video_length, force_fps, video_guide, video_source] , outputs = video_length, trigger_mode="always_last" )
             guidance_phases.change(fn=change_guidance_phases, inputs= [state, guidance_phases], outputs =[model_switch_phase, guidance_phases_row, switch_threshold, switch_threshold2, guidance2_scale, guidance3_scale ])
             audio_prompt_type_remux.change(fn=refresh_audio_prompt_type_remux, inputs=[state, audio_prompt_type, audio_prompt_type_remux], outputs=[audio_prompt_type])
             audio_prompt_type_sources.change(fn=refresh_audio_prompt_type_sources, inputs=[state, audio_prompt_type, audio_prompt_type_sources], outputs=[audio_prompt_type, audio_guide, audio_guide2, speakers_locations_row])

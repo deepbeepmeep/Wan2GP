@@ -117,6 +117,8 @@ class family_handler():
             extra_model_def["no_background_removal"] = True
             # extra_model_def["at_least_one_image_ref_needed"] = True
 
+        if base_model_type in ["standin"] or vace_class: 
+            extra_model_def["lock_image_refs_ratios"] = True
 
         # if base_model_type in ["phantom_1.3B", "phantom_14B"]: 
         #     extra_model_def["one_image_ref_needed"] = True

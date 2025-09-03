@@ -153,7 +153,6 @@ def prepare_kontext(
 
         # Kontext is trained on specific resolutions, using one of them is recommended
         _, width, height = min((abs(aspect_ratio - w / h), w, h) for w, h in PREFERED_KONTEXT_RESOLUTIONS)
-
         width = 2 * int(width / 16)
         height = 2 * int(height / 16)
 

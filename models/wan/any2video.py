@@ -454,7 +454,8 @@ class WanAny2V:
             timesteps.append(0.)
             timesteps = [torch.tensor([t], device=self.device) for t in timesteps]
             if self.use_timestep_transform:
-                timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]    
+                timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]
+            timesteps = torch.tensor(timesteps)
             sample_scheduler = None                  
         elif sample_solver == 'causvid':
             sample_scheduler = FlowMatchScheduler(num_inference_steps=sampling_steps, shift=shift, sigma_min=0, extra_one_step=True)
@@ -1016,8 +1017,8 @@ class WanAny2V:
             
             if sample_solver == "euler":
                 dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
-                dt = dt / self.num_timesteps
-                latents = latents - noise_pred * dt[:, None, None, None, None]
+                dt = dt.item() / self.num_timesteps
+                latents = latents - noise_pred * dt
             else:
                 latents = sample_scheduler.step(
                     noise_pred[:, :, :target_shape[1]],

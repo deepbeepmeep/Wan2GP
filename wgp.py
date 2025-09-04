@@ -59,8 +59,8 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
-target_mmgp_version = "3.5.12"
-WanGP_version = "8.33"
+target_mmgp_version = "3.6.0"
+WanGP_version = "8.34"
 settings_version = 2.29
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -8523,7 +8523,7 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                         ("Off", "" ),
                     ],
                     value= compile,
-                    label="Compile Transformer (up to 50% faster and 30% more frames but requires Linux / WSL and Flash or Sage attention)",
+                    label="Compile Transformer : up to 10-20% faster, useful only if multiple gens at same frames no / resolution",
                     interactive= not lock_ui_compile
                 )              
 

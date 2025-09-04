@@ -59,7 +59,30 @@ def get_embedding(speech_array, wav2vec_feature_extractor, audio_encoder, sr=160
 
     audio_emb = audio_emb.cpu().detach()
     return audio_emb
-	
+
+def extract_audio_from_video(filename, sample_rate):
+    raw_audio_path = filename.split('/')[-1].split('.')[0]+'.wav'
+    ffmpeg_command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(filename),
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "2",
+        str(raw_audio_path),
+    ]
+    subprocess.run(ffmpeg_command, check=True)
+    human_speech_array, sr = librosa.load(raw_audio_path, sr=sample_rate)
+    human_speech_array = loudness_norm(human_speech_array, sr)
+    os.remove(raw_audio_path)
+
+    return human_speech_array
+
 def audio_prepare_single(audio_path, sample_rate=16000, duration = 0):
     ext = os.path.splitext(audio_path)[1].lower()
     if ext in ['.mp4', '.mov', '.avi', '.mkv']:

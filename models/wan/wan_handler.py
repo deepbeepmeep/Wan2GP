@@ -360,8 +360,8 @@ class family_handler():
             })
 
         if text_oneframe_overlap(base_model_type):
-            ui_defaults.update["sliding_window_overlap"] = 1
-            ui_defaults.update["color_correction_strength"]= 0
+            ui_defaults["sliding_window_overlap"] = 1
+            ui_defaults["color_correction_strength"]= 0
 
         if test_multitalk(base_model_type):
             ui_defaults["audio_guidance_scale"] = 4

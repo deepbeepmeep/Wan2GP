@@ -5,6 +5,9 @@ import gradio as gr
 def test_class_i2v(base_model_type):    
     return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk" ]
 
+def text_oneframe_overlap(base_model_type):
+    return test_class_i2v(base_model_type) and not test_multitalk(base_model_type)
+
 def test_class_1_3B(base_model_type):    
     return base_model_type in [ "vace_1.3B", "t2v_1.3B", "recam_1.3B","phantom_1.3B","fun_inp_1.3B"]
 
@@ -119,6 +122,37 @@ class family_handler():
 
         if base_model_type in ["standin"] or vace_class: 
             extra_model_def["lock_image_refs_ratios"] = True
+
+        if base_model_type in ["recam_1.3B"]: 
+            extra_model_def["keep_frames_video_guide_not_supported"] = True
+            extra_model_def["model_modes"] = {
+                        "choices": [
+                            ("Pan Right", 1),
+                            ("Pan Left", 2),
+                            ("Tilt Up", 3),
+                            ("Tilt Down", 4),
+                            ("Zoom In", 5),
+                            ("Zoom Out", 6),
+                            ("Translate Up (with rotation)", 7),
+                            ("Translate Down (with rotation)", 8),
+                            ("Arc Left (with rotation)", 9),
+                            ("Arc Right (with rotation)", 10),
+                        ],
+                        "default": 1,
+                        "label" : "Camera Movement Type"
+            }
+        if vace_class or base_model_type in ["infinitetalk"]:
+            image_prompt_types_allowed = "TVL"
+        elif base_model_type in ["ti2v_2_2"]:
+            image_prompt_types_allowed = "TSEVL"
+        elif i2v:
+            image_prompt_types_allowed = "SEVL"
+        else:
+            image_prompt_types_allowed = ""
+        extra_model_def["image_prompt_types_allowed"] = image_prompt_types_allowed
+
+        if text_oneframe_overlap(base_model_type):
+            extra_model_def["sliding_window_defaults"] = { "overlap_min" : 1, "overlap_max" : 1, "overlap_step": 0, "overlap_default": 1}
 
         # if base_model_type in ["phantom_1.3B", "phantom_14B"]: 
         #     extra_model_def["one_image_ref_needed"] = True
@@ -251,6 +285,17 @@ class family_handler():
                     video_prompt_type = video_prompt_type.replace("U", "RU")
                     ui_defaults["video_prompt_type"] = video_prompt_type 
 
+        if settings_version < 2.31:
+            if base_model_type in "recam_1.3B":
+                video_prompt_type = ui_defaults.get("video_prompt_type", "")
+                if not "V" in video_prompt_type:
+                    video_prompt_type += "UV"
+                    ui_defaults["video_prompt_type"] = video_prompt_type 
+                    ui_defaults["image_prompt_type"] = ""
+
+            if text_oneframe_overlap(base_model_type):
+                ui_defaults["sliding_window_overlap"] = 1
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
@@ -308,6 +353,15 @@ class family_handler():
             ui_defaults.update({
                 "image_prompt_type": "T", 
             })
+
+        if base_model_type in ["recam_1.3B"]: 
+            ui_defaults.update({
+                "video_prompt_type": "UV", 
+            })
+
+        if text_oneframe_overlap(base_model_type):
+            ui_defaults.update["sliding_window_overlap"] = 1
+            ui_defaults.update["color_correction_strength"]= 0
 
         if test_multitalk(base_model_type):
             ui_defaults["audio_guidance_scale"] = 4

@@ -24,6 +24,7 @@ class family_handler():
         extra_model_def["frames_minimum"] = 17
         extra_model_def["frames_steps"] = 8
         extra_model_def["sliding_window"] = True
+        extra_model_def["image_prompt_types_allowed"] = "TSEV"
 
         return extra_model_def
 

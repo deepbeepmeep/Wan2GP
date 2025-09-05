@@ -56,6 +56,10 @@ class family_handler():
         if base_model_type in ["hunyuan_custom", "hunyuan_custom_edit", "hunyuan_custom_audio", "hunyuan_avatar"]:
             extra_model_def["one_image_ref_needed"] = True
 
+
+        if base_model_type in ["hunyuan_i2v"]:
+            extra_model_def["image_prompt_types_allowed"] = "S"
+
         return extra_model_def
 
     @staticmethod

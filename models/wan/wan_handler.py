@@ -144,7 +144,9 @@ class family_handler():
         if vace_class or base_model_type in ["infinitetalk"]:
             image_prompt_types_allowed = "TVL"
         elif base_model_type in ["ti2v_2_2"]:
-            image_prompt_types_allowed = "TSEVL"
+            image_prompt_types_allowed = "TSVL"
+        elif test_multitalk(base_model_type) or base_model_type in ["fantasy"]:
+            image_prompt_types_allowed = "SVL"
         elif i2v:
             image_prompt_types_allowed = "SEVL"
         else:
@@ -296,11 +298,19 @@ class family_handler():
             if text_oneframe_overlap(base_model_type):
                 ui_defaults["sliding_window_overlap"] = 1
 
+        if settings_version < 2.32:
+            image_prompt_type = ui_defaults.get("image_prompt_type", "")
+            if test_class_i2v(base_model_type) and len(image_prompt_type) == 0:
+                ui_defaults["image_prompt_type"] = "S" 
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
             "sample_solver": "unipc",
         })
+        if test_class_i2v(base_model_type):
+            ui_defaults["image_prompt_type"] = "S"
+
         if base_model_type in ["fantasy"]:
             ui_defaults.update({
                 "audio_guidance_scale": 5.0,

@@ -61,7 +61,7 @@ PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.6.0"
 WanGP_version = "8.4"
-settings_version = 2.31
+settings_version = 2.32
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 
@@ -6154,11 +6154,11 @@ def eject_video_from_gallery(state, input_file_list, choice):
     return gr.Gallery(value = file_list, selected_index= choice), gr.update() if len(file_list) >0 else get_default_video_info(), gr.Row(visible= len(file_list) > 0)
 
 def has_video_file_extension(filename):
-    extension = os.path.splitext(filename)[-1]
+    extension = os.path.splitext(filename)[-1].lower()
     return extension in [".mp4"]
 
 def has_image_file_extension(filename):
-    extension = os.path.splitext(filename)[-1]
+    extension = os.path.splitext(filename)[-1].lower()
     return extension in [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"]
 def add_videos_to_gallery(state, input_file_list, choice, files_to_load):
     gen = get_gen_info(state)
@@ -6636,7 +6636,8 @@ def refresh_image_prompt_type_radio(state, image_prompt_type, image_prompt_type_
     image_prompt_type = del_in_sequence(image_prompt_type, "VLTS")
     image_prompt_type = add_to_sequence(image_prompt_type, image_prompt_type_radio)
     any_video_source = len(filter_letters(image_prompt_type, "VL"))>0
-    end_visible = any_letters(image_prompt_type, "SVL")
+    model_def = get_model_def(state["model_type"])
+    end_visible = any_letters(image_prompt_type, "SVL") and "E" in model_def.get("image_prompt_types_allowed","")
     return image_prompt_type, gr.update(visible = "S" in image_prompt_type ), gr.update(visible = end_visible and ("E" in image_prompt_type) ), gr.update(visible = "V" in image_prompt_type) , gr.update(visible = any_video_source), gr.update(visible = end_visible)
 
 def refresh_image_prompt_type_endcheckbox(state, image_prompt_type, image_prompt_type_radio, end_checkbox):
@@ -7118,12 +7119,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 with gr.Group(visible= len(image_prompt_types_allowed)>1) as image_prompt_type_group:
                     with gr.Row():
                         image_prompt_type_radio_allowed_values= filter_letters(image_prompt_types_allowed, "SVL")
+                        image_prompt_type_radio_value = filter_letters(image_prompt_type_value, image_prompt_type_radio_allowed_values,  image_prompt_type_choices[0][1] if len(image_prompt_type_choices) > 0 else "")
                         if len(image_prompt_type_choices) > 0:
-                            image_prompt_type_radio = gr.Radio( image_prompt_type_choices, value =filter_letters(image_prompt_type_value, image_prompt_type_radio_allowed_values,  image_prompt_type_choices[0][1]), label="Location", show_label= False, visible= len(image_prompt_types_allowed)>1, scale= 3)
+                            image_prompt_type_radio = gr.Radio( image_prompt_type_choices, value = image_prompt_type_radio_value, label="Location", show_label= False, visible= len(image_prompt_types_allowed)>1, scale= 3)
                         else:
                             image_prompt_type_radio = gr.Radio(choices=[("", "")], value="", visible= False)
                         if "E" in image_prompt_types_allowed:
-                            image_prompt_type_endcheckbox = gr.Checkbox( value ="E" in image_prompt_type_value, label="End Image(s)", show_label= False, visible= any_letters(image_prompt_type_value, "SVL") and not image_outputs , scale= 1)
+                            image_prompt_type_endcheckbox = gr.Checkbox( value ="E" in image_prompt_type_value, label="End Image(s)", show_label= False, visible= any_letters(image_prompt_type_radio_value, "SVL") and not image_outputs , scale= 1)
                             any_end_image = True
                         else:
                             image_prompt_type_endcheckbox = gr.Checkbox( value =False, show_label= False, visible= False , scale= 1)

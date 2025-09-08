@@ -1,8 +1,12 @@
 import torch
 import numpy as np
+import gradio as gr
 
 def test_class_i2v(base_model_type):    
     return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk" ]
+
+def text_oneframe_overlap(base_model_type):
+    return test_class_i2v(base_model_type) and not test_multitalk(base_model_type)
 
 def test_class_1_3B(base_model_type):    
     return base_model_type in [ "vace_1.3B", "t2v_1.3B", "recam_1.3B","phantom_1.3B","fun_inp_1.3B"]
@@ -115,6 +119,46 @@ class family_handler():
         if base_model_type in ["infinitetalk"]: 
             extra_model_def["no_background_removal"] = True
             # extra_model_def["at_least_one_image_ref_needed"] = True
+
+        if base_model_type in ["standin"] or vace_class: 
+            extra_model_def["lock_image_refs_ratios"] = True
+
+        if base_model_type in ["recam_1.3B"]: 
+            extra_model_def["keep_frames_video_guide_not_supported"] = True
+            extra_model_def["model_modes"] = {
+                        "choices": [
+                            ("Pan Right", 1),
+                            ("Pan Left", 2),
+                            ("Tilt Up", 3),
+                            ("Tilt Down", 4),
+                            ("Zoom In", 5),
+                            ("Zoom Out", 6),
+                            ("Translate Up (with rotation)", 7),
+                            ("Translate Down (with rotation)", 8),
+                            ("Arc Left (with rotation)", 9),
+                            ("Arc Right (with rotation)", 10),
+                        ],
+                        "default": 1,
+                        "label" : "Camera Movement Type"
+            }
+        if vace_class or base_model_type in ["infinitetalk"]:
+            image_prompt_types_allowed = "TVL"
+        elif base_model_type in ["ti2v_2_2"]:
+            image_prompt_types_allowed = "TSVL"
+        elif test_multitalk(base_model_type) or base_model_type in ["fantasy"]:
+            image_prompt_types_allowed = "SVL"
+        elif i2v:
+            image_prompt_types_allowed = "SEVL"
+        else:
+            image_prompt_types_allowed = ""
+        extra_model_def["image_prompt_types_allowed"] = image_prompt_types_allowed
+
+        if text_oneframe_overlap(base_model_type):
+            extra_model_def["sliding_window_defaults"] = { "overlap_min" : 1, "overlap_max" : 1, "overlap_step": 0, "overlap_default": 1}
+
+        # if base_model_type in ["phantom_1.3B", "phantom_14B"]: 
+        #     extra_model_def["one_image_ref_needed"] = True
+
 
         return extra_model_def
         
@@ -235,11 +279,38 @@ class family_handler():
                 if "I" in video_prompt_type:
                     video_prompt_type = video_prompt_type.replace("KI", "QKI")
                     ui_defaults["video_prompt_type"] = video_prompt_type 
+
+        if settings_version < 2.28:
+            if base_model_type in "infinitetalk":
+                video_prompt_type = ui_defaults.get("video_prompt_type", "")
+                if "U" in video_prompt_type:
+                    video_prompt_type = video_prompt_type.replace("U", "RU")
+                    ui_defaults["video_prompt_type"] = video_prompt_type 
+
+        if settings_version < 2.31:
+            if base_model_type in "recam_1.3B":
+                video_prompt_type = ui_defaults.get("video_prompt_type", "")
+                if not "V" in video_prompt_type:
+                    video_prompt_type += "UV"
+                    ui_defaults["video_prompt_type"] = video_prompt_type 
+                    ui_defaults["image_prompt_type"] = ""
+
+            if text_oneframe_overlap(base_model_type):
+                ui_defaults["sliding_window_overlap"] = 1
+
+        if settings_version < 2.32:
+            image_prompt_type = ui_defaults.get("image_prompt_type", "")
+            if test_class_i2v(base_model_type) and len(image_prompt_type) == 0:
+                ui_defaults["image_prompt_type"] = "S" 
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
             "sample_solver": "unipc",
         })
+        if test_class_i2v(base_model_type):
+            ui_defaults["image_prompt_type"] = "S"
+
         if base_model_type in ["fantasy"]:
             ui_defaults.update({
                 "audio_guidance_scale": 5.0,
@@ -293,6 +364,15 @@ class family_handler():
                 "image_prompt_type": "T", 
             })
 
+        if base_model_type in ["recam_1.3B"]: 
+            ui_defaults.update({
+                "video_prompt_type": "UV", 
+            })
+
+        if text_oneframe_overlap(base_model_type):
+            ui_defaults["sliding_window_overlap"] = 1
+            ui_defaults["color_correction_strength"]= 0
+
         if test_multitalk(base_model_type):
             ui_defaults["audio_guidance_scale"] = 4
 
@@ -309,3 +389,11 @@ class family_handler():
             if ("V" in image_prompt_type or "L" in image_prompt_type) and image_refs is None:
                 video_prompt_type = video_prompt_type.replace("I", "").replace("K","")
                 inputs["video_prompt_type"] = video_prompt_type 
+
+
+        if base_model_type in ["vace_standin_14B"]:
+            image_refs = inputs["image_refs"]
+            video_prompt_type = inputs["video_prompt_type"]
+            if image_refs is not None and  len(image_refs) == 1 and "K" in video_prompt_type:
+                gr.Info("Warning, Ref Image for Standin Missing: if 'Landscape and then People or Objects' is selected beside the Landscape Image Ref there should be another Image Ref that contains a Face.")
+                    

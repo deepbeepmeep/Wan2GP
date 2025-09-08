@@ -18,11 +18,11 @@ import os
 import tempfile
 import subprocess
 import json
-
+from functools import lru_cache
 
 
 from PIL import Image
-
+video_info_cache = []
 def seed_everything(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -77,7 +77,9 @@ def truncate_for_filesystem(s, max_bytes=255):
         else: r = m - 1
     return s[:l]
 
+@lru_cache(maxsize=100)
 def get_video_info(video_path):
+    global video_info_cache
     import cv2
     cap = cv2.VideoCapture(video_path)
     

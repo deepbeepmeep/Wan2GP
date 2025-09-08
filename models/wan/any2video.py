@@ -19,7 +19,8 @@ from PIL import Image
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 from .distributed.fsdp import shard_model
-from .modules.model import WanModel, clear_caches
+from .modules.model import WanModel
+from mmgp.offload import get_cache, clear_caches
 from .modules.t5 import T5EncoderModel
 from .modules.vae import WanVAE
 from .modules.vae2_2 import Wan2_2_VAE
@@ -453,7 +454,8 @@ class WanAny2V:
             timesteps.append(0.)
             timesteps = [torch.tensor([t], device=self.device) for t in timesteps]
             if self.use_timestep_transform:
-                timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]    
+                timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]
+            timesteps = torch.tensor(timesteps)
             sample_scheduler = None                  
         elif sample_solver == 'causvid':
             sample_scheduler = FlowMatchScheduler(num_inference_steps=sampling_steps, shift=shift, sigma_min=0, extra_one_step=True)
@@ -496,6 +498,8 @@ class WanAny2V:
         text_len = self.model.text_len
         context = torch.cat([context, context.new_zeros(text_len -context.size(0), context.size(1)) ]).unsqueeze(0) 
         context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0) 
+        if input_video is not None: height, width = input_video.shape[-2:]
+
         # NAG_prompt =  "static, low resolution, blurry"
         # context_NAG = self.text_encoder([NAG_prompt], self.device)[0]
         # context_NAG = context_NAG.to(self.dtype)
@@ -530,8 +534,8 @@ class WanAny2V:
             if image_start is None:
                 if infinitetalk:
                     if input_frames is not None:
-                        image_ref = input_frames[:, -1]
-                        if input_video is None: input_video = input_frames[:, -1:] 
+                        image_ref = input_frames[:, 0]
+                        if input_video is None: input_video = input_frames[:, 0:1]
                         new_shot = "Q" in video_prompt_type
                     else:
                         if pre_video_frame is None:
@@ -551,74 +555,59 @@ class WanAny2V:
                 _ , preframes_count, height, width = input_video.shape
                 input_video = input_video.to(device=self.device).to(dtype= self.VAE_dtype)
                 if infinitetalk:
-                    image_for_clip = image_ref.to(input_video)
+                    image_start = image_ref.to(input_video)
                     control_pre_frames_count = 1 
-                    control_video = image_for_clip.unsqueeze(1)
+                    control_video = image_start.unsqueeze(1)
                 else:
-                    image_for_clip = input_video[:, -1]
+                    image_start = input_video[:, -1]
                     control_pre_frames_count = preframes_count
                     control_video = input_video
-                lat_h, lat_w = height // self.vae_stride[1], width // self.vae_stride[2]
-                if hasattr(self, "clip"):
-                    clip_image_size = self.clip.model.image_size
-                    clip_image = resize_lanczos(image_for_clip, clip_image_size, clip_image_size)[:, None, :, :]
-                    clip_context = self.clip.visual([clip_image]) if model_type != "flf2v_720p" else self.clip.visual([clip_image , clip_image ])
-                    clip_image = None
-                else:
-                    clip_context = None
-                enc =  torch.concat( [control_video, torch.zeros( (3, frame_num-control_pre_frames_count, height, width), 
-                                    device=self.device, dtype= self.VAE_dtype)], 
-                                    dim = 1).to(self.device)
-                color_reference_frame = image_for_clip.unsqueeze(1).clone()
+
+                color_reference_frame = image_start.unsqueeze(1).clone()
             else:
-                preframes_count = control_pre_frames_count = 1
-                any_end_frame = image_end is not None 
-                add_frames_for_end_image = any_end_frame and model_type == "i2v"
-                if any_end_frame:
-                    if add_frames_for_end_image:
-                        frame_num +=1
-                        lat_frames = int((frame_num - 2) // self.vae_stride[0] + 2)
-                        trim_frames = 1
-                
+                preframes_count = control_pre_frames_count = 1                
                 height, width = image_start.shape[1:]
+                control_video = image_start.unsqueeze(1).to(self.device)
+                color_reference_frame = control_video.clone()
 
-                lat_h = round(
-                    height // self.vae_stride[1] //
-                    self.patch_size[1] * self.patch_size[1])
-                lat_w = round(
-                    width // self.vae_stride[2] //
-                    self.patch_size[2] * self.patch_size[2])
-                height = lat_h * self.vae_stride[1]
-                width = lat_w * self.vae_stride[2]
-                image_start_frame = image_start.unsqueeze(1).to(self.device)
-                color_reference_frame = image_start_frame.clone()
-                if image_end is not None:
-                    img_end_frame = image_end.unsqueeze(1).to(self.device)
+            any_end_frame = image_end is not None 
+            add_frames_for_end_image = any_end_frame and model_type == "i2v"
+            if any_end_frame:
+                color_correction_strength = 0 #disable color correction as transition frames between shots may have a complete different color level than the colors of the new shot
+                if add_frames_for_end_image:
+                    frame_num +=1
+                    lat_frames = int((frame_num - 2) // self.vae_stride[0] + 2)
+                    trim_frames = 1
 
-                if hasattr(self, "clip"):                                   
-                    clip_image_size = self.clip.model.image_size
-                    image_start = resize_lanczos(image_start, clip_image_size, clip_image_size)
-                    if image_end is not None: image_end = resize_lanczos(image_end, clip_image_size, clip_image_size)
-                    if model_type == "flf2v_720p":                    
-                        clip_context = self.clip.visual([image_start[:, None, :, :], image_end[:, None, :, :] if image_end is not None else image_start[:, None, :, :]])
-                    else:
-                        clip_context = self.clip.visual([image_start[:, None, :, :]])
+            lat_h, lat_w = height // self.vae_stride[1], width // self.vae_stride[2]
+
+            if image_end is not None:
+                img_end_frame = image_end.unsqueeze(1).to(self.device)
+
+            if hasattr(self, "clip"):                                   
+                clip_image_size = self.clip.model.image_size
+                image_start = resize_lanczos(image_start, clip_image_size, clip_image_size)
+                image_end = resize_lanczos(image_end, clip_image_size, clip_image_size) if image_end is not None else image_start
+                if model_type == "flf2v_720p":                    
+                    clip_context = self.clip.visual([image_start[:, None, :, :], image_end[:, None, :, :] if image_end is not None else image_start[:, None, :, :]])
                 else:
-                    clip_context = None
+                    clip_context = self.clip.visual([image_start[:, None, :, :]])
+            else:
+                clip_context = None
 
-                if any_end_frame:
-                    enc= torch.concat([
-                            image_start_frame,
-                            torch.zeros( (3, frame_num-2,  height, width), device=self.device, dtype= self.VAE_dtype),
-                            img_end_frame,
-                    ], dim=1).to(self.device)
-                else:
-                    enc= torch.concat([
-                            image_start_frame,
-                            torch.zeros( (3, frame_num-1, height, width), device=self.device, dtype= self.VAE_dtype)
-                    ], dim=1).to(self.device)
+            if any_end_frame:
+                enc= torch.concat([
+                        control_video,
+                        torch.zeros( (3, frame_num-control_pre_frames_count-1,  height, width), device=self.device, dtype= self.VAE_dtype),
+                        img_end_frame,
+                ], dim=1).to(self.device)
+            else:
+                enc= torch.concat([
+                        control_video,
+                        torch.zeros( (3, frame_num-control_pre_frames_count, height, width), device=self.device, dtype= self.VAE_dtype)
+                ], dim=1).to(self.device)
 
-                image_start = image_end = image_start_frame = img_end_frame = image_for_clip = image_ref = None
+            image_start = image_end = img_end_frame = image_ref = control_video = None
 
             msk = torch.ones(1, frame_num, lat_h, lat_w, device=self.device)
             if any_end_frame:
@@ -652,12 +641,11 @@ class WanAny2V:
 
         # Recam Master
         if recam:
-            # should be be in fact in input_frames since it is control video not a video to be extended
             target_camera = model_mode
-            height,width = input_video.shape[-2:]
-            input_video = input_video.to(dtype=self.dtype , device=self.device)
-            source_latents = self.vae.encode([input_video])[0].unsqueeze(0) #.to(dtype=self.dtype, device=self.device)
-            del input_video
+            height,width = input_frames.shape[-2:]
+            input_frames = input_frames.to(dtype=self.dtype , device=self.device)
+            source_latents = self.vae.encode([input_frames])[0].unsqueeze(0) #.to(dtype=self.dtype, device=self.device)
+            del input_frames
             # Process target camera (recammaster)
             from shared.utils.cammmaster_tools import get_camera_embedding
             cam_emb = get_camera_embedding(target_camera)       
@@ -749,7 +737,9 @@ class WanAny2V:
         else:
             target_shape = (self.vae.model.z_dim, lat_frames + ref_images_count, height // self.vae_stride[1], width // self.vae_stride[2])
 
-        if multitalk and audio_proj != None:
+        if multitalk:
+            if audio_proj is None:
+                audio_proj = [ torch.zeros( (1, 1, 5, 12, 768 ), dtype=self.dtype, device=self.device), torch.zeros( (1, (frame_num - 1) // 4, 8, 12, 768 ), dtype=self.dtype, device=self.device) ] 
             from .multitalk.multitalk import get_target_masks
             audio_proj = [audio.to(self.dtype) for audio in audio_proj]
             human_no = len(audio_proj[0])
@@ -888,6 +878,7 @@ class WanAny2V:
                     latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents 
                 else:
                     latent_noise_factor = t / 1000
+                    latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents  * (1.0 - latent_noise_factor) + torch.randn_like(extended_overlapped_latents ) * latent_noise_factor 
                 if vace:
                     overlap_noise_factor = overlap_noise / 1000 
                     for zz in z:
@@ -1011,8 +1002,8 @@ class WanAny2V:
             
             if sample_solver == "euler":
                 dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
-                dt = dt / self.num_timesteps
-                latents = latents - noise_pred * dt[:, None, None, None, None]
+                dt = dt.item() / self.num_timesteps
+                latents = latents - noise_pred * dt
             else:
                 latents = sample_scheduler.step(
                     noise_pred[:, :, :target_shape[1]],

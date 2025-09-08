@@ -26,6 +26,18 @@ class family_handler():
         extra_model_def["tea_cache"] = True
         extra_model_def["guidance_max_phases"] = 1
 
+        extra_model_def["model_modes"] = {
+                    "choices": [
+                        ("Synchronous", 0),
+                        ("Asynchronous (better quality but around 50% extra steps added)", 5),
+                        ],
+                    "default": 0,
+                    "label" : "Generation Type"
+        }
+
+        extra_model_def["image_prompt_types_allowed"] = "TSEV"
+
+
         return extra_model_def 
 
     @staticmethod

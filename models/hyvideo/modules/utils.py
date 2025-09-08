@@ -14,7 +14,7 @@ from torch.nn.attention.flex_attention import (
 )
 
 
-@lru_cache
+# @lru_cache
 def create_block_mask_cached(score_mod, B, H, M, N, device="cuda", _compile=False):
     block_mask = create_block_mask(score_mod, B, H, M, N, device=device, _compile=_compile)
     return block_mask

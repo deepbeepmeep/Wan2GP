@@ -20,7 +20,8 @@ soundfile
 mutagen
 pyloudnorm
 librosa==0.11.0
-
+speechbrain==1.0.3
+ 
 # UI & interaction
 gradio==5.23.0
 dashscope
@@ -43,7 +44,7 @@ pydantic==2.10.6
 # Math & modeling
 torchdiffeq>=0.2.5
 tensordict>=0.6.1
-mmgp==3.5.10
+mmgp==3.6.0
 peft==0.15.0
 matplotlib
 

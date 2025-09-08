@@ -26,12 +26,13 @@ class family_handler():
             model_def_output["no_background_removal"] = True
 
             model_def_output["image_ref_choices"] = {
-                "choices":[("No Reference Image", ""),("First Image is a Reference Image, and then the next ones (up to two) are Style Images", "I"),
-                            ("Up to two Images are Style Images", "IJ")],
-                "default": "I",
-                "letters_filter": "IJ",
+                "choices":[("No Reference Image", ""),("First Image is a Reference Image, and then the next ones (up to two) are Style Images", "KI"),
+                            ("Up to two Images are Style Images", "KIJ")],
+                "default": "KI",
+                "letters_filter": "KIJ",
                 "label": "Reference Images / Style Images"
             }
+        model_def_output["lock_image_refs_ratios"] = True
 
         return model_def_output
 
@@ -108,6 +109,16 @@ class family_handler():
         return flux_model, pipe
 
     @staticmethod
+    def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        flux_model = model_def.get("flux-model", "flux-dev")
+        flux_uso = flux_model == "flux-dev-uso"
+        if flux_uso and settings_version < 2.29:
+            video_prompt_type = ui_defaults.get("video_prompt_type", "")
+            if "I" in video_prompt_type:
+                video_prompt_type = video_prompt_type.replace("I", "KI")
+                ui_defaults["video_prompt_type"] = video_prompt_type 
+
+    @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         flux_model = model_def.get("flux-model", "flux-dev")
         flux_uso = flux_model == "flux-dev-uso"
@@ -116,6 +127,6 @@ class family_handler():
         })            
         if model_def.get("reference_image", False):
             ui_defaults.update({
-                "video_prompt_type": "I" if flux_uso else "KI",
+                "video_prompt_type": "KI",
             })
 

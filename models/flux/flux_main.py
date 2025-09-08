@@ -9,6 +9,9 @@ from shared.utils.utils import calculate_new_dimensions
 from .sampling import denoise, get_schedule, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack
 from .modules.layers import get_linear_split_map
 from transformers import SiglipVisionModel, SiglipImageProcessor
+import torchvision.transforms.functional as TVF
+import math
+from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image
 
 from .util import (
     aspect_ratio_to_height_width,
@@ -20,6 +23,44 @@ from .util import (
 )
 
 from PIL import Image
+
+def resize_and_centercrop_image(image, target_height_ref1, target_width_ref1):
+    target_height_ref1 = int(target_height_ref1 // 64 * 64)
+    target_width_ref1 = int(target_width_ref1 // 64 * 64)
+    h, w = image.shape[-2:]
+    if h < target_height_ref1 or w < target_width_ref1:
+        # 计算长宽比
+        aspect_ratio = w / h
+        if h < target_height_ref1:
+            new_h = target_height_ref1
+            new_w = new_h * aspect_ratio
+            if new_w < target_width_ref1:
+                new_w = target_width_ref1
+                new_h = new_w / aspect_ratio
+        else:
+            new_w = target_width_ref1
+            new_h = new_w / aspect_ratio
+            if new_h < target_height_ref1:
+                new_h = target_height_ref1
+                new_w = new_h * aspect_ratio
+    else:
+        aspect_ratio = w / h
+        tgt_aspect_ratio = target_width_ref1 / target_height_ref1
+        if aspect_ratio > tgt_aspect_ratio:
+            new_h = target_height_ref1
+            new_w = new_h * aspect_ratio
+        else:
+            new_w = target_width_ref1
+            new_h = new_w / aspect_ratio
+    # 使用 TVF.resize 进行图像缩放
+    image = TVF.resize(image, (math.ceil(new_h), math.ceil(new_w)))
+    # 计算中心裁剪的参数
+    top = (image.shape[-2] - target_height_ref1) // 2
+    left = (image.shape[-1] - target_width_ref1) // 2
+    # 使用 TVF.crop 进行中心裁剪
+    image = TVF.crop(image, top, left, target_height_ref1, target_width_ref1)
+    return image
+
 
 def stitch_images(img1, img2):
     # Resize img2 to match img1's height
@@ -129,11 +170,11 @@ class model_factory:
             if n_prompt is None or len(n_prompt) == 0: n_prompt = "low quality, ugly, unfinished, out of focus, deformed, disfigure, blurry, smudged, restricted palette, flat colors"
             device="cuda"
             flux_dev_uso = self.name in ['flux-dev-uso']
-            image_stiching =  not self.name in ['flux-dev-uso']
-
+            image_stiching =  not self.name in ['flux-dev-uso'] #and False
+            # image_refs_relative_size = 100
+            crop = False
             input_ref_images = [] if input_ref_images is None else input_ref_images[:]
             ref_style_imgs = []
-
             if "I" in video_prompt_type and len(input_ref_images) > 0: 
                 if flux_dev_uso :
                     if "J" in video_prompt_type:
@@ -148,7 +189,7 @@ class model_factory:
                     if "K" in video_prompt_type :
                         w, h = input_ref_images[0].size
                         height, width = calculate_new_dimensions(height, width, h, w, fit_into_canvas)
-
+                        # actual rescale will happen in prepare_kontext
                     for new_img in input_ref_images[1:]:
                         stiched = stitch_images(stiched, new_img)
                     input_ref_images  = [stiched]
@@ -157,14 +198,24 @@ class model_factory:
                     if "K" in video_prompt_type:
                         # image latents tiling method
                         w, h = input_ref_images[0].size
-                        height, width = calculate_new_dimensions(height, width, h, w, fit_into_canvas)
-                        input_ref_images[0] = input_ref_images[0].resize((width, height), resample=Image.Resampling.LANCZOS) 
+                        if crop :
+                            img = convert_image_to_tensor(input_ref_images[0])
+                            img = resize_and_centercrop_image(img, height, width)                       
+                            input_ref_images[0] = convert_tensor_to_image(img)                    
+                        else:
+                            height, width = calculate_new_dimensions(height, width, h, w, fit_into_canvas)
+                            input_ref_images[0] = input_ref_images[0].resize((width, height), resample=Image.Resampling.LANCZOS) 
                         first_ref = 1
 
                     for i in range(first_ref,len(input_ref_images)):
                         w, h = input_ref_images[i].size
-                        image_height, image_width = calculate_new_dimensions(int(height*image_refs_relative_size/100), int(width*image_refs_relative_size/100), h, w, fit_into_canvas)
-                        input_ref_images[0] = input_ref_images[0].resize((image_width, image_height), resample=Image.Resampling.LANCZOS) 
+                        if crop:
+                            img = convert_image_to_tensor(input_ref_images[i])
+                            img = resize_and_centercrop_image(img, int(height*image_refs_relative_size/100), int(width*image_refs_relative_size/100)) 
+                            input_ref_images[i] = convert_tensor_to_image(img)                    
+                        else:
+                            image_height, image_width = calculate_new_dimensions(int(height*image_refs_relative_size/100), int(width*image_refs_relative_size/100), h, w, fit_into_canvas)
+                            input_ref_images[i] = input_ref_images[i].resize((image_width, image_height), resample=Image.Resampling.LANCZOS) 
             else:
                 input_ref_images = None
 

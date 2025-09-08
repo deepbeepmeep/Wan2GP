@@ -12,28 +12,13 @@ from diffusers.models.modeling_utils import ModelMixin
 import numpy as np
 from typing import Union,Optional
 from mmgp import offload
+from mmgp.offload import get_cache, clear_caches
 from shared.attention import pay_attention
 from torch.backends.cuda import sdp_kernel
 from ..multitalk.multitalk_utils import get_attn_map_with_target
 
 __all__ = ['WanModel']
 
-
-def get_cache(cache_name):
-    all_cache = offload.shared_state.get("_cache",  None)
-    if all_cache is None:
-        all_cache = {}
-        offload.shared_state["_cache"]=  all_cache
-    cache = offload.shared_state.get(cache_name, None)
-    if cache is None:
-        cache = {}
-        offload.shared_state[cache_name] = cache
-    return cache
-
-def clear_caches():
-    all_cache = offload.shared_state.get("_cache",  None)
-    if all_cache is not None:
-        all_cache.clear()
 
 def sinusoidal_embedding_1d(dim, position):
     # preprocess
@@ -579,19 +564,23 @@ class WanAttentionBlock(nn.Module):
             y = self.norm_x(x)
             y = y.to(attention_dtype)
             if ref_images_count == 0:
-                x += self.audio_cross_attn(y, encoder_hidden_states=multitalk_audio, shape=grid_sizes, x_ref_attn_map=x_ref_attn_map)
+                ylist= [y]
+                del y
+                x += self.audio_cross_attn(ylist, encoder_hidden_states=multitalk_audio, shape=grid_sizes, x_ref_attn_map=x_ref_attn_map)
             else:
                 y_shape = y.shape
                 y = y.reshape(y_shape[0], grid_sizes[0], -1)
                 y = y[:, ref_images_count:]
                 y = y.reshape(y_shape[0], -1, y_shape[-1])
                 grid_sizes_alt = [grid_sizes[0]-ref_images_count, *grid_sizes[1:]]
-                y = self.audio_cross_attn(y, encoder_hidden_states=multitalk_audio, shape=grid_sizes_alt, x_ref_attn_map=x_ref_attn_map)
+                ylist= [y]
+                y = None
+                y = self.audio_cross_attn(ylist, encoder_hidden_states=multitalk_audio, shape=grid_sizes_alt, x_ref_attn_map=x_ref_attn_map)
                 y = y.reshape(y_shape[0], grid_sizes[0]-ref_images_count, -1)
                 x = x.reshape(y_shape[0], grid_sizes[0], -1)
                 x[:, ref_images_count:] += y
                 x = x.reshape(y_shape[0], -1, y_shape[-1])
-            del y
+                del y
 
         y = self.norm2(x)
 

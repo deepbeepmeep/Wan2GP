@@ -10,7 +10,7 @@
 		"reference_image": true,		
 		"flux-model": "flux-dev-uso"		
     },
-	"prompt": "add a hat",
+	"prompt": "the man is wearing a hat",
 	"embedded_guidance_scale": 4,
     "resolution": "1024x1024",
     "batch_size": 1

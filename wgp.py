@@ -4937,7 +4937,7 @@ def generate_video(
                     prefix_frames_count = source_video_overlap_frames_count if window_no <= 1 else reuse_frames,
                     frame_num= (current_video_length // latent_size)* latent_size + 1,
                     batch_size = batch_size,
-                    height =  image_size[0],
+                    height = image_size[0],
                     width = image_size[1],
                     fit_into_canvas = fit_canvas,
                     shift=flow_shift,

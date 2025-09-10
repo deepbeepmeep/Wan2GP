@@ -539,7 +539,7 @@ class WanAny2V:
                         new_shot = "Q" in video_prompt_type
                     else:
                         if pre_video_frame is None:
-                            new_shot = True
+                            new_shot = "Q" in video_prompt_type
                         else:
                             if input_ref_images is None:
                                 input_ref_images, new_shot = [pre_video_frame], False

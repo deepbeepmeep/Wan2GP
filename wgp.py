@@ -4939,7 +4939,7 @@ def generate_video(
                     batch_size = batch_size,
                     height =  image_size[0],
                     width = image_size[1],
-                    fit_into_canvas = fit_canvas == 1,
+                    fit_into_canvas = fit_canvas,
                     shift=flow_shift,
                     sample_solver=sample_solver,
                     sampling_steps=num_inference_steps,

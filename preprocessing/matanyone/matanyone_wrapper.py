@@ -73,5 +73,5 @@ def matanyone(processor, frames_np, mask, r_erode=0, r_dilate=0, n_warmup=10):
         if ti > (n_warmup-1):
             frames.append((com_np*255).astype(np.uint8))
             phas.append((pha*255).astype(np.uint8))
-    
+            # phas.append(np.clip(pha * 255, 0, 255).astype(np.uint8))    
     return frames, phas

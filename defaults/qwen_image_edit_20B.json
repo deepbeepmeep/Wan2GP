@@ -9,9 +9,7 @@
         ],
         "attention": {
             "<89": "sdpa"
-        },
-        "reference_image": true,
-        "image_outputs": true
+        }
     },
     "prompt": "add a hat",
     "resolution": "1280x720",

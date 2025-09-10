@@ -9,7 +9,7 @@ def get_qwen_text_encoder_filename(text_encoder_quantization):
 class family_handler():
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        model_def_output = {
+        extra_model_def = {
             "image_outputs" : True,
             "sample_solvers":[
                             ("Default", "default"),
@@ -18,8 +18,18 @@ class family_handler():
             "lock_image_refs_ratios": True,
         }
 
+        if base_model_type in ["qwen_image_edit_20B"]: 
+            extra_model_def["inpaint_support"] = True
+            extra_model_def["image_ref_choices"] = {
+            "choices": [
+                ("None", ""),
+                ("Conditional Images is first Main Subject / Landscape and may be followed by People / Objects", "KI"),
+                ("Conditional Images are People / Objects", "I"),
+                ],
+            "letters_filter": "KI",
+            }
 
-        return model_def_output
+        return extra_model_def
 
     @staticmethod
     def query_supported_types():
@@ -75,14 +85,18 @@ class family_handler():
         if ui_defaults.get("sample_solver", "") == "": 
             ui_defaults["sample_solver"] = "default"
 
+        if settings_version < 2.32:
+            ui_defaults["denoising_strength"] = 1.
+                            
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
             "guidance_scale":  4,
             "sample_solver": "default",
         })            
-        if model_def.get("reference_image", False):
+        if base_model_type in ["qwen_image_edit_20B"]: 
             ui_defaults.update({
                 "video_prompt_type": "KI",
+                "denoising_strength" : 1.,
             })
 

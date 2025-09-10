@@ -26,6 +26,15 @@ class family_handler():
         extra_model_def["sliding_window"] = True
         extra_model_def["image_prompt_types_allowed"] = "TSEV"
 
+        extra_model_def["guide_preprocessing"] = {
+            "selection": ["", "PV", "DV", "EV", "V"],
+            "labels" : { "V": "Use LTXV raw format"}
+        }
+
+        extra_model_def["mask_preprocessing"] = {
+            "selection": ["", "A", "NA", "XA", "XNA"],
+        }
+
         return extra_model_def
 
     @staticmethod

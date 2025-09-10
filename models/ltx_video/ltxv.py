@@ -300,9 +300,6 @@ class LTXV:
             prefix_size, height, width = input_video.shape[-3:]
         else:
             if image_start != None:
-                frame_width, frame_height  = image_start.size
-                if fit_into_canvas != None:
-                    height, width = calculate_new_dimensions(height, width, frame_height, frame_width, fit_into_canvas, 32)
                 conditioning_media_paths.append(image_start.unsqueeze(1)) 
                 conditioning_start_frames.append(0)
                 conditioning_control_frames.append(False)

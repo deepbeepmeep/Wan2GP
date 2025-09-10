@@ -261,7 +261,7 @@ class WanAny2V:
     def vace_latent(self, z, m):
         return [torch.cat([zz, mm], dim=0) for zz, mm in zip(z, m)]
 
-    def fit_image_into_canvas(self, ref_img, image_size, canvas_tf_bg, device, fill_max = False, outpainting_dims = None, return_mask = False):
+    def fit_image_into_canvas(self, ref_img, image_size, canvas_tf_bg, device, full_frame = False, outpainting_dims = None, return_mask = False):
         from shared.utils.utils import save_image
         ref_width, ref_height = ref_img.size
         if (ref_height, ref_width) == image_size and outpainting_dims  == None:
@@ -270,18 +270,23 @@ class WanAny2V:
         else:
             if outpainting_dims != None:
                 final_height, final_width = image_size
-                canvas_height, canvas_width, margin_top, margin_left =   get_outpainting_frame_location(final_height, final_width,  outpainting_dims, 8)        
+                canvas_height, canvas_width, margin_top, margin_left =   get_outpainting_frame_location(final_height, final_width,  outpainting_dims, 1)        
             else:
                 canvas_height, canvas_width = image_size
-            scale = min(canvas_height / ref_height, canvas_width / ref_width)
-            new_height = int(ref_height * scale)
-            new_width = int(ref_width * scale)
-            if fill_max  and (canvas_height - new_height) < 16:
+            if full_frame:
                 new_height = canvas_height
-            if fill_max  and (canvas_width - new_width) < 16:
                 new_width = canvas_width
-            top = (canvas_height - new_height) // 2
-            left = (canvas_width - new_width) // 2
+                top = left = 0 
+            else:
+                # if fill_max  and (canvas_height - new_height) < 16:
+                #     new_height = canvas_height
+                # if fill_max  and (canvas_width - new_width) < 16:
+                #     new_width = canvas_width
+                scale = min(canvas_height / ref_height, canvas_width / ref_width)
+                new_height = int(ref_height * scale)
+                new_width = int(ref_width * scale)
+                top = (canvas_height - new_height) // 2
+                left = (canvas_width - new_width) // 2
             ref_img = ref_img.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
             ref_img = TF.to_tensor(ref_img).sub_(0.5).div_(0.5).unsqueeze(1)
             if outpainting_dims != None:
@@ -302,7 +307,7 @@ class WanAny2V:
                 canvas = canvas.to(device)
         return ref_img.to(device), canvas
 
-    def prepare_source(self, src_video, src_mask, src_ref_images, total_frames, image_size,  device, keep_video_guide_frames= [], start_frame = 0,  fit_into_canvas = None, pre_src_video = None, inject_frames = [], outpainting_dims = None, any_background_ref = False):
+    def prepare_source(self, src_video, src_mask, src_ref_images, total_frames, image_size,  device, keep_video_guide_frames= [], start_frame = 0, pre_src_video = None, inject_frames = [], outpainting_dims = None, any_background_ref = False):
         image_sizes = []
         trim_video_guide = len(keep_video_guide_frames)
         def conv_tensor(t, device):
@@ -533,22 +538,16 @@ class WanAny2V:
             any_end_frame = False
             if image_start is None:
                 if infinitetalk:
+                    new_shot = "Q" in video_prompt_type
                     if input_frames is not None:
                         image_ref = input_frames[:, 0]
-                        if input_video is None: input_video = input_frames[:, 0:1]
-                        new_shot = "Q" in video_prompt_type
                     else:
-                        if pre_video_frame is None:
-                            new_shot = "Q" in video_prompt_type
-                        else:
-                            if input_ref_images is None:
-                                input_ref_images, new_shot = [pre_video_frame], False
-                            else:
-                                input_ref_images, new_shot = [img.resize(pre_video_frame.size, resample=Image.Resampling.LANCZOS) for img in input_ref_images], "Q" in video_prompt_type
-                        if input_ref_images is None: raise Exception("Missing Reference Image")
+                        if input_ref_images is None:                        
+                            if pre_video_frame is None: raise Exception("Missing Reference Image")
+                            input_ref_images, new_shot = [pre_video_frame], False
                         new_shot = new_shot and window_no <= len(input_ref_images)
                         image_ref = convert_image_to_tensor(input_ref_images[ min(window_no, len(input_ref_images))-1 ])
-                    if new_shot:  
+                    if new_shot or input_video is None:  
                         input_video = image_ref.unsqueeze(1)
                     else:
                         color_correction_strength = 0 #disable color correction as transition frames between shots may have a complete different color level than the colors of the new shot

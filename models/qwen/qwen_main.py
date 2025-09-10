@@ -103,6 +103,8 @@ class model_factory():
         n_prompt = None,
         sampling_steps: int = 20,
         input_ref_images = None,
+        image_guide= None,
+        image_mask= None,
         width= 832,
         height=480,
         guide_scale: float = 4,
@@ -114,6 +116,7 @@ class model_factory():
         VAE_tile_size = None, 
         joint_pass = True,
         sample_solver='default',
+        denoising_strength = 1.,
         **bbargs
     ):
         # Generate with different aspect ratios
@@ -174,8 +177,9 @@ class model_factory():
 
         if n_prompt is None or len(n_prompt) == 0:
             n_prompt=  "text, watermark, copyright, blurry, low resolution"
-
-        if input_ref_images is not None:
+        if image_guide is not None:
+            input_ref_images = [image_guide] 
+        elif input_ref_images is not None:
             # image stiching method
             stiched = input_ref_images[0]
             if "K" in video_prompt_type :
@@ -190,6 +194,7 @@ class model_factory():
             prompt=input_prompt,
             negative_prompt=n_prompt,
             image = input_ref_images,
+            image_mask = image_mask,
             width=width,
             height=height,
             num_inference_steps=sampling_steps,
@@ -199,6 +204,7 @@ class model_factory():
             pipeline=self,
             loras_slists=loras_slists,
             joint_pass = joint_pass,
+            denoising_strength=denoising_strength,
             generator=torch.Generator(device="cuda").manual_seed(seed)
         )        
         if image is None: return None

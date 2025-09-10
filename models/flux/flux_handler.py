@@ -13,28 +13,41 @@ class family_handler():
         flux_schnell = flux_model == "flux-schnell" 
         flux_chroma = flux_model == "flux-chroma" 
         flux_uso = flux_model == "flux-dev-uso"
-        model_def_output = {
+        flux_kontext = flux_model == "flux-dev-kontext"
+        
+        extra_model_def = {
             "image_outputs" : True,
             "no_negative_prompt" : not flux_chroma,
         }
         if flux_chroma:
-            model_def_output["guidance_max_phases"] = 1
+            extra_model_def["guidance_max_phases"] = 1
         elif not flux_schnell:
-            model_def_output["embedded_guidance"] = True
+            extra_model_def["embedded_guidance"] = True
         if flux_uso :
-            model_def_output["any_image_refs_relative_size"] = True
-            model_def_output["no_background_removal"] = True
-
-            model_def_output["image_ref_choices"] = {
+            extra_model_def["any_image_refs_relative_size"] = True
+            extra_model_def["no_background_removal"] = True
+            extra_model_def["image_ref_choices"] = {
                 "choices":[("No Reference Image", ""),("First Image is a Reference Image, and then the next ones (up to two) are Style Images", "KI"),
                             ("Up to two Images are Style Images", "KIJ")],
                 "default": "KI",
                 "letters_filter": "KIJ",
                 "label": "Reference Images / Style Images"
             }
-        model_def_output["lock_image_refs_ratios"] = True
+        
+        if flux_kontext:
+            extra_model_def["image_ref_choices"] = {
+                "choices": [
+                    ("None", ""),
+                    ("Conditional Images is first Main Subject / Landscape and may be followed by People / Objects", "KI"),
+                    ("Conditional Images are People / Objects", "I"),
+                    ],
+                "letters_filter": "KI",
+            }
 
-        return model_def_output
+
+        extra_model_def["lock_image_refs_ratios"] = True
+
+        return extra_model_def
 
     @staticmethod
     def query_supported_types():
@@ -122,10 +135,12 @@ class family_handler():
     def update_default_settings(base_model_type, model_def, ui_defaults):
         flux_model = model_def.get("flux-model", "flux-dev")
         flux_uso = flux_model == "flux-dev-uso"
+        flux_kontext = flux_model == "flux-dev-kontext"
         ui_defaults.update({
             "embedded_guidance":  2.5,
-        })            
-        if model_def.get("reference_image", False):
+        })
+
+        if flux_kontext or flux_uso:
             ui_defaults.update({
                 "video_prompt_type": "KI",
             })

@@ -35,7 +35,7 @@ class family_handler():
                     "label" : "Generation Type"
         }
 
-        extra_model_def["image_prompt_types_allowed"] = "TSEV"
+        extra_model_def["image_prompt_types_allowed"] = "TSV"
 
 
         return extra_model_def 
@@ -66,7 +66,11 @@ class family_handler():
     def query_family_infos():
         return {}
 
-
+    @staticmethod
+    def get_rgb_factors(base_model_type ):
+        from shared.RGB_factors import get_rgb_factors
+        latent_rgb_factors, latent_rgb_factors_bias = get_rgb_factors("wan", base_model_type)
+        return latent_rgb_factors, latent_rgb_factors_bias
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):

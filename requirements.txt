@@ -23,7 +23,7 @@ librosa==0.11.0
 speechbrain==1.0.3
  
 # UI & interaction
-gradio==5.23.0
+gradio==5.29.0
 dashscope
 loguru
 

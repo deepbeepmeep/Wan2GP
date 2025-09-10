@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, Literal
 
 import gradio as gr
 import PIL
+import time
 from PIL import Image as PILImage
 
 FilePath = str
@@ -20,6 +21,9 @@ def get_list( objs):
         return []
     return [ obj[0] if isinstance(obj, tuple) else obj for obj in objs]
 
+def record_last_action(st, last_action):
+    st["last_action"] = last_action
+    st["last_time"] = time.time()
 class AdvancedMediaGallery:
     def __init__(
         self,
@@ -60,9 +64,10 @@ class AdvancedMediaGallery:
         self.state: Optional[gr.State] = None
         self._initial_state: Dict[str, Any] = {
             "items": items,
-            "selected": (len(items) - 1) if items else None,
+            "selected": (len(items) - 1) if items else 0, # None,
             "single": bool(single_image_mode),
             "mode": self.media_mode,
+            "last_action": "",
         }
 
     # ---------------- helpers ----------------
@@ -210,6 +215,13 @@ class AdvancedMediaGallery:
 
     def _on_select(self, state: Dict[str, Any], gallery, evt: gr.SelectData) :
         # Mirror the selected index into state and the gallery (server-side selected_index)
+
+        st = get_state(state)
+        last_time = st.get("last_time", None)
+        if last_time is not None and abs(time.time()- last_time)< 0.5: # crappy trick to detect if onselect is unwanted (buggy gallery)
+            # print(f"ignored:{time.time()}, real {st['selected']}")
+            return gr.update(selected_index=st["selected"]), st
+
         idx = None
         if evt is not None and hasattr(evt, "index"):
             ix = evt.index
@@ -220,17 +232,28 @@ class AdvancedMediaGallery:
                     idx = ix[0] * max(1, int(self.columns)) + ix[1]
                 else:
                     idx = ix[0]
-        st = get_state(state)
         n = len(get_list(gallery))
         sel = idx if (idx is not None and 0 <= idx < n) else None
+        # print(f"image selected evt index:{sel}/{evt.selected}")
         st["selected"] = sel
-        # return gr.update(selected_index=sel), st
-        # return gr.update(), st
-        return st
+        return gr.update(), st
+
+    def _on_upload(self, value: List[Any], state: Dict[str, Any]) :
+        # Fires when users upload via the Gallery itself.
+        # items_filtered = self._filter_items_by_mode(list(value or []))
+        items_filtered = list(value or [])
+        st = get_state(state)
+        new_items = self._paths_from_payload(items_filtered)
+        st["items"] = new_items
+        new_sel = len(new_items) - 1
+        st["selected"] = new_sel
+        record_last_action(st,"add")
+        return gr.update(selected_index=new_sel), st
 
     def _on_gallery_change(self, value: List[Any], state: Dict[str, Any]) :
         # Fires when users add/drag/drop/delete via the Gallery itself.
-        items_filtered = self._filter_items_by_mode(list(value or []))
+        # items_filtered = self._filter_items_by_mode(list(value or []))
+        items_filtered = list(value or [])
         st = get_state(state)
         st["items"] = items_filtered
         # Keep selection if still valid, else default to last
@@ -240,10 +263,9 @@ class AdvancedMediaGallery:
         else:
             new_sel = old_sel
         st["selected"] = new_sel
-        # return gr.update(value=items_filtered, selected_index=new_sel), st
-        # return gr.update(value=items_filtered), st
-
-        return gr.update(), st
+        st["last_action"] ="gallery_change"
+        # print(f"gallery change: set sel {new_sel}")
+        return gr.update(selected_index=new_sel), st
 
     def _on_add(self, files_payload: Any, state: Dict[str, Any], gallery):
         """
@@ -252,7 +274,8 @@ class AdvancedMediaGallery:
         and re-selects the last inserted item.
         """
         # New items (respect image/video mode)
-        new_items = self._filter_items_by_mode(self._paths_from_payload(files_payload))
+        # new_items = self._filter_items_by_mode(self._paths_from_payload(files_payload))
+        new_items = self._paths_from_payload(files_payload)
 
         st = get_state(state)
         cur: List[Any] = get_list(gallery)
@@ -298,30 +321,6 @@ class AdvancedMediaGallery:
                 if k is not None:
                     seen_new.add(k)
 
-        # Remove any existing occurrences of the incoming items from current list,
-        # BUT keep the currently selected item even if it's also in incoming.
-        cur_clean: List[Any] = []
-        # sel_item = cur[sel] if (sel is not None and 0 <= sel < len(cur)) else None
-        # for idx, it in enumerate(cur):
-        #     k = key_of(it)
-        #     if it is sel_item:
-        #         cur_clean.append(it)
-        #         continue
-        #     if k is not None and k in seen_new:
-        #         continue  # drop duplicate; we'll reinsert at the target spot
-        #     cur_clean.append(it)
-
-        # # Compute insertion position: right AFTER the (possibly shifted) selected item
-        # if sel_item is not None:
-        #     # find sel_item's new index in cur_clean
-        #     try:
-        #         pos_sel = cur_clean.index(sel_item)
-        #     except ValueError:
-        #         # Shouldn't happen, but fall back to end
-        #         pos_sel = len(cur_clean) - 1
-        #     insert_pos = pos_sel + 1
-        # else:
-        #     insert_pos = len(cur_clean)  # no selection -> append at end
         insert_pos = min(sel, len(cur) -1)
         cur_clean = cur
         # Build final list and selection
@@ -330,6 +329,8 @@ class AdvancedMediaGallery:
 
         st["items"] = merged
         st["selected"] = new_sel
+        record_last_action(st,"add")
+        # print(f"gallery add: set sel {new_sel}")
         return gr.update(value=merged, selected_index=new_sel), st
 
     def _on_remove(self, state: Dict[str, Any], gallery) :
@@ -342,8 +343,9 @@ class AdvancedMediaGallery:
             return gr.update(value=[], selected_index=None), st
         new_sel = min(sel, len(items) - 1)
         st["items"] = items; st["selected"] = new_sel
-        # return gr.update(value=items, selected_index=new_sel), st
-        return gr.update(value=items), st
+        record_last_action(st,"remove")
+        # print(f"gallery del: new sel {new_sel}")
+        return gr.update(value=items, selected_index=new_sel), st
 
     def _on_move(self, delta: int, state: Dict[str, Any], gallery) :
         st = get_state(state); items: List[Any] = get_list(gallery); sel = st.get("selected", None)
@@ -354,11 +356,15 @@ class AdvancedMediaGallery:
             return gr.update(value=items, selected_index=sel), st
         items[sel], items[j] = items[j], items[sel]
         st["items"] = items; st["selected"] = j
+        record_last_action(st,"move")
+        # print(f"gallery move: set sel {j}")
         return gr.update(value=items, selected_index=j), st
 
     def _on_clear(self, state: Dict[str, Any]) :
         st = {"items": [], "selected": None, "single": get_state(state).get("single", False), "mode": self.media_mode}
-        return gr.update(value=[], selected_index=0), st
+        record_last_action(st,"clear")
+        # print(f"Clear all")
+        return gr.update(value=[], selected_index=None), st
 
     def _on_toggle_single(self, to_single: bool, state: Dict[str, Any]) :
         st = get_state(state); st["single"] = bool(to_single)
@@ -382,30 +388,38 @@ class AdvancedMediaGallery:
     def mount(self, parent: Optional[gr.Blocks | gr.Group | gr.Row | gr.Column] = None, update_form = False):
         if parent is not None:
             with parent:
-                col = self._build_ui()
+                col = self._build_ui(update_form)
         else:
-            col = self._build_ui()
+            col = self._build_ui(update_form)
         if not update_form:
             self._wire_events()
         return col
 
-    def _build_ui(self) -> gr.Column:
+    def _build_ui(self, update = False) -> gr.Column:
         with gr.Column(elem_id=self.elem_id, elem_classes=self.elem_classes) as col:
             self.container = col
 
             self.state = gr.State(dict(self._initial_state))
 
-            self.gallery = gr.Gallery(
-                label=self.label,
-                value=self._initial_state["items"],
-                height=self.height,
-                columns=self.columns,
-                show_label=self.show_label,
-                preview= True,
-                # type="pil",
-                file_types= list(IMAGE_EXTS) if self.media_mode == "image" else list(VIDEO_EXTS), 
-                selected_index=self._initial_state["selected"],  # server-side selection
-            )
+            if update:
+                self.gallery = gr.update(
+                    value=self._initial_state["items"],
+                    selected_index=self._initial_state["selected"],  # server-side selection
+                    label=self.label,
+                    show_label=self.show_label,
+                )
+            else:
+                self.gallery = gr.Gallery(
+                    value=self._initial_state["items"],
+                    label=self.label,
+                    height=self.height,
+                    columns=self.columns,
+                    show_label=self.show_label,
+                    preview= True,
+                    # type="pil", # very slow
+                    file_types= list(IMAGE_EXTS) if self.media_mode == "image" else list(VIDEO_EXTS), 
+                    selected_index=self._initial_state["selected"],  # server-side selection
+                )
 
             # One-line controls
             exts = sorted(IMAGE_EXTS if self.media_mode == "image" else VIDEO_EXTS) if self.accept_filter else None
@@ -418,10 +432,10 @@ class AdvancedMediaGallery:
                     size="sm",
                     min_width=1,
                 )
-                self.btn_remove = gr.Button("Remove", size="sm", min_width=1)
+                self.btn_remove = gr.Button(" Remove ", size="sm", min_width=1)
                 self.btn_left   = gr.Button("◀ Left",  size="sm", visible=not self._initial_state["single"], min_width=1)
                 self.btn_right  = gr.Button("Right ▶", size="sm", visible=not self._initial_state["single"], min_width=1)
-                self.btn_clear  = gr.Button("Clear",   variant="secondary", size="sm", visible=not self._initial_state["single"], min_width=1)
+                self.btn_clear  = gr.Button(" Clear ",   variant="secondary", size="sm", visible=not self._initial_state["single"], min_width=1)
 
         return col
 
@@ -430,14 +444,24 @@ class AdvancedMediaGallery:
         self.gallery.select(
             self._on_select,
             inputs=[self.state, self.gallery],
-            outputs=[self.state],
+            outputs=[self.gallery, self.state],
+            trigger_mode="always_last",
         )
 
         # Gallery value changed by user actions (click-to-add, drag-drop, internal remove, etc.)
-        self.gallery.change(
+        self.gallery.upload(
+            self._on_upload,
+            inputs=[self.gallery, self.state],
+            outputs=[self.gallery, self.state],
+            trigger_mode="always_last",
+        )
+
+        # Gallery value changed by user actions (click-to-add, drag-drop, internal remove, etc.)
+        self.gallery.upload(
             self._on_gallery_change,
             inputs=[self.gallery, self.state],
             outputs=[self.gallery, self.state],
+            trigger_mode="always_last",
         )
 
         # Add via UploadButton
@@ -445,6 +469,7 @@ class AdvancedMediaGallery:
             self._on_add,
             inputs=[self.upload_btn, self.state, self.gallery],
             outputs=[self.gallery, self.state],
+            trigger_mode="always_last",
         )
 
         # Remove selected
@@ -452,6 +477,7 @@ class AdvancedMediaGallery:
             self._on_remove,
             inputs=[self.state, self.gallery],
             outputs=[self.gallery, self.state],
+            trigger_mode="always_last",
         )
 
         # Reorder using selected index, keep same item selected
@@ -459,11 +485,13 @@ class AdvancedMediaGallery:
             lambda st, gallery: self._on_move(-1, st, gallery),
             inputs=[self.state, self.gallery],
             outputs=[self.gallery, self.state],
+            trigger_mode="always_last",
         )
         self.btn_right.click(
             lambda st, gallery: self._on_move(+1, st, gallery),
             inputs=[self.state, self.gallery],
             outputs=[self.gallery, self.state],
+            trigger_mode="always_last",
         )
 
         # Clear all
@@ -471,6 +499,7 @@ class AdvancedMediaGallery:
             self._on_clear,
             inputs=[self.state],
             outputs=[self.gallery, self.state],
+            trigger_mode="always_last",
         )
 
     # ---------------- public API ----------------

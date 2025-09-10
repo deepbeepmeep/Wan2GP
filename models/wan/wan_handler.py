@@ -110,18 +110,78 @@ class family_handler():
         "tea_cache" : not (base_model_type in ["i2v_2_2", "ti2v_2_2" ] or multiple_submodels),
         "mag_cache" : True,
         "keep_frames_video_guide_not_supported": base_model_type in ["infinitetalk"],
+        "convert_image_guide_to_video" : True,
         "sample_solvers":[
                             ("unipc", "unipc"),
                             ("euler", "euler"),
                             ("dpm++", "dpm++"),
                             ("flowmatch causvid", "causvid"), ]
         })
+
+
+        if base_model_type in ["t2v"]: 
+            extra_model_def["guide_custom_choices"] = {
+                "choices":[("Use Text Prompt Only", ""),("Video to Video guided by Text Prompt", "GUV")],
+                "default": "",
+                "letters_filter": "GUV",
+                "label": "Video to Video"
+            }
+
         if base_model_type in ["infinitetalk"]: 
             extra_model_def["no_background_removal"] = True
-            # extra_model_def["at_least_one_image_ref_needed"] = True
+            extra_model_def["all_image_refs_are_background_ref"] = True
+            extra_model_def["guide_custom_choices"] = {
+            "choices":[
+                ("Images to Video, each Reference Image will start a new shot with a new Sliding Window - Sharp Transitions", "QKI"),
+                ("Images to Video, each Reference Image will start a new shot with a new Sliding Window - Smooth Transitions", "KI"),
+                ("Sparse Video to Video, one Image will by extracted from Video for each new Sliding Window - Sharp Transitions", "QRUV"),
+                ("Sparse Video to Video, one Image will by extracted from Video for each new Sliding Window - Smooth Transitions", "RUV"),
+                ("Video to Video, amount of motion transferred depends on Denoising Strength - Sharp Transitions", "GQUV"),
+                ("Video to Video, amount of motion transferred depends on Denoising Strength - Smooth Transitions", "GUV"),
+            ],
+            "default": "KI",
+            "letters_filter": "RGUVQKI",
+            "label": "Video to Video",
+            "show_label" : False,
+            }
 
-        if base_model_type in ["standin"] or vace_class: 
+            # extra_model_def["at_least_one_image_ref_needed"] = True
+        if vace_class:
+            extra_model_def["guide_preprocessing"] = {
+                    "selection": ["", "UV", "PV", "DV", "SV", "LV", "CV", "MV", "V", "PDV", "PSV", "PLV" , "DSV", "DLV", "SLV"],
+                    "labels" : { "V": "Use Vace raw format"}
+                }
+            extra_model_def["mask_preprocessing"] = {
+                    "selection": ["", "A", "NA", "XA", "XNA", "YA", "YNA", "WA", "WNA", "ZA", "ZNA"],
+                }
+
+            extra_model_def["image_ref_choices"] = {
+                    "choices": [("None", ""),
+                    ("Inject only People / Objects", "I"),
+                    ("Inject Landscape and then People / Objects", "KI"),
+                    ("Inject Frames and then People / Objects", "FI"),
+                    ],
+                    "letters_filter":  "KFI",
+            }
+
             extra_model_def["lock_image_refs_ratios"] = True
+
+        if base_model_type in ["standin"]: 
+            extra_model_def["lock_image_refs_ratios"] = True
+            extra_model_def["image_ref_choices"] = {
+                "choices": [
+                    ("No Reference Image", ""),
+                    ("Reference Image is a Person Face", "I"),
+                    ],
+                "letters_filter":"I",
+            }
+
+        if base_model_type in ["phantom_1.3B", "phantom_14B"]: 
+            extra_model_def["image_ref_choices"] = {
+                "choices": [("Reference Image", "I")],
+                "letters_filter":"I",
+                "visible": False,
+            }
 
         if base_model_type in ["recam_1.3B"]: 
             extra_model_def["keep_frames_video_guide_not_supported"] = True
@@ -141,6 +201,12 @@ class family_handler():
                         "default": 1,
                         "label" : "Camera Movement Type"
             }
+            extra_model_def["guide_preprocessing"] = {
+                    "selection": ["UV"],
+                    "labels" : { "UV": "Control Video"},
+                    "visible" : False,
+                }
+
         if vace_class or base_model_type in ["infinitetalk"]:
             image_prompt_types_allowed = "TVL"
         elif base_model_type in ["ti2v_2_2"]:

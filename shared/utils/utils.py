@@ -19,6 +19,7 @@ import tempfile
 import subprocess
 import json
 from functools import lru_cache
+os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
 
 
 from PIL import Image
@@ -188,6 +189,14 @@ def get_outpainting_full_area_dimensions(frame_height,frame_width, outpainting_d
     frame_width =  int(frame_width * (100 + outpainting_left + outpainting_right) / 100)
     return frame_height, frame_width  
 
+def rgb_bw_to_rgba_mask(img, thresh=127):
+    a = img.convert('L').point(lambda p: 255 if p > thresh else 0)  # alpha
+    out = Image.new('RGBA', img.size, (255, 255, 255, 0))           # white, transparent
+    out.putalpha(a)                                                 # white where alpha=255
+    return out
+                        
+
+
 def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims, block_size = 8):
     outpainting_top, outpainting_bottom, outpainting_left, outpainting_right= outpainting_dims
     raw_height = int(final_height / ((100 + outpainting_top + outpainting_bottom) / 100))
@@ -207,30 +216,62 @@ def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims
     if (margin_left + width) > final_width or outpainting_right == 0: margin_left = final_width - width
     return height, width, margin_top, margin_left
 
-def calculate_new_dimensions(canvas_height, canvas_width, image_height, image_width, fit_into_canvas, block_size = 16):
-    if fit_into_canvas == None:
+def rescale_and_crop(img, w, h):
+    ow, oh = img.size
+    target_ratio = w / h
+    orig_ratio = ow / oh
+    
+    if orig_ratio > target_ratio:
+        # Crop width first
+        nw = int(oh * target_ratio)
+        img = img.crop(((ow - nw) // 2, 0, (ow + nw) // 2, oh))
+    else:
+        # Crop height first
+        nh = int(ow / target_ratio)
+        img = img.crop((0, (oh - nh) // 2, ow, (oh + nh) // 2))
+    
+    return img.resize((w, h), Image.LANCZOS)
+
+def calculate_new_dimensions(canvas_height, canvas_width, image_height, image_width, fit_into_canvas,  block_size = 16):
+    if fit_into_canvas == None or fit_into_canvas == 2:
         # return image_height, image_width
         return canvas_height, canvas_width
-    if fit_into_canvas:
+    if fit_into_canvas == 1:
         scale1  = min(canvas_height / image_height, canvas_width / image_width)
         scale2  = min(canvas_width / image_height, canvas_height / image_width)
         scale = max(scale1, scale2) 
-    else:
+    else: #0 or #2 (crop)
         scale = (canvas_height * canvas_width / (image_height * image_width))**(1/2)
 
     new_height = round( image_height * scale / block_size) * block_size
     new_width = round( image_width * scale / block_size) * block_size
     return new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, ignore_first, fit_into_canvas = False ):
+def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fit_into_canvas, fit_crop, block_size = 16):
+    if fit_crop:
+        image = rescale_and_crop(image, canvas_width, canvas_height)
+        new_width, new_height = image.size  
+    else:
+        image_width, image_height = image.size
+        new_height, new_width = calculate_new_dimensions(canvas_height, canvas_width, image_height, image_width, fit_into_canvas, block_size = block_size )
+        image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
+    return image, new_height, new_width
+
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None ):
     if rm_background:
         session = new_session() 
 
     output_list =[]
     for i, img in enumerate(img_list):
         width, height =  img.size 
-
-        if fit_into_canvas:
+        if fit_into_canvas == None or any_background_ref == 1 and i==0 or any_background_ref == 2:
+            if outpainting_dims is not None:
+                resized_image =img 
+            elif img.size != (budget_width, budget_height):
+                resized_image= img.resize((budget_width, budget_height), resample=Image.Resampling.LANCZOS) 
+            else:
+                resized_image =img
+        elif fit_into_canvas == 1:
             white_canvas = np.ones((budget_height, budget_width, 3), dtype=np.uint8) * 255 
             scale = min(budget_height / height, budget_width / width)
             new_height = int(height * scale)
@@ -242,10 +283,10 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
             resized_image = Image.fromarray(white_canvas)  
         else:
             scale = (budget_height * budget_width / (height * width))**(1/2)
-            new_height = int( round(height * scale / 16) * 16)
-            new_width = int( round(width * scale / 16) * 16)
+            new_height = int( round(height * scale / block_size) * block_size)
+            new_width = int( round(width * scale / block_size) * block_size)
             resized_image= img.resize((new_width,new_height), resample=Image.Resampling.LANCZOS) 
-        if rm_background  and not (ignore_first and i == 0) :
+        if rm_background  and not (any_background_ref and i==0 or any_background_ref == 2) :
             # resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1,alpha_matting_background_threshold = 70, alpha_foreground_background_threshold = 100, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
             resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
         output_list.append(resized_image) #alpha_matting_background_threshold = 30, alpha_foreground_background_threshold = 200,

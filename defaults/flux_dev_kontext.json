@@ -7,8 +7,6 @@
             "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1_kontext_dev_bf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1_kontext_dev_quanto_bf16_int8.safetensors"
         ],
-		"image_outputs": true,		
-		"reference_image": true,		
 		"flux-model": "flux-dev-kontext"		
     },
 	"prompt": "add a hat",

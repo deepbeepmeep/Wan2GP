@@ -28,7 +28,7 @@ from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, Aut
 from .autoencoder_kl_qwenimage import AutoencoderKLQwenImage
 from diffusers import FlowMatchEulerDiscreteScheduler
 from PIL import Image
-from shared.utils.utils import calculate_new_dimensions
+from shared.utils.utils import calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image
 
 XLA_AVAILABLE = False
 
@@ -563,6 +563,8 @@ class QwenImagePipeline(): #DiffusionPipeline
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
         image = None,
+        image_mask = None,
+        denoising_strength = 0,
         callback=None,
         pipeline=None,
         loras_slists=None,
@@ -683,6 +685,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         device = "cuda"
 
         prompt_image = None
+        image_mask_latents = None
         if image is not None and not (isinstance(image, torch.Tensor) and image.size(1) == self.latent_channels):
             image = image[0] if isinstance(image, list) else image
             image_height, image_width = self.image_processor.get_default_height_width(image)
@@ -694,14 +697,32 @@ class QwenImagePipeline(): #DiffusionPipeline
             image_width = image_width // multiple_of * multiple_of
             image_height = image_height // multiple_of * multiple_of
             ref_height, ref_width = 1568, 672
-            if height * width < ref_height * ref_width: ref_height , ref_width = height , width  
-            if image_height * image_width > ref_height * ref_width:
-                image_height, image_width = calculate_new_dimensions(ref_height, ref_width, image_height, image_width, False, block_size=multiple_of)
 
-            image = image.resize((image_width,image_height), resample=Image.Resampling.LANCZOS) 
+            if image_mask is None:
+                if height * width < ref_height * ref_width: ref_height , ref_width = height , width  
+                if image_height * image_width > ref_height * ref_width:
+                    image_height, image_width = calculate_new_dimensions(ref_height, ref_width, image_height, image_width, False, block_size=multiple_of)
+                if (image_width,image_height) != image.size:
+                    image = image.resize((image_width,image_height), resample=Image.Resampling.LANCZOS) 
+            else:
+                # _, image_width, image_height = min(
+                #     (abs(aspect_ratio - w / h), w, h) for w, h in PREFERRED_QWENIMAGE_RESOLUTIONS
+                # )
+                image_height, image_width = calculate_new_dimensions(height, width, image_height, image_width, False, block_size=multiple_of)
+                # image_height, image_width = calculate_new_dimensions(ref_height, ref_width, image_height, image_width, False, block_size=multiple_of)
+                height, width = image_height, image_width
+                image_mask_latents = convert_image_to_tensor(image_mask.resize((width // 16, height // 16), resample=Image.Resampling.LANCZOS))
+                image_mask_latents = torch.where(image_mask_latents>-0.5, 1., 0. )[0:1]
+                image_mask_rebuilt = image_mask_latents.repeat_interleave(16, dim=-1).repeat_interleave(16, dim=-2).unsqueeze(0)
+                convert_tensor_to_image( image_mask_rebuilt.squeeze(0).repeat(3,1,1)).save("mmm.png")
+                image_mask_latents = image_mask_latents.reshape(1, -1, 1).to(device)
+
             prompt_image = image
-            image = self.image_processor.preprocess(image, image_height, image_width)
-            image = image.unsqueeze(2)
+            if image.size != (image_width, image_height):
+                image = image.resize((image_width, image_height), resample=Image.Resampling.LANCZOS)
+
+            image.save("nnn.png")
+            image = convert_image_to_tensor(image).unsqueeze(0).unsqueeze(2)
 
         has_neg_prompt = negative_prompt is not None or (
             negative_prompt_embeds is not None and negative_prompt_embeds_mask is not None
@@ -744,6 +765,8 @@ class QwenImagePipeline(): #DiffusionPipeline
             generator,
             latents,
         )
+        original_image_latents = None if image_latents is None else image_latents.clone() 
+
         if image is not None:
             img_shapes = [
                 [
@@ -788,6 +811,15 @@ class QwenImagePipeline(): #DiffusionPipeline
         negative_txt_seq_lens = (
             negative_prompt_embeds_mask.sum(dim=1).tolist() if negative_prompt_embeds_mask is not None else None
         )
+        morph = False
+        if image_mask_latents is not None and denoising_strength <= 1.:
+            first_step = int(len(timesteps) * (1. - denoising_strength))
+            if not morph:
+                latent_noise_factor = timesteps[first_step]/1000
+                latents  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
+                timesteps = timesteps[first_step:]
+                self.scheduler.timesteps = timesteps
+                self.scheduler.sigmas= self.scheduler.sigmas[first_step:]
 
         # 6. Denoising loop
         self.scheduler.set_begin_index(0)
@@ -797,9 +829,14 @@ class QwenImagePipeline(): #DiffusionPipeline
             update_loras_slists(self.transformer, loras_slists, updated_num_steps)
             callback(-1, None, True, override_num_inference_steps = updated_num_steps)
 
+
         for i, t in enumerate(timesteps):
             if self.interrupt:
                 continue
+
+            if image_mask_latents is not None and denoising_strength <1. and i == first_step and morph:
+                latent_noise_factor = t/1000
+                latents  = original_image_latents  * (1.0 - latent_noise_factor) + latents * latent_noise_factor 
 
             self._current_timestep = t
             # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
@@ -865,6 +902,12 @@ class QwenImagePipeline(): #DiffusionPipeline
             # compute the previous noisy sample x_t -> x_t-1
             latents_dtype = latents.dtype
             latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+            if image_mask_latents is not None:
+                next_t = timesteps[i+1] if i<len(timesteps)-1 else 0
+                latent_noise_factor = next_t / 1000
+                noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
+                latents  =  noisy_image * (1-image_mask_latents)  + image_mask_latents * latents
+                noisy_image = None
 
             if latents.dtype != latents_dtype:
                 if torch.backends.mps.is_available():
@@ -878,7 +921,7 @@ class QwenImagePipeline(): #DiffusionPipeline
 
         self._current_timestep = None
         if output_type == "latent":
-            image = latents
+            output_image = latents
         else:
             latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
             latents = latents.to(self.vae.dtype)
@@ -891,7 +934,9 @@ class QwenImagePipeline(): #DiffusionPipeline
                 latents.device, latents.dtype
             )
             latents = latents / latents_std + latents_mean
-            image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
+            output_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
+            if image_mask is not None:
+                output_image = image.squeeze(2) * (1 - image_mask_rebuilt) + output_image.to(image) * image_mask_rebuilt 
 
 
-        return image
+        return output_image

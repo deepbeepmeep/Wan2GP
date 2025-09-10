@@ -7,7 +7,6 @@ import psutil
 # import ffmpeg
 import imageio
 from PIL import Image
-
 import cv2
 import torch
 import torch.nn.functional as F
@@ -33,6 +32,8 @@ model_in_GPU = False
 matanyone_in_GPU = False
 bfloat16_supported = False
 # SAM generator
+import copy
+
 class MaskGenerator():
     def __init__(self, sam_checkpoint, device):
         global args_device
@@ -89,6 +90,7 @@ def get_frames_from_image(image_input, image_state):
         "last_frame_numer": 0,
         "fps": None
         }
+        
     image_info = "Image Name: N/A,\nFPS: N/A,\nTotal Frames: {},\nImage Size:{}".format(len(frames), image_size)
     set_image_encoder_patch()
     select_SAM()
@@ -717,27 +719,33 @@ def load_unload_models(selected):
 def get_vmc_event_handler():
     return load_unload_models
 
-def export_to_vace_video_input(foreground_video_output):
-    gr.Info("Masked Video Input transferred to Vace For Inpainting")
-    return "V#" + str(time.time()), foreground_video_output
 
-
-def export_image(image_refs, image_output):
-    gr.Info("Masked Image transferred to Current Video")
+def export_image(state, image_output):
+    ui_settings = get_current_model_settings(state)
+    image_refs = ui_settings["image_refs"]
     if image_refs == None:
         image_refs =[]
     image_refs.append( image_output)
-    return image_refs
+    ui_settings["image_refs"] = image_refs 
+    gr.Info("Masked Image transferred to Current Image Generator")
+    return time.time()
 
-def export_image_mask(image_input, image_mask):
-    gr.Info("Input Image & Mask transferred to Current Video")
-    return Image.fromarray(image_input), image_mask
+def export_image_mask(state, image_input, image_mask):
+    ui_settings = get_current_model_settings(state)
+    ui_settings["image_guide"] = Image.fromarray(image_input)
+    ui_settings["image_mask"] = image_mask
+
+    gr.Info("Input Image & Mask transferred to Current Image Generator")
+    return time.time()
 
 
-def export_to_current_video_engine( foreground_video_output, alpha_video_output):
+def export_to_current_video_engine(state, foreground_video_output, alpha_video_output):
+    ui_settings = get_current_model_settings(state)
+    ui_settings["video_guide"] = foreground_video_output
+    ui_settings["video_mask"] = alpha_video_output
+
     gr.Info("Original Video and Full Mask have been transferred")
-    # return "MV#" + str(time.time()), foreground_video_output, alpha_video_output
-    return foreground_video_output, alpha_video_output
+    return time.time()
 
 
 def teleport_to_video_tab(tab_state):
@@ -746,14 +754,28 @@ def teleport_to_video_tab(tab_state):
     return gr.Tabs(selected="video_gen")
 
 
-def display(tabs, tab_state, server_config,  vace_video_input, vace_image_input, vace_video_mask, vace_image_mask, vace_image_refs):
+def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_current_model_settings_fn): #,  vace_video_input, vace_image_input, vace_video_mask, vace_image_mask, vace_image_refs):
     # my_tab.select(fn=load_unload_models, inputs=[], outputs=[])
-    global image_output_codec, video_output_codec
+    global image_output_codec, video_output_codec, get_current_model_settings
+    get_current_model_settings = get_current_model_settings_fn
 
     image_output_codec = server_config.get("image_output_codec", None)
     video_output_codec = server_config.get("video_output_codec", None)
 
     media_url = "https://github.com/pq-yang/MatAnyone/releases/download/media/"
+
+    click_brush_js = """
+    () => {
+        setTimeout(() => {
+            const brushButton = document.querySelector('button[aria-label="Brush"]');
+            if (brushButton) {
+                brushButton.click();
+                console.log('Brush button clicked');
+            } else {
+                console.log('Brush button not found');
+            }
+        }, 1000);
+    }    """
 
     # download assets
 
@@ -871,7 +893,7 @@ def display(tabs, tab_state, server_config,  vace_video_input, vace_image_input,
                             template_frame = gr.Image(label="Start Frame", type="pil",interactive=True, elem_id="template_frame", visible=False, elem_classes="image")
                             with gr.Row():
                                 clear_button_click = gr.Button(value="Clear Clicks", interactive=True, visible=False,  min_width=100)
-                                add_mask_button = gr.Button(value="Set Mask", interactive=True, visible=False, min_width=100)
+                                add_mask_button = gr.Button(value="Add Mask", interactive=True, visible=False, min_width=100)
                                 remove_mask_button = gr.Button(value="Remove Mask", interactive=True, visible=False,  min_width=100) # no use
                                 matting_button = gr.Button(value="Generate Video Matting", interactive=True, visible=False,  min_width=100)
                             with gr.Row():
@@ -892,7 +914,7 @@ def display(tabs, tab_state, server_config,  vace_video_input, vace_image_input,
                             with gr.Row(visible= True):
                                 export_to_current_video_engine_btn = gr.Button("Export to Control Video Input and Video Mask Input", visible= False)
                                     
-                export_to_current_video_engine_btn.click(  fn=export_to_current_video_engine, inputs= [foreground_video_output, alpha_video_output], outputs= [vace_video_input, vace_video_mask]).then( #video_prompt_video_guide_trigger, 
+                export_to_current_video_engine_btn.click(  fn=export_to_current_video_engine, inputs= [state, foreground_video_output, alpha_video_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
                     fn=teleport_to_video_tab, inputs= [tab_state], outputs= [tabs])
 
 
@@ -1089,10 +1111,10 @@ def display(tabs, tab_state, server_config,  vace_video_input, vace_image_input,
                     # with gr.Column(scale=2, visible= True):
                         export_image_mask_btn = gr.Button(value="Set to Control Image & Mask", visible=False, elem_classes="new_button")
 
-                export_image_btn.click(  fn=export_image, inputs= [vace_image_refs, foreground_image_output], outputs= [vace_image_refs]).then( #video_prompt_video_guide_trigger, 
+                export_image_btn.click(  fn=export_image, inputs= [state, foreground_image_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
                     fn=teleport_to_video_tab, inputs= [tab_state], outputs= [tabs])
-                export_image_mask_btn.click(  fn=export_image_mask, inputs= [image_input, alpha_image_output], outputs= [vace_image_input, vace_image_mask]).then( #video_prompt_video_guide_trigger, 
-                    fn=teleport_to_video_tab, inputs= [tab_state], outputs= [tabs])
+                export_image_mask_btn.click(  fn=export_image_mask, inputs= [state, image_input, alpha_image_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
+                    fn=teleport_to_video_tab, inputs= [tab_state], outputs= [tabs]).then(fn=None, inputs=None, outputs=None, js=click_brush_js)
 
                 # first step: get the image information 
                 extract_frames_button.click(
@@ -1148,5 +1170,21 @@ def display(tabs, tab_state, server_config,  vace_video_input, vace_image_input,
                     outputs=[foreground_image_output, alpha_image_output,foreground_image_output, alpha_image_output,bbox_info, export_image_btn, export_image_mask_btn]
                 )
 
-
-
+                nada = gr.State({})
+                # clear input
+                gr.on(
+                    triggers=[image_input.clear], #image_input.change,
+                    fn=restart,
+                    inputs=[],
+                    outputs=[ 
+                        image_state,
+                        interactive_state,
+                        click_state,
+                        foreground_image_output, alpha_image_output,
+                        template_frame,
+                        image_selection_slider, image_selection_slider, track_pause_number_slider,point_prompt, export_image_btn, export_image_mask_btn, bbox_info, clear_button_click, 
+                        add_mask_button, matting_button, template_frame, foreground_image_output, alpha_image_output, remove_mask_button, export_image_btn, export_image_mask_btn, mask_dropdown, nada, step2_title
+                    ],
+                    queue=False,
+                    show_progress=False)
+                

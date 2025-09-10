@@ -51,6 +51,23 @@ class family_handler():
         extra_model_def["tea_cache"] = True
         extra_model_def["mag_cache"] = True
 
+        if base_model_type in ["hunyuan_custom_edit"]:
+            extra_model_def["guide_preprocessing"] = {
+                "selection": ["MV", "PV"],
+            }
+
+            extra_model_def["mask_preprocessing"] = {
+                "selection": ["A", "NA"],
+                "default" : "NA"
+            }
+
+        if base_model_type in ["hunyuan_custom_audio", "hunyuan_custom_edit", "hunyuan_custom"]:
+            extra_model_def["image_ref_choices"] = {
+                "choices": [("Reference Image", "I")],
+                "letters_filter":"I",
+                "visible": False,
+            }
+
         if base_model_type in ["hunyuan_avatar"]: extra_model_def["no_background_removal"] = True
 
         if base_model_type in ["hunyuan_custom", "hunyuan_custom_edit", "hunyuan_custom_audio", "hunyuan_avatar"]:
@@ -141,6 +158,18 @@ class family_handler():
 
         return hunyuan_model, pipe
 
+    @staticmethod
+    def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if settings_version<2.33:
+            if base_model_type in ["hunyuan_custom_edit"]:
+                video_prompt_type=  ui_defaults["video_prompt_type"]
+                if "P" in video_prompt_type and "M" in video_prompt_type: 
+                    video_prompt_type = video_prompt_type.replace("M","")
+                    ui_defaults["video_prompt_type"] = video_prompt_type  
+
+        
+        pass
+    
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults["embedded_guidance_scale"]= 6.0

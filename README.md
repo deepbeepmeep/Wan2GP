@@ -20,7 +20,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
 ## 🔥 Latest Updates : 
-### September 5 2025: WanGP v8.5 - Wanna be a Cropper or a Painter ?
+### September 11 2025: WanGP v8.5/8.55 - Wanna be a Cropper or a Painter ?
 
 I have done some intensive internal refactoring of the generation pipeline to ease support of existing models or add new models. Nothing really visible but this makes WanGP is little more future proof.
 
@@ -37,6 +37,13 @@ Select *Vace Cocktail > Control Image Process = Perform Inpainting & Area Proces
 Doing more sophisticated thing Vace Image Editor works very well too: try Image Outpainting, Pose transfer, ...
 
 For the best quality I recommend to set in *Quality Tab* the option: "*Generate a 9 Frames Long video...*" 
+
+**update 8.55**: Flux Festival
+- **Inpainting Mode** also added for *Flux Kontext*
+- **Flux SRPO** : new finetune with x3 better quality vs Flux Dev according to its authors. I have also created a *Flux SRPO USO* finetune which is certainly the best open source *Style Transfer* tool available
+- **Flux UMO**: model specialized in combining multiple reference objects / people together. Works quite well at 768x768
+
+Good luck with finding your way through all the Flux models names !
 
 ### September 5 2025: WanGP v8.4 - Take me to Outer Space
 You have probably seen these short AI generated movies created using *Nano Banana* and the *First Frame - Last Frame* feature of *Kling 2.0*. The idea is to generate an image, modify a part of it with Nano Banana and give the these two images to Kling that will generate the Video between these two images, use now the previous Last Frame as the new First Frame, rinse and repeat and you get a full movie.

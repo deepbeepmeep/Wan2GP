@@ -13,6 +13,7 @@ class family_handler():
         flux_schnell = flux_model == "flux-schnell" 
         flux_chroma = flux_model == "flux-chroma" 
         flux_uso = flux_model == "flux-dev-uso"
+        flux_umo = flux_model == "flux-dev-umo"
         flux_kontext = flux_model == "flux-dev-kontext"
         
         extra_model_def = {
@@ -35,6 +36,7 @@ class family_handler():
             }
         
         if flux_kontext:
+            extra_model_def["inpaint_support"] = True
             extra_model_def["image_ref_choices"] = {
                 "choices": [
                     ("None", ""),
@@ -42,6 +44,15 @@ class family_handler():
                     ("Conditional Images are People / Objects", "I"),
                     ],
                 "letters_filter": "KI",
+            }
+            extra_model_def["background_removal_label"]= "Remove Backgrounds only behind People / Objects except main Subject / Landscape" 
+        elif flux_umo:
+            extra_model_def["image_ref_choices"] = {
+                "choices": [
+                    ("Conditional Images are People / Objects", "I"),
+                    ],
+                "letters_filter": "I",
+                "visible": False
             }
 
 
@@ -131,10 +142,14 @@ class family_handler():
                 video_prompt_type = video_prompt_type.replace("I", "KI")
                 ui_defaults["video_prompt_type"] = video_prompt_type 
 
+        if settings_version < 2.34:
+            ui_defaults["denoising_strength"] = 1.
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         flux_model = model_def.get("flux-model", "flux-dev")
         flux_uso = flux_model == "flux-dev-uso"
+        flux_umo = flux_model == "flux-dev-umo"
         flux_kontext = flux_model == "flux-dev-kontext"
         ui_defaults.update({
             "embedded_guidance":  2.5,
@@ -143,5 +158,12 @@ class family_handler():
         if flux_kontext or flux_uso:
             ui_defaults.update({
                 "video_prompt_type": "KI",
+                "denoising_strength": 1.,
             })
+        elif flux_umo:
+            ui_defaults.update({
+                "video_prompt_type": "I",
+                "remove_background_images_ref": 0,
+            })
+        
 

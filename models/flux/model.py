@@ -190,6 +190,21 @@ class Flux(nn.Module):
                             v = swap_scale_shift(v)
                         k = k.replace("norm_out.linear", "final_layer.adaLN_modulation.1")            
                 new_sd[k] = v
+        # elif not first_key.startswith("diffusion_model.") and not first_key.startswith("transformer."):
+        #     for k,v in sd.items():
+        #         if "double" in k:
+        #             k = k.replace(".processor.proj_lora1.", ".img_attn.proj.lora_")
+        #             k = k.replace(".processor.proj_lora2.", ".txt_attn.proj.lora_")
+        #             k = k.replace(".processor.qkv_lora1.", ".img_attn.qkv.lora_")
+        #             k = k.replace(".processor.qkv_lora2.", ".txt_attn.qkv.lora_")
+        #         else:
+        #             k = k.replace(".processor.qkv_lora.", ".linear1_qkv.lora_")
+        #             k = k.replace(".processor.proj_lora.", ".linear2.lora_")
+
+        #         k = "diffusion_model." + k
+        #         new_sd[k] = v
+        #     from mmgp import safetensors2
+        #     safetensors2.torch_write_file(new_sd, "fff.safetensors")
         else:
             new_sd = sd
         return new_sd    

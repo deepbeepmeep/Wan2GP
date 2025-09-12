@@ -138,9 +138,11 @@ def prepare_kontext(
     target_width: int | None = None,
     target_height: int | None = None,
     bs: int = 1,
-
+    img_mask = None,
 ) -> tuple[dict[str, Tensor], int, int]:
     # load and encode the conditioning image
+
+    res_match_output = img_mask is not None
 
     img_cond_seq = None
     img_cond_seq_ids = None
@@ -150,9 +152,11 @@ def prepare_kontext(
     for cond_no, img_cond in enumerate(img_cond_list): 
         width, height = img_cond.size
         aspect_ratio = width / height
-
-        # Kontext is trained on specific resolutions, using one of them is recommended
-        _, width, height = min((abs(aspect_ratio - w / h), w, h) for w, h in PREFERED_KONTEXT_RESOLUTIONS)
+        if res_match_output:
+            width, height = target_width, target_height
+        else:
+            # Kontext is trained on specific resolutions, using one of them is recommended
+            _, width, height = min((abs(aspect_ratio - w / h), w, h) for w, h in PREFERED_KONTEXT_RESOLUTIONS)
         width = 2 * int(width / 16)
         height = 2 * int(height / 16)
 
@@ -193,6 +197,19 @@ def prepare_kontext(
         "img_cond_seq": img_cond_seq,
         "img_cond_seq_ids": img_cond_seq_ids,
     }
+    if img_mask is not None:
+        from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image
+        # image_height, image_width = calculate_new_dimensions(ref_height, ref_width, image_height, image_width, False, block_size=multiple_of)
+        image_mask_latents = convert_image_to_tensor(img_mask.resize((target_width // 16, target_height // 16), resample=Image.Resampling.LANCZOS))
+        image_mask_latents = torch.where(image_mask_latents>-0.5, 1., 0. )[0:1]
+        image_mask_rebuilt = image_mask_latents.repeat_interleave(16, dim=-1).repeat_interleave(16, dim=-2).unsqueeze(0)
+        convert_tensor_to_image( image_mask_rebuilt.squeeze(0).repeat(3,1,1)).save("mmm.png")
+        image_mask_latents = image_mask_latents.reshape(1, -1, 1).to(device)        
+        return_dict.update({
+            "img_msk_latents": image_mask_latents,
+            "img_msk_rebuilt": image_mask_rebuilt,
+        })
+
     img = get_noise(
         bs,
         target_height,
@@ -264,12 +281,30 @@ def denoise(
     loras_slists=None,
     unpack_latent = None,
     joint_pass= False,
+    img_msk_latents = None,
+    img_msk_rebuilt = None,
+    denoising_strength = 1,
 ):
 
     kwargs = {'pipeline': pipeline, 'callback': callback, "img_len" : img.shape[1], "siglip_embedding": siglip_embedding, "siglip_embedding_ids": siglip_embedding_ids}
 
     if callback != None:
         callback(-1, None, True)
+
+    original_image_latents = None if img_cond_seq is None else img_cond_seq.clone() 
+
+    morph, first_step = False, 0
+    if img_msk_latents is not None:
+        randn = torch.randn_like(original_image_latents)
+        if denoising_strength < 1.:
+            first_step = int(len(timesteps) * (1. - denoising_strength))
+        if not morph:
+            latent_noise_factor = timesteps[first_step]
+            latents  = original_image_latents  * (1.0 - latent_noise_factor) + randn * latent_noise_factor
+            img = latents.to(img)
+            latents = None
+            timesteps = timesteps[first_step:]
+
 
     updated_num_steps= len(timesteps) -1
     if callback != None:
@@ -280,9 +315,13 @@ def denoise(
     # this is ignored for schnell
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
     for i, (t_curr, t_prev) in enumerate(zip(timesteps[:-1], timesteps[1:])):
-        offload.set_step_no_for_lora(model, i)
+        offload.set_step_no_for_lora(model, first_step  + i)
         if pipeline._interrupt:
             return None
+
+        if img_msk_latents is not None and denoising_strength <1. and i == first_step and morph:
+            latent_noise_factor = t_curr/1000
+            img  = original_image_latents  * (1.0 - latent_noise_factor) + img * latent_noise_factor 
 
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
         img_input = img
@@ -333,6 +372,14 @@ def denoise(
             pred = neg_pred + real_guidance_scale * (pred - neg_pred)
 
         img += (t_prev - t_curr) * pred
+
+        if img_msk_latents is not None:
+            latent_noise_factor = t_prev
+            # noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
+            noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + randn * latent_noise_factor 
+            img  =  noisy_image * (1-img_msk_latents)  + img_msk_latents * img
+            noisy_image = None
+
         if callback is not None:
             preview = unpack_latent(img).transpose(0,1)
             callback(i, preview, False)         

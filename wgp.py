@@ -61,8 +61,8 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.6.0"
-WanGP_version = "8.5"
-settings_version = 2.33
+WanGP_version = "8.55"
+settings_version = 2.34
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 
@@ -487,7 +487,6 @@ def process_prompt_and_add_tasks(state, model_choice):
             image_mask = None
 
         if "G" in video_prompt_type:
-            if image_mode == 0:
                 gr.Info(f"With Denoising Strength {denoising_strength:.1f}, denoising will start at Step no {int(num_inference_steps * (1. - denoising_strength))} ")
         else: 
             denoising_strength = 1.0
@@ -552,11 +551,13 @@ def process_prompt_and_add_tasks(state, model_choice):
 
     if test_any_sliding_window(model_type) and image_mode == 0:
         if video_length > sliding_window_size:
+            if model_type in ["t2v"] and not "G" in video_prompt_type :
+                gr.Info(f"You have requested to Generate Sliding Windows with a Text to Video model. Unless you use the Video to Video feature this is useless as a t2v model doesn't see past frames and it will generate the same video in each new window.") 
+                return
             full_video_length = video_length if video_source is None else video_length +  sliding_window_overlap -1
             extra = "" if full_video_length == video_length else f" including {sliding_window_overlap} added for Video Continuation"
             no_windows = compute_sliding_window_no(full_video_length, sliding_window_size, sliding_window_discard_last_frames, sliding_window_overlap)
             gr.Info(f"The Number of Frames to generate ({video_length}{extra}) is greater than the Sliding Window Size ({sliding_window_size}), {no_windows} Windows will be generated")
-
     if "recam" in model_filename:
         if video_guide == None:
             gr.Info("You must provide a Control Video")
@@ -7032,28 +7033,38 @@ def categorize_resolution(resolution_str):
             return group
     return "1440p"
 
-def group_resolutions(resolutions, selected_resolution):
+def group_resolutions(model_def, resolutions, selected_resolution):
+
+    model_resolutions = model_def.get("resolutions", None)
+    if model_resolutions is not None:
+        selected_group ="Locked"
+        available_groups = [selected_group ]
+        selected_group_resolutions = model_resolutions
+    else:
+        grouped_resolutions = {}
+        for resolution in resolutions:
+            group = categorize_resolution(resolution[1])
+            if group not in grouped_resolutions:
+                grouped_resolutions[group] = []
+            grouped_resolutions[group].append(resolution)
+        
+        available_groups = [group for group in group_thresholds if group in grouped_resolutions]
     
-    grouped_resolutions = {}
-    for resolution in resolutions:
-        group = categorize_resolution(resolution[1])
-        if group not in grouped_resolutions:
-            grouped_resolutions[group] = []
-        grouped_resolutions[group].append(resolution)
-    
-    available_groups = [group for group in group_thresholds if group in grouped_resolutions]
-    
-    selected_group = categorize_resolution(selected_resolution)
-    selected_group_resolutions = grouped_resolutions.get(selected_group, [])
-    available_groups.reverse()
+        selected_group = categorize_resolution(selected_resolution)
+        selected_group_resolutions = grouped_resolutions.get(selected_group, [])
+        available_groups.reverse()
     return available_groups, selected_group_resolutions, selected_group
 
 def change_resolution_group(state, selected_group):
     model_type = state["model_type"]
     model_def = get_model_def(model_type)
     model_resolutions = model_def.get("resolutions", None)
-    resolution_choices, _ = get_resolution_choices(None, model_resolutions)    
-    group_resolution_choices = [ resolution for resolution in resolution_choices if categorize_resolution(resolution[1]) == selected_group ]
+    resolution_choices, _ = get_resolution_choices(None, model_resolutions)   
+    if model_resolutions is None:
+        group_resolution_choices = [ resolution for resolution in resolution_choices if categorize_resolution(resolution[1]) == selected_group ]
+    else:
+        last_resolution = group_resolution_choices[0][1]
+        return gr.update(choices= group_resolution_choices, value= last_resolution) 
 
     last_resolution_per_group = state["last_resolution_per_group"]
     last_resolution = last_resolution_per_group.get(selected_group, "")
@@ -7064,6 +7075,11 @@ def change_resolution_group(state, selected_group):
 
 
 def record_last_resolution(state, resolution):
+
+    model_type = state["model_type"]
+    model_def = get_model_def(model_type)
+    model_resolutions = model_def.get("resolutions", None)
+    if model_resolutions is not None: return
     server_config["last_resolution_choice"] = resolution
     selected_group = categorize_resolution(resolution)
     last_resolution_per_group = state["last_resolution_per_group"]
@@ -7495,11 +7511,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 frames_positions = gr.Text(value=ui_defaults.get("frames_positions","") , visible= "F" in video_prompt_type_value, scale = 2, label= "Positions of Injected Frames separated by Spaces (1=first, no position for Objects / People)" ) 
                 image_refs_relative_size = gr.Slider(20, 100, value=ui_defaults.get("image_refs_relative_size", 50), step=1, label="Rescale Internaly Image Ref (% in relation to Output Video) to change Output Composition", visible = model_def.get("any_image_refs_relative_size", False) and image_outputs)
 
-                no_background_removal = model_def.get("no_background_removal", False)
+                no_background_removal = model_def.get("no_background_removal", False) or image_ref_choices is None
+                background_removal_label = model_def.get("background_removal_label", "Remove Backgrounds behind People / Objects") 
+ 
                 remove_background_images_ref = gr.Dropdown(
                     choices=[
                         ("Keep Backgrounds behind all Reference Images", 0),
-                        ("Remove Backgrounds only behind People / Objects except main Subject / Landscape" if (flux or qwen) else ("Remove Backgrounds behind People / Objects, keep it for Landscape or positioned Frames" if vace else "Remove Backgrounds behind People / Objects") , 1),
+                        (background_removal_label, 1),
                     ],
                     value=0 if no_background_removal else ui_defaults.get("remove_background_images_ref",1),
                     label="Automatic Removal of Background of People or Objects (Only)", scale = 3, visible= "I" in video_prompt_type_value and not no_background_removal
@@ -7591,7 +7609,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 current_resolution_choice = ui_defaults.get("resolution","832x480") if update_form or last_resolution is None else last_resolution
                 model_resolutions = model_def.get("resolutions", None)
                 resolution_choices, current_resolution_choice = get_resolution_choices(current_resolution_choice, model_resolutions)
-                available_groups, selected_group_resolutions, selected_group = group_resolutions(resolution_choices, current_resolution_choice)
+                available_groups, selected_group_resolutions, selected_group = group_resolutions(model_def,resolution_choices, current_resolution_choice)
                 resolution_group = gr.Dropdown(
                 choices = available_groups,
                     value= selected_group,

@@ -846,7 +846,7 @@ class WanAny2V:
         for i, t in enumerate(tqdm(timesteps)):
             guide_scale, guidance_switch_done, trans, denoising_extra = update_guidance(i, t, guide_scale, guide2_scale, guidance_switch_done, switch_threshold, trans, 2, denoising_extra)
             guide_scale, guidance_switch2_done, trans, denoising_extra = update_guidance(i, t, guide_scale, guide3_scale, guidance_switch2_done, switch2_threshold, trans, 3, denoising_extra)
-            offload.set_step_no_for_lora(trans, i)
+            offload.set_step_no_for_lora(trans, start_step_no + i)
             timestep = torch.stack([t])
 
             if timestep_injection:

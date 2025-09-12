@@ -165,6 +165,7 @@ class family_handler():
             }
 
             extra_model_def["lock_image_refs_ratios"] = True
+            extra_model_def["background_removal_label"]= "Remove Backgrounds behind People / Objects, keep it for Landscape or positioned Frames"
 
         if base_model_type in ["standin"]: 
             extra_model_def["lock_image_refs_ratios"] = True

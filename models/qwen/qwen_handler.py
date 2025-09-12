@@ -28,6 +28,7 @@ class family_handler():
                 ],
             "letters_filter": "KI",
             }
+            extra_model_def["background_removal_label"]= "Remove Backgrounds only behind People / Objects except main Subject / Landscape" 
 
         return extra_model_def
 

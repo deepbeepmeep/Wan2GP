@@ -714,14 +714,14 @@ class QwenImagePipeline(): #DiffusionPipeline
                 image_mask_latents = convert_image_to_tensor(image_mask.resize((width // 16, height // 16), resample=Image.Resampling.LANCZOS))
                 image_mask_latents = torch.where(image_mask_latents>-0.5, 1., 0. )[0:1]
                 image_mask_rebuilt = image_mask_latents.repeat_interleave(16, dim=-1).repeat_interleave(16, dim=-2).unsqueeze(0)
-                convert_tensor_to_image( image_mask_rebuilt.squeeze(0).repeat(3,1,1)).save("mmm.png")
+                # convert_tensor_to_image( image_mask_rebuilt.squeeze(0).repeat(3,1,1)).save("mmm.png")
                 image_mask_latents = image_mask_latents.reshape(1, -1, 1).to(device)
 
             prompt_image = image
             if image.size != (image_width, image_height):
                 image = image.resize((image_width, image_height), resample=Image.Resampling.LANCZOS)
 
-            image.save("nnn.png")
+            # image.save("nnn.png")
             image = convert_image_to_tensor(image).unsqueeze(0).unsqueeze(2)
 
         has_neg_prompt = negative_prompt is not None or (
@@ -811,12 +811,15 @@ class QwenImagePipeline(): #DiffusionPipeline
         negative_txt_seq_lens = (
             negative_prompt_embeds_mask.sum(dim=1).tolist() if negative_prompt_embeds_mask is not None else None
         )
-        morph = False
-        if image_mask_latents is not None and denoising_strength <= 1.:
-            first_step = int(len(timesteps) * (1. - denoising_strength))
+        morph, first_step = False, 0
+        if image_mask_latents is not None:
+            randn = torch.randn_like(original_image_latents)
+            if denoising_strength < 1.:
+                first_step = int(len(timesteps) * (1. - denoising_strength))
             if not morph:
                 latent_noise_factor = timesteps[first_step]/1000
-                latents  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
+                # latents  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
+                latents  = original_image_latents  * (1.0 - latent_noise_factor) + randn * latent_noise_factor 
                 timesteps = timesteps[first_step:]
                 self.scheduler.timesteps = timesteps
                 self.scheduler.sigmas= self.scheduler.sigmas[first_step:]
@@ -831,6 +834,7 @@ class QwenImagePipeline(): #DiffusionPipeline
 
 
         for i, t in enumerate(timesteps):
+            offload.set_step_no_for_lora(self.transformer, first_step  + i)
             if self.interrupt:
                 continue
 
@@ -905,7 +909,8 @@ class QwenImagePipeline(): #DiffusionPipeline
             if image_mask_latents is not None:
                 next_t = timesteps[i+1] if i<len(timesteps)-1 else 0
                 latent_noise_factor = next_t / 1000
-                noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
+                    # noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
+                noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + randn * latent_noise_factor 
                 latents  =  noisy_image * (1-image_mask_latents)  + image_mask_latents * latents
                 noisy_image = None
 

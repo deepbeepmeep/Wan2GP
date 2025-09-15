@@ -68,7 +68,13 @@ class family_handler():
                 "visible": False,
             }
 
-        if base_model_type in ["hunyuan_avatar"]: extra_model_def["no_background_removal"] = True
+        if base_model_type in ["hunyuan_avatar"]: 
+            extra_model_def["image_ref_choices"] = {
+                "choices": [("Start Image", "KI")],
+                "letters_filter":"KI",
+                "visible": False,
+            }
+            extra_model_def["no_background_removal"] = True
 
         if base_model_type in ["hunyuan_custom", "hunyuan_custom_edit", "hunyuan_custom_audio", "hunyuan_avatar"]:
             extra_model_def["one_image_ref_needed"] = True
@@ -123,7 +129,7 @@ class family_handler():
         } 
 
     @staticmethod
-    def load_model(model_filename, model_type = None,  base_model_type = None, model_def = None, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False):
+    def load_model(model_filename, model_type = None,  base_model_type = None, model_def = None, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None):
         from .hunyuan import HunyuanVideoSampler
         from mmgp import offload
 

@@ -44,7 +44,7 @@ class model_factory():
         save_quantized = False,
         dtype = torch.bfloat16,
         VAE_dtype = torch.float32,
-        mixed_precision_transformer = False
+        mixed_precision_transformer = False,
     ):
     
 
@@ -117,6 +117,8 @@ class model_factory():
         joint_pass = True,
         sample_solver='default',
         denoising_strength = 1.,
+        model_mode = 0,
+        outpainting_dims = None,
         **bbargs
     ):
         # Generate with different aspect ratios
@@ -205,8 +207,16 @@ class model_factory():
             loras_slists=loras_slists,
             joint_pass = joint_pass,
             denoising_strength=denoising_strength,
-            generator=torch.Generator(device="cuda").manual_seed(seed)
+            generator=torch.Generator(device="cuda").manual_seed(seed),
+            lora_inpaint = image_mask is not None and model_mode == 1,
+            outpainting_dims = outpainting_dims,
         )        
         if image is None: return None
         return image.transpose(0, 1)
+
+    def get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, **kwargs):
+        if model_mode == 0: return [], []
+        preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
+        return [os.path.join("ckpts", os.path.basename(preloadURLs[0]))] , [1]
+
 

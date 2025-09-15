@@ -21,14 +21,15 @@ mutagen
 pyloudnorm
 librosa==0.11.0
 speechbrain==1.0.3
- 
+audio-separator==0.36.1
+
 # UI & interaction
 gradio==5.29.0
 dashscope
 loguru
 
 # Vision & segmentation
-opencv-python>=4.9.0.80
+opencv-python>=4.12.0.88
 segment-anything
 rembg[gpu]==2.0.65
 onnxruntime-gpu

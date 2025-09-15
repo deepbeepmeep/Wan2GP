@@ -166,7 +166,8 @@ class family_handler():
 
             extra_model_def["lock_image_refs_ratios"] = True
             extra_model_def["background_removal_label"]= "Remove Backgrounds behind People / Objects, keep it for Landscape or positioned Frames"
-
+            extra_model_def["video_guide_outpainting"] = [0,1]
+            
         if base_model_type in ["standin"]: 
             extra_model_def["lock_image_refs_ratios"] = True
             extra_model_def["image_ref_choices"] = {
@@ -293,7 +294,7 @@ class family_handler():
 
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None):
         from .configs import WAN_CONFIGS
 
         if test_class_i2v(base_model_type):
@@ -306,6 +307,7 @@ class family_handler():
             config=cfg,
             checkpoint_dir="ckpts",
             model_filename=model_filename,
+            submodel_no_list = submodel_no_list,
             model_type = model_type,        
             model_def = model_def,
             base_model_type=base_model_type,
@@ -381,7 +383,7 @@ class family_handler():
         if base_model_type in ["fantasy"]:
             ui_defaults.update({
                 "audio_guidance_scale": 5.0,
-                "sliding_window_size": 1, 
+                "sliding_window_overlap" : 1,
             })
 
         elif base_model_type in ["multitalk"]:
@@ -398,6 +400,7 @@ class family_handler():
                 "guidance_scale": 5.0,
                 "flow_shift": 7, # 11 for 720p
                 "sliding_window_overlap" : 9,
+                "sliding_window_size": 81, 
                 "sample_solver" : "euler",
                 "video_prompt_type": "QKI",
                 "remove_background_images_ref" : 0,

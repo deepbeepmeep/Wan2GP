@@ -569,6 +569,8 @@ class QwenImagePipeline(): #DiffusionPipeline
         pipeline=None,
         loras_slists=None,
         joint_pass= True,
+        lora_inpaint = False,
+        outpainting_dims = None,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -704,7 +706,7 @@ class QwenImagePipeline(): #DiffusionPipeline
                     image_height, image_width = calculate_new_dimensions(ref_height, ref_width, image_height, image_width, False, block_size=multiple_of)
                 if (image_width,image_height) != image.size:
                     image = image.resize((image_width,image_height), resample=Image.Resampling.LANCZOS) 
-            else:
+            elif not lora_inpaint:
                 # _, image_width, image_height = min(
                 #     (abs(aspect_ratio - w / h), w, h) for w, h in PREFERRED_QWENIMAGE_RESOLUTIONS
                 # )
@@ -721,8 +723,16 @@ class QwenImagePipeline(): #DiffusionPipeline
             if image.size != (image_width, image_height):
                 image = image.resize((image_width, image_height), resample=Image.Resampling.LANCZOS)
 
+            image = convert_image_to_tensor(image)
+            if lora_inpaint:
+                image_mask_rebuilt = torch.where(convert_image_to_tensor(image_mask)>-0.5, 1., 0. )[0:1]
+                image_mask_latents = None
+                green = torch.tensor([-1.0, 1.0, -1.0]).to(image) 
+                green_image = green[:, None, None] .expand_as(image)
+                image = torch.where(image_mask_rebuilt > 0, green_image, image)
+                prompt_image = convert_tensor_to_image(image)
+            image = image.unsqueeze(0).unsqueeze(2)
             # image.save("nnn.png")
-            image = convert_image_to_tensor(image).unsqueeze(0).unsqueeze(2)
 
         has_neg_prompt = negative_prompt is not None or (
             negative_prompt_embeds is not None and negative_prompt_embeds_mask is not None
@@ -940,7 +950,7 @@ class QwenImagePipeline(): #DiffusionPipeline
             )
             latents = latents / latents_std + latents_mean
             output_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
-            if image_mask is not None:
+            if image_mask is not None and not lora_inpaint :  #not (lora_inpaint and outpainting_dims is not None):
                 output_image = image.squeeze(2) * (1 - image_mask_rebuilt) + output_image.to(image) * image_mask_rebuilt 
 
 

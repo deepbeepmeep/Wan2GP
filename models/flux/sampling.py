@@ -203,7 +203,7 @@ def prepare_kontext(
         image_mask_latents = convert_image_to_tensor(img_mask.resize((target_width // 16, target_height // 16), resample=Image.Resampling.LANCZOS))
         image_mask_latents = torch.where(image_mask_latents>-0.5, 1., 0. )[0:1]
         image_mask_rebuilt = image_mask_latents.repeat_interleave(16, dim=-1).repeat_interleave(16, dim=-2).unsqueeze(0)
-        convert_tensor_to_image( image_mask_rebuilt.squeeze(0).repeat(3,1,1)).save("mmm.png")
+        # convert_tensor_to_image( image_mask_rebuilt.squeeze(0).repeat(3,1,1)).save("mmm.png")
         image_mask_latents = image_mask_latents.reshape(1, -1, 1).to(device)        
         return_dict.update({
             "img_msk_latents": image_mask_latents,

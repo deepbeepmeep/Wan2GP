@@ -1,4 +1,6 @@
 import torch
+import gradio as gr
+
 
 def get_qwen_text_encoder_filename(text_encoder_quantization):
     text_encoder_filename = "ckpts/Qwen2.5-VL-7B-Instruct/Qwen2.5-VL-7B-Instruct_bf16.safetensors"
@@ -29,6 +31,16 @@ class family_handler():
             "letters_filter": "KI",
             }
             extra_model_def["background_removal_label"]= "Remove Backgrounds only behind People / Objects except main Subject / Landscape" 
+            extra_model_def["video_guide_outpainting"] = [2]
+            extra_model_def["model_modes"] = {
+                        "choices": [
+                            ("Lora Inpainting: Inpainted area completely unrelated to occulted content", 1),
+                            ("Masked Denoising : Inpainted area may reuse some content that has been occulted", 0),
+                            ],
+                        "default": 1,
+                        "label" : "Inpainting Method",
+                        "image_modes" : [2],
+            }
 
         return extra_model_def
 
@@ -58,7 +70,7 @@ class family_handler():
             }
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None):
         from .qwen_main import model_factory
         from mmgp import offload
 
@@ -99,5 +111,18 @@ class family_handler():
             ui_defaults.update({
                 "video_prompt_type": "KI",
                 "denoising_strength" : 1.,
+                "model_mode" : 0,
             })
 
+    def validate_generative_settings(base_model_type, model_def, inputs):
+        if base_model_type in ["qwen_image_edit_20B"]:
+            model_mode = inputs["model_mode"]
+            denoising_strength= inputs["denoising_strength"]
+            video_guide_outpainting= inputs["video_guide_outpainting"]
+            from wgp import get_outpainting_dims
+            outpainting_dims = get_outpainting_dims(video_guide_outpainting)
+
+            if denoising_strength < 1 and model_mode == 1:
+                gr.Info("Denoising Strength will be ignored while using Lora Inpainting")
+            if outpainting_dims is not None and model_mode == 0 :
+                return "Outpainting is not supported with Masked Denoising  "

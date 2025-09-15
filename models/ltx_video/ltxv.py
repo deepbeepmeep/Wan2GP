@@ -476,14 +476,14 @@ class LTXV:
         images = images.sub_(0.5).mul_(2).squeeze(0)
         return images
 
-    def get_loras_transformer(self, get_model_recursive_prop, video_prompt_type, **kwargs):
+    def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, **kwargs):
         map = {
             "P" : "pose",
             "D" : "depth",
             "E" : "canny",
         }
         loras = []
-        preloadURLs = get_model_recursive_prop(self.model_type,  "preload_URLs")
+        preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
         lora_file_name = ""
         for letter, signature in map.items():
             if letter in video_prompt_type:

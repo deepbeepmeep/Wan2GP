@@ -64,6 +64,7 @@ class WanAny2V:
         config,
         checkpoint_dir,
         model_filename = None,
+        submodel_no_list = None,
         model_type = None, 
         model_def = None,
         base_model_type = None,
@@ -126,50 +127,65 @@ class WanAny2V:
         forcedConfigPath = base_config_file if len(model_filename) > 1 else None
         # forcedConfigPath = base_config_file = f"configs/flf2v_720p.json"
         # model_filename[1] = xmodel_filename
-
+        self.model = self.model2 = None
         source =  model_def.get("source", None)
+        source2 = model_def.get("source2", None)
         module_source =  model_def.get("module_source", None)
+        module_source2 =  model_def.get("module_source2", None)
         if module_source is not None:
-            model_filename = [] + model_filename
-            model_filename[1] = module_source
-            self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath)
-        elif source is not None:
+            self.model = offload.fast_load_transformers_model(model_filename[:1] + [module_source], modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath)
+        if module_source2 is not None:
+            self.model2 = offload.fast_load_transformers_model(model_filename[1:2] + [module_source2], modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath)
+        if source is not None:
             self.model = offload.fast_load_transformers_model(source, modelClass=WanModel, writable_tensors= False, forcedConfigPath= base_config_file)
-        elif self.transformer_switch:
-            shared_modules= {}
-            self.model = offload.fast_load_transformers_model(model_filename[:1], modules = model_filename[2:], modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath,  return_shared_modules= shared_modules)
-            self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = shared_modules, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath)
-            shared_modules = None
-        else:
-            self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath)
-        
-        # self.model = offload.load_model_data(self.model, xmodel_filename )
-        # offload.load_model_data(self.model, "c:/temp/Phantom-Wan-1.3B.pth")
+        if source2 is not None:
+            self.model2 = offload.fast_load_transformers_model(source2, modelClass=WanModel, writable_tensors= False, forcedConfigPath= base_config_file)
 
-        self.model.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype)
-        offload.change_dtype(self.model, dtype, True)
+        if self.model is not None or self.model2 is not None:
+            from wgp import save_model
+            from mmgp.safetensors2 import torch_load_file
+        else:
+            if self.transformer_switch:
+                if 0 in submodel_no_list[2:] and 1 in submodel_no_list:
+                    raise Exception("Shared and non shared modules at the same time across multipe models is not supported")
+                
+                if 0 in submodel_no_list[2:]:
+                    shared_modules= {}
+                    self.model = offload.fast_load_transformers_model(model_filename[:1], modules = model_filename[2:], modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath,  return_shared_modules= shared_modules)
+                    self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = shared_modules, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath)
+                    shared_modules = None
+                else:
+                    modules_for_1 =[ file_name for file_name, submodel_no in zip(model_filename[2:],submodel_no_list[2:] ) if submodel_no ==1 ]
+                    modules_for_2 =[ file_name for file_name, submodel_no in zip(model_filename[2:],submodel_no_list[2:] ) if submodel_no ==2 ]
+                    self.model = offload.fast_load_transformers_model(model_filename[:1], modules = modules_for_1, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath)
+                    self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = modules_for_2, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath)
+
+            else:
+                self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, writable_tensors= False, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath)
+        
+
+        if self.model is not None:
+            self.model.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype)
+            offload.change_dtype(self.model, dtype, True)
+            self.model.eval().requires_grad_(False)
         if self.model2 is not None:
             self.model2.lock_layers_dtypes(torch.float32 if mixed_precision_transformer else dtype)
             offload.change_dtype(self.model2, dtype, True)
-
-        # offload.save_model(self.model, "wan2.1_text2video_1.3B_mbf16.safetensors", do_quantize= False, config_file_path=base_config_file, filter_sd=sd)
-        # offload.save_model(self.model, "wan2.2_image2video_14B_low_mbf16.safetensors",  config_file_path=base_config_file)
-        # offload.save_model(self.model, "wan2.2_image2video_14B_low_quanto_mbf16_int8.safetensors", do_quantize=True, config_file_path=base_config_file)
-        self.model.eval().requires_grad_(False)
-        if self.model2 is not None:
             self.model2.eval().requires_grad_(False)
+
         if module_source is not None:
-            from wgp import save_model
-            from mmgp.safetensors2 import torch_load_file
-            filter = list(torch_load_file(module_source))
-            save_model(self.model, model_type, dtype, None, is_module=True, filter=filter)
-        elif not source is None:
-            from wgp import save_model
-            save_model(self.model, model_type, dtype, None)
+            save_model(self.model, model_type, dtype, None, is_module=True, filter=list(torch_load_file(module_source)), module_source_no=1)
+        if module_source2 is not None:
+            save_model(self.model2, model_type, dtype, None, is_module=True, filter=list(torch_load_file(module_source2)), module_source_no=2)
+        if not source is None:
+            save_model(self.model, model_type, dtype, None, submodel_no= 1)
+        if not source2 is None:
+            save_model(self.model2, model_type, dtype, None, submodel_no= 2)
 
         if save_quantized:
             from wgp import save_quantized_model
-            save_quantized_model(self.model, model_type, model_filename[0], dtype, base_config_file)
+            if self.model is not None:
+                save_quantized_model(self.model, model_type, model_filename[0], dtype, base_config_file)
             if self.model2 is not None:
                 save_quantized_model(self.model2, model_type, model_filename[1], dtype, base_config_file, submodel_no=2)
         self.sample_neg_prompt = config.sample_neg_prompt
@@ -307,7 +323,7 @@ class WanAny2V:
                 canvas = canvas.to(device)
         return ref_img.to(device), canvas
 
-    def prepare_source(self, src_video, src_mask, src_ref_images, total_frames, image_size,  device, keep_video_guide_frames= [], start_frame = 0, pre_src_video = None, inject_frames = [], outpainting_dims = None, any_background_ref = False):
+    def prepare_source(self, src_video, src_mask, src_ref_images, total_frames, image_size,  device, keep_video_guide_frames= [], pre_src_video = None, inject_frames = [], outpainting_dims = None, any_background_ref = False):
         image_sizes = []
         trim_video_guide = len(keep_video_guide_frames)
         def conv_tensor(t, device):
@@ -659,13 +675,15 @@ class WanAny2V:
             inject_from_start = False
             if input_frames != None and denoising_strength < 1 :
                 color_reference_frame = input_frames[:, -1:].clone()
-                if overlapped_latents != None:
-                    overlapped_latents_frames_num = overlapped_latents.shape[2]
-                    overlapped_frames_num = (overlapped_latents_frames_num-1) * 4 + 1
+                if prefix_frames_count > 0:
+                    overlapped_frames_num = prefix_frames_count
+                    overlapped_latents_frames_num = (overlapped_latents_frames_num -1 // 4) + 1 
+                    # overlapped_latents_frames_num = overlapped_latents.shape[2]
+                    # overlapped_frames_num = (overlapped_latents_frames_num-1) * 4 + 1
                 else: 
                     overlapped_latents_frames_num = overlapped_frames_num  = 0
                 if len(keep_frames_parsed) == 0  or image_outputs or  (overlapped_frames_num + len(keep_frames_parsed)) == input_frames.shape[1] and all(keep_frames_parsed) : keep_frames_parsed = [] 
-                injection_denoising_step = int(sampling_steps * (1. - denoising_strength) )
+                injection_denoising_step = int( round(sampling_steps * (1. - denoising_strength),4) )
                 latent_keep_frames = []
                 if source_latents.shape[2] < lat_frames or len(keep_frames_parsed) > 0:
                     inject_from_start = True

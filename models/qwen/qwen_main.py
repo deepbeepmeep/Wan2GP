@@ -214,9 +214,11 @@ class model_factory():
         if image is None: return None
         return image.transpose(0, 1)
 
-    def get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, **kwargs):
-        if model_mode == 0: return [], []
-        preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
-        return [os.path.join("ckpts", os.path.basename(preloadURLs[0]))] , [1]
+	def get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, **kwargs):
+		if model_mode == 0: return [], []
+		preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
+		if not preloadURLs:
+		return [], []
+		return [os.path.join("ckpts", os.path.basename(preloadURLs[0]))] , [1]
 
 

@@ -146,7 +146,7 @@ class WanAny2V:
             from mmgp.safetensors2 import torch_load_file
         else:
             if self.transformer_switch:
-                if 0 in submodel_no_list[2:] and 1 in submodel_no_list:
+                if 0 in submodel_no_list[2:] and 1 in submodel_no_list[2:]:
                     raise Exception("Shared and non shared modules at the same time across multipe models is not supported")
                 
                 if 0 in submodel_no_list[2:]:

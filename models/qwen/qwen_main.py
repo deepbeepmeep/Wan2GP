@@ -217,6 +217,7 @@ class model_factory():
     def get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, **kwargs):
         if model_mode == 0: return [], []
         preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
+        if len(preloadURLs) == 0: return [], []
         return [os.path.join("ckpts", os.path.basename(preloadURLs[0]))] , [1]
 
 

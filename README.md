@@ -111,12 +111,20 @@ conda activate wan2gp
 pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
 pip install -r requirements.txt
 ```
-
-**Run the application:**
+**Run the application**
 ```bash
-python wgp.py  # Text-to-video (default)
-python wgp.py --i2v  # Image-to-video
+python wgp.py
 ```
+
+**Run with Docker**
+```sh
+docker compose --profile <profile> up
+```
+With profile:
+* `t2v` for text2video
+* `i2v` for image2video
+
+
 
 **Update the application:**
 If using Pinokio use Pinokio to update otherwise:

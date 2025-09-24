@@ -7391,7 +7391,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             any_start_image = any_end_image = any_reference_image = any_image_mask = False
             v2i_switch_supported = (vace or t2v or standin) and not image_outputs
             ti2v_2_2 = base_model_type in ["ti2v_2_2"]
-            gallery_height = 350
+            gallery_height = "auto"
             def get_image_gallery(label ="", value = None, single_image_mode = False, visible = False ):
                 with gr.Row(visible = visible) as gallery_row:
                     gallery_amg = AdvancedMediaGallery(media_mode="image", height=gallery_height, columns=4, label=label, initial = value , single_image_mode = single_image_mode )

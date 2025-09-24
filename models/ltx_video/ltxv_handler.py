@@ -35,6 +35,8 @@ class family_handler():
             "selection": ["", "A", "NA", "XA", "XNA"],
         }
 
+        extra_model_def["extra_control_frames"] = 1
+        extra_model_def["dont_cat_preguide"]= True
         return extra_model_def
 
     @staticmethod

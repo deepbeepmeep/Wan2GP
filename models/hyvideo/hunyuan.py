@@ -865,7 +865,7 @@ class HunyuanVideoSampler(Inference):
                 freqs_cos, freqs_sin = self.get_rotary_pos_embed_new(129, target_height, target_width, concat_dict)
             else:
                 if input_frames != None:
-                    target_height, target_width = input_frames.shape[-3:-1]
+                    target_height, target_width = input_frames.shape[-2:]
                 elif input_video != None:
                     target_height, target_width = input_video.shape[-2:]
 
@@ -894,9 +894,10 @@ class HunyuanVideoSampler(Inference):
             pixel_value_bg = input_video.unsqueeze(0)
             pixel_value_mask =  torch.zeros_like(input_video).unsqueeze(0)
         if input_frames != None:
-            pixel_value_video_bg = input_frames.permute(-1,0,1,2).unsqueeze(0).float()
-            pixel_value_video_mask = input_masks.unsqueeze(-1).repeat(1,1,1,3).permute(-1,0,1,2).unsqueeze(0).float()
-            pixel_value_video_bg = pixel_value_video_bg.div_(127.5).add_(-1.)
+            pixel_value_video_bg = input_frames.unsqueeze(0) #.permute(-1,0,1,2).unsqueeze(0).float()
+            # pixel_value_video_bg = pixel_value_video_bg.div_(127.5).add_(-1.)
+            # pixel_value_video_mask = input_masks.unsqueeze(-1).repeat(1,1,1,3).permute(-1,0,1,2).unsqueeze(0).float()
+            pixel_value_video_mask = input_masks.repeat(3,1,1,1).unsqueeze(0)
             if input_video != None:
                 pixel_value_bg = torch.cat([pixel_value_bg, pixel_value_video_bg], dim=2)
                 pixel_value_mask = torch.cat([ pixel_value_mask, pixel_value_video_mask], dim=2)
@@ -908,10 +909,11 @@ class HunyuanVideoSampler(Inference):
             if pixel_value_bg.shape[2] < frame_num:
                 padding_shape = list(pixel_value_bg.shape[0:2]) + [frame_num-pixel_value_bg.shape[2]] +  list(pixel_value_bg.shape[3:])  
                 pixel_value_bg = torch.cat([pixel_value_bg, torch.full(padding_shape, -1, dtype=pixel_value_bg.dtype, device= pixel_value_bg.device ) ], dim=2)
-                pixel_value_mask = torch.cat([ pixel_value_mask, torch.full(padding_shape, 255, dtype=pixel_value_mask.dtype, device= pixel_value_mask.device ) ], dim=2)
+                # pixel_value_mask = torch.cat([ pixel_value_mask, torch.full(padding_shape, 255, dtype=pixel_value_mask.dtype, device= pixel_value_mask.device ) ], dim=2)
+                pixel_value_mask = torch.cat([ pixel_value_mask, torch.full(padding_shape, 1, dtype=pixel_value_mask.dtype, device= pixel_value_mask.device ) ], dim=2)
 
             bg_latents = self.vae.encode(pixel_value_bg).latent_dist.sample()                
-            pixel_value_mask = pixel_value_mask.div_(127.5).add_(-1.)             
+            pixel_value_mask = pixel_value_mask.mul_(2).add_(-1.)    # unmasked pixels is -1 (no 0 as usual) and masked is 1 
             mask_latents = self.vae.encode(pixel_value_mask).latent_dist.sample()
             bg_latents = torch.cat([bg_latents, mask_latents], dim=1)
             bg_latents.mul_(self.vae.config.scaling_factor)

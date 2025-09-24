@@ -3,10 +3,10 @@ import numpy as np
 import gradio as gr
 
 def test_class_i2v(base_model_type):    
-    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk" ]
+    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate" ]
 
 def text_oneframe_overlap(base_model_type):
-    return test_class_i2v(base_model_type) and not test_multitalk(base_model_type)
+    return test_class_i2v(base_model_type) and not (test_multitalk(base_model_type) or base_model_type in ["animate"]) or test_wan_5B(base_model_type)
 
 def test_class_1_3B(base_model_type):    
     return base_model_type in [ "vace_1.3B", "t2v_1.3B", "recam_1.3B","phantom_1.3B","fun_inp_1.3B"]
@@ -17,6 +17,8 @@ def test_multitalk(base_model_type):
 def test_standin(base_model_type):
     return base_model_type in ["standin", "vace_standin_14B"]
 
+def test_wan_5B(base_model_type):
+    return base_model_type in ["ti2v_2_2", "lucy_edit"]
 class family_handler():
 
     @staticmethod
@@ -36,7 +38,7 @@ class family_handler():
                 def_mag_ratios = [1.00124, 1.00155, 0.99822, 0.99851, 0.99696, 0.99687, 0.99703, 0.99732, 0.9966, 0.99679, 0.99602, 0.99658, 0.99578, 0.99664, 0.99484, 0.9949, 0.99633, 0.996, 0.99659, 0.99683, 0.99534, 0.99549, 0.99584, 0.99577, 0.99681, 0.99694, 0.99563, 0.99554, 0.9944, 0.99473, 0.99594, 0.9964, 0.99466, 0.99461, 0.99453, 0.99481, 0.99389, 0.99365, 0.99391, 0.99406, 0.99354, 0.99361, 0.99283, 0.99278, 0.99268, 0.99263, 0.99057, 0.99091, 0.99125, 0.99126, 0.65523, 0.65252, 0.98808, 0.98852, 0.98765, 0.98736, 0.9851, 0.98535, 0.98311, 0.98339, 0.9805, 0.9806, 0.97776, 0.97771, 0.97278, 0.97286, 0.96731, 0.96728, 0.95857, 0.95855, 0.94385, 0.94385, 0.92118, 0.921, 0.88108, 0.88076, 0.80263, 0.80181]
             elif base_model_type in ["i2v_2_2"]:
                 def_mag_ratios = [0.99191, 0.99144, 0.99356, 0.99337, 0.99326, 0.99285, 0.99251, 0.99264, 0.99393, 0.99366, 0.9943, 0.9943, 0.99276, 0.99288, 0.99389, 0.99393, 0.99274, 0.99289, 0.99316, 0.9931, 0.99379, 0.99377, 0.99268, 0.99271, 0.99222, 0.99227, 0.99175, 0.9916, 0.91076, 0.91046, 0.98931, 0.98933, 0.99087, 0.99088, 0.98852, 0.98855, 0.98895, 0.98896, 0.98806, 0.98808, 0.9871, 0.98711, 0.98613, 0.98618, 0.98434, 0.98435, 0.983, 0.98307, 0.98185, 0.98187, 0.98131, 0.98131, 0.9783, 0.97835, 0.97619, 0.9762, 0.97264, 0.9727, 0.97088, 0.97098, 0.96568, 0.9658, 0.96045, 0.96055, 0.95322, 0.95335, 0.94579, 0.94594, 0.93297, 0.93311, 0.91699, 0.9172, 0.89174, 0.89202, 0.8541, 0.85446, 0.79823, 0.79902]
-            elif base_model_type in ["ti2v_2_2"]:
+            elif test_wan_5B(base_model_type):
                 if inputs.get("image_start", None) is not None and inputs.get("video_source", None) is not None : # t2v
                     def_mag_ratios = [0.99505, 0.99389, 0.99441, 0.9957, 0.99558, 0.99551, 0.99499, 0.9945, 0.99534, 0.99548, 0.99468, 0.9946, 0.99463, 0.99458, 0.9946, 0.99453, 0.99408, 0.99404, 0.9945, 0.99441, 0.99409, 0.99398, 0.99403, 0.99397, 0.99382, 0.99377, 0.99349, 0.99343, 0.99377, 0.99378, 0.9933, 0.99328, 0.99303, 0.99301, 0.99217, 0.99216, 0.992, 0.99201, 0.99201, 0.99202, 0.99133, 0.99132, 0.99112, 0.9911, 0.99155, 0.99155, 0.98958, 0.98957, 0.98959, 0.98958, 0.98838, 0.98835, 0.98826, 0.98825, 0.9883, 0.98828, 0.98711, 0.98709, 0.98562, 0.98561, 0.98511, 0.9851, 0.98414, 0.98412, 0.98284, 0.98282, 0.98104, 0.98101, 0.97981, 0.97979, 0.97849, 0.97849, 0.97557, 0.97554, 0.97398, 0.97395, 0.97171, 0.97166, 0.96917, 0.96913, 0.96511, 0.96507, 0.96263, 0.96257, 0.95839, 0.95835, 0.95483, 0.95475, 0.94942, 0.94936, 0.9468, 0.94678, 0.94583, 0.94594, 0.94843, 0.94872, 0.96949, 0.97015]
                 else: # i2v
@@ -83,11 +85,13 @@ class family_handler():
         vace_class = base_model_type in ["vace_14B", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B"] 
         extra_model_def["vace_class"] = vace_class
 
-        if test_multitalk(base_model_type):
+        if base_model_type in ["animate"]:
+            fps = 30
+        elif test_multitalk(base_model_type):
             fps = 25
         elif base_model_type in ["fantasy"]:
             fps = 23
-        elif base_model_type in ["ti2v_2_2"]:
+        elif test_wan_5B(base_model_type):
             fps = 24
         else:
             fps = 16
@@ -100,17 +104,16 @@ class family_handler():
         extra_model_def.update({
         "frames_minimum" : frames_minimum,
         "frames_steps" : frames_steps, 
-        "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "fantasy"] or test_class_i2v(base_model_type) or vace_class,  #"ti2v_2_2",
+        "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "fantasy", "animate"] or test_class_i2v(base_model_type) or test_wan_5B(base_model_type) or vace_class,  #"ti2v_2_2",
         "multiple_submodels" : multiple_submodels,
         "guidance_max_phases" : 3,
         "skip_layer_guidance" : True,        
         "cfg_zero" : True,
         "cfg_star" : True,
         "adaptive_projected_guidance" : True,  
-        "tea_cache" : not (base_model_type in ["i2v_2_2", "ti2v_2_2" ] or multiple_submodels),
+        "tea_cache" : not (base_model_type in ["i2v_2_2"] or test_wan_5B(base_model_type) or multiple_submodels),
         "mag_cache" : True,
         "keep_frames_video_guide_not_supported": base_model_type in ["infinitetalk"],
-        "convert_image_guide_to_video" : True,
         "sample_solvers":[
                             ("unipc", "unipc"),
                             ("euler", "euler"),
@@ -146,6 +149,36 @@ class family_handler():
             }
 
             # extra_model_def["at_least_one_image_ref_needed"] = True
+        if base_model_type in ["lucy_edit"]:
+            extra_model_def["keep_frames_video_guide_not_supported"] = True
+            extra_model_def["guide_preprocessing"] = {
+                    "selection": ["UV"],
+                    "labels" : { "UV": "Control Video"},
+                    "visible": False,
+                }
+
+        if base_model_type in ["animate"]:
+            extra_model_def["guide_custom_choices"] = {
+            "choices":[
+                ("Animate Person in Reference Image using Motion of Person in Control Video", "PVBXAKI"),
+                ("Replace Person in Control Video Person in Reference Image", "PVBAI"),
+            ],
+            "default": "KI",
+            "letters_filter": "PVBXAKI",
+            "label": "Type of Process",
+            "show_label" : False,
+            }
+            extra_model_def["video_guide_outpainting"] = [0,1]
+            extra_model_def["keep_frames_video_guide_not_supported"] = True
+            extra_model_def["extract_guide_from_window_start"] = True
+            extra_model_def["forced_guide_mask_inputs"] = True
+            extra_model_def["background_removal_label"]= "Remove Backgrounds behind People (Animate Mode Only)"
+            extra_model_def["background_ref_outpainted"] = False
+            extra_model_def["return_image_refs_tensor"] = True
+            extra_model_def["guide_inpaint_color"] = 0
+
+
+
         if vace_class:
             extra_model_def["guide_preprocessing"] = {
                     "selection": ["", "UV", "PV", "DV", "SV", "LV", "CV", "MV", "V", "PDV", "PSV", "PLV" , "DSV", "DLV", "SLV"],
@@ -157,19 +190,22 @@ class family_handler():
 
             extra_model_def["image_ref_choices"] = {
                     "choices": [("None", ""),
-                    ("Inject only People / Objects", "I"),
-                    ("Inject Landscape and then People / Objects", "KI"),
-                    ("Inject Frames and then People / Objects", "FI"),
+                    ("People / Objects", "I"),
+                    ("Landscape followed by People / Objects (if any)", "KI"),
+                    ("Positioned Frames followed by People / Objects (if any)", "FI"),
                     ],
                     "letters_filter":  "KFI",
             }
 
-            extra_model_def["lock_image_refs_ratios"] = True
-            extra_model_def["background_removal_label"]= "Remove Backgrounds behind People / Objects, keep it for Landscape or positioned Frames"
+            extra_model_def["background_removal_label"]= "Remove Backgrounds behind People / Objects, keep it for Landscape or Positioned Frames"
             extra_model_def["video_guide_outpainting"] = [0,1]
+            extra_model_def["pad_guide_video"] = True
+            extra_model_def["guide_inpaint_color"] = 127.5
+            extra_model_def["forced_guide_mask_inputs"] = True
+            extra_model_def["return_image_refs_tensor"] = True
             
         if base_model_type in ["standin"]: 
-            extra_model_def["lock_image_refs_ratios"] = True
+            extra_model_def["fit_into_canvas_image_refs"] = 0
             extra_model_def["image_ref_choices"] = {
                 "choices": [
                     ("No Reference Image", ""),
@@ -209,10 +245,12 @@ class family_handler():
                     "visible" : False,
                 }
 
-        if vace_class or base_model_type in ["infinitetalk"]:
+        if vace_class or base_model_type in ["infinitetalk", "animate"]:
             image_prompt_types_allowed = "TVL"
         elif base_model_type in ["ti2v_2_2"]:
             image_prompt_types_allowed = "TSVL"
+        elif base_model_type in ["lucy_edit"]:
+            image_prompt_types_allowed = "TVL"
         elif test_multitalk(base_model_type) or base_model_type in ["fantasy"]:
             image_prompt_types_allowed = "SVL"
         elif i2v:
@@ -234,8 +272,8 @@ class family_handler():
     def query_supported_types():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_multitalk_14B", "vace_standin_14B",
                     "t2v_1.3B", "standin", "t2v", "vace_1.3B", "phantom_1.3B", "phantom_14B", 
-                    "recam_1.3B", 
-                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "flf2v_720p", "fun_inp_1.3B", "fun_inp"]
+                    "recam_1.3B", "animate",
+                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp"]
 
 
     @staticmethod
@@ -265,11 +303,12 @@ class family_handler():
 
     @staticmethod
     def get_vae_block_size(base_model_type):
-        return 32 if base_model_type == "ti2v_2_2" else 16
+        return 32 if test_wan_5B(base_model_type) else 16
 
     @staticmethod
     def get_rgb_factors(base_model_type ):
         from shared.RGB_factors import get_rgb_factors
+        if test_wan_5B(base_model_type): base_model_type = "ti2v_2_2"
         latent_rgb_factors, latent_rgb_factors_bias = get_rgb_factors("wan", base_model_type)
         return latent_rgb_factors, latent_rgb_factors_bias
     
@@ -283,7 +322,7 @@ class family_handler():
             "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors" ] +  computeList(model_filename)  ]   
         }]
 
-        if base_model_type == "ti2v_2_2":
+        if test_wan_5B(base_model_type):
             download_def += [    {
                 "repoId" : "DeepBeepMeep/Wan2.2", 
                 "sourceFolderList" :  [""],
@@ -377,8 +416,8 @@ class family_handler():
         ui_defaults.update({
             "sample_solver": "unipc",
         })
-        if test_class_i2v(base_model_type):
-            ui_defaults["image_prompt_type"] = "S"
+        if test_class_i2v(base_model_type) and "S" in model_def["image_prompt_types_allowed"]:
+            ui_defaults["image_prompt_type"] = "S" 
 
         if base_model_type in ["fantasy"]:
             ui_defaults.update({
@@ -434,9 +473,15 @@ class family_handler():
                 "image_prompt_type": "T", 
             })
 
-        if base_model_type in ["recam_1.3B"]: 
+        if base_model_type in ["recam_1.3B", "lucy_edit"]: 
             ui_defaults.update({
                 "video_prompt_type": "UV", 
+            })
+        elif base_model_type in ["animate"]: 
+            ui_defaults.update({
+                "video_prompt_type": "PVBXAKI", 
+                "mask_expand": 20,
+                "audio_prompt_type": "R",
             })
 
         if text_oneframe_overlap(base_model_type):

@@ -21,6 +21,7 @@ class family_handler():
         extra_model_def["fps"] =fps
         extra_model_def["frames_minimum"] = 17
         extra_model_def["frames_steps"] = 20
+        extra_model_def["latent_size"] = 4
         extra_model_def["sliding_window"] = True
         extra_model_def["skip_layer_guidance"] = True
         extra_model_def["tea_cache"] = True

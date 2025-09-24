@@ -1,0 +1,13 @@
+{
+    "model": {
+        "name": "Wan2.2 Animate",
+        "architecture": "animate",
+        "description": "Wan-Animate takes a video and a character image as input, and generates a video in either 'animation' or 'replacement' mode.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_animate_14B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_animate_14B_quanto_fp16_int8.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_animate_14B_quanto_bf16_int8.safetensors"
+        ],
+        "group": "wan2_2"
+    }
+}

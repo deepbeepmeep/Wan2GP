@@ -56,7 +56,7 @@ class family_handler():
             }
 
 
-        extra_model_def["lock_image_refs_ratios"] = True
+        extra_model_def["fit_into_canvas_image_refs"] = 0
 
         return extra_model_def
 

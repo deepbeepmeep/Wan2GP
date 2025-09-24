@@ -232,6 +232,9 @@ def save_video(tensor,
                 retry=5):
     """Save tensor as video with configurable codec and container options."""
         
+    if torch.is_tensor(tensor) and len(tensor.shape) == 4:
+        tensor = tensor.unsqueeze(0)
+        
     suffix = f'.{container}'
     cache_file = osp.join('/tmp', rand_name(suffix=suffix)) if save_file is None else save_file
     if not cache_file.endswith(suffix):

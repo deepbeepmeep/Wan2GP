@@ -142,8 +142,8 @@ class model_factory:
             n_prompt: str = None,
             sampling_steps: int = 20,
             input_ref_images = None,
-            image_guide= None,
-            image_mask= None,
+            input_frames= None,
+            input_masks= None,
             width= 832,
             height=480,
             embedded_guidance_scale: float = 2.5,
@@ -197,10 +197,12 @@ class model_factory:
                     for new_img in input_ref_images[1:]:
                         stiched = stitch_images(stiched, new_img)
                     input_ref_images  = [stiched]
-            elif image_guide is not None:
-                input_ref_images = [image_guide] 
+            elif input_frames is not None:
+                input_ref_images = [convert_tensor_to_image(input_frames) ] 
             else:
                 input_ref_images = None
+            image_mask = None if input_masks is None else convert_tensor_to_image(input_masks, mask_levels= True) 
+        
 
             if self.name in ['flux-dev-uso', 'flux-dev-umo']  :
                 inp, height, width = prepare_multi_ip(
@@ -253,8 +255,8 @@ class model_factory:
             if image_mask is not None:
                 from shared.utils.utils import convert_image_to_tensor
                 img_msk_rebuilt = inp["img_msk_rebuilt"]
-                img= convert_image_to_tensor(image_guide) 
-                x = img.squeeze(2) * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt 
+                img= input_frames.squeeze(1).unsqueeze(0) # convert_image_to_tensor(image_guide) 
+                x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt 
 
             x = x.clamp(-1, 1)
             x = x.transpose(0, 1)

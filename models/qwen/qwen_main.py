@@ -17,7 +17,7 @@ from .autoencoder_kl_qwenimage import AutoencoderKLQwenImage
 from diffusers import FlowMatchEulerDiscreteScheduler
 from .pipeline_qwenimage import QwenImagePipeline
 from PIL import Image
-from shared.utils.utils import calculate_new_dimensions
+from shared.utils.utils import calculate_new_dimensions, convert_tensor_to_image
 
 def stitch_images(img1, img2):
     # Resize img2 to match img1's height
@@ -103,8 +103,8 @@ class model_factory():
         n_prompt = None,
         sampling_steps: int = 20,
         input_ref_images = None,
-        image_guide= None,
-        image_mask= None,
+        input_frames= None,
+        input_masks= None,
         width= 832,
         height=480,
         guide_scale: float = 4,
@@ -179,8 +179,10 @@ class model_factory():
 
         if n_prompt is None or len(n_prompt) == 0:
             n_prompt=  "text, watermark, copyright, blurry, low resolution"
-        if image_guide is not None:
-            input_ref_images = [image_guide] 
+
+        image_mask = None if input_masks is None else convert_tensor_to_image(input_masks, mask_levels= True) 
+        if input_frames is not None:
+            input_ref_images = [convert_tensor_to_image(input_frames) ] 
         elif input_ref_images is not None:
             # image stiching method
             stiched = input_ref_images[0]

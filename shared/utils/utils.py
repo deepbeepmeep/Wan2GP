@@ -1,4 +1,3 @@
-# Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import argparse
 import os
 import os.path as osp
@@ -32,6 +31,14 @@ def seed_everything(seed: int):
         torch.cuda.manual_seed(seed)
     if torch.backends.mps.is_available():
         torch.mps.manual_seed(seed)
+
+def has_video_file_extension(filename):
+    extension = os.path.splitext(filename)[-1].lower()
+    return extension in [".mp4"]
+
+def has_image_file_extension(filename):
+    extension = os.path.splitext(filename)[-1].lower()
+    return extension in [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"]
 
 def resample(video_fps, video_frames_count, max_target_frames_count, target_fps, start_target_frame ):
     import math
@@ -95,7 +102,7 @@ def get_video_info(video_path):
     
     return fps, width, height, frame_count
 
-def get_video_frame(file_name: str, frame_no: int, return_last_if_missing: bool = False, return_PIL = True) -> torch.Tensor:
+def get_video_frame(file_name: str, frame_no: int, return_last_if_missing: bool = False, target_fps = None,  return_PIL = True) -> torch.Tensor:
     """Extract nth frame from video as PyTorch tensor normalized to [-1, 1]."""
     cap = cv2.VideoCapture(file_name)
     
@@ -103,7 +110,10 @@ def get_video_frame(file_name: str, frame_no: int, return_last_if_missing: bool 
         raise ValueError(f"Cannot open video: {file_name}")
     
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
+    fps = round(cap.get(cv2.CAP_PROP_FPS))
+    if target_fps is not None:
+        frame_no = round(target_fps * frame_no /fps)
+
     # Handle out of bounds
     if frame_no >= total_frames or frame_no < 0:
         if return_last_if_missing:
@@ -176,9 +186,15 @@ def remove_background(img, session=None):
 def convert_image_to_tensor(image):
     return torch.from_numpy(np.array(image).astype(np.float32)).div_(127.5).sub_(1.).movedim(-1, 0)
 
-def convert_tensor_to_image(t, frame_no = -1):    
-    t = t[:, frame_no] if frame_no >= 0 else t
-    return Image.fromarray(t.clone().add_(1.).mul_(127.5).permute(1,2,0).to(torch.uint8).cpu().numpy())
+def convert_tensor_to_image(t, frame_no = 0, mask_levels = False):
+    if len(t.shape) == 4:
+        t = t[:, frame_no] 
+    if t.shape[0]== 1:
+        t = t.expand(3,-1,-1)
+    if mask_levels:
+        return Image.fromarray(t.clone().mul_(255).permute(1,2,0).to(torch.uint8).cpu().numpy())
+    else:
+        return Image.fromarray(t.clone().add_(1.).mul_(127.5).permute(1,2,0).to(torch.uint8).cpu().numpy())
 
 def save_image(tensor_image, name, frame_no = -1):
     convert_tensor_to_image(tensor_image, frame_no).save(name)
@@ -257,16 +273,18 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
         image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
     return image, new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None ):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False ):
     if rm_background:
         session = new_session() 
 
     output_list =[]
+    output_mask_list =[]
     for i, img in enumerate(img_list):
         width, height =  img.size 
-        if fit_into_canvas == None or any_background_ref == 1 and i==0 or any_background_ref == 2:
-            if outpainting_dims is not None:
-                resized_image =img 
+        resized_mask = None
+        if any_background_ref == 1 and i==0 or any_background_ref == 2:
+            if outpainting_dims is not None and background_ref_outpainted:
+                resized_image, resized_mask = fit_image_into_canvas(img, (budget_height, budget_width), inpaint_color, full_frame = True, outpainting_dims = outpainting_dims, return_mask= True, return_image= True)
             elif img.size != (budget_width, budget_height):
                 resized_image= img.resize((budget_width, budget_height), resample=Image.Resampling.LANCZOS) 
             else:
@@ -289,146 +307,106 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
         if rm_background  and not (any_background_ref and i==0 or any_background_ref == 2) :
             # resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1,alpha_matting_background_threshold = 70, alpha_foreground_background_threshold = 100, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
             resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
-        output_list.append(resized_image) #alpha_matting_background_threshold = 30, alpha_foreground_background_threshold = 200,
-    return output_list
+        if return_tensor:
+            output_list.append(convert_image_to_tensor(resized_image).unsqueeze(1)) 
+        else:
+            output_list.append(resized_image) 
+        output_mask_list.append(resized_mask)
+    return output_list, output_mask_list
 
+def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, return_mask = False, return_image = False):
+    from shared.utils.utils import save_image
+    inpaint_color = canvas_tf_bg / 127.5 - 1
 
-
-
-def str2bool(v):
-    """
-    Convert a string to a boolean.
-
-    Supported true values: 'yes', 'true', 't', 'y', '1'
-    Supported false values: 'no', 'false', 'f', 'n', '0'
-
-    Args:
-        v (str): String to convert.
-
-    Returns:
-        bool: Converted boolean value.
-
-    Raises:
-        argparse.ArgumentTypeError: If the value cannot be converted to boolean.
-    """
-    if isinstance(v, bool):
-        return v
-    v_lower = v.lower()
-    if v_lower in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v_lower in ('no', 'false', 'f', 'n', '0'):
-        return False
+    ref_width, ref_height = ref_img.size
+    if (ref_height, ref_width) == image_size and outpainting_dims  == None:
+        ref_img = TF.to_tensor(ref_img).sub_(0.5).div_(0.5).unsqueeze(1)
+        canvas = torch.zeros_like(ref_img) if return_mask else None
     else:
-        raise argparse.ArgumentTypeError('Boolean value expected (True/False)')
+        if outpainting_dims != None:
+            final_height, final_width = image_size
+            canvas_height, canvas_width, margin_top, margin_left =   get_outpainting_frame_location(final_height, final_width,  outpainting_dims, 1)        
+        else:
+            canvas_height, canvas_width = image_size
+        if full_frame:
+            new_height = canvas_height
+            new_width = canvas_width
+            top = left = 0 
+        else:
+            # if fill_max  and (canvas_height - new_height) < 16:
+            #     new_height = canvas_height
+            # if fill_max  and (canvas_width - new_width) < 16:
+            #     new_width = canvas_width
+            scale = min(canvas_height / ref_height, canvas_width / ref_width)
+            new_height = int(ref_height * scale)
+            new_width = int(ref_width * scale)
+            top = (canvas_height - new_height) // 2
+            left = (canvas_width - new_width) // 2
+        ref_img = ref_img.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
+        ref_img = TF.to_tensor(ref_img).sub_(0.5).div_(0.5).unsqueeze(1)
+        if outpainting_dims != None:
+            canvas = torch.full((3, 1, final_height, final_width), inpaint_color, dtype= torch.float, device=device) # [-1, 1]
+            canvas[:, :, margin_top + top:margin_top + top + new_height, margin_left + left:margin_left + left + new_width] = ref_img 
+        else:
+            canvas = torch.full((3, 1, canvas_height, canvas_width), inpaint_color, dtype= torch.float, device=device) # [-1, 1]
+            canvas[:, :, top:top + new_height, left:left + new_width] = ref_img 
+        ref_img = canvas
+        canvas = None
+        if return_mask:
+            if outpainting_dims != None:
+                canvas = torch.ones((1, 1, final_height, final_width), dtype= torch.float, device=device) # [-1, 1]
+                canvas[:, :, margin_top + top:margin_top + top + new_height, margin_left + left:margin_left + left + new_width] = 0
+            else:
+                canvas = torch.ones((1, 1, canvas_height, canvas_width), dtype= torch.float, device=device) # [-1, 1]
+                canvas[:, :, top:top + new_height, left:left + new_width] = 0
+            canvas = canvas.to(device)
+    if return_image:
+        return convert_tensor_to_image(ref_img), canvas
 
+    return ref_img.to(device), canvas
 
-import sys, time
+def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, device ="cpu"):
+    src_videos, src_masks = [], []
+    inpaint_color_compressed = guide_inpaint_color/127.5 - 1
+    prepend_count = pre_video_guide.shape[1] if pre_video_guide is not None else 0
+    for guide_no, (cur_video_guide, cur_video_mask) in enumerate(zip(video_guides, video_masks)):
+        src_video, src_mask = cur_video_guide, cur_video_mask
+        if pre_video_guide is not None:
+            src_video = pre_video_guide if src_video is None else torch.cat( [pre_video_guide, src_video], dim=1)
+            if any_mask:
+                src_mask = torch.zeros_like(pre_video_guide[0:1]) if src_mask is None else torch.cat( [torch.zeros_like(pre_video_guide[0:1]), src_mask], dim=1)
 
-# Global variables to track download progress
-_start_time = None
-_last_time = None
-_last_downloaded = 0
-_speed_history = []
-_update_interval = 0.5  # Update speed every 0.5 seconds
+        if any_guide_padding:
+            if src_video is None:
+                src_video = torch.full( (3, current_video_length, *image_size ), inpaint_color_compressed, dtype = torch.float, device= device)
+            elif src_video.shape[1] < current_video_length:
+                src_video = torch.cat([src_video, torch.full( (3, current_video_length - src_video.shape[1], *src_video.shape[-2:]  ), inpaint_color_compressed, dtype = src_video.dtype, device= src_video.device) ], dim=1)
+        elif src_video is not None:
+            new_num_frames = (src_video.shape[1] - 1) // latent_size * latent_size + 1 
+            src_video = src_video[:, :new_num_frames]
 
-def progress_hook(block_num, block_size, total_size, filename=None):
-    """
-    Simple progress bar hook for urlretrieve
-    
-    Args:
-        block_num: Number of blocks downloaded so far
-        block_size: Size of each block in bytes
-        total_size: Total size of the file in bytes
-        filename: Name of the file being downloaded (optional)
-    """
-    global _start_time, _last_time, _last_downloaded, _speed_history, _update_interval
-    
-    current_time = time.time()
-    downloaded = block_num * block_size
-    
-    # Initialize timing on first call
-    if _start_time is None or block_num == 0:
-        _start_time = current_time
-        _last_time = current_time
-        _last_downloaded = 0
-        _speed_history = []
-    
-    # Calculate download speed only at specified intervals
-    speed = 0
-    if current_time - _last_time >= _update_interval:
-        if _last_time > 0:
-            current_speed = (downloaded - _last_downloaded) / (current_time - _last_time)
-            _speed_history.append(current_speed)
-            # Keep only last 5 speed measurements for smoothing
-            if len(_speed_history) > 5:
-                _speed_history.pop(0)
-            # Average the recent speeds for smoother display
-            speed = sum(_speed_history) / len(_speed_history)
-        
-        _last_time = current_time
-        _last_downloaded = downloaded
-    elif _speed_history:
-        # Use the last calculated average speed
-        speed = sum(_speed_history) / len(_speed_history)
-    # Format file sizes and speed
-    def format_bytes(bytes_val):
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if bytes_val < 1024:
-                return f"{bytes_val:.1f}{unit}"
-            bytes_val /= 1024
-        return f"{bytes_val:.1f}TB"
-    
-    file_display = filename if filename else "Unknown file"
-    
-    if total_size <= 0:
-        # If total size is unknown, show downloaded bytes
-        speed_str = f" @ {format_bytes(speed)}/s" if speed > 0 else ""
-        line = f"\r{file_display}: {format_bytes(downloaded)}{speed_str}"
-        # Clear any trailing characters by padding with spaces
-        sys.stdout.write(line.ljust(80))
-        sys.stdout.flush()
-        return
-    
-    downloaded = block_num * block_size
-    percent = min(100, (downloaded / total_size) * 100)
-    
-    # Create progress bar (40 characters wide to leave room for other info)
-    bar_length = 40
-    filled = int(bar_length * percent / 100)
-    bar = '█' * filled + '░' * (bar_length - filled)
-    
-    # Format file sizes and speed
-    def format_bytes(bytes_val):
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if bytes_val < 1024:
-                return f"{bytes_val:.1f}{unit}"
-            bytes_val /= 1024
-        return f"{bytes_val:.1f}TB"
-    
-    speed_str = f" @ {format_bytes(speed)}/s" if speed > 0 else ""
-    
-    # Display progress with filename first
-    line = f"\r{file_display}: [{bar}] {percent:.1f}% ({format_bytes(downloaded)}/{format_bytes(total_size)}){speed_str}"
-    # Clear any trailing characters by padding with spaces
-    sys.stdout.write(line.ljust(100))
-    sys.stdout.flush()
-    
-    # Print newline when complete
-    if percent >= 100:
-        print()
+        if any_mask and src_video is not None:
+            if src_mask is None:                   
+                src_mask = torch.ones_like(src_video[:1])
+            elif src_mask.shape[1] < src_video.shape[1]:
+                src_mask = torch.cat([src_mask, torch.full( (1, src_video.shape[1]- src_mask.shape[1], *src_mask.shape[-2:]  ), 1, dtype = src_video.dtype, device= src_video.device) ], dim=1)
+            else:
+                src_mask = src_mask[:, :src_video.shape[1]]                                        
 
-# Wrapper function to include filename in progress hook
-def create_progress_hook(filename):
-    """Creates a progress hook with the filename included"""
-    global _start_time, _last_time, _last_downloaded, _speed_history
-    # Reset timing variables for new download
-    _start_time = None
-    _last_time = None
-    _last_downloaded = 0
-    _speed_history = []
-    
-    def hook(block_num, block_size, total_size):
-        return progress_hook(block_num, block_size, total_size, filename)
-    return hook
+        if src_video is not None :
+            for k, keep in enumerate(keep_video_guide_frames):
+                if not keep:
+                    pos = prepend_count + k
+                    src_video[:, pos:pos+1] = inpaint_color_compressed
+                    if any_mask: src_mask[:, pos:pos+1] = 1
+
+            for k, frame in enumerate(inject_frames):
+                if frame != None:
+                    pos = prepend_count + k
+                    src_video[:, pos:pos+1], msk = fit_image_into_canvas(frame, image_size, guide_inpaint_color, device, True, outpainting_dims, return_mask= any_mask)
+                    if any_mask: src_mask[:, pos:pos+1] = msk
+        src_videos.append(src_video)
+        src_masks.append(src_mask)
+    return src_videos, src_masks
 
 

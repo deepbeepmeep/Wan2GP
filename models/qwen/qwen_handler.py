@@ -17,7 +17,7 @@ class family_handler():
                             ("Default", "default"),
                             ("Lightning", "lightning")],
             "guidance_max_phases" : 1,
-            "lock_image_refs_ratios": True,
+            "fit_into_canvas_image_refs": 0,
         }
 
         if base_model_type in ["qwen_image_edit_20B"]: 

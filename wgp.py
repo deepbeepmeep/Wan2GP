@@ -63,8 +63,8 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.6.0"
-WanGP_version = "8.71"
-settings_version = 2.35
+WanGP_version = "8.73"
+settings_version = 2.36
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 
@@ -4993,7 +4993,7 @@ def generate_video(
                         frames_to_inject[pos] = image_refs[i] 
 
 
-            video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = None
+            video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = sparse_video_image = None
             if video_guide is not None:
                 keep_frames_parsed_full, error = parse_keep_frames_video_guide(keep_frames_video_guide, source_video_frames_count -source_video_overlap_frames_count + requested_frames_to_generate)
                 if len(error) > 0:
@@ -5081,7 +5081,7 @@ def generate_video(
                 any_guide_padding = model_def.get("pad_guide_video", False)
                 from shared.utils.utils import prepare_video_guide_and_mask
                 src_videos, src_masks = prepare_video_guide_and_mask(   [video_guide_processed] + ([] if video_guide_processed2 is None else [video_guide_processed2]), 
-                                                                        [video_mask_processed] + ([] if video_mask_processed2 is None else [video_mask_processed2]),
+                                                                        [video_mask_processed] + ([] if video_guide_processed2 is None else [video_mask_processed2]),
                                                                         None if extract_guide_from_window_start or model_def.get("dont_cat_preguide", False) or sparse_video_image is not None else pre_video_guide, 
                                                                         image_size, current_video_length, latent_size,
                                                                         any_mask, any_guide_padding, guide_inpaint_color, 
@@ -5103,9 +5103,12 @@ def generate_video(
                         src_faces = src_faces[:, :src_video.shape[1]]
                 if video_guide is not None or len(frames_to_inject_parsed) > 0:
                     if args.save_masks:
-                        if src_video is not None: save_video( src_video, "masked_frames.mp4", fps)
-                        if src_video2 is not None: save_video( src_video2, "masked_frames2.mp4", fps)
-                        if any_mask: save_video( src_mask, "masks.mp4", fps, value_range=(0, 1))
+                        if src_video is not None: 
+                            save_video( src_video, "masked_frames.mp4", fps)
+                            if any_mask: save_video( src_mask, "masks.mp4", fps, value_range=(0, 1))
+                        if src_video2 is not None: 
+                            save_video( src_video2, "masked_frames2.mp4", fps)
+                            if any_mask: save_video( src_mask2, "masks2.mp4", fps, value_range=(0, 1))
                 if video_guide is not None:                        
                     preview_frame_no = 0 if extract_guide_from_window_start or model_def.get("dont_cat_preguide", False) or sparse_video_image is not None else (guide_start_frame - window_start_frame) 
                     refresh_preview["video_guide"] = convert_tensor_to_image(src_video, preview_frame_no)
@@ -6578,11 +6581,11 @@ def switch_image_mode(state):
     inpaint_support = model_def.get("inpaint_support", False)
     if inpaint_support:
         if image_mode == 1:
-            video_prompt_type = del_in_sequence(video_prompt_type, "VAG")  
+            video_prompt_type = del_in_sequence(video_prompt_type, "VAG" + all_guide_processes)  
             video_prompt_type = add_to_sequence(video_prompt_type, "KI")
         elif image_mode == 2:
+            video_prompt_type = del_in_sequence(video_prompt_type, "KI" + all_guide_processes)
             video_prompt_type = add_to_sequence(video_prompt_type, "VAG")  
-            video_prompt_type = del_in_sequence(video_prompt_type, "KI")
         ui_defaults["video_prompt_type"] = video_prompt_type 
         
     return  str(time.time())
@@ -6978,10 +6981,11 @@ def refresh_video_prompt_type_alignment(state, video_prompt_type, video_prompt_t
     video_prompt_type = add_to_sequence(video_prompt_type, video_prompt_type_video_guide)
     return video_prompt_type
 
+all_guide_processes ="PDESLCMUVB"
 
 def refresh_video_prompt_type_video_guide(state, video_prompt_type, video_prompt_type_video_guide,  image_mode, old_image_mask_guide_value, old_image_guide_value, old_image_mask_value ):
     old_video_prompt_type = video_prompt_type
-    video_prompt_type = del_in_sequence(video_prompt_type, "PDESLCMUVB")
+    video_prompt_type = del_in_sequence(video_prompt_type, all_guide_processes)
     video_prompt_type = add_to_sequence(video_prompt_type, video_prompt_type_video_guide)
     visible = "V" in video_prompt_type
     model_type = state["model_type"]
@@ -6991,8 +6995,12 @@ def refresh_video_prompt_type_video_guide(state, video_prompt_type, video_prompt
     image_outputs =  image_mode > 0
     keep_frames_video_guide_visible = not image_outputs and visible and not model_def.get("keep_frames_video_guide_not_supported", False)
     image_mask_guide, image_guide, image_mask = switch_image_guide_editor(image_mode, old_video_prompt_type , video_prompt_type, old_image_mask_guide_value, old_image_guide_value, old_image_mask_value )
-
-    return video_prompt_type,  gr.update(visible = visible and not image_outputs), image_guide, gr.update(visible = keep_frames_video_guide_visible), gr.update(visible = visible and "G" in video_prompt_type), gr.update(visible= (visible or "F" in video_prompt_type or "K" in video_prompt_type) and any_outpainting), gr.update(visible= visible and not "U" in video_prompt_type ),  gr.update(visible= mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible= mask_visible) 
+    mask_preprocessing = model_def.get("mask_preprocessing", None)
+    if mask_preprocessing  is not None:
+        mask_selector_visible = mask_preprocessing.get("visible", True)
+    else:
+        mask_selector_visible = True
+    return video_prompt_type,  gr.update(visible = visible and not image_outputs), image_guide, gr.update(visible = keep_frames_video_guide_visible), gr.update(visible = visible and "G" in video_prompt_type), gr.update(visible= (visible or "F" in video_prompt_type or "K" in video_prompt_type) and any_outpainting), gr.update(visible= visible and mask_selector_visible and  not "U" in video_prompt_type ) ,  gr.update(visible= mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible= mask_visible) 
 
 
 def refresh_video_prompt_type_video_guide_alt(state, video_prompt_type, video_prompt_type_video_guide_alt, image_mode):
@@ -7472,8 +7480,12 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 keep_frames_video_source = gr.Text(value=ui_defaults.get("keep_frames_video_source","") , visible= len(filter_letters(image_prompt_type_value, "VL"))>0 , scale = 2, label= "Truncate Video beyond this number of resampled Frames (empty=Keep All, negative truncates from End)" ) 
 
             any_control_video = any_control_image = False
-            guide_preprocessing = model_def.get("guide_preprocessing", None)
-            mask_preprocessing = model_def.get("mask_preprocessing", None)
+            if image_mode_value ==2:
+                guide_preprocessing = { "selection": ["V", "VG"]}
+                mask_preprocessing = { "selection": ["A"]}
+            else:
+                guide_preprocessing = model_def.get("guide_preprocessing", None)
+                mask_preprocessing = model_def.get("mask_preprocessing", None)
             guide_custom_choices = model_def.get("guide_custom_choices", None)
             image_ref_choices = model_def.get("image_ref_choices", None)
 
@@ -7517,7 +7529,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         if image_outputs: video_prompt_type_video_guide_label = video_prompt_type_video_guide_label.replace("Video", "Image")
                         video_prompt_type_video_guide = gr.Dropdown(
                             guide_preprocessing_choices,
-                            value=filter_letters(video_prompt_type_value, "PDESLCMUVB", guide_preprocessing.get("default", "") ),
+                            value=filter_letters(video_prompt_type_value,  all_guide_processes, guide_preprocessing.get("default", "") ),
                             label= video_prompt_type_video_guide_label , scale = 2, visible= guide_preprocessing.get("visible", True) , show_label= True,
                         )
                         any_control_video = True
@@ -7603,8 +7615,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     if image_guide_value is None:
                         image_mask_guide_value = None
                     else:
-                        image_mask_value = rgb_bw_to_rgba_mask(image_mask_value)
-                        image_mask_guide_value = { "background" : image_guide_value, "composite" : None, "layers": [image_mask_value] }
+                        image_mask_guide_value = { "background" : image_guide_value, "composite" : None}
+                        image_mask_guide_value["layers"] = [] if image_mask_value is None else [rgb_bw_to_rgba_mask(image_mask_value)]
 
                     image_mask_guide = gr.ImageEditor(
                         label="Control Image to be Inpainted" if image_mode_value == 2 else "Control Image and Mask",

@@ -5504,7 +5504,6 @@ def generate_preview(model_type, latents):
     else:
         return None
     if latent_rgb_factors is None: return None
-    latents = latents.unsqueeze(0) 
     nb_latents = latents.shape[2]
     latents_to_preview = 4
     latents_to_preview = min(nb_latents, latents_to_preview)

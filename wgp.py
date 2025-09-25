@@ -5514,7 +5514,7 @@ def generate_preview(model_type, latents):
         selected_latents.append( latents[:, : , int(latent_no): int(latent_no)+1])
         latent_no += skip_latent 
 
-    latents = torch.cat(selected_latents, dim = 2)
+    latents = torch.cat(selected_latents, dim = 2).squeeze(3)
     weight = torch.tensor(latent_rgb_factors, device=latents.device, dtype=latents.dtype).transpose(0, 1)[:, :, None, None, None]
     bias = torch.tensor(latent_rgb_factors_bias, device=latents.device, dtype=latents.dtype)
 
@@ -5524,7 +5524,7 @@ def generate_preview(model_type, latents):
     if images.dtype == torch.bfloat16:
         images = images.to(torch.float16)
     images = images.numpy().clip(0, 255).astype(np.uint8)
-    images = einops.rearrange(images, 'b c t h w -> (b h) (t w) c')
+    images = einops.rearrange(images, 'c t h w -> h (t w) c')
     h, w, _ = images.shape
     scale = 200 / h
     images= Image.fromarray(images)

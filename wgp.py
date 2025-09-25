@@ -1466,6 +1466,15 @@ def generate_queue_html(queue):
     if len(queue) <= 1:
         return "<div style='text-align: center; color: grey; padding: 20px;'>Queue is empty.</div>"
 
+    scroll_buttons = ""
+    if len(queue) > 11:
+        scroll_buttons = """
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px;">
+            <button onclick="scrollToQueueTop()" class="gr-button gr-button-sm gr-button-secondary">▲ Top</button>
+            <button onclick="scrollToQueueBottom()" class="gr-button gr-button-sm gr-button-secondary">▼ Bottom</button>
+        </div>
+        """
+
     table_header = """
     <table>
         <thead>
@@ -1545,8 +1554,10 @@ def generate_queue_html(queue):
         table_rows.append(row_html)
         
     table_footer = "</tbody></table>"
-    
-    return table_header + "".join(table_rows) + table_footer
+    table_html = table_header + "".join(table_rows) + table_footer
+    scrollable_div = f'<div id="queue-scroll-container" style="max-height: 650px; overflow-y: auto;">{table_html}</div>'
+
+    return scroll_buttons + scrollable_div
 
 def update_queue_data(queue, first_time_in_queue =False):
     update_global_queue_ref(queue)
@@ -9826,6 +9837,20 @@ def create_ui():
             }
         };
         console.log('updateAndTrigger function for queue is ready.');
+
+        window.scrollToQueueTop = function() {
+            const container = document.querySelector('#queue-scroll-container');
+            if (container) {
+                container.scrollTop = 0;
+            }
+        };
+
+        window.scrollToQueueBottom = function() {
+            const container = document.querySelector('#queue-scroll-container');
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+            }
+        };
 
         window.showImageModal = function(action) {
             const hiddenTextbox = document.querySelector('#modal_action_input textarea');

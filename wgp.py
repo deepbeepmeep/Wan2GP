@@ -198,6 +198,11 @@ def clean_image_list(gradio_list):
     gradio_list = [ convert_image( Image.open(img) if isinstance(img, str) else img  ) for img in gradio_list  ]        
     return gradio_list
 
+    
+def silent_cancel_edit(state):
+    state["editing_task_index"] = None
+    return gr.Tabs(selected="video_gen"), None
+
 def cancel_edit(state):
     state["editing_task_index"] = None
     gr.Info("Edit cancelled.")
@@ -342,8 +347,9 @@ def edit_task_in_queue(
     update_task_thumbnails(task_to_edit, original_params)
     
     gr.Info(f"Task ID {task_to_edit['id']} has been updated successfully.")
+    edited_index = state["editing_task_index"]
     state["editing_task_index"] = None
-    return update_queue_data(queue), gr.Tabs(selected="video_gen")
+    return edited_index
 
 def process_prompt_and_add_tasks(state, model_choice):
     def ret():
@@ -6959,14 +6965,15 @@ def handle_queue_action(state, action_string):
     except (IndexError, ValueError):
         return gr.HTML(), gr.Tabs()
 
-    if action == "edit":
+    if action == "edit" or action == "silent_edit":
         row_index = int(params[0])
         state["editing_task_index"] = row_index
         task_to_edit_index = row_index + 1
         
         if task_to_edit_index < len(queue):
             task_data = queue[task_to_edit_index]
-            gr.Info(f"Loading task '{task_data['prompt'][:50]}...' for editing.")
+            if action == "edit":
+                gr.Info(f"Loading task '{task_data['prompt'][:50]}...' for editing.")
             return update_queue_data(queue), gr.Tabs(selected="edit")
         else:
             gr.Warning("Task index out of bounds.")
@@ -8426,12 +8433,14 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             if not update_form:
                 if tab_id == 'edit':
                     edit_btn = gr.Button("Edit")
-                    cancel_btn = gr.Button("Cancel")
+                    cancel_btn = gr.Button("Cancel", elem_id="edit_tab_cancel_button")
+                    silent_cancel_btn = gr.Button("Silent Cancel", elem_id="silent_edit_tab_cancel_button", visible=False)
                 else:
                     generate_btn = gr.Button("Generate")
                     add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
                 generate_trigger = gr.Text(visible = False) 
                 add_to_queue_trigger = gr.Text(visible = False)
+                js_trigger_index = gr.Text(visible=False, elem_id="js_trigger_for_edit_refresh")
 
                 with gr.Column(visible= False) as current_gen_column:
                     with gr.Accordion("Preview", open=False):
@@ -8677,12 +8686,38 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 ).then(
                     fn=edit_task_in_queue,
                     inputs=edit_inputs_components + [state],
-                    outputs=[queue_html, main_tabs]
+                    outputs=[js_trigger_index]
                 )
+                js_trigger_index.change(
+                    fn=None,
+                    inputs=[js_trigger_index],
+                    outputs=None,
+                    js="""
+                    (index) => {
+                        if (index === null || index < 0 || index === '') {
+                            return;
+                        }
+                        window.updateAndTrigger('silent_edit_' + index);
+                        setTimeout(() => {
+                            const silentCancelButton = document.querySelector('#silent_edit_tab_cancel_button');
+                            if (silentCancelButton) {
+                                silentCancelButton.click();
+                            }
+                        }, 50);
+                    }
+                    """
+                )
+
                 cancel_btn.click(
                     fn=cancel_edit,
                     inputs=[state],
                     outputs=[main_tabs]
+                )
+
+                silent_cancel_btn.click(
+                    fn=silent_cancel_edit,
+                    inputs=[state],
+                    outputs=[main_tabs, js_trigger_index] # Also clears the trigger
                 )
 
             refresh_form_trigger.change(fn= fill_inputs, 

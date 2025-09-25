@@ -4075,9 +4075,14 @@ def any_audio_track(model_type):
     base_model_type = get_base_model_type(model_type)
     return base_model_type in ["fantasy", "hunyuan_avatar", "hunyuan_custom_audio"] or get_model_def(model_type).get("multitalk_class", False)
 
-def get_available_filename(target_path, video_source, suffix = "", force_extension = None):
-    name, extension =  os.path.splitext(os.path.basename(video_source))
-    if force_extension != None:
+def get_available_filename(target_path, video_source, suffix = "", force_extension = None, treat_as_stem=False):
+    if treat_as_stem:
+        name = os.path.basename(video_source)
+        extension = ""
+    else:
+        name, extension =  os.path.splitext(os.path.basename(video_source))
+
+    if force_extension is not None:
         extension = force_extension
     name+= suffix
     full_path= os.path.join(target_path, f"{name}{extension}")
@@ -4476,6 +4481,7 @@ def generate_video(
     sample_solver,
     embedded_guidance_scale,
     repeat_generation,
+    filename,
     multi_prompts_gen_type,
     multi_images_gen_type,
     skip_steps_cache_type,
@@ -5351,11 +5357,15 @@ def generate_video(
                 from shared.utils.utils import truncate_for_filesystem
                 extension = "jpg" if is_image else "mp4" 
 
-                if os.name == 'nt':
+                if filename:
+                    video_path = get_available_filename(save_path, filename, force_extension=f".{extension}", treat_as_stem=True)
+                    file_name = os.path.basename(video_path)
+                elif os.name == 'nt':
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt,50)).strip()}.{extension}"
+                    video_path = os.path.join(save_path, file_name)
                 else:
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt,100)).strip()}.{extension}"
-                video_path = os.path.join(save_path, file_name)
+                    video_path = os.path.join(save_path, file_name)
                 any_mmaudio = MMAudio_setting != 0 and server_config.get("mmaudio_enabled", 0) != 0 and sample.shape[1] >=fps
 
                 if is_image:    
@@ -5420,6 +5430,8 @@ def generate_video(
                     "transformer_loras_multipliers" : transformer_loras_multipliers
                     })                
                 configs = prepare_inputs_dict("metadata", inputs, model_type)
+                if filename:
+                    configs["filename"] = filename
                 if sliding_window: configs["window_no"] = window_no
                 configs["prompt"] = "\n".join(original_prompts)
                 if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0:
@@ -5492,7 +5504,6 @@ def generate_preview(model_type, latents):
     else:
         return None
     if latent_rgb_factors is None: return None
-    latents = latents.unsqueeze(0) 
     nb_latents = latents.shape[2]
     latents_to_preview = 4
     latents_to_preview = min(nb_latents, latents_to_preview)
@@ -6631,6 +6642,7 @@ def save_inputs(
             sample_solver,
             embedded_guidance_scale,
             repeat_generation,
+            filename,
             multi_prompts_gen_type,
             multi_images_gen_type,
             skip_steps_cache_type,
@@ -7842,6 +7854,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             control_net_weight = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight",1), step=0.1, label="Control Net Weight #1", visible=vace)
                             control_net_weight2 = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.1, label="Control Net Weight #2", visible=vace)
                         negative_prompt = gr.Textbox(label="Negative Prompt (ignored if no Guidance that is if CFG = 1)", value=ui_defaults.get("negative_prompt", ""), visible = not (hunyuan_t2v or hunyuan_i2v or no_negative_prompt)  )
+                        filename = gr.Textbox(label="Output File Name", value=ui_defaults.get("filename", ""))
                         with gr.Column(visible = vace or t2v or test_class_i2v(model_type)) as NAG_col:
                             gr.Markdown("<B>NAG enforces Negative Prompt even if no Guidance is set (CFG = 1), set NAG Scale to > 1 to enable it</B>")
                             with gr.Row():
@@ -7850,7 +7863,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 NAG_alpha = gr.Slider(0.0, 2.0, value=ui_defaults.get("NAG_alpha",.5), step=0.1, label="NAG Alpha", visible = True)
                         with gr.Row():
                             repeat_generation = gr.Slider(1, 25.0, value=ui_defaults.get("repeat_generation",1), step=1, label="Num. of Generated Videos per Prompt", visible = not image_outputs) 
-                            multi_images_gen_type = gr.Dropdown( value=ui_defaults.get("multi_images_gen_type",0), 
+                            multi_images_gen_type = gr.Dropdown( value=ui_defaults.get("multi_images_gen_type",0),
                                 choices=[
                                     ("Generate every combination of images and texts", 0),
                                     ("Match images and text prompts", 1),

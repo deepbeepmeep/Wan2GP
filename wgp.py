@@ -148,6 +148,13 @@ def format_time(seconds):
     else:
         return f"{seconds:.1f}s"
 
+    
+def get_pastel_color(index):
+    hue = (index * 137) % 360
+    saturation = 75
+    lightness = 92
+    return f"hsl({hue}, {saturation}%, {lightness}%)"
+
 def pil_to_base64_uri(pil_image, format="png", quality=75):
     if pil_image is None:
         return None
@@ -866,11 +873,13 @@ def add_video_task(**inputs):
     queue = gen["queue"]
     task_id += 1
     current_task_id = task_id
+    item_color = get_pastel_color(current_task_id)
 
     start_image_data, end_image_data, start_image_labels, end_image_labels = get_preview_images(inputs)
 
     queue.append({
         "id": current_task_id,
+        "color": item_color,
         "params": inputs.copy(),
         "repeats": inputs["repeat_generation"],
         "length": inputs["video_length"], # !!!
@@ -1214,6 +1223,8 @@ def load_queue_action(filepath, state, evt:gr.EventData):
                 }
                 newly_loaded_queue.append(runtime_task)
                 print(f"[load_queue_action] Reconstructed task {task_index+1}/{len(loaded_manifest)}, ID: {task_id_loaded}")
+        for i, task in enumerate(newly_loaded_queue):
+            task['color'] = get_pastel_color(i)
 
         with lock:
             print("[load_queue_action] Acquiring lock to update state...")
@@ -1517,8 +1528,9 @@ def generate_queue_html(queue):
 </svg>
 </button>"""
 
+        item_color = item.get('color', 'transparent')
         row_html = f"""
-        <tr class="draggable-row" data-index="{row_index}">
+        <tr class="draggable-row" data-index="{row_index}" style="background-color: {item_color};">
             {drag_handle}
             <td class="center-align">{item.get('repeats', "1")}</td>
             <td>{prompt_cell}</td>

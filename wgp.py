@@ -9707,10 +9707,10 @@ def create_ui():
             background: #2d3748;
         }
         #queue_html_container tr.drag-over-top {
-            border-top: 2px solid #4299e1;
+            border-top: 6px solid #4299e1;
         }
         #queue_html_container tr.drag-over-bottom {
-            border-bottom: 2px solid #4299e1;
+            border-bottom: 6px solid #4299e1;
         }
         #queue_html_container .action-button svg {
             width: 20px;

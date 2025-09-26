@@ -1220,7 +1220,8 @@ class WanModel(ModelMixin, ConfigMixin):
         y=None,
         freqs = None,
         pipeline = None,
-        current_step = 0,
+        current_step_no = 0,
+        real_step_no = 0,
         x_id= 0,
         max_steps = 0, 
         slg_layers=None,
@@ -1310,9 +1311,9 @@ class WanModel(ModelMixin, ConfigMixin):
             del causal_mask
 
         offload.shared_state["embed_sizes"] = grid_sizes 
-        offload.shared_state["step_no"] = current_step 
+        offload.shared_state["step_no"] = real_step_no 
         offload.shared_state["max_steps"] = max_steps
-        if current_step == 0 and x_id == 0: clear_caches()
+        if current_step_no == 0 and x_id == 0: clear_caches()
         # arguments
 
         kwargs = dict(
@@ -1336,7 +1337,7 @@ class WanModel(ModelMixin, ConfigMixin):
         if standin_ref is not None:
             standin_cache_enabled = False
             kwargs["standin_phase"] = 2
-            if current_step == 0 or not standin_cache_enabled :
+            if current_step_no == 0 or not standin_cache_enabled :
                 standin_x = self.patch_embedding(standin_ref).to(modulation_dtype).flatten(2).transpose(1, 2)
                 standin_e = self.time_embedding( sinusoidal_embedding_1d(self.freq_dim, torch.zeros_like(t)).to(modulation_dtype) )
                 standin_e0 = self.time_projection(standin_e).unflatten(1, (6, self.dim)).to(e.dtype)
@@ -1401,7 +1402,7 @@ class WanModel(ModelMixin, ConfigMixin):
         skips_steps_cache = self.cache
         if skips_steps_cache != None: 
             if skips_steps_cache.cache_type == "mag":
-                if current_step <= skips_steps_cache.start_step:
+                if real_step_no <= skips_steps_cache.start_step:
                     should_calc = True
                 elif skips_steps_cache.one_for_all and x_id != 0: # not joint pass, not main pas, one for all
                     assert len(x_list) == 1
@@ -1410,7 +1411,7 @@ class WanModel(ModelMixin, ConfigMixin):
                     x_should_calc = []
                     for i in range(1 if skips_steps_cache.one_for_all else len(x_list)):
                         cur_x_id = i if joint_pass else x_id  
-                        cur_mag_ratio = skips_steps_cache.mag_ratios[current_step * 2 + cur_x_id] # conditional and unconditional in one list
+                        cur_mag_ratio = skips_steps_cache.mag_ratios[real_step_no * 2 + cur_x_id] # conditional and unconditional in one list
                         skips_steps_cache.accumulated_ratio[cur_x_id] *= cur_mag_ratio # magnitude ratio between current step and the cached step
                         skips_steps_cache.accumulated_steps[cur_x_id] += 1 # skip steps plus 1
                         cur_skip_err = np.abs(1-skips_steps_cache.accumulated_ratio[cur_x_id]) # skip error of current steps
@@ -1430,7 +1431,7 @@ class WanModel(ModelMixin, ConfigMixin):
                 if x_id != 0:
                     should_calc = skips_steps_cache.should_calc
                 else:
-                    if current_step <= skips_steps_cache.start_step or current_step == skips_steps_cache.num_steps-1:
+                    if real_step_no <= skips_steps_cache.start_step or real_step_no == skips_steps_cache.num_steps-1:
                         should_calc = True
                         skips_steps_cache.accumulated_rel_l1_distance = 0
                     else:

@@ -292,7 +292,7 @@ def denoise(
         callback(-1, None, True)
 
     original_image_latents = None if img_cond_seq is None else img_cond_seq.clone() 
-
+    original_timesteps = timesteps
     morph, first_step = False, 0
     if img_msk_latents is not None:
         randn = torch.randn_like(original_image_latents)
@@ -309,7 +309,7 @@ def denoise(
     updated_num_steps= len(timesteps) -1
     if callback != None:
         from shared.utils.loras_mutipliers import update_loras_slists
-        update_loras_slists(model, loras_slists, updated_num_steps)
+        update_loras_slists(model, loras_slists, len(original_timesteps))
         callback(-1, None, True, override_num_inference_steps = updated_num_steps)
     from mmgp import offload
     # this is ignored for schnell

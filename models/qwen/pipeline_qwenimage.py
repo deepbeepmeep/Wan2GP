@@ -825,7 +825,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         )
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         self._num_timesteps = len(timesteps)
-
+        original_timesteps = timesteps
         # handle guidance
         if self.transformer.guidance_embeds:
             guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
@@ -860,7 +860,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         updated_num_steps= len(timesteps)
         if callback != None:
             from shared.utils.loras_mutipliers import update_loras_slists
-            update_loras_slists(self.transformer, loras_slists, updated_num_steps)
+            update_loras_slists(self.transformer, loras_slists, len(original_timesteps))
             callback(-1, None, True, override_num_inference_steps = updated_num_steps)
 
 

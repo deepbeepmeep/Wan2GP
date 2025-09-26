@@ -1470,8 +1470,44 @@ def generate_queue_html(queue):
     if len(queue) > 11:
         scroll_buttons = """
         <div style="display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px;">
-            <button onclick="scrollToQueueTop()" class="gr-button gr-button-sm gr-button-secondary">▲ Top</button>
-            <button onclick="scrollToQueueBottom()" class="gr-button gr-button-sm gr-button-secondary">▼ Bottom</button>
+            <div>
+                <button onclick="scrollToQueueTop()" class="gr-button gr-button-sm gr-button-secondary" style="display: flex; align-items: center;">
+                    <svg fill="#000000" style="width: 1.1em; height: 1.1em; margin-right: 4px;" viewBox="0 0 512 512">
+                    <g>
+                        <g>
+                            <g>
+                                <path d="M256,0C114.618,0,0,114.618,0,256s114.618,256,256,256s256-114.618,256-256S397.382,0,256,0z M256,469.333
+                                    c-117.818,0-213.333-95.515-213.333-213.333S138.182,42.667,256,42.667S469.333,138.182,469.333,256S373.818,469.333,256,469.333
+                                    z"/>
+                                <path d="M271.085,176.915c-8.331-8.331-21.839-8.331-30.17,0L134.248,283.582c-8.331,8.331-8.331,21.839,0,30.17
+                                    c8.331,8.331,21.839,8.331,30.17,0L256,222.17l91.582,91.582c8.331,8.331,21.839,8.331,30.17,0c8.331-8.331,8.331-21.839,0-30.17
+                                    L271.085,176.915z"/>
+                            </g>
+                        </g>
+                    </g>
+                    </svg>
+                    Top
+                </button>
+            </div>
+            <div>
+                <button onclick="scrollToQueueBottom()" class="gr-button gr-button-sm gr-button-secondary" style="display: flex; align-items: center;">
+                    <svg fill="#000000" style="width: 1.1em; height: 1.1em; margin-right: 4px;" viewBox="0 0 512 512">
+                    <g>
+                        <g>
+                            <g>
+                                <path d="M256,0C114.618,0,0,114.618,0,256s114.618,256,256,256s256-114.618,256-256S397.382,0,256,0z M256,469.333
+                                    c-117.818,0-213.333-95.515-213.333-213.333S138.182,42.667,256,42.667S469.333,138.182,469.333,256S373.818,469.333,256,469.333
+                                    z"/>
+                                <path d="M347.582,198.248L256,289.83l-91.582-91.582c-8.331-8.331-21.839-8.331-30.17,0c-8.331,8.331-8.331,21.839,0,30.17
+                                    l106.667,106.667c8.331,8.331,21.839,8.331,30.17,0l106.667-106.667c8.331-8.331,8.331-21.839,0-30.17
+                                    C369.42,189.917,355.913,189.917,347.582,198.248z"/>
+                            </g>
+                        </g>
+                    </g>
+                    </svg>
+                    Bottom
+                </button>
+            </div>
         </div>
         """
 
@@ -9607,6 +9643,7 @@ def create_ui():
             white-space: nowrap;
         }
         #queue_html_container table {
+            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;
             width: 100%;
             border-collapse: collapse;
             font-size: 14px;
@@ -9628,7 +9665,7 @@ def create_ui():
             vertical-align: middle;
         }
         #queue_html_container tr:hover td {
-            background-color: rgba(255, 255, 255, 0.04);
+            background-color: rgba(255, 255, 255, 0.6);
         }
         #queue_html_container .prompt-cell {
             white-space: nowrap;

@@ -124,11 +124,19 @@ class family_handler():
 
         if base_model_type in ["t2v"]: 
             extra_model_def["guide_custom_choices"] = {
-                "choices":[("Use Text Prompt Only", ""),("Video to Video guided by Text Prompt", "GUV")],
+                "choices":[("Use Text Prompt Only", ""),
+                           ("Video to Video guided by Text Prompt", "GUV"),
+                           ("Video to Video guided by Text Prompt and Restricted to the Area of the Video Mask", "GVA")],
                 "default": "",
-                "letters_filter": "GUV",
+                "letters_filter": "GUVA",
                 "label": "Video to Video"
             }
+
+            extra_model_def["mask_preprocessing"] = {
+                "selection":[ "", "A"],
+                "visible": False
+            }
+
 
         if base_model_type in ["infinitetalk"]: 
             extra_model_def["no_background_removal"] = True
@@ -160,14 +168,22 @@ class family_handler():
         if base_model_type in ["animate"]:
             extra_model_def["guide_custom_choices"] = {
             "choices":[
-                ("Animate Person in Reference Image using Motion of Person in Control Video", "PVBXAKI"),
-                ("Replace Person in Control Video Person in Reference Image", "PVBAI"),
+                ("Animate Person in Reference Image using Motion of Whole Control Video", "PVBKI"),
+                ("Animate Person in Reference Image using Motion of Targeted Person in Control Video", "PVBXAKI"),
+                ("Replace Person in Control Video by Person in Reference Image", "PVBAI"),
+                ("Replace Person in Control Video by Person in Reference Image and Apply Relighting Process", "PVBAI1"),
             ],
-            "default": "KI",
-            "letters_filter": "PVBXAKI",
+            "default": "PVBKI",
+            "letters_filter": "PVBXAKI1",
             "label": "Type of Process",
             "show_label" : False,
             }
+
+            extra_model_def["mask_preprocessing"] = {
+                "selection":[ "", "A", "XA"],
+                "visible": False
+            }
+
             extra_model_def["video_guide_outpainting"] = [0,1]
             extra_model_def["keep_frames_video_guide_not_supported"] = True
             extra_model_def["extract_guide_from_window_start"] = True
@@ -480,8 +496,8 @@ class family_handler():
                 "video_prompt_type": "UV", 
             })
         elif base_model_type in ["animate"]: 
-            ui_defaults.update({
-                "video_prompt_type": "PVBXAKI", 
+            ui_defaults.update({ 
+                "video_prompt_type": "PVBKI", 
                 "mask_expand": 20,
                 "audio_prompt_type": "R",
             })

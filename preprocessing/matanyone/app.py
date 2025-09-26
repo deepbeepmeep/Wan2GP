@@ -697,7 +697,8 @@ def load_unload_models(selected):
                 model.samcontroler.sam_controler.model.to("cpu").to(torch.bfloat16).to(arg_device)
                 model_in_GPU = True
                 from .matanyone.model.matanyone import MatAnyone
-                matanyone_model = MatAnyone.from_pretrained("PeiqingYang/MatAnyone")
+                # matanyone_model = MatAnyone.from_pretrained("PeiqingYang/MatAnyone")
+                matanyone_model = MatAnyone.from_pretrained("ckpts/mask")
                 # pipe ={"mat" : matanyone_model, "sam" :model.samcontroler.sam_controler.model }
                 # offload.profile(pipe)
                 matanyone_model = matanyone_model.to("cpu").eval()

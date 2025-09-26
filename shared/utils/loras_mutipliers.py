@@ -99,7 +99,7 @@ def parse_loras_multipliers(loras_multipliers, nb_loras, num_inference_steps, me
     
     return  loras_list_mult_choices_nums, slists_dict, ""
 
-def update_loras_slists(trans, slists_dict, num_inference_steps, phase_switch_step = None, phase_switch_step2 = None ):
+def update_loras_slists(trans, slists_dict, num_inference_steps, phase_switch_step = None, phase_switch_step2 = None):
     from mmgp import offload
     sz = len(slists_dict["phase1"])
     slists = [ expand_slist(slists_dict, i, num_inference_steps, phase_switch_step, phase_switch_step2 ) for i in range(sz)  ]
@@ -108,7 +108,8 @@ def update_loras_slists(trans, slists_dict, num_inference_steps, phase_switch_st
 
 
 
-def get_model_switch_steps(timesteps, total_num_steps, guide_phases, model_switch_phase, switch_threshold, switch2_threshold ):
+def get_model_switch_steps(timesteps, guide_phases, model_switch_phase, switch_threshold, switch2_threshold ):
+    total_num_steps = len(timesteps)
     model_switch_step = model_switch_step2 = None
     for i, t in enumerate(timesteps):
         if guide_phases >=2 and model_switch_step is None and t <= switch_threshold: model_switch_step = i

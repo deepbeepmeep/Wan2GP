@@ -217,9 +217,13 @@ def _generate_image_captions(
     system_prompt: str = "<DETAILED_CAPTION>",
 ) -> List[str]:
     image_caption_prompts = [system_prompt] * len(images)
+
+    # This new line automatically fixes transparent images
+    processed_images = [img.convert("RGB") if img.mode == 'RGBA' else img for img in images]
+
     inputs = image_caption_processor(
-        image_caption_prompts, images, return_tensors="pt"
-    ).to("cuda") #.to(image_caption_model.device)
+        image_caption_prompts, processed_images, return_tensors="pt"
+    ).to("cuda")
 
     with torch.inference_mode():
         generated_ids = image_caption_model.generate(
@@ -231,7 +235,6 @@ def _generate_image_captions(
         )
 
     return image_caption_processor.batch_decode(generated_ids, skip_special_tokens=True)
-
 
 def _generate_and_decode_prompts(
     prompt_enhancer_model, prompt_enhancer_tokenizer, model_inputs, max_new_tokens: int

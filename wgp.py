@@ -1,3 +1,20 @@
+import torch._dynamo
+torch._dynamo.config.verbose = True
+torch._dynamo.config.suppress_errors = True
+
+def compile_or_fallback(model, example_inputs):
+    try:
+        print("Attempting Torch compile...")
+        compiled_model = torch.compile(model)
+        # Optional: run a dry pass to trigger kernel compilation
+        compiled_model(*example_inputs)
+        print("Compilation succeeded.")
+        return compiled_model
+    except Exception as e:
+        print("⚠️ Compilation failed. Falling back to eager mode.")
+        print("Error:", e)
+        return model  # fallback to uncompiled model
+
 import os
 os.environ["GRADIO_LANG"] = "en"
 # # os.environ.pop("TORCH_LOGS", None)  # make sure no env var is suppressing/overriding

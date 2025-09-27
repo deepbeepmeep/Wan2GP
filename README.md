@@ -13,7 +13,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 - Auto download of the required model adapted to your specific architecture
 - Tools integrated to facilitate Video Generation : Mask Editor, Prompt Enhancer, Temporal and Spatial Generation, MMAudio, Video Browser, Pose / Depth / Flow extractor
 - Loras Support to customize each model
-- Queuing system : make your shopping list of videos to generate and come back later 
+- Queuing system : make your shopping list of videos to generate and come back later
 
 **Discord Server to get Help from Other Users and show your Best Videos:** https://discord.gg/g7efUW9jGV
 
@@ -122,6 +122,33 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 
 ## 🚀 Quick Start
 
+### 🐳 Docker:
+
+**For Debian-based systems (Ubuntu, Debian, etc.):**
+
+```bash
+./run-docker-cuda-deb.sh
+```
+
+This automated script will:
+
+- Detect your GPU model and VRAM automatically
+- Select optimal CUDA architecture for your GPU
+- Install NVIDIA Docker runtime if needed
+- Build a Docker image with all dependencies
+- Run WanGP with optimal settings for your hardware
+
+**Docker environment includes:**
+
+- NVIDIA CUDA 12.4.1 with cuDNN support
+- PyTorch 2.6.0 with CUDA 12.4 support
+- SageAttention compiled for your specific GPU architecture
+- Optimized environment variables for performance (TF32, threading, etc.)
+- Automatic cache directory mounting for faster subsequent runs
+- Current directory mounted in container - all downloaded models, loras, generated videos and files are saved locally
+
+**Supported GPUs:** RTX 50XX, RTX 40XX, RTX 30XX, RTX 20XX, GTX 16XX, GTX 10XX, Tesla V100, A100, H100, and more.
+
 **One-click installation:** Get started instantly with [Pinokio App](https://pinokio.computer/)
 
 **Manual installation:**
@@ -148,6 +175,32 @@ git pull
 pip install -r requirements.txt
 ```
 
+## 🐳 Docker:
+
+**For Debian-based systems (Ubuntu, Debian, etc.):**
+
+```bash
+./run-docker-cuda-deb.sh
+```
+
+This automated script will:
+
+- Detect your GPU model and VRAM automatically
+- Select optimal CUDA architecture for your GPU
+- Install NVIDIA Docker runtime if needed
+- Build a Docker image with all dependencies
+- Run WanGP with optimal settings for your hardware
+
+**Docker environment includes:**
+
+- NVIDIA CUDA 12.4.1 with cuDNN support
+- PyTorch 2.6.0 with CUDA 12.4 support
+- SageAttention compiled for your specific GPU architecture
+- Optimized environment variables for performance (TF32, threading, etc.)
+- Automatic cache directory mounting for faster subsequent runs
+- Current directory mounted in container - all downloaded models, loras, generated videos and files are saved locally
+
+**Supported GPUs:** RTX 40XX, RTX 30XX, RTX 20XX, GTX 16XX, GTX 10XX, Tesla V100, A100, H100, and more.
 
 ## 📦 Installation
 
@@ -191,4 +244,4 @@ https://www.youtube.com/watch?v=T5jNiEhf9xk
 
 <p align="center">
 Made with ❤️ by DeepBeepMeep
-</p> 
+</p>

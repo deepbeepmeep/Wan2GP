@@ -232,7 +232,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         drop_idx = self.prompt_template_encode_start_idx
         txt = [template.format(e) for e in prompt]
 
-        if self.processor is not None and image is not None:
+        if self.processor is not None and image is not None and len(image) > 0:
             img_prompt_template = "Picture {}: <|vision_start|><|image_pad|><|vision_end|>"
             if isinstance(image, list):
                 base_img_prompt = ""
@@ -972,7 +972,7 @@ class QwenImagePipeline(): #DiffusionPipeline
 
             if callback is not None:
                 preview = self._unpack_latents(latents, height, width, self.vae_scale_factor)
-                preview = preview.squeeze(0)
+                preview = preview.transpose(0,2).squeeze(0)
                 callback(i, preview, False)         
 
 

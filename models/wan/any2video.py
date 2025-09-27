@@ -595,7 +595,7 @@ class WanAny2V:
                 color_reference_frame = input_frames[:, -1:].clone()
                 if prefix_frames_count > 0:
                     overlapped_frames_num = prefix_frames_count
-                    overlapped_latents_frames_num = (overlapped_latents_frames_num -1 // 4) + 1 
+                    overlapped_latents_frames_num = (overlapped_frames_num -1 // 4) + 1 
                     # overlapped_latents_frames_num = overlapped_latents.shape[2]
                     # overlapped_frames_num = (overlapped_latents_frames_num-1) * 4 + 1
                 else: 
@@ -735,10 +735,19 @@ class WanAny2V:
         if callback != None:
             callback(-1, None, True)
 
+
+        clear_caches()
         offload.shared_state["_chipmunk"] =  False
         chipmunk = offload.shared_state.get("_chipmunk", False)        
         if chipmunk:
             self.model.setup_chipmunk()
+
+        offload.shared_state["_radial"] =  offload.shared_state["_attention"]=="radial"
+        radial = offload.shared_state.get("_radial", False)        
+        if radial:
+            radial_cache = get_cache("radial")
+            from shared.radial_attention.attention import fill_radial_cache
+            fill_radial_cache(radial_cache, len(self.model.blocks), *target_shape[1:])
 
         # init denoising
         updated_num_steps= len(timesteps)

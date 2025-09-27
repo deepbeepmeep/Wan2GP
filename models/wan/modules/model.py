@@ -315,6 +315,8 @@ class WanSelfAttention(nn.Module):
             x_ref_attn_map = None
 
         chipmunk = offload.shared_state.get("_chipmunk", False) 
+        radial = offload.shared_state.get("_radial", False) 
+
         if chipmunk and self.__class__ == WanSelfAttention:
             q = q.transpose(1,2)
             k = k.transpose(1,2)
@@ -322,12 +324,17 @@ class WanSelfAttention(nn.Module):
             attn_layers = offload.shared_state["_chipmunk_layers"]
             x = attn_layers[self.block_no](q, k, v)
             x = x.transpose(1,2)
+        elif radial and self.__class__ == WanSelfAttention:
+            qkv_list = [q,k,v]
+            del q,k,v
+            radial_cache = get_cache("radial")
+            no_step_no = offload.shared_state["step_no"] 
+            x = radial_cache[self.block_no](qkv_list=qkv_list, timestep_no=no_step_no)
         elif block_mask == None:
             qkv_list = [q,k,v]
             del q,k,v
-            x = pay_attention(
-                qkv_list,
-                window_size=self.window_size)
+
+            x = pay_attention( qkv_list, window_size=self.window_size)
 
         else:
             with sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
@@ -1311,9 +1318,8 @@ class WanModel(ModelMixin, ConfigMixin):
             del causal_mask
 
         offload.shared_state["embed_sizes"] = grid_sizes 
-        offload.shared_state["step_no"] = real_step_no 
+        offload.shared_state["step_no"] = current_step_no 
         offload.shared_state["max_steps"] = max_steps
-        if current_step_no == 0 and x_id == 0: clear_caches()
         # arguments
 
         kwargs = dict(

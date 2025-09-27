@@ -184,6 +184,15 @@ class family_handler():
                 "visible": False
             }
 
+            # extra_model_def["image_ref_choices"] = {
+            #         "choices": [("None", ""),
+            #             ("People / Objects", "I"),
+            #             ("Landscape followed by People / Objects (if any)", "KI"),
+            #             ],
+            #         "visible": False,
+            #         "letters_filter":  "KFI",
+            # }
+
             extra_model_def["video_guide_outpainting"] = [0,1]
             extra_model_def["keep_frames_video_guide_not_supported"] = True
             extra_model_def["extract_guide_from_window_start"] = True

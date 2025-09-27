@@ -122,34 +122,9 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 
 ## 🚀 Quick Start
 
-### 🐳 Docker:
-
-**For Debian-based systems (Ubuntu, Debian, etc.):**
-
-```bash
-./run-docker-cuda-deb.sh
-```
-
-This automated script will:
-
-- Detect your GPU model and VRAM automatically
-- Select optimal CUDA architecture for your GPU
-- Install NVIDIA Docker runtime if needed
-- Build a Docker image with all dependencies
-- Run WanGP with optimal settings for your hardware
-
-**Docker environment includes:**
-
-- NVIDIA CUDA 12.4.1 with cuDNN support
-- PyTorch 2.6.0 with CUDA 12.4 support
-- SageAttention compiled for your specific GPU architecture
-- Optimized environment variables for performance (TF32, threading, etc.)
-- Automatic cache directory mounting for faster subsequent runs
-- Current directory mounted in container - all downloaded models, loras, generated videos and files are saved locally
-
-**Supported GPUs:** RTX 50XX, RTX 40XX, RTX 30XX, RTX 20XX, GTX 16XX, GTX 10XX, Tesla V100, A100, H100, and more.
-
-**One-click installation:** Get started instantly with [Pinokio App](https://pinokio.computer/)
+**One-click installation:** 
+- Get started instantly with [Pinokio App](https://pinokio.computer/)
+- Use Redtash1 [One Click Install with Sage](https://github.com/Redtash1/Wan2GP-Windows-One-Click-Install-With-Sage)
 
 **Manual installation:**
 ```bash
@@ -163,8 +138,7 @@ pip install -r requirements.txt
 
 **Run the application:**
 ```bash
-python wgp.py  # Text-to-video (default)
-python wgp.py --i2v  # Image-to-video
+python wgp.py
 ```
 
 **Update the application:**

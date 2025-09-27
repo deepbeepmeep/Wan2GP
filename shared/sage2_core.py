@@ -28,18 +28,24 @@ from sageattention.triton.quant_per_thread import per_thread_int8 as per_thread_
 
 try:
     from sageattention import _qattn_sm80
+    if not hasattr(_qattn_sm80, "qk_int8_sv_f16_accum_f32_attn"): 
+        _qattn_sm80 = torch.ops.sageattention_qattn_sm80
     SM80_ENABLED = True
 except:
     SM80_ENABLED = False
 
 try:
     from sageattention import _qattn_sm89
+    if not hasattr(_qattn_sm89, "qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_inst_buf"): 
+        _qattn_sm89 = torch.ops.sageattention_qattn_sm89
     SM89_ENABLED = True
 except:
     SM89_ENABLED = False
 
 try:
     from sageattention import _qattn_sm90
+    if not hasattr(_qattn_sm90, "qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_inst_buf"): 
+        _qattn_sm90 = torch.ops.sageattention_qattn_sm90
     SM90_ENABLED = True
 except:
     SM90_ENABLED = False

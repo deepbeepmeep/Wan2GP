@@ -63,7 +63,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.6.0"
-WanGP_version = "8.74"
+WanGP_version = "8.75"
 settings_version = 2.36
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1392,6 +1392,12 @@ def _parse_args():
         "--debug-gen-form",
         action="store_true",
         help="View form generation / refresh time"
+    )
+
+    parser.add_argument(
+        "--betatest",
+        action="store_true",
+        help="test unreleased features"
     )
 
     parser.add_argument(
@@ -4372,7 +4378,7 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, overri
     if image_start is None or not "I" in prompt_enhancer:
         image_start = [None] * num_prompts
     else:
-        image_start = [img[0] for img in image_start]
+        image_start = [convert_image(img[0]) for img in image_start]
         if len(image_start) == 1:
             image_start = image_start * num_prompts
         else:
@@ -8725,9 +8731,9 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                         ("Flash" + check("flash")+ ": good quality - requires additional install (usually complex to set up on Windows without WSL)", "flash"),
                         ("Xformers" + check("xformers")+ ": good quality - requires additional install (usually complex, may consume less VRAM to set up on Windows without WSL)", "xformers"),
                         ("Sage" + check("sage")+ ": 30% faster but slightly worse quality - requires additional install (usually complex to set up on Windows without WSL)", "sage"),
-                        ("Sage2/2++" + check("sage2")+ ": 40% faster but slightly worse quality - requires additional install (usually complex to set up on Windows without WSL)", "sage2"),
-                        ("Sage3" + check("sage3")+ ": x2 faster but worse quality - requires additional install (usually complex to set up on Windows without WSL)", "sage3"),
-                    ],
+                        ("Sage2/2++" + check("sage2")+ ": 40% faster but slightly worse quality - requires additional install (usually complex to set up on Windows without WSL)", "sage2")]\
+                        + ([("Radial" + check("radial")+ ": x? faster but ? quality - requires Sparge & Sage 2 Attn (usually complex to set up on Windows without WSL)", "radial")] if args.betatest else [])\
+                        +  [("Sage3" + check("sage3")+ ": x2 faster but worse quality - requires additional install (usually complex to set up on Windows without WSL)", "sage3")],
                     value= attention_mode,
                     label="Attention Type",
                     interactive= not lock_ui_attention

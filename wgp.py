@@ -7889,7 +7889,39 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             multiselect= True,
                             label="Activated Loras"
                         )
-                        loras_multipliers = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
+                        loras_multipliers = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str, elem_id="loras_multipliers_textbox", interactive=True)
+                        MAX_LORA_SLIDERS = 15
+                        MAX_STEP_SPLITS = 5
+                        lora_slider_ui_groups = []
+                        if not update_form:
+                            with gr.Group(elem_id="lora_builder_main_group"):
+                                for i in range(MAX_LORA_SLIDERS):
+                                    with gr.Column(visible=False, elem_classes="lora-main-container") as lora_main_group:
+                                        with gr.Row(variant="compact"):
+                                            lora_name_md = gr.Markdown()
+                                            split_steps_btn = gr.Button("Split Steps")
+                                        
+                                        split_groups = []
+                                        for j in range(MAX_STEP_SPLITS):
+                                            with gr.Column(visible=False, elem_classes="lora-step-split-container") as lora_step_group:
+                                                step_range_md = gr.Markdown()
+                                                with gr.Row():
+                                                    phase1_slider = gr.Slider(minimum=0.0, maximum=1.0, value=1.0, step=0.05, label="Phase 1", interactive=True)
+                                                    phase2_slider = gr.Slider(minimum=0.0, maximum=1.0, value=1.0, step=0.05, label="Phase 2", interactive=True, visible=False)
+                                                    phase3_slider = gr.Slider(minimum=0.0, maximum=1.0, value=1.0, step=0.05, label="Phase 3", interactive=True, visible=False)
+                                                
+                                                split_groups.append({
+                                                    "group": lora_step_group,
+                                                    "title": step_range_md,
+                                                    "sliders": [phase1_slider, phase2_slider, phase3_slider]
+                                                })
+                                        
+                                        lora_slider_ui_groups.append({
+                                            "main_group": lora_main_group,
+                                            "name": lora_name_md,
+                                            "split_button": split_steps_btn,
+                                            "splits": split_groups
+                                        })
                 with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache) as speed_tab:
                     with gr.Column():
                         gr.Markdown("<B>Tea Cache and Mag Cache accelerate the Video Generation by skipping intelligently some steps, the more steps are skipped the lower the quality of the video.</B>")
@@ -8357,7 +8389,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 gen["status_display"] = True
                 return time.time()
 
-            start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js, click_brush_js = get_js()
+            start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js, click_brush_js, _ = get_js()
 
             status_trigger.change(refresh_status_async, inputs= [state] , outputs= [gen_status], show_progress_on= [gen_status])
 
@@ -8477,7 +8509,112 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 fn = fill_wizard_prompt, inputs = [state, wizard_prompt_activated_var, prompt, wizard_prompt], outputs = [ wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, prompt_column_advanced, prompt_column_wizard, prompt_column_wizard_vars, *prompt_vars]
             )
 
+            lora_split_counts = gr.State([1] * MAX_LORA_SLIDERS)
 
+            def update_slider_ui_and_textbox(selected_lora_indices, guidance_phases_val, current_multipliers_str, total_steps, current_split_counts, triggered_lora_index=-1):
+                if triggered_lora_index != -1:
+                    if current_split_counts[triggered_lora_index] < MAX_STEP_SPLITS:
+                        current_split_counts[triggered_lora_index] += 1
+                elif triggered_lora_index == -1:
+                    current_split_counts = [1] * MAX_LORA_SLIDERS
+                
+                ui_updates = []
+                textbox_strings = []
+                selected_loras = [loras_names[int(i)] for i in selected_lora_indices]
+                multipliers_per_lora = current_multipliers_str.split(' ')
+
+                for i in range(MAX_LORA_SLIDERS):
+                    if i < len(selected_loras):
+                        lora_name = selected_loras[i]
+                        ui_updates.extend([gr.update(visible=True), gr.update(value=f"### {lora_name}")])
+                        
+                        num_splits_for_this_lora = current_split_counts[i]
+                        steps_and_phases_str = multipliers_per_lora[i] if i < len(multipliers_per_lora) else ""
+                        multipliers_per_step = steps_and_phases_str.split(',')
+
+                        steps_per_split = total_steps // num_splits_for_this_lora
+                        remainder = total_steps % num_splits_for_this_lora
+                        start_step = 0
+                        
+                        lora_step_strings = []
+                        for j in range(MAX_STEP_SPLITS):
+                            if j < num_splits_for_this_lora:
+                                end_step = start_step + steps_per_split + (1 if j < remainder else 0)
+                                step_title = f"**Steps {start_step + 1} to {end_step}**"
+                                start_step = end_step
+                                ui_updates.extend([gr.update(visible=True), gr.update(value=step_title)])
+                                
+                                multipliers_per_phase = multipliers_per_step[j].split(';') if j < len(multipliers_per_step) else ['1.0'] * 3
+                                phase_values_for_textbox = []
+                                
+                                for k in range(3):
+                                    try: phase_value = float(multipliers_per_phase[k])
+                                    except (ValueError, IndexError): phase_value = 1.0
+                                    
+                                    is_visible = (k + 1) <= guidance_phases_val
+                                    ui_updates.append(gr.update(visible=is_visible, value=phase_value))
+                                    if is_visible:
+                                        phase_values_for_textbox.append(str(phase_value))
+                                
+                                if phase_values_for_textbox:
+                                    lora_step_strings.append(";".join(phase_values_for_textbox))
+                            else:
+                                ui_updates.extend([gr.update(visible=False), gr.update(value=""), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)])
+                        
+                        if lora_step_strings:
+                            textbox_strings.append(",".join(lora_step_strings))
+                    else:
+                        ui_updates.append(gr.update(visible=False))
+                        ui_updates.append(gr.update(value=""))
+                        for _ in range(MAX_STEP_SPLITS):
+                            ui_updates.extend([gr.update(visible=False), gr.update(value=""), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)])
+                
+                new_textbox_value = " ".join(textbox_strings)
+                return [current_split_counts, new_textbox_value] + ui_updates
+
+            slider_ui_outputs = []
+            all_sliders_flat = []
+            for group in lora_slider_ui_groups:
+                slider_ui_outputs.append(group["main_group"])
+                slider_ui_outputs.append(group["name"])
+                for split in group["splits"]:
+                    slider_ui_outputs.append(split["group"])
+                    slider_ui_outputs.append(split["title"])
+                    slider_ui_outputs.extend(split["sliders"])
+                    all_sliders_flat.extend(split["sliders"])
+
+            update_multipliers_js = get_js()[-1]
+
+            events_to_trigger_ui_update = [
+                loras_choices.change, 
+                guidance_phases.change, 
+                num_inference_steps.change
+            ]
+            for event in events_to_trigger_ui_update:
+                event(
+                    fn=update_slider_ui_and_textbox,
+                    inputs=[loras_choices, guidance_phases, loras_multipliers, num_inference_steps, lora_split_counts],
+                    outputs=[lora_split_counts, loras_multipliers] + slider_ui_outputs,
+                    show_progress="hidden"
+                )
+
+            for i, group in enumerate(lora_slider_ui_groups):
+                group["split_button"].click(
+                    fn=update_slider_ui_and_textbox,
+                    inputs=[loras_choices, guidance_phases, loras_multipliers, num_inference_steps, lora_split_counts, gr.State(i)],
+                    outputs=[lora_split_counts, loras_multipliers] + slider_ui_outputs,
+                    show_progress="hidden"
+                )
+
+            for slider in all_sliders_flat:
+                slider.release(fn=None, js=update_multipliers_js)
+
+            main.load(
+                fn=update_slider_ui_and_textbox,
+                inputs=[loras_choices, guidance_phases, loras_multipliers, num_inference_steps, lora_split_counts],
+                outputs=[lora_split_counts, loras_multipliers] + slider_ui_outputs,
+                show_progress="hidden"
+            )
             refresh_form_trigger.change(fn= fill_inputs, 
                 inputs=[state],
                 outputs=gen_inputs + extra_inputs,
@@ -9277,8 +9414,52 @@ def get_js():
         }, 1000);
     }    """
 
-    return start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js, click_brush_js
+    update_lora_multipliers_js = """
+    () => {
+        const lora_main_containers = document.querySelectorAll(".lora-main-container");
+        const final_multipliers = [];
 
+        lora_main_containers.forEach(main_container => {
+            if (main_container.style.display === 'none') return;
+
+            const step_split_containers = main_container.querySelectorAll(".lora-step-split-container");
+            const lora_step_strings = [];
+
+            step_split_containers.forEach(step_container => {
+                if (step_container.style.display === 'none') return;
+
+                const phase_sliders = step_container.querySelectorAll(".form > .block");
+                const phase_values = [];
+
+                phase_sliders.forEach(slider_wrapper => {
+                    if (slider_wrapper.style.display !== 'none' && !slider_wrapper.classList.contains('hidden')) {
+                        const input = slider_wrapper.querySelector("input[type='range']");
+                        if (input) {
+                            phase_values.push(input.value);
+                        }
+                    }
+                });
+
+                if (phase_values.length > 0) {
+                    lora_step_strings.push(phase_values.join(';'));
+                }
+            });
+
+            if (lora_step_strings.length > 0) {
+                final_multipliers.push(lora_step_strings.join(','));
+            }
+        });
+
+        const multiplier_textbox = document.querySelector("#loras_multipliers_textbox textarea");
+        if (multiplier_textbox) {
+            multiplier_textbox.value = final_multipliers.join(' ');
+            const inputEvent = new Event('input', { bubbles: true });
+            multiplier_textbox.dispatchEvent(inputEvent);
+        }
+    }
+    """
+
+    return start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js, click_brush_js, update_lora_multipliers_js
 def create_ui():
     global vmc_event_handler    
     css = """
@@ -9617,8 +9798,31 @@ def create_ui():
             if (path.some(hit)) e.stopImmediatePropagation();
         }, { capture: true, passive: true });
 
-        }    
+        window.updateLoraMultipliers = (loras_json, phases) => {
+            let multipliers = [];
+            const loras = JSON.parse(loras_json);
+            for (const lora of loras) {
+                let lora_multipliers = [];
+                for (let i = 0; i < phases; i++) {
+                    const slider = document.querySelector(`#lora_slider_${lora.replace(/[^a-zA-Z0-9]/g, '_')}_${i} input[type='number']`);
+                    if (slider) {
+                        lora_multipliers.push(slider.value);
+                    } else {
+                        lora_multipliers.push('1.0');
+                    }
+                }
+                multipliers.push(lora_multipliers.join(';'));
+            }
+            const multiplier_textbox = document.querySelector("#loras_multipliers_textbox textarea");
+            if(multiplier_textbox){
+                multiplier_textbox.value = multipliers.join(' ');
+                const inputEvent = new Event('input', { bubbles: true });
+                multiplier_textbox.dispatchEvent(inputEvent);
+            }
+            return multipliers.join(' ');
+        };
 
+        }
     """
     if server_config.get("display_stats", 0) == 1:
         from shared.utils.stats import SystemStatsApp

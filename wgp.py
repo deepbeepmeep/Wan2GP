@@ -63,8 +63,8 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.6.0"
-WanGP_version = "8.76"
-settings_version = 2.37
+WanGP_version = "8.761"
+settings_version = 2.38
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 
@@ -7029,32 +7029,35 @@ def refresh_video_prompt_type_video_guide(state, filter_type, video_prompt_type,
     else:
         mask_selector_visible = True
     ref_images_visible = "I" in video_prompt_type
-    custom_options = custom_checkbox= False 
-    if "#" in video_prompt_type:
-        custom_options = True
-        custom_video_choices = model_def.get("custom_video_selection", None)
-        if custom_video_choices is not None:
-            custom_checkbox = len(custom_video_choices.get("choices", [])) <= 2
+    custom_options = custom_checkbox = False 
+    custom_video_selection = model_def.get("custom_video_selection", None)
+    if custom_video_selection is not None:
+        custom_trigger =  custom_video_selection.get("trigger","")
+        if len(custom_trigger) == 0 or custom_trigger in video_prompt_type:
+            custom_options = True
+            custom_checkbox = custom_video_selection.get("type","") == "checkbox"
             
     return video_prompt_type,  gr.update(visible = visible and not image_outputs), image_guide, gr.update(visible = keep_frames_video_guide_visible), gr.update(visible = visible and "G" in video_prompt_type), gr.update(visible= (visible or "F" in video_prompt_type or "K" in video_prompt_type) and any_outpainting), gr.update(visible= visible and mask_selector_visible and  not "U" in video_prompt_type ) ,  gr.update(visible= mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible= mask_visible),  gr.update(visible = ref_images_visible ), gr.update(visible= custom_options and not custom_checkbox ), gr.update(visible= custom_options and custom_checkbox ) 
 
 def refresh_video_prompt_type_video_custom_dropbox(state, video_prompt_type, video_prompt_type_video_custom_dropbox):
     model_type = state["model_type"]
     model_def = get_model_def(model_type)
-    custom_video_choices = model_def.get("custom_video_selection", None)
-    if not "#" in video_prompt_type or custom_video_choices is None: return gr.update()
-    video_prompt_type = del_in_sequence(video_prompt_type, "0123456789")
+    custom_video_selection = model_def.get("custom_video_selection", None)
+    if custom_video_selection is None: return gr.update()
+    letters_filter = custom_video_selection.get("letters_filter", "")
+    video_prompt_type = del_in_sequence(video_prompt_type, letters_filter)
     video_prompt_type = add_to_sequence(video_prompt_type, video_prompt_type_video_custom_dropbox)
     return video_prompt_type
 
 def refresh_video_prompt_type_video_custom_checkbox(state, video_prompt_type, video_prompt_type_video_custom_checkbox):
     model_type = state["model_type"]
     model_def = get_model_def(model_type)
-    custom_video_choices = model_def.get("custom_video_selection", None)
-    if not "#" in video_prompt_type or custom_video_choices is None: return gr.update()
-    video_prompt_type = del_in_sequence(video_prompt_type, "0123456789")
+    custom_video_selection = model_def.get("custom_video_selection", None)
+    if custom_video_selection is None: return gr.update()
+    letters_filter = custom_video_selection.get("letters_filter", "")
+    video_prompt_type = del_in_sequence(video_prompt_type, letters_filter)
     if video_prompt_type_video_custom_checkbox:
-        video_prompt_type = add_to_sequence(video_prompt_type, custom_video_choices["choices"][1][1])
+        video_prompt_type = add_to_sequence(video_prompt_type, custom_video_selection["choices"][1][1])
     return video_prompt_type
 
 
@@ -7620,15 +7623,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         video_prompt_type_video_custom_checkbox = gr.Checkbox(value=False, label="Custom Checkbbox", scale = 1, visible= False, show_label= True, )
 
                     else:
-                        custom_choices = "#" in video_prompt_type_value 
                         custom_video_choices = custom_video_selection["choices"]
-                        custom_checkbox = len(custom_video_choices) <= 2
+                        custom_video_trigger = custom_video_selection.get("trigger", "")
+                        custom_choices =  len(custom_video_trigger) == 0 or custom_video_trigger in video_prompt_type_value 
+                        custom_checkbox = custom_video_selection.get("type","") == "checkbox"
 
                         video_prompt_type_video_custom_label = custom_video_selection.get("label", "Custom Choices")
-
                         video_prompt_type_video_custom_dropbox = gr.Dropdown(
                             custom_video_choices,
-                            value=filter_letters(video_prompt_type_value, "0123456789", custom_video_selection.get("default", "")),
+                            value=filter_letters(video_prompt_type_value, custom_video_selection.get("letters_filter", ""), custom_video_selection.get("default", "")),
                             scale = custom_video_selection.get("scale", 1),
                             label= video_prompt_type_video_custom_label , visible= not custom_checkbox and custom_choices, 
                             show_label= custom_video_selection.get("show_label", True),

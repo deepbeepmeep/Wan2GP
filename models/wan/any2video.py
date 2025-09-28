@@ -447,7 +447,7 @@ class WanAny2V:
         if model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "fantasy", "multitalk", "infinitetalk", "i2v_2_2_multitalk", "flf2v_720p"]:
             any_end_frame = False
             if infinitetalk:
-                new_shot = "Q" in video_prompt_type
+                new_shot = "0" in video_prompt_type
                 if input_frames is not None:
                     image_ref = input_frames[:, 0]
                 else:
@@ -1058,7 +1058,7 @@ class WanAny2V:
 
     def get_loras_transformer(self, get_model_recursive_prop, base_model_type, model_type, video_prompt_type, model_mode, **kwargs):
         if base_model_type == "animate":
-            if "1" in video_prompt_type:
+            if "#" in video_prompt_type and "1" in video_prompt_type:
                 preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
                 if len(preloadURLs) > 0: 
                     return [os.path.join("ckpts", os.path.basename(preloadURLs[0]))] , [1]

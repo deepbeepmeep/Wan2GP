@@ -82,7 +82,7 @@ class family_handler():
         extra_model_def["i2v_class"] = i2v
         extra_model_def["multitalk_class"] = test_multitalk(base_model_type)
         extra_model_def["standin_class"] = test_standin(base_model_type)
-        vace_class = base_model_type in ["vace_14B", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B"] 
+        vace_class = base_model_type in ["vace_14B", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "mega_aio_14B", "mega_aio_14B_nsfw"] 
         extra_model_def["vace_class"] = vace_class
 
         if base_model_type in ["animate"]:
@@ -104,7 +104,7 @@ class family_handler():
         extra_model_def.update({
         "frames_minimum" : frames_minimum,
         "frames_steps" : frames_steps, 
-        "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "fantasy", "animate"] or test_class_i2v(base_model_type) or test_wan_5B(base_model_type) or vace_class,  #"ti2v_2_2",
+        "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "fantasy", "animate", "mega_aio_14B", "mega_aio_14B_nsfw"] or test_class_i2v(base_model_type) or test_wan_5B(base_model_type) or vace_class,  #"ti2v_2_2",
         "multiple_submodels" : multiple_submodels,
         "guidance_max_phases" : 3,
         "skip_layer_guidance" : True,        
@@ -117,6 +117,7 @@ class family_handler():
         "sample_solvers":[
                             ("unipc", "unipc"),
                             ("euler", "euler"),
+                            ("euler ancestral", "euler_a"),
                             ("dpm++", "dpm++"),
                             ("flowmatch causvid", "causvid"), ]
         })
@@ -270,7 +271,9 @@ class family_handler():
                     "visible" : False,
                 }
 
-        if vace_class or base_model_type in ["animate"]:
+        if base_model_type in ["mega_aio_14B", "mega_aio_14B_nsfw"]:
+            image_prompt_types_allowed = "TSVL"  # Full MEGA capabilities: Text + Start + Video + Last
+        elif vace_class or base_model_type in ["animate"]:
             image_prompt_types_allowed = "TVL"
         elif base_model_type in ["infinitetalk"]:
             image_prompt_types_allowed = "TSVL"
@@ -299,7 +302,7 @@ class family_handler():
     def query_supported_types():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_multitalk_14B", "vace_standin_14B",
                     "t2v_1.3B", "standin", "t2v", "vace_1.3B", "phantom_1.3B", "phantom_14B", 
-                    "recam_1.3B", "animate",
+                    "recam_1.3B", "animate", "mega_aio_14B", "mega_aio_14B_nsfw",
                     "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp"]
 
 
@@ -312,8 +315,10 @@ class family_handler():
         }
 
         models_comp_map = { 
-                    "vace_14B" : [ "vace_multitalk_14B", "vace_standin_14B"],
-                    "t2v" : [ "vace_14B", "vace_1.3B" "vace_multitalk_14B", "t2v_1.3B", "phantom_1.3B","phantom_14B", "standin"],
+                    "vace_14B" : [ "vace_multitalk_14B", "vace_standin_14B", "mega_aio_14B", "mega_aio_14B_nsfw"],
+                    "mega_aio_14B" : [ "vace_14B", "vace_multitalk_14B", "vace_standin_14B", "mega_aio_14B_nsfw"],
+                    "mega_aio_14B_nsfw" : [ "vace_14B", "vace_multitalk_14B", "vace_standin_14B", "mega_aio_14B"],
+                    "t2v" : [ "vace_14B", "vace_1.3B", "vace_multitalk_14B", "t2v_1.3B", "phantom_1.3B","phantom_14B", "standin", "mega_aio_14B", "mega_aio_14B_nsfw"],
                     "i2v" : [ "fantasy", "multitalk", "flf2v_720p" ],
                     "i2v_2_2" : ["i2v_2_2_multitalk"],
                     "fantasy": ["multitalk"],
@@ -362,8 +367,12 @@ class family_handler():
     @staticmethod
     def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None):
         from .configs import WAN_CONFIGS
+        import copy
 
-        if test_class_i2v(base_model_type):
+        if base_model_type in ["mega_aio_14B", "mega_aio_14B_nsfw"]:
+            # MEGA AIO uses T2V config but with I2V capabilities
+            cfg = WAN_CONFIGS['t2v-14B']
+        elif test_class_i2v(base_model_type):
             cfg = WAN_CONFIGS['i2v-14B']
         else:
             cfg = WAN_CONFIGS['t2v-14B']
@@ -491,6 +500,11 @@ class family_handler():
             })
 
         elif base_model_type in ["vace_14B", "vace_multitalk_14B"]:
+            ui_defaults.update({
+                "sliding_window_discard_last_frames": 0,
+            })
+
+        elif base_model_type in ["mega_aio_14B", "mega_aio_14B_nsfw"]:
             ui_defaults.update({
                 "sliding_window_discard_last_frames": 0,
             })

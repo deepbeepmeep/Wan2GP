@@ -537,7 +537,13 @@ class WanAttentionBlock(nn.Module):
                     hints_processed.append(self.vace(hint, x, **kwargs) if self.block_id == 0 else self.vace(hint, None, **kwargs))
                      
         latent_frames = e.shape[0]
-        e = (self.modulation + e).chunk(6, dim=1)
+        # Handle FP8 modulation parameters (convert to compatible dtype)
+        modulation = self.modulation
+        if hasattr(torch, 'float8_e4m3fn') and modulation.dtype == torch.float8_e4m3fn:
+            modulation = modulation.to(e.dtype)
+        elif hasattr(torch, 'float8_e5m2') and modulation.dtype == torch.float8_e5m2:
+            modulation = modulation.to(e.dtype)
+        e = (modulation + e).chunk(6, dim=1)
         # self-attention
         x_mod = self.norm1(x)
         x_mod = reshape_latent(x_mod , latent_frames)
@@ -764,7 +770,14 @@ class Head(nn.Module):
         dtype = x.dtype
 
         latent_frames = e.shape[0]
-        e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
+        # Handle FP8 modulation parameters (convert to compatible dtype)
+        modulation = self.modulation
+        e_unsqueezed = e.unsqueeze(1)
+        if hasattr(torch, 'float8_e4m3fn') and modulation.dtype == torch.float8_e4m3fn:
+            modulation = modulation.to(e_unsqueezed.dtype)
+        elif hasattr(torch, 'float8_e5m2') and modulation.dtype == torch.float8_e5m2:
+            modulation = modulation.to(e_unsqueezed.dtype)
+        e = (modulation + e_unsqueezed).chunk(2, dim=1)
         x = self.norm(x).to(dtype)
         x = reshape_latent(x , latent_frames)
         x *= (1 + e[1])

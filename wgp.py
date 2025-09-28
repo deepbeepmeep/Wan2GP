@@ -2338,6 +2338,8 @@ reload_needed = False
 save_path = server_config.get("save_path", os.path.join(os.getcwd(), "outputs"))
 image_save_path = server_config.get("image_save_path", os.path.join(os.getcwd(), "outputs"))
 if not "video_output_codec" in server_config: server_config["video_output_codec"]= "libx264_8"
+if not "video_container" in server_config: server_config["video_container"]= "mp4"
+if not "embed_source_images" in server_config: server_config["embed_source_images"]= False
 if not "image_output_codec" in server_config: server_config["image_output_codec"]= "jpeg_95"
 
 preload_model_policy = server_config.get("preload_model_policy", []) 
@@ -2988,6 +2990,8 @@ def apply_changes(  state,
                     max_frames_multiplier_choice = 1,
                     display_stats_choice = 0,
                     video_output_codec_choice = None,
+                    video_container_choice = None,
+                    embed_source_images_choice = None,
                     image_output_codec_choice = None,
                     audio_output_codec_choice = None,
                     last_resolution_choice = None,
@@ -3026,6 +3030,8 @@ def apply_changes(  state,
         "max_frames_multiplier" : max_frames_multiplier_choice,
         "display_stats" : display_stats_choice,
         "video_output_codec" : video_output_codec_choice,
+        "video_container" : video_container_choice,
+        "embed_source_images" : embed_source_images_choice,
         "image_output_codec" : image_output_codec_choice,
         "audio_output_codec" : audio_output_codec_choice,
         "last_model_type" : state["model_type"],
@@ -3073,7 +3079,7 @@ def apply_changes(  state,
         reset_prompt_enhancer()
     if all(change in ["attention_mode", "vae_config", "boost", "save_path", "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant", 
                       "notification_sound_enabled", "notification_sound_volume", "mmaudio_enabled", "max_frames_multiplier", "display_stats",
-                      "video_output_codec", "image_output_codec", "audio_output_codec"] for change in changes ):
+                      "video_output_codec", "video_container", "embed_source_images", "image_output_codec", "audio_output_codec"] for change in changes ):
         model_family = gr.Dropdown()
         model_choice = gr.Dropdown()
     else:
@@ -4194,7 +4200,7 @@ def edit_video(
     any_change = False
     if sample != None:
         video_path =get_available_filename(save_path, video_source, "_tmp") if any_mmaudio or has_already_audio else get_available_filename(save_path, video_source, "_post")  
-        save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type= server_config.get("video_output_codec", None))
+        save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type= server_config.get("video_output_codec", None), container=server_config.get("video_container", "mp4"))
 
         if any_mmaudio or has_already_audio: tmp_path = video_path
         any_change = True
@@ -5361,7 +5367,11 @@ def generate_video(
                 save_prompt = original_prompts[0]
 
                 from shared.utils.utils import truncate_for_filesystem
-                extension = "jpg" if is_image else "mp4" 
+                if is_image:
+                    extension = "jpg"
+                else:
+                    container = server_config.get("video_container", "mp4")
+                    extension = container 
 
                 if os.name == 'nt':
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt,50)).strip()}.{extension}"
@@ -5381,8 +5391,9 @@ def generate_video(
                     video_path= new_image_path
                 elif len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0 or output_new_audio_filepath is not None or any_mmaudio or output_new_audio_data is not None or audio_source is not None:
                     video_path = os.path.join(save_path, file_name)
-                    save_path_tmp = video_path[:-4] + "_tmp.mp4"
-                    save_video( tensor=sample[None], save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None))
+                    container = server_config.get("video_container", "mp4")
+                    save_path_tmp = video_path.rsplit('.', 1)[0] + f"_tmp.{container}"
+                    save_video( tensor=sample[None], save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None), container=server_config.get("video_container", "mp4"))
                     output_new_audio_temp_filepath = None
                     new_audio_from_start =  reset_control_aligment
                     source_audio_duration = source_video_frames_count / fps
@@ -5409,7 +5420,17 @@ def generate_video(
                     if output_new_audio_temp_filepath is not None: os.remove(output_new_audio_temp_filepath)
 
                 else:
-                    save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None))
+                    # Prepare source images for embedding if enabled
+                    source_images = {}
+                    if server_config.get("embed_source_images", False) and server_config.get("video_container", "mp4") == "mkv":
+                        if image_start is not None:
+                            source_images["image_start"] = image_start
+                        if image_end is not None:
+                            source_images["image_end"] = image_end
+                        if image_refs is not None:
+                            source_images["image_refs"] = image_refs
+                    
+                    save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None), container=server_config.get("video_container", "mp4"), source_images=source_images if source_images else None)
 
                 end_time = time.time()
 
@@ -5447,11 +5468,43 @@ def generate_video(
                     elif metadata_choice == "metadata":
                         if is_image:
                             save_image_metadata(path, configs)
-                        else:
+                        elif path.endswith('.mp4'):
                             from mutagen.mp4 import MP4
                             file = MP4(path)
                             file.tags['©cmt'] = [json.dumps(configs)]
                             file.save()
+                        elif path.endswith('.mkv'):
+                            # For MKV files, embed metadata using FFmpeg
+                            try:
+                                import subprocess
+                                import tempfile
+                                
+                                # Create temporary file with metadata
+                                temp_path = path.replace('.mkv', '_temp_with_metadata.mkv')
+                                
+                                # Use FFmpeg to add metadata while preserving ALL streams (including attachments)
+                                ffmpeg_cmd = [
+                                    'ffmpeg', '-y', '-i', path,
+                                    '-metadata', f'comment={json.dumps(configs)}',
+                                    '-map', '0',  # Map all streams from input (including attachments)
+                                    '-c', 'copy',  # Copy streams without re-encoding
+                                    temp_path
+                                ]
+                                
+                                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+                                
+                                if result.returncode == 0:
+                                    # Replace original with metadata version
+                                    import shutil
+                                    shutil.move(temp_path, path)
+                                else:
+                                    print(f"Warning: Failed to add metadata to MKV file: {result.stderr}")
+                                    # Clean up temp file if it exists
+                                    if os.path.exists(temp_path):
+                                        os.remove(temp_path)
+                                        
+                            except Exception as e:
+                                print(f"Error adding metadata to MKV file {path}: {e}")
                     if is_image:
                         print(f"New image saved to Path: "+ path)
                     else:
@@ -6349,7 +6402,7 @@ def apply_post_processing(state, input_file_list, choice, PP_temporal_upsampling
     if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list)  :
         return gr.update(), gr.update(), gr.update()
     
-    if not file_list[choice].endswith(".mp4"):
+    if not (file_list[choice].endswith(".mp4") or file_list[choice].endswith(".mkv")):
         gr.Info("Post processing is only available with Videos")
         return gr.update(), gr.update(), gr.update()
     overrides = {
@@ -6372,7 +6425,7 @@ def remux_audio(state, input_file_list, choice, PP_MMAudio_setting, PP_MMAudio_p
     if len(file_list) == 0 or choice == None or choice < 0 or choice > len(file_list)  :
         return gr.update(), gr.update(), gr.update()
     
-    if not file_list[choice].endswith(".mp4"):
+    if not (file_list[choice].endswith(".mp4") or file_list[choice].endswith(".mkv")):
         gr.Info("Post processing is only available with Videos")
         return gr.update(), gr.update(), gr.update()
     overrides = {
@@ -6477,6 +6530,80 @@ def export_settings(state):
     return text_base64, sanitize_file_name(model_type + "_" + datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss") + ".json")
 
 
+def extract_and_apply_source_images(file_path, state):
+    """
+    Extract embedded source images from MKV files and apply them to the UI state.
+    
+    Args:
+        file_path (str): Path to the MKV video file
+        state (dict): UI state dictionary
+    
+    Returns:
+        int: Number of source images extracted and applied
+    """
+    if not file_path.endswith('.mkv'):
+        return 0
+    
+    try:
+        from shared.utils.audio_video import extract_source_images
+        import tempfile
+        import os
+        from PIL import Image
+        
+        # Create temporary directory for extracted images
+        with tempfile.TemporaryDirectory() as temp_dir:
+            extracted_files = extract_source_images(file_path, temp_dir)
+            
+            if not extracted_files:
+                return 0
+            
+            # Process extracted images and apply to state
+            applied_count = 0
+            
+            for img_path in extracted_files:
+                img_name = os.path.basename(img_path).lower()
+                
+                try:
+                    # Load the image
+                    pil_image = Image.open(img_path)
+                    
+                    # Apply based on filename
+                    if 'image_start' in img_name:
+                        # Apply as start image
+                        current_settings = get_model_settings(state, state["model_type"]) or {}
+                        current_settings['image_start'] = [pil_image]
+                        set_model_settings(state, state["model_type"], current_settings)
+                        applied_count += 1
+                        
+                    elif 'image_end' in img_name:
+                        # Apply as end image  
+                        current_settings = get_model_settings(state, state["model_type"]) or {}
+                        current_settings['image_end'] = [pil_image]
+                        set_model_settings(state, state["model_type"], current_settings)
+                        applied_count += 1
+                        
+                    elif 'image_refs' in img_name:
+                        # Apply as reference image
+                        current_settings = get_model_settings(state, state["model_type"]) or {}
+                        existing_refs = current_settings.get('image_refs', [])
+                        if not isinstance(existing_refs, list):
+                            existing_refs = []
+                        existing_refs.append(pil_image)
+                        current_settings['image_refs'] = existing_refs
+                        set_model_settings(state, state["model_type"], current_settings)
+                        applied_count += 1
+                        
+                except Exception as e:
+                    print(f"Error processing extracted image {img_path}: {e}")
+                    continue
+            
+            return applied_count
+            
+    except Exception as e:
+        print(f"Error extracting source images from {file_path}: {e}")
+        return 0
+
+
 def use_video_settings(state, input_file_list, choice):
     gen = get_gen_info(state)
     file_list, file_settings_list = get_file_list(state, input_file_list)
@@ -6495,11 +6622,21 @@ def use_video_settings(state, input_file_list, choice):
             defaults = get_default_settings(model_type) if defaults == None else defaults
             defaults.update(configs)
             prompt = configs.get("prompt", "")
+            
+            # Extract and apply embedded source images from MKV files
+            extracted_images = extract_and_apply_source_images(file_name, state)
+            
             set_model_settings(state, model_type, defaults)
+            
+            # Update info message to include source image extraction
             if has_image_file_extension(file_name):
                 gr.Info(f"Settings Loaded from Image with prompt '{prompt[:100]}'")
             else:
-                gr.Info(f"Settings Loaded from Video with prompt '{prompt[:100]}'")
+                info_msg = f"Settings Loaded from Video with prompt '{prompt[:100]}'"
+                if extracted_images:
+                    info_msg += f" + {extracted_images} source image(s) extracted"
+                gr.Info(info_msg)
+            
             if models_compatible:
                 return gr.update(), gr.update(), str(time.time())
             else:
@@ -6525,6 +6662,32 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
             tags = file.tags['©cmt'][0] 
             configs = json.loads(tags)
             any_image_or_video = True
+        except:
+            pass
+    elif file_path.endswith(".mkv"):
+        # For MKV files, try to read metadata from attachments or use ffprobe
+        try:
+            import subprocess
+            # Try to get metadata using ffprobe
+            result = subprocess.run([
+                'ffprobe', '-v', 'quiet', '-print_format', 'json', 
+                '-show_format', file_path
+            ], capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                import json as json_module
+                probe_data = json_module.loads(result.stdout)
+                format_tags = probe_data.get('format', {}).get('tags', {})
+                
+                # Look for our metadata in various possible tag locations
+                for tag_key in ['comment', 'COMMENT', 'description', 'DESCRIPTION']:
+                    if tag_key in format_tags:
+                        try:
+                            configs = json.loads(format_tags[tag_key])
+                            any_image_or_video = True
+                            break
+                        except:
+                            continue
         except:
             pass
     elif has_image_file_extension(file_path):
@@ -6606,8 +6769,16 @@ def load_settings_from_file(state, file_path):
     prompt = configs.get("prompt", "")
     is_image = configs.get("is_image", False)
 
+    # Extract and apply embedded source images from MKV files
+    extracted_images = 0
+    if file_path.endswith('.mkv'):
+        extracted_images = extract_and_apply_source_images(file_path, state)
+
     if any_video_or_image_file:    
-        gr.Info(f"Settings Loaded from {'Image' if is_image else 'Video'} generated with prompt '{prompt[:100]}'")
+        info_msg = f"Settings Loaded from {'Image' if is_image else 'Video'} generated with prompt '{prompt[:100]}'"
+        if extracted_images > 0:
+            info_msg += f" + {extracted_images} source image(s) extracted and applied"
+        gr.Info(info_msg)
     else:
         gr.Info(f"Settings Loaded from Settings file with prompt '{prompt[:100]}'")
 
@@ -8931,6 +9102,21 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                     label="Video Codec to use"
                 )
 
+                video_container_choice = gr.Dropdown(
+                    choices=[
+                        ("MP4 (Universal Compatibility)", 'mp4'),
+                        ("MKV (Advanced Features + Source Image Embedding)", 'mkv'),
+                    ],
+                    value=server_config.get("video_container", "mp4"),
+                    label="Video Container Format"
+                )
+
+                embed_source_images_choice = gr.Checkbox(
+                    value=server_config.get("embed_source_images", False),
+                    label="Embed Source Images in Video Files (requires MKV format)",
+                    info="Automatically embeds i2v source images as attachments in the video file for reference"
+                )
+
                 image_output_codec_choice = gr.Dropdown(
                     choices=[
                         ("JPEG Quality 85", 'jpeg_85'),
@@ -9019,6 +9205,8 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                     max_frames_multiplier_choice,
                     display_stats_choice,
                     video_output_codec_choice,
+                    video_container_choice,
+                    embed_source_images_choice,
                     image_output_codec_choice,
                     audio_output_codec_choice,
                     resolution,

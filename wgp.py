@@ -53,6 +53,7 @@ from preprocessing.matanyone  import app as matanyone_app
 from tqdm import tqdm
 import requests
 from shared.gradio.gallery import AdvancedMediaGallery
+import re
 
 # import torch._dynamo as dynamo
 # dynamo.config.recompile_limit = 2000   # default is 256
@@ -2819,6 +2820,9 @@ def setup_prompt_enhancer(pipe, kwargs):
 
 
 def load_models(model_type, override_profile = -1):
+                                                        
+                                                             
+                                                             
     global transformer_type, loaded_profile
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(model_type)
@@ -2902,6 +2906,8 @@ def load_models(model_type, override_profile = -1):
     transformer_type = model_type
     loaded_profile = profile
     return wan_model, offloadobj 
+
+  
 
 if not "P" in preload_model_policy:
     wan_model, offloadobj, transformer = None, None, None
@@ -3308,6 +3314,100 @@ def set_file_choice(gen, file_list, choice):
     gen["last_selected"] = (choice + 1) >= len(file_list)
     gen["selected"] = choice
 
+def create_video_player_html(base_url, container_id, video_path, fps, slider_id):
+    full_video_url = f"{base_url}/gradio_api/file={video_path}"
+    html = f"""
+    <div id="{container_id}" class="video-joiner-player" data-slider-id="{slider_id}" data-fps="{fps}">
+        <video src="{full_video_url}" style="width:100%; border-radius: 8px;" controls muted preload="metadata"></video>
+    </div>
+    """
+    return html
+
+def get_video_info_html(state, file_path):
+    configs, _ = get_settings_from_file(state, file_path, False, False, False)
+    values = [os.path.basename(file_path)]
+    labels = ["File Name"]
+    misc_values= []
+    misc_labels = []
+    pp_values= []
+    pp_labels = []
+    
+    if not has_video_file_extension(file_path):
+        img = Image.open(file_path)
+        width, height = img.size
+        is_image = True
+        frames_count = fps = 1
+        nb_audio_tracks = 0
+    else:
+        fps, width, height, frames_count = get_video_info(file_path)
+        is_image = False
+        nb_audio_tracks = extract_audio_tracks(file_path, query_only=True)
+
+    if configs is not None:
+        if "merge_info" in configs and len(configs["merge_info"]) > 0:
+            misc_values.append(configs["merge_info"])
+            misc_labels.append("Merged From")
+
+        video_model_name = configs.get("type", "Unknown model")
+        if "-" in video_model_name:
+            video_model_name = video_model_name[video_model_name.find("-") + 2:]
+        misc_values.append(video_model_name)
+        misc_labels.append("Model")
+        
+        if configs.get("temporal_upsampling"):
+            pp_values.append(configs["temporal_upsampling"])
+            pp_labels.append("Upsampling")
+        if configs.get("film_grain_intensity", 0) > 0:
+            pp_values.append(f"Intensity={configs['film_grain_intensity']}, Saturation={configs['film_grain_saturation']}")
+            pp_labels.append("Film Grain")
+
+    if configs is None or "seed" not in configs:
+        values.extend(misc_values)
+        labels.extend(misc_labels)
+        creation_date = str(get_file_creation_date(file_path))
+        if "." in creation_date: creation_date = creation_date[:creation_date.rfind(".")]
+        
+        if is_image:
+            values.append(f"{width}x{height}")
+            labels.append("Resolution")
+        else:
+            values.extend([f"{width}x{height}", f"{frames_count} frames (duration={frames_count/fps:.1f}s, fps={round(fps)})"])
+            labels.extend(["Resolution", "Frames"])
+        if nb_audio_tracks > 0:
+            values.append(nb_audio_tracks)
+            labels.append("Nb Audio Tracks")
+        
+        values.extend(pp_values)
+        labels.extend(pp_labels)
+        values.append(creation_date)
+        labels.append("Creation Date")
+    else:
+        video_prompt = configs.get("prompt", "")[:1024]
+        values.extend(misc_values)
+        labels.extend(misc_labels)
+        values.append(video_prompt)
+        labels.append("Text Prompt")
+        
+        values.extend([
+            configs.get("resolution", "") + f" (real: {width}x{height})",
+            configs.get("video_length", 0),
+            configs.get("seed", -1),
+            configs.get("guidance_scale", "N/A"),
+            configs.get("num_inference_steps", "N/A")
+        ])
+        labels.extend(["Resolution", "Video Length", "Seed", "Guidance (CFG)", "Num Inference steps"])
+
+    labels = [label for value, label in zip(values, labels) if value is not None]
+    values = [value for value in values if value is not None]
+
+    table_style = """<STYLE>
+        #video_info, #video_info TR, #video_info TD {
+        background-color: transparent; color: inherit; padding: 4px;
+        border:0px !important; font-size:12px; }
+        </STYLE>"""
+    rows = [f"<TR><TD style='text-align: right;' WIDTH=1% NOWRAP VALIGN=TOP>{label}</TD><TD><B>{value}</B></TD></TR>" for label, value in zip(labels, values)]
+    return f"{table_style}<TABLE ID=video_info WIDTH=100%>" + "".join(rows) + "</TABLE>"
+
 def select_video(state, input_file_list, event_data: gr.EventData):
     data=  event_data._data
     gen = get_gen_info(state)
@@ -3531,6 +3631,8 @@ def select_video(state, input_file_list, event_data: gr.EventData):
         html = f"{table_style}<TABLE ID=video_info WIDTH=100%>" + "".join(rows) + "</TABLE>"
     else:
         html =  get_default_video_info()
+                        
+        
     visible= len(file_list) > 0
     return choice, html, gr.update(visible=visible and not is_image) , gr.update(visible=visible and is_image), gr.update(visible=visible and not is_image) , gr.update(visible=visible and not is_image) 
 
@@ -4132,6 +4234,13 @@ def edit_video(
 
 
 
+                                                                                               
+               
+                 
+                      
+                       
+          
+
     gen = get_gen_info(state)
 
     if gen.get("abort", False): return 
@@ -4550,10 +4659,19 @@ def generate_video(
     state,
     model_type,
     model_filename,
+    merge_info,
     mode,
 ):
 
 
+
+                         
+                                                                    
+                                                                                              
+                   
+                     
+                        
+              
 
     def remove_temp_filenames(temp_filenames_list):
         for temp_filename in temp_filenames_list: 
@@ -5090,6 +5208,7 @@ def generate_video(
                                                                                         outpainting_dims =outpainting_dims,
                                                                                         background_ref_outpainted = model_def.get("background_ref_outpainted", True),
                                                                                         return_tensor= model_def.get("return_image_refs_tensor", False) )
+ 
 
             frames_to_inject_parsed = frames_to_inject[ window_start_frame if extract_guide_from_window_start else guide_start_frame: guide_end_frame]
             if video_guide is not None or len(frames_to_inject_parsed) > 0 or model_def.get("forced_guide_mask_inputs", False): 
@@ -5430,6 +5549,8 @@ def generate_video(
                 inputs.pop("mode")
                 inputs["model_type"] = model_type
                 inputs["model_filename"] = original_filename
+                if merge_info and len(merge_info.strip()) > 0:
+                    inputs["merge_info"] = merge_info
                 if is_image:
                     inputs["image_quality"] = server_config.get("image_output_codec", None)
                 else:
@@ -6604,13 +6725,13 @@ def switch_image_mode(state):
 def load_settings_from_file(state, file_path):
     gen = get_gen_info(state)
 
-    if file_path==None:
-        return gr.update(), gr.update(), None
+    if file_path is None or not file_path:
+        return gr.update(), gr.update(), None, None, gr.update()
 
     configs, any_video_or_image_file = get_settings_from_file(state, file_path, True, True, True)
-    if configs == None:
+    if configs is None:
         gr.Info("File not supported")
-        return gr.update(), gr.update(), None
+        return gr.update(), gr.update(), None, None, gr.update()
 
     current_model_type = state["model_type"]
     model_type = configs["model_type"]
@@ -6624,10 +6745,11 @@ def load_settings_from_file(state, file_path):
 
     if model_type == current_model_type:
         set_model_settings(state, current_model_type, configs)        
-        return gr.update(), gr.update(), str(time.time()), None
+        return gr.update(), gr.update(), str(time.time()), None, gr.Tabs(selected="video_gen")
     else:
         set_model_settings(state, model_type, configs)        
-        return *generate_dropdown_model_list(model_type), gr.update(), None
+        model_family_update, model_choice_update = generate_dropdown_model_list(model_type)
+        return model_family_update, model_choice_update, str(time.time()), None, gr.Tabs(selected="video_gen")
 
 def save_inputs(
             target,
@@ -6713,6 +6835,7 @@ def save_inputs(
             prompt_enhancer,
             min_frames_if_references,
             override_profile,
+            merge_info,
             mode,
             state,
 ):
@@ -7324,6 +7447,7 @@ def get_default_value(choices, current_value, default_value = None):
 
 def generate_video_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_choice = None, header = None, main = None, main_tabs= None):
     global inputs_names #, advanced
+    merge_info = gr.Text(value="", visible=False, label="Merge Info")
 
     if update_form:
         model_filename = state_dict["model_filename"]
@@ -8725,7 +8849,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 outputs=[modal_container]
             )
 
-    return ( state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger,
+    return ( state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger, image_start, image_end, merge_info, settings_file, image_prompt_type, image_start_row, image_end_row, image_prompt_type_radio, image_prompt_type_endcheckbox
             #  video_guide, image_guide, video_mask, image_mask, image_refs,   
             ) 
  
@@ -9093,6 +9217,324 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                 ],
                 outputs= [msg , header, model_family, model_choice, refresh_form_trigger]
         )
+
+def generate_gallery_tab(state):
+    with gr.Column():
+        with gr.Row():
+            refresh_gallery_files_btn = gr.Button("Refresh Files")
+
+        with gr.Row(elem_id="gallery-layout"):
+            gallery_html_output = gr.HTML(
+                value="<div class='gallery-grid'><p class='placeholder'>Click 'Refresh Files' to load gallery.</p></div>", 
+                elem_id="gallery-container"
+            )
+            with gr.Column(elem_id="metadata-panel-container"):
+                send_to_generator_settings_btn = gr.Button("Use Settings in Generator", interactive=False, visible=False)
+                join_videos_btn = gr.Button("Join 2 Selected Videos", interactive=False, visible=False)
+                with gr.Row(visible=False) as frame_preview_row:
+                    first_frame_preview = gr.Image(label="First Frame", interactive=False, height=150)
+                    last_frame_preview = gr.Image(label="Last Frame", interactive=False, height=150)
+                metadata_panel_output = gr.HTML(
+                    value="<div class='metadata-content'><p class='placeholder'>Select a file to view its metadata.</p></div>"
+                )
+                with gr.Column(visible=False) as join_interface:
+                    with gr.Row():
+                        with gr.Column():
+                            gr.Markdown("#### Video 1 (Provides End Frame)")
+                            video1_preview = gr.HTML(label="Video 1 Preview")
+                            video1_frame_slider = gr.Slider(label="Frame Number", minimum=1, maximum=100, step=1, interactive=True, elem_id="video1_frame_slider")
+                            video1_path = gr.Text(visible=False)
+                            video1_info = gr.HTML(label="Video 1 Info")
+                        with gr.Column():
+                            gr.Markdown("#### Video 2 (Provides Start Frame)")
+                            video2_preview = gr.HTML(label="Video 2 Preview")
+                            video2_frame_slider = gr.Slider(label="Frame Number", minimum=1, maximum=100, step=1, interactive=True, elem_id="video2_frame_slider")
+                            video2_path = gr.Text(visible=False)
+                            video2_info = gr.HTML(label="Video 2 Info")
+                    with gr.Row():
+                        send_to_generator_btn = gr.Button("Send Frames to Generator", variant="primary")
+                        cancel_join_btn = gr.Button("Cancel")
+
+        selected_files_for_backend = gr.Text(label="Selected Files", visible=False, elem_id="selected-files-backend")
+        path_for_settings_loader = gr.Text(label="Path for Settings Loader", visible=False)
+
+    return (
+        gallery_html_output, metadata_panel_output, selected_files_for_backend, path_for_settings_loader,
+        send_to_generator_settings_btn, refresh_gallery_files_btn, join_videos_btn, join_interface,
+        video1_preview, video1_frame_slider, video1_path, video1_info,
+        video2_preview, video2_frame_slider, video2_path, video2_info,
+        send_to_generator_btn, cancel_join_btn,
+        frame_preview_row, first_frame_preview, last_frame_preview
+    )
+
+def wire_gallery_events(
+    state, gallery_tab, video_gen_tab, main_tabs, model_family, model_choice, refresh_form_trigger, settings_file,
+    image_start, image_end, merge_info, image_prompt_type,
+    gallery_html_output, metadata_panel_output, selected_files_for_backend, path_for_settings_loader,
+    send_to_generator_settings_btn, refresh_gallery_files_btn, join_videos_btn, join_interface,
+    video1_preview, video1_frame_slider, video1_path, video1_info,
+    video2_preview, video2_frame_slider, video2_path, video2_info,
+    send_to_generator_btn, cancel_join_btn,
+    frame_preview_row, first_frame_preview, last_frame_preview, 
+    image_start_row, image_end_row, image_prompt_type_radio, image_prompt_type_endcheckbox
+):
+
+    def list_output_files_as_html(current_state):
+        save_path = server_config.get("save_path", "outputs")
+        image_save_path = server_config.get("image_save_path", "outputs")
+        paths = {save_path, image_save_path}
+        all_files = []
+        for path in paths:
+            if os.path.isdir(path) and os.path.exists(path):
+                valid_files = [f for f in os.listdir(path) if has_video_file_extension(f) or has_image_file_extension(f)]
+                all_files.extend([os.path.join(path, f) for f in valid_files])
+        all_files.sort(key=os.path.getctime, reverse=True)
+        items_html = ""
+        for f in all_files:
+            safe_path = f.replace("'", "\\'")
+            basename = os.path.basename(f)
+            display_name = basename
+            match = re.search(r'_seed\d+_(.+)\.(mp4|jpg|jpeg|png|webp)$', basename, re.IGNORECASE)
+            if match:
+                display_name = match.group(1)
+
+            is_video = has_video_file_extension(f)
+            thumbnail_html = f'<video muted preload="metadata" src="/file={f}#t=0.5"></video>' if is_video else f'<img src="/file={f}" alt="{basename}">'
+            items_html += f"""<div class="gallery-item" data-path='{safe_path}' onclick="selectGalleryItem(event, this)">
+                <div class="gallery-item-thumbnail">{thumbnail_html}</div>
+                <div class="gallery-item-name" title="{basename}">{display_name}</div>
+            </div>"""
+        full_html = f"<div class='gallery-grid'>{items_html}</div>"
+        clear_metadata_html = "<div class='metadata-content'><p class='placeholder'>Select a file to view its metadata.</p></div>"
+        return full_html, "", clear_metadata_html, gr.Button(visible=False), gr.Button(visible=False), gr.Row(visible=False), gr.Image(value=None), gr.Image(value=None), gr.Column(visible=False)
+
+    def update_metadata_panel_and_buttons(selection_str, current_state):
+        file_paths = selection_str.split(',') if selection_str else []
+        video_files = [f for f in file_paths if has_video_file_extension(f)]
+
+        # Initialize all updates
+        join_button_update = gr.Button(visible=False, interactive=False)
+        use_settings_button_update = gr.Button(visible=False, interactive=False)
+        metadata_html = "<div class='metadata-content'><p class='placeholder'>Select a file to view its metadata.</p></div>"
+        path_for_settings = ""
+        frame_preview_row_update = gr.Row(visible=False)
+        first_frame_update = gr.Image(value=None)
+        last_frame_update = gr.Image(value=None)
+        join_interface_update = gr.Column(visible=False)
+
+        # Logic for 1 selection
+        if len(file_paths) == 1:
+            last_selected_path = file_paths[0]
+            path_for_settings = last_selected_path
+            configs, _ = get_settings_from_file(current_state, last_selected_path, False, False, False)
+            
+            use_settings_button_update = gr.Button(visible=True, interactive=bool(configs))
+            frame_preview_row_update = gr.Row(visible=True)
+
+            is_video = has_video_file_extension(last_selected_path)
+            is_image = has_image_file_extension(last_selected_path)
+
+            if is_video:
+                try:
+                    first_frame = get_video_frame(last_selected_path, 0, return_PIL=True)
+                    _, _, _, frame_count = get_video_info(last_selected_path)
+                    last_frame = get_video_frame(last_selected_path, frame_count - 1, return_PIL=True) if frame_count > 1 else first_frame
+                    first_frame_update = gr.Image(value=first_frame)
+                    last_frame_update = gr.Image(value=last_frame, visible=True)
+                except Exception as e:
+                    print(f"Error extracting frames from {last_selected_path}: {e}")
+            elif is_image:
+                try:
+                    first_frame = Image.open(last_selected_path)
+                    first_frame_update = gr.Image(value=first_frame, label="Image Preview")
+                    last_frame_update = gr.Image(value=None, visible=False)
+                except Exception as e:
+                    print(f"Error opening image {last_selected_path}: {e}")
+
+            metadata_html = f"<div class='metadata-content'>"
+            metadata_html += f"<b>File:</b> {os.path.basename(last_selected_path)}<hr>"
+            if configs:
+                prompt_preview = configs.get("prompt", "N/A").replace('\\n', '<br>')
+                metadata_html += f"<b>Prompt:</b> {prompt_preview[:150]}{'...' if len(prompt_preview) > 150 else ''}<hr>"
+                metadata_html += f"<b>Seed:</b> {configs.get('seed', 'N/A')}<br>"
+                metadata_html += f"<b>Steps:</b> {configs.get('num_inference_steps', 'N/A')}<br>"
+                model_name = configs.get('type', "Unknown").replace("WanGP v" + WanGP_version + " by DeepBeepMeep - ", "")
+                metadata_html += f"<b>Model:</b> {model_name}<br>"
+                if "merge_info" in configs:
+                    metadata_html += f"<hr><b>Merged From:</b> {configs['merge_info']}"
+            else:
+                metadata_html += "<i>No metadata found.</i>"
+            metadata_html += "</div>"
+
+        # Logic for 2 video selections
+        elif len(video_files) == 2 and len(file_paths) == 2:
+            join_button_update = gr.Button(visible=True, interactive=True)
+            metadata_html = f"<div class='metadata-content'><p>2 videos selected. Ready to join.</p></div>"
+        
+        elif len(file_paths) > 1:
+            metadata_html = f"<div class='metadata-content'><p>{len(file_paths)} items selected.</p></div>"
+            
+        return (join_button_update, use_settings_button_update, metadata_html, path_for_settings,
+                frame_preview_row_update, first_frame_update, last_frame_update, join_interface_update)
+
+    def load_settings_and_frames_from_gallery(state, file_path):
+        if not file_path:
+            gr.Warning("No file selected.")
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+    
+        configs, _ = get_settings_from_file(state, file_path, True, True, True)
+        if configs is None:
+            gr.Info("No settings found in the selected file. Cannot apply settings.")
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+    
+        current_model_type = state["model_type"]
+        model_type_from_file = configs.get("model_type", current_model_type)
+    
+        target_model_type = current_model_type if are_model_types_compatible(model_type_from_file, current_model_type) else model_type_from_file
+        configs["model_type"] = target_model_type
+        
+        first_frame, last_frame = None, None
+        
+        if has_video_file_extension(file_path):
+            first_frame = get_video_frame(file_path, 0, return_PIL=True)
+            _, _, _, frame_count = get_video_info(file_path)
+            if frame_count > 1:
+                last_frame = get_video_frame(file_path, frame_count - 1, return_PIL=True)
+        elif has_image_file_extension(file_path):
+            first_frame = Image.open(file_path)
+
+        model_def = get_model_def(target_model_type)
+        allowed_prompts = model_def.get("image_prompt_types_allowed", "")
+        ui_defaults = get_default_settings(target_model_type)
+        configs = {**ui_defaults, **configs}
+
+        if first_frame:
+            current_image_prompts = configs.get("image_prompt_type", "")
+            updated_image_prompts = current_image_prompts
+            if "S" in allowed_prompts:
+                updated_image_prompts = add_to_sequence(updated_image_prompts, "S")
+                configs["image_start"] = [(first_frame, "First Frame")]
+    
+            if last_frame and "E" in allowed_prompts:
+                updated_image_prompts = add_to_sequence(updated_image_prompts, "E")
+                configs["image_end"] = [(last_frame, "Last Frame")]
+            
+            configs["image_prompt_type"] = updated_image_prompts
+    
+        set_model_settings(state, target_model_type, configs)
+        gr.Info(f"Settings and frames from '{os.path.basename(file_path)}' sent to generator.")
+        
+        model_family_update, model_choice_update = (gr.update(), gr.update()) if target_model_type == current_model_type else generate_dropdown_model_list(target_model_type)
+        return (model_family_update, model_choice_update, gr.update(selected="video_gen"), get_unique_id(),
+                gr.update(), gr.update(), gr.update())
+
+    def show_join_interface(selection_str, current_state):
+        if not selection_str: return gr.update()
+        video_files = [f for f in selection_str.split(',') if has_video_file_extension(f)]
+        if len(video_files) != 2:
+            gr.Warning("Please select exactly two video files to join.")
+            return gr.update()
+        vid1_path, vid2_path = video_files[0], video_files[1]
+
+        server_port_val = int(args.server_port) if args.server_port != 0 else 7860
+        server_name_val = args.server_name if args.server_name and args.server_name != "0.0.0.0" else "127.0.0.1"
+        base_url = f"http://{server_name_val}:{server_port_val}"
+        
+        v1_fps, _, _, v1_frames = get_video_info(vid1_path)
+        v2_fps, _, _, v2_frames = get_video_info(vid2_path)
+        
+        player1_html = create_video_player_html(base_url, "video1_player_container", vid1_path, v1_fps, "video1_frame_slider")
+        player2_html = create_video_player_html(base_url, "video2_player_container", vid2_path, v2_fps, "video2_frame_slider")
+        
+        vid1_info_html = get_video_info_html(current_state, vid1_path)
+        vid2_info_html = get_video_info_html(current_state, vid2_path)
+        
+        return {
+            join_interface: gr.Column(visible=True),
+            frame_preview_row: gr.Row(visible=False),
+            first_frame_preview: gr.Image(value=None),
+            last_frame_preview: gr.Image(value=None),
+            video1_preview: gr.HTML(value=player1_html),
+            video2_preview: gr.HTML(value=player2_html),
+            video1_path: vid1_path,
+            video2_path: vid2_path,
+            video1_frame_slider: gr.Slider(maximum=v1_frames, value=v1_frames),
+            video2_frame_slider: gr.Slider(maximum=v2_frames, value=1),
+            video1_info: vid1_info_html,
+            video2_info: vid2_info_html,
+        }
+
+    def send_selected_frames_to_generator(vid1_path, frame1_num, vid2_path, frame2_num, current_image_prompt_type):
+        frame1 = get_video_frame(vid1_path, int(frame1_num) - 1, return_PIL=True)
+        frame2 = get_video_frame(vid2_path, int(frame2_num) - 1, return_PIL=True)
+        merge_info_str = f"{os.path.basename(vid1_path)}[{int(frame1_num)}]>{os.path.basename(vid2_path)}[{int(frame2_num)}]"
+        gr.Info("Frames sent to Video Generator. Check the Start Image and End Image inputs.")
+        
+        updated_image_prompt_type = add_to_sequence(current_image_prompt_type, "SE")
+        
+        new_radio_value = "S" if "S" in updated_image_prompt_type else ""
+
+        return {
+            image_start: [(frame1, "Start Frame")],
+            image_end: [(frame2, "End Frame")],
+            merge_info: merge_info_str,
+            main_tabs: gr.Tabs(selected="video_gen"),
+            join_interface: gr.Column(visible=False),
+            image_prompt_type: updated_image_prompt_type,
+            image_start_row: gr.Row(visible=True),
+            image_end_row: gr.Row(visible=True),
+            image_prompt_type_radio: gr.Radio(value=new_radio_value),
+            image_prompt_type_endcheckbox: gr.Checkbox(value=True),
+        }
+
+    gallery_tab.select(
+        fn=list_output_files_as_html, 
+        inputs=[state], 
+        outputs=[gallery_html_output, selected_files_for_backend, metadata_panel_output, join_videos_btn, send_to_generator_settings_btn, frame_preview_row, first_frame_preview, last_frame_preview, join_interface], 
+        show_progress="hidden"
+    )
+    refresh_gallery_files_btn.click(
+        fn=list_output_files_as_html, 
+        inputs=[state], 
+        outputs=[gallery_html_output, selected_files_for_backend, metadata_panel_output, join_videos_btn, send_to_generator_settings_btn, frame_preview_row, first_frame_preview, last_frame_preview, join_interface]
+    )
+
+    selected_files_for_backend.change(
+        fn=update_metadata_panel_and_buttons,
+        inputs=[selected_files_for_backend, state],
+        outputs=[join_videos_btn, send_to_generator_settings_btn, metadata_panel_output, path_for_settings_loader,
+                 frame_preview_row, first_frame_preview, last_frame_preview, join_interface],
+        show_progress="hidden"
+    )
+    
+    join_videos_btn.click(
+        fn=show_join_interface, 
+        inputs=[selected_files_for_backend, state], 
+        outputs=[
+            join_interface, frame_preview_row, first_frame_preview, last_frame_preview,
+            video1_preview, video2_preview, video1_path, video2_path,
+            video1_frame_slider, video2_frame_slider,
+            video1_info, video2_info
+        ]
+    )
+    
+    send_to_generator_settings_btn.click(
+        fn=load_settings_and_frames_from_gallery,
+        inputs=[state, path_for_settings_loader],
+        outputs=[model_family, model_choice, main_tabs, refresh_form_trigger, image_start, image_end, image_prompt_type],
+        show_progress="hidden"
+    )
+
+    send_to_generator_btn.click(
+        fn=send_selected_frames_to_generator,
+        inputs=[video1_path, video1_frame_slider, video2_path, video2_frame_slider, image_prompt_type],
+        outputs=[
+            image_start, image_end, merge_info, main_tabs, join_interface,
+            image_prompt_type, image_start_row, image_end_row, 
+            image_prompt_type_radio, image_prompt_type_endcheckbox
+        ]
+    )
+    cancel_join_btn.click(fn=lambda: gr.Column(visible=False), outputs=join_interface)
 
 def generate_about_tab():
     gr.Markdown("<H2>WanGP - AI Generative Models for the GPU Poor by <B>DeepBeepMeep</B> (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>GitHub</A>)</H2>")
@@ -9656,6 +10098,73 @@ def create_ui():
         }
         .btn_centered {margin-top:10px; text-wrap-mode: nowrap;}
         .cbx_centered label {margin-top:8px; text-wrap-mode: nowrap;}
+
+        #gallery-layout {
+            display: flex;
+            gap: 16px;
+            min-height: 75vh;
+        }
+        #gallery-container {
+            flex: 3;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border-radius: 8px;
+        }
+        #metadata-panel-container {
+            flex: 1;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+            padding: 15px;
+            background-color: #ffffff;
+            border-radius: 8px;
+        }
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 16px;
+        }
+        .gallery-item {
+            position: relative;
+            cursor: pointer;
+            border: 2px solid transparent;
+            border-radius: 8px;
+            overflow: hidden;
+            aspect-ratio: 4 / 5;
+            display: flex;
+            flex-direction: column;
+            background-color: #ffffff;
+            transition: all 0.2s ease-in-out;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .gallery-item:hover {
+            border-color: #a0a0a0;
+            transform: translateY(-2px);
+        }
+        .gallery-item.selected {
+            border-color: var(--primary-500);
+            box-shadow: 0 0 0 3px var(--primary-200);
+        }
+        .gallery-item-thumbnail { flex-grow: 1; background-color: #f0f0f0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .gallery-item-thumbnail img, .gallery-item-thumbnail video { width: 100%; height: 100%; object-fit: contain; }
+        .gallery-item-name {
+            padding: 4px 8px;
+            font-size: 12px;
+            text-align: center;
+            background-color: #f8f9fa;
+            white-space: normal;
+            word-break: break-word;
+            border-top: 1px solid #ddd;
+            min-height: 3.2em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .metadata-content { font-family: monospace; font-size: 13px; line-height: 1.6; word-wrap: break-word; }
+        .metadata-content b { color: #87ceeb; }
+        .metadata-content hr { border: 0; border-top: 1px solid #e0e0e0; margin: 8px 0; }
+        .metadata-content .placeholder { color: #999; text-align: center; margin-top: 20px; font-style: italic; }
     """
     UI_theme = server_config.get("UI_theme", "default")
     UI_theme  = args.theme if len(args.theme) > 0 else UI_theme
@@ -9686,8 +10195,130 @@ def create_ui():
             if (path.some(hit)) e.stopImmediatePropagation();
         }, { capture: true, passive: true });
 
-        }    
+        window.selectGalleryItem = function(event, element) {
+            const gallery = element.closest('.gallery-grid');
+            const selectedFilesInput = document.querySelector('#selected-files-backend textarea');
 
+            if (!gallery || !selectedFilesInput) {
+                console.error("Gallery or hidden input for backend not found!");
+                return;
+            }
+
+            // Handle selection logic (Ctrl/Cmd for multi-select)
+            if (!event.ctrlKey && !event.metaKey) {
+                // Single selection: deselect all others
+                gallery.querySelectorAll('.gallery-item.selected').forEach(el => {
+                    if (el !== element) el.classList.remove('selected');
+                });
+            }
+            // Toggle selection for the clicked item
+            element.classList.toggle('selected');
+
+            // Update the hidden Gradio component with all selected paths
+            const selectedItems = Array.from(gallery.querySelectorAll('.gallery-item.selected'));
+            const selectedPaths = selectedItems.map(el => el.dataset.path);
+            
+            selectedFilesInput.value = selectedPaths.join(',');
+            // Dispatch 'input' event to notify Gradio of the change
+            selectedFilesInput.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+
+        function setupVideoFrameSeeker(containerId, sliderId, fps) {
+            const container = document.querySelector(`#${containerId}`);
+            const sliderContainer = document.querySelector(`#${sliderId}`);
+
+            if (!container || !sliderContainer) {
+                console.warn(`Seeker setup failed: Could not find container #${containerId} or slider #${sliderId}`);
+                return;
+            }
+
+            const video = container.querySelector('video');
+            if (!video) {
+                console.warn(`Seeker setup failed: Missing video for ${containerId}.`);
+                return;
+            }
+
+            let frameTime = (fps > 0) ? 1 / fps : 0;
+            let isSeekingFromSlider = false;
+            let debounceTimer;
+
+            function updateVideoToFrame(frameNumber) {
+                if (frameTime === 0 || !isFinite(video.duration)) return;
+                const maxFrame = Math.floor(video.duration * fps);
+                const clampedFrame = Math.max(1, Math.min(frameNumber, maxFrame || 1));
+                const targetTime = (clampedFrame - 1) * frameTime;
+
+                if (Math.abs(video.currentTime - targetTime) > frameTime / 2) {
+                    video.currentTime = targetTime;
+                }
+            }
+            
+            video.addEventListener('loadedmetadata', () => {
+                const sliderInput = sliderContainer.querySelector('input[type="range"]');
+                if (sliderInput) {
+                    const initialFrame = parseInt(sliderInput.value, 10);
+                    setTimeout(() => updateVideoToFrame(initialFrame), 100);
+                }
+            }, { once: true });
+
+            video.addEventListener('timeupdate', () => {
+                const sliderInput = sliderContainer.querySelector('input[type="range"]');
+                if (!isSeekingFromSlider && frameTime > 0 && sliderInput) {
+                    const currentFrame = Math.round(video.currentTime / frameTime) + 1;
+                    if (sliderInput.value != currentFrame) {
+                        sliderInput.value = currentFrame;
+                        const numberInput = sliderContainer.querySelector('input[type="number"]');
+                        if (numberInput) numberInput.value = currentFrame;
+                    }
+                }
+            });
+
+            const handleSliderInput = () => {
+                const sliderInput = sliderContainer.querySelector('input[type="range"]');
+                if (sliderInput) {
+                    isSeekingFromSlider = true;
+                    const frameNumber = parseInt(sliderInput.value, 10);
+                    clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(() => {
+                        updateVideoToFrame(frameNumber);
+                    }, 50);
+                }
+            };
+            
+            const handleInteractionEnd = () => {
+                 setTimeout(() => { isSeekingFromSlider = false; }, 150);
+            };
+            
+            sliderContainer.removeEventListener('input', handleSliderInput); 
+            sliderContainer.addEventListener('input', handleSliderInput);
+            sliderContainer.addEventListener('mouseup', handleInteractionEnd);
+            sliderContainer.addEventListener('touchend', handleInteractionEnd);
+        }
+
+        const observer = new MutationObserver((mutationsList, observer) => {
+            for(const mutation of mutationsList) {
+                if (mutation.type === 'childList') {
+                    const joinerPlayers = document.querySelectorAll('.video-joiner-player');
+                    if (joinerPlayers.length > 0) {
+                        joinerPlayers.forEach(player => {
+                            if (!player.dataset.initialized) {
+                                const containerId = player.id;
+                                const sliderId = player.dataset.sliderId;
+                                const fps = parseFloat(player.dataset.fps);
+                                if (containerId && sliderId && !isNaN(fps)) {
+                                    setupVideoFrameSeeker(containerId, sliderId, fps);
+                                    player.dataset.initialized = 'true';
+                                    console.log(`Initialized seeker for ${containerId}`);
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
     """
     if server_config.get("display_stats", 0) == 1:
         from shared.utils.stats import SystemStatsApp
@@ -9718,9 +10349,18 @@ def create_ui():
                         stats_element = stats_app.get_gradio_element()
 
                 with gr.Row():
-                    (   state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger
+                    (   state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger, image_start, image_end, merge_info, settings_file, image_prompt_type, image_start_row, image_end_row, image_prompt_type_radio, image_prompt_type_endcheckbox
                         # video_guide, image_guide, video_mask, image_mask, image_refs, 
                     ) = generate_video_tab(model_family=model_family, model_choice=model_choice, header=header, main = main, main_tabs =main_tabs)
+            with gr.Tab("Gallery", id="gallery_tab") as gallery_tab:
+                (
+                    gallery_html_output, metadata_panel_output, selected_files_for_backend, path_for_settings_loader,
+                    send_to_generator_settings_btn, refresh_gallery_files_btn, join_videos_btn, join_interface,
+                    video1_preview, video1_frame_slider, video1_path, video1_info,
+                    video2_preview, video2_frame_slider, video2_path, video2_info,
+                    send_to_generator_btn, cancel_join_btn,
+                    frame_preview_row, first_frame_preview, last_frame_preview
+                ) = generate_gallery_tab(state)
             with gr.Tab("Guides", id="info") as info_tab:
                 generate_info_tab()
             with gr.Tab("Video Mask Creator", id="video_mask_creator") as video_mask_creator:
@@ -9735,6 +10375,17 @@ def create_ui():
         if stats_app is not None:
             stats_app.setup_events(main, state)
         main_tabs.select(fn=select_tab, inputs= [tab_state], outputs= [main_tabs, save_form_trigger], trigger_mode="multiple")
+        wire_gallery_events(
+            state, gallery_tab, video_generator_tab, main_tabs, model_family, model_choice, refresh_form_trigger, settings_file,
+            image_start, image_end, merge_info, image_prompt_type,
+            gallery_html_output, metadata_panel_output, selected_files_for_backend, path_for_settings_loader,
+            send_to_generator_settings_btn, refresh_gallery_files_btn, join_videos_btn, join_interface,
+            video1_preview, video1_frame_slider, video1_path, video1_info,
+            video2_preview, video2_frame_slider, video2_path, video2_info,
+            send_to_generator_btn, cancel_join_btn,
+            frame_preview_row, first_frame_preview, last_frame_preview,
+            image_start_row, image_end_row, image_prompt_type_radio, image_prompt_type_endcheckbox
+        )
         return main
 
 if __name__ == "__main__":

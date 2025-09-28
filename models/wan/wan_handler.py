@@ -17,6 +17,9 @@ def test_multitalk(base_model_type):
 def test_standin(base_model_type):
     return base_model_type in ["standin", "vace_standin_14B"]
 
+def test_lynx(base_model_type):
+    return base_model_type in ["lynx_lite", "vace_lynx_lite_14B", "lynx_full", "vace_lynx_full_14B"]
+
 def test_wan_5B(base_model_type):
     return base_model_type in ["ti2v_2_2", "lucy_edit"]
 class family_handler():
@@ -82,6 +85,7 @@ class family_handler():
         extra_model_def["i2v_class"] = i2v
         extra_model_def["multitalk_class"] = test_multitalk(base_model_type)
         extra_model_def["standin_class"] = test_standin(base_model_type)
+        extra_model_def["lynx_class"] = test_lynx(base_model_type)
         vace_class = base_model_type in ["vace_14B", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B"] 
         extra_model_def["vace_class"] = vace_class
 
@@ -170,13 +174,24 @@ class family_handler():
             "choices":[
                 ("Animate Person in Reference Image using Motion of Whole Control Video", "PVBKI"),
                 ("Animate Person in Reference Image using Motion of Targeted Person in Control Video", "PVBXAKI"),
-                ("Replace Person in Control Video by Person in Reference Image", "PVBAI"),
-                ("Replace Person in Control Video by Person in Reference Image and Apply Relighting Process", "PVBAI1"),
+                ("Replace Person in Control Video by Person in Ref Image", "PVBAIH#"),
+                ("Replace Person in Control Video by Person in Ref Image. See Through Mask", "PVBAI#"),
             ],
             "default": "PVBKI",
-            "letters_filter": "PVBXAKI1",
+            "letters_filter": "PVBXAKIH#",
             "label": "Type of Process",
+            "scale": 3,
             "show_label" : False,
+            }
+
+            extra_model_def["custom_video_selection"] = {
+            "choices":[
+                ("None", ""),
+                ("Apply Relighting", "1"),
+            ],
+            "label": "Custom Process",
+            "show_label" : False,
+            "scale": 1,
             }
 
             extra_model_def["mask_preprocessing"] = {
@@ -229,7 +244,7 @@ class family_handler():
             extra_model_def["forced_guide_mask_inputs"] = True
             extra_model_def["return_image_refs_tensor"] = True
             
-        if base_model_type in ["standin"]: 
+        if base_model_type in ["standin", "lynx_lite", "lynx_full"]: 
             extra_model_def["fit_into_canvas_image_refs"] = 0
             extra_model_def["image_ref_choices"] = {
                 "choices": [
@@ -298,7 +313,7 @@ class family_handler():
     @staticmethod
     def query_supported_types():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_multitalk_14B", "vace_standin_14B",
-                    "t2v_1.3B", "standin", "t2v", "vace_1.3B", "phantom_1.3B", "phantom_14B", 
+                    "t2v_1.3B", "standin", "lynx_lite", "lynx_full", "t2v", "vace_1.3B", "phantom_1.3B", "phantom_14B", 
                     "recam_1.3B", "animate",
                     "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp"]
 
@@ -312,8 +327,8 @@ class family_handler():
         }
 
         models_comp_map = { 
-                    "vace_14B" : [ "vace_multitalk_14B", "vace_standin_14B"],
-                    "t2v" : [ "vace_14B", "vace_1.3B" "vace_multitalk_14B", "t2v_1.3B", "phantom_1.3B","phantom_14B", "standin"],
+                    "vace_14B" : [ "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_lite_14B", "vace_lynx_full_14B"],
+                    "t2v" : [ "vace_14B", "vace_1.3B" "vace_multitalk_14B", "t2v_1.3B", "phantom_1.3B","phantom_14B", "standin", "lynx_lite", "lynx_full"],
                     "i2v" : [ "fantasy", "multitalk", "flf2v_720p" ],
                     "i2v_2_2" : ["i2v_2_2_multitalk"],
                     "fantasy": ["multitalk"],
@@ -423,7 +438,7 @@ class family_handler():
                     ui_defaults["video_prompt_type"] = video_prompt_type 
 
         if settings_version < 2.31:
-            if base_model_type in "recam_1.3B":
+            if base_model_type in ["recam_1.3B"]:
                 video_prompt_type = ui_defaults.get("video_prompt_type", "")
                 if not "V" in video_prompt_type:
                     video_prompt_type += "UV"
@@ -437,6 +452,14 @@ class family_handler():
             image_prompt_type = ui_defaults.get("image_prompt_type", "")
             if test_class_i2v(base_model_type) and len(image_prompt_type) == 0:
                 ui_defaults["image_prompt_type"] = "S" 
+
+
+        if settings_version < 2.37:
+            if base_model_type in ["animate"]:
+                video_prompt_type = ui_defaults.get("video_prompt_type", "")
+                if "1" in video_prompt_type:
+                    video_prompt_type = video_prompt_type.replace("1", "#1")
+                    ui_defaults["video_prompt_type"] = video_prompt_type 
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
@@ -481,6 +504,15 @@ class family_handler():
                 "video_prompt_type": "I",
                 "remove_background_images_ref" : 1,
             })
+        elif base_model_type in ["lynx_lite", "lynx_full"]:
+            ui_defaults.update({
+                "guidance_scale": 5.0,
+                "flow_shift": 7, # 11 for 720p
+                "sliding_window_overlap" : 9,
+                "video_prompt_type": "QI",
+                "remove_background_images_ref" : 1,
+            })
+
         elif base_model_type in ["phantom_1.3B", "phantom_14B"]:
             ui_defaults.update({
                 "guidance_scale": 7.5,

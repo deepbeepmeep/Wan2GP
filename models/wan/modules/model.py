@@ -355,13 +355,38 @@ class WanSelfAttention(nn.Module):
 
 class WanT2VCrossAttention(WanSelfAttention):
 
-    def forward(self, xlist, context, grid_sizes, *args, **kwargs):
+    def forward(self, xlist, context, grid_sizes, lynx_ip_embeds = None, lynx_ip_scale = 0, *args, **kwargs):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
             context(Tensor): Shape [B, L2, C]
         """
-        x, _ = self.text_cross_attention( xlist, context)
+        x, q = self.text_cross_attention( xlist, context, return_q=lynx_ip_embeds is not None)
+        if lynx_ip_embeds is not None and self.to_k_ip is not None:
+            if self.registers is not None:
+                from ..lynx.navit_utils import vector_to_list, merge_token_lists, list_to_vector
+                ip_hidden_states_list = vector_to_list(lynx_ip_embeds, lynx_ip_embeds.shape[1], 1)
+                ip_hidden_states_list = merge_token_lists(ip_hidden_states_list, [self.registers] * len(ip_hidden_states_list), 1)
+                lynx_ip_embeds, ip_lens = list_to_vector(ip_hidden_states_list, 1)
+                ip_hidden_states_list = None
+            ip_key = self.to_k_ip(lynx_ip_embeds)
+            ip_value = self.to_v_ip(lynx_ip_embeds)
+            # if self.norm_q is not None: ip_query = self.norm_q(q)
+            if self.norm_rms_k is None:
+                ip_key = self.norm_k(ip_key)
+            else:
+                ip_key = self.norm_rms_k(ip_key)
+            ip_inner_dim = ip_key.shape[-1]
+            ip_head_dim = ip_inner_dim // self.num_heads
+            batch_size = q.shape[0]
+            # ip_query = ip_query.view(batch_size, -1, attn.heads, ip_head_dim)
+            ip_key = ip_key.view(batch_size, -1, self.num_heads, ip_head_dim)
+            ip_value = ip_value.view(batch_size, -1, self.num_heads, ip_head_dim)
+            qkv_list = [q, ip_key, ip_value]
+            del q, ip_key, ip_value
+            ip_hidden_states = pay_attention(qkv_list).reshape(*x.shape)
+            x.add_(ip_hidden_states, alpha= lynx_ip_scale)
+
         x = self.o(x)
         return x
 
@@ -382,7 +407,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         # self.alpha = nn.Parameter(torch.zeros((1, )))
         self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, xlist, context, grid_sizes, audio_proj, audio_scale, audio_context_lens ):
+    def forward(self, xlist, context, grid_sizes, audio_proj, audio_scale, audio_context_lens, *args, **kwargs ):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -510,6 +535,8 @@ class WanAttentionBlock(nn.Module):
         ref_images_count=0,
         standin_phase=-1,
         motion_vec = None,
+        lynx_ip_embeds = None,
+        lynx_ip_scale = 0,
     ):
         r"""
         Args:
@@ -568,7 +595,7 @@ class WanAttentionBlock(nn.Module):
             y = y.to(attention_dtype)
             ylist= [y]
             del y
-            x += self.cross_attn(ylist, context, grid_sizes, audio_proj, audio_scale, audio_context_lens).to(dtype)
+            x += self.cross_attn(ylist, context, grid_sizes, audio_proj = audio_proj, audio_scale = audio_scale, audio_context_lens = audio_context_lens, lynx_ip_embeds=lynx_ip_embeds, lynx_ip_scale=lynx_ip_scale).to(dtype)
 
         if multitalk_audio != None:
             # cross attn of multitalk audio
@@ -914,6 +941,7 @@ class WanModel(ModelMixin, ConfigMixin):
                  norm_output_audio=True,
                  standin= False,
                  motion_encoder_dim=0,
+                 lynx=None,
                  ):
 
         super().__init__()
@@ -1043,6 +1071,32 @@ class WanModel(ModelMixin, ConfigMixin):
                 block.self_attn.q_loras = LoRALinearLayer(dim, dim, rank=128)
                 block.self_attn.k_loras = LoRALinearLayer(dim, dim, rank=128)
                 block.self_attn.v_loras = LoRALinearLayer(dim, dim, rank=128)
+
+        if lynx is not None:
+            from ..lynx.light_attention_processor import IPAWanAttnProcessor2_0
+            lynx_full = lynx=="full"
+            if lynx_full:
+                lynx_cross_dim = 5120
+                lynx_layers = len(self.blocks)
+            else:
+                lynx_cross_dim = 2048 
+                lynx_layers = 20
+            for i, block in enumerate(self.blocks):
+                if i < lynx_layers:
+                    attn = IPAWanAttnProcessor2_0(hidden_size=dim, cross_attention_dim = lynx_cross_dim,)
+                    block.cross_attn.to_k_ip = attn.to_k_ip
+                    block.cross_attn.to_v_ip = attn.to_v_ip
+                else:
+                    block.cross_attn.to_k_ip = None
+                    block.cross_attn.to_v_ip = None
+                if lynx_full:
+                    block.cross_attn.registers = nn.Parameter(torch.randn(1, 16, lynx_cross_dim) / dim**0.5)
+                    block.cross_attn.norm_rms_k = None
+                else:
+                    block.cross_attn.registers = None
+                    block.cross_attn.norm_rms_k = attn.norm_rms_k
+
+
 
         if animate:
             self.pose_patch_embedding = nn.Conv3d(
@@ -1247,6 +1301,8 @@ class WanModel(ModelMixin, ConfigMixin):
         standin_ref = None,
         pose_latents=None, 
         face_pixel_values=None,
+        lynx_ip_embeds = None,
+        lynx_ip_scale = 0,        
 
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
@@ -1286,11 +1342,11 @@ class WanModel(ModelMixin, ConfigMixin):
         y = None
         
         motion_vec_list = []
-        for i, x in enumerate(x_list):
+        for i, (x, one_face_pixel_values) in enumerate(zip(x_list, face_pixel_values)):
                 # animate embeddings
                 motion_vec = None
                 if pose_latents is not None: 
-                    x, motion_vec = after_patch_embedding(self, x, pose_latents, face_pixel_values)
+                    x, motion_vec = after_patch_embedding(self, x, pose_latents, torch.zeros_like(one_face_pixel_values) if one_face_pixel_values is None else one_face_pixel_values)
                 motion_vec_list.append(motion_vec)
                 if chipmunk:
                     x = x.unsqueeze(-1)
@@ -1330,6 +1386,7 @@ class WanModel(ModelMixin, ConfigMixin):
             audio_proj=audio_proj,
             audio_context_lens=audio_context_lens,
             ref_images_count=ref_images_count,
+            lynx_ip_scale= lynx_ip_scale,
             )
 
         _flag_df = t.dim() == 2
@@ -1348,6 +1405,11 @@ class WanModel(ModelMixin, ConfigMixin):
                 standin_e = self.time_embedding( sinusoidal_embedding_1d(self.freq_dim, torch.zeros_like(t)).to(modulation_dtype) )
                 standin_e0 = self.time_projection(standin_e).unflatten(1, (6, self.dim)).to(e.dtype)
                 standin_e = standin_ref = None
+        
+        if lynx_ip_embeds is None:
+            lynx_ip_embeds_list = [None] * len(x_list)
+        else:
+            lynx_ip_embeds_list = lynx_ip_embeds
 
         if self.inject_sample_info and fps!=None:
             fps = torch.tensor(fps, dtype=torch.long, device=device)
@@ -1498,9 +1560,9 @@ class WanModel(ModelMixin, ConfigMixin):
                         continue
                     x_list[0] = block(x_list[0], context = context_list[0], audio_scale= audio_scale_list[0], e= e0, **kwargs)
                 else:
-                    for i, (x, context, hints, audio_scale, multitalk_audio, multitalk_masks, should_calc, motion_vec) in enumerate(zip(x_list, context_list, hints_list, audio_scale_list, multitalk_audio_list, multitalk_masks_list, x_should_calc,motion_vec_list)):
+                    for i, (x, context, hints, audio_scale, multitalk_audio, multitalk_masks, should_calc, motion_vec, lynx_ip_embeds) in enumerate(zip(x_list, context_list, hints_list, audio_scale_list, multitalk_audio_list, multitalk_masks_list, x_should_calc,motion_vec_list, lynx_ip_embeds_list)):
                         if should_calc:
-                            x_list[i] = block(x, context = context, hints= hints, audio_scale= audio_scale, multitalk_audio = multitalk_audio, multitalk_masks =multitalk_masks, e= e0,  motion_vec = motion_vec,**kwargs)
+                            x_list[i] = block(x, context = context, hints= hints, audio_scale= audio_scale, multitalk_audio = multitalk_audio, multitalk_masks =multitalk_masks, e= e0,  motion_vec = motion_vec, lynx_ip_embeds= lynx_ip_embeds, **kwargs)
                             del x
                     context = hints = audio_embedding  = None
 

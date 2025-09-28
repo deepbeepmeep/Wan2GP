@@ -148,6 +148,13 @@ def format_time(seconds):
     else:
         return f"{seconds:.1f}s"
 
+    
+def get_pastel_color(index):
+    hue = (index * 137) % 360
+    saturation = 75
+    lightness = 92
+    return f"hsl({hue}, {saturation}%, {lightness}%)"
+
 def pil_to_base64_uri(pil_image, format="png", quality=75):
     if pil_image is None:
         return None
@@ -197,6 +204,11 @@ def clean_image_list(gradio_list):
     if any( isinstance(image, str) and not has_image_file_extension(image) for image in gradio_list): return None
     gradio_list = [ convert_image( Image.open(img) if isinstance(img, str) else img  ) for img in gradio_list  ]        
     return gradio_list
+
+    
+def silent_cancel_edit(state):
+    state["editing_task_index"] = None
+    return gr.Tabs(selected="video_gen"), None
 
 def cancel_edit(state):
     state["editing_task_index"] = None
@@ -338,12 +350,13 @@ def edit_task_in_queue(
     task_to_edit['params'] = original_params
     task_to_edit['prompt'] = new_inputs.get('prompt')
     task_to_edit['length'] = new_inputs.get('video_length')
-    task_to_edit['steps'] = new_inputs.get('num_inference_steps') 
-    update_task_thumbnails(task_to_edit, original_params)   
+    task_to_edit['steps'] = new_inputs.get('num_inference_steps')
+    update_task_thumbnails(task_to_edit, original_params)
     
     gr.Info(f"Task ID {task_to_edit['id']} has been updated successfully.")
+    edited_index = state["editing_task_index"]
     state["editing_task_index"] = None
-    return update_queue_data(queue), gr.Tabs(selected="video_gen")
+    return edited_index
 
 def process_prompt_and_add_tasks(state, model_choice):
     def ret():
@@ -860,11 +873,13 @@ def add_video_task(**inputs):
     queue = gen["queue"]
     task_id += 1
     current_task_id = task_id
+    item_color = get_pastel_color(current_task_id)
 
     start_image_data, end_image_data, start_image_labels, end_image_labels = get_preview_images(inputs)
 
     queue.append({
         "id": current_task_id,
+        "color": item_color,
         "params": inputs.copy(),
         "repeats": inputs["repeat_generation"],
         "length": inputs["video_length"], # !!!
@@ -888,35 +903,26 @@ def update_task_thumbnails(task,  inputs):
         "end_image_data_base64": [pil_to_base64_uri(img, format="jpeg", quality=70) for img in end_image_data] if end_image_data != None else None
     })
 
-def move_up(queue, selected_indices):
-    if not selected_indices or len(selected_indices) == 0:
+def move_task(queue, old_index_str, new_index_str):
+    try:
+        old_idx = int(old_index_str)
+        new_idx = int(new_index_str)
+    except (ValueError, IndexError):
         return update_queue_data(queue)
-    idx = selected_indices[0]
-    if isinstance(idx, list):
-        idx = idx[0]
-    idx = int(idx)
-    with lock:
-        idx += 1
-        if idx > 1:
-            queue[idx], queue[idx-1] = queue[idx-1], queue[idx]
-        elif idx == 1:
-            queue[:] = queue[0:1] + queue[2:] + queue[1:2]
 
-    return update_queue_data(queue)
-
-def move_down(queue, selected_indices):
-    if not selected_indices or len(selected_indices) == 0:
-        return update_queue_data(queue)
-    idx = selected_indices[0]
-    if isinstance(idx, list):
-        idx = idx[0]
-    idx = int(idx)
     with lock:
-        idx += 1
-        if idx < len(queue)-1:
-            queue[idx], queue[idx+1] = queue[idx+1], queue[idx]
-        elif idx == len(queue)-1:
-            queue[:] = queue[0:1] + queue[-1:] + queue[1:-1]
+        old_idx += 1
+        new_idx += 1
+
+        if not (0 < old_idx < len(queue)):
+            return update_queue_data(queue)
+
+        item_to_move = queue.pop(old_idx)
+        if old_idx < new_idx:
+            new_idx -= 1
+        clamped_new_idx = max(1, min(new_idx, len(queue)))
+        
+        queue.insert(clamped_new_idx, item_to_move)
 
     return update_queue_data(queue)
 
@@ -1217,6 +1223,8 @@ def load_queue_action(filepath, state, evt:gr.EventData):
                 }
                 newly_loaded_queue.append(runtime_task)
                 print(f"[load_queue_action] Reconstructed task {task_index+1}/{len(loaded_manifest)}, ID: {task_id_loaded}")
+        for i, task in enumerate(newly_loaded_queue):
+            task['color'] = get_pastel_color(i)
 
         with lock:
             print("[load_queue_action] Acquiring lock to update state...")
@@ -1454,50 +1462,136 @@ def finalize_generation_with_state(current_state):
      accordion_update = gr.Accordion(open=False) if len(get_gen_info(current_state).get("queue", [])) <= 1 else gr.update()
      return gallery_update, abort_btn_update, gen_btn_update, add_queue_btn_update, current_gen_col_update, gen_info_update, accordion_update, current_state
 
-def get_queue_table(queue):
-    data = []
-    if len(queue) == 1:
-        return data 
+def generate_queue_html(queue):
+    if len(queue) <= 1:
+        return "<div style='text-align: center; color: grey; padding: 20px;'>Queue is empty.</div>"
 
+    scroll_buttons = ""
+    if len(queue) > 11:
+        scroll_buttons = """
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px;">
+            <div>
+                <button onclick="scrollToQueueTop()" class="gr-button gr-button-sm gr-button-secondary" style="display: flex; align-items: center;">
+                    <svg fill="#000000" style="width: 1.1em; height: 1.1em; margin-right: 4px;" viewBox="0 0 512 512">
+                    <g>
+                        <g>
+                            <g>
+                                <path d="M256,0C114.618,0,0,114.618,0,256s114.618,256,256,256s256-114.618,256-256S397.382,0,256,0z M256,469.333
+                                    c-117.818,0-213.333-95.515-213.333-213.333S138.182,42.667,256,42.667S469.333,138.182,469.333,256S373.818,469.333,256,469.333
+                                    z"/>
+                                <path d="M271.085,176.915c-8.331-8.331-21.839-8.331-30.17,0L134.248,283.582c-8.331,8.331-8.331,21.839,0,30.17
+                                    c8.331,8.331,21.839,8.331,30.17,0L256,222.17l91.582,91.582c8.331,8.331,21.839,8.331,30.17,0c8.331-8.331,8.331-21.839,0-30.17
+                                    L271.085,176.915z"/>
+                            </g>
+                        </g>
+                    </g>
+                    </svg>
+                    Top
+                </button>
+            </div>
+            <div>
+                <button onclick="scrollToQueueBottom()" class="gr-button gr-button-sm gr-button-secondary" style="display: flex; align-items: center;">
+                    <svg fill="#000000" style="width: 1.1em; height: 1.1em; margin-right: 4px;" viewBox="0 0 512 512">
+                    <g>
+                        <g>
+                            <g>
+                                <path d="M256,0C114.618,0,0,114.618,0,256s114.618,256,256,256s256-114.618,256-256S397.382,0,256,0z M256,469.333
+                                    c-117.818,0-213.333-95.515-213.333-213.333S138.182,42.667,256,42.667S469.333,138.182,469.333,256S373.818,469.333,256,469.333
+                                    z"/>
+                                <path d="M347.582,198.248L256,289.83l-91.582-91.582c-8.331-8.331-21.839-8.331-30.17,0c-8.331,8.331-8.331,21.839,0,30.17
+                                    l106.667,106.667c8.331,8.331,21.839,8.331,30.17,0l106.667-106.667c8.331-8.331,8.331-21.839,0-30.17
+                                    C369.42,189.917,355.913,189.917,347.582,198.248z"/>
+                            </g>
+                        </g>
+                    </g>
+                    </svg>
+                    Bottom
+                </button>
+            </div>
+        </div>
+        """
+
+    table_header = """
+    <table>
+        <thead>
+            <tr>
+                <th style="width:5%;" class="center-align">Qty</th>
+                <th style="width:auto;" class="text-left">Prompt</th>
+                <th style="width:7%;" class="center-align">Length</th>
+                <th style="width:7%;" class="center-align">Steps</th>
+                <th style="width:10%;" class="center-align">Start/Ref</th>
+                <th style="width:10%;" class="center-align">End</th>
+                <th style="width:4%;" class="center-align" title="Edit"></th>
+                <th style="width:4%;" class="center-align" title="Remove"></th>
+            </tr>
+        </thead>
+        <tbody>
+    """
+    
+    table_rows = []
     for i, item in enumerate(queue):
-        if i==0:
+        if i == 0:
             continue
+        
+        row_index = i - 1
         truncated_prompt = (item['prompt'][:97] + '...') if len(item['prompt']) > 100 else item['prompt']
         full_prompt = item['prompt'].replace('"', '&quot;')
-        prompt_cell = f'<span title="{full_prompt}">{truncated_prompt}</span>'
-        start_img_uri =item.get('start_image_data_base64')
-        start_img_uri = start_img_uri[0] if start_img_uri !=None else None
-        start_img_labels =item.get('start_image_labels')
-        end_img_uri = item.get('end_image_data_base64')
-        end_img_uri = end_img_uri[0] if end_img_uri !=None else None
-        end_img_labels =item.get('end_image_labels')
-        thumbnail_size = "50px"
+        prompt_cell = f'<div class="prompt-cell" title="{full_prompt}">{truncated_prompt}</div>'
+        
+        start_img_data = item.get('start_image_data_base64') or [None]
+        start_img_uri = start_img_data[0]
+        start_img_labels = item.get('start_image_labels', [''])
+        
+        end_img_data = item.get('end_image_data_base64') or [None]
+        end_img_uri = end_img_data[0]
+        end_img_labels = item.get('end_image_labels', [''])
+        
         num_steps = item.get('steps')
         length = item.get('length')
+        
         start_img_md = ""
-        end_img_md = ""
         if start_img_uri:
-            start_img_md = f'<div class="hover-image"><img src="{start_img_uri}" alt="{start_img_labels[0]}" style="max-width:{thumbnail_size}; max-height:{thumbnail_size}; display: block; margin: auto; object-fit: contain;" /><span class="tooltip2">{start_img_labels[0]}</span></div>'
+            start_img_md = f'<div class="hover-image" onclick="showImageModal(\'start_{row_index}\')"><img src="{start_img_uri}" alt="{start_img_labels[0]}" /></div>'
+            
+        end_img_md = ""
         if end_img_uri:
-            end_img_md = f'<div class="hover-image"><img src="{end_img_uri}" alt="{end_img_labels[0]}" style="max-width:{thumbnail_size}; max-height:{thumbnail_size}; display: block; margin: auto; object-fit: contain;" /><span class="tooltip2">{end_img_labels[0]}</span></div>'
+            end_img_md = f'<div class="hover-image" onclick="showImageModal(\'end_{row_index}\')"><img src="{end_img_uri}" alt="{end_img_labels[0]}" /></div>'
 
+        edit_btn = f"""<button onclick="updateAndTrigger('edit_{row_index}')" class="action-button" title="Edit"><svg viewBox="0 0 64 64">
+<path d="M0 0 C1.11826172 0.00322266 2.23652344 0.00644531 3.38867188 0.00976562 C4.55591797 0.01814453 5.72316406 0.02652344 6.92578125 0.03515625 C8.10462891 0.03966797 9.28347656 0.04417969 10.49804688 0.04882812 C13.41150914 0.06062352 16.32486988 0.07708355 19.23828125 0.09765625 C19.89828125 1.41765625 20.55828125 2.73765625 21.23828125 4.09765625 C20.57828125 5.08765625 19.91828125 6.07765625 19.23828125 7.09765625 C16.71630859 7.43823242 16.71630859 7.43823242 13.57421875 7.390625 C12.56407715 7.38313232 11.55393555 7.37563965 10.51318359 7.36791992 C9.22621582 7.34060791 7.93924805 7.3132959 6.61328125 7.28515625 C2.52953125 7.22328125 -1.55421875 7.16140625 -5.76171875 7.09765625 C-5.76171875 20.62765625 -5.76171875 34.15765625 -5.76171875 48.09765625 C7.76828125 48.09765625 21.29828125 48.09765625 35.23828125 48.09765625 C35.11973183 40.33403423 35.11973183 40.33403423 34.96801758 32.57104492 C34.9605249 31.60400635 34.95303223 30.63696777 34.9453125 29.640625 C34.92960205 28.6508667 34.9138916 27.6611084 34.89770508 26.64135742 C35.28781002 23.72773495 35.95836413 22.87267823 38.23828125 21.09765625 C39.55828125 21.75765625 40.87828125 22.41765625 42.23828125 23.09765625 C42.35462058 27.32659093 42.42558077 31.55511299 42.48828125 35.78515625 C42.53855469 37.58243164 42.53855469 37.58243164 42.58984375 39.41601562 C42.60273437 40.57294922 42.615625 41.72988281 42.62890625 42.921875 C42.64985352 43.98494873 42.67080078 45.04802246 42.69238281 46.14331055 C42.08668997 50.08389607 41.33970543 51.54877801 38.23828125 54.09765625 C34.80064189 54.82978838 31.42929782 54.77430179 27.92578125 54.7265625 C26.41697388 54.73018044 26.41697388 54.73018044 24.87768555 54.73387146 C22.75272679 54.73289272 20.62774263 54.71949279 18.50292969 54.69458008 C15.2497702 54.66027739 11.99932742 54.67391872 8.74609375 54.69335938 C6.68097802 54.68646084 4.6158693 54.67678839 2.55078125 54.6640625 C1.57778076 54.66902237 0.60478027 54.67398224 -0.39770508 54.67909241 C-4.22696801 54.61228762 -6.97272175 54.52167304 -10.37524414 52.69311523 C-12.57503646 48.57513809 -12.31211348 44.60130827 -12.2578125 40.00390625 C-12.25926773 39.02023071 -12.26072296 38.03655518 -12.26222229 37.02307129 C-12.26056374 34.94520096 -12.24900737 32.8673183 -12.22827148 30.78955078 C-12.19932355 27.60916966 -12.20766242 24.43045611 -12.22070312 21.25 C-12.21446541 19.23046065 -12.20607421 17.21092656 -12.1953125 15.19140625 C-12.19824814 14.24027954 -12.20118378 13.28915283 -12.20420837 12.3092041 C-12.1915242 11.42148315 -12.17884003 10.53376221 -12.16577148 9.61914062 C-12.1603685 8.84066772 -12.15496552 8.06219482 -12.1493988 7.26013184 C-11.65561813 4.50582801 -10.66022148 3.13054266 -8.76171875 1.09765625 C-5.58384334 0.03836445 -3.33582932 -0.01693314 0 0 Z " fill="#5F7D8B" transform="translate(11.76171875,9.90234375)"/>
+<path d="M0 0 C3.18086518 1.50946511 5.29869906 3.07941825 7.75 5.625 C8.67039062 6.57246094 8.67039062 6.57246094 9.609375 7.5390625 C10.29773437 8.26222656 10.29773437 8.26222656 11 9 C8.59523682 14.54812095 4.06412729 18.38524881 -0.125 22.625 C-0.95515625 23.49640625 -1.7853125 24.3678125 -2.640625 25.265625 C-7.55981439 30.24649701 -10.9212929 33.32655006 -18 34 C-19.67421842 33.70694442 -21.34358949 33.38104214 -23 33 C-22.73322255 23.701482 -19.99207397 18.8860205 -13.359375 12.48046875 C-12.36512148 11.56972466 -11.37032304 10.65957512 -10.375 9.75 C-9.37010113 8.79537851 -8.3674748 7.83835883 -7.3671875 6.87890625 C-4.93268233 4.56144459 -2.47807311 2.27066292 0 0 Z " fill="#42A5F5" transform="translate(45,8)"/>
+<path d="M0 0 C1.9375 1 1.9375 1 3 3 C3.73574144 8.06844106 3.73574144 8.06844106 3 11 C1.18277145 13.20174358 -0.58687091 14.39124727 -3 16 C-6.3 12.7 -9.6 9.4 -13 6 C-8.2454497 0.05681213 -7.32417654 -0.5139773 0 0 Z " fill="#42A5F5" transform="translate(61,0)"/>
+</svg></button>"""
+        remove_btn = f"""<button onclick="updateAndTrigger('remove_{row_index}')" class="action-button" title="Remove"><svg viewBox="0 0 64 64">
+<path d="M0 0 C0.91974609 -0.01224609 1.83949219 -0.02449219 2.78710938 -0.03710938 C3.67076172 -0.03904297 4.55441406 -0.04097656 5.46484375 -0.04296875 C6.27429443 -0.04707764 7.08374512 -0.05118652 7.91772461 -0.05541992 C10.0625 0.1875 10.0625 0.1875 13.0625 2.1875 C13.75 4.8125 13.75 4.8125 14.0625 7.1875 C15.42375 7.06375 15.42375 7.06375 16.8125 6.9375 C20.0625 7.1875 20.0625 7.1875 22.5 8.875 C24.0625 11.1875 24.0625 11.1875 23.9375 13.5625 C23.0625 16.1875 23.0625 16.1875 22.04296875 18.640625 C20.67104278 23.60360819 20.63408506 28.43456418 20.5 33.5625 C20.38290046 37.43924233 20.24089926 41.31308782 20.0625 45.1875 C20.02600342 46.35974121 20.02600342 46.35974121 19.98876953 47.55566406 C19.75385703 51.06553322 19.41343427 52.82998048 16.91577148 55.37451172 C13.52950324 57.5261698 11.60953176 57.70262762 7.625 57.71875 C5.78808594 57.72648437 5.78808594 57.72648437 3.9140625 57.734375 C2.64304687 57.71890625 1.37203125 57.7034375 0.0625 57.6875 C-1.84402344 57.71070312 -1.84402344 57.71070312 -3.7890625 57.734375 C-5.01367188 57.72921875 -6.23828125 57.7240625 -7.5 57.71875 C-8.61503906 57.71423828 -9.73007812 57.70972656 -10.87890625 57.70507812 C-14.62316268 57.07147151 -16.29526355 55.87931783 -18.9375 53.1875 C-19.5718301 50.34090421 -19.84799189 48.06242942 -19.9375 45.1875 C-19.97858887 44.29514648 -20.01967773 43.40279297 -20.06201172 42.48339844 C-20.22958856 38.48982026 -20.35059881 34.49569673 -20.45507812 30.5 C-20.63368241 25.36428436 -20.93861234 20.9970841 -22.9375 16.1875 C-23.8125 13.5625 -23.8125 13.5625 -23.9375 11.1875 C-22.375 8.875 -22.375 8.875 -19.9375 7.1875 C-16.6875 6.9375 -16.6875 6.9375 -13.9375 7.1875 C-13.64875 6.218125 -13.36 5.24875 -13.0625 4.25 C-10.91276671 -1.60205174 -5.44118975 0.00379706 0 0 Z M-9.9375 4.1875 C-9.6075 5.5075 -9.2775 6.8275 -8.9375 8.1875 C-2.6675 8.1875 3.6025 8.1875 10.0625 8.1875 C10.0625 6.8675 10.0625 5.5475 10.0625 4.1875 C3.4625 4.1875 -3.1375 4.1875 -9.9375 4.1875 Z M-19.9375 16.1875 C-19.9375 16.5175 -19.9375 16.8475 -19.9375 17.1875 C-6.7375 17.1875 6.4625 17.1875 20.0625 17.1875 C20.0625 16.8575 20.0625 16.5275 20.0625 16.1875 C6.8625 16.1875 -6.3375 16.1875 -19.9375 16.1875 Z M-9.9375 29.1875 C-9.9375 34.7975 -9.9375 40.4075 -9.9375 46.1875 C-9.6075 46.1875 -9.2775 46.1875 -8.9375 46.1875 C-8.9375 40.5775 -8.9375 34.9675 -8.9375 29.1875 C-9.2675 29.1875 -9.5975 29.1875 -9.9375 29.1875 Z M9.0625 29.1875 C9.0625 34.7975 9.0625 40.4075 9.0625 46.1875 C9.3925 46.1875 9.7225 46.1875 10.0625 46.1875 C10.0625 40.5775 10.0625 34.9675 10.0625 29.1875 C9.7325 29.1875 9.4025 29.1875 9.0625 29.1875 Z " fill="#2A8BFF" transform="translate(31.9375,3.8125)"/>
+</svg>
+</button>"""
 
-        data.append([item.get('repeats', "1"),
-                    prompt_cell,
-                    length,
-                    num_steps,
-                    start_img_md,
-                    end_img_md,
-                    "↑",
-                    "↓",
-                    "✖"
-                    ])    
-    return data
+        item_color = item.get('color', 'transparent')
+        row_html = f"""
+        <tr draggable="true" class="draggable-row" data-index="{row_index}" style="background-color: {item_color};" title="Drag to reorder">
+            <td class="center-align">{item.get('repeats', "1")}</td>
+            <td>{prompt_cell}</td>
+            <td class="center-align">{length}</td>
+            <td class="center-align">{num_steps}</td>
+            <td class="center-align">{start_img_md}</td>
+            <td class="center-align">{end_img_md}</td>
+            <td class="center-align">{edit_btn}</td>
+            <td class="center-align">{remove_btn}</td>
+        </tr>
+        """
+        table_rows.append(row_html)
+        
+    table_footer = "</tbody></table>"
+    table_html = table_header + "".join(table_rows) + table_footer
+    scrollable_div = f'<div id="queue-scroll-container" style="max-height: 650px; overflow-y: auto;">{table_html}</div>'
+
+    return scroll_buttons + scrollable_div
+
 def update_queue_data(queue, first_time_in_queue =False):
     update_global_queue_ref(queue)
-    data = get_queue_table(queue)
-
-    return gr.DataFrame(value=data)
+    html_content = generate_queue_html(queue)
+    return gr.HTML(value=html_content)
 
 
 def create_html_progress_bar(percentage=0.0, text="Idle", is_idle=True):
@@ -5165,7 +5259,9 @@ def generate_video(
                         src_faces = torch.cat([src_faces, torch.full( (3, current_video_length - src_faces.shape[1], 512, 512 ), -1, dtype = src_faces.dtype, device= src_faces.device) ], dim=1)
 
                 # Sparse Video to Video
-                sparse_video_image = get_video_frame(video_guide, aligned_guide_start_frame, return_last_if_missing = True, target_fps = fps, return_PIL = True) if "R" in video_prompt_type else None
+                sparse_video_image = None
+                if "R" in video_prompt_type:
+                    sparse_video_image = get_video_frame(video_guide, aligned_guide_start_frame, return_last_if_missing = True, target_fps = fps, return_PIL = True)
 
                 # Generic Video Preprocessing
                 process_outside_mask = process_map_outside_mask.get(filter_letters(video_prompt_type, "YWX"), None)
@@ -6919,63 +7015,46 @@ def download_loras():
     return
 
 
-def handle_celll_selection(state, evt: gr.SelectData):
+def handle_queue_action(state, action_string):
+    if not action_string:
+        return gr.HTML(), gr.Tabs()
+        
     gen = get_gen_info(state)
     queue = gen.get("queue", [])
-
-    if evt.index is None:
-        return gr.update(), gr.update(), gr.update(visible=False), gr.update()
-    row_index, col_index = evt.index
     
-    if col_index == 1:
+    try:
+        parts = action_string.split('_')
+        action = parts[0]
+        params = parts[1:]
+    except (IndexError, ValueError):
+        return gr.HTML(), gr.Tabs()
+
+    if action == "edit" or action == "silent_edit":
+        row_index = int(params[0])
         state["editing_task_index"] = row_index
         task_to_edit_index = row_index + 1
         
         if task_to_edit_index < len(queue):
             task_data = queue[task_to_edit_index]
-            gr.Info(f"Loading task '{task_data['prompt'][:50]}...' for editing.")
-            return gr.update(), gr.update(), gr.update(visible=False), gr.Tabs(selected="edit")
+            if action == "edit":
+                gr.Info(f"Loading task '{task_data['prompt'][:50]}...' for editing.")
+            return update_queue_data(queue), gr.Tabs(selected="edit")
         else:
             gr.Warning("Task index out of bounds.")
-            return gr.update(), gr.update(), gr.update(visible=False), gr.update()
+            return update_queue_data(queue), gr.Tabs()
             
-    if col_index in [6, 7, 8]:
-        if col_index == 6: cell_value = "↑"
-        elif col_index == 7: cell_value = "↓"
-        elif col_index == 8: cell_value = "✖"
-        if col_index == 6:
-            new_df_data = move_up(queue, [row_index])
-            return new_df_data, gr.update(), gr.update(visible=False), gr.update()
-        elif col_index == 7:
-            new_df_data = move_down(queue, [row_index])
-            return new_df_data, gr.update(), gr.update(visible=False), gr.update()
-        elif col_index == 8:
-            new_df_data = remove_task(queue, [row_index])
-            gen["prompts_max"] = gen.get("prompts_max",0) - 1
-            update_status(state)
-            return new_df_data, gr.update(), gr.update(visible=False), gr.update()
-            
-    start_img_col_idx = 4
-    end_img_col_idx = 5
-    image_data_to_show = None
-    names = []
-    if col_index == start_img_col_idx:
-        with lock:
-            row_index += 1
-            if row_index < len(queue):
-                image_data_to_show = queue[row_index].get('start_image_data_base64')
-                names = queue[row_index].get('start_image_labels')
-    elif col_index == end_img_col_idx:
-        with lock:
-            row_index += 1
-            if row_index < len(queue):
-                image_data_to_show = queue[row_index].get('end_image_data_base64')
-                names = queue[row_index].get('end_image_labels')
-    if image_data_to_show:
-        value = get_modal_image( image_data_to_show[0], names[0])
-        return gr.update(), gr.update(value=value), gr.update(visible=True), gr.update()
-    else:
-        return gr.update(), gr.update(), gr.update(visible=False), gr.update()
+    elif action == "move" and len(params) == 3 and params[1] == "to":
+        old_index_str, new_index_str = params[0], params[2]
+        return move_task(queue, old_index_str, new_index_str), gr.Tabs()
+        
+    elif action == "remove":
+        row_index = int(params[0])
+        new_queue_data = remove_task(queue, [row_index])
+        gen["prompts_max"] = gen.get("prompts_max", 0) - 1
+        update_status(state)
+        return new_queue_data, gr.Tabs()
+
+    return update_queue_data(queue), gr.Tabs()
 
 def change_model(state, model_choice):
     if model_choice == None:
@@ -7215,6 +7294,40 @@ def init_process_queue_if_any(state):
 def get_modal_image(image_base64, label):
     return "<DIV ALIGN=CENTER><IMG SRC=\"" + image_base64 + "\"><div style='position: absolute; top: 0; left: 0; background: rgba(0,0,0,0.7); color: white; padding: 5px; font-size: 12px;'>" + label + "</div></DIV>"
 
+def show_modal_image(state, action_string):
+    if not action_string:
+        return gr.HTML(), gr.Column(visible=False)
+
+    try:
+        img_type, row_index_str = action_string.split('_')
+        row_index = int(row_index_str)
+    except (ValueError, IndexError):
+        return gr.HTML(), gr.Column(visible=False)
+
+    gen = get_gen_info(state)
+    queue = gen.get("queue", [])
+    task_index = row_index + 1
+
+    if task_index >= len(queue):
+        return gr.HTML(), gr.Column(visible=False)
+
+    task_item = queue[task_index]
+    image_data = None
+    label_data = None
+
+    if img_type == 'start':
+        image_data = task_item.get('start_image_data_base64')
+        label_data = task_item.get('start_image_labels')
+    elif img_type == 'end':
+        image_data = task_item.get('end_image_data_base64')
+        label_data = task_item.get('end_image_labels')
+
+    if not image_data or not label_data:
+        return gr.HTML(), gr.Column(visible=False)
+
+    html_content = get_modal_image(image_data[0], label_data[0])
+    return gr.HTML(value=html_content), gr.Column(visible=True)
+
 def get_prompt_labels(multi_prompts_gen_type, image_outputs = False):
     new_line_text = "each new line of prompt will be used for a window" if multi_prompts_gen_type != 0 else "each new line of prompt will generate " + ("a new image" if image_outputs else "a new video")
     return "Prompts (" + new_line_text + ", # lines = comments, ! lines = macros)", "Prompts (" + new_line_text + ", # lines = comments)"
@@ -7225,28 +7338,6 @@ def get_image_end_label(multi_prompts_gen_type):
 def refresh_prompt_labels(multi_prompts_gen_type, image_mode):
     prompt_label, wizard_prompt_label =  get_prompt_labels(multi_prompts_gen_type, image_mode > 0)
     return gr.update(label=prompt_label), gr.update(label = wizard_prompt_label), gr.update(label=get_image_end_label(multi_prompts_gen_type))
-
-def show_preview_column_modal(state, column_no):
-    column_no = int(column_no)
-    if column_no == -1:
-        return gr.update(), gr.update(), gr.update()
-    gen = get_gen_info(state)
-    queue = gen.get("queue", [])
-    task = queue[0]
-    list_uri = []
-    names = []
-    start_img_uri = task.get('start_image_data_base64')
-    if start_img_uri != None:
-        list_uri += start_img_uri
-        names += task.get('start_image_labels')
-    end_img_uri = task.get('end_image_data_base64')
-    if end_img_uri != None:
-        list_uri += end_img_uri
-        names += task.get('end_image_labels')
-
-    value = get_modal_image( list_uri[column_no],names[column_no]  )
-
-    return -1, gr.update(value=value), gr.update(visible=True)
 
 def update_video_guide_outpainting(video_guide_outpainting_value, value, pos):
     if len(video_guide_outpainting_value) <= 1:
@@ -7521,11 +7612,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
     with gr.Row():
         with gr.Column():
             with gr.Column(visible=False, elem_id="image-modal-container") as modal_container: 
-                with gr.Row(elem_id="image-modal-close-button-row"): #
+                with gr.Row(elem_id="image-modal-close-button-row"):
                     close_modal_button = gr.Button("❌", size="sm", scale=1)
-                # modal_image_display = gr.Image(label="Full Resolution Image", interactive=False, show_label=False)
-                modal_image_display = gr.HTML(label="Full Resolution Image")
-                preview_column_no = gr.Text(visible=False, value=-1, elem_id="preview_column_no")
+                modal_html_display = gr.HTML()
+                modal_action_input = gr.Text(elem_id="modal_action_input", visible=False)
+                modal_action_trigger = gr.Button(elem_id="modal_action_trigger", visible=False)
             with gr.Row(visible= True): #len(loras)>0) as presets_column:
                 lset_choices = compute_lset_choices(loras_presets) + [(get_new_preset_msg(advanced_ui), "")]
                 with gr.Column(scale=6):
@@ -8416,12 +8507,14 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             if not update_form:
                 if tab_id == 'edit':
                     edit_btn = gr.Button("Edit")
-                    cancel_btn = gr.Button("Cancel")
+                    cancel_btn = gr.Button("Cancel", elem_id="edit_tab_cancel_button")
+                    silent_cancel_btn = gr.Button("Silent Cancel", elem_id="silent_edit_tab_cancel_button", visible=False)
                 else:
                     generate_btn = gr.Button("Generate")
                     add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
                 generate_trigger = gr.Text(visible = False) 
                 add_to_queue_trigger = gr.Text(visible = False)
+                js_trigger_index = gr.Text(visible=False, elem_id="js_trigger_for_edit_refresh")
 
                 with gr.Column(visible= False) as current_gen_column:
                     with gr.Accordion("Preview", open=False):
@@ -8433,21 +8526,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         onemorewindow_btn = gr.Button("Extend this Sample Please !", visible = False)
                         abort_btn = gr.Button("Abort", visible = True)
                 with gr.Accordion("Queue Management", open=False) as queue_accordion:
-                    with gr.Row( ): 
-                        queue_df = gr.DataFrame(
-                            headers=["Qty","Prompt", "Length","Steps","", "", "", "", ""],
-                            datatype=[ "str","markdown","str", "markdown", "markdown", "markdown", "str", "str", "str"],
-                            column_widths= ["5%", None, "7%", "7%", "10%", "10%", "3%", "3%", "34"],
-                            interactive=False,
-                            col_count=(9, "fixed"),
-                            wrap=True,
-                            value=[],
-                            line_breaks= True,
-                            visible= True,
-                            elem_id="queue_df",
-                            max_height= 1000
-
+                    with gr.Row():
+                        queue_html = gr.HTML(
+                            value=generate_queue_html(state_dict["gen"]["queue"]),
+                            elem_id="queue_html_container"
                         )
+                    queue_action_input = gr.Text(elem_id="queue_action_input", visible=False)
+                    queue_action_trigger = gr.Button(elem_id="queue_action_trigger", visible=False)
                     with gr.Row(visible= True):
                         queue_zip_base64_output = gr.Text(visible=False)
                         save_queue_btn = gr.DownloadButton("Save Queue", size="sm")
@@ -8506,7 +8591,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             video_guide_outpainting_checkbox.input(fn=refresh_video_guide_outpainting_row, inputs=[video_guide_outpainting_checkbox, video_guide_outpainting], outputs= [video_guide_outpainting_row,video_guide_outpainting])
             show_advanced.change(fn=switch_advanced, inputs=[state, show_advanced, lset_name], outputs=[advanced_row, preset_buttons_rows, refresh_lora_btn, refresh2_row ,lset_name]).then(
                 fn=switch_prompt_type, inputs = [state, wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, *prompt_vars], outputs = [wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, prompt_column_advanced, prompt_column_wizard, prompt_column_wizard_vars, *prompt_vars])
-            queue_df.select( fn=handle_celll_selection, inputs=state, outputs=[queue_df, modal_image_display, modal_container, main_tabs])
+            queue_action_trigger.click(fn=handle_queue_action, inputs=[state, queue_action_input], outputs=[queue_html, main_tabs], show_progress="hidden")
             gr.on( triggers=[output.change, output.select], fn=select_video, inputs=[state, output], outputs=[last_choice, video_info, video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab], show_progress="hidden")
             preview_trigger.change(refresh_preview, inputs= [state], outputs= [preview], show_progress="hidden")
             PP_MMAudio_setting.change(fn = lambda value : [gr.update(visible = value == 1), gr.update(visible = value == 0)] , inputs = [PP_MMAudio_setting], outputs = [PP_MMAudio_row, PP_custom_audio_row] )
@@ -8541,13 +8626,24 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             if tab_id == 'generate':
                 output_trigger.change(refresh_gallery,
                     inputs = [state], 
-                    outputs = [output, gen_info, generate_btn, add_to_queue_btn, current_gen_column, current_gen_buttons_row, queue_df, abort_btn, onemorewindow_btn],
+                    outputs = [output, gen_info, generate_btn, add_to_queue_btn, current_gen_column, current_gen_buttons_row, queue_html, abort_btn, onemorewindow_btn],
                     show_progress="hidden"
                     )
 
 
-            preview_column_no.input(show_preview_column_modal, inputs=[state, preview_column_no], outputs=[preview_column_no, modal_image_display, modal_container])
-            abort_btn.click(abort_generation, [state], [ abort_btn] ) #.then(refresh_gallery, inputs = [state, gen_info], outputs = [output, gen_info, queue_df] )
+            modal_action_trigger.click(
+                fn=show_modal_image,
+                inputs=[state, modal_action_input],
+                outputs=[modal_html_display, modal_container],
+                show_progress="hidden"
+            )
+            close_modal_button.click(
+                fn=lambda: gr.Column(visible=False),
+                inputs=[],
+                outputs=[modal_container],
+                show_progress="hidden"
+            )
+            abort_btn.click(abort_generation, [state], [ abort_btn] ) #.then(refresh_gallery, inputs = [state, gen_info], outputs = [output, gen_info, queue_html] )
             onemoresample_btn.click(fn=one_more_sample,inputs=[state], outputs= [state])
             onemorewindow_btn.click(fn=one_more_window,inputs=[state], outputs= [state])
 
@@ -8665,12 +8761,38 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 ).then(
                     fn=edit_task_in_queue,
                     inputs=edit_inputs_components + [state],
-                    outputs=[queue_df, main_tabs]
+                    outputs=[js_trigger_index]
                 )
+                js_trigger_index.change(
+                    fn=None,
+                    inputs=[js_trigger_index],
+                    outputs=None,
+                    js="""
+                    (index) => {
+                        if (index === null || index < 0 || index === '') {
+                            return;
+                        }
+                        window.updateAndTrigger('silent_edit_' + index);
+                        setTimeout(() => {
+                            const silentCancelButton = document.querySelector('#silent_edit_tab_cancel_button');
+                            if (silentCancelButton) {
+                                silentCancelButton.click();
+                            }
+                        }, 50);
+                    }
+                    """
+                )
+
                 cancel_btn.click(
                     fn=cancel_edit,
                     inputs=[state],
                     outputs=[main_tabs]
+                )
+
+                silent_cancel_btn.click(
+                    fn=silent_cancel_edit,
+                    inputs=[state],
+                    outputs=[main_tabs, js_trigger_index] # Also clears the trigger
                 )
 
             refresh_form_trigger.change(fn= fill_inputs, 
@@ -8716,7 +8838,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     outputs= None
                 ).then(fn=process_prompt_and_add_tasks,
                     inputs = [state, model_choice],
-                    outputs=[queue_df, queue_accordion],
+                    outputs=[queue_html, queue_accordion],
                     show_progress="hidden",
                 ).then(
                     fn=update_status,
@@ -8732,7 +8854,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     outputs= None
                 ).then(fn=process_prompt_and_add_tasks,
                     inputs = [state, model_choice],
-                    outputs= [queue_df, queue_accordion],
+                    outputs= [queue_html, queue_accordion],
                     show_progress="hidden",
                 ).then(fn=prepare_generate_video,
                     inputs= [state],
@@ -8759,7 +8881,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 gr.on(triggers=[load_queue_btn.upload, main.load],
                     fn=load_queue_action,
                     inputs=[load_queue_btn, state],
-                    outputs=[queue_df]
+                    outputs=[queue_html]
                 ).then(
                      fn=lambda s: (gr.update(visible=bool(get_gen_info(s).get("queue",[]))), gr.Accordion(open=True)) if bool(get_gen_info(s).get("queue",[])) else (gr.update(visible=False), gr.update()),
                      inputs=[state],
@@ -8838,17 +8960,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             clear_queue_btn.click(
                 fn=clear_queue_action,
                 inputs=[state],
-                outputs=[queue_df]
+                outputs=[queue_html]
             ).then(
                  fn=lambda: (gr.update(visible=False), gr.Accordion(open=False)),
                  inputs=None,
                  outputs=[current_gen_column, queue_accordion]
-            )
-
-            close_modal_button.click(
-                lambda: gr.update(visible=False),
-                inputs=[],
-                outputs=[modal_container]
             )
 
     if tab_id == 'edit':
@@ -9525,134 +9641,99 @@ def create_ui():
             margin: 0 20px;
             white-space: nowrap;
         }
-        .queue-item {
-            border: 1px solid #ccc;
-            padding: 10px;
-            margin: 5px 0;
-            border-radius: 5px;
+        #queue_html_container table {
+            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+            table-layout: fixed;
         }
-        .current {
-            background: #f8f9fa;
-            border-left: 4px solid #007bff;
+        #queue_html_container th {
+            text-align: left;
+            padding: 10px 8px;
+            border-bottom: 2px solid #4a5568;
+            font-weight: bold;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #a0aec0;
+            white-space: nowrap;
         }
-        .task-header {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 5px;
+        #queue_html_container td {
+            padding: 8px;
+            border-bottom: 1px solid #2d3748;
+            vertical-align: middle;
         }
-        .progress-container {
-            height: 10px;
-            background: #e9ecef;
-            border-radius: 5px;
-            overflow: hidden;
+        #queue_html_container tr:hover td {
+            background-color: rgba(255, 255, 255, 0.6);
         }
-        .progress-bar {
-            height: 100%;
-            background: #007bff;
-            transition: width 0.3s ease;
-        }
-        .task-details {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.9em;
-            color: #6c757d;
-            margin-top: 5px;
-        }
-        .task-prompt {
-            font-size: 0.8em;
-            color: #868e96;
-            margin-top: 5px;
+        #queue_html_container .prompt-cell {
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        #queue_df th {
-            pointer-events: none;
+        #queue_html_container .action-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 1.3em;
+            padding: 0;
+            color: #718096;
+            transition: color 0.2s;
+            line-height: 1;
+        }
+        #queue_html_container .action-button:hover {
+            color: #e2e8f0;
+        }
+        #queue_html_container .center-align {
             text-align: center;
-            vertical-align: middle;
-            font-size:11px;
         }
-        #xqueue_df table {
-            width: 100%;
-            overflow: hidden !important;
+        #queue_html_container .text-left {
+            text-align: left;
         }
-        #xqueue_df::-webkit-scrollbar {
-            display: none !important;
-        }
-        #xqueue_df {
-            scrollbar-width: none !important;
-            -ms-overflow-style: none !important;
-        }
-        .selection-button {
-            display: none;
-        }
-        .cell-selected {
-            --ring-color: none;
-        }
-        #queue_df th:nth-child(1),
-        #queue_df td:nth-child(1) {
-            width: 60px;
-            text-align: center;
-            vertical-align: middle;
-            cursor: default !important;
-            pointer-events: none;
-        }
-        #xqueue_df th:nth-child(2),
-        #queue_df td:nth-child(2) {
-            text-align: center;
-            vertical-align: middle;
-            white-space: normal;
-        }
-        #queue_df td:nth-child(2) {
-            cursor: default !important;
-        }
-        #queue_df th:nth-child(3),
-        #queue_df td:nth-child(3) {
-            width: 60px;
-            text-align: center;
-            vertical-align: middle;
-            cursor: default !important;
-            pointer-events: none;
-        }
-        #queue_df th:nth-child(4),
-        #queue_df td:nth-child(4) {
-            width: 60px;
-            text-align: center;
-            white-space: nowrap;
-            cursor: default !important;
-            pointer-events: none;
-        }
-        #queue_df th:nth-child(5), #queue_df td:nth-child(7),
-        #queue_df th:nth-child(6), #queue_df td:nth-child(8) {
-            width: 60px;
-            text-align: center;
-            vertical-align: middle;
-        }
-        #queue_df td:nth-child(5) img,
-        #queue_df td:nth-child(6) img {
+        #queue_html_container .hover-image img {
             max-width: 50px;
             max-height: 50px;
             object-fit: contain;
             display: block;
             margin: auto;
-            cursor: pointer;
         }
-        #queue_df th:nth-child(7), #queue_df td:nth-child(9),
-        #queue_df th:nth-child(8), #queue_df td:nth-child(10),
-        #queue_df th:nth-child(9), #queue_df td:nth-child(11) {
+        #queue_html_container .draggable-row {
+            cursor: grab;
+        }
+        #queue_html_container tr.dragging {
+            opacity: 0.5;
+            background: #2d3748;
+        }
+        #queue_html_container tr.drag-over-top {
+            border-top: 6px solid #4299e1;
+        }
+        #queue_html_container tr.drag-over-bottom {
+            border-bottom: 6px solid #4299e1;
+        }
+        #queue_html_container .action-button svg {
             width: 20px;
-            padding: 2px !important;
-            cursor: pointer;
-            text-align: center;
-            font-weight: bold;
-            vertical-align: middle;
+            height: 20px;
         }
-        #queue_df td:nth-child(5):hover,
-        #queue_df td:nth-child(6):hover,
-        #queue_df td:nth-child(7):hover,
-        #queue_df td:nth-child(8):hover,
-        #queue_df td:nth-child(9):hover {
-            background-color: #e0e0e0;
+        
+        #queue_html_container .drag-handle svg {
+            width: 20px;
+            height: 20px;
+        }
+        #queue_html_container .action-button:hover svg {
+            fill: #e2e8f0;
+        }
+        #image-modal-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            padding: 20px;
+            box-sizing: border-box;
         }
         #image-modal-container {
             position: fixed;
@@ -9796,18 +9877,163 @@ def create_ui():
 
     js = """
     function() {
-        // Attach function to window object to make it globally accessible
-        window.sendColIndex = function(index) {
-            const input= document.querySelector('#preview_column_no textarea');
-            if (input) {
-                input.value = index;
-                input.dispatchEvent(new Event("input", { bubbles: true }));
-                input.focus();
-                input.blur();
-                console.log('Events dispatched for column:', index);
-                }
+        window.updateAndTrigger = function(action) {
+            const hiddenTextbox = document.querySelector('#queue_action_input textarea');
+            const hiddenButton = document.querySelector('#queue_action_trigger');
+            
+            if (hiddenTextbox && hiddenButton) {
+                hiddenTextbox.value = action;
+                const inputEvent = new Event('input', { bubbles: true });
+                hiddenTextbox.dispatchEvent(inputEvent);
+                hiddenButton.click();
+            } else {
+                console.error("Could not find hidden queue action elements.");
+            }
         };
-        console.log('sendColIndex function attached to window');
+        console.log('updateAndTrigger function for queue is ready.');
+
+        window.scrollToQueueTop = function() {
+            const container = document.querySelector('#queue-scroll-container');
+            if (container) {
+                container.scrollTop = 0;
+            }
+        };
+
+        window.scrollToQueueBottom = function() {
+            const container = document.querySelector('#queue-scroll-container');
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+            }
+        };
+
+        window.showImageModal = function(action) {
+            const hiddenTextbox = document.querySelector('#modal_action_input textarea');
+            const hiddenButton = document.querySelector('#modal_action_trigger');
+            if (hiddenTextbox && hiddenButton) {
+                hiddenTextbox.value = action;
+                hiddenTextbox.dispatchEvent(new Event('input', { bubbles: true }));
+                hiddenButton.click();
+            } else {
+                console.error("Could not find hidden modal action elements.");
+            }
+        };
+
+        window.closeImageModal = function() {
+            const modal = document.querySelector('#image-modal-container');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        };
+
+        let draggedItem = null;
+
+        function initializeQueueDragAndDrop() {
+            const queueTbody = document.querySelector('#queue_html_container table > tbody');
+            if (!queueTbody || queueTbody.dataset.dndInitialized) {
+                return;
+            }
+            
+            queueTbody.dataset.dndInitialized = 'true';
+
+            queueTbody.addEventListener('dragstart', (e) => {
+                if (e.target.closest('.action-button') || e.target.closest('.hover-image')) {
+                    e.preventDefault();
+                    return;
+                }
+                draggedItem = e.target.closest('.draggable-row');
+                if (draggedItem) {
+                    setTimeout(() => draggedItem.classList.add('dragging'), 0);
+                }
+            });
+
+            queueTbody.addEventListener('dragend', (e) => {
+                if (draggedItem) {
+                    draggedItem.classList.remove('dragging');
+                    draggedItem = null;
+                    document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => {
+                        el.classList.remove('drag-over-top', 'drag-over-bottom');
+                    });
+                }
+            });
+
+            queueTbody.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                const targetRow = e.target.closest('.draggable-row');
+                
+                // Clear previous indicators
+                document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => {
+                    el.classList.remove('drag-over-top', 'drag-over-bottom');
+                });
+
+                if (targetRow && draggedItem && targetRow !== draggedItem) {
+                    const rect = targetRow.getBoundingClientRect();
+                    const midpoint = rect.top + rect.height / 2;
+                    
+                    if (e.clientY < midpoint) {
+                        targetRow.classList.add('drag-over-top');
+                    } else {
+                        targetRow.classList.add('drag-over-bottom');
+                    }
+                }
+            });
+
+            queueTbody.addEventListener('dragleave', (e) => {
+                 const relatedTarget = e.relatedTarget;
+                 const queueTable = e.currentTarget.closest('table');
+                 if (queueTable && !queueTable.contains(relatedTarget)) {
+                    document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => {
+                        el.classList.remove('drag-over-top', 'drag-over-bottom');
+                    });
+                 }
+            });
+
+            queueTbody.addEventListener('drop', (e) => {
+                e.preventDefault();
+                const targetRow = e.target.closest('.draggable-row');
+
+                if (draggedItem && targetRow && targetRow !== draggedItem) {
+                    const oldIndex = draggedItem.dataset.index;
+                    let newIndex = parseInt(targetRow.dataset.index);
+
+                    // If dropping on the bottom half, the new index is after the target row
+                    if (targetRow.classList.contains('drag-over-bottom')) {
+                        newIndex++;
+                    }
+
+                    if (oldIndex != newIndex) {
+                       const action = `move_${oldIndex}_to_${newIndex}`;
+                       window.updateAndTrigger(action);
+                    }
+                }
+
+                // Cleanup visual styles
+                document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => {
+                    el.classList.remove('drag-over-top', 'drag-over-bottom');
+                });
+                if (draggedItem) {
+                    draggedItem.classList.remove('dragging');
+                    draggedItem = null;
+                }
+            });
+        }
+        
+        const observer = new MutationObserver((mutationsList, observer) => {
+            for(const mutation of mutationsList) {
+                if (mutation.type === 'childList') {
+                    const queueContainer = document.querySelector('#queue_html_container');
+                    if (queueContainer && queueContainer.querySelector('table > tbody')) {
+                        initializeQueueDragAndDrop();
+                    }
+                }
+            }
+        });
+
+        const targetNode = document.querySelector('gradio-app');
+        if (targetNode) {
+            observer.observe(targetNode, { childList: true, subtree: true });
+        }
+        
+        setTimeout(initializeQueueDragAndDrop, 500);
 
         // cancel wheel usage inside image editor    
         const hit = n => n?.id === "img_editor" || n?.classList?.contains("wheel-pass");

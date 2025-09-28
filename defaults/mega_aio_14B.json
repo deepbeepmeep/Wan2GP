@@ -1,0 +1,17 @@
+{
+	"model":
+	{
+		"name": "WAN2.2 Rapid Mega AIO v3",
+		"architecture" : "mega_aio_14B",
+		"description": "WAN 2.2 Rapid Mega All-in-One model v3. Single model that combines high and low noise phases for optimized inference. Use 1 CFG, 4 steps, euler_a sampler with beta scheduler.",
+		"URLs": [
+			"https://huggingface.co/Phr00t/WAN2.2-14B-Rapid-AllInOne/resolve/main/Mega-v3/wan2.2-rapid-mega-aio-v3.safetensors"
+		],
+		"group": "wan2_2"		
+	},
+	"guidance_phases": 1,	
+	"guidance_scale": 1.0,
+	"num_inference_steps": 4,
+	"sample_solver": "euler_a",
+	"flow_shift": 5
+}

@@ -35,6 +35,8 @@ rembg[gpu]==2.0.65
 onnxruntime-gpu
 decord
 timm
+# insightface==0.7.3
+# facexlib==0.3.0
 
 # Config & orchestration
 omegaconf

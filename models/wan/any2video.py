@@ -354,6 +354,7 @@ class WanAny2V:
         pre_video_frame = None,
         video_prompt_type= "",
         original_input_ref_images = [],
+        face_arc_embeds = None,
         **bbargs
                 ):
         
@@ -428,6 +429,7 @@ class WanAny2V:
         multitalk = model_type in ["multitalk", "infinitetalk", "vace_multitalk_14B", "i2v_2_2_multitalk"]
         infinitetalk = model_type in ["infinitetalk"]
         standin = model_type in ["standin", "vace_standin_14B"]
+        lynx = model_type in ["lynx_lite", "lynx_full", "vace_lynx_lite_14B", "vace_lynx_full_14B"]
         recam = model_type in ["recam_1.3B"]
         ti2v = model_type in ["ti2v_2_2", "lucy_edit"]
         lucy_edit=  model_type in ["lucy_edit"]
@@ -535,6 +537,7 @@ class WanAny2V:
             pose_latents = self.vae.encode([pose_pixels], VAE_tile_size)[0].unsqueeze(0)
             input_frames = input_frames * input_masks
             if not "X" in video_prompt_type: input_frames += input_masks - 1 # masked area should black (-1) in background frames
+            # input_frames = input_frames[:, :1].expand(-1, input_frames.shape[1], -1, -1)
             if prefix_frames_count > 0:
                  input_frames[:, :prefix_frames_count] = input_video 
                  input_masks[:, :prefix_frames_count] = 1 
@@ -549,7 +552,8 @@ class WanAny2V:
             clip_image_start = image_ref.squeeze(1)
             lat_y = torch.concat(self.vae.encode([image_ref, input_frames.to(self.device)], VAE_tile_size), dim=1)
             y = torch.concat([msk, lat_y])
-            kwargs.update({ 'y': y, 'pose_latents': pose_latents, 'face_pixel_values' : input_faces.unsqueeze(0)})
+            kwargs.update({ 'y': y, 'pose_latents': pose_latents})
+            face_pixel_values = input_faces.unsqueeze(0)
             lat_y = msk = msk_control = msk_ref = pose_pixels = None
             ref_images_before = True
             ref_images_count = 1
@@ -699,6 +703,23 @@ class WanAny2V:
 
         kwargs["freqs"] = freqs
 
+        # Lynx
+        if lynx:
+            from  .lynx.resampler import Resampler
+            from accelerate import init_empty_weights
+            lynx_lite = model_type in ["lynx_lite", "vace_lynx_lite_14B"]
+            with init_empty_weights():
+                arc_resampler = Resampler( depth=4, dim=1280, dim_head=64, embedding_dim=512, ff_mult=4, heads=20, num_queries=16, output_dim=2048 if lynx_lite else 5120 )
+            offload.load_model_data(arc_resampler, os.path.join("ckpts", "wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"))
+            arc_resampler.to(self.device)
+            arcface_embed = face_arc_embeds[None,None,:].to(device=self.device, dtype=torch.float) 
+            ip_hidden_states = arc_resampler(arcface_embed).to(self.dtype)
+            ip_hidden_states_uncond = arc_resampler(torch.zeros_like(arcface_embed)).to(self.dtype)
+            arc_resampler = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            kwargs["lynx_ip_scale"] = 1.
+
         #Standin
         if standin:
             from preprocessing.face_preprocessor  import FaceProcessor 
@@ -847,6 +868,18 @@ class WanAny2V:
                     "x" : [latent_model_input, latent_model_input, latent_model_input],
                     "context" : [context, context_null, context_null],
                     "audio_scale": [audio_scale, None, None ]
+                }
+            elif animate:
+                gen_args = {
+                    "x" : [latent_model_input, latent_model_input],
+                    "context" : [context, context_null],
+                    "face_pixel_values": [face_pixel_values, None]
+                }
+            elif lynx:
+                gen_args = {
+                    "x" : [latent_model_input, latent_model_input],
+                    "context" : [context, context_null],
+                    "lynx_ip_embeds": [ip_hidden_states, ip_hidden_states_uncond]
                 }
             elif multitalk and audio_proj != None:
                 if guide_scale == 1:

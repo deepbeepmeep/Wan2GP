@@ -54,6 +54,7 @@ from tqdm import tqdm
 import requests
 from shared.gradio.gallery import AdvancedMediaGallery
 import re
+import subprocess
 
 # import torch._dynamo as dynamo
 # dynamo.config.recompile_limit = 2000   # default is 256
@@ -9218,6 +9219,41 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                 outputs= [msg , header, model_family, model_choice, refresh_form_trigger]
         )
 
+def get_thumbnails_in_batch_windows(file_paths):
+    if not file_paths:
+        return {}
+    extractor_path = "ThumbnailExtractor.exe"
+    if not os.path.exists(extractor_path):
+        return {}
+    temp_file = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt", encoding='utf-8') as tf:
+            tf.write("\n".join(file_paths))
+            temp_file = tf.name
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        
+        process = subprocess.run(
+            [extractor_path, temp_file],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            startupinfo=startupinfo
+        )
+
+        if process.returncode == 0 and process.stdout:
+            return json.loads(process.stdout)
+        else:
+            print(f"ThumbnailExtractor failed: {process.stderr}")
+            return {}
+
+    except Exception as e:
+        print(f"Error running ThumbnailExtractor: {e}")
+        return {}
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            os.remove(temp_file)
+
 def generate_gallery_tab(state):
     with gr.Column():
         with gr.Row():
@@ -9288,9 +9324,16 @@ def wire_gallery_events(
             if os.path.isdir(path) and os.path.exists(path):
                 valid_files = [f for f in os.listdir(path) if has_video_file_extension(f) or has_image_file_extension(f)]
                 all_files.extend([os.path.join(path, f) for f in valid_files])
+        
         all_files.sort(key=os.path.getctime, reverse=True)
+        thumbnails_dict = {}
+        if os.name == 'nt':
+            absolute_paths = [os.path.abspath(f) for f in all_files]
+            thumbnails_dict = get_thumbnails_in_batch_windows(absolute_paths)
+
         items_html = ""
         for f in all_files:
+            abs_f = os.path.abspath(f)
             safe_path = f.replace("'", "\\'")
             basename = os.path.basename(f)
             display_name = basename
@@ -9299,11 +9342,18 @@ def wire_gallery_events(
                 display_name = match.group(1)
 
             is_video = has_video_file_extension(f)
-            thumbnail_html = f'<video muted preload="metadata" src="/file={f}#t=0.5"></video>' if is_video else f'<img src="/file={f}" alt="{basename}">'
+            thumbnail_html = ''
+            base64_thumb = thumbnails_dict.get(abs_f)
+            if base64_thumb:
+                thumbnail_html = f'<img src="data:image/jpeg;base64,{base64_thumb}" alt="{basename} thumbnail">'
+            else:
+                thumbnail_html = f'<video muted preload="metadata" src="/file={f}#t=0.5"></video>' if is_video else f'<img src="/file={f}" alt="{basename}">'
+
             items_html += f"""<div class="gallery-item" data-path='{safe_path}' onclick="selectGalleryItem(event, this)">
                 <div class="gallery-item-thumbnail">{thumbnail_html}</div>
                 <div class="gallery-item-name" title="{basename}">{display_name}</div>
             </div>"""
+
         full_html = f"<div class='gallery-grid'>{items_html}</div>"
         clear_metadata_html = "<div class='metadata-content'><p class='placeholder'>Select a file to view its metadata.</p></div>"
         return full_html, "", clear_metadata_html, gr.Button(visible=False), gr.Button(visible=False), gr.Row(visible=False), gr.Image(value=None), gr.Image(value=None), gr.Column(visible=False)

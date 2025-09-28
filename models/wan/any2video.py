@@ -542,7 +542,6 @@ class WanAny2V:
                 extended_overlapped_latents = lat_y[:, :overlapped_latents_frames_num].clone().unsqueeze(0)
 
             lat_y = input_video = None
-            print(f"DEBUG: Adding y parameter to kwargs! y.shape={y.shape}")
             kwargs.update({ 'y': y})
 
         # Animate
@@ -567,7 +566,6 @@ class WanAny2V:
             clip_image_start = image_ref.squeeze(1)
             lat_y = torch.concat(self.vae.encode([image_ref, input_frames.to(self.device)], VAE_tile_size), dim=1)
             y = torch.concat([msk, lat_y])
-            print(f"DEBUG: Adding y parameter in ANIMATE block! y.shape={y.shape}")
             kwargs.update({ 'y': y, 'pose_latents': pose_latents, 'face_pixel_values' : input_faces.unsqueeze(0)})
             lat_y = msk = msk_control = msk_ref = pose_pixels = None
             ref_images_before = True

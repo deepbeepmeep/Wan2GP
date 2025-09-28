@@ -229,7 +229,8 @@ def save_video(tensor,
                 nrow=8,
                 normalize=True,
                 value_range=(-1, 1),
-                retry=5):
+                retry=5,
+                source_images=None):
     """Save tensor as video with configurable codec and container options."""
         
     if torch.is_tensor(tensor) and len(tensor.shape) == 4:
@@ -265,11 +266,337 @@ def save_video(tensor,
                 writer.append_data(frame)
         
             writer.close()
+            
+            # Embed source images if provided and container supports it
+            if source_images and container == 'mkv':
+                try:
+                    cache_file = embed_source_images_metadata(cache_file, source_images)
+                except Exception as e:
+                    print(f"Warning: Failed to embed source images: {e}")
+            
             return cache_file
             
         except Exception as e:
             error = e
             print(f"error saving {save_file}: {e}")
+
+
+def embed_source_images_metadata(video_path, source_images):
+    """
+    Embed source images as attachments in MKV video files using FFmpeg.
+    
+    Args:
+        video_path (str): Path to the video file
+        source_images (dict): Dictionary containing source images
+            Expected keys: 'image_start', 'image_end', 'image_refs'
+            Values should be PIL Images or file paths
+    
+    Returns:
+        str: Path to the video file with embedded attachments
+    """
+    import tempfile
+    import subprocess
+    import os
+    
+    if not source_images:
+        return video_path
+    
+    # Create temporary directory for image files
+    temp_dir = tempfile.mkdtemp()
+    try:
+        attachment_files = []
+        
+        # Process each source image type
+        for img_type, img_data in source_images.items():
+            if img_data is None:
+                continue
+                
+            # Handle different image input types
+            if isinstance(img_data, list):
+                # Multiple images (e.g., image_refs)
+                for i, img in enumerate(img_data):
+                    if img is not None:
+                        img_path = _save_temp_image(img, temp_dir, f"{img_type}_{i}")
+                        if img_path:
+                            attachment_files.append((img_path, f"{img_type}_{i}.jpg"))
+            else:
+                # Single image
+                img_path = _save_temp_image(img_data, temp_dir, img_type)
+                if img_path:
+                    attachment_files.append((img_path, f"{img_type}.jpg"))
+        
+        if not attachment_files:
+            return video_path
+        
+        # Build FFmpeg command
+        ffmpeg_cmd = ['ffmpeg', '-y', '-i', video_path]
+        
+        # Add attachment parameters
+        for i, (file_path, filename) in enumerate(attachment_files):
+            ffmpeg_cmd.extend(['-attach', file_path])
+            ffmpeg_cmd.extend(['-metadata:s:t:' + str(i), f'mimetype=image/jpeg'])
+            ffmpeg_cmd.extend(['-metadata:s:t:' + str(i), f'filename={filename}'])
+        
+        # Output parameters
+        ffmpeg_cmd.extend(['-c', 'copy'])  # Copy streams without re-encoding
+        
+        # Create output file
+        output_path = video_path.replace('.mkv', '_with_sources.mkv')
+        ffmpeg_cmd.append(output_path)
+        
+        # Verify all attachment files exist before running FFmpeg
+        for file_path, filename in attachment_files:
+            if not os.path.exists(file_path):
+                print(f"ERROR: Attachment file missing: {file_path}")
+                return video_path
+        
+        try:
+            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=True)
+            
+            # Verify output file was created
+            if not os.path.exists(output_path):
+                print(f"ERROR: FFmpeg completed but output file {output_path} was not created")
+                return video_path
+            
+            # Check output file size and streams before replacing
+            output_size = os.path.getsize(output_path)
+            
+            # Verify the output file actually has attachments
+            try:
+                import subprocess as sp
+                probe_result = sp.run([
+                    'ffprobe', '-v', 'quiet', '-print_format', 'json', 
+                    '-show_streams', output_path
+                ], capture_output=True, text=True)
+                
+                if probe_result.returncode == 0:
+                    import json
+                    probe_data = json.loads(probe_result.stdout)
+                    streams = probe_data.get('streams', [])
+                    attachment_streams = [s for s in streams if s.get('disposition', {}).get('attached_pic') == 1]
+                    
+                    if len(attachment_streams) == 0:
+                        print(f"WARNING: Output file has no attachment streams despite FFmpeg success!")
+                    
+            except Exception as probe_error:
+                pass
+            
+            # Replace original file with the one containing attachments
+            import shutil
+            
+            try:
+                # Backup original file first
+                backup_path = video_path + ".backup"
+                shutil.copy2(video_path, backup_path)
+                
+                # Replace original with new file - use explicit error handling
+                try:
+                    shutil.move(output_path, video_path)
+                except Exception as move_error:
+                    print(f"ERROR: shutil.move() failed: {move_error}")
+                    # Restore backup and return
+                    if os.path.exists(backup_path):
+                        shutil.move(backup_path, video_path)
+                    return video_path
+                
+                # Verify replacement actually worked by checking file exists and size
+                if not os.path.exists(video_path):
+                    print(f"ERROR: File replacement failed - target file doesn't exist!")
+                    # Restore backup
+                    if os.path.exists(backup_path):
+                        shutil.move(backup_path, video_path)
+                    return video_path
+                
+                final_size = os.path.getsize(video_path)
+                
+                if final_size == output_size:
+                    # Remove backup
+                    os.remove(backup_path)
+                else:
+                    print(f"ERROR: File replacement failed - size mismatch! Expected {output_size}, got {final_size}")
+                    # Restore backup
+                    if os.path.exists(backup_path):
+                        shutil.move(backup_path, video_path)
+                    return video_path
+                    
+            except Exception as move_error:
+                print(f"ERROR: File replacement failed: {move_error}")
+                # Try to restore backup if it exists
+                backup_path = video_path + ".backup"
+                if os.path.exists(backup_path):
+                    try:
+                        shutil.move(backup_path, video_path)
+                    except:
+                        pass
+                return video_path
+            
+            return video_path
+            
+        except subprocess.CalledProcessError as e:
+            print(f"FFmpeg error embedding source images: {e.stderr}")
+            # Clean up temp file if it exists
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return video_path
+            
+    finally:
+        # Clean up temporary directory
+        import shutil
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+
+
+def _save_temp_image(img_data, temp_dir, name):
+    """
+    Save image data to a temporary file.
+    
+    Args:
+        img_data: PIL Image, file path, or tensor
+        temp_dir: Temporary directory path
+        name: Base name for the file
+    
+    Returns:
+        str: Path to saved temporary file, or None if failed
+    """
+    import os
+    from PIL import Image
+    import torch
+    
+    try:
+        temp_path = os.path.join(temp_dir, f"{name}.jpg")
+        
+        if isinstance(img_data, str):
+            # File path - copy the file
+            if os.path.exists(img_data):
+                import shutil
+                shutil.copy2(img_data, temp_path)
+                return temp_path
+        elif hasattr(img_data, 'save'):
+            # PIL Image
+            img_data.save(temp_path, 'JPEG', quality=95)
+            return temp_path
+        elif torch.is_tensor(img_data):
+            # Tensor - convert to PIL and save
+            if img_data.dim() == 4:
+                img_data = img_data.squeeze(0)
+            if img_data.dim() == 3:
+                # Convert from tensor to PIL
+                if img_data.shape[0] == 3:  # CHW format
+                    img_data = img_data.permute(1, 2, 0)
+                # Normalize to 0-255 range
+                if img_data.max() <= 1.0:
+                    img_data = (img_data * 255).clamp(0, 255)
+                img_array = img_data.cpu().numpy().astype('uint8')
+                img_pil = Image.fromarray(img_array)
+                img_pil.save(temp_path, 'JPEG', quality=95)
+                return temp_path
+        
+        return None
+        
+    except Exception as e:
+        print(f"ERROR: Exception in _save_temp_image for {name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def extract_source_images(video_path, output_dir=None):
+    """
+    Extract embedded source images from MKV video files.
+    
+    Args:
+        video_path (str): Path to the MKV video file
+        output_dir (str): Directory to save extracted images (optional)
+    
+    Returns:
+        list: List of extracted image file paths
+    """
+    import os
+    import tempfile
+    
+    if output_dir is None:
+        output_dir = os.path.dirname(video_path)
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    try:
+        # First, probe the video to find attachment streams (attached pics)
+        probe_cmd = [
+            'ffprobe', '-v', 'quiet', '-print_format', 'json', 
+            '-show_streams', video_path
+        ]
+        
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+        import json as json_module
+        probe_data = json_module.loads(result.stdout)
+        
+        # Find attachment streams (attached pics)
+        attachment_streams = []
+        for i, stream in enumerate(probe_data.get('streams', [])):
+            # Check for attachment streams in multiple ways:
+            # 1. Traditional attached_pic flag
+            # 2. Video streams with image-like metadata (filename, mimetype)
+            # 3. MJPEG codec which is commonly used for embedded images
+            is_attached_pic = stream.get('disposition', {}).get('attached_pic', 0) == 1
+            
+            # Check for image metadata in video streams (our case after metadata embedding)
+            tags = stream.get('tags', {})
+            has_image_metadata = (
+                'FILENAME' in tags and tags['FILENAME'].lower().endswith(('.jpg', '.jpeg', '.png')) or
+                'filename' in tags and tags['filename'].lower().endswith(('.jpg', '.jpeg', '.png')) or
+                'MIMETYPE' in tags and tags['MIMETYPE'].startswith('image/') or
+                'mimetype' in tags and tags['mimetype'].startswith('image/')
+            )
+            
+            # Check for MJPEG codec (common for embedded images)
+            is_mjpeg = stream.get('codec_name') == 'mjpeg'
+            
+            if (stream.get('codec_type') == 'video' and 
+                (is_attached_pic or (has_image_metadata and is_mjpeg))):
+                attachment_streams.append(i)
+        
+        if not attachment_streams:
+            print(f"No attachment streams found in {video_path}")
+            return []
+        
+        # Extract each attachment stream
+        extracted_files = []
+        for stream_idx in attachment_streams:
+            # Get original filename from metadata if available
+            stream_info = probe_data['streams'][stream_idx]
+            tags = stream_info.get('tags', {})
+            original_filename = (
+                tags.get('filename') or 
+                tags.get('FILENAME') or 
+                f'attachment_{stream_idx}.png'
+            )
+            
+            # Clean filename for filesystem
+            safe_filename = os.path.basename(original_filename)
+            if not safe_filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                safe_filename += '.png'
+            
+            output_file = os.path.join(output_dir, safe_filename)
+            
+            # Extract the attachment stream
+            extract_cmd = [
+                'ffmpeg', '-y', '-i', video_path,
+                '-map', f'0:{stream_idx}', '-frames:v', '1',
+                output_file
+            ]
+            
+            try:
+                subprocess.run(extract_cmd, capture_output=True, text=True, check=True)
+                if os.path.exists(output_file):
+                    extracted_files.append(output_file)
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to extract attachment {stream_idx}: {e.stderr}")
+        
+        return extracted_files
+            
+    except subprocess.CalledProcessError as e:
+        print(f"Error extracting source images: {e.stderr}")
+        return []
 
 
 def _get_codec_params(codec_type, container):

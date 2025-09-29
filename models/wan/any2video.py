@@ -544,7 +544,6 @@ class WanAny2V:
                 extended_overlapped_latents = lat_y[:, :overlapped_latents_frames_num].clone().unsqueeze(0)
 
             lat_y = input_video = None
-            print(f"DEBUG: Adding y parameter to kwargs! y.shape={y.shape}")
             kwargs.update({ 'y': y})
 
         # Animate

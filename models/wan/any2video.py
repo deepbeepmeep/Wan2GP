@@ -84,7 +84,6 @@ class WanAny2V:
         self.num_train_timesteps = config.num_train_timesteps
         self.param_dtype = config.param_dtype
         self.model_def = model_def
-        self.base_model_type = base_model_type
         self.model2 = None
         self.transformer_switch = model_def.get("URLs2", None) is not None
         self.text_encoder = T5EncoderModel(
@@ -109,11 +108,6 @@ class WanAny2V:
             self.vae_stride = (4, 16, 16)
             vae_checkpoint = "Wan2.2_VAE.safetensors"
             vae = Wan2_2_VAE
-        elif base_model_type in ["mega_aio_14B", "mega_aio_14B_nsfw"]:
-            # MEGA uses the original WanVAE (16 channels) to match transformer expectations
-            self.vae_stride = (4, 8, 8)  # Use original VAE stride
-            vae_checkpoint = "Wan2.1_VAE.safetensors"  # Use original VAE checkpoint
-            vae = WanVAE
         else:
             self.vae_stride = config.vae_stride
             vae_checkpoint = "Wan2.1_VAE.safetensors"
@@ -372,15 +366,6 @@ class WanAny2V:
                 timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]
             timesteps = torch.tensor(timesteps)
             sample_scheduler = None                  
-        elif sample_solver == "euler_a":
-            # Euler Ancestral (stochastic) - same timesteps as Euler but with noise injection
-            timesteps = list(np.linspace(self.num_timesteps, 1, sampling_steps, dtype=np.float32))
-            timesteps.append(0.)
-            timesteps = [torch.tensor([t], device=self.device) for t in timesteps]
-            if self.use_timestep_transform:
-                timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]
-            timesteps = torch.tensor(timesteps)
-            sample_scheduler = None
         elif sample_solver == 'causvid':
             sample_scheduler = FlowMatchScheduler(num_inference_steps=sampling_steps, shift=shift, sigma_min=0, extra_one_step=True)
             timesteps = torch.tensor([1000, 934, 862, 756, 603, 410, 250, 140, 74])[:sampling_steps].to(self.device)
@@ -437,7 +422,7 @@ class WanAny2V:
         # if NAG_scale > 1: context = torch.cat([context, context_NAG], dim=0)
         if self._interrupt: return None
 
-        vace = model_type in ["vace_1.3B","vace_14B", "vace_multitalk_14B", "vace_standin_14B"] or self.base_model_type in ["mega_aio_14B", "mega_aio_14B_nsfw"]
+        vace = model_type in ["vace_1.3B","vace_14B", "vace_multitalk_14B", "vace_standin_14B"]
         phantom = model_type in ["phantom_1.3B", "phantom_14B"]
         fantasy = model_type in ["fantasy"]
         multitalk = model_type in ["multitalk", "infinitetalk", "vace_multitalk_14B", "i2v_2_2_multitalk"]
@@ -457,9 +442,7 @@ class WanAny2V:
         extended_input_dim = 0
         ref_images_before = False
         # image2video 
-        # MEGA AIO model should not go through i2v processing even if it has image inputs
-        mega_aio = self.base_model_type in ["mega_aio_14B", "mega_aio_14B_nsfw"]
-        if not mega_aio and model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "fantasy", "multitalk", "infinitetalk", "i2v_2_2_multitalk", "flf2v_720p"]:
+        if model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "fantasy", "multitalk", "infinitetalk", "i2v_2_2_multitalk", "flf2v_720p"]:
             any_end_frame = False
             if infinitetalk:
                 new_shot = "Q" in video_prompt_type
@@ -662,61 +645,26 @@ class WanAny2V:
 
         # Vace
         if vace :
-            # Special handling for MEGA I2V: convert simple image inputs to VACE format
-            if self.base_model_type in ["mega_aio_14B", "mega_aio_14B_nsfw"] and image_start is not None and input_frames is None:
-                # Create VACE-compatible inputs from start/end images
-                start_frame = image_start.to(self.device)
-                
-                # Create control frames: start frame + black frames + optional end frame
-                control_frames = torch.zeros((3, frame_num, height, width), device=self.device, dtype=self.VAE_dtype)
-                control_frames[:, 0] = start_frame  # First frame
-                
-                if image_end is not None:
-                    end_frame = image_end.to(self.device)
-                    control_frames[:, -1] = end_frame  # Last frame
-                
-                # Create masks: 1 for start/end frames, 0 for generated frames
-                control_masks = torch.zeros((1, frame_num, height, width), device=self.device, dtype=self.VAE_dtype)
-                control_masks[:, 0] = 1.0  # Start frame mask
-                if image_end is not None:
-                    control_masks[:, -1] = 1.0  # End frame mask
-                
-                # Set up VACE inputs
-                input_frames = [control_frames]
-                input_masks = [control_masks]
-                # Reference image should be 3D: [3, H, W] for RGB
-                if start_frame.dim() == 4:  # [1, 3, H, W]
-                    ref_image = start_frame.squeeze(0)  # [3, H, W]
-                elif start_frame.dim() == 3:  # [3, H, W]
-                    ref_image = start_frame
-                else:
-                    raise ValueError(f"Unexpected start_frame shape: {start_frame.shape}")
-                input_ref_images = [ref_image.unsqueeze(1)]  # [3, 1, H, W] - single frame video
-                input_ref_masks = None
-            
-            # Standard VACE processing
-            if input_frames is not None:
-                input_frames = [input_frames.to(self.device)] if not isinstance(input_frames, list) else [f.to(self.device) for f in input_frames]
-                input_frames = input_frames + ([] if input_frames2 is None else [input_frames2.to(self.device)])            
-                input_masks = [input_masks.to(self.device)] if not isinstance(input_masks, list) else [m.to(self.device) for m in input_masks]
-                input_masks = input_masks + ([] if input_masks2 is None else [input_masks2.to(self.device)])         
-                input_ref_images = None if input_ref_images is None else [ u.to(self.device) for u in input_ref_images]
-                input_ref_masks = None if input_ref_masks is None else [ None if u is None else u.to(self.device) for u in input_ref_masks]
-                ref_images_before = True
-                z0 = self.vace_encode_frames(input_frames, input_ref_images, masks=input_masks, tile_size = VAE_tile_size, overlapped_latents = overlapped_latents )
-                m0 = self.vace_encode_masks(input_masks, input_ref_images)
-                if input_ref_masks is not None and len(input_ref_masks) > 0 and input_ref_masks[0] is not None:
-                    color_reference_frame = input_ref_images[0].clone()
-                    zbg = self.vace_encode_frames( input_ref_images[:1] * len(input_frames), None, masks=input_ref_masks[0], tile_size = VAE_tile_size )
-                    mbg = self.vace_encode_masks(input_ref_masks[:1] * len(input_frames), None)
-                    for zz0, mm0, zzbg, mmbg in zip(z0, m0, zbg, mbg):
-                        zz0[:, 0:1] = zzbg
-                        mm0[:, 0:1] = mmbg
-                    zz0 = mm0 = zzbg = mmbg = None
-                z = [torch.cat([zz, mm], dim=0) for zz, mm in zip(z0, m0)]
-                ref_images_count = len(input_ref_images) if input_ref_images is not None and input_ref_images is not None else 0
-                context_scale = context_scale if context_scale != None else [1.0] * len(z)
-                kwargs.update({'vace_context' : z, 'vace_context_scale' : context_scale, "ref_images_count": ref_images_count })
+            # vace context encode
+            input_frames = [input_frames.to(self.device)] +([] if input_frames2 is None else [input_frames2.to(self.device)])            
+            input_masks = [input_masks.to(self.device)] + ([] if input_masks2 is None else [input_masks2.to(self.device)])         
+            input_ref_images = None if input_ref_images is None else [ u.to(self.device) for u in input_ref_images]
+            input_ref_masks = None if input_ref_masks is None else [ None if u is None else u.to(self.device) for u in input_ref_masks]
+            ref_images_before = True
+            z0 = self.vace_encode_frames(input_frames, input_ref_images, masks=input_masks, tile_size = VAE_tile_size, overlapped_latents = overlapped_latents )
+            m0 = self.vace_encode_masks(input_masks, input_ref_images)
+            if input_ref_masks is not None and len(input_ref_masks) > 0 and input_ref_masks[0] is not None:
+                color_reference_frame = input_ref_images[0].clone()
+                zbg = self.vace_encode_frames( input_ref_images[:1] * len(input_frames), None, masks=input_ref_masks[0], tile_size = VAE_tile_size )
+                mbg = self.vace_encode_masks(input_ref_masks[:1] * len(input_frames), None)
+                for zz0, mm0, zzbg, mmbg in zip(z0, m0, zbg, mbg):
+                    zz0[:, 0:1] = zzbg
+                    mm0[:, 0:1] = mmbg
+                zz0 = mm0 = zzbg = mmbg = None
+            z = [torch.cat([zz, mm], dim=0) for zz, mm in zip(z0, m0)]
+            ref_images_count = len(input_ref_images) if input_ref_images is not None and input_ref_images is not None else 0
+            context_scale = context_scale if context_scale != None else [1.0] * len(z)
+            kwargs.update({'vace_context' : z, 'vace_context_scale' : context_scale, "ref_images_count": ref_images_count })
             if overlapped_latents != None :
                 overlapped_latents_size = overlapped_latents.shape[2]
                 extended_overlapped_latents = z[0][:16, :overlapped_latents_size + ref_images_count].clone().unsqueeze(0)
@@ -1002,17 +950,6 @@ class WanAny2V:
                 dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
                 dt = dt.item() / self.num_timesteps
                 latents = latents - noise_pred * dt
-            elif sample_solver == "euler_a":
-                # Euler Ancestral (stochastic) - adds noise at each step except the last
-                dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
-                dt = dt.item() / self.num_timesteps
-                latents = latents - noise_pred * dt
-                
-                # Add noise (ancestral sampling) - skip on final step
-                if i < len(timesteps) - 1:
-                    sigma_up = (timesteps[i + 1] / self.num_timesteps) * 0.1  # Small noise factor
-                    noise = torch.randn(latents.shape, dtype=latents.dtype, device=latents.device, generator=seed_g)
-                    latents = latents + noise * sigma_up
             else:
                 latents = sample_scheduler.step(
                     noise_pred[:, :, :target_shape[1]],

@@ -6671,12 +6671,12 @@ def load_settings_from_file(state, file_path):
     gen = get_gen_info(state)
 
     if file_path==None:
-        return gr.update(), gr.update(), None
+        return gr.update(), gr.update(), None, gr.update()
 
     configs, any_video_or_image_file = get_settings_from_file(state, file_path, True, True, True)
     if configs == None:
         gr.Info("File not supported")
-        return gr.update(), gr.update(), None
+        return gr.update(), gr.update(), None, gr.update()
 
     current_model_type = state["model_type"]
     model_type = configs["model_type"]
@@ -6690,10 +6690,10 @@ def load_settings_from_file(state, file_path):
 
     if model_type == current_model_type:
         set_model_settings(state, current_model_type, configs)        
-        return gr.update(), gr.update(), str(time.time()), None
+        return gr.update(), gr.update(), str(time.time()), gr.update()
     else:
         set_model_settings(state, model_type, configs)        
-        return *generate_dropdown_model_list(model_type), gr.update(), None
+        return *generate_dropdown_model_list(model_type), gr.update(), gr.update()
 
 def save_inputs(
             target,

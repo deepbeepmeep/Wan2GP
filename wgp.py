@@ -340,6 +340,7 @@ def process_prompt_and_add_tasks(state, model_choice):
     sliding_window_size = inputs["sliding_window_size"]
     sliding_window_overlap = inputs["sliding_window_overlap"]
     sliding_window_discard_last_frames = inputs["sliding_window_discard_last_frames"]
+    sliding_window_keep_only_longest = inputs.get("sliding_window_keep_only_longest", False)
     video_length = inputs["video_length"]
     num_inference_steps= inputs["num_inference_steps"]
     skip_steps_cache_type= inputs["skip_steps_cache_type"]
@@ -2112,7 +2113,7 @@ def fix_settings(model_type, ui_defaults):
     audio_prompt_type = ui_defaults.get("audio_prompt_type", None)
     if settings_version < 2.2: 
         if not base_model_type in ["vace_1.3B","vace_14B", "sky_df_1.3B", "sky_df_14B", "ltxv_13B"]:
-            for p in  ["sliding_window_size", "sliding_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames"]:
+            for p in  ["sliding_window_size", "sliding_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames", "sliding_window_keep_only_longest"]:
                 if p in ui_defaults: del ui_defaults[p]
 
         if audio_prompt_type == None :
@@ -4541,6 +4542,7 @@ def generate_video(
     sliding_window_color_correction_strength,
     sliding_window_overlap_noise,
     sliding_window_discard_last_frames,
+    sliding_window_keep_only_longest,
     image_refs_relative_size,
     remove_background_images_ref,
     temporal_upsampling,
@@ -4900,6 +4902,7 @@ def generate_video(
         context_scale = None
         window_no = 0
         extra_windows = 0
+        previous_video_path = None  # Track previous video for cleanup when sliding_window_keep_only_longest is enabled
         guide_start_frame = 0 # pos of of first control video frame of current window  (reuse_frames later than the first processed frame)
         keep_frames_parsed = [] # aligned to the first control frame of current window (therefore ignore previous reuse_frames)
         pre_video_guide = None # reuse_frames of previous window
@@ -5413,6 +5416,15 @@ def generate_video(
                     video_path= new_image_path
                 elif len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0 or output_new_audio_filepath is not None or any_mmaudio or output_new_audio_data is not None or audio_source is not None:
                     video_path = os.path.join(save_path, file_name)
+                    
+                    # Delete previous video if sliding_window_keep_only_longest is enabled
+                    if sliding_window and sliding_window_keep_only_longest and previous_video_path is not None:
+                        try:
+                            if os.path.isfile(previous_video_path):
+                                os.remove(previous_video_path)
+                        except Exception as e:
+                            pass
+                    
                     save_path_tmp = video_path[:-4] + "_tmp.mp4"
                     save_video( tensor=sample[None], save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None))
                     output_new_audio_temp_filepath = None
@@ -5441,6 +5453,14 @@ def generate_video(
                     if output_new_audio_temp_filepath is not None: os.remove(output_new_audio_temp_filepath)
 
                 else:
+                    # Delete previous video if sliding_window_keep_only_longest is enabled
+                    if sliding_window and sliding_window_keep_only_longest and previous_video_path is not None:
+                        try:
+                            if os.path.isfile(previous_video_path):
+                                os.remove(previous_video_path)
+                        except Exception as e:
+                            pass
+                    
                     save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None))
 
                 end_time = time.time()
@@ -5491,6 +5511,14 @@ def generate_video(
                     with lock:
                         file_list.append(path)
                         file_settings_list.append(configs if no > 0 else configs.copy())
+                
+                # Update previous video path for cleanup in next iteration (only for videos, not images)
+                if sliding_window and sliding_window_keep_only_longest and not is_image:
+                    if isinstance(video_path, list):
+                        # Handle case where video_path might be a list (for images)
+                        previous_video_path = video_path[0] if len(video_path) > 0 else None
+                    else:
+                        previous_video_path = video_path
                     
                 # Play notification sound for single video
                 try:
@@ -6266,7 +6294,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["keep_frames_video_source"]
 
     if not test_any_sliding_window( base_model_type):
-        pop += ["sliding_window_size", "sliding_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames", "sliding_window_color_correction_strength"]
+        pop += ["sliding_window_size", "sliding_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames", "sliding_window_color_correction_strength", "sliding_window_keep_only_longest"]
 
     if not (base_model_type in ["fantasy"] or model_def.get("multitalk_class", False)):
         pop += ["audio_guidance_scale", "speakers_locations"]
@@ -6715,6 +6743,7 @@ def save_inputs(
             sliding_window_color_correction_strength,
             sliding_window_overlap_noise,
             sliding_window_discard_last_frames,
+            sliding_window_keep_only_longest,
             image_refs_relative_size,
             remove_background_images_ref,
             temporal_upsampling,
@@ -8166,18 +8195,21 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             sliding_window_color_correction_strength = gr.Slider(0, 1, visible=False, value =0)                            
                             sliding_window_overlap_noise = gr.Slider(0, 100, value=ui_defaults.get("sliding_window_overlap_noise",20), step=1, label="Noise to be added to overlapped frames to reduce blur effect", visible = True)
                             sliding_window_discard_last_frames = gr.Slider(0, 20, value=ui_defaults.get("sliding_window_discard_last_frames", 0), step=4, visible = False)
+                            sliding_window_keep_only_longest = gr.Checkbox(value=ui_defaults.get("sliding_window_keep_only_longest", False), label="Keep only longest video (delete previous shorter videos during generation)")
                         elif ltxv:
                             sliding_window_size = gr.Slider(41, get_max_frames(257), value=ui_defaults.get("sliding_window_size", 129), step=8, label="Sliding Window Size")
                             sliding_window_overlap = gr.Slider(1, 97, value=ui_defaults.get("sliding_window_overlap",9), step=8, label="Windows Frames Overlap (needed to maintain continuity between windows, a higher value will require more windows)")
                             sliding_window_color_correction_strength = gr.Slider(0, 1, visible=False, value =0)                            
                             sliding_window_overlap_noise = gr.Slider(0, 100, value=ui_defaults.get("sliding_window_overlap_noise",20), step=1, label="Noise to be added to overlapped frames to reduce blur effect", visible = False)
                             sliding_window_discard_last_frames = gr.Slider(0, 20, value=ui_defaults.get("sliding_window_discard_last_frames", 0), step=8, label="Discard Last Frames of a Window (that may have bad quality)",  visible = True)
+                            sliding_window_keep_only_longest = gr.Checkbox(value=ui_defaults.get("sliding_window_keep_only_longest", False), label="Keep only longest video (delete previous shorter videos during generation)")
                         elif hunyuan_video_custom_edit:
                             sliding_window_size = gr.Slider(5, get_max_frames(257), value=ui_defaults.get("sliding_window_size", 129), step=4, label="Sliding Window Size")
                             sliding_window_overlap = gr.Slider(1, 97, value=ui_defaults.get("sliding_window_overlap",5), step=4, label="Windows Frames Overlap (needed to maintain continuity between windows, a higher value will require more windows)")
                             sliding_window_color_correction_strength = gr.Slider(0, 1, visible=False, value =0)                            
                             sliding_window_overlap_noise = gr.Slider(0, 150, value=ui_defaults.get("sliding_window_overlap_noise",20), step=1, label="Noise to be added to overlapped frames to reduce blur effect", visible = False)
                             sliding_window_discard_last_frames = gr.Slider(0, 20, value=ui_defaults.get("sliding_window_discard_last_frames", 0), step=4, label="Discard Last Frames of a Window (that may have bad quality)", visible = True)
+                            sliding_window_keep_only_longest = gr.Checkbox(value=ui_defaults.get("sliding_window_keep_only_longest", False), label="Keep only longest video (delete previous shorter videos during generation)")
                         else: # Vace, Multitalk
                             sliding_window_defaults = model_def.get("sliding_window_defaults", {})                            
                             sliding_window_size = gr.Slider(5, get_max_frames(257), value=ui_defaults.get("sliding_window_size", 129), step=4, label="Sliding Window Size")
@@ -8185,6 +8217,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             sliding_window_color_correction_strength = gr.Slider(0, 1, value=ui_defaults.get("sliding_window_color_correction_strength",0), step=0.01, label="Color Correction Strength (match colors of new window with previous one, 0 = disabled)", visible = True)
                             sliding_window_overlap_noise = gr.Slider(0, 150, value=ui_defaults.get("sliding_window_overlap_noise",20 if vace else 0), step=1, label="Noise to be added to overlapped frames to reduce blur effect" , visible = vace)
                             sliding_window_discard_last_frames = gr.Slider(0, 20, value=ui_defaults.get("sliding_window_discard_last_frames", 0), step=4, label="Discard Last Frames of a Window (that may have bad quality)", visible = True)
+                            sliding_window_keep_only_longest = gr.Checkbox(value=ui_defaults.get("sliding_window_keep_only_longest", False), label="Keep only longest video (delete previous shorter videos during generation)")
 
                         video_prompt_type_alignment = gr.Dropdown(
                             choices=[

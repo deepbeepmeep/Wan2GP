@@ -108,7 +108,7 @@ class family_handler():
         extra_model_def.update({
         "frames_minimum" : frames_minimum,
         "frames_steps" : frames_steps, 
-        "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "fantasy", "animate", "mega_aio_14B", "mega_aio_14B_nsfw"] or test_class_i2v(base_model_type) or test_wan_5B(base_model_type) or vace_class,  #"ti2v_2_2",
+        "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "fantasy", "animate"] or test_class_i2v(base_model_type) or test_wan_5B(base_model_type) or vace_class,  #"ti2v_2_2",
         "multiple_submodels" : multiple_submodels,
         "guidance_max_phases" : 3,
         "skip_layer_guidance" : True,        

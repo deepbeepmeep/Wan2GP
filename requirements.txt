@@ -32,9 +32,11 @@ loguru
 opencv-python>=4.12.0.88
 segment-anything
 rembg[gpu]==2.0.65
-onnxruntime-gpu
+onnxruntime-gpu==1.22
 decord
 timm
+# insightface==0.7.3
+# facexlib==0.3.0
 
 # Config & orchestration
 omegaconf

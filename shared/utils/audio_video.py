@@ -556,7 +556,6 @@ def extract_source_images(video_path, output_dir=None):
                 attachment_streams.append(i)
         
         if not attachment_streams:
-            print(f"No attachment streams found in {video_path}")
             return []
         
         # Extract each attachment stream

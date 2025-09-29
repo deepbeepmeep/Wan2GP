@@ -5422,6 +5422,13 @@ def generate_video(
                         try:
                             if os.path.isfile(previous_video_path):
                                 os.remove(previous_video_path)
+                                # Also remove from UI file list to prevent dead links in preview
+                                with lock:
+                                    if previous_video_path in file_list:
+                                        index = file_list.index(previous_video_path)
+                                        file_list.pop(index)
+                                        if index < len(file_settings_list):
+                                            file_settings_list.pop(index)
                         except Exception as e:
                             pass
                     
@@ -5458,6 +5465,13 @@ def generate_video(
                         try:
                             if os.path.isfile(previous_video_path):
                                 os.remove(previous_video_path)
+                                # Also remove from UI file list to prevent dead links in preview
+                                with lock:
+                                    if previous_video_path in file_list:
+                                        index = file_list.index(previous_video_path)
+                                        file_list.pop(index)
+                                        if index < len(file_settings_list):
+                                            file_settings_list.pop(index)
                         except Exception as e:
                             pass
                     

@@ -8514,7 +8514,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         progress(*progress_args)
                         gen["progress_args"] = None
                     status= gen.get("status","")
-                    if status == None or len(status) > 0:
+                    if status is not None and len(status) > 0:
                         yield status
                         gen["status"]= ""
                     if not gen.get("status_display", False):

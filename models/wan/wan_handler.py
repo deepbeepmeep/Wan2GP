@@ -2,6 +2,9 @@ import torch
 import numpy as np
 import gradio as gr
 
+# Import unified sampler system
+from shared.samplers import get_sampler_choices
+
 def test_class_i2v(base_model_type):    
     return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate" ]
 
@@ -118,11 +121,7 @@ class family_handler():
         "tea_cache" : not (base_model_type in ["i2v_2_2"] or test_wan_5B(base_model_type) or multiple_submodels),
         "mag_cache" : True,
         "keep_frames_video_guide_not_supported": base_model_type in ["infinitetalk"],
-        "sample_solvers":[
-                            ("unipc", "unipc"),
-                            ("euler", "euler"),
-                            ("dpm++", "dpm++"),
-                            ("flowmatch causvid", "causvid"), ]
+        "sample_solvers": get_sampler_choices(),
         })
 
 

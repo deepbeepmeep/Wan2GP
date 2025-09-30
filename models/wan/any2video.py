@@ -26,17 +26,15 @@ from .modules.vae import WanVAE
 from .modules.vae2_2 import Wan2_2_VAE
 
 from .modules.clip import CLIPModel
-from shared.utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
-                               get_sampling_sigmas, retrieve_timesteps)
-from shared.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+# Import unified sampler system
+from shared.samplers import get_sampler, SamplerContext
 from .modules.posemb_layers import get_rotary_pos_embed, get_nd_rotary_pos_embed
 from shared.utils.vace_preprocessor import VaceVideoProcessor
-from shared.utils.basic_flowmatch import FlowMatchScheduler
+from shared.utils.basic_flowmatch import FlowMatchScheduler  # Still needed for scheduler_kwargs logic
 from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
 from shared.utils.audio_video import save_video
 from mmgp import safetensors2
-from shared.utils.audio_video import save_video
 
 def optimized_scale(positive_flat, negative_flat):
 
@@ -384,37 +382,22 @@ class WanAny2V:
         **bbargs
                 ):
         
-        if sample_solver =="euler":
-            # prepare timesteps
-            timesteps = list(np.linspace(self.num_timesteps, 1, sampling_steps, dtype=np.float32))
-            timesteps.append(0.)
-            timesteps = [torch.tensor([t], device=self.device) for t in timesteps]
-            if self.use_timestep_transform:
-                timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]
-            timesteps = torch.tensor(timesteps)
-            sample_scheduler = None                  
-        elif sample_solver == 'causvid':
-            sample_scheduler = FlowMatchScheduler(num_inference_steps=sampling_steps, shift=shift, sigma_min=0, extra_one_step=True)
-            timesteps = torch.tensor([1000, 934, 862, 756, 603, 410, 250, 140, 74])[:sampling_steps].to(self.device)
-            sample_scheduler.timesteps =timesteps
-            sample_scheduler.sigmas = torch.cat([sample_scheduler.timesteps / 1000, torch.tensor([0.], device=self.device)])
-        elif sample_solver == 'unipc' or sample_solver == "":
-            sample_scheduler = FlowUniPCMultistepScheduler( num_train_timesteps=self.num_train_timesteps, shift=1, use_dynamic_shifting=False)
-            sample_scheduler.set_timesteps( sampling_steps, device=self.device, shift=shift)
-            
-            timesteps = sample_scheduler.timesteps
-        elif sample_solver == 'dpm++':
-            sample_scheduler = FlowDPMSolverMultistepScheduler(
-                num_train_timesteps=self.num_train_timesteps,
-                shift=1,
-                use_dynamic_shifting=False)
-            sampling_sigmas = get_sampling_sigmas(sampling_steps, shift)
-            timesteps, _ = retrieve_timesteps(
-                sample_scheduler,
+        # Use unified sampler system
+        if sample_solver == "":
+            sample_solver = "unipc"  # Default fallback
+        
+        try:
+            sampler = get_sampler(sample_solver)
+            timesteps, sample_scheduler = sampler.setup_timesteps(
+                num_steps=sampling_steps,
                 device=self.device,
-                sigmas=sampling_sigmas)
-        else:
-            raise NotImplementedError(f"Unsupported Scheduler {sample_solver}")
+                shift=shift,
+                num_timesteps=self.num_timesteps,
+                use_timestep_transform=self.use_timestep_transform,
+                timestep_transform=getattr(self, 'timestep_transform', None)
+            )
+        except ValueError as e:
+            raise NotImplementedError(f"Unsupported Scheduler {sample_solver}: {e}")
         original_timesteps = timesteps
 
         seed_g = torch.Generator(device=self.device)
@@ -842,7 +825,10 @@ class WanAny2V:
             torch.cuda.empty_cache()
             return None
 
-        if sample_scheduler != None:
+        # Set up scheduler kwargs for all samplers
+        if sample_scheduler is None:
+            scheduler_kwargs = {"generator": seed_g}  # For Euler sampler
+        else:
             scheduler_kwargs = {} if isinstance(sample_scheduler, FlowMatchScheduler) else {"generator": seed_g}
         # b, c, lat_f, lat_h, lat_w
         latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=seed_g)
@@ -1027,16 +1013,18 @@ class WanAny2V:
                     noise_pred = noise_pred_uncond + guide_scale * (noise_pred_text - noise_pred_uncond)            
             ret_values = noise_pred_uncond = noise_pred_cond = noise_pred_text = neg  = None
             
-            if sample_solver == "euler":
-                dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
-                dt = dt.item() / self.num_timesteps
-                latents = latents - noise_pred * dt
-            else:
-                latents = sample_scheduler.step(
-                    noise_pred[:, :, :target_shape[1]],
-                    t,
-                    latents,
-                    **scheduler_kwargs)[0]
+            # Use elegant unified sampler system with context pattern
+            sampler_context = SamplerContext(
+                model_output=noise_pred[:, :, :target_shape[1]],
+                timestep=t,
+                sample=latents,
+                timestep_index=i,
+                total_timesteps=timesteps,
+                scheduler=sample_scheduler,
+                num_timesteps=self.num_timesteps,
+                generator=scheduler_kwargs.get('generator')
+            )
+            latents = sampler.step(sampler_context)
 
 
             if image_mask_latents is not None:

@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Wan2.1 Lynx 14B",
+        "modules": [
+            [
+                "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_lynx_full_module_14B_bf16.safetensors",
+                "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_lynx_full_module_14B_quanto_bf16_int8.safetensors",
+                "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_lynx_full_module_14B_quanto_fp16_int8.safetensors"
+            ]
+        ],
+        "architecture": "lynx",
+        "description": "The Lynx ControlNet offers State of the Art Identity Preservation. You need to provide a Reference Image which is a close up of a person face to transfer this person in the Video.",
+        "URLs": "t2v",
+        "preload_URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_lynx_full_arc_resampler.safetensors"
+        ]
+    }
+}

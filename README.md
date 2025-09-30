@@ -20,6 +20,15 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
 ## 🔥 Latest Updates : 
+### September 30 2025: WanGP v8.9 - Combinatorics
+
+This new version of WanGP introduces **Wan 2.1 Lynx** the best Control Net so far to transfer *Facial Identity*. You will be amazed to recognize your friends even with a completely different hair style. Congrats to the *Byte Dance team* for this achievement. Lynx works quite with well *Fusionix t2v* 10 steps.
+
+*WanGP 8.9* also illustrate how existing WanGP features can be easily combined with new models. For instance with *Lynx* you will get out of the box *Video to Video* and *Image/Text to Image*.
+
+Another fun combination is *Vace* + *Lynx*, which works much better than *Vace StandIn*. I have added sliders to change the weight of Vace & Lynx to allow you to tune the effects.
+
+
 ### September 28 2025: WanGP v8.76 - ~~Here Are Two Three New Contenders in the Vace Arena !~~ The Never Ending Release 
 
 So in ~~today's~~ this release you will find two Wannabe Vace that covers each only a subset of Vace features but offers some interesting advantages:

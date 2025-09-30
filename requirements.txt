@@ -35,8 +35,9 @@ rembg[gpu]==2.0.65
 onnxruntime-gpu==1.22
 decord
 timm
-# insightface==0.7.3
-# facexlib==0.3.0
+insightface @ https://github.com/deepbeepmeep/insightface/raw/refs/heads/master/wheels/insightface-0.7.3-cp310-cp310-win_amd64.whl ; sys_platform == "win32" and python_version == "3.10"
+insightface==0.7.3 ; sys_platform == "linux"
+facexlib==0.3.0
 
 # Config & orchestration
 omegaconf

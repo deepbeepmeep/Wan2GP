@@ -63,7 +63,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.6.0"
-WanGP_version = "8.761"
+WanGP_version = "8.9"
 settings_version = 2.38
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -3492,7 +3492,23 @@ def select_video(state, input_file_list, event_data: gr.EventData):
             if video_apg_switch is not None and video_apg_switch != 0: 
                 values += ["on"]
                 labels += ["APG"]      
-                
+
+            control_net_weight = ""
+            if test_vace_module(video_model_type):
+                video_control_net_weight = configs.get("control_net_weight", 1)
+                if len(filter_letters(video_video_prompt_type, video_guide_processes))> 1:
+                    video_control_net_weight2 = configs.get("control_net_weight2", 1)
+                    control_net_weight = f"Vace #1={video_control_net_weight}, Vace #2={video_control_net_weight2}"
+                else:
+                    control_net_weight = f"Vace={video_control_net_weight}"
+            control_net_weight_alt_name = model_def.get("control_net_weight_alt_name", "")
+            if len(control_net_weight_alt_name) >0:
+                if len(control_net_weight): control_net_weight += ", "
+                control_net_weight += control_net_weight_alt_name + "=" + str(configs.get("control_net_alt", 1))
+            if len(control_net_weight) > 0: 
+                values += [control_net_weight]
+                labels += ["Control Net Weights"]      
+
             video_skip_steps_cache_type = configs.get("skip_steps_cache_type", "")
             video_skip_steps_multiplier = configs.get("skip_steps_multiplier", 0)
             video_skip_steps_cache_start_step_perc = configs.get("skip_steps_start_step_perc", 0)
@@ -3736,7 +3752,7 @@ def extract_faces_from_video_with_mask(input_video_path, input_mask_path, max_fr
             alpha_mask[mask > 127] = 1
             frame = frame * alpha_mask
         frame = Image.fromarray(frame)
-        face = face_processor.process(frame, resize_to=size, face_crop_scale = 1.2,)
+        face = face_processor.process(frame, resize_to=size)
         face_list.append(face)
 
     face_processor = None
@@ -4519,6 +4535,7 @@ def generate_video(
     image_mask,
     control_net_weight,
     control_net_weight2,
+    control_net_weight_alt,
     mask_expand,
     audio_guide,
     audio_guide2,
@@ -4583,6 +4600,9 @@ def generate_video(
 
     model_def = get_model_def(model_type) 
     is_image = image_mode > 0
+    set_video_prompt_type = model_def.get("set_video_prompt_type", None)
+    if set_video_prompt_type is not None:
+        video_prompt_type = add_to_sequence(video_prompt_type, set_video_prompt_type)
     if is_image:
         if min_frames_if_references >= 1000:
             video_length = min_frames_if_references - 1000
@@ -4734,7 +4754,7 @@ def generate_video(
 
     _, _, latent_size = get_model_min_frames_and_step(model_type)  
     original_image_refs = image_refs
-    image_refs = None if image_refs is None else [] + image_refs # work on a copy as it is going to be modified
+    image_refs = None if image_refs is None else ([] + image_refs) # work on a copy as it is going to be modified
     # image_refs = None
     # nb_frames_positions= 0
     # Output Video Ratio Priorities:
@@ -5031,7 +5051,7 @@ def generate_video(
                 # Generic Video Preprocessing
                 process_outside_mask = process_map_outside_mask.get(filter_letters(video_prompt_type, "YWX"), None)
                 preprocess_type, preprocess_type2 =  "raw", None 
-                for process_num, process_letter in enumerate( filter_letters(video_prompt_type, "PEDSLCMU")):
+                for process_num, process_letter in enumerate( filter_letters(video_prompt_type, video_guide_processes)):
                     if process_num == 0:
                         preprocess_type = process_map_video_guide.get(process_letter, "raw")
                     else:
@@ -5230,6 +5250,7 @@ def generate_video(
                     audio_scale= audio_scale,
                     audio_context_lens= audio_context_lens,
                     context_scale = context_scale,
+                    control_scale_alt = control_net_weight_alt,
                     model_mode = model_mode,
                     causal_block_size = 5,
                     causal_attention = True,
@@ -6242,7 +6263,10 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
 
     if not vace:
         pop += ["frames_positions", "control_net_weight", "control_net_weight2"] 
-                
+
+    if not len(model_def.get("control_net_weight_alt_name", "")) >0:
+        pop += ["control_net_alt"]
+                        
     if model_def.get("video_guide_outpainting", None) is None:
         pop += ["video_guide_outpainting"] 
 
@@ -6691,6 +6715,7 @@ def save_inputs(
             image_mask,
             control_net_weight,
             control_net_weight2,
+            control_net_weight_alt,
             mask_expand,
             audio_guide,
             audio_guide2,
@@ -7004,6 +7029,7 @@ def refresh_video_prompt_type_alignment(state, video_prompt_type, video_prompt_t
     return video_prompt_type
 
 all_guide_processes ="PDESLCMUVBH"
+video_guide_processes = "PEDSLCMU"
 
 def refresh_video_prompt_type_video_guide(state, filter_type, video_prompt_type, video_prompt_type_video_guide,  image_mode, old_image_mask_guide_value, old_image_guide_value, old_image_mask_value ):
     model_type = state["model_type"]
@@ -7452,13 +7478,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             phantom = base_model_type in ["phantom_1.3B", "phantom_14B"]
             fantasy = base_model_type in ["fantasy"]
             multitalk = model_def.get("multitalk_class", False)
-            standin = model_def.get("standin_class", False)
             infinitetalk =  base_model_type in ["infinitetalk"]
             hunyuan_t2v = "hunyuan_video_720" in model_filename
             hunyuan_i2v = "hunyuan_video_i2v" in model_filename
-            hunyuan_video_custom = "hunyuan_video_custom" in model_filename
-            hunyuan_video_custom =  base_model_type in ["hunyuan_custom", "hunyuan_custom_audio", "hunyuan_custom_edit"]
-            hunyuan_video_custom_audio = base_model_type in ["hunyuan_custom_audio"]
             hunyuan_video_custom_edit = base_model_type in ["hunyuan_custom_edit"]
             hunyuan_video_avatar = "hunyuan_video_avatar" in model_filename
             flux =  base_model_family in ["flux"]
@@ -7472,7 +7494,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             image_prompt_type_value = ""
             video_prompt_type_value = ""
             any_start_image = any_end_image = any_reference_image = any_image_mask = False
-            v2i_switch_supported = (vace or t2v or standin) and not image_outputs
+            v2i_switch_supported = model_def.get("v2i_switch_supported", False) and not image_outputs
             ti2v_2_2 = base_model_type in ["ti2v_2_2"]
             gallery_height = 350
             def get_image_gallery(label ="", value = None, single_image_mode = False, visible = False ):
@@ -7551,7 +7573,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             guide_custom_choices = model_def.get("guide_custom_choices", None)
             image_ref_choices = model_def.get("image_ref_choices", None)
 
-            # with gr.Column(visible= vace or phantom or hunyuan_video_custom or hunyuan_video_avatar or hunyuan_video_custom_edit or t2v or standin or ltxv or infinitetalk or recammaster or (flux or qwen ) and model_reference_image and image_mode_value >=1) as video_prompt_column: 
             with gr.Column(visible= guide_preprocessing is not None or mask_preprocessing is not None or guide_custom_choices is not None or image_ref_choices is not None) as video_prompt_column: 
                 video_prompt_type_value= ui_defaults.get("video_prompt_type","")
                 video_prompt_type = gr.Text(value= video_prompt_type_value, visible= False)
@@ -7935,10 +7956,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     choices= sample_solver_choices, visible= True, label= "Sampler Solver / Scheduler"
                                 )
                             flow_shift = gr.Slider(1.0, 25.0, value=ui_defaults.get("flow_shift",3), step=0.1, label="Shift Scale", visible = not image_outputs) 
-
-                        with gr.Row(visible = vace) as control_net_weights_row:
-                            control_net_weight = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight",1), step=0.1, label="Control Net Weight #1", visible=vace)
-                            control_net_weight2 = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.1, label="Control Net Weight #2", visible=vace)
+                        control_net_weight_alt_name = model_def.get("control_net_weight_alt_name", "")
+                        with gr.Row(visible = vace or len(control_net_weight_alt_name) >0 ) as control_net_weights_row:
+                            control_net_weight = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight",1), step=0.1, label="Vace Weight #1", visible=vace)
+                            control_net_weight2 = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.1, label="Vace Weight #2", visible=vace)
+                            control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.1, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0)
                         negative_prompt = gr.Textbox(label="Negative Prompt (ignored if no Guidance that is if CFG = 1)", value=ui_defaults.get("negative_prompt", ""), visible = not (hunyuan_t2v or hunyuan_i2v or no_negative_prompt)  )
                         filename = gr.Textbox(label="Output File Name", value=ui_defaults.get("filename", ""))
                         with gr.Column(visible = vace or t2v or test_class_i2v(model_type)) as NAG_col:
@@ -8126,7 +8148,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             with gr.Row():
                                 cfg_zero_step = gr.Slider(-1, 39, value=ui_defaults.get("cfg_zero_step",-1), step=1, label="CFG Zero below this Layer (Extra Process)", visible = any_cfg_zero) 
 
-                        with gr.Column(visible = (vace or t2v or standin) and image_outputs) as min_frames_if_references_col:
+                        with gr.Column(visible = v2i_switch_supported and image_outputs) as min_frames_if_references_col:
                             gr.Markdown("<B>Generating a single Frame alone may not be sufficient to preserve Reference Image Identity / Control Image Information or simply to get a good Image Quality. A workaround is to generate a short Video and keep the First Frame.")
                             min_frames_if_references = gr.Dropdown(
                                 choices=[

@@ -3192,17 +3192,52 @@ def abort_generation(state):
         return gr.Button(interactive=  True)
 
 
+def cleanup_missing_files(gen):
+    file_list = gen.get("file_list", [])
+    file_settings_list = gen.get("file_settings_list", [])
+
+    if not file_list:
+        return 0
+
+    original_count = len(file_list)
+
+    valid_items = [
+        (file_path, file_settings_list[i] if i < len(file_settings_list) else None)
+        for i, file_path in enumerate(file_list)
+        if os.path.exists(file_path)
+    ]
+
+    removed_count = original_count - len(valid_items)
+
+    if removed_count > 0:
+        print(f"Gallery refresh: Removed {removed_count} missing file(s) from view.")
+        if valid_items:
+            gen["file_list"], gen["file_settings_list"] = zip(*valid_items)
+            gen["file_list"] = list(gen["file_list"])
+            gen["file_settings_list"] = list(gen["file_settings_list"])
+        else:
+            gen["file_list"] = []
+            gen["file_settings_list"] = []
+
+    return removed_count
+
 
 def refresh_gallery(state): #, msg
     gen = get_gen_info(state)
 
-    # gen["last_msg"] = msg
-    file_list = gen.get("file_list", None)      
-    choice = gen.get("selected",0)
+    # Clean up any missing files first
+    cleanup_missing_files(gen)
+
+    # Now get the cleaned file list
+    file_list = gen.get("file_list", [])
+    choice = gen.get("selected", 0)
     header_text = gen.get("header_text", "")
     in_progress = "in_progress" in gen
-    if gen.get("last_selected", True) and file_list is not None:
-        choice = max(len(file_list) - 1,0)  
+    if gen.get("last_selected", True) and file_list:
+        choice = max(len(file_list) - 1, 0)
+
+    # Ensure choice is valid after cleanup
+    choice = min(choice, len(file_list) - 1 if file_list else 0)
 
     queue = gen.get("queue", [])
     abort_interactive = not gen.get("abort", False)
@@ -3329,6 +3364,10 @@ def select_video(state, input_file_list, event_data: gr.EventData):
     if len(file_list) > 0:
         configs = file_settings_list[choice]
         file_name = file_list[choice]
+        if not os.path.exists(file_name):
+            gr.Warning(f"File not found: {os.path.basename(file_name)}. It may have been moved or deleted.")
+            visible = False
+            return choice, get_default_video_info(), gr.update(visible=visible), gr.update(visible=visible), gr.update(visible=visible) , gr.update(visible=visible)
         values = [  os.path.basename(file_name)]
         labels = [ "File Name"]
         misc_values= []

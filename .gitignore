@@ -41,3 +41,7 @@ gradio_outputs/
 ckpts/
 loras/
 loras_i2v/
+
+settings/
+
+wgp_config.json

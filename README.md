@@ -13,22 +13,47 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 - Auto download of the required model adapted to your specific architecture
 - Tools integrated to facilitate Video Generation : Mask Editor, Prompt Enhancer, Temporal and Spatial Generation, MMAudio, Video Browser, Pose / Depth / Flow extractor
 - Loras Support to customize each model
-- Queuing system : make your shopping list of videos to generate and come back later 
+- Queuing system : make your shopping list of videos to generate and come back later
 
 **Discord Server to get Help from Other Users and show your Best Videos:** https://discord.gg/g7efUW9jGV
 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
 ## 🔥 Latest Updates : 
-### September 23 2025: WanGP v8.7 - Here Are Two New Contenders in the Vace Arena !
+### September 30 2025: WanGP v8.9 - Combinatorics
 
-So in today's release you will find two Wannabe Vace that covers each only a subset of Vace features but offers some interesting advantages:
-- **Wan 2.2 Animate**: this model is specialized in *Body Motion* and *Facial Motion tranfers*. It does that very well. You can use this model to either *Replace* a person in an in Video or *Animate* the person of your choice using an existing *Pose Video* (remember *Animate Anyone* ?). By default it will keep the original soundtrack. *Wan 2.2 Animate* seems to be under the hood a derived i2v model and should support the corresponding Loras Accelerators (for instance *FusioniX t2v*). Also as a WanGP exclusivity, you will find support for *Outpainting*.
+This new version of WanGP introduces **Wan 2.1 Lynx** the best Control Net so far to transfer *Facial Identity*. You will be amazed to recognize your friends even with a completely different hair style. Congrats to the *Byte Dance team* for this achievement. Lynx works quite with well *Fusionix t2v* 10 steps.
 
-In order to use Wan 2.2 Animate you will need first to stop by the *Mat Anyone* embedded tool, to extract the Video Mask of the person from which you want to extract the motion.
+*WanGP 8.9* also illustrate how existing WanGP features can be easily combined with new models. For instance with *Lynx* you will get out of the box *Video to Video* and *Image/Text to Image*.
 
-- **Lucy Edit**: this one claims to be a *Nano Banana* for Videos. Give it a video and asks it to change it (it is specialized in clothes changing) and voila ! The nice thing about it is that is it based on the *Wan 2.2 5B* model and therefore is very fast especially if you the *FastWan* finetune that is also part of the package. 
+Another fun combination is *Vace* + *Lynx*, which works much better than *Vace StandIn*. I have added sliders to change the weight of Vace & Lynx to allow you to tune the effects.
 
+
+### September 28 2025: WanGP v8.76 - ~~Here Are Two Three New Contenders in the Vace Arena !~~ The Never Ending Release 
+
+So in ~~today's~~ this release you will find two Wannabe Vace that covers each only a subset of Vace features but offers some interesting advantages:
+- **Wan 2.2 Animate**: this model is specialized in *Body Motion* and *Facial Motion transfers*. It does that very well. You can use this model to either *Replace* a person in an in Video or *Animate* the person of your choice using an existing *Pose Video* (remember *Animate Anyone* ?). By default it will keep the original soundtrack. *Wan 2.2 Animate* seems to be under the hood a derived i2v model and should support the corresponding Loras Accelerators (for instance *FusioniX t2v*). Also as a WanGP exclusivity, you will find support for *Outpainting*.
+
+In order to use Wan 2.2 Animate you will need first to stop by the *Mat Anyone* embedded tool, to extract the *Video Mask* of the person from which you want to extract the motion.
+
+With version WanGP 8.74, there is an extra option that allows you to apply *Relighting* when Replacing a person. Also, you can now Animate a person without providing a Video Mask to target the source of the motion (with the risk it will be less precise) 
+
+For those of you who have a mask halo effect when Animating a character I recommend trying *SDPA attention* and to use the *FusioniX i2v* lora. If this issue persists (this will depend on the control video) you have now a choice of the two *Animate Mask Options* in *WanGP 8.76*. The old masking option which was a WanGP exclusive has been renamed *See Through Mask* because the background behind the animated character was preserved but this creates sometime visual artifacts. The new option which has the shorter name is what you may find elsewhere online. As it uses internally a much larger mask, there is no halo. However the immediate background behind the character is not preserved and may end completely different.
+
+- **Lucy Edit**: this one claims to be a *Nano Banana* for Videos. Give it a video and asks it to change it (it is specialized in clothes changing) and voila ! The nice thing about it is that is it based on the *Wan 2.2 5B* model and therefore is very fast especially if you the *FastWan* finetune that is also part of the package.
+
+Also because I wanted to spoil you:
+- **Qwen Edit Plus**: also known as the *Qwen Edit 25th September Update* which is specialized in combining multiple Objects / People. There is also a new support for *Pose transfer* & *Recolorisation*. All of this made easy to use in WanGP. You will find right now only the quantized version since HF crashes when uploading the unquantized version.
+
+- **T2V Video 2 Video Masking**: ever wanted to apply a Lora, a process (for instance Upsampling) or a Text Prompt on only a (moving) part of a Source Video. Look no further, I have added *Masked Video 2 Video* (which works also in image2image) in the *Text 2 Video* models. As usual you just need to use *Matanyone* to creatre the mask.
+
+
+*Update 8.71*: fixed Fast Lucy Edit that didnt contain the lora
+*Update 8.72*: shadow drop of Qwen Edit Plus
+*Update 8.73*: Qwen Preview & InfiniteTalk Start image 
+*Update 8.74*: Animate Relighting / Nomask mode , t2v Masked Video to Video  
+*Update 8.75*: REDACTED  
+*Update 8.76*: Alternate Animate masking that fixes the mask halo effect that some users have    
 
 ### September 15 2025: WanGP v8.6 - Attack of the Clones
 
@@ -110,7 +135,9 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 
 ## 🚀 Quick Start
 
-**One-click installation:** Get started instantly with [Pinokio App](https://pinokio.computer/)
+**One-click installation:** 
+- Get started instantly with [Pinokio App](https://pinokio.computer/)
+- Use Redtash1 [One Click Install with Sage](https://github.com/Redtash1/Wan2GP-Windows-One-Click-Install-With-Sage)
 
 **Manual installation:**
 ```bash
@@ -124,8 +151,7 @@ pip install -r requirements.txt
 
 **Run the application:**
 ```bash
-python wgp.py  # Text-to-video (default)
-python wgp.py --i2v  # Image-to-video
+python wgp.py
 ```
 
 **Update the application:**
@@ -136,6 +162,32 @@ git pull
 pip install -r requirements.txt
 ```
 
+## 🐳 Docker:
+
+**For Debian-based systems (Ubuntu, Debian, etc.):**
+
+```bash
+./run-docker-cuda-deb.sh
+```
+
+This automated script will:
+
+- Detect your GPU model and VRAM automatically
+- Select optimal CUDA architecture for your GPU
+- Install NVIDIA Docker runtime if needed
+- Build a Docker image with all dependencies
+- Run WanGP with optimal settings for your hardware
+
+**Docker environment includes:**
+
+- NVIDIA CUDA 12.4.1 with cuDNN support
+- PyTorch 2.6.0 with CUDA 12.4 support
+- SageAttention compiled for your specific GPU architecture
+- Optimized environment variables for performance (TF32, threading, etc.)
+- Automatic cache directory mounting for faster subsequent runs
+- Current directory mounted in container - all downloaded models, loras, generated videos and files are saved locally
+
+**Supported GPUs:** RTX 40XX, RTX 30XX, RTX 20XX, GTX 16XX, GTX 10XX, Tesla V100, A100, H100, and more.
 
 ## 📦 Installation
 
@@ -179,4 +231,4 @@ https://www.youtube.com/watch?v=T5jNiEhf9xk
 
 <p align="center">
 Made with ❤️ by DeepBeepMeep
-</p> 
+</p>

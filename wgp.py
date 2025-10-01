@@ -3191,19 +3191,19 @@ def refresh_gallery(state): #, msg
     gen = get_gen_info(state)
 
     # gen["last_msg"] = msg
-    file_list = gen.get("file_list", None)      
-    choice = gen.get("selected",0)
-    header_text = gen.get("header_text", "")
-    in_progress = "in_progress" in gen
-    if gen.get("last_selected", True) and file_list is not None:
-        choice = max(len(file_list) - 1,0)  
+    with lock:
+        file_list = gen.get("file_list", None)      
+        choice = gen.get("selected",0)
+        header_text = gen.get("header_text", "")
+        in_progress = "in_progress" in gen
+        if gen.get("last_selected", True) and file_list is not None:
+            choice = max(len(file_list) - 1,0)  
 
-    # Filter out files that don't exist to prevent Gradio errors
-    file_settings_list = gen.get("file_settings_list", [])
-    file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
-    # Update gen with filtered lists
-    if file_list is not None:
-        with lock:
+        # Filter out files that don't exist to prevent Gradio errors (inside lock to prevent race conditions)
+        file_settings_list = gen.get("file_settings_list", [])
+        file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
+        # Update gen with filtered lists (still inside same lock)
+        if file_list is not None:
             gen["file_list"] = file_list
             gen["file_settings_list"] = file_settings_list
 
@@ -6487,11 +6487,9 @@ def eject_video_from_gallery(state, input_file_list, choice):
         file_settings_list[:] = file_settings_list[:choice]
         file_settings_list.extend(extend_list)
         choice = min(choice, len(file_list))
-    
-    # Filter out files that don't exist to prevent Gradio errors
-    file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
-    
-    with lock:
+        
+        # Filter out files that don't exist to prevent Gradio errors (inside lock to prevent race conditions)
+        file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
         gen["file_list"] = file_list
         gen["file_settings_list"] = file_settings_list
     
@@ -6533,16 +6531,17 @@ def add_videos_to_gallery(state, input_file_list, choice, files_to_load):
         if invalid_files_count > 0:
             txt += f"Unable to add {invalid_files_count} files which were invalid. " if invalid_files_count > 1 else  f"Unable to add one file which was invalid."
         gr.Info(txt)
+    
     if choice != None and choice <= 0:
         choice = len(file_list)
-        gen["selected"] = choice
-    
-    # Filter out files that don't exist to prevent Gradio errors
-    file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
     
     with lock:
+        # Filter out files that don't exist to prevent Gradio errors (inside lock to prevent race conditions)
+        file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
         gen["file_list"] = file_list
         gen["file_settings_list"] = file_settings_list
+        if choice != None and choice <= 0:
+            gen["selected"] = choice
     
     return gr.Gallery(value = file_list, selected_index=choice, preview= True), gr.Files(value=[]),  gr.Tabs(selected="video_info")
 

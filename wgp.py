@@ -8644,7 +8644,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     is_visible = (k + 1) <= guidance_phases_val
                                     ui_updates.append(gr.update(visible=is_visible, value=phase_value))
                                     if is_visible:
-                                        phase_values_for_textbox.append(str(phase_value))
+                                        formatted_value = str(int(phase_value)) if phase_value.is_integer() else str(phase_value)
+                                        phase_values_for_textbox.append(formatted_value)
                                 
                                 if phase_values_for_textbox:
                                     lora_step_strings.append(";".join(phase_values_for_textbox))

@@ -3368,7 +3368,7 @@ def select_video(state, input_file_list, event_data: gr.EventData):
         # Check if file exists, if not return a safe default
         if not os.path.exists(file_name):
             gr.Warning(f"File not found: {os.path.basename(file_name)}")
-            return choice, get_default_video_info(), gr.Row(visible=False), gr.Row(visible=False), gr.update(), gr.update()
+            return choice, get_default_video_info(), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
         
         values = [  os.path.basename(file_name)]
         labels = [ "File Name"]
@@ -3390,7 +3390,7 @@ def select_video(state, input_file_list, event_data: gr.EventData):
                 nb_audio_tracks = extract_audio_tracks(file_name,query_only = True)
         except Exception as e:
             gr.Warning(f"Error reading file: {os.path.basename(file_name)}")
-            return choice, get_default_video_info(), gr.Row(visible=False), gr.Row(visible=False), gr.update(), gr.update()
+            return choice, get_default_video_info(), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
         if configs != None:
             video_model_name =  configs.get("type", "Unknown model")
             if "-" in video_model_name: video_model_name =  video_model_name[video_model_name.find("-")+2:] 

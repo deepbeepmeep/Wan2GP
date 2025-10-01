@@ -8,7 +8,8 @@ during sliding window generation to save disk space.
 import os
 
 
-def cleanup_previous_video(previous_video_path, file_list, file_settings_list, lock):
+def cleanup_previous_video(previous_video_path, file_list, file_settings_list, lock, 
+                          sliding_window=True, sliding_window_keep_only_longest=True):
     """
     Delete a previous video file and remove it from UI file lists.
     
@@ -17,11 +18,14 @@ def cleanup_previous_video(previous_video_path, file_list, file_settings_list, l
         file_list: List of file paths in UI preview
         file_settings_list: List of file settings in UI preview
         lock: Threading lock for safe list manipulation
+        sliding_window: Whether sliding window is enabled (default: True)
+        sliding_window_keep_only_longest: Whether cleanup is enabled (default: True)
         
     Returns:
         bool: True if cleanup was successful, False otherwise
     """
-    if previous_video_path is None:
+    # Check if cleanup should be performed
+    if not sliding_window or not sliding_window_keep_only_longest or previous_video_path is None:
         return False
         
     try:

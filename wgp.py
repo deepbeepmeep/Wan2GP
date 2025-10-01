@@ -5422,8 +5422,8 @@ def generate_video(
                     video_path = os.path.join(save_path, file_name)
                     
                     # Delete previous video if sliding_window_keep_only_longest is enabled
-                    if sliding_window and sliding_window_keep_only_longest and previous_video_path is not None:
-                        cleanup_previous_video(previous_video_path, file_list, file_settings_list, lock)
+                    cleanup_previous_video(previous_video_path, file_list, file_settings_list, lock, 
+                                         sliding_window, sliding_window_keep_only_longest)
                     
                     save_path_tmp = video_path[:-4] + "_tmp.mp4"
                     save_video( tensor=sample[None], save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None))
@@ -5454,8 +5454,8 @@ def generate_video(
 
                 else:
                     # Delete previous video if sliding_window_keep_only_longest is enabled
-                    if sliding_window and sliding_window_keep_only_longest and previous_video_path is not None:
-                        cleanup_previous_video(previous_video_path, file_list, file_settings_list, lock)
+                    cleanup_previous_video(previous_video_path, file_list, file_settings_list, lock, 
+                                         sliding_window, sliding_window_keep_only_longest)
                     
                     save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None))
 

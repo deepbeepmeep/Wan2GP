@@ -38,6 +38,7 @@ import typing
 import asyncio
 import inspect
 from shared.utils import prompt_parser
+from shared.utils.sliding_window_cleanup import cleanup_previous_video, should_cleanup_video, get_cleanup_status_text
 import base64
 import io
 from PIL import Image
@@ -563,7 +564,7 @@ def process_prompt_and_add_tasks(state, model_choice):
             full_video_length = video_length if video_source is None else video_length +  sliding_window_overlap -1
             extra = "" if full_video_length == video_length else f" including {sliding_window_overlap} added for Video Continuation"
             no_windows = compute_sliding_window_no(full_video_length, sliding_window_size, sliding_window_discard_last_frames, sliding_window_overlap)
-            cleanup_status = "Enabled" if server_config.get("sliding_window_keep_only_longest", False) else "Disabled"
+            cleanup_status = get_cleanup_status_text(server_config)
             gr.Info(f"The Number of Frames to generate ({video_length}{extra}) is greater than the Sliding Window Size ({sliding_window_size}), {no_windows} Windows will be generated. Video Cleanup: {cleanup_status}")
     if "recam" in model_filename:
         if video_guide == None:
@@ -5422,18 +5423,7 @@ def generate_video(
                     
                     # Delete previous video if sliding_window_keep_only_longest is enabled
                     if sliding_window and sliding_window_keep_only_longest and previous_video_path is not None:
-                        try:
-                            if os.path.isfile(previous_video_path):
-                                os.remove(previous_video_path)
-                                # Also remove from UI file list to prevent dead links in preview
-                                with lock:
-                                    if previous_video_path in file_list:
-                                        index = file_list.index(previous_video_path)
-                                        file_list.pop(index)
-                                        if index < len(file_settings_list):
-                                            file_settings_list.pop(index)
-                        except Exception as e:
-                            pass
+                        cleanup_previous_video(previous_video_path, file_list, file_settings_list, lock)
                     
                     save_path_tmp = video_path[:-4] + "_tmp.mp4"
                     save_video( tensor=sample[None], save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None))
@@ -5465,18 +5455,7 @@ def generate_video(
                 else:
                     # Delete previous video if sliding_window_keep_only_longest is enabled
                     if sliding_window and sliding_window_keep_only_longest and previous_video_path is not None:
-                        try:
-                            if os.path.isfile(previous_video_path):
-                                os.remove(previous_video_path)
-                                # Also remove from UI file list to prevent dead links in preview
-                                with lock:
-                                    if previous_video_path in file_list:
-                                        index = file_list.index(previous_video_path)
-                                        file_list.pop(index)
-                                        if index < len(file_settings_list):
-                                            file_settings_list.pop(index)
-                        except Exception as e:
-                            pass
+                        cleanup_previous_video(previous_video_path, file_list, file_settings_list, lock)
                     
                     save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None))
 
@@ -5530,7 +5509,7 @@ def generate_video(
                         file_settings_list.append(configs if no > 0 else configs.copy())
                 
                 # Update previous video path for cleanup in next iteration (only for videos, not images)
-                if sliding_window and sliding_window_keep_only_longest and not is_image:
+                if should_cleanup_video(sliding_window, sliding_window_keep_only_longest, is_image):
                     if isinstance(video_path, list):
                         # Handle case where video_path might be a list (for images)
                         previous_video_path = video_path[0] if len(video_path) > 0 else None

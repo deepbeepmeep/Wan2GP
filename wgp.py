@@ -1373,9 +1373,9 @@ def get_queue_table(queue):
                     num_steps,
                     start_img_md,
                     end_img_md,
-                    "⭱",
                     "↑",
                     "↓",
+                    "⭱",
                     "⭳",
                     "✖"
                     ])    
@@ -6835,19 +6835,19 @@ def handle_celll_selection(state, evt: gr.SelectData):
     row_index, col_index = evt.index
     cell_value = None
     if col_index in [6, 7, 8, 9, 10]:
-        if col_index == 6: cell_value = "⭱"
-        elif col_index == 7: cell_value = "↑"
-        elif col_index == 8: cell_value = "↓"
+        if col_index == 6: cell_value = "↑"
+        elif col_index == 7: cell_value = "↓"
+        elif col_index == 8: cell_value = "⭱"
         elif col_index == 9: cell_value = "⭳"
         elif col_index == 10: cell_value = "✖"
     if col_index == 6:
-        new_df_data = move_to_top(queue, [row_index])
-        return new_df_data, gr.update(), gr.update(visible=False)
-    elif col_index == 7:
         new_df_data = move_up(queue, [row_index])
         return new_df_data, gr.update(), gr.update(visible=False)
-    elif col_index == 8:
+    elif col_index == 7:
         new_df_data = move_down(queue, [row_index])
+        return new_df_data, gr.update(), gr.update(visible=False)
+    elif col_index == 8:
+        new_df_data = move_to_top(queue, [row_index])
         return new_df_data, gr.update(), gr.update(visible=False)
     elif col_index == 9:
         new_df_data = move_to_bottom(queue, [row_index])

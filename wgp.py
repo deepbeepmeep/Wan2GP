@@ -3365,8 +3365,9 @@ def select_video(state, input_file_list, event_data: gr.EventData):
         configs = file_settings_list[choice]
         file_name = file_list[choice]
         
-        # Check if file exists, if not return a safe default silently
+        # Check if file exists, if not return a safe default
         if not os.path.exists(file_name):
+            gr.Warning(f"File not found: {os.path.basename(file_name)}")
             return get_default_video_info(), gr.Row(visible=False), gr.Row(visible=False), gr.update(), gr.update()
         
         values = [  os.path.basename(file_name)]
@@ -3388,7 +3389,7 @@ def select_video(state, input_file_list, event_data: gr.EventData):
                 is_image = False
                 nb_audio_tracks = extract_audio_tracks(file_name,query_only = True)
         except Exception as e:
-            # Silently handle file errors
+            gr.Warning(f"Error reading file: {os.path.basename(file_name)}")
             return get_default_video_info(), gr.Row(visible=False), gr.Row(visible=False), gr.update(), gr.update()
         if configs != None:
             video_model_name =  configs.get("type", "Unknown model")

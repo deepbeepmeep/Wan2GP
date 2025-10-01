@@ -4218,11 +4218,8 @@ def edit_video(
     if audio_source is not None:
         audio_tracks = [audio_source]
 
-    with lock:
-        file_list = gen["file_list"]
-        file_settings_list = gen["file_settings_list"]
-
-
+    # Don't hold references to file_list - append directly to gen dicts to avoid stale references
+    # when filter_existing_files() creates new lists
 
     seed = set_seed(seed)
 
@@ -4314,8 +4311,8 @@ def edit_video(
             else:
                 print(f"Postprocessed video saved to Path: "+ new_video_path)
             with lock:
-                file_list.append(new_video_path)
-                file_settings_list.append(configs)
+                gen["file_list"].append(new_video_path)
+                gen["file_settings_list"].append(configs)
 
             if configs != None:    
                 from mutagen.mp4 import MP4
@@ -4638,10 +4635,8 @@ def generate_video(
     if mode.startswith("edit_"):
         edit_video(send_cmd, state, mode, video_source, seed, temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, MMAudio_setting, MMAudio_prompt, MMAudio_neg_prompt, repeat_generation, audio_source)
         return
-    with lock:
-        file_list = gen["file_list"]
-        file_settings_list = gen["file_settings_list"]
-
+    # Don't hold references to file_list - append directly to gen dicts to avoid stale references
+    # when filter_existing_files() creates new lists
 
     model_def = get_model_def(model_type) 
     is_image = image_mode > 0
@@ -5540,8 +5535,8 @@ def generate_video(
                     else:
                         print(f"New video saved to Path: "+ path)
                     with lock:
-                        file_list.append(path)
-                        file_settings_list.append(configs if no > 0 else configs.copy())
+                        gen["file_list"].append(path)
+                        gen["file_settings_list"].append(configs if no > 0 else configs.copy())
                     
                 # Play notification sound for single video
                 try:

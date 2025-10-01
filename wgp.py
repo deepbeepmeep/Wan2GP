@@ -3200,7 +3200,12 @@ def refresh_gallery(state): #, msg
 
     # Filter out files that don't exist to prevent Gradio errors
     file_settings_list = gen.get("file_settings_list", [])
-    file_list, file_settings_list, choice = filter_existing_files(gen, file_list, file_settings_list, choice)
+    file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
+    # Update gen with filtered lists
+    if file_list is not None:
+        with lock:
+            gen["file_list"] = file_list
+            gen["file_settings_list"] = file_settings_list
 
     queue = gen.get("queue", [])
     abort_interactive = not gen.get("abort", False)
@@ -3288,7 +3293,7 @@ def get_default_video_info():
     return "Please Select an Video / Image"    
 
 
-def filter_existing_files(gen, file_list, file_settings_list, choice):
+def filter_existing_files(file_list, file_settings_list, choice):
     """Filter out files that don't exist from the file list to prevent Gradio errors.
     Returns: (filtered_file_list, filtered_settings_list, adjusted_choice)
     """
@@ -3311,13 +3316,8 @@ def filter_existing_files(gen, file_list, file_settings_list, choice):
         elif choice is not None and i < choice:
             choice = max(0, choice - 1)
     
-    # Update gen dict if lists changed
+    # Adjust choice to be within bounds if lists changed
     if len(filtered_files) != len(file_list):
-        with lock:
-            gen["file_list"] = filtered_files
-            gen["file_settings_list"] = filtered_settings
-        
-        # Adjust choice to be within bounds
         if choice is not None and len(filtered_files) > 0:
             choice = min(choice, len(filtered_files) - 1)
         elif len(filtered_files) == 0:
@@ -6494,7 +6494,11 @@ def eject_video_from_gallery(state, input_file_list, choice):
         choice = min(choice, len(file_list))
     
     # Filter out files that don't exist to prevent Gradio errors
-    file_list, file_settings_list, choice = filter_existing_files(gen, file_list, file_settings_list, choice)
+    file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
+    
+    with lock:
+        gen["file_list"] = file_list
+        gen["file_settings_list"] = file_settings_list
     
     return gr.Gallery(value = file_list, selected_index= choice), gr.update() if len(file_list) >0 else get_default_video_info(), gr.Row(visible= len(file_list) > 0)
 
@@ -6539,7 +6543,11 @@ def add_videos_to_gallery(state, input_file_list, choice, files_to_load):
         gen["selected"] = choice
     
     # Filter out files that don't exist to prevent Gradio errors
-    file_list, file_settings_list, choice = filter_existing_files(gen, file_list, file_settings_list, choice)
+    file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
+    
+    with lock:
+        gen["file_list"] = file_list
+        gen["file_settings_list"] = file_settings_list
     
     return gr.Gallery(value = file_list, selected_index=choice, preview= True), gr.Files(value=[]),  gr.Tabs(selected="video_info")
 

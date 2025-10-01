@@ -32,11 +32,11 @@ from shared.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from .modules.posemb_layers import get_rotary_pos_embed, get_nd_rotary_pos_embed
 from shared.utils.vace_preprocessor import VaceVideoProcessor
 from shared.utils.basic_flowmatch import FlowMatchScheduler
+from shared.utils.lcm_scheduler import LCMScheduler
 from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
 from shared.utils.audio_video import save_video
 from mmgp import safetensors2
-from shared.utils.audio_video import save_video
 
 def optimized_scale(positive_flat, negative_flat):
 
@@ -286,7 +286,32 @@ class WanAny2V:
         msk = msk.view(1, msk.shape[1] // 4, 4, lat_h, lat_w)
         msk = msk.transpose(1,2)[0]
         return msk
-    
+
+    def encode_reference_images(self, ref_images, ref_prompt="image of a face", any_guidance= False, tile_size = None):
+        ref_images = [convert_image_to_tensor(img).unsqueeze(1).to(device=self.device, dtype=self.dtype) for img in ref_images]
+        shape = ref_images[0].shape
+        freqs = get_rotary_pos_embed( (len(ref_images) , shape[-2] // 8, shape[-1] // 8 )) 
+        # batch_ref_image: [B, C, F, H, W]
+        vae_feat = self.vae.encode(ref_images, tile_size = tile_size)
+        vae_feat = torch.cat( vae_feat, dim=1).unsqueeze(0)
+        if any_guidance:
+            vae_feat_uncond = self.vae.encode([ref_images[0] * 0], tile_size = tile_size) * len(ref_images)
+            vae_feat_uncond = torch.cat( vae_feat_uncond, dim=1).unsqueeze(0)
+        context = self.text_encoder([ref_prompt], self.device)[0].to(self.dtype)
+        context = torch.cat([context, context.new_zeros(self.model.text_len -context.size(0), context.size(1)) ]).unsqueeze(0) 
+        clear_caches()
+        get_cache("lynx_ref_buffer").update({ 0: {}, 1: {} })
+        ref_buffer = self.model(
+            pipeline =self,
+            x = [vae_feat, vae_feat_uncond] if any_guidance else [vae_feat],
+            context = [context, context] if any_guidance else [context], 
+            freqs= freqs,
+            t=torch.stack([torch.tensor(0, dtype=torch.float)]).to(self.device),
+            lynx_feature_extractor = True,
+        )
+        clear_caches()
+        return ref_buffer[0], (ref_buffer[1] if any_guidance else None)
+
     def generate(self,
         input_prompt,
         input_frames= None,
@@ -355,6 +380,7 @@ class WanAny2V:
         video_prompt_type= "",
         original_input_ref_images = [],
         face_arc_embeds = None,
+        control_scale_alt = 1.,
         **bbargs
                 ):
         
@@ -387,6 +413,17 @@ class WanAny2V:
                 sample_scheduler,
                 device=self.device,
                 sigmas=sampling_sigmas)
+        elif sample_solver == 'lcm':
+            # LCM + LTX scheduler: Latent Consistency Model with RectifiedFlow
+            # Optimized for Lightning LoRAs with ultra-fast 2-8 step inference
+            effective_steps = min(sampling_steps, 8)  # LCM works best with few steps
+            sample_scheduler = LCMScheduler(
+                num_train_timesteps=self.num_train_timesteps,
+                num_inference_steps=effective_steps,
+                shift=shift
+            )
+            sample_scheduler.set_timesteps(effective_steps, device=self.device, shift=shift)
+            timesteps = sample_scheduler.timesteps
         else:
             raise NotImplementedError(f"Unsupported Scheduler {sample_solver}")
         original_timesteps = timesteps
@@ -401,13 +438,15 @@ class WanAny2V:
         # Text Encoder
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
-        context = self.text_encoder([input_prompt], self.device)[0]
-        context_null = self.text_encoder([n_prompt], self.device)[0]
-        context = context.to(self.dtype)
-        context_null = context_null.to(self.dtype)
         text_len = self.model.text_len
-        context = torch.cat([context, context.new_zeros(text_len -context.size(0), context.size(1)) ]).unsqueeze(0) 
-        context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0) 
+        any_guidance_at_all = guide_scale > 1 or guide2_scale > 1 and guide_phases >=2 or guide3_scale > 1 and guide_phases >=3
+        context = self.text_encoder([input_prompt], self.device)[0].to(self.dtype)
+        context = torch.cat([context, context.new_zeros(text_len -context.size(0), context.size(1)) ]).unsqueeze(0)
+        if NAG_scale > 1 or any_guidance_at_all:      
+            context_null = self.text_encoder([n_prompt], self.device)[0].to(self.dtype)
+            context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0) 
+        else:
+            context_null = None
         if input_video is not None: height, width = input_video.shape[-2:]
 
         # NAG_prompt =  "static, low resolution, blurry"
@@ -423,13 +462,13 @@ class WanAny2V:
         # if NAG_scale > 1: context = torch.cat([context, context_NAG], dim=0)
         if self._interrupt: return None
 
-        vace = model_type in ["vace_1.3B","vace_14B", "vace_multitalk_14B", "vace_standin_14B"]
+        vace = model_type in ["vace_1.3B","vace_14B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"]
         phantom = model_type in ["phantom_1.3B", "phantom_14B"]
         fantasy = model_type in ["fantasy"]
         multitalk = model_type in ["multitalk", "infinitetalk", "vace_multitalk_14B", "i2v_2_2_multitalk"]
         infinitetalk = model_type in ["infinitetalk"]
         standin = model_type in ["standin", "vace_standin_14B"]
-        lynx = model_type in ["lynx_lite", "lynx_full", "vace_lynx_lite_14B", "vace_lynx_full_14B"]
+        lynx = model_type in ["lynx_lite", "lynx", "vace_lynx_lite_14B", "vace_lynx_14B"]
         recam = model_type in ["recam_1.3B"]
         ti2v = model_type in ["ti2v_2_2", "lucy_edit"]
         lucy_edit=  model_type in ["lucy_edit"]
@@ -651,7 +690,9 @@ class WanAny2V:
         if vace :
             # vace context encode
             input_frames = [input_frames.to(self.device)] +([] if input_frames2 is None else [input_frames2.to(self.device)])            
-            input_masks = [input_masks.to(self.device)] + ([] if input_masks2 is None else [input_masks2.to(self.device)])         
+            input_masks = [input_masks.to(self.device)] + ([] if input_masks2 is None else [input_masks2.to(self.device)])
+            if model_type in ["vace_lynx_14B"]:
+                input_ref_images = input_ref_masks = None          
             input_ref_images = None if input_ref_images is None else [ u.to(self.device) for u in input_ref_images]
             input_ref_masks = None if input_ref_masks is None else [ None if u is None else u.to(self.device) for u in input_ref_masks]
             ref_images_before = True
@@ -704,21 +745,36 @@ class WanAny2V:
         kwargs["freqs"] = freqs
 
         # Lynx
-        if lynx:
-            from  .lynx.resampler import Resampler
-            from accelerate import init_empty_weights
-            lynx_lite = model_type in ["lynx_lite", "vace_lynx_lite_14B"]
-            with init_empty_weights():
-                arc_resampler = Resampler( depth=4, dim=1280, dim_head=64, embedding_dim=512, ff_mult=4, heads=20, num_queries=16, output_dim=2048 if lynx_lite else 5120 )
-            offload.load_model_data(arc_resampler, os.path.join("ckpts", "wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"))
-            arc_resampler.to(self.device)
-            arcface_embed = face_arc_embeds[None,None,:].to(device=self.device, dtype=torch.float) 
-            ip_hidden_states = arc_resampler(arcface_embed).to(self.dtype)
-            ip_hidden_states_uncond = arc_resampler(torch.zeros_like(arcface_embed)).to(self.dtype)
-            arc_resampler = None
-            gc.collect()
-            torch.cuda.empty_cache()
-            kwargs["lynx_ip_scale"] = 1.
+        if lynx :
+            if original_input_ref_images is None or len(original_input_ref_images) == 0:
+                lynx = False
+            else:
+                from  .lynx.resampler import Resampler
+                from accelerate import init_empty_weights
+                lynx_lite = model_type in ["lynx_lite", "vace_lynx_lite_14B"]
+                ip_hidden_states = ip_hidden_states_uncond = None
+                if True:
+                    with init_empty_weights():
+                        arc_resampler = Resampler( depth=4, dim=1280, dim_head=64, embedding_dim=512, ff_mult=4, heads=20, num_queries=16, output_dim=2048 if lynx_lite else 5120 )
+                    offload.load_model_data(arc_resampler, os.path.join("ckpts", "wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"))
+                    arc_resampler.to(self.device)
+                    arcface_embed = face_arc_embeds[None,None,:].to(device=self.device, dtype=torch.float) 
+                    ip_hidden_states = arc_resampler(arcface_embed).to(self.dtype)
+                    ip_hidden_states_uncond = arc_resampler(torch.zeros_like(arcface_embed)).to(self.dtype)
+                arc_resampler = None
+                if not lynx_lite:
+                    standin_ref_pos = -1
+                    image_ref = original_input_ref_images[standin_ref_pos]
+                    from preprocessing.face_preprocessor  import FaceProcessor 
+                    face_processor = FaceProcessor()
+                    lynx_ref = face_processor.process(image_ref, resize_to = 256 )
+                    lynx_ref_buffer, lynx_ref_buffer_uncond = self.encode_reference_images([lynx_ref], tile_size=VAE_tile_size, any_guidance= any_guidance_at_all)
+                    lynx_ref = None
+                gc.collect()
+                torch.cuda.empty_cache()
+                vace_lynx = model_type in ["vace_lynx_14B"]
+                kwargs["lynx_ip_scale"] = control_scale_alt
+                kwargs["lynx_ref_scale"] = control_scale_alt
 
         #Standin
         if standin:
@@ -881,6 +937,9 @@ class WanAny2V:
                     "context" : [context, context_null],
                     "lynx_ip_embeds": [ip_hidden_states, ip_hidden_states_uncond]
                 }
+                if model_type in ["lynx", "vace_lynx_14B"]:
+                    gen_args["lynx_ref_buffer"] = [lynx_ref_buffer, lynx_ref_buffer_uncond]
+                    
             elif multitalk and audio_proj != None:
                 if guide_scale == 1:
                     gen_args = {

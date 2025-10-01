@@ -1375,8 +1375,8 @@ def get_queue_table(queue):
                     end_img_md,
                     "↑",
                     "↓",
-                    "⭱",
-                    "⭳",
+                    "⤊",
+                    "⤋",
                     "✖"
                     ])    
     return data
@@ -6837,8 +6837,8 @@ def handle_celll_selection(state, evt: gr.SelectData):
     if col_index in [6, 7, 8, 9, 10]:
         if col_index == 6: cell_value = "↑"
         elif col_index == 7: cell_value = "↓"
-        elif col_index == 8: cell_value = "⭱"
-        elif col_index == 9: cell_value = "⭳"
+        elif col_index == 8: cell_value = "⤊"
+        elif col_index == 9: cell_value = "⤋"
         elif col_index == 10: cell_value = "✖"
     if col_index == 6:
         new_df_data = move_up(queue, [row_index])
@@ -8386,7 +8386,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         queue_df = gr.DataFrame(
                             headers=["Qty","Prompt", "Length","Steps","", "", "", "", "", "", ""],
                             datatype=[ "str","markdown","str", "markdown", "markdown", "markdown", "str", "str", "str", "str", "str"],
-                            column_widths= ["5%", None, "7%", "7%", "10%", "10%", "3%", "3%", "3%", "3%", "3%"],
+                            column_widths= ["5%", None, "7%", "7%", "10%", "10%", "3%", "3%", "30", "30", "30"],
                             interactive=False,
                             col_count=(11, "fixed"),
                             wrap=True,

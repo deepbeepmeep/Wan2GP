@@ -775,6 +775,36 @@ def move_down(queue, selected_indices):
 
     return update_queue_data(queue)
 
+def move_to_top(queue, selected_indices):
+    if not selected_indices or len(selected_indices) == 0:
+        return update_queue_data(queue)
+    idx = selected_indices[0]
+    if isinstance(idx, list):
+        idx = idx[0]
+    idx = int(idx)
+    with lock:
+        idx += 1  # Account for current generation at index 0
+        if idx > 1:  # Only move if not already at top (position 1)
+            item = queue.pop(idx)
+            queue.insert(1, item)
+    
+    return update_queue_data(queue)
+
+def move_to_bottom(queue, selected_indices):
+    if not selected_indices or len(selected_indices) == 0:
+        return update_queue_data(queue)
+    idx = selected_indices[0]
+    if isinstance(idx, list):
+        idx = idx[0]
+    idx = int(idx)
+    with lock:
+        idx += 1  # Account for current generation at index 0
+        if idx < len(queue) - 1:  # Only move if not already at bottom
+            item = queue.pop(idx)
+            queue.append(item)
+    
+    return update_queue_data(queue)
+
 def remove_task(queue, selected_indices):
     if not selected_indices or len(selected_indices) == 0:
         return update_queue_data(queue)
@@ -1343,8 +1373,10 @@ def get_queue_table(queue):
                     num_steps,
                     start_img_md,
                     end_img_md,
+                    "⭱",
                     "↑",
                     "↓",
+                    "⭳",
                     "✖"
                     ])    
     return data
@@ -6802,17 +6834,25 @@ def handle_celll_selection(state, evt: gr.SelectData):
         return gr.update(), gr.update(), gr.update(visible=False)
     row_index, col_index = evt.index
     cell_value = None
-    if col_index in [6, 7, 8]:
-        if col_index == 6: cell_value = "↑"
-        elif col_index == 7: cell_value = "↓"
-        elif col_index == 8: cell_value = "✖"
+    if col_index in [6, 7, 8, 9, 10]:
+        if col_index == 6: cell_value = "⭱"
+        elif col_index == 7: cell_value = "↑"
+        elif col_index == 8: cell_value = "↓"
+        elif col_index == 9: cell_value = "⭳"
+        elif col_index == 10: cell_value = "✖"
     if col_index == 6:
-        new_df_data = move_up(queue, [row_index])
+        new_df_data = move_to_top(queue, [row_index])
         return new_df_data, gr.update(), gr.update(visible=False)
     elif col_index == 7:
-        new_df_data = move_down(queue, [row_index])
+        new_df_data = move_up(queue, [row_index])
         return new_df_data, gr.update(), gr.update(visible=False)
     elif col_index == 8:
+        new_df_data = move_down(queue, [row_index])
+        return new_df_data, gr.update(), gr.update(visible=False)
+    elif col_index == 9:
+        new_df_data = move_to_bottom(queue, [row_index])
+        return new_df_data, gr.update(), gr.update(visible=False)
+    elif col_index == 10:
         new_df_data = remove_task(queue, [row_index])
         gen["prompts_max"] = gen.get("prompts_max",0) - 1
         update_status(state)
@@ -8344,11 +8384,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 with gr.Accordion("Queue Management", open=False) as queue_accordion:
                     with gr.Row( ): 
                         queue_df = gr.DataFrame(
-                            headers=["Qty","Prompt", "Length","Steps","", "", "", "", ""],
-                            datatype=[ "str","markdown","str", "markdown", "markdown", "markdown", "str", "str", "str"],
-                            column_widths= ["5%", None, "7%", "7%", "10%", "10%", "3%", "3%", "34"],
+                            headers=["Qty","Prompt", "Length","Steps","", "", "", "", "", "", ""],
+                            datatype=[ "str","markdown","str", "markdown", "markdown", "markdown", "str", "str", "str", "str", "str"],
+                            column_widths= ["5%", None, "7%", "7%", "10%", "10%", "3%", "3%", "3%", "3%", "3%"],
                             interactive=False,
-                            col_count=(9, "fixed"),
+                            col_count=(11, "fixed"),
                             wrap=True,
                             value=[],
                             line_breaks= True,

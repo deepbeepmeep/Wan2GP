@@ -9768,6 +9768,56 @@ def create_ui():
         transition: visibility 0s linear 1s, opacity 0.3s linear 1s; /* 1s delay before showing */
         }
         .btn_centered {margin-top:10px; text-wrap-mode: nowrap;}
+
+        #lora_builder_main_group {
+            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;
+        }
+
+        .lora-main-container {
+            border: 1px solid var(--border-color-primary);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px !important;
+            background-color: var(--background-fill-secondary);
+        }
+
+        .lora-main-container > .gr-row {
+            margin-bottom: 8px;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .lora-step-split-container {
+            border: 1px dashed var(--border-color-accent);
+            border-radius: 6px;
+            padding: 10px;
+            margin-top: 8px;
+        }
+
+        .lora-main-container button {
+            padding: 4px 12px !important;
+            font-size: 1.2em !important;
+            min-width: fit-content !important;
+            flex-grow: 0;
+            background: var(--button-secondary-background-fill);
+            color: var(--button-secondary-text-color);
+            border: 1px solid var(--button-secondary-border-color);
+        }
+        
+        .lora-main-container button:hover {
+            background: var(--button-secondary-background-fill-hover);
+            border-color: var(--button-secondary-border-color-hover);
+        }
+
+        .lora-step-split-container > .gr-row {
+            gap: 16px;
+            align-items: end; 
+        }
+
+        .lora-step-split-container .form {
+            flex-grow: 1;
+        }
+
     """
     UI_theme = server_config.get("UI_theme", "default")
     UI_theme  = args.theme if len(args.theme) > 0 else UI_theme

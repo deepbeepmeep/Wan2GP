@@ -3484,8 +3484,9 @@ def select_video(state, input_file_list, event_data: gr.EventData):
             labels += [ "Resolution", video_length_label, "Seed", video_guidance_label, "Audio Guidance Scale", "Shift Scale", "Num Inference steps"]
             video_subseed = configs.get("subseed", -1)
             video_subseed_strength = configs.get("subseed_strength", 0.0)
-            if video_subseed_strength > 0 and video_subseed >= 0:
-                values += [f"{video_subseed} (strength: {video_subseed_strength})"]
+            if video_subseed_strength > 0:
+                subseed_display = video_subseed if video_subseed >= 0 else "random"
+                values += [f"{subseed_display} (strength: {video_subseed_strength})"]
                 labels += ["Variation Seed"]
             video_negative_prompt = configs.get("negative_prompt", "")
             if len(video_negative_prompt) > 0:
@@ -4855,9 +4856,13 @@ def generate_video(
         current_video_length = min(current_video_length, length)
 
 
-    seed = set_seed(seed)
-    # Initialize subseed (randomizes if needed and tracks original value)
+    # Initialize subseed BEFORE setting main seed to ensure independent randomization
+    # (set_seed will seed the random module, making subsequent random calls deterministic)
     subseed, original_subseed = initialize_subseed(subseed, subseed_strength)
+    print(f"[Subseed Init] Input: subseed={original_subseed}, strength={subseed_strength} → Using: subseed={subseed}")
+    
+    # Now set the main seed (this seeds random module for reproducibility)
+    seed = set_seed(seed)
     
     torch.set_grad_enabled(False) 
     os.makedirs(save_path, exist_ok=True)
@@ -5470,9 +5475,12 @@ def generate_video(
                     })
                 # Preserve original subseed value (-1) in metadata if it was random
                 # This ensures next generation will also randomize instead of reusing
+                print(f"[Subseed Metadata] original_subseed={original_subseed}, inputs['subseed'] before={inputs.get('subseed', 'MISSING')}, inputs['subseed_strength']={inputs.get('subseed_strength', 'MISSING')}")
                 if original_subseed < 0:
+                    print(f"[Subseed Metadata] Preserving original random flag: changing {inputs['subseed']} → {original_subseed}")
                     inputs["subseed"] = original_subseed
                 configs = prepare_inputs_dict("metadata", inputs, model_type)
+                print(f"[Subseed Metadata] After prepare_inputs_dict: configs has subseed={configs.get('subseed', 'MISSING')}, subseed_strength={configs.get('subseed_strength', 'MISSING')}")
                 if sliding_window: configs["window_no"] = window_no
                 configs["prompt"] = "\n".join(original_prompts)
                 if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0:
@@ -5514,9 +5522,9 @@ def generate_video(
 
                 send_cmd("output")
 
-        seed = set_seed(-1)
-        # Regenerate subseed for next iteration if original was -1
+        # Regenerate subseed BEFORE setting new seed to ensure independent randomization
         subseed = regenerate_subseed(original_subseed, subseed_strength)
+        seed = set_seed(-1)
     clear_status(state)
     trans.cache = None
     offload.unload_loras_from_model(trans)
@@ -8403,7 +8411,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab, PP_MMAudio_row, PP_custom_audio_row, 
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
-                                      min_frames_if_references_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v] + image_start_extra + image_end_extra + image_refs_extra #  presets_column,
+                                      min_frames_if_references_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, seed_extras_checkbox] + image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()
             gen_inputs = [state_dict if k=="state" else locals_dict[k]  for k in inputs_names] + [state_dict] + extra_inputs

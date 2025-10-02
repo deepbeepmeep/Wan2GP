@@ -27,7 +27,8 @@ from .modules.vae2_2 import Wan2_2_VAE
 
 from .modules.clip import CLIPModel
 from shared.utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
-                               get_sampling_sigmas, retrieve_timesteps)
+                              get_sampling_sigmas, retrieve_timesteps)
+from shared.utils.seed_management import create_generator, create_subseed_generator, apply_subseed_variation
 from shared.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from .modules.posemb_layers import get_rotary_pos_embed, get_nd_rotary_pos_embed
 from shared.utils.vace_preprocessor import VaceVideoProcessor
@@ -430,14 +431,8 @@ class WanAny2V:
             raise NotImplementedError(f"Unsupported Scheduler {sample_solver}")
         original_timesteps = timesteps
 
-        seed_g = torch.Generator(device=self.device)
-        seed_g.manual_seed(seed)
-        
-        # Initialize subseed generator if subseed variation is enabled
-        subseed_g = None
-        if subseed_strength > 0 and subseed >= 0:
-            subseed_g = torch.Generator(device=self.device)
-            subseed_g.manual_seed(subseed)
+        seed_g = create_generator(seed, self.device)
+        subseed_g = create_subseed_generator(subseed, subseed_strength, self.device)
         
         image_outputs = image_mode == 1
         kwargs = {'pipeline': self, 'callback': callback}
@@ -866,11 +861,7 @@ class WanAny2V:
             scheduler_kwargs = {} if isinstance(sample_scheduler, FlowMatchScheduler) else {"generator": seed_g}
         # b, c, lat_f, lat_h, lat_w
         latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=seed_g)
-        
-        # Apply subseed variation if enabled
-        if subseed_g is not None and subseed_strength > 0:
-            sub_latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=subseed_g)
-            latents = latents * (1.0 - subseed_strength) + sub_latents * subseed_strength
+        latents = apply_subseed_variation(latents, subseed_g, subseed_strength)
         
         if "G" in video_prompt_type: randn = latents
         if apg_switch != 0:  

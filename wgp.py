@@ -4125,15 +4125,7 @@ def get_available_filename(target_path, video_source, suffix = "", force_extensi
             return full_path
         counter += 1
 
-def set_seed(seed):
-    import random
-    seed = random.randint(0, 99999999) if seed == None or seed < 0 else seed
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    return seed
+from shared.utils.seed_management import set_seed, initialize_subseed, regenerate_subseed
 
 def edit_video(
                 send_cmd,
@@ -4864,12 +4856,8 @@ def generate_video(
 
 
     seed = set_seed(seed)
-    # Track if subseed should be randomized for each repeat generation
-    original_subseed = subseed
-    # Randomize subseed if it's -1 AND subseed_strength > 0 (only randomize if it will be used)
-    if subseed < 0 and subseed_strength > 0:
-        import random
-        subseed = random.randint(0, 99999999)
+    # Initialize subseed (randomizes if needed and tracks original value)
+    subseed, original_subseed = initialize_subseed(subseed, subseed_strength)
     
     torch.set_grad_enabled(False) 
     os.makedirs(save_path, exist_ok=True)
@@ -5524,9 +5512,7 @@ def generate_video(
 
         seed = set_seed(-1)
         # Regenerate subseed for next iteration if original was -1
-        if original_subseed < 0 and subseed_strength > 0:
-            import random
-            subseed = random.randint(0, 99999999)
+        subseed = regenerate_subseed(original_subseed, subseed_strength)
     clear_status(state)
     trans.cache = None
     offload.unload_loras_from_model(trans)

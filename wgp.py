@@ -4864,8 +4864,10 @@ def generate_video(
 
 
     seed = set_seed(seed)
-    # Randomize subseed if it's -1 (like we do for main seed)
-    if subseed < 0:
+    # Track if subseed should be randomized for each repeat generation
+    original_subseed = subseed
+    # Randomize subseed if it's -1 AND subseed_strength > 0 (only randomize if it will be used)
+    if subseed < 0 and subseed_strength > 0:
         import random
         subseed = random.randint(0, 99999999)
     
@@ -5521,6 +5523,10 @@ def generate_video(
                 send_cmd("output")
 
         seed = set_seed(-1)
+        # Regenerate subseed for next iteration if original was -1
+        if original_subseed < 0 and subseed_strength > 0:
+            import random
+            subseed = random.randint(0, 99999999)
     clear_status(state)
     trans.cache = None
     offload.unload_loras_from_model(trans)
@@ -7920,7 +7926,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             seed = gr.Slider(-1, 999999999, value=ui_defaults.get("seed",-1), step=1, label="Seed (-1 for random)", scale=2) 
                             random_seed_btn = gr.Button("🎲", size="sm", min_width=40, scale=0)
                             reuse_seed_btn = gr.Button("♻️", size="sm", min_width=40, scale=0)
-                            seed_extras_checkbox = gr.Checkbox(label="Extra", value=False, scale=0, min_width=60)
                             guidance_phases_value = ui_defaults.get("guidance_phases", 1) 
                             guidance_phases = gr.Dropdown(
                                 choices=[
@@ -7932,6 +7937,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 visible= guidance_max_phases >=2,
                                 interactive = not model_def.get("lock_guidance_phases", False)
                             )
+                        with gr.Row():
+                            seed_extras_checkbox = gr.Checkbox(label="Extra", value=False, scale=0, min_width=60)
                         with gr.Row(visible=False) as seed_extras_row:
                             subseed = gr.Slider(-1, 999999999, value=ui_defaults.get("subseed", -1), step=1, label="Variation Seed (-1 for random)", scale=2)
                             random_subseed_btn = gr.Button("🎲", size="sm", min_width=40, scale=0)

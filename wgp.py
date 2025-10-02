@@ -7908,13 +7908,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_audio_guidance = fantasy or multitalk
                 with gr.Tab("General"):
                     with gr.Column():
-                        with gr.Row():
-                            with gr.Group():
-                                with gr.Row():
-                                    seed = gr.Slider(-1, 999999999, value=ui_defaults.get("seed",-1), step=1, label="Seed (-1 for random)", scale=2)
-                                    random_seed_btn = gr.Button("🎲", size="sm", min_width=40, scale=0)
-                                    reuse_seed_btn = gr.Button("♻️", size="sm", min_width=40, scale=0)
-                                seed_extras_checkbox = gr.Checkbox(label="Extra Seed Options", value=False)
+                        with gr.Row():                        
+                            seed = gr.Slider(-1, 999999999, value=ui_defaults.get("seed",-1), step=1, label="Seed (-1 for random)", scale=2)
+                            random_seed_btn = gr.Button("🎲", size="sm", min_width=40, scale=0)
+                            reuse_seed_btn = gr.Button("♻️", size="sm", min_width=40, scale=0)
                             guidance_phases_value = ui_defaults.get("guidance_phases", 1) 
                             guidance_phases = gr.Dropdown(
                                 choices=[
@@ -7926,6 +7923,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 visible= guidance_max_phases >=2,
                                 interactive = not model_def.get("lock_guidance_phases", False)
                             )
+                        seed_extras_checkbox = gr.Checkbox(label="Extra Seed Options", value=False)
                         with gr.Row(visible=False) as seed_extras_row:
                             subseed = gr.Slider(-1, 999999999, value=ui_defaults.get("subseed", -1), step=1, label="Variation Seed (-1 for random)", scale=2)
                             random_subseed_btn = gr.Button("🎲", size="sm", min_width=40, scale=0)

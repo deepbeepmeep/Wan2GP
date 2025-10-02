@@ -6561,6 +6561,9 @@ def use_video_settings(state, input_file_list, choice):
             defaults = get_model_settings(state, model_type) 
             defaults = get_default_settings(model_type) if defaults == None else defaults
             defaults.update(configs)
+            # For reproducibility: use the actual subseed that was used, not the random flag
+            if "subseed_used" in configs and configs.get("subseed_strength", 0.0) > 0:
+                defaults["subseed"] = configs["subseed_used"]
             prompt = configs.get("prompt", "")
             set_model_settings(state, model_type, defaults)
             if has_image_file_extension(file_name):
@@ -6629,6 +6632,9 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
         defaults = get_model_settings(state, model_type) 
         defaults = get_default_settings(model_type) if defaults == None else defaults
         defaults.update(configs)
+        # For reproducibility: use the actual subseed that was used, not the random flag
+        if "subseed_used" in configs and configs.get("subseed_strength", 0.0) > 0:
+            defaults["subseed"] = configs["subseed_used"]
         configs = defaults
     configs["model_type"] = model_type
 

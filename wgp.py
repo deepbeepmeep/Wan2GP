@@ -8089,38 +8089,39 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             allow_custom_value= True,
                         )
                         loras_multipliers = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str, elem_id="loras_multipliers_textbox", interactive=True)
-                        MAX_LORA_SLIDERS = 15
-                        MAX_STEP_SPLITS = 5
-                        lora_slider_ui_groups = []
-                        if not update_form:
-                            with gr.Group(elem_id="lora_builder_main_group"):
-                                for i in range(MAX_LORA_SLIDERS):
-                                    with gr.Column(visible=False, elem_classes="lora-main-container") as lora_main_group:
-                                        with gr.Row(variant="compact"):
-                                            lora_name_md = gr.Markdown()
-                                            split_steps_btn = gr.Button("Split Steps")
-                                        
-                                        split_groups = []
-                                        for j in range(MAX_STEP_SPLITS):
-                                            with gr.Column(visible=False, elem_classes="lora-step-split-container") as lora_step_group:
-                                                step_range_md = gr.Markdown()
-                                                with gr.Row():
-                                                    phase1_slider = gr.Slider(minimum=0.0, maximum=1.0, value=1.0, step=0.05, label="Phase 1", interactive=True)
-                                                    phase2_slider = gr.Slider(minimum=0.0, maximum=1.0, value=1.0, step=0.05, label="Phase 2", interactive=True, visible=False)
-                                                    phase3_slider = gr.Slider(minimum=0.0, maximum=1.0, value=1.0, step=0.05, label="Phase 3", interactive=True, visible=False)
-                                                
-                                                split_groups.append({
-                                                    "group": lora_step_group,
-                                                    "title": step_range_md,
-                                                    "sliders": [phase1_slider, phase2_slider, phase3_slider]
-                                                })
-                                        
-                                        lora_slider_ui_groups.append({
-                                            "main_group": lora_main_group,
-                                            "name": lora_name_md,
-                                            "split_button": split_steps_btn,
-                                            "splits": split_groups
-                                        })
+                        with gr.Accordion("Dynamic Lora Multipliers Adjustments", open=False):
+                            MAX_LORA_SLIDERS = 15
+                            MAX_STEP_SPLITS = 5
+                            lora_slider_ui_groups = []
+                            if not update_form:
+                                with gr.Group(elem_id="lora_builder_main_group"):
+                                    for i in range(MAX_LORA_SLIDERS):
+                                        with gr.Column(visible=False, elem_classes="lora-main-container") as lora_main_group:
+                                            with gr.Row(variant="compact"):
+                                                lora_name_md = gr.Markdown()
+                                                split_steps_btn = gr.Button("Split Steps")
+                                            
+                                            split_groups = []
+                                            for j in range(MAX_STEP_SPLITS):
+                                                with gr.Column(visible=False, elem_classes="lora-step-split-container") as lora_step_group:
+                                                    step_range_md = gr.Markdown()
+                                                    with gr.Row():
+                                                        phase1_slider = gr.Slider(minimum=0.0, maximum=1.0, value=1.0, step=0.05, label="Phase 1", interactive=True)
+                                                        phase2_slider = gr.Slider(minimum=0.0, maximum=1.0, value=1.0, step=0.05, label="Phase 2", interactive=True, visible=False)
+                                                        phase3_slider = gr.Slider(minimum=0.0, maximum=1.0, value=1.0, step=0.05, label="Phase 3", interactive=True, visible=False)
+                                                    
+                                                    split_groups.append({
+                                                        "group": lora_step_group,
+                                                        "title": step_range_md,
+                                                        "sliders": [phase1_slider, phase2_slider, phase3_slider]
+                                                    })
+                                            
+                                            lora_slider_ui_groups.append({
+                                                "main_group": lora_main_group,
+                                                "name": lora_name_md,
+                                                "split_button": split_steps_btn,
+                                                "splits": split_groups
+                                            })
                 with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache) as speed_tab:
                     with gr.Column():
                         gr.Markdown("<B>Tea Cache and Mag Cache accelerate the Video Generation by skipping intelligently some steps, the more steps are skipped the lower the quality of the video.</B>")
@@ -8741,7 +8742,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 
                 ui_updates = []
                 textbox_strings = []
-                selected_loras = [loras_names[int(i)] for i in selected_lora_indices]
+                selected_loras = selected_lora_indices
                 multipliers_per_lora = current_multipliers_str.split(' ')
 
                 for i in range(MAX_LORA_SLIDERS):

@@ -2205,6 +2205,8 @@ def get_default_settings(model_type):
             "video_length": 81,
             "num_inference_steps": 30,
             "seed": -1,
+            "subseed": -1,
+            "subseed_strength": 0.0,
             "repeat_generation": 1,
             "multi_images_gen_type": 0,        
             "guidance_scale": 5.0,
@@ -3480,6 +3482,11 @@ def select_video(state, input_file_list, event_data: gr.EventData):
                 labels += ["Sampler Solver"]                                        
             values += [video_resolution, video_length_summary, video_seed, video_guidance_scale, video_audio_guidance_scale, video_flow_shift, video_num_inference_steps]
             labels += [ "Resolution", video_length_label, "Seed", video_guidance_label, "Audio Guidance Scale", "Shift Scale", "Num Inference steps"]
+            video_subseed = configs.get("subseed", -1)
+            video_subseed_strength = configs.get("subseed_strength", 0.0)
+            if video_subseed_strength > 0 and video_subseed >= 0:
+                values += [f"{video_subseed} (strength: {video_subseed_strength})"]
+                labels += ["Variation Seed"]
             video_negative_prompt = configs.get("negative_prompt", "")
             if len(video_negative_prompt) > 0:
                 values += [video_negative_prompt]
@@ -4490,6 +4497,8 @@ def generate_video(
     video_length,
     batch_size,
     seed,
+    subseed,
+    subseed_strength,
     force_fps,
     num_inference_steps,
     guidance_scale,
@@ -4855,7 +4864,11 @@ def generate_video(
 
 
     seed = set_seed(seed)
-
+    # Randomize subseed if it's -1 (like we do for main seed)
+    if subseed < 0:
+        import random
+        subseed = random.randint(0, 99999999)
+    
     torch.set_grad_enabled(False) 
     os.makedirs(save_path, exist_ok=True)
     os.makedirs(image_save_path, exist_ok=True)
@@ -5227,6 +5240,8 @@ def generate_video(
                     embedded_guidance_scale=embedded_guidance_scale,
                     n_prompt=negative_prompt,
                     seed=seed,
+                    subseed=subseed,
+                    subseed_strength=subseed_strength,
                     callback=callback,
                     enable_RIFLEx = enable_RIFLEx,
                     VAE_tile_size = VAE_tile_size,
@@ -6664,6 +6679,8 @@ def save_inputs(
             video_length,
             batch_size,
             seed,
+            subseed,
+            subseed_strength,
             force_fps,
             num_inference_steps,
             guidance_scale,
@@ -7901,6 +7918,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     with gr.Column():
                         with gr.Row():                        
                             seed = gr.Slider(-1, 999999999, value=ui_defaults.get("seed",-1), step=1, label="Seed (-1 for random)", scale=2) 
+                            random_seed_btn = gr.Button("🎲", size="sm", min_width=40, scale=0)
+                            reuse_seed_btn = gr.Button("♻️", size="sm", min_width=40, scale=0)
+                            seed_extras_checkbox = gr.Checkbox(label="Extra", value=False, scale=0, min_width=60)
                             guidance_phases_value = ui_defaults.get("guidance_phases", 1) 
                             guidance_phases = gr.Dropdown(
                                 choices=[
@@ -7912,6 +7932,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 visible= guidance_max_phases >=2,
                                 interactive = not model_def.get("lock_guidance_phases", False)
                             )
+                        with gr.Row(visible=False) as seed_extras_row:
+                            subseed = gr.Slider(-1, 999999999, value=ui_defaults.get("subseed", -1), step=1, label="Variation Seed (-1 for random)", scale=2)
+                            random_subseed_btn = gr.Button("🎲", size="sm", min_width=40, scale=0)
+                            reuse_subseed_btn = gr.Button("♻️", size="sm", min_width=40, scale=0)
+                            subseed_strength = gr.Slider(0.0, 1.0, value=ui_defaults.get("subseed_strength", 0.0), step=0.01, label="Variation Strength", scale=1)
                         with gr.Row(visible = guidance_phases_value >=2 ) as guidance_phases_row:
                             multiple_submodels = model_def.get("multiple_submodels", False)
                             model_switch_phase = gr.Dropdown(
@@ -8397,6 +8422,28 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             # video_length.release(fn=refresh_video_length_label, inputs=[state, video_length ], outputs = video_length, trigger_mode="always_last" )
             gr.on(triggers=[video_length.release, force_fps.change, video_guide.change, video_source.change], fn=refresh_video_length_label, inputs=[state, video_length, force_fps, video_guide, video_source] , outputs = video_length, trigger_mode="always_last", show_progress="hidden"  )
             guidance_phases.change(fn=change_guidance_phases, inputs= [state, guidance_phases], outputs =[model_switch_phase, guidance_phases_row, switch_threshold, switch_threshold2, guidance2_scale, guidance3_scale ])
+            seed_extras_checkbox.change(fn=lambda x: gr.update(visible=x), inputs=[seed_extras_checkbox], outputs=[seed_extras_row], show_progress=False)
+            
+            # Seed button handlers
+            random_seed_btn.click(fn=lambda: -1, inputs=[], outputs=[seed], show_progress=False)
+            random_subseed_btn.click(fn=lambda: -1, inputs=[], outputs=[subseed], show_progress=False)
+            
+            def get_last_seed_from_state(state, is_subseed=False):
+                gen = get_gen_info(state)
+                file_list = gen.get("file_list", [])
+                if not file_list:
+                    return -1
+                # Get the most recent file
+                last_file = file_list[-1]
+                file_settings = gen.get("file_settings_list", [{}])[-1] if gen.get("file_settings_list") else {}
+                if is_subseed:
+                    return file_settings.get("subseed", -1)
+                else:
+                    return file_settings.get("seed", -1)
+            
+            reuse_seed_btn.click(fn=lambda s: get_last_seed_from_state(s, False), inputs=[state], outputs=[seed], show_progress=False)
+            reuse_subseed_btn.click(fn=lambda s: get_last_seed_from_state(s, True), inputs=[state], outputs=[subseed], show_progress=False)
+            
             audio_prompt_type_remux.change(fn=refresh_audio_prompt_type_remux, inputs=[state, audio_prompt_type, audio_prompt_type_remux], outputs=[audio_prompt_type])
             remove_background_sound.change(fn=refresh_remove_background_sound, inputs=[state, audio_prompt_type, remove_background_sound], outputs=[audio_prompt_type])
             audio_prompt_type_sources.change(fn=refresh_audio_prompt_type_sources, inputs=[state, audio_prompt_type, audio_prompt_type_sources], outputs=[audio_prompt_type, audio_guide, audio_guide2, speakers_locations_row, remove_background_sound])

@@ -344,6 +344,8 @@ class WanAny2V:
         model_switch_phase = 1,
         n_prompt="",
         seed=-1,
+        subseed=-1,
+        subseed_strength=0.0,
         callback = None,
         enable_RIFLEx = None,
         VAE_tile_size = 0,
@@ -430,6 +432,13 @@ class WanAny2V:
 
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
+        
+        # Initialize subseed generator if subseed variation is enabled
+        subseed_g = None
+        if subseed_strength > 0 and subseed >= 0:
+            subseed_g = torch.Generator(device=self.device)
+            subseed_g.manual_seed(subseed)
+        
         image_outputs = image_mode == 1
         kwargs = {'pipeline': self, 'callback': callback}
         color_reference_frame = None
@@ -857,6 +866,12 @@ class WanAny2V:
             scheduler_kwargs = {} if isinstance(sample_scheduler, FlowMatchScheduler) else {"generator": seed_g}
         # b, c, lat_f, lat_h, lat_w
         latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=seed_g)
+        
+        # Apply subseed variation if enabled
+        if subseed_g is not None and subseed_strength > 0:
+            sub_latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=subseed_g)
+            latents = latents * (1.0 - subseed_strength) + sub_latents * subseed_strength
+        
         if "G" in video_prompt_type: randn = latents
         if apg_switch != 0:  
             apg_momentum = -0.75

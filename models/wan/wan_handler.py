@@ -493,7 +493,7 @@ class family_handler():
 
         if settings_version < 2.32:
             image_prompt_type = ui_defaults.get("image_prompt_type", "")
-            if test_class_i2v(base_model_type) and len(image_prompt_type) == 0:
+            if test_class_i2v(base_model_type) and len(image_prompt_type) == 0 and "S" in model_def.get("image_prompt_types_allowed",""):
                 ui_defaults["image_prompt_type"] = "S" 
 
 

@@ -5467,7 +5467,11 @@ def generate_video(
                     inputs.update({
                     "transformer_loras_filenames" : transformer_loras_filenames,
                     "transformer_loras_multipliers" : transformer_loras_multipliers
-                    })                
+                    })
+                # Preserve original subseed value (-1) in metadata if it was random
+                # This ensures next generation will also randomize instead of reusing
+                if original_subseed < 0:
+                    inputs["subseed"] = original_subseed
                 configs = prepare_inputs_dict("metadata", inputs, model_type)
                 if sliding_window: configs["window_no"] = window_no
                 configs["prompt"] = "\n".join(original_prompts)
@@ -7923,8 +7927,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 visible= guidance_max_phases >=2,
                                 interactive = not model_def.get("lock_guidance_phases", False)
                             )
-                        seed_extras_checkbox = gr.Checkbox(label="Extra Seed Options", value=False)
-                        with gr.Row(visible=False) as seed_extras_row:
+                        # Auto-check Extra checkbox if loading settings with subseed data
+                        has_subseed_data = ui_defaults.get("subseed_strength", 0.0) > 0 or ui_defaults.get("subseed", -1) != -1
+                        seed_extras_checkbox = gr.Checkbox(label="Extra Seed Options", value=has_subseed_data)
+                        with gr.Row(visible=has_subseed_data) as seed_extras_row:
                             subseed = gr.Slider(-1, 999999999, value=ui_defaults.get("subseed", -1), step=1, label="Variation Seed (-1 for random)", scale=2)
                             random_subseed_btn = gr.Button("🎲", size="sm", min_width=40, scale=0)
                             reuse_subseed_btn = gr.Button("♻️", size="sm", min_width=40, scale=0)

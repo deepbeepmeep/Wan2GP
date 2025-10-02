@@ -3485,7 +3485,14 @@ def select_video(state, input_file_list, event_data: gr.EventData):
             video_subseed = configs.get("subseed", -1)
             video_subseed_strength = configs.get("subseed_strength", 0.0)
             if video_subseed_strength > 0:
-                subseed_display = video_subseed if video_subseed >= 0 else "random"
+                # Show the actually used subseed if available, otherwise show the subseed value
+                subseed_used = configs.get("subseed_used", None)
+                if subseed_used is not None:
+                    subseed_display = subseed_used
+                elif video_subseed >= 0:
+                    subseed_display = video_subseed
+                else:
+                    subseed_display = "random"
                 values += [f"{subseed_display} (strength: {video_subseed_strength})"]
                 labels += ["Variation Seed"]
             video_negative_prompt = configs.get("negative_prompt", "")
@@ -5475,9 +5482,15 @@ def generate_video(
                     })
                 # Preserve original subseed value (-1) in metadata if it was random
                 # This ensures next generation will also randomize instead of reusing
+                # But also save the actually used subseed for display purposes (only if strength > 0)
                 print(f"[Subseed Metadata] original_subseed={original_subseed}, inputs['subseed'] before={inputs.get('subseed', 'MISSING')}, inputs['subseed_strength']={inputs.get('subseed_strength', 'MISSING')}")
-                if original_subseed < 0:
-                    print(f"[Subseed Metadata] Preserving original random flag: changing {inputs['subseed']} → {original_subseed}")
+                if original_subseed < 0 and subseed_strength > 0:
+                    actual_subseed_used = inputs["subseed"]  # Save the actual randomized value
+                    print(f"[Subseed Metadata] Preserving original random flag: changing {inputs['subseed']} → {original_subseed}, actual used: {actual_subseed_used}")
+                    inputs["subseed"] = original_subseed
+                    inputs["subseed_used"] = actual_subseed_used  # Store actual value for display
+                elif original_subseed < 0:
+                    # If strength is 0, just set subseed to -1 without storing subseed_used
                     inputs["subseed"] = original_subseed
                 configs = prepare_inputs_dict("metadata", inputs, model_type)
                 print(f"[Subseed Metadata] After prepare_inputs_dict: configs has subseed={configs.get('subseed', 'MISSING')}, subseed_strength={configs.get('subseed_strength', 'MISSING')}")
@@ -7936,7 +7949,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 interactive = not model_def.get("lock_guidance_phases", False)
                             )
                         # Auto-check Extra checkbox if loading settings with subseed data
-                        has_subseed_data = ui_defaults.get("subseed_strength", 0.0) > 0 or ui_defaults.get("subseed", -1) != -1
+                        # Only check if subseed_strength > 0, since that indicates variation was actually used
+                        has_subseed_data = ui_defaults.get("subseed_strength", 0.0) > 0
                         seed_extras_checkbox = gr.Checkbox(label="Extra Seed Options", value=has_subseed_data)
                         with gr.Row(visible=has_subseed_data) as seed_extras_row:
                             subseed = gr.Slider(-1, 999999999, value=ui_defaults.get("subseed", -1), step=1, label="Variation Seed (-1 for random)", scale=2)

@@ -7,6 +7,7 @@
             "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_text2video_5B_mbf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_text2video_5B_quanto_mbf16_int8.safetensors"
         ],
+		"settings_dir": [ "wan2_2_5B" ],		
         "group": "wan2_2"
     },
     "video_length": 121,

@@ -8,6 +8,7 @@
             "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_lucy_edit_quanto_mbf16_int8.safetensors",
             "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_lucy_edit_quanto_mfp16_int8.safetensors"
         ],
+		"settings_dir": "ti2v_2_2",		
         "group": "wan2_2"
     },
 	"prompt": "change the clothes to red",	

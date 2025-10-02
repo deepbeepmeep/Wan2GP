@@ -8448,7 +8448,16 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             # video_length.release(fn=refresh_video_length_label, inputs=[state, video_length ], outputs = video_length, trigger_mode="always_last" )
             gr.on(triggers=[video_length.release, force_fps.change, video_guide.change, video_source.change], fn=refresh_video_length_label, inputs=[state, video_length, force_fps, video_guide, video_source] , outputs = video_length, trigger_mode="always_last", show_progress="hidden"  )
             guidance_phases.change(fn=change_guidance_phases, inputs= [state, guidance_phases], outputs =[model_switch_phase, guidance_phases_row, switch_threshold, switch_threshold2, guidance2_scale, guidance3_scale ])
-            seed_extras_checkbox.change(fn=lambda x: gr.update(visible=x), inputs=[seed_extras_checkbox], outputs=[seed_extras_row], show_progress=False)
+            
+            def toggle_seed_extras(checked):
+                """Toggle seed extras visibility and reset subseed_strength when unchecked"""
+                if checked:
+                    return gr.update(visible=True), gr.update()
+                else:
+                    # Reset subseed_strength to 0 when unchecking to disable variation
+                    return gr.update(visible=False), gr.update(value=0.0)
+            
+            seed_extras_checkbox.change(fn=toggle_seed_extras, inputs=[seed_extras_checkbox], outputs=[seed_extras_row, subseed_strength], show_progress=False)
             
             # Seed button handlers
             random_seed_btn.click(fn=lambda: -1, inputs=[], outputs=[seed], show_progress=False)

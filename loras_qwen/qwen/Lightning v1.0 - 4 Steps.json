@@ -1,0 +1,8 @@
+{
+    "activated_loras": [
+		"https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/loras_accelerators/Qwen-Image-Lightning-4steps-V1.0-bf16.safetensors"	
+	],
+	"loras_multipliers": "1",
+	"num_inference_steps": 4,
+    "guidance_scale": 1
+}

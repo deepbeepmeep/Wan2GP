@@ -63,7 +63,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.6.0"
-WanGP_version = "8.9"
+WanGP_version = "8.99"
 settings_version = 2.38
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -360,6 +360,12 @@ def process_prompt_and_add_tasks(state, model_choice):
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
 
+    if len(activated_loras) > 0:
+        error = check_loras_exist(model_type, activated_loras)
+        if len(error) > 0:
+            gr.Info(error)
+            return ret()
+        
     if len(loras_multipliers) > 0:
         _, _, errors =  parse_loras_multipliers(loras_multipliers, len(activated_loras), num_inference_steps, nb_phases= guidance_phases)
         if len(errors) > 0: 
@@ -2089,10 +2095,10 @@ def get_transformer_dtype(model_family, transformer_dtype_policy):
 def get_settings_file_name(model_type):
     return  os.path.join(args.settings, model_type + "_settings.json")
 
-def fix_settings(model_type, ui_defaults):
+def fix_settings(model_type, ui_defaults, min_settings_version = 0):
     if model_type is None: return
 
-    settings_version =  ui_defaults.get("settings_version", 0)
+    settings_version =  max(min_settings_version, ui_defaults.get("settings_version", 0))
     model_def = get_model_def(model_type)
     base_model_type = get_base_model_type(model_type)
 
@@ -2184,7 +2190,7 @@ def fix_settings(model_type, ui_defaults):
 
     model_handler = get_model_handler(base_model_type)
     if hasattr(model_handler, "fix_settings"):
-        model_handler.fix_settings(base_model_type, settings_version, model_def, ui_defaults)
+            model_handler.fix_settings(base_model_type, settings_version, model_def, ui_defaults)
 
 
 def get_default_settings(model_type):
@@ -2525,6 +2531,27 @@ def download_mmaudio():
         }
         process_files_def(**enhancer_def)
 
+
+def download_file(url,filename):
+    if url.startswith("https://huggingface.co/") and "/resolve/main/" in url:
+        base_dir = os.path.dirname(filename)
+        url = url[len("https://huggingface.co/"):]
+        url_parts = url.split("/resolve/main/")
+        repoId = url_parts[0]
+        onefile = os.path.basename(url_parts[-1])
+        sourceFolder = os.path.dirname(url_parts[-1])
+        if len(sourceFolder) == 0:
+            hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = "ckpts/" if len(base_dir)==0 else base_dir)
+        else:
+            target_path = "ckpts/temp/" + sourceFolder
+            if not os.path.exists(target_path):
+                os.makedirs(target_path)
+            hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = "ckpts/temp/", subfolder=sourceFolder)
+            shutil.move(os.path.join( "ckpts", "temp" , sourceFolder , onefile), "ckpts/" if len(base_dir)==0 else base_dir)
+            shutil.rmtree("ckpts/temp")
+    else:
+        urlretrieve(url,filename, create_progress_hook(filename))
+
 download_shared_done = False
 def download_models(model_filename = None, model_type= None, module_type = False, submodel_no = 1):
     def computeList(filename):
@@ -2573,26 +2600,6 @@ def download_models(model_filename = None, model_type= None, module_type = False
     download_shared_done = True
 
     if model_filename is None: return
-
-    def download_file(url,filename):
-        if url.startswith("https://huggingface.co/") and "/resolve/main/" in url:
-            base_dir = os.path.dirname(filename)
-            url = url[len("https://huggingface.co/"):]
-            url_parts = url.split("/resolve/main/")
-            repoId = url_parts[0]
-            onefile = os.path.basename(url_parts[-1])
-            sourceFolder = os.path.dirname(url_parts[-1])
-            if len(sourceFolder) == 0:
-                hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = "ckpts/" if len(base_dir)==0 else base_dir)
-            else:
-                target_path = "ckpts/temp/" + sourceFolder
-                if not os.path.exists(target_path):
-                    os.makedirs(target_path)
-                hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = "ckpts/temp/", subfolder=sourceFolder)
-                shutil.move(os.path.join( "ckpts", "temp" , sourceFolder , onefile), "ckpts/" if len(base_dir)==0 else base_dir)
-                shutil.rmtree("ckpts/temp")
-        else:
-            urlretrieve(url,filename, create_progress_hook(filename))
 
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(model_type)
@@ -2653,6 +2660,33 @@ offload.default_verboseLevel = verbose_level
 def sanitize_file_name(file_name, rep =""):
     return file_name.replace("/",rep).replace("\\",rep).replace(":",rep).replace("|",rep).replace("?",rep).replace("<",rep).replace(">",rep).replace("\"",rep).replace("\n",rep).replace("\r",rep) 
 
+def check_loras_exist(model_type, loras_choices_files, download = False, send_cmd = None):
+    lora_dir = get_lora_dir(model_type)
+    missing_local_loras = []
+    missing_remote_loras = []
+    for lora_file in loras_choices_files:
+        local_path = os.path.join(lora_dir, os.path.basename(lora_file))
+        if not os.path.isfile(local_path):
+            url = loras_url_cache.get(local_path, None)         
+            if url is not None:
+                if download:
+                    if send_cmd is not None:
+                        send_cmd("status", f'Downloading Lora {os.path.basename(lora_file)}...')
+                    try:
+                        download_file(url, local_path)
+                    except:
+                        missing_remote_loras.append(lora_file)
+            else:
+                missing_local_loras.append(lora_file)
+
+    error = ""
+    if len(missing_local_loras) > 0:
+        error += f"The following Loras files are missing or invalid: {missing_local_loras}."
+    if len(missing_remote_loras) > 0:
+        error += f"The following Loras files could not be downloaded: {missing_remote_loras}."
+    
+    return error
+
 def extract_preset(model_type, lset_name, loras):
     loras_choices = []
     loras_choices_files = []
@@ -2669,24 +2703,12 @@ def extract_preset(model_type, lset_name, loras):
     if not os.path.isfile(lset_name_filename):
         error = f"Preset '{lset_name}' not found "
     else:
-        missing_loras = []
 
         with open(lset_name_filename, "r", encoding="utf-8") as reader:
             text = reader.read()
         lset = json.loads(text)
 
-        loras_choices_files = lset["loras"]
-        for lora_file in loras_choices_files:
-            choice = os.path.join(lora_dir, lora_file)
-            if choice not in loras:
-                missing_loras.append(lora_file)
-            else:
-                loras_choice_no = loras.index(choice)
-                loras_choices.append(str(loras_choice_no))
-
-        if len(missing_loras) > 0:
-            error = f"Unable to apply Lora preset '{lset_name} because the following Loras files are missing or invalid: {missing_loras}"
-        
+        loras_choices = lset["loras"]
         loras_mult_choices = lset["loras_mult"]
         prompt = lset.get("prompt", "")
         full_prompt = lset.get("full_prompt", False)
@@ -2695,7 +2717,6 @@ def extract_preset(model_type, lset_name, loras):
 
 def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, split_linear_modules_map = None):
     loras =[]
-    loras_names = []
     default_loras_choices = []
     default_loras_multis_str = ""
     loras_presets = []
@@ -2726,7 +2747,7 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
         loras = offload.load_loras_into_model(transformer, loras,  activate_all_loras=False, check_only= True, preprocess_sd=get_loras_preprocessor(transformer, model_type), split_linear_modules_map = split_linear_modules_map) #lora_multiplier,
 
     if len(loras) > 0:
-        loras_names = [ Path(lora).stem for lora in loras  ]
+        loras = [ os.path.basename(lora) for lora in loras  ]
 
     if len(lora_preselected_preset) > 0:
         if not os.path.isfile(os.path.join(lora_dir, lora_preselected_preset + ".lset")):
@@ -2735,7 +2756,7 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
         default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, _ , error = extract_preset(model_type, default_lora_preset, loras)
         if len(error) > 0:
             print(error[:200])
-    return loras, loras_names, loras_presets, default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, default_lora_preset
+    return loras, loras_presets, default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, default_lora_preset
 
 def get_transformer_model(model, submodel_no = 1):
     if submodel_no > 1:
@@ -2996,7 +3017,7 @@ def apply_changes(  state,
         return "<DIV ALIGN=CENTER>Config Locked</DIV>",*[gr.update()]*4
     if gen_in_progress:
         return "<DIV ALIGN=CENTER>Unable to change config when a generation is in progress</DIV>",*[gr.update()]*4
-    global offloadobj, wan_model, server_config, loras, loras_names, default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, default_lora_preset, loras_presets
+    global offloadobj, wan_model, server_config, loras, default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, default_lora_preset, loras_presets
     server_config = {
         "attention_mode" : attention_choice,  
         "transformer_types": transformer_types_choices, 
@@ -3464,6 +3485,8 @@ def select_video(state, input_file_list, event_data: gr.EventData):
             video_loras_multipliers = configs.get("loras_multipliers", "")
             video_loras_multipliers =  preparse_loras_multipliers(video_loras_multipliers)
             video_loras_multipliers += [""] * len(video_activated_loras)
+
+            video_activated_loras = [ f"<span class='copy-swap' tabindex=0><SPAN class='copy-swap__trunc' >{os.path.basename(lora)}</span><span class='copy-swap__full'>{lora}</span></span>" for lora in video_activated_loras] 
             video_activated_loras = [ f"<TR><TD style='padding-top:0px;padding-left:0px'>{lora}</TD><TD>x{multiplier if len(multiplier)>0 else '1'}</TD></TR>" for lora, multiplier in zip(video_activated_loras, video_loras_multipliers) ]
             video_activated_loras_str = "<TABLE style='border:0px;padding:0px'>" + "".join(video_activated_loras) + "</TABLE>" if len(video_activated_loras) > 0 else ""
             values +=  misc_values + [video_prompt]
@@ -4687,7 +4710,9 @@ def generate_video(
         loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(loras_multipliers, len(activated_loras), num_inference_steps, nb_phases = guidance_phases, merge_slist= loras_slists )
         if len(errors) > 0: raise Exception(f"Error parsing Loras: {errors}")
         lora_dir = get_lora_dir(model_type)
-        loras_selected += [ os.path.join(lora_dir, lora) for lora in activated_loras]
+        errors = check_loras_exist(model_type, activated_loras, True, send_cmd)
+        if len(errors) > 0 : raise gr.Error(errors)
+        loras_selected += [ os.path.join(lora_dir, os.path.basename(lora)) for lora in activated_loras]
 
     if len(loras_selected) > 0:
         pinnedLora = loaded_profile !=5  # and transformer_loras_filenames == None False # # # 
@@ -4704,6 +4729,9 @@ def generate_video(
     # negative_prompt = "" # not applicable in the inference
     original_filename = model_filename 
     model_filename = get_model_filename(base_model_type)  
+
+    _, _, latent_size = get_model_min_frames_and_step(model_type)  
+    video_length = (video_length -1) // latent_size * latent_size + 1
 
     current_video_length = video_length
     # VAE Tiling
@@ -4746,13 +4774,12 @@ def generate_video(
         if video_source is not None:
             current_video_length +=  sliding_window_overlap - 1
         sliding_window = current_video_length > sliding_window_size
-        reuse_frames = min(sliding_window_size - 4, sliding_window_overlap) 
+        reuse_frames = min(sliding_window_size - latent_size, sliding_window_overlap) 
     else:
         sliding_window = False
         sliding_window_size = current_video_length
         reuse_frames = 0
 
-    _, _, latent_size = get_model_min_frames_and_step(model_type)  
     original_image_refs = image_refs
     image_refs = None if image_refs is None else ([] + image_refs) # work on a copy as it is going to be modified
     # image_refs = None
@@ -5820,8 +5847,24 @@ def get_new_preset_msg(advanced = True):
     else:
         return "Choose a Lora Preset or a Settings file in this List"
     
-def compute_lset_choices(loras_presets):
-    # lset_choices = [ (preset, preset) for preset in loras_presets]
+def compute_lset_choices(model_type, loras_presets):
+    # top_dir = "settings"
+    global_list = []
+    if model_type is not None:
+        top_dir = get_lora_dir(model_type)
+        model_def = get_model_def(model_type)
+        settings_dir = get_model_recursive_prop(model_type, "settings_dir", return_list=False)
+        if settings_dir is None or len(settings_dir) == 0: settings_dir = [get_model_family(model_type, True)]
+        for dir in settings_dir:
+            if len(dir) == "": continue
+            cur_path = os.path.join(top_dir, dir)
+            if os.path.isdir(cur_path):
+                cur_dir_presets = glob.glob( os.path.join(cur_path, "*.json") )
+                cur_dir_presets =[ os.path.join(dir, os.path.basename(path)) for path in cur_dir_presets]
+                global_list += cur_dir_presets
+            global_list = sorted(global_list, key=lambda n: os.path.basename(n))
+
+            
     lset_list = []
     settings_list = []
     for item in loras_presets:
@@ -5833,6 +5876,9 @@ def compute_lset_choices(loras_presets):
     sep = '\u2500' 
     indent = chr(160) * 4
     lset_choices = []
+    if len(global_list) > 0:
+        lset_choices += [( (sep*16) +"Profiles" + (sep*17), ">Profiles")]
+        lset_choices += [ ( indent   + os.path.splitext(os.path.basename(preset))[0], preset) for preset in global_list ]
     if len(settings_list) > 0:
         settings_list.sort()
         lset_choices += [( (sep*16) +"Settings" + (sep*17), ">settings")]
@@ -5847,15 +5893,19 @@ def get_lset_name(state, lset_name):
     presets = state["loras_presets"]
     if len(lset_name) == 0 or lset_name.startswith(">") or lset_name== get_new_preset_msg(True) or lset_name== get_new_preset_msg(False): return ""
     if lset_name in presets: return lset_name
-    choices = compute_lset_choices(presets)
+    model_type = state["model_type"]
+    choices = compute_lset_choices(model_type, presets)
     for label, value in choices:
         if label == lset_name: return value
     return lset_name
 
 def validate_delete_lset(state, lset_name):
     lset_name = get_lset_name(state, lset_name)
-    if len(lset_name) == 0:
+    if len(lset_name) == 0 :
         gr.Info(f"Choose a Preset to delete")
+        return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False) 
+    elif "/" in lset_name or "\\" in lset_name:
+        gr.Info(f"You can't Delete a Profile")
         return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False) 
     else:
         return  gr.Button(visible= False), gr.Checkbox(visible= False), gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= True), gr.Button(visible= True) 
@@ -5864,6 +5914,9 @@ def validate_save_lset(state, lset_name):
     lset_name = get_lset_name(state, lset_name)
     if len(lset_name) == 0:
         gr.Info("Please enter a name for the preset")
+        return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False),gr.Checkbox(visible= False) 
+    elif "/" in lset_name or "\\" in lset_name:
+        gr.Info(f"You can't Edit a Profile")
         return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False),gr.Checkbox(visible= False) 
     else:
         return  gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= True), gr.Button(visible= True),gr.Checkbox(visible= True)
@@ -5893,8 +5946,7 @@ def save_lset(state, lset_name, loras_choices, loras_mult_choices, prompt, save_
             lset = collect_current_model_settings(state)
             extension = ".json" 
         else:
-            loras_choices_files = [ Path(loras[int(choice_no)]).parts[-1] for choice_no in loras_choices  ]
-            lset  = {"loras" : loras_choices_files, "loras_mult" : loras_mult_choices}
+            lset  = {"loras" : loras_choices, "loras_mult" : loras_mult_choices}
             if save_lset_prompt_cbox!=1:
                 prompts = prompt.replace("\r", "").split("\n")
                 prompts = [prompt for prompt in prompts if len(prompt)> 0 and prompt.startswith("#")]
@@ -5911,7 +5963,8 @@ def save_lset(state, lset_name, loras_choices, loras_mult_choices, prompt, save_
             if not old_lset_name in loras_presets: old_lset_name = ""
         lset_name = lset_name + extension
 
-        lora_dir = get_lora_dir(state["model_type"])
+        model_type = state["model_type"]
+        lora_dir = get_lora_dir(model_type)
         full_lset_name_filename = os.path.join(lora_dir, lset_name ) 
 
         with open(full_lset_name_filename, "w", encoding="utf-8") as writer:
@@ -5934,20 +5987,21 @@ def save_lset(state, lset_name, loras_choices, loras_mult_choices, prompt, save_
             loras_presets.append(lset_name)
         state["loras_presets"] = loras_presets
 
-        lset_choices = compute_lset_choices(loras_presets)
+        lset_choices = compute_lset_choices(model_type, loras_presets)
         lset_choices.append( (get_new_preset_msg(), ""))
     return gr.Dropdown(choices=lset_choices, value= lset_name), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False), gr.Checkbox(visible= False)
 
 def delete_lset(state, lset_name):
     loras_presets = state["loras_presets"]
     lset_name = get_lset_name(state, lset_name)
+    model_type = state["model_type"]
     if len(lset_name) > 0:
-        lset_name_filename = os.path.join( get_lora_dir(state["model_type"]),  sanitize_file_name(lset_name))
+        lset_name_filename = os.path.join( get_lora_dir(model_type), sanitize_file_name(lset_name))
         if not os.path.isfile(lset_name_filename):
             gr.Info(f"Preset '{lset_name}' not found ")
             return [gr.update()]*7 
         os.remove(lset_name_filename)
-        lset_choices = compute_lset_choices(loras_presets)
+        lset_choices = compute_lset_choices(None, loras_presets)
         pos = next( (i for i, item in enumerate(lset_choices) if item[1]==lset_name ), -1)
         gr.Info(f"Lora Preset '{lset_name}' has been deleted")
         loras_presets.remove(lset_name)
@@ -5957,30 +6011,33 @@ def delete_lset(state, lset_name):
 
     state["loras_presets"] = loras_presets
 
-    lset_choices = compute_lset_choices(loras_presets)
+    lset_choices = compute_lset_choices(model_type, loras_presets)
     lset_choices.append((get_new_preset_msg(), ""))
     selected_lset_name = "" if pos < 0 else lset_choices[min(pos, len(lset_choices)-1)][1] 
     return  gr.Dropdown(choices=lset_choices, value= selected_lset_name), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Checkbox(visible= False)
 
+def get_updated_loras_dropdown(loras, loras_choices):
+    loras_choices = [os.path.basename(choice) for choice in loras_choices]    
+    loras_choices_dict = { choice : True for choice in loras_choices}
+    for lora in loras:
+        loras_choices_dict.pop(lora, False)
+    new_loras = loras[:]
+    for choice, _ in loras_choices_dict.items():
+        new_loras.append(choice)    
+
+    new_loras_dropdown= [ ( os.path.splitext(choice)[0], choice) for choice in new_loras ]
+    return new_loras, new_loras_dropdown
+
 def refresh_lora_list(state, lset_name, loras_choices):
-    loras_names = state["loras_names"]
-    prev_lora_names_selected = [ loras_names[int(i)] for i in loras_choices]
     model_type= state["model_type"]
-    loras, loras_names, loras_presets, _, _, _, _  = setup_loras(model_type, None,  get_lora_dir(model_type), lora_preselected_preset, None)
-    state["loras"] = loras
-    state["loras_names"] = loras_names
+    loras, loras_presets, _, _, _, _  = setup_loras(model_type, None,  get_lora_dir(model_type), lora_preselected_preset, None)
     state["loras_presets"] = loras_presets
-
     gc.collect()
-    new_loras_choices = [ (loras_name, str(i)) for i,loras_name in enumerate(loras_names)]
-    new_loras_dict = { loras_name: str(i) for i,loras_name in enumerate(loras_names) }
-    lora_names_selected = []
-    for lora in prev_lora_names_selected:
-        lora_id = new_loras_dict.get(lora, None)
-        if lora_id!= None:
-            lora_names_selected.append(lora_id)
 
-    lset_choices = compute_lset_choices(loras_presets)
+    loras, new_loras_dropdown = get_updated_loras_dropdown(loras, loras_choices)
+    state["loras"] = loras
+    model_type = state["model_type"]    
+    lset_choices = compute_lset_choices(model_type, loras_presets)
     lset_choices.append((get_new_preset_msg( state["advanced"]), "")) 
     if not lset_name in loras_presets:
         lset_name = ""
@@ -5994,7 +6051,7 @@ def refresh_lora_list(state, lset_name, loras_choices):
             gr.Info("Lora List has been refreshed")
 
 
-    return gr.Dropdown(choices=lset_choices, value= lset_name), gr.Dropdown(choices=new_loras_choices, value= lora_names_selected) 
+    return gr.Dropdown(choices=lset_choices, value= lset_name), gr.Dropdown(choices=new_loras_dropdown, value= loras_choices) 
 
 def update_lset_type(state, lset_name):
     return 1 if lset_name.endswith(".lset") else 2
@@ -6013,30 +6070,31 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
         if lset_name.endswith(".lset"):
             loras = state["loras"]
             loras_choices, loras_mult_choices, preset_prompt, full_prompt, error = extract_preset(current_model_type,  lset_name, loras)
-            if len(error) > 0:
-                gr.Info(error)
-            else:
-                if full_prompt:
-                    prompt = preset_prompt
-                elif len(preset_prompt) > 0:
-                    prompts = prompt.replace("\r", "").split("\n")
-                    prompts = [prompt for prompt in prompts if len(prompt)>0 and not prompt.startswith("#")]
-                    prompt = "\n".join(prompts) 
-                    prompt = preset_prompt + '\n' + prompt
-                gr.Info(f"Lora Preset '{lset_name}' has been applied")
-                state["apply_success"] = 1
-                wizard_prompt_activated = "on"
+            loras_choices = update_loras_url_cache(get_lora_dir(current_model_type), loras_choices)
+            if full_prompt:
+                prompt = preset_prompt
+            elif len(preset_prompt) > 0:
+                prompts = prompt.replace("\r", "").split("\n")
+                prompts = [prompt for prompt in prompts if len(prompt)>0 and not prompt.startswith("#")]
+                prompt = "\n".join(prompts) 
+                prompt = preset_prompt + '\n' + prompt
+            gr.Info(f"Lora Preset '{lset_name}' has been applied")
+            state["apply_success"] = 1
+            wizard_prompt_activated = "on"
 
             return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, get_unique_id(), gr.update(), gr.update(), gr.update()
         else:
-            configs, _ = get_settings_from_file(state, os.path.join(get_lora_dir(current_model_type), lset_name), True, True, True)
+            # lset_path =  os.path.join("settings", lset_name) if len(Path(lset_name).parts)>1 else os.path.join(get_lora_dir(current_model_type), lset_name)
+            lset_path =  os.path.join(get_lora_dir(current_model_type), lset_name)
+            configs, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38)
             if configs == None:
                 gr.Info("File not supported")
-                return [gr.update()] * 7
-            
+                return [gr.update()] * 8
             model_type = configs["model_type"]
             configs["lset_name"] = lset_name
             gr.Info(f"Settings File '{lset_name}' has been applied")
+            help = configs.get("help", None)
+            if help is not None: gr.Info(help)
 
             if model_type == current_model_type:
                 set_model_settings(state, current_model_type, configs)        
@@ -6173,7 +6231,8 @@ visible= False
 def switch_advanced(state, new_advanced, lset_name):
     state["advanced"] = new_advanced
     loras_presets = state["loras_presets"]
-    lset_choices = compute_lset_choices(loras_presets)
+    model_type = state["model_type"]    
+    lset_choices = compute_lset_choices(model_type, loras_presets)
     lset_choices.append((get_new_preset_msg(new_advanced), ""))
     server_config["last_advanced_choice"] = new_advanced
     with open(server_config_filename, "w", encoding="utf-8") as writer:
@@ -6195,9 +6254,12 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if "loras_choices" in inputs:
         loras_choices = inputs.pop("loras_choices")
         inputs.pop("model_filename", None)
-        activated_loras = [Path( loras[int(no)]).parts[-1]  for no in loras_choices ]
-        inputs["activated_loras"] = activated_loras
-
+    else:
+        loras_choices = inputs["activated_loras"]
+    if model_type == None: model_type = state["model_type"]
+    
+    inputs["activated_loras"] = update_loras_url_cache(get_lora_dir(model_type), loras_choices)
+    
     if target == "state":
         return inputs
     
@@ -6207,7 +6269,6 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     unsaved_params = ["image_start", "image_end", "image_refs", "video_guide", "image_guide", "video_source", "video_mask", "image_mask", "audio_guide", "audio_guide2", "audio_source"]
     for k in unsaved_params:
         inputs.pop(k)
-    if model_type == None: model_type = state["model_type"]
     inputs["type"] = get_model_record(get_model_name(model_type))  
     inputs["settings_version"] = settings_version
     model_def = get_model_def(model_type)
@@ -6554,8 +6615,38 @@ def use_video_settings(state, input_file_list, choice):
         gr.Info(f"No Video is Selected")
 
     return gr.update(), gr.update()
+loras_url_cache = None
+def update_loras_url_cache(lora_dir, loras_selected):
+    if loras_selected is None: return None
+    global loras_url_cache
+    loras_cache_file = "loras_url_cache.json"
+    if loras_url_cache is None:
+        if os.path.isfile(loras_cache_file):
+            try:
+                with open(loras_cache_file, 'r', encoding='utf-8') as f:
+                    loras_url_cache = json.load(f)
+            except:
+                loras_url_cache = {}
+        else:
+            loras_url_cache = {}
+    new_loras_selected = []
+    update = False
+    for lora in loras_selected:
+        base_name = os.path.basename(lora)
+        local_name = os.path.join(lora_dir, base_name)
+        url = loras_url_cache.get(local_name, base_name)
+        if lora.startswith("http:") or lora.startswith("https:") and url != lora:
+            loras_url_cache[local_name]=lora
+            update = True
+        new_loras_selected.append(url)
 
-def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible):    
+    if update:
+        with open(loras_cache_file, "w", encoding="utf-8") as writer:
+            writer.write(json.dumps(loras_url_cache, indent=4))
+
+    return new_loras_selected
+
+def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible, min_settings_version = 0):    
     configs = None
     any_image_or_video = False
     if file_path.endswith(".json") and allow_json:
@@ -6581,7 +6672,10 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
             pass
     if configs is None: return None, False
     try:
-        if not "WanGP" in configs.get("type", ""): configs = None 
+        if isinstance(configs, dict):
+            if (not merge_with_defaults) and not "WanGP" in configs.get("type", ""): configs = None 
+        else:
+            configs = None
     except:
         configs = None
     if configs is None: return None, False
@@ -6601,7 +6695,6 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
             model_type = current_model_type
     elif not model_type in model_types:
         model_type = current_model_type
-    fix_settings(model_type, configs)
     if switch_type_if_compatible and are_model_types_compatible(model_type,current_model_type):
         model_type = current_model_type
     if merge_with_defaults:
@@ -6609,6 +6702,12 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
         defaults = get_default_settings(model_type) if defaults == None else defaults
         defaults.update(configs)
         configs = defaults
+
+    loras_selected =configs.get("activated_loras", None)
+    if loras_selected is not None:
+        configs["activated_loras"]= update_loras_url_cache(get_lora_dir(model_type), loras_selected)
+
+    fix_settings(model_type, configs, min_settings_version)
     configs["model_type"] = model_type
 
     return configs, any_image_or_video
@@ -6663,6 +6762,13 @@ def load_settings_from_file(state, file_path):
     else:
         set_model_settings(state, model_type, configs)        
         return *generate_dropdown_model_list(model_type), gr.update(), None
+
+def reset_settings(state):
+    model_type = state["model_type"]
+    ui_defaults = get_default_settings(model_type)
+    set_model_settings(state, model_type, ui_defaults)
+    gr.Info(f"Default Settings have been Restored")
+    return str(time.time())
 
 def save_inputs(
             target,
@@ -7360,6 +7466,25 @@ def get_default_value(choices, current_value, default_value = None):
             return current_value
     return default_value
 
+def download_lora(state, lora_url, progress=gr.Progress(track_tqdm=True),):
+    if lora_url is None or not lora_url.startswith("http"):
+        gr.Info("Please provide a URL for a Lora to Download")
+        return gr.update()
+    model_type = state["model_type"]
+    lora_short_name = os.path.basename(lora_url)
+    lora_dir = get_lora_dir(model_type)
+    local_path = os.path.join(lora_dir, lora_short_name)
+    try:
+        download_file(lora_url, local_path)
+    except Exception as e:
+        gr.Info(f"Error downloading Lora {lora_short_name}: {e}")
+        return gr.update()
+    update_loras_url_cache(lora_dir, [lora_url])
+    gr.Info(f"Lora {lora_short_name} has been succesfully downloaded")
+    return ""
+    
+
+
 def generate_video_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_choice = None, header = None, main = None, main_tabs= None):
     global inputs_names #, advanced
 
@@ -7387,11 +7512,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
     model_filename = get_model_filename( base_model_type )
     preset_to_load = lora_preselected_preset if lora_preset_model == model_type else "" 
 
-    loras, loras_names, loras_presets, default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, default_lora_preset = setup_loras(model_type,  None,  get_lora_dir(model_type), preset_to_load, None)
+    loras, loras_presets, default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, default_lora_preset = setup_loras(model_type,  None,  get_lora_dir(model_type), preset_to_load, None)
 
     state_dict["loras"] = loras
     state_dict["loras_presets"] = loras_presets
-    state_dict["loras_names"] = loras_names
 
     launch_prompt = ""
     launch_preset = ""
@@ -7412,17 +7536,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
         launch_prompt = ui_defaults.get("prompt","")
     if len(launch_loras) == 0:
         launch_multis_str = ui_defaults.get("loras_multipliers","")
-        activated_loras = ui_defaults.get("activated_loras",[])
-        if len(activated_loras) > 0:
-            lora_filenames = [os.path.basename(lora_path) for lora_path in loras]
-            activated_indices = []
-            for lora_file in ui_defaults["activated_loras"]:
-                try:
-                    idx = lora_filenames.index(lora_file)
-                    activated_indices.append(str(idx))
-                except ValueError: 
-                    print(f"Warning: Lora file {lora_file} from config not found in loras directory")
-            launch_loras = activated_indices
+        launch_loras = [os.path.basename(path) for path in ui_defaults.get("activated_loras",[])]
 
     with gr.Row():
         with gr.Column():
@@ -7433,7 +7547,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 modal_image_display = gr.HTML(label="Full Resolution Image")
                 preview_column_no = gr.Text(visible=False, value=-1, elem_id="preview_column_no")
             with gr.Row(visible= True): #len(loras)>0) as presets_column:
-                lset_choices = compute_lset_choices(loras_presets) + [(get_new_preset_msg(advanced_ui), "")]
+                lset_choices = compute_lset_choices(model_type, loras_presets) + [(get_new_preset_msg(advanced_ui), "")]
                 with gr.Column(scale=6):
                     lset_name = gr.Dropdown(show_label=False, allow_custom_value= True, scale=5, filterable=True, choices= lset_choices, value=launch_preset)
                 with gr.Column(scale=1):
@@ -7461,8 +7575,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         delete_lset_btn = gr.Button("Delete", size="sm", min_width= 1, visible = True)
                         cancel_lset_btn = gr.Button("Don't do it !", size="sm", min_width= 1 , visible=False)  
                         #confirm_save_lset_btn, confirm_delete_lset_btn, save_lset_btn, delete_lset_btn, cancel_lset_btn
-            if not update_form:
-                state = gr.State(state_dict)     
             trigger_refresh_input_type = gr.Text(interactive= False, visible= False)
             t2v =  base_model_type in ["t2v"] 
             t2v_1_3B =  base_model_type in ["t2v_1.3B"] 
@@ -7554,7 +7666,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         else:
                             image_prompt_type_endcheckbox = gr.Checkbox( value =False, show_label= False, visible= False , scale= 1)
                 image_start_row, image_start, image_start_extra = get_image_gallery(label= "Images as starting points for new Videos in the Generation Queue", value = ui_defaults.get("image_start", None), visible= "S" in image_prompt_type_value )
-                video_source = gr.Video(label= "Video to Continue", height = gallery_height, visible= "V" in image_prompt_type_value, value= ui_defaults.get("video_source", None),)
+                video_source = gr.Video(label= "Video to Continue", height = gallery_height, visible= "V" in image_prompt_type_value, value= ui_defaults.get("video_source", None), elem_id="video_input")
                 image_end_row, image_end, image_end_extra = get_image_gallery(label= get_image_end_label(ui_defaults.get("multi_prompts_gen_type", 0)), value = ui_defaults.get("image_end", None), visible= any_letters(image_prompt_type_value, "SVL") and ("E" in image_prompt_type_value)     ) 
                 if model_mode_choices is None or image_mode_value not in model_modes_visibility:
                     model_mode = gr.Dropdown(value=None, visible=False)
@@ -7714,7 +7826,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         )
 
                 image_guide = gr.Image(label= "Control Image", height = 800, type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and ("U" in video_prompt_type_value or not "A" in video_prompt_type_value ) , value= ui_defaults.get("image_guide", None))
-                video_guide = gr.Video(label= "Control Video", height = gallery_height, visible= (not image_outputs) and "V" in video_prompt_type_value, value= ui_defaults.get("video_guide", None))
+                video_guide = gr.Video(label= "Control Video", height = gallery_height, visible= (not image_outputs) and "V" in video_prompt_type_value, value= ui_defaults.get("video_guide", None), elem_id="video_input")
                 if image_mode_value >= 1:  
                     image_guide_value = ui_defaults.get("image_guide", None)
                     image_mask_value = ui_defaults.get("image_mask", None)
@@ -7980,13 +8092,14 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 with gr.Tab("Loras"):
                     with gr.Column(visible = True): #as loras_column:
                         gr.Markdown("<B>Loras can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
+                        loras, loras_choices = get_updated_loras_dropdown(loras, launch_loras)
+                        state_dict["loras"] = loras
                         loras_choices = gr.Dropdown(
-                            choices=[
-                                (lora_name, str(i) ) for i, lora_name in enumerate(loras_names)
-                            ],
+                            choices=loras_choices,
                             value= launch_loras,
                             multiselect= True,
-                            label="Activated Loras"
+                            label="Activated Loras",
+                            allow_custom_value= True,
                         )
                         loras_multipliers = gr.Textbox(label="Loras Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored", value=launch_multis_str)
                 with gr.Tab("Steps Skipping", visible = any_tea_cache or any_mag_cache) as speed_tab:
@@ -8272,15 +8385,21 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             with gr.Row():
                 save_settings_btn = gr.Button("Set Settings as Default", visible = not args.lock_config)
                 export_settings_from_file_btn = gr.Button("Export Settings to File")
+                reset_settings_btn = gr.Button("Reset Settings")
             with gr.Row():
                 settings_file = gr.File(height=41,label="Load Settings From Video / Image / JSON")
                 settings_base64_output = gr.Text(interactive= False, visible=False, value = "")
                 settings_filename =  gr.Text(interactive= False, visible=False, value = "")
-            
+            with gr.Group():
+                with gr.Row():
+                    lora_url = gr.Text(label ="Lora URL", placeholder= "Enter Lora URL", scale=4, show_label=False, elem_classes="compact_text" )
+                    download_lora_btn = gr.Button("Download Lora", scale=1, min_width=10)
+        
             mode = gr.Text(value="", visible = False)
 
         with gr.Column():
             if not update_form:
+                state = gr.State(state_dict)     
                 gen_status = gr.Text(interactive= False, label = "Status")
                 status_trigger = gr.Text(interactive= False, visible=False)
                 default_files = []
@@ -8436,6 +8555,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             gr.on( triggers=[output.change, output.select], fn=select_video, inputs=[state, output], outputs=[last_choice, video_info, video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab], show_progress="hidden")
             preview_trigger.change(refresh_preview, inputs= [state], outputs= [preview], show_progress="hidden")
             PP_MMAudio_setting.change(fn = lambda value : [gr.update(visible = value == 1), gr.update(visible = value == 0)] , inputs = [PP_MMAudio_setting], outputs = [PP_MMAudio_row, PP_custom_audio_row] )
+            download_lora_btn.click(fn=download_lora, inputs = [state, lora_url], outputs = [lora_url]).then(fn=refresh_lora_list, inputs=[state, lset_name,loras_choices], outputs=[lset_name, loras_choices])
             def refresh_status_async(state, progress=gr.Progress()):
                 gen = get_gen_info(state)
                 gen["progress"] = progress
@@ -8575,6 +8695,17 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 outputs= None
             ).then(fn=load_settings_from_file, inputs =[state, settings_file] , outputs= [model_family, model_choice, refresh_form_trigger, settings_file])
 
+
+            reset_settings_btn.click(fn=validate_wizard_prompt,
+                inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
+                outputs= [prompt],
+                show_progress="hidden",
+            ).then(fn=save_inputs,
+                inputs =[target_state] + gen_inputs,
+                outputs= None
+            ).then(fn=reset_settings, inputs =[state] , outputs= [refresh_form_trigger])
+
+ 
 
             fill_wizard_prompt_trigger.change(
                 fn = fill_wizard_prompt, inputs = [state, wizard_prompt_activated_var, prompt, wizard_prompt], outputs = [ wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, prompt_column_advanced, prompt_column_wizard, prompt_column_wizard_vars, *prompt_vars]
@@ -9691,6 +9822,32 @@ def create_ui():
         }
         .btn_centered {margin-top:10px; text-wrap-mode: nowrap;}
         .cbx_centered label {margin-top:8px; text-wrap-mode: nowrap;}
+
+        .copy-swap { display:block; max-width:100%; 
+        }
+        .copy-swap__trunc {
+        display: block;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        }
+        .copy-swap__full { display: none; }
+        .copy-swap:hover .copy-swap__trunc,
+        .copy-swap:focus-within .copy-swap__trunc { display: none; }
+        .copy-swap:hover .copy-swap__full,
+        .copy-swap:focus-within .copy-swap__full {
+        display: inline;
+        white-space: normal;
+        user-select: text;
+        }
+        .compact_text {padding: 1px}
+        #video_input .video-container .container {
+            flex-direction: row !important;
+            display: flex !important;
+        }
+        #video_input .video-container .container .controls {
+            overflow: visible !important;
+        }
     """
     UI_theme = server_config.get("UI_theme", "default")
     UI_theme  = args.theme if len(args.theme) > 0 else UI_theme

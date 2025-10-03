@@ -47,6 +47,20 @@ python wgp.py --lora-dir-hunyuan /path/to/hunyuan/loras --lora-dir-ltxv /path/to
 
 If you store loras in the loras folder once WanGP has been launched, click the *Refresh* button at the top so that it can become selectable.
 
+### Autodownload of Loras
+WanGP will try to remember where a Lora was obtained and will store the corresponding Download URL in the Generation settings that are embedded in the Generated Video. This is useful to share this information or to easily recover lost loras after a reinstall.
+
+This works very well if the Loras are stored in repositories such *Hugging Face* but won't work for the moment for Loras that requires a Login (like *CivitAi*) to be downloaded.
+
+WanGP will update its internal URL Lora Cache whenener one of this events will occur:
+- when applying or importing a *Accelerator Profile*, *Settings* or *Lset* file that contains Loras with full URLs (not just local paths) 
+- when extracting the settings of a Video that was generated with Loras and that contained the full Loras URLs
+- when downloading manually a Lora using the *Download Lora* button at the bottom
+
+So the more you use WanGP the more the URL cache File will get updated. The file is *loras_url_cache.json* and is located in the root folder of WanGP.
+
+You can delete this file with any risk if needed or share it with friends to save them time locating the Loras. You will need to restart WanGP if you modify manually this file or delete it.
+
 ### Lora Multipliers
 
 Multipliers control the strength of each lora's effect:
@@ -117,38 +131,49 @@ Loras Multipliers: 0;1;0 0;0;1
 Here during the first phase with guidance 3.5, the High model will be used but there won't be any lora at all. Then during phase 2 only the High lora will be used (which requires to set the guidance to 1). At last in phase 3 WanGP will switch to the Low model and then only the Low lora will be used.
 
 *Note that the syntax for multipliers can also be used in a Finetune model definition file (except that each multiplier definition is a string in a json list)*
-## Lora Presets
+## Lora Presets (.Lset file)
 
-Lora Presets are combinations of loras with predefined multipliers and prompts.
+Lora Presets contains all the information needed to use a Lora or a combination of Loras:
+- The full download URLs of the Loras
+- Default Loras Multipliers
+- Sample Prompt to use the Loras with their corresponding *Trigger Words* (usually as comments)
+Optionaly they may contain advanced prompts with macros to generate automatically Prompt using keywords.
+
+A Lora Preset is a text file of only of few kilobytes and can be easily shared between users. Don't hesitate to use this format if you have created a Lora.
 
 ### Creating Presets
 1. Configure your loras and multipliers
-2. Write a prompt with comments (lines starting with #)
-3. Save as a preset with `.lset` extension
+2. Write a prompt with comments lines starting with # that contains instructions
+3. Save as a preset with `.lset` extension by clicking the *Save* button at the top, select *Save Only Loras & Full Prompt* and finally click *Go Ahead Save it!*
 
-### Example Preset
+### Example Lora Preset Prompt
 ```
 # Use the keyword "ohnvx" to trigger the lora
 A ohnvx character is driving a car through the city
 ```
 
-### Using Presets
-```bash
-# Load preset on startup
-python wgp.py --lora-preset mypreset.lset
+Using a macro (check the doc below), the user will just have to enter two words and the Prompt will be generated for him:
+```
+! {Person}="man" : {Object}="car"
+This {Person} is cleaning his {Object}.
 ```
 
-### Managing Presets
+
+### Managing Loras Presets (.lset Files)
 - Edit, save, or delete presets directly from the web interface
 - Presets include comments with usage instructions
-- Share `.lset` files with other users
+- Share `.lset` files with other users (make sure the full Loras URLs are in it)
+
+A *.lset* file may contain only local paths to the Loras if WanGP doesn't know where you got it. You can edit the .lset file with a text editor and replace the local path with its URL. If you store your Lora in Hugging Face, you can easily obtain its URL by selecting the file and clicking *Copy Download Link*.
+
+To share a *.Lset* file you will need (for the moment) to get it directly in the Lora folder where it is stored.
 
 ## Supported Formats
 
-WanGP supports multiple lora formats:
+WanGP supports multiple most lora formats:
 - **Safetensors** (.safetensors)
 - **Replicate** format
-- **Standard PyTorch** (.pt, .pth)
+- ...
 
 
 ## Loras Accelerators
@@ -166,8 +191,17 @@ https://huggingface.co/DeepBeepMeep/Qwen_image/tree/main/loras_accelerators
 
 
 ### Setup Instructions
-1. Download the Lora
-2. Place it in your `loras/` directory if it is a t2v lora or in the `loras_i2v/` directory if it isa i2v lora
+There are three ways to setup Loras accelerators:
+1) **Finetune with Embedded Loras Accelerators**
+Some models Finetunes such as *Vace FusioniX* or *Vace Coctail* have the Loras Accelerators already set up in their own definition and you won't have to do anything as they will be downloaded with the Finetune.
+
+2) **Accelerators Profiles**
+Predefined *Accelerator Profiles* can be selected using the *Settings* Dropdown box at the top. The choices of Accelerators will depend on the models. No accelerator will be offered if the finetune / model is already accelerated. Just click *Apply* and the Accelerators Loras will be setup in the Loras tab at the bottom. Any missing Lora will be downloaded automatically the first time you try to generate a Video. Be aware that when applying an *Accelerator Profile*, inputs such as *Activated Loras*, *Number of Inference Steps*, ... will bo overwritten wheras other inputs will be preserved so that you can easily switch between profiles. 
+
+3) **Manual Install**
+- Download the Lora
+- Place it in the Lora Directory of the correspondig model
+- Configure the Loras Multipliers, CFG as described in the later sections
 
 ## FusioniX (or FusionX) Lora for Wan 2.1 / Wan 2.2 
 If you need just one Lora accelerator use this one. It is a combination of multiple Loras acelerators (including Causvid below) and style loras. It will not only accelerate the video generation but it will also improve the quality. There are two versions of this lora whether you use it for t2v or i2v

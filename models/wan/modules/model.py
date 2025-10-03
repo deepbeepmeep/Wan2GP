@@ -1354,8 +1354,7 @@ class WanModel(ModelMixin, ConfigMixin):
                 # animate embeddings
                 motion_vec = None
                 if pose_latents is not None: 
-                    # x, motion_vec = after_patch_embedding(self, x, pose_latents, torch.zeros_like(face_pixel_values[0]) if one_face_pixel_values is None else one_face_pixel_values)
-                    x, motion_vec = after_patch_embedding(self, x, pose_latents, face_pixel_values[0]) # if one_face_pixel_values is None else one_face_pixel_values)
+                    x, motion_vec = after_patch_embedding(self, x, pose_latents, torch.zeros_like(face_pixel_values[0]) if one_face_pixel_values is None else one_face_pixel_values)
                 motion_vec_list.append(motion_vec)
                 if chipmunk:
                     x = x.unsqueeze(-1)

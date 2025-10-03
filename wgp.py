@@ -5142,7 +5142,8 @@ def generate_video(
                                                                                         block_size=block_size,
                                                                                         outpainting_dims =outpainting_dims,
                                                                                         background_ref_outpainted = model_def.get("background_ref_outpainted", True),
-                                                                                        return_tensor= model_def.get("return_image_refs_tensor", False) )
+                                                                                        return_tensor= model_def.get("return_image_refs_tensor", False),
+                                                                                        ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0))
 
             frames_to_inject_parsed = frames_to_inject[ window_start_frame if extract_guide_from_window_start else guide_start_frame: guide_end_frame]
             if video_guide is not None or len(frames_to_inject_parsed) > 0 or model_def.get("forced_guide_mask_inputs", False): 

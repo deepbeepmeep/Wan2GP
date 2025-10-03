@@ -97,6 +97,26 @@ def relative_l1_distance(last_tensor, current_tensor):
     relative_l1_distance = l1_distance / norm
     return relative_l1_distance.to(torch.float32)
 
+def trim_image_ref(y, ref_images_count, grid_sizes):
+    y_shape = y.shape
+    y = y.reshape(y_shape[0], grid_sizes[0], -1)
+    y = y[:, ref_images_count:]
+    y = y.reshape(y_shape[0], -1, y_shape[-1])
+    grid_sizes_alt = [grid_sizes[0]-ref_images_count, *grid_sizes[1:]]
+    return y, grid_sizes_alt
+
+def fuse_with_image_ref(x, y, ref_images_count, grid_sizes, alpha = 1):
+    y_shape = x.shape
+    y = y.reshape(y_shape[0], grid_sizes[0]-ref_images_count, -1)
+    x = x.reshape(y_shape[0], grid_sizes[0], -1)
+    if alpha == 1:
+        x[:, ref_images_count:] += y
+    else:
+        x[:, ref_images_count:].add_(y, alpha= alpha) 
+
+    x = x.reshape(*y_shape)
+    return x
+
 class LoRALinearLayer(nn.Module):
     def __init__(
         self,
@@ -295,6 +315,8 @@ class WanSelfAttention(nn.Module):
         if not lynx_ref_buffer is None:
             lynx_ref_features = lynx_ref_buffer[self.block_no]
             if self.norm_q is not None: ref_query = self.norm_q(q, in_place = False)
+            if ref_images_count > 0:
+                ref_query, _ = trim_image_ref(ref_query, ref_images_count, grid_sizes)
             ref_key = self.to_k_ref(lynx_ref_features)
             ref_value = self.to_v_ref(lynx_ref_features)
             if self.norm_k is not None: ref_key = self.norm_k(ref_key)
@@ -365,7 +387,11 @@ class WanSelfAttention(nn.Module):
                 del q,k,v
 
         if ref_hidden_states is not None:
-            x.add_(ref_hidden_states, alpha= lynx_ref_scale) 
+
+            if ref_images_count > 0:
+                x = fuse_with_image_ref(x, ref_hidden_states, ref_images_count, grid_sizes, alpha = lynx_ref_scale)
+            else:
+                x.add_(ref_hidden_states, alpha= lynx_ref_scale) 
 
         x = x.flatten(2)
         x = self.o(x)
@@ -631,18 +657,11 @@ class WanAttentionBlock(nn.Module):
                 del y
                 x += self.audio_cross_attn(ylist, encoder_hidden_states=multitalk_audio, shape=grid_sizes, x_ref_attn_map=x_ref_attn_map)
             else:
-                y_shape = y.shape
-                y = y.reshape(y_shape[0], grid_sizes[0], -1)
-                y = y[:, ref_images_count:]
-                y = y.reshape(y_shape[0], -1, y_shape[-1])
-                grid_sizes_alt = [grid_sizes[0]-ref_images_count, *grid_sizes[1:]]
+                y, grid_sizes_alt = trim_image_ref(y, ref_images_count, grid_sizes)
                 ylist= [y]
                 y = None
                 y = self.audio_cross_attn(ylist, encoder_hidden_states=multitalk_audio, shape=grid_sizes_alt, x_ref_attn_map=x_ref_attn_map)
-                y = y.reshape(y_shape[0], grid_sizes[0]-ref_images_count, -1)
-                x = x.reshape(y_shape[0], grid_sizes[0], -1)
-                x[:, ref_images_count:] += y
-                x = x.reshape(y_shape[0], -1, y_shape[-1])
+                x = fuse_with_image_ref(x, y, ref_images_count, grid_sizes)
                 del y
 
         y = self.norm2(x)

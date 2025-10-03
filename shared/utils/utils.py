@@ -273,13 +273,13 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
         image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
     return image, new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False ):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0 ):
     if rm_background:
         session = new_session() 
 
     output_list =[]
     output_mask_list =[]
-    for i, img in enumerate(img_list):
+    for i, img in enumerate(img_list if ignore_last_refs == 0 else img_list[:-ignore_last_refs]):
         width, height =  img.size 
         resized_mask = None
         if any_background_ref == 1 and i==0 or any_background_ref == 2:
@@ -312,6 +312,11 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
         else:
             output_list.append(resized_image) 
         output_mask_list.append(resized_mask)
+    if ignore_last_refs:
+        for img in img_list[-ignore_last_refs:]:
+            output_list.append(convert_image_to_tensor(img).unsqueeze(1) if return_tensor else img) 
+            output_mask_list.append(None)
+
     return output_list, output_mask_list
 
 def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, return_mask = False, return_image = False):

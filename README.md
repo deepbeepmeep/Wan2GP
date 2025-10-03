@@ -20,7 +20,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
 ## 🔥 Latest Updates : 
-### October 2 2025: WanGP v8.99 - One Last Thing before the Big Unknown ...
+### October 2 2025: WanGP v8.991 - One Last Thing before the Big Unknown ...
 
 This new version hasn't any new model...
 
@@ -35,6 +35,7 @@ I have created the new Discord Channel **share-your-settings** where you can pos
 
 Last but not least the Lora's documentation has been updated.
 
+*update 8.991*: full power of *Vace Lynx* unleashed with new combinations such as Landscape + Face / Clothes + Face  / Injectd Frame (Start/End frames/...) + Face
 ### September 30 2025: WanGP v8.9 - Combinatorics
 
 This new version of WanGP introduces **Wan 2.1 Lynx** the best Control Net so far to transfer *Facial Identity*. You will be amazed to recognize your friends even with a completely different hair style. Congrats to the *Byte Dance team* for this achievement. Lynx works quite with well *Fusionix t2v* 10 steps.

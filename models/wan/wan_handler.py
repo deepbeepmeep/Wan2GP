@@ -254,9 +254,13 @@ class family_handler():
             if base_model_type in ["vace_lynx_14B"]:
                 extra_model_def["set_video_prompt_type"]="Q"
                 extra_model_def["control_net_weight_alt_name"] = "Lynx"
-                extra_model_def["image_ref_choices"] = { "choices": [("None", ""),("Person Face", "I")], "letters_filter":  "I"}
-                extra_model_def["no_background_removal"] = True
-                extra_model_def["fit_into_canvas_image_refs"] = 0
+                extra_model_def["image_ref_choices"]["choices"] = [("None", ""),
+                    ("People / Objects", "I"),
+                    ("Landscape followed by People / Objects (if any)", "KI"),
+                    ("Positioned Frames followed by People / Objects (if any)", "FI"),
+                    ]
+                extra_model_def["background_removal_label"]= "Remove Backgrounds behind People / Objects, keep it for Landscape, Lynx Face or Positioned Frames"
+                extra_model_def["no_processing_on_last_images_refs"] = 1
 
             
 
@@ -617,9 +621,9 @@ class family_handler():
                 inputs["video_prompt_type"] = video_prompt_type 
 
 
-        if base_model_type in ["vace_standin_14B"]:
+        if base_model_type in ["vace_standin_14B", "vace_lynx_14B"]:
             image_refs = inputs["image_refs"]
             video_prompt_type = inputs["video_prompt_type"]
-            if image_refs is not None and  len(image_refs) == 1 and "K" in video_prompt_type:
-                gr.Info("Warning, Ref Image for Standin Missing: if 'Landscape and then People or Objects' is selected beside the Landscape Image Ref there should be another Image Ref that contains a Face.")
+            if image_refs is not None and len(image_refs) == 1 and "K" in video_prompt_type:
+                gr.Info("Warning, Ref Image that contains the Face to transfer is Missing: if 'Landscape and then People or Objects' is selected beside the Landscape Image Ref there should be another Image Ref that contains a Face.")
                     

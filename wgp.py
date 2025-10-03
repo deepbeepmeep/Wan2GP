@@ -38,6 +38,7 @@ import typing
 import asyncio
 import inspect
 from shared.utils import prompt_parser
+from shared.utils.sliding_window_cleanup import cleanup_previous_video, should_cleanup_video, get_cleanup_status_text
 import base64
 import io
 from PIL import Image
@@ -569,7 +570,8 @@ def process_prompt_and_add_tasks(state, model_choice):
             full_video_length = video_length if video_source is None else video_length +  sliding_window_overlap -1
             extra = "" if full_video_length == video_length else f" including {sliding_window_overlap} added for Video Continuation"
             no_windows = compute_sliding_window_no(full_video_length, sliding_window_size, sliding_window_discard_last_frames, sliding_window_overlap)
-            gr.Info(f"The Number of Frames to generate ({video_length}{extra}) is greater than the Sliding Window Size ({sliding_window_size}), {no_windows} Windows will be generated")
+            cleanup_status = get_cleanup_status_text(server_config)
+            gr.Info(f"The Number of Frames to generate ({video_length}{extra}) is greater than the Sliding Window Size ({sliding_window_size}), {no_windows} Windows will be generated. Video Cleanup: {cleanup_status}")
     if "recam" in model_filename:
         if video_guide == None:
             gr.Info("You must provide a Control Video")
@@ -1823,7 +1825,8 @@ if not Path(server_config_filename).is_file():
         "vae_config": 0,
         "profile" : profile_type.LowRAM_LowVRAM,
         "preload_model_policy": [],
-        "UI_theme": "default"
+        "UI_theme": "default",
+        "sliding_window_keep_only_longest": False
     }
 
     with open(server_config_filename, "w", encoding="utf-8") as writer:
@@ -3012,6 +3015,7 @@ def apply_changes(  state,
                     image_output_codec_choice = None,
                     audio_output_codec_choice = None,
                     last_resolution_choice = None,
+                    sliding_window_keep_only_longest_choice = False,
 ):
     if args.lock_config:
         return "<DIV ALIGN=CENTER>Config Locked</DIV>",*[gr.update()]*4
@@ -3049,6 +3053,7 @@ def apply_changes(  state,
         "video_output_codec" : video_output_codec_choice,
         "image_output_codec" : image_output_codec_choice,
         "audio_output_codec" : audio_output_codec_choice,
+        "sliding_window_keep_only_longest" : sliding_window_keep_only_longest_choice,
         "last_model_type" : state["model_type"],
         "last_model_per_family":  state["last_model_per_family"],
         "last_advanced_choice": state["advanced"], 
@@ -4605,6 +4610,7 @@ def generate_video(
     processes_names = { "pose": "Open Pose", "depth": "Depth Mask", "scribble" : "Shapes", "flow" : "Flow Map", "gray" : "Gray Levels", "inpaint" : "Inpaint Mask", "identity": "Identity Mask", "raw" : "Raw Format", "canny" : "Canny Edges"}
 
     global wan_model, offloadobj, reload_needed
+    sliding_window_keep_only_longest = server_config.get("sliding_window_keep_only_longest", False)
     gen = get_gen_info(state)
     torch.set_grad_enabled(False) 
     if mode.startswith("edit_"):
@@ -4927,6 +4933,7 @@ def generate_video(
         context_scale = None
         window_no = 0
         extra_windows = 0
+        previous_video_path = None  # Track previous video for cleanup when sliding_window_keep_only_longest is enabled
         guide_start_frame = 0 # pos of of first control video frame of current window  (reuse_frames later than the first processed frame)
         keep_frames_parsed = [] # aligned to the first control frame of current window (therefore ignore previous reuse_frames)
         pre_video_guide = None # reuse_frames of previous window
@@ -5441,6 +5448,11 @@ def generate_video(
                     video_path= new_image_path
                 elif len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0 or output_new_audio_filepath is not None or any_mmaudio or output_new_audio_data is not None or audio_source is not None:
                     video_path = os.path.join(save_path, file_name)
+                    
+                    # Delete previous video if sliding_window_keep_only_longest is enabled
+                    cleanup_previous_video(previous_video_path, file_list, file_settings_list, lock, 
+                                         sliding_window, sliding_window_keep_only_longest)
+                    
                     save_path_tmp = video_path[:-4] + "_tmp.mp4"
                     save_video( tensor=sample[None], save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None))
                     output_new_audio_temp_filepath = None
@@ -5469,6 +5481,10 @@ def generate_video(
                     if output_new_audio_temp_filepath is not None: os.remove(output_new_audio_temp_filepath)
 
                 else:
+                    # Delete previous video if sliding_window_keep_only_longest is enabled
+                    cleanup_previous_video(previous_video_path, file_list, file_settings_list, lock, 
+                                         sliding_window, sliding_window_keep_only_longest)
+                    
                     save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None))
 
                 end_time = time.time()
@@ -5519,6 +5535,14 @@ def generate_video(
                     with lock:
                         file_list.append(path)
                         file_settings_list.append(configs if no > 0 else configs.copy())
+                
+                # Update previous video path for cleanup in next iteration (only for videos, not images)
+                if should_cleanup_video(sliding_window, sliding_window_keep_only_longest, is_image):
+                    if isinstance(video_path, list):
+                        # Handle case where video_path might be a list (for images)
+                        previous_video_path = video_path[0] if len(video_path) > 0 else None
+                    else:
+                        previous_video_path = video_path
                     
                 # Play notification sound for single video
                 try:
@@ -6729,12 +6753,12 @@ def load_settings_from_file(state, file_path):
     gen = get_gen_info(state)
 
     if file_path==None:
-        return gr.update(), gr.update(), None
+        return gr.update(), gr.update(), None, gr.update()
 
     configs, any_video_or_image_file = get_settings_from_file(state, file_path, True, True, True)
     if configs == None:
         gr.Info("File not supported")
-        return gr.update(), gr.update(), None
+        return gr.update(), gr.update(), None, gr.update()
 
     current_model_type = state["model_type"]
     model_type = configs["model_type"]
@@ -6748,10 +6772,10 @@ def load_settings_from_file(state, file_path):
 
     if model_type == current_model_type:
         set_model_settings(state, current_model_type, configs)        
-        return gr.update(), gr.update(), str(time.time()), None
+        return gr.update(), gr.update(), str(time.time()), gr.update()
     else:
         set_model_settings(state, model_type, configs)        
-        return *generate_dropdown_model_list(model_type), gr.update(), None
+        return *generate_dropdown_model_list(model_type), gr.update(), gr.update()
 
 def reset_settings(state):
     model_type = state["model_type"]
@@ -9008,6 +9032,15 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                     label="User Interface Theme. You will need to restart the App the see new Theme."
                 )
 
+                sliding_window_keep_only_longest_choice = gr.Dropdown(
+                    choices=[
+                        ("Disabled", False),
+                        ("Enabled", True),
+                    ],
+                    value=server_config.get("sliding_window_keep_only_longest", False),
+                    label="Sliding Window Video Cleanup Policy (automatically deletes shorter intermediate videos during generation)"
+                )
+
 
             with gr.Tab("Performance"):
 
@@ -9244,6 +9277,7 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                     image_output_codec_choice,
                     audio_output_codec_choice,
                     resolution,
+                    sliding_window_keep_only_longest_choice,
                 ],
                 outputs= [msg , header, model_family, model_choice, refresh_form_trigger]
         )

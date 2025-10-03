@@ -122,8 +122,7 @@ class family_handler():
                             ("unipc", "unipc"),
                             ("euler", "euler"),
                             ("dpm++", "dpm++"),
-                            ("flowmatch causvid", "causvid"),
-                            ("lcm + ltx", "lcm"), ]
+                            ("flowmatch causvid", "causvid"), ]
         })
 
 

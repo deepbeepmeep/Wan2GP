@@ -929,7 +929,8 @@ class WanAny2V:
                 gen_args = {
                     "x" : [latent_model_input, latent_model_input],
                     "context" : [context, context_null],
-                    "face_pixel_values": [face_pixel_values, None]
+                    # "face_pixel_values": [face_pixel_values, None]
+                    "face_pixel_values": [face_pixel_values, face_pixel_values] # seems to look better this way
                 }
             elif lynx:
                 gen_args = {

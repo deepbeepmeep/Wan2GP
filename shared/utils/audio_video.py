@@ -13,6 +13,13 @@ from PIL import Image
 import os.path as osp
 import json
 
+# Import source image embedding functionality
+from .source_image_embedding import (
+    embed_source_images_metadata_mp4,
+    embed_source_images_metadata,
+    extract_source_images
+)
+
 def rand_name(length=8, suffix=''):
     name = binascii.b2a_hex(os.urandom(length)).decode('utf-8')
     if suffix:
@@ -229,7 +236,8 @@ def save_video(tensor,
                 nrow=8,
                 normalize=True,
                 value_range=(-1, 1),
-                retry=5):
+                retry=5,
+                source_images=None):
     """Save tensor as video with configurable codec and container options."""
         
     if torch.is_tensor(tensor) and len(tensor.shape) == 4:
@@ -265,6 +273,17 @@ def save_video(tensor,
                 writer.append_data(frame)
         
             writer.close()
+            
+            # Embed source images if provided and container supports it
+            if source_images and container in ['mkv', 'mp4']:
+                try:
+                    if container == 'mp4':
+                        cache_file = embed_source_images_metadata_mp4(cache_file, source_images)
+                    else:  # mkv
+                        cache_file = embed_source_images_metadata(cache_file, source_images)
+                except Exception as e:
+                    print(f"Warning: Failed to embed source images: {e}")
+            
             return cache_file
             
         except Exception as e:

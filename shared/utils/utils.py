@@ -34,7 +34,7 @@ def seed_everything(seed: int):
 
 def has_video_file_extension(filename):
     extension = os.path.splitext(filename)[-1].lower()
-    return extension in [".mp4"]
+    return extension in [".mp4", ".mkv"]
 
 def has_image_file_extension(filename):
     extension = os.path.splitext(filename)[-1].lower()

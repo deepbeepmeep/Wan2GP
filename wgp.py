@@ -53,7 +53,7 @@ from preprocessing.matanyone  import app as matanyone_app
 from tqdm import tqdm
 import requests
 from shared.gradio.gallery import AdvancedMediaGallery
-
+from shared.utils.plugins import PluginManager, WAN2GPApplication
 # import torch._dynamo as dynamo
 # dynamo.config.recompile_limit = 2000   # default is 256
 # dynamo.config.accumulated_recompile_limit = 2000  # or whatever limit you want
@@ -8879,7 +8879,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 outputs=[modal_container]
             )
 
-    return ( state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger,
+    tab_locals_dict = { name: obj for name, obj in locals().items() if isinstance(obj, (gr.Blocks, gr.components.Component, gr.Row, gr.Column, gr.Tabs, gr.Group, gr.Accordion)) }
+
+    return ( state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger, tab_locals_dict,
             #  video_guide, image_guide, video_mask, image_mask, image_refs,   
             ) 
  
@@ -9881,6 +9883,8 @@ def create_ui():
 
         tab_state = gr.State({ "tab_no":0 }) 
 
+        sorted_plugin_tabs = app.setup_plugins_ui(globals())
+
         with gr.Tabs(selected="video_gen", ) as main_tabs:
             with gr.Tab("Video Generator", id="video_gen") as video_generator_tab:
                 with gr.Row():
@@ -9898,7 +9902,7 @@ def create_ui():
                         stats_element = stats_app.get_gradio_element()
 
                 with gr.Row():
-                    (   state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger
+                    (   state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger, generate_tab_components
                         # video_guide, image_guide, video_mask, image_mask, image_refs, 
                     ) = generate_video_tab(model_family=model_family, model_choice=model_choice, header=header, main = main, main_tabs =main_tabs)
             with gr.Tab("Guides", id="info") as info_tab:
@@ -9912,12 +9916,20 @@ def create_ui():
                     generate_configuration_tab(state, main, header, model_family, model_choice, resolution, refresh_form_trigger)
             with gr.Tab("About"):
                 generate_about_tab()
+
+            for tab_id, tab_info in sorted_plugin_tabs:
+                with gr.Tab(tab_info['label'], id=f"plugin_{tab_id}"):
+                    tab_info['component_constructor']()
         if stats_app is not None:
             stats_app.setup_events(main, state)
         main_tabs.select(fn=select_tab, inputs= [tab_state], outputs= [main_tabs, save_form_trigger], trigger_mode="multiple")
+
+        app.ui_components = generate_tab_components
+        app.run_post_ui_setup()
         return main
 
 if __name__ == "__main__":
+    app = WAN2GPApplication()
     atexit.register(autosave_queue)
     download_ffmpeg()
     # threading.Thread(target=runner, daemon=True).start()

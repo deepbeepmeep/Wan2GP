@@ -708,8 +708,7 @@ class WanAny2V:
                     ip_hidden_states_uncond = arc_resampler(torch.zeros_like(arcface_embed)).to(self.dtype)
                 arc_resampler = None
                 if not lynx_lite:
-                    standin_ref_pos = -1
-                    image_ref = original_input_ref_images[standin_ref_pos]
+                    image_ref = original_input_ref_images[-1]
                     from preprocessing.face_preprocessor  import FaceProcessor 
                     face_processor = FaceProcessor()
                     lynx_ref = face_processor.process(image_ref, resize_to = 256 )
@@ -736,7 +735,7 @@ class WanAny2V:
                 face_processor = None
                 gc.collect()
                 torch.cuda.empty_cache()
-                standin_freqs = get_nd_rotary_pos_embed((-1, int(target_shape[-2]/2), int(target_shape[-1]/2) ), (-1, int(target_shape[-2]/2 + standin_ref.height/16), int(target_shape[-1]/2 + standin_ref.width/16) )) 
+                standin_freqs = get_nd_rotary_pos_embed((-1, int(height/16), int(width/16) ), (-1, int(height/16 + standin_ref.height/16), int(width/16 + standin_ref.width/16) )) 
                 standin_ref = self.vae.encode([ convert_image_to_tensor(standin_ref).unsqueeze(1) ], VAE_tile_size)[0].unsqueeze(0)
                 kwargs.update({ "standin_freqs": standin_freqs, "standin_ref": standin_ref, }) 
 

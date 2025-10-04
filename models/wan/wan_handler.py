@@ -255,10 +255,9 @@ class family_handler():
                 extra_model_def["set_video_prompt_type"]="Q"
                 extra_model_def["control_net_weight_alt_name"] = "Lynx"
                 extra_model_def["image_ref_choices"]["choices"] = [("None", ""),
-                    ("People / Objects", "I"),
-                    ("Landscape followed by People / Objects (if any)", "KI"),
-                    ("Positioned Frames followed by People / Objects (if any)", "FI"),
-                    ]
+                    ("People / Objects (if any) then a Face", "I"),
+                    ("Landscape followed by People / Objects (if any) then a Face", "KI"),
+                    ("Positioned Frames followed by People / Objects (if any) then a Face", "FI")]
                 extra_model_def["background_removal_label"]= "Remove Backgrounds behind People / Objects, keep it for Landscape, Lynx Face or Positioned Frames"
                 extra_model_def["no_processing_on_last_images_refs"] = 1
 
@@ -266,6 +265,15 @@ class family_handler():
 
         if base_model_type in ["standin"]: 
             extra_model_def["v2i_switch_supported"] = True
+            extra_model_def["image_ref_choices"] = {
+                "choices": [
+                    ("No Reference Image", ""),
+                    ("Reference Image is a Person Face", "I"),
+                    ],
+                "visible": False,
+                "letters_filter":"I",
+            }
+            extra_model_def["one_image_ref_needed"] = True
 
         if base_model_type in ["lynx_lite", "lynx"]: 
             extra_model_def["fit_into_canvas_image_refs"] = 0
@@ -292,7 +300,7 @@ class family_handler():
                 "visible": False,
                 "letters_filter":"I",
             }
-
+            extra_model_def["one_image_ref_needed"] = True
             extra_model_def["set_video_prompt_type"]= "Q"
             extra_model_def["no_background_removal"] = True
             extra_model_def["v2i_switch_supported"] = True
@@ -515,6 +523,13 @@ class family_handler():
                     video_prompt_type = video_prompt_type.replace("Q", "0")
                     ui_defaults["video_prompt_type"] = video_prompt_type 
 
+        if settings_version < 2.39:
+            if base_model_type in ["fantasy"]:
+                audio_prompt_type = ui_defaults.get("audio_prompt_type", "")
+                if not "A" in audio_prompt_type:
+                    audio_prompt_type +=  "A"
+                    ui_defaults["audio_prompt_type"] = audio_prompt_type 
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
@@ -527,6 +542,7 @@ class family_handler():
             ui_defaults.update({
                 "audio_guidance_scale": 5.0,
                 "sliding_window_overlap" : 1,
+                "audio_prompt_type": "A",
             })
 
         elif base_model_type in ["multitalk"]:
@@ -535,6 +551,7 @@ class family_handler():
                 "flow_shift": 7, # 11 for 720p
                 "sliding_window_discard_last_frames" : 4,
                 "sample_solver" : "euler",
+                "audio_prompt_type": "A",
                 "adaptive_switch" : 1,
             })
 

@@ -62,8 +62,8 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
-target_mmgp_version = "3.6.1"
-WanGP_version = "8.992"
+target_mmgp_version = "3.6.2"
+WanGP_version = "8.993"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -3527,7 +3527,7 @@ def select_video(state, input_file_list, event_data: gr.EventData):
             control_net_weight_alt_name = model_def.get("control_net_weight_alt_name", "")
             if len(control_net_weight_alt_name) >0:
                 if len(control_net_weight): control_net_weight += ", "
-                control_net_weight += control_net_weight_alt_name + "=" + str(configs.get("control_net_alt", 1))
+                control_net_weight += control_net_weight_alt_name + "=" + str(configs.get("control_net_weight_alt", 1))
             if len(control_net_weight) > 0: 
                 values += [control_net_weight]
                 labels += ["Control Net Weights"]      
@@ -5854,8 +5854,8 @@ def compute_lset_choices(model_type, loras_presets):
     if model_type is not None:
         top_dir = get_lora_dir(model_type)
         model_def = get_model_def(model_type)
-        settings_dir = get_model_recursive_prop(model_type, "settings_dir", return_list=False)
-        if settings_dir is None or len(settings_dir) == 0: settings_dir = [get_model_family(model_type, True)]
+        settings_dir = get_model_recursive_prop(model_type, "profiles_dir", return_list=False)
+        if settings_dir is None or len(settings_dir) == 0: settings_dir = ["profiles_" + get_model_family(model_type, True)]
         for dir in settings_dir:
             if len(dir) == "": continue
             cur_path = os.path.join(top_dir, dir)
@@ -5947,6 +5947,8 @@ def save_lset(state, lset_name, loras_choices, loras_mult_choices, prompt, save_
             lset = collect_current_model_settings(state)
             extension = ".json" 
         else:
+            from shared.utils.loras_mutipliers import extract_loras_side
+            loras_choices, loras_mult_choices = extract_loras_side(loras_choices, loras_mult_choices, "after")
             lset  = {"loras" : loras_choices, "loras_mult" : loras_mult_choices}
             if save_lset_prompt_cbox!=1:
                 prompts = prompt.replace("\r", "").split("\n")
@@ -6057,6 +6059,7 @@ def refresh_lora_list(state, lset_name, loras_choices):
 def update_lset_type(state, lset_name):
     return 1 if lset_name.endswith(".lset") else 2
 
+from shared.utils.loras_mutipliers import merge_loras_settings
 
 def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_mult_choices, prompt):
 
@@ -6068,10 +6071,11 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
         return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, gr.update(), gr.update(), gr.update(), gr.update()
     else:
         current_model_type = state["model_type"]
+        ui_settings = get_current_model_settings(state)
+        old_activated_loras, old_loras_multipliers  = ui_settings.get("activated_loras", []), ui_settings.get("loras_multipliers", ""),
         if lset_name.endswith(".lset"):
             loras = state["loras"]
             loras_choices, loras_mult_choices, preset_prompt, full_prompt, error = extract_preset(current_model_type,  lset_name, loras)
-            loras_choices = update_loras_url_cache(get_lora_dir(current_model_type), loras_choices)
             if full_prompt:
                 prompt = preset_prompt
             elif len(preset_prompt) > 0:
@@ -6079,6 +6083,9 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
                 prompts = [prompt for prompt in prompts if len(prompt)>0 and not prompt.startswith("#")]
                 prompt = "\n".join(prompts) 
                 prompt = preset_prompt + '\n' + prompt
+            loras_choices, loras_mult_choices = merge_loras_settings(old_activated_loras, old_loras_multipliers, loras_choices, loras_mult_choices, "merge after")
+            loras_choices = update_loras_url_cache(get_lora_dir(current_model_type), loras_choices)
+            loras_choices = [os.path.basename(lora) for lora in loras_choices]
             gr.Info(f"Lora Preset '{lset_name}' has been applied")
             state["apply_success"] = 1
             wizard_prompt_activated = "on"
@@ -6087,7 +6094,8 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
         else:
             # lset_path =  os.path.join("settings", lset_name) if len(Path(lset_name).parts)>1 else os.path.join(get_lora_dir(current_model_type), lset_name)
             lset_path =  os.path.join(get_lora_dir(current_model_type), lset_name)
-            configs, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38)
+            configs, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = "merge after" if  len(Path(lset_name).parts)<=1 else "merge before" )
+
             if configs == None:
                 gr.Info("File not supported")
                 return [gr.update()] * 8
@@ -6096,7 +6104,6 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             gr.Info(f"Settings File '{lset_name}' has been applied")
             help = configs.get("help", None)
             if help is not None: gr.Info(help)
-
             if model_type == current_model_type:
                 set_model_settings(state, current_model_type, configs)        
                 return *[gr.update()] * 4, gr.update(), gr.update(), gr.update(), get_unique_id()
@@ -6327,7 +6334,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["frames_positions", "control_net_weight", "control_net_weight2"] 
 
     if not len(model_def.get("control_net_weight_alt_name", "")) >0:
-        pop += ["control_net_alt"]
+        pop += ["control_net_weight_alt"]
                         
     if model_def.get("video_guide_outpainting", None) is None:
         pop += ["video_guide_outpainting"] 
@@ -6636,7 +6643,7 @@ def update_loras_url_cache(lora_dir, loras_selected):
         base_name = os.path.basename(lora)
         local_name = os.path.join(lora_dir, base_name)
         url = loras_url_cache.get(local_name, base_name)
-        if lora.startswith("http:") or lora.startswith("https:") and url != lora:
+        if (lora.startswith("http:") or lora.startswith("https:")) and url != lora:
             loras_url_cache[local_name]=lora
             update = True
         new_loras_selected.append(url)
@@ -6647,7 +6654,7 @@ def update_loras_url_cache(lora_dir, loras_selected):
 
     return new_loras_selected
 
-def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible, min_settings_version = 0):    
+def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible, min_settings_version = 0, merge_loras = None):    
     configs = None
     any_image_or_video = False
     if file_path.endswith(".json") and allow_json:
@@ -6698,16 +6705,28 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
         model_type = current_model_type
     if switch_type_if_compatible and are_model_types_compatible(model_type,current_model_type):
         model_type = current_model_type
+    old_loras_selected = old_loras_multipliers = None
     if merge_with_defaults:
         defaults = get_model_settings(state, model_type) 
         defaults = get_default_settings(model_type) if defaults == None else defaults
+        if merge_loras is not None and model_type == current_model_type:
+            old_loras_selected, old_loras_multipliers  = defaults.get("activated_loras", []), defaults.get("loras_multipliers", ""),
         defaults.update(configs)
         configs = defaults
 
-    loras_selected =configs.get("activated_loras", None)
-    if loras_selected is not None:
-        configs["activated_loras"]= update_loras_url_cache(get_lora_dir(model_type), loras_selected)
+    loras_selected =configs.get("activated_loras", [])
+    loras_multipliers = configs.get("loras_multipliers", "")
+    if loras_selected is not None and len(loras_selected) > 0:
+        loras_selected = update_loras_url_cache(get_lora_dir(model_type), loras_selected)
+    if old_loras_selected is not None:
+        if len(old_loras_selected) == 0 and "|" in loras_multipliers:
+            pass
+        else:
+            old_loras_selected = update_loras_url_cache(get_lora_dir(model_type), old_loras_selected)
+            loras_selected, loras_multipliers = merge_loras_settings(old_loras_selected, old_loras_multipliers, loras_selected, loras_multipliers, merge_loras )
 
+    configs["activated_loras"]= loras_selected or []
+    configs["loras_multipliers"] = loras_multipliers       
     fix_settings(model_type, configs, min_settings_version)
     configs["model_type"] = model_type
 

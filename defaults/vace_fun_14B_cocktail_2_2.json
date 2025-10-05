@@ -17,6 +17,7 @@
             0.5,
             0.5
         ],
+		"profiles_dir": [""],
         "group": "wan2_2"
     },
     "guidance_phases": 2,

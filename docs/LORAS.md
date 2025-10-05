@@ -196,7 +196,9 @@ There are three ways to setup Loras accelerators:
 Some models Finetunes such as *Vace FusioniX* or *Vace Coctail* have the Loras Accelerators already set up in their own definition and you won't have to do anything as they will be downloaded with the Finetune.
 
 2) **Accelerators Profiles**
-Predefined *Accelerator Profiles* can be selected using the *Settings* Dropdown box at the top. The choices of Accelerators will depend on the models. No accelerator will be offered if the finetune / model is already accelerated. Just click *Apply* and the Accelerators Loras will be setup in the Loras tab at the bottom. Any missing Lora will be downloaded automatically the first time you try to generate a Video. Be aware that when applying an *Accelerator Profile*, inputs such as *Activated Loras*, *Number of Inference Steps*, ... will bo overwritten wheras other inputs will be preserved so that you can easily switch between profiles. 
+Predefined *Accelerator Profiles* can be selected using the *Settings* Dropdown box at the top. The choices of Accelerators will depend on the models. No accelerator will be offered if the finetune / model is already accelerated. Just click *Apply* and the Accelerators Loras will be setup in the Loras tab at the bottom. Any missing Lora will be downloaded automatically the first time you try to generate a Video. Be aware that when applying an *Accelerator Profile*, inputs such as *Activated Loras*, *Number of Inference Steps*, ... will be updated. However if you have already existing Loras set up (that are non Loras Accelerators) they will be preserved so that you can easily switch between Accelerators Profiles. 
+
+You will see the "|" character at the end of the Multipliers text input associated to Loras Accelerators. It plays the same role than the Space character to separate Multipliers except it tells WanGP where the Loras Accelerators multipliers end so that it can merge Loras Accelerators with Non Loras Accelerators.
 
 3) **Manual Install**
 - Download the Lora

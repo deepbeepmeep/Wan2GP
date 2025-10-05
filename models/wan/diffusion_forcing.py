@@ -365,7 +365,7 @@ class DTT2V:
                 timestep[:, valid_interval_start:predix_video_latent_length] = timestep_for_noised_condition
             kwrags.update({
                 "t" : timestep,
-                "current_step" : i,                 
+                "current_step_no" : i,                 
                 })
 
             # with torch.autocast(device_type="cuda"):                

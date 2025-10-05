@@ -14,7 +14,7 @@
         "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/Wan21_AccVid_T2V_14B_lora_rank32_fp16.safetensors",
         "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/Wan21_T2V_14B_MoviiGen_lora_rank32_fp16.safetensors"
 		],
-		"settings_dir": [ "" ],
+		"profiles_dir": [ "" ],
 		"loras_multipliers": [1, 0.2, 0.5, 0.5],
 		"group": "wan2_2"
     },

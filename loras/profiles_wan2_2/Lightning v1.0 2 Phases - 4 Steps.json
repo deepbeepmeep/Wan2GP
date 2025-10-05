@@ -6,7 +6,7 @@
     "switch_threshold": 876,
     "guidance_phases": 2,
     "flow_shift": 3,
- 	"loras": [
+ 	"activated_loras": [
 		"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_HIGH_fp16.safetensors",
 		"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_LOW_fp16.safetensors"
 	],

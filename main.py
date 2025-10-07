@@ -58,14 +58,42 @@ from PyQt6.QtWidgets import (
     QMessageBox, QRadioButton
 )
 from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QDropEvent
 from PIL.ImageQt import ImageQt
 
+
+class QueueTableWidget(QTableWidget):
+    """A QTableWidget with drag-and-drop reordering for rows."""
+    rowsMoved = pyqtSignal(int, int)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(self.DragDropMode.InternalMove)
+        self.setSelectionBehavior(self.SelectionBehavior.SelectRows)
+        self.setSelectionMode(self.SelectionMode.SingleSelection)
+
+    def dropEvent(self, event: QDropEvent):
+        if event.source() == self and event.dropAction() == Qt.DropAction.MoveAction:
+            source_row = self.currentRow()
+            target_item = self.itemAt(event.position().toPoint())
+            dest_row = target_item.row() if target_item else self.rowCount()
+
+            # Adjust destination row if moving down
+            if source_row < dest_row:
+                dest_row -=1
+
+            if source_row != dest_row:
+                self.rowsMoved.emit(source_row, dest_row)
+            
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
+
+
 class Worker(QObject):
-    """
-    Worker thread to run the long-running video generation task
-    without freezing the UI.
-    """
     progress = pyqtSignal(list)
     status = pyqtSignal(str)
     preview = pyqtSignal(object)
@@ -77,38 +105,61 @@ class Worker(QObject):
         super().__init__()
         self.state = state
         self._is_running = True
+        self._last_progress_phase = None
+        self._last_preview = None
 
     def send_cmd(self, cmd, data=None):
         if not self._is_running:
             return
-        if cmd == "progress":
-            self.progress.emit(data)
-        elif cmd == "status":
-            self.status.emit(data)
-        elif cmd == "preview":
-            self.preview.emit(data)
-        elif cmd == "output":
-            self.output.emit()
-        elif cmd == "error":
-            self.error.emit(str(data))
-        elif cmd == "exit":
-            self._is_running = False
 
     def run(self):
-        try:
-            task_generator = wgp.process_tasks(self.state)
+        def generation_target():
+            try:
+                for _ in wgp.process_tasks(self.state):
+                    if self._is_running:
+                        self.output.emit()
+                    else:
+                        break
+            except Exception as e:
+                import traceback
+                print("Error in generation thread:")
+                traceback.print_exc()
+                if "gradio.Error" in str(type(e)):
+                    self.error.emit(str(e))
+                else:
+                    self.error.emit(f"An unexpected error occurred: {e}")
+            finally:
+                self._is_running = False
+
+        gen_thread = threading.Thread(target=generation_target, daemon=True)
+        gen_thread.start()
+
+        while self._is_running:
+            gen = self.state.get('gen', {})
             
-            for _ in task_generator:
-                if not self._is_running:
-                    break
-                time.sleep(0.01)
-        except Exception as e:
-            import traceback
-            print("Error in worker thread:")
-            traceback.print_exc()
-            self.error.emit(f"An unexpected error occurred: {e}")
-        finally:
-            self.finished.emit()
+            current_phase = gen.get("progress_phase")
+            if current_phase and current_phase != self._last_progress_phase:
+                self._last_progress_phase = current_phase
+                
+                phase_name, step = current_phase
+                total_steps = gen.get("num_inference_steps", 1)
+                high_level_status = gen.get("progress_status", "")
+
+                status_msg = wgp.merge_status_context(high_level_status, phase_name)
+                
+                progress_args = [(step, total_steps), status_msg]
+                self.progress.emit(progress_args)
+
+            preview_img = gen.get('preview')
+            if preview_img is not None and preview_img is not self._last_preview:
+                self._last_preview = preview_img
+                self.preview.emit(preview_img)
+                gen['preview'] = None
+
+            time.sleep(0.1)
+
+        gen_thread.join()
+        self.finished.emit()
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -314,6 +365,8 @@ class MainWindow(QMainWindow):
         btn_layout = QHBoxLayout()
         self.generate_btn = self.create_widget(QPushButton, 'generate_btn', "Generate")
         self.add_to_queue_btn = self.create_widget(QPushButton, 'add_to_queue_btn', "Add to Queue")
+        self.generate_btn.setEnabled(True)
+        self.add_to_queue_btn.setEnabled(False)
         btn_layout.addWidget(self.generate_btn)
         btn_layout.addWidget(self.add_to_queue_btn)
         right_layout.addLayout(btn_layout)
@@ -323,7 +376,7 @@ class MainWindow(QMainWindow):
         self.progress_bar = self.create_widget(QProgressBar, 'progress_bar')
         right_layout.addWidget(self.progress_bar)
 
-        self.preview_image = self.create_widget(QLabel, 'preview_image', "Preview")
+        self.preview_image = self.create_widget(QLabel, 'preview_image', "")
         self.preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_image.setMinimumSize(200, 200)
         right_layout.addWidget(self.preview_image)
@@ -333,12 +386,14 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.output_gallery)
 
         right_layout.addWidget(QLabel("Queue:"))
-        self.queue_table = self.create_widget(QTableWidget, 'queue_table')
+        self.queue_table = self.create_widget(QueueTableWidget, 'queue_table')
         right_layout.addWidget(self.queue_table)
         
         queue_btn_layout = QHBoxLayout()
+        self.remove_queue_btn = self.create_widget(QPushButton, 'remove_queue_btn', "Remove Selected")
         self.clear_queue_btn = self.create_widget(QPushButton, 'clear_queue_btn', "Clear Queue")
         self.abort_btn = self.create_widget(QPushButton, 'abort_btn', "Abort")
+        queue_btn_layout.addWidget(self.remove_queue_btn)
         queue_btn_layout.addWidget(self.clear_queue_btn)
         queue_btn_layout.addWidget(self.abort_btn)
         right_layout.addLayout(queue_btn_layout)
@@ -450,8 +505,8 @@ class MainWindow(QMainWindow):
         combo.addItem("Disabled", 0)
         combo.addItem("Enabled", 1)
         layout.addRow("MMAudio:", combo)
-        layout.addRow("MMAudio Prompt:", self.create_widget(QLineEdit, 'MMAudio_prompt'))
-        layout.addRow("MMAudio Neg Prompt:", self.create_widget(QLineEdit, 'MMAudio_neg_prompt'))
+        layout.addWidget(self.create_widget(QLineEdit, 'MMAudio_prompt', placeholderText="MMAudio Prompt"))
+        layout.addWidget(self.create_widget(QLineEdit, 'MMAudio_neg_prompt', placeholderText="MMAudio Negative Prompt"))
         layout.addRow(self._create_file_input('audio_source', "Custom Soundtrack"))
 
     def _setup_adv_tab_quality(self, tabs):
@@ -1106,7 +1161,6 @@ class MainWindow(QMainWindow):
     def connect_signals(self):
         self.widgets['model_family'].currentIndexChanged.connect(self._on_family_changed)
         self.widgets['model_choice'].currentIndexChanged.connect(self._on_model_changed)
-        ### MODIFIED ###: Added new signal connections for resolution dropdowns
         self.widgets['resolution_group'].currentIndexChanged.connect(self._on_resolution_group_changed)
         self.widgets['guidance_phases'].currentIndexChanged.connect(self._update_dynamic_ui)
 
@@ -1121,8 +1175,10 @@ class MainWindow(QMainWindow):
 
         self.generate_btn.clicked.connect(self._on_generate)
         self.add_to_queue_btn.clicked.connect(self._on_add_to_queue)
+        self.remove_queue_btn.clicked.connect(self._on_remove_selected_from_queue)
         self.clear_queue_btn.clicked.connect(self._on_clear_queue)
         self.abort_btn.clicked.connect(self._on_abort)
+        self.queue_table.rowsMoved.connect(self._on_queue_rows_moved)
 
     def _on_family_changed(self, index):
         internal_family_key = self.widgets['model_family'].currentData()
@@ -1213,7 +1269,6 @@ class MainWindow(QMainWindow):
             "keep_frames_video_guide": "", "keep_frames_video_source": "",
             "video_guide_outpainting": "", "switch_threshold2": 0,
             "model_switch_phase": 1, "batch_size": 1,
-            # FIX: Add the two missing required arguments with their default values.
             "control_net_weight_alt": 1.0,
             "image_refs_relative_size": 50,
         }
@@ -1320,15 +1375,35 @@ class MainWindow(QMainWindow):
 
         return full_inputs
 
+    def _prepare_state_for_generation(self):
+        if 'gen' in self.state:
+            self.state['gen'].pop('abort', None)
+            self.state['gen'].pop('in_progress', None)
+
     def _on_generate(self):
-        self._add_task_to_queue()
-        if not self.thread or not self.thread.isRunning():
-            self.start_generation()
+        try:
+            is_running = self.thread and self.thread.isRunning()
+            self._add_task_to_queue_and_update_ui()
+            if not is_running:
+                self.start_generation()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
 
     def _on_add_to_queue(self):
+        try:
+            self._add_task_to_queue_and_update_ui()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
+    def _add_task_to_queue_and_update_ui(self):
         self._add_task_to_queue()
+        self.update_queue_table()
 
     def _add_task_to_queue(self):
+        queue_size_before = len(self.state["gen"]["queue"])
         all_inputs = self.collect_inputs()
         keys_to_remove = ['type', 'settings_version', 'is_image', 'video_quality', 'image_quality']
         for key in keys_to_remove:
@@ -1339,16 +1414,14 @@ class MainWindow(QMainWindow):
         
         self.state["validate_success"] = 1
         wgp.process_prompt_and_add_tasks(self.state, self.state['model_type'])
-        
-        self.update_queue_table()
+
         
     def start_generation(self):
         if not self.state['gen']['queue']:
-            print("Queue is empty, nothing to generate.")
             return
-
+        self._prepare_state_for_generation()
         self.generate_btn.setEnabled(False)
-        self.add_to_queue_btn.setEnabled(False)
+        self.add_to_queue_btn.setEnabled(True)
 
         self.thread = QThread()
         self.worker = Worker(self.state)
@@ -1367,14 +1440,17 @@ class MainWindow(QMainWindow):
         self.worker.error.connect(self.on_generation_error)
 
         self.thread.start()
+        self.update_queue_table()
 
     def on_generation_finished(self):
+        time.sleep(0.1)
         self.status_label.setText("Finished.")
         self.progress_bar.setValue(0)
         self.generate_btn.setEnabled(True)
-        self.add_to_queue_btn.setEnabled(True)
+        self.add_to_queue_btn.setEnabled(False)
         self.thread = None
         self.worker = None
+        self.update_queue_table()
 
     def on_generation_error(self, err_msg):
         msg_box = QMessageBox()
@@ -1391,6 +1467,8 @@ class MainWindow(QMainWindow):
             self.progress_bar.setMaximum(total)
             self.progress_bar.setValue(step)
             self.status_label.setText(str(data[1]))
+            if step <= 1:
+                self.update_queue_table()
         elif len(data) > 1:
              self.status_label.setText(str(data[1]))
 
@@ -1414,26 +1492,59 @@ class MainWindow(QMainWindow):
             self.output_gallery.setCurrentRow(len(file_list) - 1)
 
     def update_queue_table(self):
-        queue = self.state.get('gen', {}).get('queue', [])
-        table_data = wgp.get_queue_table(queue)
-        
-        self.queue_table.setRowCount(len(table_data))
-        self.queue_table.setColumnCount(4) 
-        self.queue_table.setHorizontalHeaderLabels(["Qty", "Prompt", "Length", "Steps"])
-        
-        for row_idx, row_data in enumerate(table_data):
-            prompt_html = row_data[1]
-            try:
-                prompt_text = prompt_html.split('>')[1].split('<')[0]
-            except IndexError:
-                prompt_text = str(row_data[1])
+        with wgp.lock:
+            queue = self.state.get('gen', {}).get('queue', [])
+            is_running = self.thread and self.thread.isRunning()
+            queue_to_display = queue if is_running else [None] + queue
+            
+            table_data = wgp.get_queue_table(queue_to_display)
 
-            self.queue_table.setItem(row_idx, 0, QTableWidgetItem(str(row_data[0])))
-            self.queue_table.setItem(row_idx, 1, QTableWidgetItem(prompt_text))
-            self.queue_table.setItem(row_idx, 2, QTableWidgetItem(str(row_data[2])))
-            self.queue_table.setItem(row_idx, 3, QTableWidgetItem(str(row_data[3])))
-        
-        self.queue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            self.queue_table.setRowCount(0)
+            self.queue_table.setRowCount(len(table_data))
+            self.queue_table.setColumnCount(4) 
+            self.queue_table.setHorizontalHeaderLabels(["Qty", "Prompt", "Length", "Steps"])
+            
+            for row_idx, row_data in enumerate(table_data):
+                prompt_html = row_data[1]
+                try:
+                    prompt_text = prompt_html.split('>')[1].split('<')[0]
+                except IndexError:
+                    prompt_text = str(row_data[1])
+
+                self.queue_table.setItem(row_idx, 0, QTableWidgetItem(str(row_data[0])))
+                self.queue_table.setItem(row_idx, 1, QTableWidgetItem(prompt_text))
+                self.queue_table.setItem(row_idx, 2, QTableWidgetItem(str(row_data[2])))
+                self.queue_table.setItem(row_idx, 3, QTableWidgetItem(str(row_data[3])))
+            
+            self.queue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            self.queue_table.resizeColumnsToContents()
+
+    def _on_remove_selected_from_queue(self):
+        selected_row = self.queue_table.currentRow()
+        if selected_row < 0:
+            return
+
+        with wgp.lock:
+            is_running = self.thread and self.thread.isRunning()
+            offset = 1 if is_running else 0
+            
+            queue = self.state.get('gen', {}).get('queue', [])
+            if len(queue) > selected_row + offset:
+                queue.pop(selected_row + offset)
+        self.update_queue_table()
+
+    def _on_queue_rows_moved(self, source_row, dest_row):
+        with wgp.lock:
+            queue = self.state.get('gen', {}).get('queue', [])
+            is_running = self.thread and self.thread.isRunning()
+            offset = 1 if is_running else 0
+
+            real_source_idx = source_row + offset
+            real_dest_idx = dest_row + offset
+
+            moved_item = queue.pop(real_source_idx)
+            queue.insert(real_dest_idx, moved_item)
+        self.update_queue_table()
 
     def _on_clear_queue(self):
         wgp.clear_queue_action(self.state)

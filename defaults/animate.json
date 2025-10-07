@@ -12,7 +12,6 @@
 		[
 			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_animate_relighting_lora.safetensors"
 		],
-		"profiles_dir": [ "profiles_wan" ],				
         "group": "wan2_2"
     }
 }

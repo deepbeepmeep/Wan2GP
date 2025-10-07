@@ -37,6 +37,7 @@ from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, c
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
 from shared.utils.audio_video import save_video
 from mmgp import safetensors2
+from shared.utils import files_locator as fl 
 
 def optimized_scale(positive_flat, negative_flat):
 
@@ -91,16 +92,15 @@ class WanAny2V:
             dtype=config.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=os.path.join(checkpoint_dir, "umt5-xxl"),
+            tokenizer_path=fl.locate_folder("umt5-xxl"),
             shard_fn= None)
         # base_model_type = "i2v2_2"
         if hasattr(config, "clip_checkpoint") and not base_model_type in ["i2v_2_2", "i2v_2_2_multitalk"] or base_model_type in ["animate"]:
             self.clip = CLIPModel(
                 dtype=config.clip_dtype,
                 device=self.device,
-                checkpoint_path=os.path.join(checkpoint_dir , 
-                                            config.clip_checkpoint),
-                tokenizer_path=os.path.join(checkpoint_dir , "xlm-roberta-large"))
+                checkpoint_path=fl.locate_file(config.clip_checkpoint),
+                tokenizer_path=fl.locate_folder("xlm-roberta-large"))
 
         ignore_unused_weights = model_def.get("ignore_unused_weights", False)
 
@@ -114,9 +114,7 @@ class WanAny2V:
             vae = WanVAE
         self.patch_size = config.patch_size 
         
-        self.vae = vae(
-            vae_pth=os.path.join(checkpoint_dir, vae_checkpoint), dtype= VAE_dtype,
-            device="cpu")
+        self.vae = vae( vae_pth=fl.locate_file(vae_checkpoint), dtype= VAE_dtype, device="cpu")
         self.vae.device = self.device
         
         # config_filename= "configs/t2v_1.3B.json"
@@ -125,7 +123,7 @@ class WanAny2V:
         #     config = json.load(f)
         # sd = safetensors2.torch_load_file(xmodel_filename)
         # model_filename = "c:/temp/wan2.2i2v/low/diffusion_pytorch_model-00001-of-00006.safetensors"
-        base_config_file = f"configs/{base_model_type}.json"
+        base_config_file = f"models/wan/configs/{base_model_type}.json"
         forcedConfigPath = base_config_file if len(model_filename) > 1 else None
         # forcedConfigPath = base_config_file = f"configs/flf2v_720p.json"
         # model_filename[1] = xmodel_filename
@@ -702,7 +700,7 @@ class WanAny2V:
                 if True:
                     with init_empty_weights():
                         arc_resampler = Resampler( depth=4, dim=1280, dim_head=64, embedding_dim=512, ff_mult=4, heads=20, num_queries=16, output_dim=2048 if lynx_lite else 5120 )
-                    offload.load_model_data(arc_resampler, os.path.join("ckpts", "wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"))
+                    offload.load_model_data(arc_resampler, fl.locate_file("wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"))
                     arc_resampler.to(self.device)
                     arcface_embed = face_arc_embeds[None,None,:].to(device=self.device, dtype=torch.float) 
                     ip_hidden_states = arc_resampler(arcface_embed).to(self.dtype)
@@ -1125,6 +1123,6 @@ class WanAny2V:
             if "#" in video_prompt_type and "1" in video_prompt_type:
                 preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
                 if len(preloadURLs) > 0: 
-                    return [os.path.join("ckpts", os.path.basename(preloadURLs[0]))] , [1]
+                    return [fl.locate_file(os.path.basename(preloadURLs[0]))] , [1]
         return [], []
 

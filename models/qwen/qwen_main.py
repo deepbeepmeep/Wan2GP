@@ -18,6 +18,7 @@ from diffusers import FlowMatchEulerDiscreteScheduler
 from .pipeline_qwenimage import QwenImagePipeline
 from PIL import Image
 from shared.utils.utils import calculate_new_dimensions, convert_tensor_to_image
+from shared.utils import files_locator as fl 
 
 def stitch_images(img1, img2):
     # Resize img2 to match img1's height
@@ -56,7 +57,7 @@ class model_factory():
         tokenizer = AutoTokenizer.from_pretrained(os.path.join(checkpoint_dir,"Qwen2.5-VL-7B-Instruct"))
         self.base_model_type = base_model_type
 
-        base_config_file = "configs/qwen_image_20B.json" 
+        base_config_file = "models/qwen/configs/qwen_image_20B.json" 
         with open(base_config_file, 'r', encoding='utf-8') as f:
             transformer_config = json.load(f)
         transformer_config.pop("_diffusers_version")
@@ -223,6 +224,6 @@ class model_factory():
         if model_mode == 0: return [], []
         preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
         if len(preloadURLs) == 0: return [], []
-        return [os.path.join("ckpts", os.path.basename(preloadURLs[0]))] , [1]
+        return [ fl.locate_file(os.path.basename(preloadURLs[0]))] , [1]
 
 

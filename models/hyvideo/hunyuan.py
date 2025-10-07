@@ -3,7 +3,7 @@ import time
 import random
 import functools
 from typing import List, Optional, Tuple, Union
-
+from shared.utils import files_locator as fl 
 from pathlib import Path
 from einops import rearrange
 import torch
@@ -405,14 +405,14 @@ class Inference(object):
         # ============================= Build extra models ========================
         # VAE
         if custom or avatar:
-            vae_configpath = "ckpts/hunyuan_video_custom_VAE_config.json"
-            vae_filepath = "ckpts/hunyuan_video_custom_VAE_fp32.safetensors"
+            vae_configpath =  fl.locate_file("hunyuan_video_custom_VAE_config.json")
+            vae_filepath = fl.locate_file("hunyuan_video_custom_VAE_fp32.safetensors")
         # elif avatar:
         #     vae_configpath = "ckpts/config_vae_avatar.json"
         #     vae_filepath = "ckpts/vae_avatar.pt"
         else:
-            vae_configpath = "ckpts/hunyuan_video_VAE_config.json"
-            vae_filepath = "ckpts/hunyuan_video_VAE_fp32.safetensors"
+            vae_configpath = fl.locate_file("hunyuan_video_VAE_config.json")
+            vae_filepath =  fl.locate_file("hunyuan_video_VAE_fp32.safetensors")
 
     # config = AutoencoderKLCausal3D.load_config("ckpts/hunyuan_video_VAE_config.json")
     # config = AutoencoderKLCausal3D.load_config("c:/temp/hvae/config_vae.json")
@@ -486,12 +486,12 @@ class Inference(object):
         align_instance = None
 
         if avatar or custom_audio:
-            feature_extractor = AutoFeatureExtractor.from_pretrained("ckpts/whisper-tiny/")
-            wav2vec = WhisperModel.from_pretrained("ckpts/whisper-tiny/").to(device="cpu", dtype=torch.float32)
+            feature_extractor = AutoFeatureExtractor.from_pretrained(fl.locate_folder("whisper-tiny"))
+            wav2vec = WhisperModel.from_pretrained(fl.locate_folder("whisper-tiny")).to(device="cpu", dtype=torch.float32)
             wav2vec._model_dtype = torch.float32
             wav2vec.requires_grad_(False)
         if avatar:
-            align_instance = AlignImage("cuda", det_path="ckpts/det_align/detface.pt")
+            align_instance = AlignImage("cuda", det_path= fl.locate_file("det_align/detface.pt"))
             align_instance.facedet.model.to("cpu")
             adapt_model(model, "audio_adapter_blocks")
         elif custom_audio:

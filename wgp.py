@@ -29,7 +29,8 @@ from shared.utils.audio_video import extract_audio_tracks, combine_video_with_au
 from shared.utils.audio_video import save_image_metadata, read_image_metadata
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
-from huggingface_hub import hf_hub_download, snapshot_download    
+from huggingface_hub import hf_hub_download, snapshot_download
+from shared.utils import files_locator as fl 
 import torch
 import gc
 import traceback
@@ -63,7 +64,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.6.2"
-WanGP_version = "8.993"
+WanGP_version = "8.994"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -563,7 +564,7 @@ def process_prompt_and_add_tasks(state, model_choice):
 
     if test_any_sliding_window(model_type) and image_mode == 0:
         if video_length > sliding_window_size:
-            if model_type in ["t2v"] and not "G" in video_prompt_type :
+            if model_type in ["t2v", "t2v_2_2"] and not "G" in video_prompt_type :
                 gr.Info(f"You have requested to Generate Sliding Windows with a Text to Video model. Unless you use the Video to Video feature this is useless as a t2v model doesn't see past frames and it will generate the same video in each new window.") 
                 return ret()
             full_video_length = video_length if video_source is None else video_length +  sliding_window_overlap -1
@@ -1793,16 +1794,17 @@ if os.path.isfile("t2v_settings.json"):
 if not os.path.isfile(server_config_filename) and os.path.isfile("gradio_config.json"):
     shutil.move("gradio_config.json", server_config_filename) 
 
-if not os.path.isdir("ckpts/umt5-xxl/"):
-    os.makedirs("ckpts/umt5-xxl/")
-src_move = [ "ckpts/models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "ckpts/models_t5_umt5-xxl-enc-bf16.safetensors", "ckpts/models_t5_umt5-xxl-enc-quanto_int8.safetensors" ]
-tgt_move = [ "ckpts/xlm-roberta-large/", "ckpts/umt5-xxl/", "ckpts/umt5-xxl/"]
+src_move = [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "models_t5_umt5-xxl-enc-bf16.safetensors", "models_t5_umt5-xxl-enc-quanto_int8.safetensors" ]
+tgt_move = [ "xlm-roberta-large", "umt5-xxl", "umt5-xxl"]
 for src,tgt in zip(src_move,tgt_move):
-    if os.path.isfile(src):
+    src = fl.locate_file(src)
+    tgt = fl.get_download_location(tgt)
+    if src is not None:
         try:
             if os.path.isfile(tgt):
                 shutil.remove(src)
             else:
+                os.makedirs(os.path.dirname(tgt))
                 shutil.move(src, tgt)
         except:
             pass
@@ -1823,7 +1825,8 @@ if not Path(server_config_filename).is_file():
         "vae_config": 0,
         "profile" : profile_type.LowRAM_LowVRAM,
         "preload_model_policy": [],
-        "UI_theme": "default"
+        "UI_theme": "default",
+        "checkpoints_paths": fl.default_checkpoints_paths,
     }
 
     with open(server_config_filename, "w", encoding="utf-8") as writer:
@@ -1833,6 +1836,10 @@ else:
         text = reader.read()
     server_config = json.loads(text)
 
+checkpoints_paths = server_config.get("checkpoints_paths", None)
+if checkpoints_paths is None: checkpoints_paths = server_config["checkpoints_paths"] = fl.default_checkpoints_paths
+fl.set_checkpoints_paths(checkpoints_paths)
+
 #   Deprecated models
 for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion_forcing_1.3B_bf16.safetensors","sky_reels2_diffusion_forcing_720p_14B_bf16.safetensors",
 "sky_reels2_diffusion_forcing_720p_14B_quanto_int8.safetensors", "sky_reels2_diffusion_forcing_720p_14B_quanto_fp16_int8.safetensors", "wan2.1_image2video_480p_14B_bf16.safetensors", "wan2.1_image2video_480p_14B_quanto_int8.safetensors",
@@ -1841,11 +1848,11 @@ for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion
 "wan2.1_Vace_14B_mbf16.safetensors", "wan2.1_Vace_14B_quanto_mbf16_int8.safetensors", "wan2.1_FLF2V_720p_14B_quanto_int8.safetensors", "wan2.1_FLF2V_720p_14B_bf16.safetensors",  "wan2.1_FLF2V_720p_14B_fp16.safetensors", "wan2.1_Vace_1.3B_mbf16.safetensors", "wan2.1_text2video_1.3B_bf16.safetensors",
 "ltxv_0.9.7_13B_dev_bf16.safetensors"
 ]:
-    if Path(os.path.join("ckpts" , path)).is_file():
+    if fl.locate_file(path) is not None:
         print(f"Removing old version of model '{path}'. A new version of this model will be downloaded next time you use it.")
-        os.remove( os.path.join("ckpts" , path))
+        os.remove( fl.locate_file(path))
 
-for f, s in [("ckpts/Florence2/modeling_florence2.py", 127287)]:
+for f, s in [(fl.locate_file("Florence2/modeling_florence2.py"), 127287)]:
     try:
         if os.path.isfile(f) and os.path.getsize(f) == s:
             print(f"Removing old version of model '{f}'. A new version of this model will be downloaded next time you use it.")
@@ -2050,7 +2057,6 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
             if len(stack) > 10: raise Exception(f"Circular Reference in Model {key_name} dependencies: {stack}")
             return get_model_filename(URLs, quantization=quantization, dtype_policy=dtype_policy, submodel_no = submodel_no, stack = stack + [URLs])
 
-    # choices = [ ("ckpts/" + os.path.basename(path) if path.startswith("http") else path)  for path in URLs ]
     choices = URLs
     if len(quantization) == 0:
         quantization = "bf16"
@@ -2259,7 +2265,7 @@ def init_model_def(model_type, model_def):
     base_model_type = get_base_model_type(model_type)
     family_handler = model_types_handlers.get(base_model_type, None)
     if family_handler is None:
-        raise Exception(f"Unknown model type {model_type}")
+        raise Exception(f"Unknown model type {base_model_type}")
     default_model_def = family_handler.query_model_def(base_model_type, model_def)
     if default_model_def is None: return model_def
     default_model_def.update(model_def)
@@ -2418,13 +2424,13 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
         saved_finetune_def = json.load(reader)
 
     update_model_def = False
-    model_filename = os.path.join("ckpts",model_filename)
+    model_filename_path = os.path.join(fl.get_download_folder(), model_filename)
     quanto_dtypestr= "bf16" if dtype == torch.bfloat16 else "fp16"
     if ("m" + dtypestr) in model_filename: 
         dtypestr = "m" + dtypestr 
         quanto_dtypestr = "m" + quanto_dtypestr 
-    if not os.path.isfile(model_filename) and (not no_fp16_main_model or dtype == torch.bfloat16):
-        offload.save_model(model, model_filename, config_file_path=config_file, filter_sd=filter)
+    if fl.locate_file(model_filename) is None and (not no_fp16_main_model or dtype == torch.bfloat16):
+        offload.save_model(model, model_filename_path, config_file_path=config_file, filter_sd=filter)
         print(f"New model file '{model_filename}' had been created for finetune Id '{model_type}'.")
         del saved_finetune_def["model"][source_key]
         del model_def[source_key]
@@ -2433,10 +2439,11 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
 
     if is_module:
         quanto_filename = model_filename.replace(dtypestr, "quanto_" + quanto_dtypestr + "_int8" )
+        quanto_filename_path = os.path.join(fl.get_download_folder() , quanto_filename)
         if hasattr(model, "_quanto_map"):
             print("unable to generate quantized module, the main model should at full 16 bits before quantization can be done")
-        elif not os.path.isfile(quanto_filename):
-            offload.save_model(model, quanto_filename, config_file_path=config_file, do_quantize= True, filter_sd=filter)
+        elif fl.locate_file(quanto_filename) is None:
+            offload.save_model(model, quanto_filename_path, config_file_path=config_file, do_quantize= True, filter_sd=filter)
             print(f"New quantized file '{quanto_filename}' had been created for finetune Id '{model_type}'.")
             if isinstance(model_def[url_key][0],dict): 
                 model_def[url_key][0][url_dict_key].append(quanto_filename) 
@@ -2473,10 +2480,11 @@ def save_quantized_model(model, model_type, model_filename, dtype,  config_file,
         pos = model_filename.rfind(".")
         model_filename =  model_filename[:pos] + "_quanto_int8" + model_filename[pos+1:] 
     
-    if os.path.isfile(model_filename):
+    if fl.locate_file(model_filename) is not None:
         print(f"There isn't any model to quantize as quantized model '{model_filename}' aready exists")
     else:
-        offload.save_model(model, model_filename, do_quantize= True, config_file_path=config_file)
+        model_filename_path = os.path.join(fl.get_download_folder(), model_filename)
+        offload.save_model(model, model_filename_path, do_quantize= True, config_file_path=config_file)
         print(f"New quantized file '{model_filename}' had been created for finetune Id '{model_type}'.")
         if not model_filename in URLs:
             URLs.append(model_filename)
@@ -2500,26 +2508,27 @@ def get_loras_preprocessor(transformer, model_type):
 
 def get_local_model_filename(model_filename):
     if model_filename.startswith("http"):
-        local_model_filename = os.path.join("ckpts", os.path.basename(model_filename))
+        local_model_filename =os.path.basename(model_filename)
     else:
         local_model_filename = model_filename
+    local_model_filename = fl.locate_file(local_model_filename)
     return local_model_filename
     
 
 
 def process_files_def(repoId, sourceFolderList, fileList):
-    targetRoot = "ckpts/" 
+    targetRoot = fl.get_download_location()
     for sourceFolder, files in zip(sourceFolderList,fileList ):
         if len(files)==0:
-            if not Path(targetRoot + sourceFolder).exists():
+            if fl.locate_folder(sourceFolder) is None:
                 snapshot_download(repo_id=repoId,  allow_patterns=sourceFolder +"/*", local_dir= targetRoot)
         else:
             for onefile in files:     
                 if len(sourceFolder) > 0: 
-                    if not os.path.isfile(targetRoot + sourceFolder + "/" + onefile ):          
+                    if fl.locate_file(sourceFolder + "/" + onefile) is None:   
                         hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = targetRoot, subfolder=sourceFolder)
                 else:
-                    if not os.path.isfile(targetRoot + onefile ):          
+                    if fl.locate_file(onefile) is None:          
                         hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = targetRoot)
 
 def download_mmaudio():
@@ -2541,15 +2550,18 @@ def download_file(url,filename):
         onefile = os.path.basename(url_parts[-1])
         sourceFolder = os.path.dirname(url_parts[-1])
         if len(sourceFolder) == 0:
-            hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = "ckpts/" if len(base_dir)==0 else base_dir)
+            hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = fl.get_download_location() if len(base_dir)==0 else base_dir)
         else:
-            target_path = "ckpts/temp/" + sourceFolder
+            temp_dir_path = os.path.join(fl.get_download_location(), "temp")
+            target_path = os.path.join(temp_dir_path, sourceFolder)
             if not os.path.exists(target_path):
                 os.makedirs(target_path)
-            hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = "ckpts/temp/", subfolder=sourceFolder)
-            shutil.move(os.path.join( "ckpts", "temp" , sourceFolder , onefile), "ckpts/" if len(base_dir)==0 else base_dir)
-            shutil.rmtree("ckpts/temp")
+            hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = temp_dir_path, subfolder=sourceFolder)
+            shutil.move(os.path.join( target_path, onefile), fl.get_download_location() if len(base_dir)==0 else base_dir)
+            shutil.rmtree(temp_dir_path)
     else:
+        from urllib.request import urlretrieve
+        from shared.utils.download import create_progress_hook
         urlretrieve(url,filename, create_progress_hook(filename))
 
 download_shared_done = False
@@ -2563,8 +2575,6 @@ def download_models(model_filename = None, model_type= None, module_type = False
 
 
 
-    from urllib.request import urlretrieve
-    from shared.utils.download import create_progress_hook
 
     shared_def = {
         "repoId" : "DeepBeepMeep/Wan2.1",
@@ -2607,12 +2617,13 @@ def download_models(model_filename = None, model_type= None, module_type = False
     any_source = ("source2" if submodel_no ==2 else "source") in model_def
     any_module_source = ("module_source2" if submodel_no ==2 else "module_source") in model_def 
     model_type_handler = model_types_handlers[base_model_type]
-    local_model_filename = get_local_model_filename(model_filename)
-
+ 
     if any_source and not module_type or any_module_source and module_type:
         model_filename = None
     else:
-        if not os.path.isfile(local_model_filename):
+        local_model_filename = get_local_model_filename(model_filename)
+        if local_model_filename is None:
+            local_model_filename = fl.get_download_location(os.path.basename(model_filename))
             url = model_filename
 
             if not url.startswith("http"):
@@ -2621,13 +2632,13 @@ def download_models(model_filename = None, model_type= None, module_type = False
                 download_file(url, local_model_filename)
             except Exception as e:
                 if os.path.isfile(local_model_filename): os.remove(local_model_filename) 
-                raise Exception(f"'{url}' is invalid for Model '{local_model_filename}' : {str(e)}'")
+                raise Exception(f"'{url}' is invalid for Model '{model_type}' : {str(e)}'")
             if module_type: return
         model_filename = None
 
         preload_URLs = get_model_recursive_prop(model_type, "preload_URLs", return_list= True)
         for url in preload_URLs:
-            filename = "ckpts/" + url.split("/")[-1]
+            filename = fl.get_download_location(url.split("/")[-1])
             if not os.path.isfile(filename ): 
                 if not url.startswith("http"):
                     raise Exception(f"File '{filename}' to preload was not found locally and no URL was provided to download it. Please add an URL in the model definition file.")
@@ -2809,8 +2820,8 @@ def setup_prompt_enhancer(pipe, kwargs):
     model_no = server_config.get("enhancer_enabled", 0) 
     if model_no != 0:
         from transformers import ( AutoModelForCausalLM, AutoProcessor, AutoTokenizer, LlamaForCausalLM )
-        prompt_enhancer_image_caption_model = AutoModelForCausalLM.from_pretrained( "ckpts/Florence2", trust_remote_code=True)
-        prompt_enhancer_image_caption_processor = AutoProcessor.from_pretrained( "ckpts/Florence2", trust_remote_code=True)
+        prompt_enhancer_image_caption_model = AutoModelForCausalLM.from_pretrained(fl.locate_folder("Florence2"), trust_remote_code=True)
+        prompt_enhancer_image_caption_processor = AutoProcessor.from_pretrained(fl.locate_folder("Florence2"), trust_remote_code=True)
         pipe["prompt_enhancer_image_caption_model"] = prompt_enhancer_image_caption_model
         prompt_enhancer_image_caption_model._model_dtype = torch.float
         # def preprocess_sd(sd, map):
@@ -2825,12 +2836,12 @@ def setup_prompt_enhancer(pipe, kwargs):
 
         if model_no == 1:
             budget = 5000
-            prompt_enhancer_llm_model = offload.fast_load_transformers_model("ckpts/Llama3_2/Llama3_2_quanto_bf16_int8.safetensors")
-            prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained("ckpts/Llama3_2")
+            prompt_enhancer_llm_model = offload.fast_load_transformers_model( fl.locate_file("Llama3_2/Llama3_2_quanto_bf16_int8.safetensors"))
+            prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained(fl.locate_folder("Llama3_2"))
         else:
             budget = 10000
-            prompt_enhancer_llm_model = offload.fast_load_transformers_model("ckpts/llama-joycaption-beta-one-hf-llava/llama_joycaption_quanto_bf16_int8.safetensors")
-            prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained("ckpts/llama-joycaption-beta-one-hf-llava")
+            prompt_enhancer_llm_model = offload.fast_load_transformers_model(fl.locate_file("llama-joycaption-beta-one-hf-llava/llama_joycaption_quanto_bf16_int8.safetensors"))
+            prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained(fl.locate_folder("llama-joycaption-beta-one-hf-llava"))
         pipe["prompt_enhancer_llm_model"] = prompt_enhancer_llm_model
         if not "budgets" in kwargs: kwargs["budgets"] = {}
         kwargs["budgets"]["prompt_enhancer_llm_model"] = budget 
@@ -2875,7 +2886,7 @@ def load_models(model_type, override_profile = -1):
     if model_filename2 != None:
         model_file_list += [model_filename2]
         model_type_list += [model_type]
-        module_type_list += [False]
+        module_type_list += [None]
         model_submodel_no_list += [2]
     for module_type in modules:
         if isinstance(module_type,dict):
@@ -3012,7 +3023,11 @@ def apply_changes(  state,
                     image_output_codec_choice = None,
                     audio_output_codec_choice = None,
                     last_resolution_choice = None,
+                    checkpoints_paths = "",
 ):
+    checkpoints_paths = fl.default_checkpoints_paths if len(checkpoints_paths.strip()) == "" else checkpoints_paths.replace("\r", "").split("\n")
+    checkpoints_paths = [path.strip() for path in checkpoints_paths if len(path.strip()) > 0 ]
+    fl.set_checkpoints_paths(checkpoints_paths)
     if args.lock_config:
         return "<DIV ALIGN=CENTER>Config Locked</DIV>",*[gr.update()]*4
     if gen_in_progress:
@@ -3054,6 +3069,7 @@ def apply_changes(  state,
         "last_advanced_choice": state["advanced"], 
         "last_resolution_choice": last_resolution_choice, 
         "last_resolution_per_group":  state["last_resolution_per_group"],
+        "checkpoints_paths": checkpoints_paths,
     }
 
     if Path(server_config_filename).is_file():
@@ -3087,14 +3103,14 @@ def apply_changes(  state,
     transformer_quantization = server_config["transformer_quantization"]
     transformer_dtype_policy = server_config["transformer_dtype_policy"]
     text_encoder_quantization = server_config["text_encoder_quantization"]
-    transformer_types = server_config["transformer_types"]
+    transformer_types = server_config["transformer_types"]    
     model_filename = get_model_filename(transformer_type, transformer_quantization, transformer_dtype_policy)
     state["model_filename"] = model_filename
     if "enhancer_enabled" in changes or "enhancer_mode" in changes:
         reset_prompt_enhancer()
     if all(change in ["attention_mode", "vae_config", "boost", "save_path", "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant", 
                       "notification_sound_enabled", "notification_sound_volume", "mmaudio_enabled", "max_frames_multiplier", "display_stats",
-                      "video_output_codec", "image_output_codec", "audio_output_codec"] for change in changes ):
+                      "video_output_codec", "image_output_codec", "audio_output_codec", "checkpoints_paths"] for change in changes ):
         model_family = gr.Dropdown()
         model_choice = gr.Dropdown()
     else:
@@ -3649,28 +3665,23 @@ def get_preprocessor(process_type, inpaint_color):
     if process_type=="pose":
         from preprocessing.dwpose.pose import PoseBodyFaceVideoAnnotator
         cfg_dict = {
-            "DETECTION_MODEL": "ckpts/pose/yolox_l.onnx",
-            "POSE_MODEL": "ckpts/pose/dw-ll_ucoco_384.onnx",
+            "DETECTION_MODEL": fl.locate_file("pose/yolox_l.onnx"),
+            "POSE_MODEL": fl.locate_file("pose/dw-ll_ucoco_384.onnx"),
             "RESIZE_SIZE": 1024
         }
         anno_ins = lambda img: PoseBodyFaceVideoAnnotator(cfg_dict).forward(img)
     elif process_type=="depth":
-        # from preprocessing.midas.depth import DepthVideoAnnotator
-        # cfg_dict = {
-        #     "PRETRAINED_MODEL": "ckpts/depth/dpt_hybrid-midas-501f0c75.pt"
-        # }
-        # anno_ins = lambda img: DepthVideoAnnotator(cfg_dict).forward(img)[0]
 
         from preprocessing.depth_anything_v2.depth import DepthV2VideoAnnotator
 
         if server_config.get("depth_anything_v2_variant", "vitl") == "vitl":
             cfg_dict = {
-                "PRETRAINED_MODEL": "ckpts/depth/depth_anything_v2_vitl.pth",
+                "PRETRAINED_MODEL": fl.locate_file("depth/depth_anything_v2_vitl.pth"),
                 'MODEL_VARIANT': 'vitl'
             }
         else:
             cfg_dict = {
-                "PRETRAINED_MODEL": "ckpts/depth/depth_anything_v2_vitb.pth",
+                "PRETRAINED_MODEL": fl.locate_file("depth/depth_anything_v2_vitb.pth"),
                 'MODEL_VARIANT': 'vitb',
             }
 
@@ -3682,19 +3693,19 @@ def get_preprocessor(process_type, inpaint_color):
     elif process_type=="canny":
         from preprocessing.canny import CannyVideoAnnotator
         cfg_dict = {
-                "PRETRAINED_MODEL": "ckpts/scribble/netG_A_latest.pth"
+                "PRETRAINED_MODEL": fl.locate_file("scribble/netG_A_latest.pth")
             }
         anno_ins = lambda img: CannyVideoAnnotator(cfg_dict).forward(img)
     elif process_type=="scribble":
         from preprocessing.scribble import ScribbleVideoAnnotator
         cfg_dict = {
-                "PRETRAINED_MODEL": "ckpts/scribble/netG_A_latest.pth"
+                "PRETRAINED_MODEL": fl.locate_file("scribble/netG_A_latest.pth")
             }
         anno_ins = lambda img: ScribbleVideoAnnotator(cfg_dict).forward(img)
     elif process_type=="flow":
         from preprocessing.flow import FlowVisAnnotator
         cfg_dict = {
-                "PRETRAINED_MODEL": "ckpts/flow/raft-things.pth"
+                "PRETRAINED_MODEL": fl.locate_file("flow/raft-things.pth")
             }
         anno_ins = lambda img: FlowVisAnnotator(cfg_dict).forward(img)
     elif process_type=="inpaint":
@@ -4092,10 +4103,10 @@ def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling
         if previous_last_frame != None:
             sample = torch.cat([previous_last_frame, sample], dim=1)
             previous_last_frame = sample[:, -1:].clone()
-            sample = temporal_interpolation( os.path.join("ckpts", "flownet.pkl"), sample, exp, device=processing_device)
+            sample = temporal_interpolation( fl.locate_file("flownet.pkl"), sample, exp, device=processing_device)
             sample = sample[:, 1:]
         else:
-            sample = temporal_interpolation( os.path.join("ckpts", "flownet.pkl"), sample, exp, device=processing_device)
+            sample = temporal_interpolation( fl.locate_file("flownet.pkl"), sample, exp, device=processing_device)
             previous_last_frame = sample[:, -1:].clone()
 
         output_fps = output_fps * 2**exp
@@ -5849,13 +5860,12 @@ def get_new_preset_msg(advanced = True):
         return "Choose a Lora Preset or a Settings file in this List"
     
 def compute_lset_choices(model_type, loras_presets):
-    # top_dir = "settings"
     global_list = []
     if model_type is not None:
-        top_dir = get_lora_dir(model_type)
+        top_dir = "profiles" # get_lora_dir(model_type)
         model_def = get_model_def(model_type)
         settings_dir = get_model_recursive_prop(model_type, "profiles_dir", return_list=False)
-        if settings_dir is None or len(settings_dir) == 0: settings_dir = ["profiles_" + get_model_family(model_type, True)]
+        if settings_dir is None or len(settings_dir) == 0: settings_dir = [""]
         for dir in settings_dir:
             if len(dir) == "": continue
             cur_path = os.path.join(top_dir, dir)
@@ -6092,8 +6102,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
 
             return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, get_unique_id(), gr.update(), gr.update(), gr.update()
         else:
-            # lset_path =  os.path.join("settings", lset_name) if len(Path(lset_name).parts)>1 else os.path.join(get_lora_dir(current_model_type), lset_name)
-            lset_path =  os.path.join(get_lora_dir(current_model_type), lset_name)
+            lset_path =  os.path.join("profiles" if len(Path(lset_name).parts)>1 else get_lora_dir(current_model_type), lset_name)
             configs, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = "merge after" if  len(Path(lset_name).parts)<=1 else "merge before" )
 
             if configs == None:
@@ -6286,7 +6295,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         inputs["base_model_type"] = base_model_type
     diffusion_forcing = base_model_type in ["sky_df_1.3B", "sky_df_14B"]
     vace =  test_vace_module(base_model_type) 
-    t2v=   base_model_type in ["t2v"]
+    t2v=   base_model_type in ["t2v", "t2v_2_2"]
     ltxv = base_model_type in ["ltxv_13B"]
     recammaster = base_model_type in ["recam_1.3B"]
     phantom = base_model_type in ["phantom_1.3B", "phantom_14B"]
@@ -6320,10 +6329,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if model_def.get("model_modes", None) is None:
         pop += ["model_mode"]
 
-    if not vace and not phantom and not hunyuan_video_custom:
-        unsaved_params = ["keep_frames_video_guide", "mask_expand"] #"video_prompt_type",  
-        if base_model_type in ["t2v"]: unsaved_params = unsaved_params[1:]
-        pop += unsaved_params
+    if model_def.get("guide_custom_choices", None ) is None and model_def.get("guide_preprocessing", None ) is None:
+        pop += ["keep_frames_video_guide", "mask_expand"]
 
     if not "I" in video_prompt_type:
         pop += ["remove_background_images_ref"]
@@ -7557,7 +7564,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
     if len(launch_loras) == 0:
         launch_multis_str = ui_defaults.get("loras_multipliers","")
         launch_loras = [os.path.basename(path) for path in ui_defaults.get("activated_loras",[])]
-
     with gr.Row():
         with gr.Column():
             with gr.Column(visible=False, elem_id="image-modal-container") as modal_container: 
@@ -7596,7 +7602,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         cancel_lset_btn = gr.Button("Don't do it !", size="sm", min_width= 1 , visible=False)  
                         #confirm_save_lset_btn, confirm_delete_lset_btn, save_lset_btn, delete_lset_btn, cancel_lset_btn
             trigger_refresh_input_type = gr.Text(interactive= False, visible= False)
-            t2v =  base_model_type in ["t2v"] 
+            t2v =  base_model_type in ["t2v", "t2v_2_2"] 
             t2v_1_3B =  base_model_type in ["t2v_1.3B"] 
             flf2v = base_model_type == "flf2v_720p"
             base_model_family = get_model_family(base_model_type)
@@ -9030,6 +9036,8 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                     value=server_config.get("max_frames_multiplier", 1),
                     label="Increase the Max Number of Frames (needs more RAM and VRAM, usually the longer the worse the quality, needs an App restart)"
                 )
+                checkpoints_paths_text = "\n".join(server_config.get("checkpoints_paths", fl.default_checkpoints_paths))
+                checkpoints_paths = gr.Text(label ="Folders where Model Checkpoints are Stored. One Path per Line. First Path is Default Download Path.", value=checkpoints_paths_text,lines=3)
 
                 UI_theme_choice = gr.Dropdown(
                     choices=[
@@ -9276,6 +9284,7 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                     image_output_codec_choice,
                     audio_output_codec_choice,
                     resolution,
+                    checkpoints_paths,
                 ],
                 outputs= [msg , header, model_family, model_choice, refresh_form_trigger]
         )

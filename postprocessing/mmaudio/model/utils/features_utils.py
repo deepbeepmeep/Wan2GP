@@ -12,6 +12,7 @@ from ...ext.autoencoder import AutoEncoderModule
 from ...ext.mel_converter import get_mel_converter
 from ...ext.synchformer.synchformer import Synchformer
 from ...model.utils.distributions import DiagonalGaussianDistribution
+from shared.utils import files_locator as fl 
 
 
 def patch_clip(clip_model):
@@ -31,7 +32,7 @@ def patch_clip(clip_model):
     return clip_model
 
 def get_model_config(model_name):
-    with open("ckpts/DFN5B-CLIP-ViT-H-14-378/open_clip_config.json", 'r', encoding='utf-8') as f:
+    with open( fl.locate_file("DFN5B-CLIP-ViT-H-14-378/open_clip_config.json"), 'r', encoding='utf-8') as f:
         return json.load(f)["model_cfg"]
 
 class FeaturesUtils(nn.Module):
@@ -51,10 +52,10 @@ class FeaturesUtils(nn.Module):
         if enable_conditions:
             old_get_model_config = open_clip.factory.get_model_config
             open_clip.factory.get_model_config = get_model_config
-            with open("ckpts/DFN5B-CLIP-ViT-H-14-378/open_clip_config.json", 'r', encoding='utf-8') as f:
+            with open( fl.locate_file("DFN5B-CLIP-ViT-H-14-378/open_clip_config.json"), 'r', encoding='utf-8') as f:
                 override_preprocess = json.load(f)["preprocess_cfg"]
 
-            self.clip_model = create_model('DFN5B-CLIP-ViT-H-14-378', pretrained='ckpts/DFN5B-CLIP-ViT-H-14-378/open_clip_pytorch_model.bin',  force_preprocess_cfg= override_preprocess)
+            self.clip_model = create_model('DFN5B-CLIP-ViT-H-14-378', pretrained= fl.locate_file('DFN5B-CLIP-ViT-H-14-378/open_clip_pytorch_model.bin'),  force_preprocess_cfg= override_preprocess)
             open_clip.factory.get_model_config = old_get_model_config
 
             # self.clip_model = create_model_from_pretrained('hf-hub:apple/DFN5B-CLIP-ViT-H-14-384', return_transform=False)

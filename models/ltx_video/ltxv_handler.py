@@ -1,11 +1,12 @@
 import torch
+from shared.utils import files_locator as fl 
 
 
 def get_ltxv_text_encoder_filename(text_encoder_quantization):
-    text_encoder_filename = "ckpts/T5_xxl_1.1/T5_xxl_1.1_enc_bf16.safetensors"
+    text_encoder_filename = "T5_xxl_1.1/T5_xxl_1.1_enc_bf16.safetensors"
     if text_encoder_quantization =="int8":
         text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8") 
-    return text_encoder_filename
+    return fl.locate_file(text_encoder_filename, True)
 
 class family_handler():
     @staticmethod

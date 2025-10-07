@@ -20,7 +20,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
 ## 🔥 Latest Updates : 
-### October 5 2025: WanGP v8.993 - One Last Thing before the Big Unknown ...
+### October 6 2025: WanGP v8.994 - A few last things before the Big Unknown ...
 
 This new version hasn't any new model...
 
@@ -37,11 +37,14 @@ I have created the new Discord Channel **share-your-settings** where you can pos
 
 The *Scaled FP8 format* is widely used as it the format used by ... *ComfyUI*. So I except a flood of Finetunes in the *share-your-finetune* channel. If not it means this feature was useless and I will remove it &#x1F608;&#x1F608;&#x1F608;
 
+Not enough Space left on your SSD to download more models ? Would like to reuse Scaled FP8 files in your ComfyUI Folder without duplicating them ? Here comes *WanGP 8.994* **Multiple Checkpoints Folders** : you just need to move the files into different folders / hard drives or reuse existing folders and let know WanGP about it in the *Config Tab* and WanGP will be able to put all the parts together.   
+
 Last but not least the Lora's documentation has been updated.
 
 *update 8.991*: full power of *Vace Lynx* unleashed with new combinations such as Landscape + Face / Clothes + Face  / Injectd Frame (Start/End frames/...) + Face
 *update 8.992*: optimized gen with Lora, should be 10% faster if many loras
 *update 8.993*: Support for *Scaled FP8* format and samples *Paligenesis* finetunes, merged Loras Accelerators and Non Accelerators
+*update 8.994*: Added custom checkpoints folders
 
 ### September 30 2025: WanGP v8.9 - Combinatorics
 

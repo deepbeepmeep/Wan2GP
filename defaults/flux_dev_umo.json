@@ -1,10 +1,9 @@
 {
     "model": {
         "name": "Flux 1 Dev UMO 12B",
-        "architecture": "flux",
+        "architecture": "flux_dev_umo",
         "description": "FLUX.1 Dev UMO is a model that can Edit Images with a specialization in combining multiple image references (resized internally at 512x512 max) to produce an Image output. Best Image preservation at 768x768 Resolution Output.",
         "URLs": "flux",
-		"flux-model": "flux-dev-umo",		
 		"loras": ["https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1-dev-UMO_dit_lora_bf16.safetensors"],
 		"resolutions":  [ ["1024x1024 (1:1)", "1024x1024"],
 						["768x1024 (3:4)", "768x1024"],

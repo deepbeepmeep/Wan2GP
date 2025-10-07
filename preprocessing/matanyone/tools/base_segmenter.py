@@ -8,6 +8,7 @@ from segment_anything import sam_model_registry, SamPredictor, SamAutomaticMaskG
 import matplotlib.pyplot as plt
 import PIL
 from .mask_painter import mask_painter
+from shared.utils import files_locator as fl 
 
 
 class BaseSegmenter:
@@ -32,7 +33,7 @@ class BaseSegmenter:
         # self.model.to(torch.float16)
         # offload.save_model(self.model, "ckpts/mask/sam_vit_h_4b8939_fp16.safetensors")
         
-        offload.load_model_data(self.model, "ckpts/mask/sam_vit_h_4b8939_fp16.safetensors")
+        offload.load_model_data(self.model, fl.locate_file("mask/sam_vit_h_4b8939_fp16.safetensors"))
         self.model.to(torch.float32) # need to be optimized, if not f32 crappy precision
         self.model.to(device=self.device)
         self.predictor = SamPredictor(self.model)

@@ -1,15 +1,35 @@
 import torch
+from shared.utils import files_locator as fl 
 
 def get_ltxv_text_encoder_filename(text_encoder_quantization):
-    text_encoder_filename = "ckpts/T5_xxl_1.1/T5_xxl_1.1_enc_bf16.safetensors"
+    text_encoder_filename =  "T5_xxl_1.1/T5_xxl_1.1_enc_bf16.safetensors"
     if text_encoder_quantization =="int8":
         text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8") 
-    return text_encoder_filename
+    return fl.locate_file(text_encoder_filename, True)
 
 class family_handler():
     @staticmethod
+    def query_supported_types():
+        return ["flux", "flux_chroma", "flux_dev_kontext", "flux_dev_umo", "flux_dev_uso", "flux_schnell" ]
+
+    @staticmethod
+    def query_family_maps():
+
+        models_eqv_map = {
+            "flux_dev_kontext" : "flux",
+            "flux_dev_umo" : "flux",
+            "flux_dev_uso" : "flux",
+            "flux_schnell" : "flux",
+            "flux_chroma" : "flux",
+        }
+
+        models_comp_map = { 
+                    "flux": ["flux_chroma", "flux_dev_kontext", "flux_dev_umo", "flux_dev_uso", "flux_schnell" ]
+                    }
+        return models_eqv_map, models_comp_map
+    @staticmethod
     def query_model_def(base_model_type, model_def):
-        flux_model = model_def.get("flux-model", "flux-dev")
+        flux_model = "flux-dev" if base_model_type == "flux" else base_model_type.replace("_", "-")
         flux_schnell = flux_model == "flux-schnell" 
         flux_chroma = flux_model == "flux-chroma" 
         flux_uso = flux_model == "flux-dev-uso"
@@ -19,6 +39,7 @@ class family_handler():
         extra_model_def = {
             "image_outputs" : True,
             "no_negative_prompt" : not flux_chroma,
+            "flux-model": flux_model,
         }
         if flux_chroma:
             extra_model_def["guidance_max_phases"] = 1
@@ -60,13 +81,6 @@ class family_handler():
 
         return extra_model_def
 
-    @staticmethod
-    def query_supported_types():
-        return ["flux"]
-
-    @staticmethod
-    def query_family_maps():
-        return {}, {}
 
     @staticmethod
     def get_rgb_factors(base_model_type ):

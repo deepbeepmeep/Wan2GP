@@ -1,12 +1,13 @@
 import torch
 import gradio as gr
+from shared.utils import files_locator as fl 
 
 
 def get_qwen_text_encoder_filename(text_encoder_quantization):
-    text_encoder_filename = "ckpts/Qwen2.5-VL-7B-Instruct/Qwen2.5-VL-7B-Instruct_bf16.safetensors"
+    text_encoder_filename = "Qwen2.5-VL-7B-Instruct/Qwen2.5-VL-7B-Instruct_bf16.safetensors"
     if text_encoder_quantization =="int8":
         text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8") 
-    return text_encoder_filename
+    return fl.locate_file(text_encoder_filename, True)
 
 class family_handler():
     @staticmethod
@@ -18,6 +19,7 @@ class family_handler():
                             ("Lightning", "lightning")],
             "guidance_max_phases" : 1,
             "fit_into_canvas_image_refs": 0,
+            "profiles_dir": ["qwen"],
         }
 
         if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]: 

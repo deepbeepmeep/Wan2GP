@@ -22,6 +22,7 @@ from .matanyone.inference.inference_core import InferenceCore
 from .matanyone_wrapper import matanyone
 from shared.utils.audio_video import save_video, save_image
 from mmgp import offload
+from shared.utils import files_locator as fl 
 
 arg_device = "cuda"
 arg_sam_model_type="vit_h"
@@ -698,7 +699,7 @@ def load_unload_models(selected):
                 model_in_GPU = True
                 from .matanyone.model.matanyone import MatAnyone
                 # matanyone_model = MatAnyone.from_pretrained("PeiqingYang/MatAnyone")
-                matanyone_model = MatAnyone.from_pretrained("ckpts/mask")
+                matanyone_model = MatAnyone.from_pretrained(fl.locate_folder("mask"))
                 # pipe ={"mat" : matanyone_model, "sam" :model.samcontroler.sam_controler.model }
                 # offload.profile(pipe)
                 matanyone_model = matanyone_model.to("cpu").eval()

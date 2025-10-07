@@ -38,6 +38,7 @@ from .utils.skip_layer_strategy import SkipLayerStrategy
 from .models.autoencoders.latent_upsampler import LatentUpsampler
 from .pipelines import crf_compressor
 import cv2
+from shared.utils import files_locator as fl 
 
 MAX_HEIGHT = 720
 MAX_WIDTH = 1280
@@ -177,7 +178,7 @@ class LTXV:
         # offload.save_model(transformer, "ckpts/ltxv_0.9.8_13B_quanto_bf16_int8.safetensors", do_quantize= True, config_file_path= "c:/temp/ltxv_config.json")
         
         # vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
-        vae = offload.fast_load_transformers_model("ckpts/ltxv_0.9.7_VAE.safetensors", modelClass=CausalVideoAutoencoder)
+        vae = offload.fast_load_transformers_model( fl.locate_file("ltxv_0.9.7_VAE.safetensors"), modelClass=CausalVideoAutoencoder)
         # vae = offload.fast_load_transformers_model("ckpts/ltxv_0.9.8_VAE.safetensors", modelClass=CausalVideoAutoencoder)
         # if VAE_dtype == torch.float16:
         VAE_dtype = torch.bfloat16
@@ -196,11 +197,11 @@ class LTXV:
             transformer._lock_dtype = torch.float
 
 
-        scheduler = RectifiedFlowScheduler.from_pretrained("ckpts/ltxv_scheduler.json")
+        scheduler = RectifiedFlowScheduler.from_pretrained(fl.locate_file("ltxv_scheduler.json"))
         # transformer = offload.fast_load_transformers_model("ltx_13B_quanto_bf16_int8.safetensors", modelClass=Transformer3DModel, modelPrefix= "model.diffusion_model",  forcedConfigPath="config_transformer.json")
         # offload.save_model(transformer, "ltx_13B_quanto_bf16_int8.safetensors", do_quantize= True, config_file_path="config_transformer.json")
 
-        latent_upsampler = LatentUpsampler.from_pretrained("ckpts/ltxv_0.9.7_spatial_upscaler.safetensors").to("cpu").eval()
+        latent_upsampler = LatentUpsampler.from_pretrained(fl.locate_file("ltxv_0.9.7_spatial_upscaler.safetensors")).to("cpu").eval()
         # latent_upsampler = LatentUpsampler.from_pretrained("ckpts/ltxv_0.9.8_spatial_upscaler.safetensors").to("cpu").eval()
         latent_upsampler.to(VAE_dtype)
         latent_upsampler._model_dtype = VAE_dtype
@@ -216,19 +217,13 @@ class LTXV:
 
         text_encoder = offload.fast_load_transformers_model(text_encoder_filepath)
         patchifier = SymmetricPatchifier(patch_size=1)
-        tokenizer = T5Tokenizer.from_pretrained( "ckpts/T5_xxl_1.1")
+        tokenizer = T5Tokenizer.from_pretrained(fl.locate_folder("T5_xxl_1.1"))
 
         enhance_prompt = False
-        if enhance_prompt:
-            prompt_enhancer_image_caption_model = AutoModelForCausalLM.from_pretrained( "ckpts/Florence2", trust_remote_code=True)
-            prompt_enhancer_image_caption_processor = AutoProcessor.from_pretrained( "ckpts/Florence2", trust_remote_code=True)
-            prompt_enhancer_llm_model = offload.fast_load_transformers_model("ckpts/Llama3_2_quanto_bf16_int8.safetensors")
-            prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained("ckpts/Llama3_2")
-        else:
-            prompt_enhancer_image_caption_model = None
-            prompt_enhancer_image_caption_processor = None
-            prompt_enhancer_llm_model = None
-            prompt_enhancer_llm_tokenizer = None
+        prompt_enhancer_image_caption_model = None
+        prompt_enhancer_image_caption_processor = None
+        prompt_enhancer_llm_model = None
+        prompt_enhancer_llm_tokenizer = None
 
         # if prompt_enhancer_image_caption_model != None:
         #     pipe["prompt_enhancer_image_caption_model"] = prompt_enhancer_image_caption_model
@@ -489,7 +484,7 @@ class LTXV:
             if letter in video_prompt_type:
                 for file_name in preloadURLs:
                     if signature in file_name:
-                        loras += [ os.path.join("ckpts", os.path.basename(file_name))]
+                        loras += [ fl.locate_file(os.path.basename(file_name))]
                         break
         loras_mult = [1.] * len(loras)
         return loras, loras_mult 

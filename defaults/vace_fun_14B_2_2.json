@@ -1,7 +1,7 @@
 {
     "model": {
         "name": "Wan2.2 Vace Fun 14B",
-        "architecture": "vace_14B",
+        "architecture": "vace_14B_2_2",
         "description": "This is the Fun Vace 2.2 version, that is not the official Vace 2.2",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_HIGH_mbf16.safetensors",

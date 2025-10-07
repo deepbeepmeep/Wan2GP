@@ -14,6 +14,7 @@ from safetensors.torch import load_file as load_sft
 from .model import Flux, FluxLoraWrapper, FluxParams
 from .modules.autoencoder import AutoEncoder, AutoEncoderParams
 from .modules.conditioner import HFEmbedder
+from shared.utils import files_locator as fl 
 
 CHECKPOINTS_DIR = Path("checkpoints")
 
@@ -756,12 +757,12 @@ def load_t5(device: str | torch.device = "cuda", text_encoder_filename = None, m
 
 
 def load_clip(device: str | torch.device = "cuda") -> HFEmbedder:
-    return HFEmbedder("ckpts/clip_vit_large_patch14", "", max_length=77, torch_dtype=torch.bfloat16, is_clip  =True).to(device)
+    return HFEmbedder( fl.locate_folder("clip_vit_large_patch14"), "", max_length=77, torch_dtype=torch.bfloat16, is_clip  =True).to(device)
 
 
 def load_ae(name: str, device: str | torch.device = "cuda") -> AutoEncoder:
     config = configs[name]
-    ckpt_path = str(get_checkpoint_path(config.repo_id, config.repo_ae, "FLUX_AE"))
+    ckpt_path = str(get_checkpoint_path(config.repo_id, fl.locate_file("flux_vae.safetensors"), "FLUX_AE"))
 
     # Loading the autoencoder
     with torch.device("meta"):

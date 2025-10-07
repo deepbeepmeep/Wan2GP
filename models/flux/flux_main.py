@@ -12,6 +12,7 @@ from transformers import SiglipVisionModel, SiglipImageProcessor
 import torchvision.transforms.functional as TVF
 import math
 from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image
+from shared.utils import files_locator as fl 
 
 from .util import (
     aspect_ratio_to_height_width,
@@ -101,7 +102,7 @@ class model_factory:
 
         siglip_processor = siglip_model = feature_embedder = None
         if self.name == 'flux-dev-uso':
-            siglip_path = "ckpts/siglip-so400m-patch14-384"
+            siglip_path =  fl.locate_folder("siglip-so400m-patch14-384")
             siglip_processor = SiglipImageProcessor.from_pretrained(siglip_path)
             siglip_model = SiglipVisionModel.from_pretrained(siglip_path)
             siglip_model.eval().to("cpu")

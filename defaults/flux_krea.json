@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Flux 1 Krea Dev 12B",
+        "name": "Flux 1 Dev Krea 12B",
         "architecture": "flux",
         "description": "Cutting-edge output quality, with a focus on aesthetic photography..",
         "URLs": [

@@ -54,6 +54,7 @@ from preprocessing.matanyone  import app as matanyone_app
 from tqdm import tqdm
 import requests
 from shared.gradio.gallery import AdvancedMediaGallery
+from collections import defaultdict
 
 # import torch._dynamo as dynamo
 # dynamo.config.recompile_limit = 2000   # default is 256
@@ -64,7 +65,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 
 target_mmgp_version = "3.6.2"
-WanGP_version = "8.994"
+WanGP_version = "8.995"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1839,6 +1840,7 @@ else:
 checkpoints_paths = server_config.get("checkpoints_paths", None)
 if checkpoints_paths is None: checkpoints_paths = server_config["checkpoints_paths"] = fl.default_checkpoints_paths
 fl.set_checkpoints_paths(checkpoints_paths)
+three_levels_hierarchy = server_config.get("model_hierarchy_type", 0) == 1
 
 #   Deprecated models
 for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion_forcing_1.3B_bf16.safetensors","sky_reels2_diffusion_forcing_720p_14B_bf16.safetensors",
@@ -1897,6 +1899,12 @@ def get_base_model_type(model_type):
     else:
         return model_def["architecture"]
 
+def get_parent_model_type(model_type):
+    base_model_type =  get_base_model_type(model_type)
+    if base_model_type is None: return None
+    model_def = get_model_def(base_model_type)
+    return model_def.get("parent_model_type", base_model_type)
+"vace_14B"
 def get_model_handler(model_type):
     base_model_type = get_base_model_type(model_type)
     if base_model_type is None:
@@ -2993,6 +3001,7 @@ def release_RAM():
 
 def apply_changes(  state,
                     transformer_types_choices,
+                    model_hierarchy_type_choice,
                     transformer_dtype_policy_choice,
                     text_encoder_quantization_choice,
                     VAE_precision_choice,
@@ -3029,13 +3038,14 @@ def apply_changes(  state,
     checkpoints_paths = [path.strip() for path in checkpoints_paths if len(path.strip()) > 0 ]
     fl.set_checkpoints_paths(checkpoints_paths)
     if args.lock_config:
-        return "<DIV ALIGN=CENTER>Config Locked</DIV>",*[gr.update()]*4
+        return "<DIV ALIGN=CENTER>Config Locked</DIV>",*[gr.update()]*5
     if gen_in_progress:
-        return "<DIV ALIGN=CENTER>Unable to change config when a generation is in progress</DIV>",*[gr.update()]*4
+        return "<DIV ALIGN=CENTER>Unable to change config when a generation is in progress</DIV>",*[gr.update()]*5
     global offloadobj, wan_model, server_config, loras, default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, default_lora_preset, loras_presets
     server_config = {
         "attention_mode" : attention_choice,  
         "transformer_types": transformer_types_choices, 
+        "model_hierarchy_type": model_hierarchy_type_choice,
         "text_encoder_quantization" : text_encoder_quantization_choice,
         "save_path" : save_path_choice,
         "image_save_path" : image_save_path_choice,
@@ -3066,6 +3076,7 @@ def apply_changes(  state,
         "audio_output_codec" : audio_output_codec_choice,
         "last_model_type" : state["model_type"],
         "last_model_per_family":  state["last_model_per_family"],
+        "last_model_per_type":  state["last_model_per_type"],
         "last_advanced_choice": state["advanced"], 
         "last_resolution_choice": last_resolution_choice, 
         "last_resolution_per_group":  state["last_resolution_per_group"],
@@ -3090,7 +3101,8 @@ def apply_changes(  state,
         if v != v_old:
             changes.append(k)
 
-    global attention_mode, default_profile, compile, vae_config, boost, lora_dir, reload_needed, preload_model_policy, transformer_quantization, transformer_dtype_policy, transformer_types, text_encoder_quantization, save_path 
+    global attention_mode, default_profile, compile, vae_config, boost, lora_dir, reload_needed, preload_model_policy, transformer_quantization, transformer_dtype_policy, transformer_types, text_encoder_quantization, save_path , three_levels_hierarchy
+    three_levels_hierarchy= server_config["model_hierarchy_type"] == 1 
     attention_mode = server_config["attention_mode"]
     default_profile = server_config["profile"]
     compile = server_config["compile"]
@@ -3104,22 +3116,26 @@ def apply_changes(  state,
     transformer_dtype_policy = server_config["transformer_dtype_policy"]
     text_encoder_quantization = server_config["text_encoder_quantization"]
     transformer_types = server_config["transformer_types"]    
-    model_filename = get_model_filename(transformer_type, transformer_quantization, transformer_dtype_policy)
+    model_type = state["model_type"]
+    model_filename = get_model_filename(model_type, transformer_quantization, transformer_dtype_policy)
     state["model_filename"] = model_filename
     if "enhancer_enabled" in changes or "enhancer_mode" in changes:
         reset_prompt_enhancer()
     if all(change in ["attention_mode", "vae_config", "boost", "save_path", "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant", 
                       "notification_sound_enabled", "notification_sound_volume", "mmaudio_enabled", "max_frames_multiplier", "display_stats",
-                      "video_output_codec", "image_output_codec", "audio_output_codec", "checkpoints_paths"] for change in changes ):
+                      "video_output_codec", "image_output_codec", "audio_output_codec", "checkpoints_paths", "model_hierarchy_type"] for change in changes ):
         model_family = gr.Dropdown()
+        model_base_type = gr.Dropdown()
         model_choice = gr.Dropdown()
+        if "model_hierarchy_type" in changes:
+            model_family, model_base_type, model_choice = generate_dropdown_model_list(model_type)
     else:
         reload_needed = True
-        model_family, model_choice = generate_dropdown_model_list(transformer_type)
+        model_family, model_base_type, model_choice = generate_dropdown_model_list(model_type)
 
     header = generate_header(state["model_type"], compile=compile, attention_mode= attention_mode)
     mmaudio_enabled = server_config["mmaudio_enabled"] > 0
-    return "<DIV ALIGN=CENTER>The new configuration has been succesfully applied</DIV>", header, model_family, model_choice, get_unique_id()
+    return "<DIV ALIGN=CENTER>The new configuration has been succesfully applied</DIV>", header, model_family, model_base_type, model_choice, get_unique_id()
 
 def get_gen_info(state):
     cache = state.get("gen", None)
@@ -4375,6 +4391,7 @@ def process_prompt_enhancer(prompt_enhancer, original_prompts,  image_start, ori
     prompt_images = []
     if "I" in prompt_enhancer:
         if image_start != None:
+            if not isinstance(image_start, list): image_start= [image_start] 
             prompt_images += image_start
         if original_image_refs != None:
             prompt_images += original_image_refs[:1]
@@ -5888,7 +5905,7 @@ def compute_lset_choices(model_type, loras_presets):
     indent = chr(160) * 4
     lset_choices = []
     if len(global_list) > 0:
-        lset_choices += [( (sep*16) +"Profiles" + (sep*17), ">Profiles")]
+        lset_choices += [( (sep*12) +"Accelerators Profiles" + (sep*13), ">profiles")]
         lset_choices += [ ( indent   + os.path.splitext(os.path.basename(preset))[0], preset) for preset in global_list ]
     if len(settings_list) > 0:
         settings_list.sort()
@@ -6100,14 +6117,14 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             state["apply_success"] = 1
             wizard_prompt_activated = "on"
 
-            return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, get_unique_id(), gr.update(), gr.update(), gr.update()
+            return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, get_unique_id(), gr.update(), gr.update(), gr.update(), gr.update()
         else:
             lset_path =  os.path.join("profiles" if len(Path(lset_name).parts)>1 else get_lora_dir(current_model_type), lset_name)
             configs, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = "merge after" if  len(Path(lset_name).parts)<=1 else "merge before" )
 
             if configs == None:
                 gr.Info("File not supported")
-                return [gr.update()] * 8
+                return [gr.update()] * 9
             model_type = configs["model_type"]
             configs["lset_name"] = lset_name
             gr.Info(f"Settings File '{lset_name}' has been applied")
@@ -6115,7 +6132,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             if help is not None: gr.Info(help)
             if model_type == current_model_type:
                 set_model_settings(state, current_model_type, configs)        
-                return *[gr.update()] * 4, gr.update(), gr.update(), gr.update(), get_unique_id()
+                return *[gr.update()] * 4, gr.update(), gr.update(), gr.update(), gr.update(), get_unique_id()
             else:
                 set_model_settings(state, model_type, configs)        
                 return *[gr.update()] * 4, gr.update(), *generate_dropdown_model_list(model_type), gr.update()
@@ -6766,12 +6783,12 @@ def load_settings_from_file(state, file_path):
     gen = get_gen_info(state)
 
     if file_path==None:
-        return gr.update(), gr.update(), None
+        return gr.update(), gr.update(), gr.update(), gr.update(), None
 
     configs, any_video_or_image_file = get_settings_from_file(state, file_path, True, True, True)
     if configs == None:
         gr.Info("File not supported")
-        return gr.update(), gr.update(), None
+        return gr.update(), gr.update(), gr.update(), gr.update(), None
 
     current_model_type = state["model_type"]
     model_type = configs["model_type"]
@@ -6785,7 +6802,7 @@ def load_settings_from_file(state, file_path):
 
     if model_type == current_model_type:
         set_model_settings(state, current_model_type, configs)        
-        return gr.update(), gr.update(), str(time.time()), None
+        return gr.update(), gr.update(), gr.update(), gr.update(), str(time.time()), None
     else:
         set_model_settings(state, model_type, configs)        
         return *generate_dropdown_model_list(model_type), gr.update(), None
@@ -6888,7 +6905,6 @@ def save_inputs(
 ):
 
 
-    model_filename = state["model_filename"]
     model_type = state["model_type"]
     if image_mask_guide is not None and image_mode >= 1 and video_prompt_type is not None and "A" in video_prompt_type and not "U" in video_prompt_type:
     # if image_mask_guide is not None and image_mode == 2:
@@ -6993,6 +7009,11 @@ def change_model(state, model_choice):
     last_model_per_family = state["last_model_per_family"] 
     last_model_per_family[get_model_family(model_choice, for_ui= True)] = model_choice
     server_config["last_model_per_family"] = last_model_per_family
+
+    last_model_per_type = state["last_model_per_type"] 
+    last_model_per_type[get_base_model_type(model_choice)] = model_choice
+    server_config["last_model_per_type"] = last_model_per_type
+
     server_config["last_model_type"] = model_choice
 
     with open(server_config_filename, "w", encoding="utf-8") as writer:
@@ -7512,7 +7533,7 @@ def download_lora(state, lora_url, progress=gr.Progress(track_tqdm=True),):
     
 
 
-def generate_video_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_choice = None, header = None, main = None, main_tabs= None):
+def generate_video_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_base_type_choice = None, model_choice = None, header = None, main = None, main_tabs= None):
     global inputs_names #, advanced
 
     if update_form:
@@ -7529,6 +7550,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
         state_dict["model_type"] = model_type
         state_dict["advanced"] = advanced_ui
         state_dict["last_model_per_family"] = server_config.get("last_model_per_family", {})
+        state_dict["last_model_per_type"] = server_config.get("last_model_per_type", {})
         state_dict["last_resolution_per_group"] = server_config.get("last_resolution_per_group", {})
         gen = dict()
         gen["queue"] = []
@@ -8635,7 +8657,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             ).then(fn=save_inputs,
                 inputs =[target_state] + gen_inputs,
                 outputs= None
-            ).then( fn=use_video_settings, inputs =[state, output, last_choice] , outputs= [model_family, model_choice, refresh_form_trigger])
+            ).then( fn=use_video_settings, inputs =[state, output, last_choice] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger])
 
 
             prompt_enhancer_btn.click(fn=validate_wizard_prompt,
@@ -8680,7 +8702,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             confirm_delete_lset_btn.click(delete_lset, inputs=[state, lset_name], outputs=[lset_name, apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn,confirm_delete_lset_btn, cancel_lset_btn ])
             cancel_lset_btn.click(cancel_lset, inputs=[], outputs=[apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn, confirm_delete_lset_btn,confirm_save_lset_btn, cancel_lset_btn,save_lset_prompt_drop ])
             apply_lset_btn.click(fn=save_inputs, inputs =[target_state] + gen_inputs, outputs= None).then(fn=apply_lset, 
-                inputs=[state, wizard_prompt_activated_var, lset_name,loras_choices, loras_multipliers, prompt], outputs=[wizard_prompt_activated_var, loras_choices, loras_multipliers, prompt, fill_wizard_prompt_trigger, model_family, model_choice, refresh_form_trigger])
+                inputs=[state, wizard_prompt_activated_var, lset_name,loras_choices, loras_multipliers, prompt], outputs=[wizard_prompt_activated_var, loras_choices, loras_multipliers, prompt, fill_wizard_prompt_trigger, model_family, model_base_type_choice, model_choice, refresh_form_trigger])
             refresh_lora_btn.click(refresh_lora_list, inputs=[state, lset_name,loras_choices], outputs=[lset_name, loras_choices])
             refresh_lora_btn2.click(refresh_lora_list, inputs=[state, lset_name,loras_choices], outputs=[lset_name, loras_choices])
 
@@ -8719,7 +8741,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             ).then(fn=save_inputs,
                 inputs =[target_state] + gen_inputs,
                 outputs= None
-            ).then(fn=load_settings_from_file, inputs =[state, settings_file] , outputs= [model_family, model_choice, refresh_form_trigger, settings_file])
+            ).then(fn=load_settings_from_file, inputs =[state, settings_file] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger, settings_file])
 
 
             reset_settings_btn.click(fn=validate_wizard_prompt,
@@ -8748,7 +8770,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 show_progress="hidden",
             )                
 
-            model_family.input(fn=change_model_family, inputs=[state, model_family], outputs= [model_choice])
+            model_family.input(fn=change_model_family, inputs=[state, model_family], outputs= [model_base_type_choice, model_choice], show_progress="hidden")
+            model_base_type_choice.input(fn=change_model_base_types, inputs=[state, model_family, model_base_type_choice], outputs= [model_base_type_choice, model_choice], show_progress="hidden")
 
             model_choice.change(fn=validate_wizard_prompt,
                 inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
@@ -8936,13 +8959,13 @@ def generate_download_tab(lset_name,loras_choices, state):
     download_loras_btn.click(fn=download_loras, inputs=[], outputs=[download_status_row, download_status]).then(fn=refresh_lora_list, inputs=[state, lset_name,loras_choices], outputs=[lset_name, loras_choices])
 
     
-def generate_configuration_tab(state, blocks, header, model_family, model_choice, resolution, refresh_form_trigger):
+def generate_configuration_tab(state, blocks, header, model_family, model_base_type_choice, model_choice, resolution, refresh_form_trigger):
     gr.Markdown("Please click Apply Changes at the bottom so that the changes are effective. Some choices below may be locked if the app has been launched by specifying a config preset.")
     with gr.Column():
         with gr.Tabs():
             # with gr.Row(visible=advanced_ui) as advanced_row:
             with gr.Tab("General"):
-                dropdown_families, dropdown_choices = get_sorted_dropdown(displayed_model_types, None)
+                _, _, dropdown_choices = get_sorted_dropdown(displayed_model_types, None, None, False)
 
                 transformer_types_choices = gr.Dropdown(
                     choices= dropdown_choices,
@@ -8951,6 +8974,18 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                     scale= 2,
                     multiselect= True
                     )
+
+                model_hierarchy_type_choice = gr.Dropdown(
+                    choices=[
+                        ("Two Levels: Model Family > Models & Finetunes", 0),
+                        ("Three Levels: Model Family > Models > Finetunes", 1),
+                    ],
+                    value= server_config.get("model_hierarchy_type", 1),
+                    label= "Models Hierarchy In User Interface",
+                    visible=args.betatest, 
+                    scale= 2,
+                    )
+
 
                 fit_canvas_choice = gr.Dropdown(
                     choices=[
@@ -9254,6 +9289,7 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                 inputs=[
                     state,
                     transformer_types_choices,
+                    model_hierarchy_type_choice,
                     transformer_dtype_policy_choice,
                     text_encoder_quantization_choice,
                     VAE_precision_choice,
@@ -9286,7 +9322,7 @@ def generate_configuration_tab(state, blocks, header, model_family, model_choice
                     resolution,
                     checkpoints_paths,
                 ],
-                outputs= [msg , header, model_family, model_choice, refresh_form_trigger]
+                outputs= [msg , header, model_family, model_base_type_choice, model_choice, refresh_form_trigger]
         )
 
 def generate_about_tab():
@@ -9344,7 +9380,100 @@ def compact_name(family_name, model_name):
         return model_name[len(family_name):].strip()
     return model_name
 
-def get_sorted_dropdown(dropdown_types, current_model_family):
+
+def create_models_hierarchy(rows):
+    """
+    rows: list of (model_name, model_id, parent_model_id)
+    returns:
+      parents_list: list[(parent_header, parent_id)]
+      children_dict: dict[parent_id] -> list[(child_display_name, child_id)]
+    """
+    toks=lambda s:[t for t in s.split() if t]
+    norm=lambda s:' '.join(s.split()).casefold()
+
+    groups,parents,order=defaultdict(list),{},[]
+    for name,mid,pmid in rows:
+        groups[pmid].append((name,mid))
+        if mid==pmid and pmid not in parents:
+            parents[pmid]=name; order.append(pmid)
+
+    parents_list,children_dict=[],{}
+
+    # --- Real parents ---
+    for pid in order:
+        p_name=parents[pid]; p_tok=toks(p_name); p_low=[w.casefold() for w in p_tok]
+        n=len(p_low); p_last=p_low[-1]; p_set=set(p_low)
+
+        kids=[]
+        for name,mid in groups.get(pid,[]):
+            ot=toks(name); lt=[w.casefold() for w in ot]; st=set(lt)
+            kids.append((name,mid,ot,lt,st))
+
+        outliers={mid for _,mid,_,_,st in kids if mid!=pid and p_set.isdisjoint(st)}
+
+        # Only parent + children that start with parent's first word contribute to prefix
+        prefix_non=[]
+        for name,mid,ot,lt,st in kids:
+            if mid==pid or (mid not in outliers and lt and lt[0]==p_low[0]):
+                prefix_non.append((ot,lt))
+
+        def lcp_len(a,b):
+            i=0; m=min(len(a),len(b))
+            while i<m and a[i]==b[i]: i+=1
+            return i
+        L=n if len(prefix_non)<=1 else min(lcp_len(lt,p_low) for _,lt in prefix_non)
+        if L==0 and len(prefix_non)>1: L=n
+
+        shares_last=any(mid!=pid and mid not in outliers and lt and lt[-1]==p_last
+                        for _,mid,_,lt,_ in kids)
+        header_tokens_disp=p_tok[:L]+([p_tok[-1]] if shares_last and L<n else [])
+        header=' '.join(header_tokens_disp)
+        header_has_last=(L==n) or (shares_last and L<n)
+
+        prefix_low=p_low[:L]
+        def startswith_prefix(lt):
+            if L==0 or len(lt)<L: return False
+            for i in range(L):
+                if lt[i]!=prefix_low[i]: return False
+            return True
+
+        def disp(name,mid,ot,lt):
+            if mid in outliers: return name
+            rem=ot[L:] if startswith_prefix(lt) else ot[:]
+            if header_has_last and lt and lt[-1]==p_last and rem and rem[-1].casefold()==p_last:
+                rem=rem[:-1]
+            s=' '.join(rem).strip()
+            return s if s else 'Default'
+
+        entries=[(disp(p_name,pid,p_tok,p_low),pid)]
+        for name,mid,ot,lt,_ in kids:
+            if mid==pid: continue
+            entries.append((disp(name,mid,ot,lt),mid))
+
+        # Number "Default" for children whose full name == parent's full name
+        p_full=norm(p_name); full_by_mid={mid:name for name,mid,*_ in kids}
+        num=2; numbered=[entries[0]]
+        for dname,mid in entries[1:]:
+            if dname=='Default' and norm(full_by_mid[mid])==p_full:
+                numbered.append((f'Default #{num}',mid)); num+=1
+            else:
+                numbered.append((dname,mid))
+
+        parents_list.append((header,pid))
+        children_dict[pid]=numbered
+
+    # --- Orphan groups (no real parent present) ---
+    for pid in groups.keys():
+        if pid in parents: continue
+        first_name=groups[pid][0][0]
+        parents_list.append((first_name,pid))               # fake parent: full name of first orphan
+        children_dict[pid]=[(name,mid) for name,mid in groups[pid]]  # copy full names only
+    
+    parents_list = sorted(parents_list, key=lambda c: c[0])
+    return parents_list,children_dict
+
+
+def get_sorted_dropdown(dropdown_types, current_model_family, current_model_type, three_levels = True):
     models_families = [get_model_family(type, for_ui= True) for type in dropdown_types] 
     families = {}
     for family in models_families:
@@ -9358,32 +9487,53 @@ def get_sorted_dropdown(dropdown_types, current_model_family):
     else:
         dropdown_choices = [ (families_infos[family][0], compact_name(families_infos[family][1], get_model_name(model_type)), model_type) for model_type, family in zip( dropdown_types, models_families) if family == current_model_family]
     dropdown_choices = sorted(dropdown_choices, key=lambda c: (c[0], c[1]))
-    dropdown_choices = [model[1:] for model in dropdown_choices] 
-    return sorted_familes, dropdown_choices
+    if three_levels:
+        dropdown_choices = [ (*model[1:], get_parent_model_type(model[2])) for model in dropdown_choices] 
+        sorted_choices, finetunes_dict = create_models_hierarchy(dropdown_choices)
+        return sorted_familes, sorted_choices, finetunes_dict[get_parent_model_type(current_model_type)]
+        
+    else:
+        dropdown_types_list = list({get_base_model_type(model[2]) for model in dropdown_choices})
+        dropdown_choices = [model[1:] for model in dropdown_choices] 
+        return sorted_familes, dropdown_types_list, dropdown_choices 
+
+
 
 def generate_dropdown_model_list(current_model_type):
     dropdown_types= transformer_types if len(transformer_types) > 0 else displayed_model_types 
     if current_model_type not in dropdown_types:
         dropdown_types.append(current_model_type)
     current_model_family = get_model_family(current_model_type, for_ui= True)
-    sorted_familes, dropdown_choices = get_sorted_dropdown(dropdown_types, current_model_family)
+    sorted_familes, sorted_models, sorted_finetunes = get_sorted_dropdown(dropdown_types, current_model_family, current_model_type, three_levels=three_levels_hierarchy)
 
     dropdown_families = gr.Dropdown(
         choices= sorted_familes,
         value= current_model_family,
         show_label= False,
-        scale= 1,
+        scale= 2 if three_levels_hierarchy else 1,
         elem_id="family_list",
         min_width=50
         )
 
-    return dropdown_families, gr.Dropdown(
-        choices= dropdown_choices,
+    dropdown_models = gr.Dropdown(
+        choices= sorted_models,
+        value= get_parent_model_type(current_model_type) if three_levels_hierarchy  else get_base_model_type(current_model_type),
+        show_label= False,
+        scale= 3 if len(sorted_finetunes) > 1 else 7, 
+        elem_id="model_base_types_list",
+        visible= three_levels_hierarchy
+        )
+    
+    dropdown_finetunes = gr.Dropdown(
+        choices= sorted_finetunes,
         value= current_model_type,
         show_label= False,
         scale= 4,
+        visible= len(sorted_finetunes) > 1,
         elem_id="model_list",
         )
+    
+    return dropdown_families, dropdown_models, dropdown_finetunes
 
 def change_model_family(state, current_model_family):
     dropdown_types= transformer_types if len(transformer_types) > 0 else displayed_model_types 
@@ -9394,7 +9544,34 @@ def change_model_family(state, current_model_family):
     last_model_per_family = state.get("last_model_per_family", {})
     model_type = last_model_per_family.get(current_model_family, "")
     if len(model_type) == "" or model_type not in [choice[1] for choice in dropdown_choices] :  model_type = dropdown_choices[0][1]
-    return gr.Dropdown(choices= dropdown_choices, value = model_type )
+
+    if three_levels_hierarchy:
+        parent_model_type = get_parent_model_type(model_type)
+        dropdown_choices = [ (*tup, get_parent_model_type(tup[1])) for tup in dropdown_choices] 
+        dropdown_base_types_choices, finetunes_dict = create_models_hierarchy(dropdown_choices)
+        dropdown_choices = finetunes_dict[parent_model_type ]
+        model_finetunes_visible = len(dropdown_choices) > 1 
+    else:
+        parent_model_type = get_base_model_type(model_type)
+        model_finetunes_visible = True
+        dropdown_base_types_choices = list({get_base_model_type(model[1]) for model in dropdown_choices})
+
+    return gr.Dropdown(choices= dropdown_base_types_choices, value = parent_model_type, scale=3 if model_finetunes_visible else 7), gr.Dropdown(choices= dropdown_choices, value = model_type, visible = model_finetunes_visible )
+
+def change_model_base_types(state,  current_model_family, model_base_type_choice):
+    if not three_levels_hierarchy: return gr.update()
+    dropdown_types= transformer_types if len(transformer_types) > 0 else displayed_model_types 
+    current_family_name = families_infos[current_model_family][1]
+    dropdown_choices = [ (compact_name(current_family_name,  get_model_name(model_type)), model_type, model_base_type_choice) for model_type in dropdown_types if get_parent_model_type(model_type) == model_base_type_choice and get_model_family(model_type, for_ui= True) == current_model_family]
+    dropdown_choices = sorted(dropdown_choices, key=lambda c: c[0])
+    _, finetunes_dict = create_models_hierarchy(dropdown_choices)
+    dropdown_choices = finetunes_dict[model_base_type_choice ]
+    model_finetunes_visible = len(dropdown_choices) > 1 
+    last_model_per_type = state.get("last_model_per_type", {})
+    model_type = last_model_per_type.get(model_base_type_choice, "")
+    if len(model_type) == "" or model_type not in [choice[1] for choice in dropdown_choices] :  model_type = dropdown_choices[0][1]
+
+    return gr.update(scale=3 if model_finetunes_visible else 7), gr.Dropdown(choices= dropdown_choices, value = model_type, visible=model_finetunes_visible )
 
 def set_new_tab(tab_state, new_tab_no):
     global vmc_event_handler    
@@ -9560,11 +9737,13 @@ def create_ui():
             --layout-gap: 0px !important;
         }    
         .postprocess span {margin-top:4px;margin-bottom:4px} 
-        #model_list, #family_list{
+        #model_list, #family_list, #model_base_types_list {
         background-color:black;
         padding:1px}
 
-        #model_list input, #family_list input {
+        #model_list,#model_base_types_list { padding-left:0px}
+
+        #model_list input, #family_list input, #model_base_types_list input {
         font-size:25px}
 
         #family_list div div {
@@ -9573,6 +9752,10 @@ def create_ui():
 
         #model_list div div {
         border-radius: 0px 4px 4px 0px;
+        }
+
+        #model_base_types_list div div {
+        border-radius: 0px 0px 0px 0px;
         }
 
         .title-with-lines {
@@ -9930,8 +10113,8 @@ def create_ui():
                         model_family = gr.Dropdown(visible=False, value= "")
                         model_choice = gr.Dropdown(visible=False, value= transformer_type, choices= [transformer_type])
                     else:
-                        gr.Markdown("<div class='title-with-lines'><div class=line width=100%></div></div>")
-                        model_family, model_choice = generate_dropdown_model_list(transformer_type)
+                        gr.Markdown("<div class='title-with-lines'><div class=line width=100%></div></div>")                        
+                        model_family, model_base_type_choice, model_choice = generate_dropdown_model_list(transformer_type)
                         gr.Markdown("<div class='title-with-lines'><div class=line width=100%></div></div>")
                 with gr.Row():
                     header = gr.Markdown(generate_header(transformer_type, compile, attention_mode), visible= True)
@@ -9940,17 +10123,16 @@ def create_ui():
 
                 with gr.Row():
                     (   state, loras_choices, lset_name, resolution, refresh_form_trigger, save_form_trigger
-                        # video_guide, image_guide, video_mask, image_mask, image_refs, 
-                    ) = generate_video_tab(model_family=model_family, model_choice=model_choice, header=header, main = main, main_tabs =main_tabs)
+                    ) = generate_video_tab(model_family=model_family, model_base_type_choice= model_base_type_choice, model_choice=model_choice, header=header, main = main, main_tabs =main_tabs)
             with gr.Tab("Guides", id="info") as info_tab:
                 generate_info_tab()
             with gr.Tab("Video Mask Creator", id="video_mask_creator") as video_mask_creator:
-                matanyone_app.display(main_tabs, tab_state, state, refresh_form_trigger, server_config, get_current_model_settings) #, video_guide, image_guide, video_mask, image_mask, image_refs)
+                matanyone_app.display(main_tabs, tab_state, state, refresh_form_trigger, server_config, get_current_model_settings) 
             if not args.lock_config:
                 with gr.Tab("Downloads", id="downloads") as downloads_tab:
                     generate_download_tab(lset_name, loras_choices, state)
                 with gr.Tab("Configuration", id="configuration") as configuration_tab:
-                    generate_configuration_tab(state, main, header, model_family, model_choice, resolution, refresh_form_trigger)
+                    generate_configuration_tab(state, main, header, model_family, model_base_type_choice, model_choice, resolution, refresh_form_trigger)
             with gr.Tab("About"):
                 generate_about_tab()
         if stats_app is not None:

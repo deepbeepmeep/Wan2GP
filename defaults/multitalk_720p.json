@@ -1,7 +1,7 @@
 {
 	"model":
 	{
-		"name": "Multitalk 720p",
+		"name": "Multitalk 720p 14B",
 		"architecture" : "multitalk",
 		"modules": ["multitalk"],
 		"description": "The Multitalk model corresponds to the original Wan image 2 video 720p model combined with the Multitalk module. It lets you have up to two people have a conversation.",

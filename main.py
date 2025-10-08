@@ -2,6 +2,7 @@ import sys
 import os
 import threading
 import time
+import json
 from unittest.mock import MagicMock
 
 # --- Start of Gradio Hijacking ---
@@ -173,8 +174,11 @@ class MainWindow(QMainWindow):
         self.thread = None
         self.lora_map = {}
         self.full_resolution_choices = []
+        self.main_config = {}
 
+        self.load_main_config()
         self.setup_ui()
+        self.apply_initial_config()
         self.connect_signals()
         
         self.init_wgp_state()
@@ -277,10 +281,12 @@ class MainWindow(QMainWindow):
         # Model Selection
         model_layout = QHBoxLayout()
         self.widgets['model_family'] = QComboBox()
+        self.widgets['model_base_type_choice'] = QComboBox()
         self.widgets['model_choice'] = QComboBox()
         model_layout.addWidget(QLabel("Model:"))
-        model_layout.addWidget(self.widgets['model_family'], 1)
-        model_layout.addWidget(self.widgets['model_choice'], 4)
+        model_layout.addWidget(self.widgets['model_family'], 2)
+        model_layout.addWidget(self.widgets['model_base_type_choice'], 3)
+        model_layout.addWidget(self.widgets['model_choice'], 3)
         options_layout.addLayout(model_layout)
 
         # Prompt
@@ -376,10 +382,17 @@ class MainWindow(QMainWindow):
         self.progress_bar = self.create_widget(QProgressBar, 'progress_bar')
         right_layout.addWidget(self.progress_bar)
 
+        preview_group = self.create_widget(QGroupBox, 'preview_group', "Preview")
+        preview_group.setCheckable(True)
+        preview_group.setStyleSheet("QGroupBox { border: 1px solid #cccccc; }")
+        preview_group_layout = QVBoxLayout(preview_group)
+
         self.preview_image = self.create_widget(QLabel, 'preview_image', "")
         self.preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_image.setMinimumSize(200, 200)
-        right_layout.addWidget(self.preview_image)
+        
+        preview_group_layout.addWidget(self.preview_image)
+        right_layout.addWidget(preview_group)
 
         right_layout.addWidget(QLabel("Output:"))
         self.output_gallery = self.create_widget(QListWidget, 'output_gallery')
@@ -670,16 +683,25 @@ class MainWindow(QMainWindow):
         self.widgets[f'config_{key}'] = list_widget
         form_layout.addRow(label, list_widget)
 
-    def _create_config_textbox(self, form_layout, label, key, default_value):
-        textbox = QLineEdit(wgp.server_config.get(key, default_value))
+    def _create_config_textbox(self, form_layout, label, key, default_value, multi_line=False):
+        if multi_line:
+            textbox = QTextEdit(default_value)
+            textbox.setAcceptRichText(False)
+        else:
+            textbox = QLineEdit(default_value)
         self.widgets[f'config_{key}'] = textbox
         form_layout.addRow(label, textbox)
 
     def _create_general_config_tab(self):
         tab, form = self._create_scrollable_form_tab()
         
-        _, dropdown_choices = wgp.get_sorted_dropdown(wgp.displayed_model_types, None)
+        _, _, dropdown_choices = wgp.get_sorted_dropdown(wgp.displayed_model_types, None, None, False)
         self._create_config_checklist(form, "Selectable Models:", "transformer_types", dropdown_choices, wgp.transformer_types)
+
+        self._create_config_combo(form, "Model Hierarchy:", "model_hierarchy_type", [
+            ("Two Levels (Family > Model)", 0),
+            ("Three Levels (Family > Base > Finetune)", 1)
+        ], 1)
 
         self._create_config_combo(form, "Video Dimensions:", "fit_canvas", [
             ("Dimensions are Pixels Budget", 0), ("Dimensions are Max Width/Height", 1),
@@ -703,6 +725,14 @@ class MainWindow(QMainWindow):
         
         self._create_config_combo(form, "Max Frames Multiplier:", "max_frames_multiplier",
                                   [(f"x{i}", i) for i in range(1, 8)], 1)
+        
+        checkpoints_paths_text = "\n".join(wgp.server_config.get("checkpoints_paths", wgp.fl.default_checkpoints_paths))
+        checkpoints_textbox = QTextEdit()
+        checkpoints_textbox.setPlainText(checkpoints_paths_text)
+        checkpoints_textbox.setAcceptRichText(False)
+        checkpoints_textbox.setMinimumHeight(60)
+        self.widgets['config_checkpoints_paths'] = checkpoints_textbox
+        form.addRow("Checkpoints Paths:", checkpoints_textbox)
                                   
         self._create_config_combo(form, "UI Theme (requires restart):", "UI_theme", [("Blue Sky", "default"), ("Classic Gradio", "gradio")], "default")
         
@@ -751,8 +781,9 @@ class MainWindow(QMainWindow):
         
     def init_wgp_state(self):
         initial_model = wgp.server_config.get("last_model_type", wgp.transformer_type)
-        all_models = [choice[1] for choice in wgp.get_sorted_dropdown(wgp.displayed_model_types, None)[1]]
-        if initial_model not in all_models:
+        all_models, _, _ = wgp.get_sorted_dropdown(wgp.displayed_model_types, None, None, False)
+        all_model_ids = [m[1] for m in all_models]
+        if initial_model not in all_model_ids:
             initial_model = wgp.transformer_type
         
         state_dict = {}
@@ -760,6 +791,7 @@ class MainWindow(QMainWindow):
         state_dict["model_type"] = initial_model
         state_dict["advanced"] = wgp.advanced
         state_dict["last_model_per_family"] = wgp.server_config.get("last_model_per_family", {})
+        state_dict["last_model_per_type"] = wgp.server_config.get("last_model_per_type", {})
         state_dict["last_resolution_per_group"] = wgp.server_config.get("last_resolution_per_group", {})
         state_dict["gen"] = {"queue": []}
         
@@ -771,29 +803,36 @@ class MainWindow(QMainWindow):
         self._update_input_visibility() # Set initial visibility
 
     def update_model_dropdowns(self, current_model_type):
-        families_mock, choices_mock = wgp.generate_dropdown_model_list(current_model_type)
-        
+        family_mock, base_type_mock, choice_mock = wgp.generate_dropdown_model_list(current_model_type)
+
         self.widgets['model_family'].blockSignals(True)
+        self.widgets['model_base_type_choice'].blockSignals(True)
         self.widgets['model_choice'].blockSignals(True)
         
         self.widgets['model_family'].clear()
-        if families_mock.choices:
-            for display_name, internal_key in families_mock.choices:
+        if family_mock.choices:
+            for display_name, internal_key in family_mock.choices:
                 self.widgets['model_family'].addItem(display_name, internal_key)
+        index = self.widgets['model_family'].findData(family_mock.value)
+        if index != -1: self.widgets['model_family'].setCurrentIndex(index)
+        
+        self.widgets['model_base_type_choice'].clear()
+        if base_type_mock.choices:
+            for label, value in base_type_mock.choices:
+                self.widgets['model_base_type_choice'].addItem(label, value)
+        index = self.widgets['model_base_type_choice'].findData(base_type_mock.value)
+        if index != -1: self.widgets['model_base_type_choice'].setCurrentIndex(index)
+        self.widgets['model_base_type_choice'].setVisible(base_type_mock.kwargs.get('visible', True))
 
-        internal_family_key = families_mock.value
-        family_index = self.widgets['model_family'].findData(internal_family_key)
-        if family_index != -1:
-            self.widgets['model_family'].setCurrentIndex(family_index)
-        
         self.widgets['model_choice'].clear()
-        if choices_mock.choices:
-            for label, value in choices_mock.choices: self.widgets['model_choice'].addItem(label, value)
-        
-        index = self.widgets['model_choice'].findData(choices_mock.value)
+        if choice_mock.choices:
+            for label, value in choice_mock.choices: self.widgets['model_choice'].addItem(label, value)
+        index = self.widgets['model_choice'].findData(choice_mock.value)
         if index != -1: self.widgets['model_choice'].setCurrentIndex(index)
-        
+        self.widgets['model_choice'].setVisible(choice_mock.kwargs.get('visible', True))
+
         self.widgets['model_family'].blockSignals(False)
+        self.widgets['model_base_type_choice'].blockSignals(False)
         self.widgets['model_choice'].blockSignals(False)
 
     def refresh_ui_from_model_change(self, model_type):
@@ -808,7 +847,7 @@ class MainWindow(QMainWindow):
 
         image_outputs = model_def.get("image_outputs", False)
         vace = wgp.test_vace_module(model_type)
-        t2v = base_model_type == 't2v'
+        t2v = base_model_type in ['t2v', 't2v_2_2']
         i2v = wgp.test_class_i2v(model_type)
         fantasy = base_model_type in ["fantasy"]
         multitalk = model_def.get("multitalk_class", False)
@@ -1160,6 +1199,7 @@ class MainWindow(QMainWindow):
 
     def connect_signals(self):
         self.widgets['model_family'].currentIndexChanged.connect(self._on_family_changed)
+        self.widgets['model_base_type_choice'].currentIndexChanged.connect(self._on_base_type_changed)
         self.widgets['model_choice'].currentIndexChanged.connect(self._on_model_changed)
         self.widgets['resolution_group'].currentIndexChanged.connect(self._on_resolution_group_changed)
         self.widgets['guidance_phases'].currentIndexChanged.connect(self._update_dynamic_ui)
@@ -1172,6 +1212,7 @@ class MainWindow(QMainWindow):
         self.widgets['image_end_checkbox'].toggled.connect(self._update_input_visibility)
         self.widgets['control_video_checkbox'].toggled.connect(self._update_input_visibility)
         self.widgets['ref_image_checkbox'].toggled.connect(self._update_input_visibility)
+        self.widgets['preview_group'].toggled.connect(self._on_preview_toggled)
 
         self.generate_btn.clicked.connect(self._on_generate)
         self.add_to_queue_btn.clicked.connect(self._on_add_to_queue)
@@ -1180,37 +1221,80 @@ class MainWindow(QMainWindow):
         self.abort_btn.clicked.connect(self._on_abort)
         self.queue_table.rowsMoved.connect(self._on_queue_rows_moved)
 
+    def load_main_config(self):
+        try:
+            with open('main_config.json', 'r') as f:
+                self.main_config = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.main_config = {'preview_visible': False}
+
+    def save_main_config(self):
+        try:
+            with open('main_config.json', 'w') as f:
+                json.dump(self.main_config, f, indent=4)
+        except Exception as e:
+            print(f"Error saving main_config.json: {e}")
+
+    def apply_initial_config(self):
+        is_visible = self.main_config.get('preview_visible', True)
+        self.widgets['preview_group'].setChecked(is_visible)
+        self.widgets['preview_image'].setVisible(is_visible)
+
+    def _on_preview_toggled(self, checked):
+        self.widgets['preview_image'].setVisible(checked)
+        self.main_config['preview_visible'] = checked
+        self.save_main_config()
+
     def _on_family_changed(self, index):
-        internal_family_key = self.widgets['model_family'].currentData()
-
-        if not internal_family_key or not self.state:
-            return
-
-        family_display_name = self.widgets['model_family'].currentText()
-        last_model_map = self.state.get('last_model_per_family', {})
-        target_model = last_model_map.get(internal_family_key)
-
-        if not target_model:
-            _ , choices_for_family = wgp.get_sorted_dropdown(wgp.displayed_model_types, internal_family_key)
-            if choices_for_family:
-                target_model = choices_for_family[0][1]
+        family = self.widgets['model_family'].currentData()
+        if not family or not self.state: return
         
-        if not target_model:
-            return
+        base_type_mock, choice_mock = wgp.change_model_family(self.state, family)
 
-        _, choices_mock = wgp.generate_dropdown_model_list(target_model)
+        self.widgets['model_base_type_choice'].blockSignals(True)
+        self.widgets['model_base_type_choice'].clear()
+        if base_type_mock.choices:
+            for label, value in base_type_mock.choices:
+                self.widgets['model_base_type_choice'].addItem(label, value)
+        index = self.widgets['model_base_type_choice'].findData(base_type_mock.value)
+        if index != -1:
+            self.widgets['model_base_type_choice'].setCurrentIndex(index)
+        self.widgets['model_base_type_choice'].setVisible(base_type_mock.kwargs.get('visible', True))
+        self.widgets['model_base_type_choice'].blockSignals(False)
+        
         self.widgets['model_choice'].blockSignals(True)
         self.widgets['model_choice'].clear()
-        if choices_mock.choices:
-            for label, value in choices_mock.choices:
+        if choice_mock.choices:
+            for label, value in choice_mock.choices:
                 self.widgets['model_choice'].addItem(label, value)
-
-        new_model_index = self.widgets['model_choice'].findData(target_model)
-        if new_model_index != -1:
-            self.widgets['model_choice'].setCurrentIndex(new_model_index)
+        index = self.widgets['model_choice'].findData(choice_mock.value)
+        if index != -1:
+            self.widgets['model_choice'].setCurrentIndex(index)
+        self.widgets['model_choice'].setVisible(choice_mock.kwargs.get('visible', True))
         self.widgets['model_choice'].blockSignals(False)
+
         self._on_model_changed()
+
+    def _on_base_type_changed(self, index):
+        family = self.widgets['model_family'].currentData()
+        base_type = self.widgets['model_base_type_choice'].currentData()
+        if not family or not base_type or not self.state: return
         
+        base_type_mock, choice_mock = wgp.change_model_base_types(self.state, family, base_type)
+        
+        self.widgets['model_choice'].blockSignals(True)
+        self.widgets['model_choice'].clear()
+        if choice_mock.choices:
+            for label, value in choice_mock.choices:
+                self.widgets['model_choice'].addItem(label, value)
+        index = self.widgets['model_choice'].findData(choice_mock.value)
+        if index != -1:
+            self.widgets['model_choice'].setCurrentIndex(index)
+        self.widgets['model_choice'].setVisible(choice_mock.kwargs.get('visible', True))
+        self.widgets['model_choice'].blockSignals(False)
+        
+        self._on_model_changed()
+
     def _on_model_changed(self):
         model_type = self.widgets['model_choice'].currentData()
         if not model_type or model_type == self.state['model_type']: return
@@ -1571,6 +1655,9 @@ class MainWindow(QMainWindow):
         checked_items = [item.data(Qt.ItemDataRole.UserRole) for i in range(list_widget.count()) if list_widget.item(i).checkState() == Qt.CheckState.Checked]
         changes['preload_model_policy_choice'] = checked_items
 
+        changes['model_hierarchy_type_choice'] = self.widgets['config_model_hierarchy_type'].currentData()
+        changes['checkpoints_paths'] = self.widgets['config_checkpoints_paths'].toPlainText()
+
         for key in ["fit_canvas", "attention_mode", "metadata_type", "clear_file_list", "display_stats", "max_frames_multiplier", "UI_theme"]:
             changes[f'{key}_choice'] = self.widgets[f'config_{key}'].currentData()
 
@@ -1591,7 +1678,7 @@ class MainWindow(QMainWindow):
         changes['last_resolution_choice'] = self.widgets['resolution'].currentData()
 
         try:
-            msg, header_mock, family_mock, choice_mock, refresh_trigger = wgp.apply_changes(self.state, **changes)
+            msg, header_mock, family_mock, base_type_mock, choice_mock, refresh_trigger = wgp.apply_changes(self.state, **changes)
             self.config_status_label.setText("Changes applied successfully. Some settings may require a restart.")
             
             self.header_info.setText(wgp.generate_header(self.state['model_type'], wgp.compile, wgp.attention_mode))

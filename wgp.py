@@ -1828,6 +1828,7 @@ if not Path(server_config_filename).is_file():
         "preload_model_policy": [],
         "UI_theme": "default",
         "checkpoints_paths": fl.default_checkpoints_paths,
+        "model_hierarchy_type": 1,
     }
 
     with open(server_config_filename, "w", encoding="utf-8") as writer:
@@ -1840,7 +1841,7 @@ else:
 checkpoints_paths = server_config.get("checkpoints_paths", None)
 if checkpoints_paths is None: checkpoints_paths = server_config["checkpoints_paths"] = fl.default_checkpoints_paths
 fl.set_checkpoints_paths(checkpoints_paths)
-three_levels_hierarchy = server_config.get("model_hierarchy_type", 0) == 1
+three_levels_hierarchy = server_config.get("model_hierarchy_type", 0) == 1 and args.betatest
 
 #   Deprecated models
 for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion_forcing_1.3B_bf16.safetensors","sky_reels2_diffusion_forcing_720p_14B_bf16.safetensors",
@@ -6802,7 +6803,7 @@ def load_settings_from_file(state, file_path):
 
     if model_type == current_model_type:
         set_model_settings(state, current_model_type, configs)        
-        return gr.update(), gr.update(), gr.update(), gr.update(), str(time.time()), None
+        return gr.update(), gr.update(), gr.update(), str(time.time()), None
     else:
         set_model_settings(state, model_type, configs)        
         return *generate_dropdown_model_list(model_type), gr.update(), None

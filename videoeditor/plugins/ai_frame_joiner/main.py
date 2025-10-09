@@ -139,6 +139,7 @@ class WgpClientWidget(QWidget):
             if response.status_code == 200:
                 if payload['start_generation']:
                     self.status_label.setText("Status: Parameters set. Generation sent. Polling...")
+                    self.start_polling()
                 else:
                     self.status_label.setText("Status: Parameters set. Waiting for manual start.")
             else:
@@ -154,6 +155,7 @@ class WgpClientWidget(QWidget):
                 latest_path = data.get("latest_output_path")
                 
                 if latest_path and latest_path != self.last_known_output:
+                    self.stop_polling()
                     self.last_known_output = latest_path
                     self.output_label.setText(f"Latest Output File:\n{latest_path}")
                     self.status_label.setText("Status: New output received! Inserting clip...")
@@ -182,7 +184,6 @@ class Plugin(VideoEditorPlugin):
         self.dock_widget.hide()
         
         self.app.timeline_widget.context_menu_requested.connect(self.on_timeline_context_menu)
-        self.client_widget.start_polling()
 
     def disable(self):
         try:
@@ -215,6 +216,8 @@ class Plugin(VideoEditorPlugin):
         self._reset_state()
         self.active_region = region
         start_sec, end_sec = region
+        
+        self.client_widget.check_server_status()
         
         start_data, w, h = self.app.get_frame_data_at_time(start_sec)
         end_data, _, _ = self.app.get_frame_data_at_time(end_sec)

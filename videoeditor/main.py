@@ -5,45 +5,18 @@ import subprocess
 import re
 import json
 import ffmpeg
+import copy
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QFileDialog, QLabel,
                              QScrollArea, QFrame, QProgressBar, QDialog,
-                             QCheckBox, QDialogButtonBox, QMenu, QSplitter, QDockWidget)
+                             QCheckBox, QDialogButtonBox, QMenu, QSplitter, QDockWidget, QListWidget, QListWidgetItem, QMessageBox)
 from PyQt6.QtGui import (QPainter, QColor, QPen, QFont, QFontMetrics, QMouseEvent, QAction,
-                         QPixmap, QImage)
+                         QPixmap, QImage, QDrag)
 from PyQt6.QtCore import (Qt, QPoint, QRect, QRectF, QSize, QPointF, QObject, QThread,
-                          pyqtSignal, QTimer, QByteArray)
+                          pyqtSignal, QTimer, QByteArray, QMimeData)
 
 from plugins import PluginManager, ManagePluginsDialog
-import requests
-import zipfile
-from tqdm import tqdm
-
-def download_ffmpeg():
-    if os.name != 'nt': return
-    exes = ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']
-    if all(os.path.exists(e) for e in exes): return
-    api_url = 'https://api.github.com/repos/GyanD/codexffmpeg/releases/latest'
-    r = requests.get(api_url, headers={'Accept': 'application/vnd.github+json'})
-    assets = r.json().get('assets', [])
-    zip_asset = next((a for a in assets if 'essentials_build.zip' in a['name']), None)
-    if not zip_asset: return
-    zip_url = zip_asset['browser_download_url']
-    zip_name = zip_asset['name']
-    with requests.get(zip_url, stream=True) as resp:
-        total = int(resp.headers.get('Content-Length', 0))
-        with open(zip_name, 'wb') as f, tqdm(total=total, unit='B', unit_scale=True) as pbar:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
-                pbar.update(len(chunk))
-    with zipfile.ZipFile(zip_name) as z:
-        for f in z.namelist():
-            if f.endswith(tuple(exes)) and '/bin/' in f:
-                z.extract(f)
-                os.rename(f, os.path.basename(f))
-    os.remove(zip_name)
-
-download_ffmpeg()
+from undo import UndoStack, TimelineStateChangeCommand, MoveClipsCommand
 
 class TimelineClip:
     def __init__(self, source_path, timeline_start_sec, clip_start_sec, duration_sec, track_index, track_type, group_id):
@@ -111,15 +84,19 @@ class TimelineWidget(QWidget):
     AUDIO_TRACKS_SEPARATOR_Y = 15
 
     split_requested = pyqtSignal(object)
+    delete_clip_requested = pyqtSignal(object)
     playhead_moved = pyqtSignal(float)
     split_region_requested = pyqtSignal(list)
     split_all_regions_requested = pyqtSignal(list)
     join_region_requested = pyqtSignal(list)
     join_all_regions_requested = pyqtSignal(list)
+    delete_region_requested = pyqtSignal(list)
+    delete_all_regions_requested = pyqtSignal(list)
     add_track = pyqtSignal(str)
     remove_track = pyqtSignal(str)
     operation_finished = pyqtSignal()
-    context_menu_requested = pyqtSignal(QMenu, 'QContextMenuEvent') 
+    context_menu_requested = pyqtSignal(QMenu, 'QContextMenuEvent')
+    clips_moved = pyqtSignal(list)
 
     def __init__(self, timeline_model, settings, parent=None):
         super().__init__(parent)
@@ -128,6 +105,7 @@ class TimelineWidget(QWidget):
         self.playhead_pos_sec = 0.0
         self.setMinimumHeight(300)
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)
         self.selection_regions = []
         self.dragging_clip = None
         self.dragging_linked_clip = None
@@ -135,7 +113,7 @@ class TimelineWidget(QWidget):
         self.creating_selection_region = False
         self.dragging_selection_region = None
         self.drag_start_pos = QPoint()
-        self.drag_original_timeline_start = 0
+        self.drag_original_clip_states = {} # Store {'clip_id': (start_sec, track_index)}
         self.selection_drag_start_sec = 0.0
         self.drag_selection_start_values = None
 
@@ -147,6 +125,11 @@ class TimelineWidget(QWidget):
         
         self.video_tracks_y_start = 0
         self.audio_tracks_y_start = 0
+        
+        self.drag_over_active = False
+        self.drag_over_rect = QRectF()
+        self.drag_over_audio_rect = QRectF()
+        self.drag_has_audio = False
 
     def sec_to_x(self, sec): return self.HEADER_WIDTH + int(sec * self.PIXELS_PER_SECOND)
     def x_to_sec(self, x): return float(x - self.HEADER_WIDTH) / self.PIXELS_PER_SECOND if x > self.HEADER_WIDTH else 0.0
@@ -160,6 +143,16 @@ class TimelineWidget(QWidget):
         self.draw_timescale(painter)
         self.draw_tracks_and_clips(painter)
         self.draw_selections(painter)
+        
+        if self.drag_over_active:
+            painter.fillRect(self.drag_over_rect, QColor(0, 255, 0, 80))
+            if self.drag_has_audio:
+                painter.fillRect(self.drag_over_audio_rect, QColor(0, 255, 0, 80))
+            painter.setPen(QColor(0, 255, 0, 150))
+            painter.drawRect(self.drag_over_rect)
+            if self.drag_has_audio:
+                painter.drawRect(self.drag_over_audio_rect)
+
         self.draw_playhead(painter)
 
         total_width = self.sec_to_x(self.timeline.get_total_duration()) + 100
@@ -368,14 +361,20 @@ class TimelineWidget(QWidget):
             self.dragging_playhead = False
             self.dragging_selection_region = None
             self.creating_selection_region = False
+            self.drag_original_clip_states.clear()
 
             for clip in reversed(self.timeline.clips):
                 clip_rect = self.get_clip_rect(clip)
                 if clip_rect.contains(QPointF(event.pos())):
                     self.dragging_clip = clip
+                    self.drag_original_clip_states[clip.id] = (clip.timeline_start_sec, clip.track_index)
+                    
                     self.dragging_linked_clip = next((c for c in self.timeline.clips if c.group_id == clip.group_id and c.id != clip.id), None)
+                    if self.dragging_linked_clip:
+                        self.drag_original_clip_states[self.dragging_linked_clip.id] = \
+                            (self.dragging_linked_clip.timeline_start_sec, self.dragging_linked_clip.track_index)
+
                     self.drag_start_pos = event.pos()
-                    self.drag_original_timeline_start = clip.timeline_start_sec
                     break
             
             if not self.dragging_clip:
@@ -429,25 +428,23 @@ class TimelineWidget(QWidget):
         elif self.dragging_clip:
             self.highlighted_track_info = None
             new_track_info = self.y_to_track_info(event.pos().y())
+            
+            original_start_sec, _ = self.drag_original_clip_states[self.dragging_clip.id]
+
             if new_track_info:
                 new_track_type, new_track_index = new_track_info
                 if new_track_type == self.dragging_clip.track_type:
                     self.dragging_clip.track_index = new_track_index
                     if self.dragging_linked_clip:
+                        # For now, linked clips move to same-number track index
                         self.dragging_linked_clip.track_index = new_track_index
-                        if self.dragging_clip.track_type == 'video':
-                            if new_track_index > self.timeline.num_audio_tracks:
-                                self.timeline.num_audio_tracks = new_track_index
-                            self.highlighted_track_info = ('audio', new_track_index)
-                        else:
-                            if new_track_index > self.timeline.num_video_tracks:
-                                self.timeline.num_video_tracks = new_track_index
-                            self.highlighted_track_info = ('video', new_track_index)
+
 
             delta_x = event.pos().x() - self.drag_start_pos.x()
             time_delta = delta_x / self.PIXELS_PER_SECOND
-            new_start_time = self.drag_original_timeline_start + time_delta
+            new_start_time = original_start_sec + time_delta
 
+            # Basic collision detection (can be improved)
             for other_clip in self.timeline.clips:
                 if other_clip.id == self.dragging_clip.id: continue
                 if self.dragging_linked_clip and other_clip.id == self.dragging_linked_clip.id: continue
@@ -485,13 +482,129 @@ class TimelineWidget(QWidget):
 
             self.dragging_playhead = False
             if self.dragging_clip:
+                move_data = []
+                # Check main dragged clip
+                orig_start, orig_track = self.drag_original_clip_states[self.dragging_clip.id]
+                if orig_start != self.dragging_clip.timeline_start_sec or orig_track != self.dragging_clip.track_index:
+                     move_data.append({
+                        'clip_id': self.dragging_clip.id,
+                        'old_start': orig_start, 'new_start': self.dragging_clip.timeline_start_sec,
+                        'old_track': orig_track, 'new_track': self.dragging_clip.track_index
+                     })
+                # Check linked clip
+                if self.dragging_linked_clip:
+                    orig_start_link, orig_track_link = self.drag_original_clip_states[self.dragging_linked_clip.id]
+                    if orig_start_link != self.dragging_linked_clip.timeline_start_sec or orig_track_link != self.dragging_linked_clip.track_index:
+                         move_data.append({
+                            'clip_id': self.dragging_linked_clip.id,
+                            'old_start': orig_start_link, 'new_start': self.dragging_linked_clip.timeline_start_sec,
+                            'old_track': orig_track_link, 'new_track': self.dragging_linked_clip.track_index
+                         })
+                
+                if move_data:
+                    self.clips_moved.emit(move_data)
+
                 self.timeline.clips.sort(key=lambda c: c.timeline_start_sec)
                 self.highlighted_track_info = None
                 self.operation_finished.emit()
+
             self.dragging_clip = None
             self.dragging_linked_clip = None
+            self.drag_original_clip_states.clear()
             
             self.update()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat('application/x-vnd.video.filepath'):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.drag_over_active = False
+        self.update()
+
+    def dragMoveEvent(self, event):
+        mime_data = event.mimeData()
+        if not mime_data.hasFormat('application/x-vnd.video.filepath'):
+            event.ignore()
+            return
+        
+        event.acceptProposedAction()
+        
+        json_data = json.loads(mime_data.data('application/x-vnd.video.filepath').data().decode('utf-8'))
+        duration = json_data['duration']
+        self.drag_has_audio = json_data['has_audio']
+
+        pos = event.position()
+        track_info = self.y_to_track_info(pos.y())
+        start_sec = self.x_to_sec(pos.x())
+
+        if track_info:
+            self.drag_over_active = True
+            track_type, track_index = track_info
+            
+            width = int(duration * self.PIXELS_PER_SECOND)
+            x = self.sec_to_x(start_sec)
+            
+            if track_type == 'video':
+                visual_index = self.timeline.num_video_tracks - track_index
+                y = self.video_tracks_y_start + visual_index * self.TRACK_HEIGHT
+                self.drag_over_rect = QRectF(x, y, width, self.TRACK_HEIGHT)
+                if self.drag_has_audio:
+                    audio_y = self.audio_tracks_y_start # Default to track 1
+                    self.drag_over_audio_rect = QRectF(x, audio_y, width, self.TRACK_HEIGHT)
+
+            elif track_type == 'audio':
+                visual_index = track_index - 1
+                y = self.audio_tracks_y_start + visual_index * self.TRACK_HEIGHT
+                self.drag_over_audio_rect = QRectF(x, y, width, self.TRACK_HEIGHT)
+                # For now, just show video on track 1 if dragging onto audio
+                video_y = self.video_tracks_y_start + (self.timeline.num_video_tracks - 1) * self.TRACK_HEIGHT
+                self.drag_over_rect = QRectF(x, video_y, width, self.TRACK_HEIGHT)
+        else:
+            self.drag_over_active = False
+        
+        self.update()
+
+    def dropEvent(self, event):
+        self.drag_over_active = False
+        self.update()
+        
+        mime_data = event.mimeData()
+        if not mime_data.hasFormat('application/x-vnd.video.filepath'):
+            return
+
+        json_data = json.loads(mime_data.data('application/x-vnd.video.filepath').data().decode('utf-8'))
+        file_path = json_data['path']
+        duration = json_data['duration']
+        has_audio = json_data['has_audio']
+
+        pos = event.position()
+        start_sec = self.x_to_sec(pos.x())
+        track_info = self.y_to_track_info(pos.y())
+
+        if not track_info:
+            return
+
+        drop_track_type, drop_track_index = track_info
+        video_track_idx = 1
+        audio_track_idx = 1 if has_audio else None
+        
+        if drop_track_type == 'video':
+            video_track_idx = drop_track_index
+        elif drop_track_type == 'audio':
+            audio_track_idx = drop_track_index
+
+        main_window = self.window()
+        main_window._add_clip_to_timeline(
+            source_path=file_path,
+            timeline_start_sec=start_sec,
+            duration_sec=duration,
+            clip_start_sec=0,
+            video_track_index=video_track_idx,
+            audio_track_index=audio_track_idx
+        )
 
     def contextMenuEvent(self, event: 'QContextMenuEvent'):
         menu = QMenu(self)
@@ -502,6 +615,8 @@ class TimelineWidget(QWidget):
             split_all_action = menu.addAction("Split All Regions")
             join_this_action = menu.addAction("Join This Region")
             join_all_action = menu.addAction("Join All Regions")
+            delete_this_action = menu.addAction("Delete This Region")
+            delete_all_action = menu.addAction("Delete All Regions")
             menu.addSeparator()
             clear_this_action = menu.addAction("Clear This Region")
             clear_all_action = menu.addAction("Clear All Regions")
@@ -509,6 +624,8 @@ class TimelineWidget(QWidget):
             split_all_action.triggered.connect(lambda: self.split_all_regions_requested.emit(self.selection_regions))
             join_this_action.triggered.connect(lambda: self.join_region_requested.emit(region_at_pos))
             join_all_action.triggered.connect(lambda: self.join_all_regions_requested.emit(self.selection_regions))
+            delete_this_action.triggered.connect(lambda: self.delete_region_requested.emit(region_at_pos))
+            delete_all_action.triggered.connect(lambda: self.delete_all_regions_requested.emit(self.selection_regions))
             clear_this_action.triggered.connect(lambda: self.clear_region(region_at_pos))
             clear_all_action.triggered.connect(self.clear_all_regions)
 
@@ -521,10 +638,12 @@ class TimelineWidget(QWidget):
         if clip_at_pos:
             if not menu.isEmpty(): menu.addSeparator()
             split_action = menu.addAction("Split Clip")
+            delete_action = menu.addAction("Delete Clip")
             playhead_time = self.playhead_pos_sec
             is_playhead_over_clip = (clip_at_pos.timeline_start_sec < playhead_time < clip_at_pos.timeline_end_sec)
             split_action.setEnabled(is_playhead_over_clip)
             split_action.triggered.connect(lambda: self.split_requested.emit(clip_at_pos))
+            delete_action.triggered.connect(lambda: self.delete_clip_requested.emit(clip_at_pos))
 
         self.context_menu_requested.emit(menu, event)
 
@@ -540,22 +659,111 @@ class TimelineWidget(QWidget):
         self.selection_regions.clear()
         self.update()
 
+    
 class SettingsDialog(QDialog):
     def __init__(self, parent_settings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumWidth(350)
         layout = QVBoxLayout(self)
-        self.seek_anywhere_checkbox = QCheckBox("Allow seeking by clicking anywhere on the timeline")
-        self.seek_anywhere_checkbox.setChecked(parent_settings.get("allow_seek_anywhere", False))
-        layout.addWidget(self.seek_anywhere_checkbox)
+        self.confirm_on_exit_checkbox = QCheckBox("Confirm before exiting")
+        self.confirm_on_exit_checkbox.setChecked(parent_settings.get("confirm_on_exit", True))
+        layout.addWidget(self.confirm_on_exit_checkbox)
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
     def get_settings(self):
-        return {"allow_seek_anywhere": self.seek_anywhere_checkbox.isChecked()}
+        return {
+            "confirm_on_exit": self.confirm_on_exit_checkbox.isChecked()
+        }
+
+class MediaListWidget(QListWidget):
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.setDragEnabled(True)
+        self.setAcceptDrops(False)
+        self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+
+    def startDrag(self, supportedActions):
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        
+        item = self.currentItem()
+        if not item: return
+
+        path = item.data(Qt.ItemDataRole.UserRole)
+        media_info = self.main_window.media_properties.get(path)
+        if not media_info: return
+
+        payload = {
+            "path": path,
+            "duration": media_info['duration'],
+            "has_audio": media_info['has_audio']
+        }
+        
+        mime_data.setData('application/x-vnd.video.filepath', QByteArray(json.dumps(payload).encode('utf-8')))
+        drag.setMimeData(mime_data)
+        drag.exec(Qt.DropAction.CopyAction)
+
+class ProjectMediaWidget(QWidget):
+    media_removed = pyqtSignal(str)
+    add_media_requested = pyqtSignal()
+    add_to_timeline_requested = pyqtSignal(str)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_window = parent
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        
+        self.media_list = MediaListWidget(self.main_window, self)
+        self.media_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.media_list.customContextMenuRequested.connect(self.show_context_menu)
+        layout.addWidget(self.media_list)
+        
+        button_layout = QHBoxLayout()
+        add_button = QPushButton("Add")
+        remove_button = QPushButton("Remove")
+        button_layout.addWidget(add_button)
+        button_layout.addWidget(remove_button)
+        layout.addLayout(button_layout)
+        
+        add_button.clicked.connect(self.add_media_requested.emit)
+        remove_button.clicked.connect(self.remove_selected_media)
+    def show_context_menu(self, pos):
+        item = self.media_list.itemAt(pos)
+        if not item:
+            return
+
+        menu = QMenu()
+        add_action = menu.addAction("Add to timeline at playhead")
+        
+        action = menu.exec(self.media_list.mapToGlobal(pos))
+
+        if action == add_action:
+            file_path = item.data(Qt.ItemDataRole.UserRole)
+            self.add_to_timeline_requested.emit(file_path)
+
+    def add_media_item(self, file_path):
+        if not any(self.media_list.item(i).data(Qt.ItemDataRole.UserRole) == file_path for i in range(self.media_list.count())):
+            item = QListWidgetItem(os.path.basename(file_path))
+            item.setData(Qt.ItemDataRole.UserRole, file_path)
+            self.media_list.addItem(item)
+
+    def remove_selected_media(self):
+        selected_items = self.media_list.selectedItems()
+        if not selected_items: return
+
+        for item in selected_items:
+            file_path = item.data(Qt.ItemDataRole.UserRole)
+            self.media_removed.emit(file_path)
+            self.media_list.takeItem(self.media_list.row(item))
+
+    def clear_list(self):
+        self.media_list.clear()
 
 class MainWindow(QMainWindow):
     def __init__(self, project_to_load=None):
@@ -565,6 +773,9 @@ class MainWindow(QMainWindow):
         self.setDockOptions(QMainWindow.DockOption.AnimatedDocks | QMainWindow.DockOption.AllowNestedDocks)
 
         self.timeline = Timeline()
+        self.undo_stack = UndoStack()
+        self.media_pool = []
+        self.media_properties = {} # To store duration, has_audio etc.
         self.export_thread = None
         self.export_worker = None
         self.current_project_path = None
@@ -583,6 +794,30 @@ class MainWindow(QMainWindow):
         self.playback_process = None
         self.playback_clip = None
 
+        self._setup_ui()
+        self._connect_signals()
+
+        self.plugin_manager.load_enabled_plugins_from_settings(self.settings.get("enabled_plugins", []))
+        self._apply_loaded_settings()
+        self.seek_preview(0)
+        
+        if not self.settings_file_was_loaded: self._save_settings()
+        if project_to_load: QTimer.singleShot(100, lambda: self._load_project_from_path(project_to_load))
+
+    def _get_current_timeline_state(self):
+        """Helper to capture a snapshot of the timeline for undo/redo."""
+        return (
+            copy.deepcopy(self.timeline.clips),
+            self.timeline.num_video_tracks,
+            self.timeline.num_audio_tracks
+        )
+
+    def _setup_ui(self):
+        self.media_dock = QDockWidget("Project Media", self)
+        self.project_media_widget = ProjectMediaWidget(self)
+        self.media_dock.setWidget(self.project_media_widget)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.media_dock)
+
         self.splitter = QSplitter(Qt.Orientation.Vertical)
 
         self.preview_widget = QLabel()
@@ -592,14 +827,14 @@ class MainWindow(QMainWindow):
         self.preview_widget.setStyleSheet("background-color: black; color: white;")
         self.splitter.addWidget(self.preview_widget)
 
-        self.timeline_widget = TimelineWidget(self.timeline, self.settings)
+        self.timeline_widget = TimelineWidget(self.timeline, self.settings, self)
         self.timeline_scroll_area = QScrollArea()
         self.timeline_scroll_area.setWidgetResizable(True)
         self.timeline_scroll_area.setWidget(self.timeline_widget)
         self.timeline_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.timeline_scroll_area.setMinimumHeight(250)
         self.splitter.addWidget(self.timeline_scroll_area)
-
+        
         container_widget = QWidget()
         main_layout = QVBoxLayout(container_widget)
         main_layout.setContentsMargins(0,0,0,0)
@@ -634,7 +869,8 @@ class MainWindow(QMainWindow):
 
         self.managed_widgets = {
             'preview': {'widget': self.preview_widget, 'name': 'Video Preview', 'action': None},
-            'timeline': {'widget': self.timeline_scroll_area, 'name': 'Timeline', 'action': None}
+            'timeline': {'widget': self.timeline_scroll_area, 'name': 'Timeline', 'action': None},
+            'project_media': {'widget': self.media_dock, 'name': 'Project Media', 'action': None}
         }
         self.plugin_menu_actions = {}
         self.windows_menu = None
@@ -643,14 +879,20 @@ class MainWindow(QMainWindow):
         self.splitter_save_timer = QTimer(self)
         self.splitter_save_timer.setSingleShot(True)
         self.splitter_save_timer.timeout.connect(self._save_settings)
+
+    def _connect_signals(self):
         self.splitter.splitterMoved.connect(self.on_splitter_moved)
 
         self.timeline_widget.split_requested.connect(self.split_clip_at_playhead)
+        self.timeline_widget.delete_clip_requested.connect(self.delete_clip)
         self.timeline_widget.playhead_moved.connect(self.seek_preview)
+        self.timeline_widget.clips_moved.connect(self.on_clips_moved)
         self.timeline_widget.split_region_requested.connect(self.on_split_region)
         self.timeline_widget.split_all_regions_requested.connect(self.on_split_all_regions)
         self.timeline_widget.join_region_requested.connect(self.on_join_region)
         self.timeline_widget.join_all_regions_requested.connect(self.on_join_all_regions)
+        self.timeline_widget.delete_region_requested.connect(self.on_delete_region)
+        self.timeline_widget.delete_all_regions_requested.connect(self.on_delete_all_regions)
         self.timeline_widget.add_track.connect(self.add_track)
         self.timeline_widget.remove_track.connect(self.remove_track)
         self.timeline_widget.operation_finished.connect(self.prune_empty_tracks)
@@ -661,16 +903,57 @@ class MainWindow(QMainWindow):
         self.frame_forward_button.clicked.connect(lambda: self.step_frame(1))
         self.playback_timer.timeout.connect(self.advance_playback_frame)
         
-        self.plugin_manager.load_enabled_plugins_from_settings(self.settings.get("enabled_plugins", []))
-        self._apply_loaded_settings()
-        self.seek_preview(0)
+        self.project_media_widget.add_media_requested.connect(self.add_video_clip)
+        self.project_media_widget.media_removed.connect(self.on_media_removed_from_pool)
+        self.project_media_widget.add_to_timeline_requested.connect(self.on_add_to_timeline_at_playhead)
         
-        if not self.settings_file_was_loaded: self._save_settings()
-        if project_to_load: QTimer.singleShot(100, lambda: self._load_project_from_path(project_to_load))
+        self.undo_stack.history_changed.connect(self.update_undo_redo_actions)
+        self.undo_stack.timeline_changed.connect(self.on_timeline_changed_by_undo)
+
+    def on_timeline_changed_by_undo(self):
+        """Called when undo/redo modifies the timeline."""
+        self.prune_empty_tracks()
+        self.timeline_widget.update()
+        # You may want to update other UI elements here as well
+        self.status_label.setText("Operation undone/redone.")
+
+    def update_undo_redo_actions(self):
+        self.undo_action.setEnabled(self.undo_stack.can_undo())
+        self.undo_action.setText(f"Undo {self.undo_stack.undo_text()}" if self.undo_stack.can_undo() else "Undo")
+        
+        self.redo_action.setEnabled(self.undo_stack.can_redo())
+        self.redo_action.setText(f"Redo {self.undo_stack.redo_text()}" if self.undo_stack.can_redo() else "Redo")
+
+    def on_clips_moved(self, move_data):
+        command = MoveClipsCommand("Move Clip", self.timeline, move_data)
+        # The change is already applied visually, so we push without redoing
+        self.undo_stack.undo_stack.append(command)
+        self.undo_stack.redo_stack.clear()
+        self.undo_stack.history_changed.emit()
+        self.status_label.setText("Clip moved.")
+
+    def on_add_to_timeline_at_playhead(self, file_path):
+        media_info = self.media_properties.get(file_path)
+        if not media_info:
+            self.status_label.setText(f"Error: Could not find properties for {os.path.basename(file_path)}")
+            return
+
+        playhead_pos = self.timeline_widget.playhead_pos_sec
+        duration = media_info['duration']
+        has_audio = media_info['has_audio']
+
+        self._add_clip_to_timeline(
+            source_path=file_path,
+            timeline_start_sec=playhead_pos,
+            duration_sec=duration,
+            clip_start_sec=0.0,
+            video_track_index=1,
+            audio_track_index=1 if has_audio else None
+        )
 
     def prune_empty_tracks(self):
         pruned_something = False
-
+        # Prune Video Tracks
         while self.timeline.num_video_tracks > 1:
             highest_track_index = self.timeline.num_video_tracks
             is_track_occupied = any(c for c in self.timeline.clips 
@@ -680,7 +963,8 @@ class MainWindow(QMainWindow):
             else:
                 self.timeline.num_video_tracks -= 1
                 pruned_something = True
-
+        
+        # Prune Audio Tracks
         while self.timeline.num_audio_tracks > 1:
             highest_track_index = self.timeline.num_audio_tracks
             is_track_occupied = any(c for c in self.timeline.clips 
@@ -690,42 +974,64 @@ class MainWindow(QMainWindow):
             else:
                 self.timeline.num_audio_tracks -= 1
                 pruned_something = True
-        
+
         if pruned_something:
             self.timeline_widget.update()
 
-
     def add_track(self, track_type):
+        old_state = self._get_current_timeline_state()
         if track_type == 'video':
             self.timeline.num_video_tracks += 1
         elif track_type == 'audio':
             self.timeline.num_audio_tracks += 1
-        self.timeline_widget.update()
+        new_state = self._get_current_timeline_state()
+        
+        command = TimelineStateChangeCommand(f"Add {track_type.capitalize()} Track", self.timeline, *old_state, *new_state)
+        self.undo_stack.push(command)
+        # Manually undo the direct change, because push() will redo() it.
+        command.undo()
+        self.undo_stack.push(command)
     
     def remove_track(self, track_type):
+        old_state = self._get_current_timeline_state()
         if track_type == 'video' and self.timeline.num_video_tracks > 1:
             self.timeline.num_video_tracks -= 1
         elif track_type == 'audio' and self.timeline.num_audio_tracks > 1:
             self.timeline.num_audio_tracks -= 1
-        self.timeline_widget.update()
+        else:
+            return # No change made
+        new_state = self._get_current_timeline_state()
+        
+        command = TimelineStateChangeCommand(f"Remove {track_type.capitalize()} Track", self.timeline, *old_state, *new_state)
+        command.undo() # Invert state because we already made the change
+        self.undo_stack.push(command)
+
 
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("&File")
         new_action = QAction("&New Project", self); new_action.triggered.connect(self.new_project)
         open_action = QAction("&Open Project...", self); open_action.triggered.connect(self.open_project)
+        self.recent_menu = file_menu.addMenu("Recent")
         save_action = QAction("&Save Project As...", self); save_action.triggered.connect(self.save_project_as)
-        add_video_action = QAction("&Add Video...", self); add_video_action.triggered.connect(self.add_video_clip)
+        add_video_action = QAction("&Add Media to Project...", self); add_video_action.triggered.connect(self.add_video_clip)
         export_action = QAction("&Export Video...", self); export_action.triggered.connect(self.export_video)
         settings_action = QAction("Se&ttings...", self); settings_action.triggered.connect(self.open_settings_dialog)
         exit_action = QAction("E&xit", self); exit_action.triggered.connect(self.close)
-        file_menu.addAction(new_action); file_menu.addAction(open_action); file_menu.addAction(save_action)
+        file_menu.addAction(new_action); file_menu.addAction(open_action); file_menu.addSeparator()
+        file_menu.addAction(save_action)
         file_menu.addSeparator(); file_menu.addAction(add_video_action); file_menu.addAction(export_action)
         file_menu.addSeparator(); file_menu.addAction(settings_action); file_menu.addSeparator(); file_menu.addAction(exit_action)
-        
+        self._update_recent_files_menu()
+
         edit_menu = menu_bar.addMenu("&Edit")
+        self.undo_action = QAction("Undo", self); self.undo_action.setShortcut("Ctrl+Z"); self.undo_action.triggered.connect(self.undo_stack.undo)
+        self.redo_action = QAction("Redo", self); self.redo_action.setShortcut("Ctrl+Y"); self.redo_action.triggered.connect(self.undo_stack.redo)
+        edit_menu.addAction(self.undo_action); edit_menu.addAction(self.redo_action); edit_menu.addSeparator()
+
         split_action = QAction("Split Clip at Playhead", self); split_action.triggered.connect(self.split_clip_at_playhead)
         edit_menu.addAction(split_action)
+        self.update_undo_redo_actions() # Set initial state
         
         plugins_menu = menu_bar.addMenu("&Plugins")
         for name, data in self.plugin_manager.plugins.items():
@@ -742,8 +1048,14 @@ class MainWindow(QMainWindow):
         
         self.windows_menu = menu_bar.addMenu("&Windows")
         for key, data in self.managed_widgets.items():
+            if data['widget'] is self.preview_widget: continue # Preview is part of splitter, not a dock
             action = QAction(data['name'], self, checkable=True)
-            action.toggled.connect(lambda checked, k=key: self.toggle_widget_visibility(k, checked))
+            if hasattr(data['widget'], 'visibilityChanged'):
+                action.toggled.connect(data['widget'].setVisible)
+                data['widget'].visibilityChanged.connect(action.setChecked)
+            else:
+                action.toggled.connect(lambda checked, k=key: self.toggle_widget_visibility(k, checked))
+
             data['action'] = action
             self.windows_menu.addAction(action)
 
@@ -783,6 +1095,10 @@ class MainWindow(QMainWindow):
         return False
 
     def get_frame_data_at_time(self, time_sec):
+        """
+        Plugin API: Extracts raw frame data at a specific time.
+        Returns a tuple of (bytes, width, height) or (None, 0, 0) on failure.
+        """
         clip_at_time = next((c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec), None)
         if not clip_at_time:
             return (None, 0, 0)
@@ -858,7 +1174,7 @@ class MainWindow(QMainWindow):
 
     def _load_settings(self):
         self.settings_file_was_loaded = False
-        defaults = {"allow_seek_anywhere": False, "window_visibility": {"preview": True, "timeline": True}, "splitter_state": None, "enabled_plugins": []}
+        defaults = {"window_visibility": {"project_media": True}, "splitter_state": None, "enabled_plugins": [], "recent_files": [], "confirm_on_exit": True}
         if os.path.exists(self.settings_file):
             try:
                 with open(self.settings_file, "r") as f: self.settings = json.load(f)
@@ -874,33 +1190,27 @@ class MainWindow(QMainWindow):
             key: data['action'].isChecked()
             for key, data in self.managed_widgets.items() if data.get('action')
         }
-
         self.settings["window_visibility"] = visibility_to_save
         self.settings['enabled_plugins'] = self.plugin_manager.get_enabled_plugin_names()
         try:
-            with open(self.settings_file, "w") as f:
-                json.dump(self.settings, f, indent=4)
-        except IOError as e:
-            print(f"Error saving settings: {e}")
+            with open(self.settings_file, "w") as f: json.dump(self.settings, f, indent=4)
+        except IOError as e: print(f"Error saving settings: {e}")
 
     def _apply_loaded_settings(self):
         visibility_settings = self.settings.get("window_visibility", {})
         for key, data in self.managed_widgets.items():
-            if data.get('plugin'):
-                continue
-
+            if data.get('plugin'): continue
             is_visible = visibility_settings.get(key, True)
-            data['widget'].setVisible(is_visible)
+            if data['widget'] is not self.preview_widget: # preview handled by splitter state
+                data['widget'].setVisible(is_visible)
             if data['action']: data['action'].setChecked(is_visible)
-            
         splitter_state = self.settings.get("splitter_state")
         if splitter_state: self.splitter.restoreState(QByteArray.fromHex(splitter_state.encode('ascii')))
 
     def on_splitter_moved(self, pos, index): self.splitter_save_timer.start(500)
     
     def toggle_widget_visibility(self, key, checked):
-        if self.is_shutting_down:
-            return
+        if self.is_shutting_down: return
         if key in self.managed_widgets:
             self.managed_widgets[key]['widget'].setVisible(checked)
             self._save_settings()
@@ -912,19 +1222,25 @@ class MainWindow(QMainWindow):
 
     def new_project(self):
         self.timeline.clips.clear(); self.timeline.num_video_tracks = 1; self.timeline.num_audio_tracks = 1
+        self.media_pool.clear(); self.media_properties.clear(); self.project_media_widget.clear_list()
         self.current_project_path = None; self.stop_playback(); self.timeline_widget.update()
-        self.status_label.setText("New project created. Add video clips to begin.")
+        self.undo_stack = UndoStack()
+        self.undo_stack.history_changed.connect(self.update_undo_redo_actions)
+        self.update_undo_redo_actions()
+        self.status_label.setText("New project created. Add media to begin.")
 
     def save_project_as(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save Project", "", "JSON Project Files (*.json)")
         if not path: return
         project_data = {
+            "media_pool": self.media_pool,
             "clips": [{"source_path": c.source_path, "timeline_start_sec": c.timeline_start_sec, "clip_start_sec": c.clip_start_sec, "duration_sec": c.duration_sec, "track_index": c.track_index, "track_type": c.track_type, "group_id": c.group_id} for c in self.timeline.clips],
             "settings": {"num_video_tracks": self.timeline.num_video_tracks, "num_audio_tracks": self.timeline.num_audio_tracks}
         }
         try:
             with open(path, "w") as f: json.dump(project_data, f, indent=4)
             self.current_project_path = path; self.status_label.setText(f"Project saved to {os.path.basename(path)}")
+            self._add_to_recent_files(path)
         except Exception as e: self.status_label.setText(f"Error saving project: {e}")
 
     def open_project(self):
@@ -934,10 +1250,14 @@ class MainWindow(QMainWindow):
     def _load_project_from_path(self, path):
         try:
             with open(path, "r") as f: project_data = json.load(f)
-            self.timeline.clips.clear()
+            self.new_project() # Clear existing state
+            
+            self.media_pool = project_data.get("media_pool", [])
+            for p in self.media_pool: self._add_media_to_pool(p)
+            
             for clip_data in project_data["clips"]:
                 if not os.path.exists(clip_data["source_path"]):
-                    self.status_label.setText(f"Error: Missing media file {clip_data['source_path']}"); self.timeline.clips.clear(); self.timeline_widget.update(); return
+                    self.status_label.setText(f"Error: Missing media file {clip_data['source_path']}"); self.new_project(); return
                 self.timeline.add_clip(TimelineClip(**clip_data))
             
             project_settings = project_data.get("settings", {})
@@ -949,35 +1269,77 @@ class MainWindow(QMainWindow):
             self.prune_empty_tracks()
             self.timeline_widget.update(); self.stop_playback()
             self.status_label.setText(f"Project '{os.path.basename(path)}' loaded.")
+            self._add_to_recent_files(path)
         except Exception as e: self.status_label.setText(f"Error opening project: {e}")
 
-    def add_video_clip(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open Video File", "", "Video Files (*.mp4 *.mov *.avi)")
-        if not file_path: return
-        if not self.timeline.clips:
-            if not self._set_project_properties_from_clip(file_path): self.status_label.setText("Error: Could not determine video properties from file."); return
+    def _add_to_recent_files(self, path):
+        recent = self.settings.get("recent_files", [])
+        if path in recent: recent.remove(path)
+        recent.insert(0, path)
+        self.settings["recent_files"] = recent[:10]
+        self._update_recent_files_menu()
+        self._save_settings()
+
+    def _update_recent_files_menu(self):
+        self.recent_menu.clear()
+        recent_files = self.settings.get("recent_files", [])
+        for path in recent_files:
+            if os.path.exists(path):
+                action = QAction(os.path.basename(path), self)
+                action.triggered.connect(lambda checked, p=path: self._load_project_from_path(p))
+                self.recent_menu.addAction(action)
+
+    def _add_media_to_pool(self, file_path):
+        if file_path in self.media_pool: return True
         try:
             self.status_label.setText(f"Probing {os.path.basename(file_path)}..."); QApplication.processEvents()
             probe = ffmpeg.probe(file_path)
             video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
             if not video_stream: raise ValueError("No video stream found.")
+            
             duration = float(video_stream.get('duration', probe['format'].get('duration', 0)))
             has_audio = any(s['codec_type'] == 'audio' for s in probe['streams'])
-            timeline_start = self.timeline.get_total_duration()
+            
+            self.media_properties[file_path] = {'duration': duration, 'has_audio': has_audio}
+            self.media_pool.append(file_path)
+            self.project_media_widget.add_media_item(file_path)
+            
+            self.status_label.setText(f"Added {os.path.basename(file_path)} to project.")
+            return True
+        except Exception as e:
+            self.status_label.setText(f"Error probing file: {e}")
+            return False
 
-            self._add_clip_to_timeline(
-                source_path=file_path,
-                timeline_start_sec=timeline_start,
-                duration_sec=duration,
-                clip_start_sec=0,
-                video_track_index=1,
-                audio_track_index=1 if has_audio else None
-            )
+    def on_media_removed_from_pool(self, file_path):
+        old_state = self._get_current_timeline_state()
+        
+        if file_path in self.media_pool: self.media_pool.remove(file_path)
+        if file_path in self.media_properties: del self.media_properties[file_path]
+        
+        clips_to_remove = [c for c in self.timeline.clips if c.source_path == file_path]
+        for clip in clips_to_remove: self.timeline.clips.remove(clip)
 
-            self.timeline_widget.update(); self.seek_preview(self.timeline_widget.playhead_pos_sec)
-        except Exception as e: self.status_label.setText(f"Error adding file: {e}")
+        new_state = self._get_current_timeline_state()
+        command = TimelineStateChangeCommand("Remove Media From Project", self.timeline, *old_state, *new_state)
+        command.undo()
+        self.undo_stack.push(command)
+
+
+    def add_video_clip(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Video File", "", "Video Files (*.mp4 *.mov *.avi)")
+        if not file_path: return
+
+        if not self.timeline.clips and not self.media_pool:
+            if not self._set_project_properties_from_clip(file_path):
+                self.status_label.setText("Error: Could not determine video properties from file."); return
+        
+        if self._add_media_to_pool(file_path):
+             self.status_label.setText(f"Added {os.path.basename(file_path)} to project media.")
+        else:
+             self.status_label.setText(f"Failed to add {os.path.basename(file_path)}.")
 
     def _add_clip_to_timeline(self, source_path, timeline_start_sec, duration_sec, clip_start_sec=0.0, video_track_index=None, audio_track_index=None):
+        old_state = self._get_current_timeline_state()
         group_id = str(uuid.uuid4())
         
         if video_track_index is not None:
@@ -988,14 +1350,16 @@ class MainWindow(QMainWindow):
              audio_clip = TimelineClip(source_path, timeline_start_sec, clip_start_sec, duration_sec, audio_track_index, 'audio', group_id)
              self.timeline.add_clip(audio_clip)
 
-        self.timeline_widget.update()
-        self.status_label.setText(f"Added {os.path.basename(source_path)}.")
+        new_state = self._get_current_timeline_state()
+        command = TimelineStateChangeCommand("Add Clip", self.timeline, *old_state, *new_state)
+        # We already performed the action, so we need to undo it before letting the stack redo it.
+        command.undo()
+        self.undo_stack.push(command)
 
     def _split_at_time(self, clip_to_split, time_sec, new_group_id=None):
         if not (clip_to_split.timeline_start_sec < time_sec < clip_to_split.timeline_end_sec): return False
         split_point = time_sec - clip_to_split.timeline_start_sec
         orig_dur = clip_to_split.duration_sec
-        
         group_id_for_new_clip = new_group_id if new_group_id is not None else clip_to_split.group_id
         
         new_clip = TimelineClip(clip_to_split.source_path, time_sec, clip_to_split.clip_start_sec + split_point, orig_dur - split_point, clip_to_split.track_index, clip_to_split.track_type, group_id_for_new_clip)
@@ -1006,88 +1370,199 @@ class MainWindow(QMainWindow):
     def split_clip_at_playhead(self, clip_to_split=None):
         playhead_time = self.timeline_widget.playhead_pos_sec
         if not clip_to_split:
-            clip_to_split = next((c for c in self.timeline.clips if c.timeline_start_sec < playhead_time < c.timeline_end_sec), None)
-        
-        if not clip_to_split:
-            self.status_label.setText("Playhead is not over a clip to split.")
-            return
-        
+            clips_at_playhead = [c for c in self.timeline.clips if c.timeline_start_sec < playhead_time < c.timeline_end_sec]
+            if not clips_at_playhead:
+                self.status_label.setText("Playhead is not over a clip to split.")
+                return
+            clip_to_split = clips_at_playhead[0]
+
+        old_state = self._get_current_timeline_state()
+
         linked_clip = next((c for c in self.timeline.clips if c.group_id == clip_to_split.group_id and c.id != clip_to_split.id), None)
-        
         new_right_side_group_id = str(uuid.uuid4())
         
         split1 = self._split_at_time(clip_to_split, playhead_time, new_group_id=new_right_side_group_id)
-        split2 = True
         if linked_clip:
-            split2 = self._split_at_time(linked_clip, playhead_time, new_group_id=new_right_side_group_id)
+            self._split_at_time(linked_clip, playhead_time, new_group_id=new_right_side_group_id)
 
-        if split1 and split2:
-            self.timeline_widget.update()
-            self.status_label.setText("Clip split.")
+        if split1:
+            new_state = self._get_current_timeline_state()
+            command = TimelineStateChangeCommand("Split Clip", self.timeline, *old_state, *new_state)
+            command.undo()
+            self.undo_stack.push(command)
         else:
             self.status_label.setText("Failed to split clip.")
 
-    def on_split_region(self, region):
-        start_sec, end_sec = region;
-        clips = list(self.timeline.clips)
-        for clip in clips: self._split_at_time(clip, end_sec)
-        for clip in clips: self._split_at_time(clip, start_sec)
-        self.timeline_widget.clear_region(region); self.timeline_widget.update(); self.status_label.setText("Region split.")
 
-    def on_split_all_regions(self, regions):
-        split_points = set()
-        for start, end in regions: split_points.add(start); split_points.add(end)
-        for point in sorted(list(split_points)):
-            group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
-            new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
-            
-            for clip in list(self.timeline.clips):
-                if clip.group_id in new_group_ids:
-                    self._split_at_time(clip, point, new_group_ids[clip.group_id])
+    def delete_clip(self, clip_to_delete):
+        old_state = self._get_current_timeline_state()
 
-        self.timeline_widget.clear_all_regions(); self.timeline_widget.update(); self.status_label.setText("All regions split.")
-
-    def on_join_region(self, region):
-        start_sec, end_sec = region; duration_to_remove = end_sec - start_sec
-        if duration_to_remove <= 0.01: return
+        linked_clip = next((c for c in self.timeline.clips if c.group_id == clip_to_delete.group_id and c.id != clip_to_delete.id), None)
         
-        for point in [start_sec, end_sec]:
-             group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
-             new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
-             for clip in list(self.timeline.clips):
-                 if clip.group_id in new_group_ids:
-                     self._split_at_time(clip, point, new_group_ids[clip.group_id])
-
-        clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_start_sec < end_sec]
-        for clip in clips_to_remove: self.timeline.clips.remove(clip)
-        for clip in self.timeline.clips:
-            if clip.timeline_start_sec >= end_sec: clip.timeline_start_sec -= duration_to_remove
-        self.timeline.clips.sort(key=lambda c: c.timeline_start_sec); self.timeline_widget.clear_region(region)
-        self.timeline_widget.update(); self.status_label.setText("Region joined (content removed).")
+        if clip_to_delete in self.timeline.clips: self.timeline.clips.remove(clip_to_delete)
+        if linked_clip and linked_clip in self.timeline.clips: self.timeline.clips.remove(linked_clip)
+            
+        new_state = self._get_current_timeline_state()
+        command = TimelineStateChangeCommand("Delete Clip", self.timeline, *old_state, *new_state)
+        command.undo()
+        self.undo_stack.push(command)
         self.prune_empty_tracks()
 
-    def on_join_all_regions(self, regions):
-        for region in sorted(regions, key=lambda r: r[0], reverse=True):
-            start_sec, end_sec = region; duration_to_remove = end_sec - start_sec
-            if duration_to_remove <= 0.01: continue
+    def _perform_complex_timeline_change(self, description, change_function):
+        """Wrapper for complex operations to make them undoable."""
+        old_state = self._get_current_timeline_state()
+        
+        # Execute the provided function which will modify the timeline
+        change_function()
+        
+        new_state = self._get_current_timeline_state()
+        
+        # If no change occurred, don't add to undo stack
+        if old_state[0] == new_state[0] and old_state[1] == new_state[1] and old_state[2] == new_state[2]:
+            return
+            
+        command = TimelineStateChangeCommand(description, self.timeline, *old_state, *new_state)
+        # The change was already made, so we need to "undo" it before letting the stack "redo" it.
+        command.undo()
+        self.undo_stack.push(command)
 
-            for point in [start_sec, end_sec]:
+    def on_split_region(self, region):
+        def action():
+            start_sec, end_sec = region
+            clips = list(self.timeline.clips) # Work on a copy
+            for clip in clips: self._split_at_time(clip, end_sec)
+            for clip in clips: self._split_at_time(clip, start_sec)
+            self.timeline_widget.clear_region(region)
+        self._perform_complex_timeline_change("Split Region", action)
+
+    def on_split_all_regions(self, regions):
+        def action():
+            split_points = set()
+            for start, end in regions:
+                split_points.add(start)
+                split_points.add(end)
+
+            for point in sorted(list(split_points)):
                 group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
                 new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
                 for clip in list(self.timeline.clips):
                     if clip.group_id in new_group_ids:
                         self._split_at_time(clip, point, new_group_ids[clip.group_id])
-            
-            clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_start_sec < end_sec]
-            for clip in clips_to_remove:
-                try: self.timeline.clips.remove(clip)
-                except ValueError: pass
-            for clip in self.timeline.clips:
-                if clip.timeline_start_sec >= end_sec: clip.timeline_start_sec -= duration_to_remove
+            self.timeline_widget.clear_all_regions()
+        self._perform_complex_timeline_change("Split All Regions", action)
 
-        self.timeline.clips.sort(key=lambda c: c.timeline_start_sec); self.timeline_widget.clear_all_regions()
-        self.timeline_widget.update(); self.status_label.setText("All regions joined.")
-        self.prune_empty_tracks()
+    def on_join_region(self, region):
+        def action():
+            start_sec, end_sec = region
+            duration_to_remove = end_sec - start_sec
+            if duration_to_remove <= 0.01: return
+
+            # Split any clips that cross the region boundaries
+            for point in [start_sec, end_sec]:
+                 group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
+                 new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
+                 for clip in list(self.timeline.clips):
+                     if clip.group_id in new_group_ids: self._split_at_time(clip, point, new_group_ids[clip.group_id])
+
+            # Remove clips fully inside the region
+            clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_start_sec < end_sec]
+            for clip in clips_to_remove: self.timeline.clips.remove(clip)
+
+            # Ripple delete: move subsequent clips to the left
+            for clip in self.timeline.clips:
+                if clip.timeline_start_sec >= end_sec:
+                    clip.timeline_start_sec -= duration_to_remove
+            
+            self.timeline.clips.sort(key=lambda c: c.timeline_start_sec)
+            self.timeline_widget.clear_region(region)
+        self._perform_complex_timeline_change("Join Region", action)
+
+    def on_join_all_regions(self, regions):
+        def action():
+            # Process regions from end to start to avoid index issues
+            for region in sorted(regions, key=lambda r: r[0], reverse=True):
+                start_sec, end_sec = region
+                duration_to_remove = end_sec - start_sec
+                if duration_to_remove <= 0.01: continue
+                
+                # Split clips at boundaries
+                for point in [start_sec, end_sec]:
+                    group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
+                    new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
+                    for clip in list(self.timeline.clips):
+                        if clip.group_id in new_group_ids: self._split_at_time(clip, point, new_group_ids[clip.group_id])
+                
+                # Remove clips inside region
+                clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_start_sec < end_sec]
+                for clip in clips_to_remove:
+                    try: self.timeline.clips.remove(clip)
+                    except ValueError: pass # Already removed
+                
+                # Ripple
+                for clip in self.timeline.clips:
+                    if clip.timeline_start_sec >= end_sec:
+                        clip.timeline_start_sec -= duration_to_remove
+            
+            self.timeline.clips.sort(key=lambda c: c.timeline_start_sec)
+            self.timeline_widget.clear_all_regions()
+        self._perform_complex_timeline_change("Join All Regions", action)
+
+    def on_delete_region(self, region):
+        def action():
+            start_sec, end_sec = region
+            duration_to_remove = end_sec - start_sec
+            if duration_to_remove <= 0.01: return
+
+            # Split any clips that cross the region boundaries
+            for point in [start_sec, end_sec]:
+                 group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
+                 new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
+                 for clip in list(self.timeline.clips):
+                     if clip.group_id in new_group_ids: self._split_at_time(clip, point, new_group_ids[clip.group_id])
+
+            # Remove clips fully inside the region
+            clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_start_sec < end_sec]
+            for clip in clips_to_remove: self.timeline.clips.remove(clip)
+
+            # Ripple delete: move subsequent clips to the left
+            for clip in self.timeline.clips:
+                if clip.timeline_start_sec >= end_sec:
+                    clip.timeline_start_sec -= duration_to_remove
+            
+            self.timeline.clips.sort(key=lambda c: c.timeline_start_sec)
+            self.timeline_widget.clear_region(region)
+        self._perform_complex_timeline_change("Delete Region", action)
+
+    def on_delete_all_regions(self, regions):
+        def action():
+            # Process regions from end to start to avoid index issues
+            for region in sorted(regions, key=lambda r: r[0], reverse=True):
+                start_sec, end_sec = region
+                duration_to_remove = end_sec - start_sec
+                if duration_to_remove <= 0.01: continue
+                
+                # Split clips at boundaries
+                for point in [start_sec, end_sec]:
+                    group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
+                    new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
+                    for clip in list(self.timeline.clips):
+                        if clip.group_id in new_group_ids: self._split_at_time(clip, point, new_group_ids[clip.group_id])
+                
+                # Remove clips inside region
+                clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_start_sec < end_sec]
+                for clip in clips_to_remove:
+                    try: self.timeline.clips.remove(clip)
+                    except ValueError: pass # Already removed
+                
+                # Ripple
+                for clip in self.timeline.clips:
+                    if clip.timeline_start_sec >= end_sec:
+                        clip.timeline_start_sec -= duration_to_remove
+            
+            self.timeline.clips.sort(key=lambda c: c.timeline_start_sec)
+            self.timeline_widget.clear_all_regions()
+        self._perform_complex_timeline_change("Delete All Regions", action)
+
 
     def export_video(self):
         if not self.timeline.clips: self.status_label.setText("Timeline is empty."); return
@@ -1174,45 +1649,29 @@ class MainWindow(QMainWindow):
     
     def add_dock_widget(self, plugin_instance, widget, title, area=Qt.DockWidgetArea.RightDockWidgetArea, show_on_creation=True):
         widget_key = f"plugin_{plugin_instance.name}_{title}".replace(' ', '_').lower()
-
         dock = QDockWidget(title, self)
         dock.setWidget(widget)
         self.addDockWidget(area, dock)
-
         visibility_settings = self.settings.get("window_visibility", {})
         initial_visibility = visibility_settings.get(widget_key, show_on_creation)
-        
         dock.setVisible(initial_visibility)
-
         action = QAction(title, self, checkable=True)
-        action.toggled.connect(lambda checked, k=widget_key: self.toggle_widget_visibility(k, checked))
+        action.toggled.connect(dock.setVisible)
         dock.visibilityChanged.connect(action.setChecked)
-        
         action.setChecked(dock.isVisible()) 
-
         self.windows_menu.addAction(action)
-
-        self.managed_widgets[widget_key] = {
-            'widget': dock,
-            'name': title,
-            'action': action,
-            'plugin': plugin_instance.name
-        }
-
+        self.managed_widgets[widget_key] = {'widget': dock, 'name': title, 'action': action, 'plugin': plugin_instance.name}
         return dock
         
     def update_plugin_ui_visibility(self, plugin_name, is_enabled):
         for key, data in self.managed_widgets.items():
             if data.get('plugin') == plugin_name:
                 data['action'].setVisible(is_enabled)
-                if not is_enabled:
-                    data['widget'].hide()
+                if not is_enabled: data['widget'].hide()
 
     def toggle_plugin(self, name, checked):
-        if checked:
-            self.plugin_manager.enable_plugin(name)
-        else:
-            self.plugin_manager.disable_plugin(name)
+        if checked: self.plugin_manager.enable_plugin(name)
+        else: self.plugin_manager.disable_plugin(name)
         self._save_settings()
 
     def toggle_plugin_action(self, name, checked):
@@ -1228,6 +1687,27 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def closeEvent(self, event):
+        if self.settings.get("confirm_on_exit", True):
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Confirm Exit")
+            msg_box.setText("Are you sure you want to exit?")
+            msg_box.setInformativeText("Any unsaved changes will be lost.")
+            msg_box.setIcon(QMessageBox.Icon.Question)
+            msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            msg_box.setDefaultButton(QMessageBox.StandardButton.No)
+            
+            dont_ask_cb = QCheckBox("Don't ask again")
+            msg_box.setCheckBox(dont_ask_cb)
+            
+            reply = msg_box.exec()
+
+            if dont_ask_cb.isChecked():
+                self.settings['confirm_on_exit'] = False
+
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                return
+
         self.is_shutting_down = True
         self._save_settings()
         self._stop_playback_stream()

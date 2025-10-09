@@ -37,10 +37,11 @@ python main.py
 ```
 
 ## Screenshots
-<img width="1991" height="1050" alt="image" src="https://github.com/user-attachments/assets/bdf4f57e-c466-4b27-91a8-cc222f9d5e37" />
-<img width="1982" height="1039" alt="image" src="https://github.com/user-attachments/assets/85067061-7ce2-4b5a-96b0-aefba5083109" />
-<img width="3729" height="1620" alt="image" src="https://github.com/user-attachments/assets/6609c3f3-e18b-4b9c-835c-57f5b6f675f5" />
-<img width="1502" height="1039" alt="image" src="https://github.com/user-attachments/assets/9e20ef63-7661-4ab5-8f15-1bdc45e8e768" />
+<img width="1991" height="1050" alt="image" src="https://github.com/user-attachments/assets/d6613d40-af1a-4cf0-8180-1d2dcaa4fb8e" />
+<img width="1982" height="1039" alt="image" src="https://github.com/user-attachments/assets/b15d1fe7-cf19-452e-8012-dac3d86b8cca" />
+<img width="3729" height="1620" alt="image" src="https://github.com/user-attachments/assets/681d4758-4e79-4418-8a69-1649c07cf463" />
+<img width="1502" height="1039" alt="image" src="https://github.com/user-attachments/assets/01e6fe75-126c-4474-a485-34995691bde0" />
+
 
 
 

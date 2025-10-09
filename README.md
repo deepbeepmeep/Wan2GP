@@ -36,8 +36,16 @@ cd videoeditor
 python main.py
 ```
 
+## Screenshots
+<img width="1991" height="1050" alt="image" src="https://github.com/user-attachments/assets/bdf4f57e-c466-4b27-91a8-cc222f9d5e37" />
+<img width="1982" height="1039" alt="image" src="https://github.com/user-attachments/assets/85067061-7ce2-4b5a-96b0-aefba5083109" />
+<img width="3729" height="1620" alt="image" src="https://github.com/user-attachments/assets/6609c3f3-e18b-4b9c-835c-57f5b6f675f5" />
+<img width="1502" height="1039" alt="image" src="https://github.com/user-attachments/assets/9e20ef63-7661-4ab5-8f15-1bdc45e8e768" />
 
-# WanGP
+
+
+
+# What follows is the standard WanGP Readme
 
 -----
 <p align="center">

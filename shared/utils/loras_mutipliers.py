@@ -306,6 +306,8 @@ def merge_loras_settings(
     update that preserved multiplier and drop the duplicate from the replaced side.
     """
     assert mode in ("merge before", "merge after")
+    mult_old= mult_old.strip()
+    mult_new= mult_new.strip()
 
     # Old split & alignment
     bi_old = _find_bar(mult_old)

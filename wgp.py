@@ -63,9 +63,8 @@ from collections import defaultdict
 global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
-
-target_mmgp_version = "3.6.2"
-WanGP_version = "8.995"
+target_mmgp_version = "3.6.3"
+WanGP_version = "8.996"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -3530,6 +3529,9 @@ def select_video(state, input_file_list, event_data: gr.EventData):
             if len(video_outpainting) >0:
                 values += [video_outpainting]
                 labels += ["Outpainting"]
+            if "G" in video_video_prompt_type and "V" in video_video_prompt_type:
+                values += [configs.get("denoising_strength",1)]
+                labels += ["Denoising Strength"]
             video_sample_solver = configs.get("sample_solver", "")
             if model_def.get("sample_solvers", None) is not None and len(video_sample_solver) > 0 :
                 values += [video_sample_solver]
@@ -6096,7 +6098,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
     lset_name = get_lset_name(state, lset_name)
     if len(lset_name) == 0:
         gr.Info("Please choose a Lora Preset or Setting File in the list or create one")
-        return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, gr.update(), gr.update(), gr.update(), gr.update()
+        return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
     else:
         current_model_type = state["model_type"]
         ui_settings = get_current_model_settings(state)
@@ -6120,7 +6122,8 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
 
             return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, get_unique_id(), gr.update(), gr.update(), gr.update(), gr.update()
         else:
-            lset_path =  os.path.join("profiles" if len(Path(lset_name).parts)>1 else get_lora_dir(current_model_type), lset_name)
+            accelerator_profile =  len(Path(lset_name).parts)>1 
+            lset_path =  os.path.join("profiles" if accelerator_profile else get_lora_dir(current_model_type), lset_name)
             configs, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = "merge after" if  len(Path(lset_name).parts)<=1 else "merge before" )
 
             if configs == None:
@@ -6128,7 +6131,10 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
                 return [gr.update()] * 9
             model_type = configs["model_type"]
             configs["lset_name"] = lset_name
-            gr.Info(f"Settings File '{lset_name}' has been applied")
+            if accelerator_profile:
+                gr.Info(f"Accelerator Profile '{os.path.splitext(os.path.basename(lset_name))[0]}' has been applied")
+            else:
+                gr.Info(f"Settings File '{os.path.basename(lset_name)}' has been applied")
             help = configs.get("help", None)
             if help is not None: gr.Info(help)
             if model_type == current_model_type:
@@ -6714,7 +6720,6 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
     if configs is None: return None, False
         
 
-    current_model_filename = state["model_filename"]
     current_model_type = state["model_type"]
     
     model_type = configs.get("model_type", None)
@@ -6722,7 +6727,7 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
         model_type = configs.get("base_model_type", None)
   
     if model_type == None:
-        model_filename = configs.get("model_filename", current_model_filename)
+        model_filename = configs.get("model_filename", "")
         model_type = get_model_type(model_filename)
         if model_type == None:
             model_type = current_model_type

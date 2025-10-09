@@ -59,7 +59,18 @@ def timestep_transform(t, shift=5.0, num_timesteps=1000 ):
     new_t = new_t * num_timesteps
     return new_t
     
-    
+def preprocess_sd(sd):
+    new_sd = {}
+    prefix_list = ["model.diffusion_model"]
+    for k,v in sd.items():
+        for prefix in prefix_list:
+            if k.startswith(prefix): 
+                k = k[len(prefix)+1:]
+                continue
+        if not k.startswith("vae."):
+            new_sd[k] = v
+    return new_sd
+
 class WanAny2V:
 
     def __init__(
@@ -132,15 +143,16 @@ class WanAny2V:
         source2 = model_def.get("source2", None)
         module_source =  model_def.get("module_source", None)
         module_source2 =  model_def.get("module_source2", None)
-        kwargs= { "ignore_unused_weights": ignore_unused_weights, "writable_tensors": False, "default_dtype": dtype }
+        kwargs= { "modelClass": WanModel,"do_quantize": quantizeTransformer and not save_quantized, "defaultConfigPath": base_config_file , "ignore_unused_weights": ignore_unused_weights, "writable_tensors": False, "default_dtype": dtype, "preprocess_sd": preprocess_sd, "forcedConfigPath": forcedConfigPath, }
+        kwargs_light= { "modelClass": WanModel,"writable_tensors": False, "preprocess_sd": preprocess_sd , "forcedConfigPath" : base_config_file}
         if module_source is not None:
-            self.model = offload.fast_load_transformers_model(model_filename[:1] + [module_source], modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath, **kwargs)
+            self.model = offload.fast_load_transformers_model(model_filename[:1] + [module_source], **kwargs)
         if module_source2 is not None:
-            self.model2 = offload.fast_load_transformers_model(model_filename[1:2] + [module_source2], modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath, **kwargs)
+            self.model2 = offload.fast_load_transformers_model(model_filename[1:2] + [module_source2], **kwargs)
         if source is not None:
-            self.model = offload.fast_load_transformers_model(source, modelClass=WanModel, writable_tensors= False, forcedConfigPath= base_config_file)
+            self.model = offload.fast_load_transformers_model(source,  **kwargs_light)
         if source2 is not None:
-            self.model2 = offload.fast_load_transformers_model(source2, modelClass=WanModel, writable_tensors= False, forcedConfigPath= base_config_file)
+            self.model2 = offload.fast_load_transformers_model(source2, **kwargs_light)
 
         if self.model is not None or self.model2 is not None:
             from wgp import save_model
@@ -152,17 +164,17 @@ class WanAny2V:
                 
                 if 0 in submodel_no_list[2:]:
                     shared_modules= {}
-                    self.model = offload.fast_load_transformers_model(model_filename[:1], modules = model_filename[2:], modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath, return_shared_modules= shared_modules, **kwargs)
-                    self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = shared_modules, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath, **kwargs)
+                    self.model = offload.fast_load_transformers_model(model_filename[:1], modules = model_filename[2:], return_shared_modules= shared_modules, **kwargs)
+                    self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = shared_modules, **kwargs)
                     shared_modules = None
                 else:
                     modules_for_1 =[ file_name for file_name, submodel_no in zip(model_filename[2:],submodel_no_list[2:] ) if submodel_no ==1 ]
                     modules_for_2 =[ file_name for file_name, submodel_no in zip(model_filename[2:],submodel_no_list[2:] ) if submodel_no ==2 ]
-                    self.model = offload.fast_load_transformers_model(model_filename[:1], modules = modules_for_1, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath, **kwargs)
-                    self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = modules_for_2, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath, **kwargs)
+                    self.model = offload.fast_load_transformers_model(model_filename[:1], modules = modules_for_1, **kwargs)
+                    self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = modules_for_2, **kwargs)
 
             else:
-                self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel,do_quantize= quantizeTransformer and not save_quantized, defaultConfigPath=base_config_file , forcedConfigPath= forcedConfigPath, **kwargs)
+                self.model = offload.fast_load_transformers_model(model_filename,  **kwargs)
         
 
         if self.model is not None:

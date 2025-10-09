@@ -190,6 +190,7 @@ class family_handler():
                            ("Video to Video guided by Text Prompt", "GUV"),
                            ("Video to Video guided by Text Prompt and Restricted to the Area of the Video Mask", "GVA")],
                 "default": "",
+                "show_label" : False,
                 "letters_filter": "GUVA",
                 "label": "Video to Video"
             }

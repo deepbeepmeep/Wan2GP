@@ -198,7 +198,10 @@ class WanLayerNorm(nn.LayerNorm):
         # return F.layer_norm(
         #     input, self.normalized_shape, self.weight, self.bias, self.eps
         # )
-        y = super().forward(x)
+        if self.weight is not None:
+            y = super().forward(x.to(self.weight.dtype))
+        else:
+            y = super().forward(x)
         x = y.type_as(x)
         return x
         # return super().forward(x).type_as(x)
@@ -1141,6 +1144,8 @@ class WanModel(ModelMixin, ConfigMixin):
 
 
     def lock_layers_dtypes(self, hybrid_dtype = None, dtype = torch.float32):
+        from optimum.quanto import QTensor
+
         layer_list = [self.head, self.head.head, self.patch_embedding]
         target_dype= dtype
         
@@ -1174,8 +1179,9 @@ class WanModel(ModelMixin, ConfigMixin):
             for layer in current_layer_list:
                 layer._lock_dtype = dtype
 
-                if hasattr(layer, "weight") and layer.weight.dtype != current_dtype :
-                    layer.weight.data = layer.weight.data.to(current_dtype)
+                if hasattr(layer, "weight") and layer.weight.dtype != current_dtype:
+                    if not isinstance(layer.weight.data, QTensor):
+                        layer.weight.data = layer.weight.data.to(current_dtype)
                     if hasattr(layer, "bias"):
                         layer.bias.data = layer.bias.data.to(current_dtype)
 

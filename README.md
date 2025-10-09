@@ -32,7 +32,8 @@ python main.py
 
 **Run the video editor:**
 ```bash
-python videoeditor\main.py
+cd videoeditor
+python main.py
 ```
 
 

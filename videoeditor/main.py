@@ -290,7 +290,7 @@ class TimelineWidget(QWidget):
                 y = self.audio_tracks_y_start + visual_index * self.TRACK_HEIGHT
 
             if y != -1:
-                highlight_rect = QRect(self.HEADER_WIDTH, y, self.width() - self.HEADER_WIDTH, self.TRACK_HEIGHT)
+                highlight_rect = QRect(self.HEADER_WIDTH, int(y), self.width() - self.HEADER_WIDTH, self.TRACK_HEIGHT)
                 painter.fillRect(highlight_rect, QColor(255, 255, 0, 40))
 
         if self.highlighted_ghost_track_info:
@@ -302,10 +302,9 @@ class TimelineWidget(QWidget):
                 y = self.audio_tracks_y_start + self.timeline.num_audio_tracks * self.TRACK_HEIGHT
 
             if y != -1:
-                highlight_rect = QRect(self.HEADER_WIDTH, y, self.width() - self.HEADER_WIDTH, self.TRACK_HEIGHT)
+                highlight_rect = QRect(self.HEADER_WIDTH, int(y), self.width() - self.HEADER_WIDTH, self.TRACK_HEIGHT)
                 painter.fillRect(highlight_rect, QColor(255, 255, 0, 40))
 
-        # Draw clips
         for clip in self.timeline.clips:
             clip_rect = self.get_clip_rect(clip)
             base_color = QColor("#46A") if clip.track_type == 'video' else QColor("#48C")

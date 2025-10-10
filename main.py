@@ -355,7 +355,6 @@ class MainWindow(QMainWindow):
         if model_type:
             self._api_set_model(model_type)
 
-        # 2. Set frame inputs
         if start_frame:
             self.widgets['mode_s'].setChecked(True)
             self.widgets['image_start'].setText(start_frame)
@@ -363,37 +362,24 @@ class MainWindow(QMainWindow):
         if end_frame:
             self.widgets['image_end_checkbox'].setChecked(True)
             self.widgets['image_end'].setText(end_frame)
-        
-        # 3. Calculate video length in frames based on duration and model FPS
+
         if duration_sec is not None:
             try:
                 duration = float(duration_sec)
-                
-                # Get base FPS by parsing the "Force FPS" dropdown's default text (e.g., "Model Default (16 fps)")
-                base_fps = 16 # Fallback
+                base_fps = 16
                 fps_text = self.widgets['force_fps'].itemText(0) 
                 match = re.search(r'\((\d+)\s*fps\)', fps_text)
                 if match:
                     base_fps = int(match.group(1))
 
-                # Temporal upsampling creates more frames in post-processing, so we must account for it here.
-                upsample_setting = self.widgets['temporal_upsampling'].currentData()
-                multiplier = 1.0
-                if upsample_setting == "rife2":
-                    multiplier = 2.0
-                elif upsample_setting == "rife4":
-                    multiplier = 4.0
-
-                # The number of frames the model needs to generate
-                video_length_frames = int(duration * base_fps * multiplier)
+                video_length_frames = int(duration * base_fps)
                 
                 self.widgets['video_length'].setValue(video_length_frames)
-                print(f"API: Calculated video length: {video_length_frames} frames for {duration:.2f}s @ {base_fps*multiplier:.0f} effective FPS.")
+                print(f"API: Calculated video length: {video_length_frames} frames for {duration:.2f}s @ {base_fps} effective FPS.")
 
             except (ValueError, TypeError) as e:
                 print(f"API Error: Invalid duration_sec '{duration_sec}': {e}")
-        
-        # 4. Conditionally start generation
+
         if start_generation:
             self.generate_btn.click()
             print("API: Generation started.")

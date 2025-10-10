@@ -272,10 +272,12 @@ class Plugin(VideoEditorPlugin):
             return
             
         start_sec, end_sec = self.active_region
-        duration = end_sec - start_sec
         self.app.status_label.setText(f"Inserting AI clip: {os.path.basename(video_path)}")
 
         try:
+            probe = ffmpeg.probe(video_path)
+            actual_duration = float(probe['format']['duration'])
+
             for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, start_sec)
             for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, end_sec)
 
@@ -291,7 +293,7 @@ class Plugin(VideoEditorPlugin):
                 source_path=video_path,
                 timeline_start_sec=start_sec,
                 clip_start_sec=0,
-                duration_sec=duration,
+                duration_sec=actual_duration,
                 video_track_index=1,
                 audio_track_index=None
             )
@@ -301,7 +303,7 @@ class Plugin(VideoEditorPlugin):
             self.app.prune_empty_tracks()
 
         except Exception as e:
-            error_message = f"Error during clip insertion: {e}"
+            error_message = f"Error during clip insertion/probing: {e}"
             self.app.status_label.setText(error_message)
             self.client_widget.status_label.setText("Status: Failed to insert clip.")
             print(error_message)

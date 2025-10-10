@@ -574,8 +574,14 @@ class TimelineWidget(QWidget):
             delta_x = event.pos().x() - self.resize_start_pos.x()
             time_delta = delta_x / self.pixels_per_second
             min_duration = 1.0 / self.project_fps
-            playhead_time = self.playhead_pos_sec
             snap_time_delta = self.SNAP_THRESHOLD_PIXELS / self.pixels_per_second
+
+            snap_points = [self.playhead_pos_sec]
+            for clip in self.timeline.clips:
+                if clip.id == self.resizing_clip.id: continue
+                if linked_clip and clip.id == linked_clip.id: continue
+                snap_points.append(clip.timeline_start_sec)
+                snap_points.append(clip.timeline_end_sec)
 
             media_props = self.window().media_properties.get(self.resizing_clip.source_path)
             source_duration = media_props['duration'] if media_props else float('inf')
@@ -585,10 +591,12 @@ class TimelineWidget(QWidget):
                 original_duration = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].duration_sec
                 original_clip_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].clip_start_sec
                 true_new_start_sec = original_start + time_delta
-                if abs(true_new_start_sec - playhead_time) < snap_time_delta:
-                    new_start_sec = playhead_time
-                else:
-                    new_start_sec = true_new_start_sec
+                
+                new_start_sec = true_new_start_sec
+                for snap_point in snap_points:
+                    if abs(true_new_start_sec - snap_point) < snap_time_delta:
+                        new_start_sec = snap_point
+                        break
 
                 if new_start_sec > original_start + original_duration - min_duration:
                     new_start_sec = original_start + original_duration - min_duration
@@ -621,11 +629,14 @@ class TimelineWidget(QWidget):
                 
                 true_new_duration = original_duration + time_delta
                 true_new_end_time = original_start + true_new_duration
-
-                if abs(true_new_end_time - playhead_time) < snap_time_delta:
-                    new_duration = playhead_time - original_start
-                else:
-                    new_duration = true_new_duration
+                
+                new_end_time = true_new_end_time
+                for snap_point in snap_points:
+                    if abs(true_new_end_time - snap_point) < snap_time_delta:
+                        new_end_time = snap_point
+                        break
+                
+                new_duration = new_end_time - original_start
                 
                 if new_duration < min_duration:
                     new_duration = min_duration

@@ -19,7 +19,7 @@ from plugins import PluginManager, ManagePluginsDialog
 from undo import UndoStack, TimelineStateChangeCommand, MoveClipsCommand
 
 class TimelineClip:
-    def __init__(self, source_path, timeline_start_sec, clip_start_sec, duration_sec, track_index, track_type, group_id):
+    def __init__(self, source_path, timeline_start_sec, clip_start_sec, duration_sec, track_index, track_type, media_type, group_id):
         self.id = str(uuid.uuid4())
         self.source_path = source_path
         self.timeline_start_sec = timeline_start_sec
@@ -27,6 +27,7 @@ class TimelineClip:
         self.duration_sec = duration_sec
         self.track_index = track_index
         self.track_type = track_type
+        self.media_type = media_type
         self.group_id = group_id
 
     @property
@@ -136,7 +137,6 @@ class TimelineWidget(QWidget):
         self.drag_over_active = False
         self.drag_over_rect = QRectF()
         self.drag_over_audio_rect = QRectF()
-        self.drag_has_audio = False
 
     def set_project_fps(self, fps):
         self.project_fps = fps if fps > 0 else 25.0
@@ -163,12 +163,12 @@ class TimelineWidget(QWidget):
         self.draw_selections(painter)
         
         if self.drag_over_active:
-            painter.fillRect(self.drag_over_rect, QColor(0, 255, 0, 80))
-            if self.drag_has_audio:
-                painter.fillRect(self.drag_over_audio_rect, QColor(0, 255, 0, 80))
             painter.setPen(QColor(0, 255, 0, 150))
-            painter.drawRect(self.drag_over_rect)
-            if self.drag_has_audio:
+            if not self.drag_over_rect.isNull():
+                painter.fillRect(self.drag_over_rect, QColor(0, 255, 0, 80))
+                painter.drawRect(self.drag_over_rect)
+            if not self.drag_over_audio_rect.isNull():
+                painter.fillRect(self.drag_over_audio_rect, QColor(0, 255, 0, 80))
                 painter.drawRect(self.drag_over_audio_rect)
 
         self.draw_playhead(painter)
@@ -376,7 +376,12 @@ class TimelineWidget(QWidget):
 
         for clip in self.timeline.clips:
             clip_rect = self.get_clip_rect(clip)
-            base_color = QColor("#46A") if clip.track_type == 'video' else QColor("#48C")
+            base_color = QColor("#46A") # Default video
+            if clip.media_type == 'image':
+                base_color = QColor("#4A6") # Greenish for images
+            elif clip.track_type == 'audio':
+                base_color = QColor("#48C") # Bluish for audio
+            
             color = QColor("#5A9") if self.dragging_clip and self.dragging_clip.id == clip.id else base_color
             painter.fillRect(clip_rect, color)
             painter.setPen(QPen(QColor("#FFF"), 1))
@@ -667,47 +672,55 @@ class TimelineWidget(QWidget):
         
         json_data = json.loads(mime_data.data('application/x-vnd.video.filepath').data().decode('utf-8'))
         duration = json_data['duration']
-        self.drag_has_audio = json_data['has_audio']
+        media_type = json_data['media_type']
+        has_audio = json_data['has_audio']
 
         pos = event.position()
-        track_info = self.y_to_track_info(pos.y())
         start_sec = self.x_to_sec(pos.x())
+        track_info = self.y_to_track_info(pos.y())
+
+        self.drag_over_rect = QRectF()
+        self.drag_over_audio_rect = QRectF()
+        self.drag_over_active = False
+        self.highlighted_ghost_track_info = None
+        self.highlighted_track_info = None
 
         if track_info:
             self.drag_over_active = True
             track_type, track_index = track_info
-
+            
             is_ghost_track = (track_type == 'video' and track_index > self.timeline.num_video_tracks) or \
                              (track_type == 'audio' and track_index > self.timeline.num_audio_tracks)
             if is_ghost_track:
                 self.highlighted_ghost_track_info = track_info
-                self.highlighted_track_info = None
             else:
-                self.highlighted_ghost_track_info = None
                 self.highlighted_track_info = track_info
             
             width = int(duration * self.pixels_per_second)
             x = self.sec_to_x(start_sec)
             
-            if track_type == 'video':
-                visual_index = self.timeline.num_video_tracks - track_index
-                y = self.video_tracks_y_start + visual_index * self.TRACK_HEIGHT
-                self.drag_over_rect = QRectF(x, y, width, self.TRACK_HEIGHT)
-                if self.drag_has_audio:
-                    audio_y = self.audio_tracks_y_start # Default to track 1
-                    self.drag_over_audio_rect = QRectF(x, audio_y, width, self.TRACK_HEIGHT)
+            video_y, audio_y = -1, -1
 
-            elif track_type == 'audio':
-                visual_index = track_index - 1
-                y = self.audio_tracks_y_start + visual_index * self.TRACK_HEIGHT
-                self.drag_over_audio_rect = QRectF(x, y, width, self.TRACK_HEIGHT)
-                # For now, just show video on track 1 if dragging onto audio
-                video_y = self.video_tracks_y_start + (self.timeline.num_video_tracks - 1) * self.TRACK_HEIGHT
+            if media_type in ['video', 'image']:
+                if track_type == 'video':
+                    visual_index = self.timeline.num_video_tracks - track_index
+                    video_y = self.video_tracks_y_start + visual_index * self.TRACK_HEIGHT
+                    if has_audio:
+                        audio_y = self.audio_tracks_y_start
+                elif track_type == 'audio' and has_audio:
+                    visual_index = track_index - 1
+                    audio_y = self.audio_tracks_y_start + visual_index * self.TRACK_HEIGHT
+                    video_y = self.video_tracks_y_start + (self.timeline.num_video_tracks - 1) * self.TRACK_HEIGHT
+            
+            elif media_type == 'audio':
+                if track_type == 'audio':
+                    visual_index = track_index - 1
+                    audio_y = self.audio_tracks_y_start + visual_index * self.TRACK_HEIGHT
+
+            if video_y != -1:
                 self.drag_over_rect = QRectF(x, video_y, width, self.TRACK_HEIGHT)
-        else:
-            self.drag_over_active = False
-            self.highlighted_ghost_track_info = None
-            self.highlighted_track_info = None
+            if audio_y != -1:
+                self.drag_over_audio_rect = QRectF(x, audio_y, width, self.TRACK_HEIGHT)
         
         self.update()
 
@@ -725,6 +738,7 @@ class TimelineWidget(QWidget):
         file_path = json_data['path']
         duration = json_data['duration']
         has_audio = json_data['has_audio']
+        media_type = json_data['media_type']
 
         pos = event.position()
         start_sec = self.x_to_sec(pos.x())
@@ -734,19 +748,32 @@ class TimelineWidget(QWidget):
             return
 
         drop_track_type, drop_track_index = track_info
-        video_track_idx = 1
-        audio_track_idx = 1 if has_audio else None
+        video_track_idx = None
+        audio_track_idx = None
+
+        if media_type == 'image':
+            if drop_track_type == 'video':
+                video_track_idx = drop_track_index
+        elif media_type == 'audio':
+            if drop_track_type == 'audio':
+                audio_track_idx = drop_track_index
+        elif media_type == 'video':
+            if drop_track_type == 'video':
+                video_track_idx = drop_track_index
+                if has_audio: audio_track_idx = 1
+            elif drop_track_type == 'audio' and has_audio:
+                audio_track_idx = drop_track_index
+                video_track_idx = 1
         
-        if drop_track_type == 'video':
-            video_track_idx = drop_track_index
-        elif drop_track_type == 'audio':
-            audio_track_idx = drop_track_index
+        if video_track_idx is None and audio_track_idx is None:
+            return
 
         main_window = self.window()
         main_window._add_clip_to_timeline(
             source_path=file_path,
             timeline_start_sec=start_sec,
             duration_sec=duration,
+            media_type=media_type,
             clip_start_sec=0,
             video_track_index=video_track_idx,
             audio_track_index=audio_track_idx
@@ -847,7 +874,8 @@ class MediaListWidget(QListWidget):
         payload = {
             "path": path,
             "duration": media_info['duration'],
-            "has_audio": media_info['has_audio']
+            "has_audio": media_info['has_audio'],
+            "media_type": media_info['media_type']
         }
         
         mime_data.setData('application/x-vnd.video.filepath', QByteArray(json.dumps(payload).encode('utf-8')))
@@ -1049,7 +1077,7 @@ class MainWindow(QMainWindow):
         self.frame_forward_button.clicked.connect(lambda: self.step_frame(1))
         self.playback_timer.timeout.connect(self.advance_playback_frame)
         
-        self.project_media_widget.add_media_requested.connect(self.add_video_clip)
+        self.project_media_widget.add_media_requested.connect(self.add_media_files)
         self.project_media_widget.media_removed.connect(self.on_media_removed_from_pool)
         self.project_media_widget.add_to_timeline_requested.connect(self.on_add_to_timeline_at_playhead)
         
@@ -1095,14 +1123,19 @@ class MainWindow(QMainWindow):
         playhead_pos = self.timeline_widget.playhead_pos_sec
         duration = media_info['duration']
         has_audio = media_info['has_audio']
+        media_type = media_info['media_type']
+
+        video_track = 1 if media_type in ['video', 'image'] else None
+        audio_track = 1 if has_audio else None
 
         self._add_clip_to_timeline(
             source_path=file_path,
             timeline_start_sec=playhead_pos,
             duration_sec=duration,
+            media_type=media_type,
             clip_start_sec=0.0,
-            video_track_index=1,
-            audio_track_index=1 if has_audio else None
+            video_track_index=video_track,
+            audio_track_index=audio_track
         )
 
     def prune_empty_tracks(self):
@@ -1165,13 +1198,13 @@ class MainWindow(QMainWindow):
         open_action = QAction("&Open Project...", self); open_action.triggered.connect(self.open_project)
         self.recent_menu = file_menu.addMenu("Recent")
         save_action = QAction("&Save Project As...", self); save_action.triggered.connect(self.save_project_as)
-        add_video_action = QAction("&Add Media to Project...", self); add_video_action.triggered.connect(self.add_video_clip)
+        add_media_action = QAction("&Add Media to Project...", self); add_media_action.triggered.connect(self.add_media_files)
         export_action = QAction("&Export Video...", self); export_action.triggered.connect(self.export_video)
         settings_action = QAction("Se&ttings...", self); settings_action.triggered.connect(self.open_settings_dialog)
         exit_action = QAction("E&xit", self); exit_action.triggered.connect(self.close)
         file_menu.addAction(new_action); file_menu.addAction(open_action); file_menu.addSeparator()
         file_menu.addAction(save_action)
-        file_menu.addSeparator(); file_menu.addAction(add_video_action); file_menu.addAction(export_action)
+        file_menu.addSeparator(); file_menu.addAction(add_media_action); file_menu.addAction(export_action)
         file_menu.addSeparator(); file_menu.addAction(settings_action); file_menu.addSeparator(); file_menu.addAction(exit_action)
         self._update_recent_files_menu()
 
@@ -1252,13 +1285,24 @@ class MainWindow(QMainWindow):
         if not clip_at_time:
             return (None, 0, 0)
         try:
-            clip_time = time_sec - clip_at_time.timeline_start_sec + clip_at_time.clip_start_sec
-            out, _ = (
-                ffmpeg
-                .input(clip_at_time.source_path, ss=clip_time)
-                .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
-                .run(capture_stdout=True, quiet=True)
-            )
+            w, h = self.project_width, self.project_height
+            if clip_at_time.media_type == 'image':
+                out, _ = (
+                    ffmpeg
+                    .input(clip_at_time.source_path)
+                    .filter('scale', w, h, force_original_aspect_ratio='decrease')
+                    .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
+                    .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
+                    .run(capture_stdout=True, quiet=True)
+                )
+            else:
+                clip_time = time_sec - clip_at_time.timeline_start_sec + clip_at_time.clip_start_sec
+                out, _ = (
+                    ffmpeg
+                    .input(clip_at_time.source_path, ss=clip_time)
+                    .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
+                    .run(capture_stdout=True, quiet=True)
+                )
             return (out, self.project_width, self.project_height)
         except ffmpeg.Error as e:
             print(f"Error extracting frame data: {e.stderr}")
@@ -1269,8 +1313,19 @@ class MainWindow(QMainWindow):
         black_pixmap = QPixmap(self.project_width, self.project_height); black_pixmap.fill(QColor("black"))
         if not clip_at_time: return black_pixmap
         try:
-            clip_time = time_sec - clip_at_time.timeline_start_sec + clip_at_time.clip_start_sec
-            out, _ = (ffmpeg.input(clip_at_time.source_path, ss=clip_time).output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24').run(capture_stdout=True, quiet=True))
+            w, h = self.project_width, self.project_height
+            if clip_at_time.media_type == 'image':
+                out, _ = (
+                    ffmpeg.input(clip_at_time.source_path)
+                    .filter('scale', w, h, force_original_aspect_ratio='decrease')
+                    .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
+                    .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
+                    .run(capture_stdout=True, quiet=True)
+                )
+            else:
+                clip_time = time_sec - clip_at_time.timeline_start_sec + clip_at_time.clip_start_sec
+                out, _ = (ffmpeg.input(clip_at_time.source_path, ss=clip_time).output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24').run(capture_stdout=True, quiet=True))
+            
             image = QImage(out, self.project_width, self.project_height, QImage.Format.Format_RGB888)
             return QPixmap.fromImage(image)
         except ffmpeg.Error as e: print(f"Error extracting frame: {e.stderr}"); return black_pixmap
@@ -1303,14 +1358,32 @@ class MainWindow(QMainWindow):
         frame_duration = 1.0 / self.project_fps
         new_time = self.timeline_widget.playhead_pos_sec + frame_duration
         if new_time > self.timeline.get_total_duration(): self.stop_playback(); return
-        self.timeline_widget.playhead_pos_sec = new_time; self.timeline_widget.update()
+        
+        self.timeline_widget.playhead_pos_sec = new_time
+        self.timeline_widget.update()
+        
         clip_at_new_time = next((c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= new_time < c.timeline_end_sec), None)
+        
         if not clip_at_new_time:
             self._stop_playback_stream()
             black_pixmap = QPixmap(self.project_width, self.project_height); black_pixmap.fill(QColor("black"))
             scaled_pixmap = black_pixmap.scaled(self.preview_widget.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.preview_widget.setPixmap(scaled_pixmap); return
-        if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id: self._start_playback_stream_at(new_time)
+            self.preview_widget.setPixmap(scaled_pixmap)
+            return
+
+        if clip_at_new_time.media_type == 'image':
+            if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id:
+                self._stop_playback_stream()
+                self.playback_clip = clip_at_new_time
+                frame_pixmap = self.get_frame_at_time(new_time)
+                if frame_pixmap:
+                    scaled_pixmap = frame_pixmap.scaled(self.preview_widget.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    self.preview_widget.setPixmap(scaled_pixmap)
+            return
+
+        if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id:
+            self._start_playback_stream_at(new_time)
+        
         if self.playback_process:
             frame_size = self.project_width * self.project_height * 3
             frame_bytes = self.playback_process.stdout.read(frame_size)
@@ -1319,7 +1392,8 @@ class MainWindow(QMainWindow):
                 pixmap = QPixmap.fromImage(image)
                 scaled_pixmap = pixmap.scaled(self.preview_widget.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 self.preview_widget.setPixmap(scaled_pixmap)
-            else: self._stop_playback_stream()
+            else:
+                self._stop_playback_stream()
 
     def _load_settings(self):
         self.settings_file_was_loaded = False
@@ -1386,7 +1460,7 @@ class MainWindow(QMainWindow):
         if not path: return
         project_data = {
             "media_pool": self.media_pool,
-            "clips": [{"source_path": c.source_path, "timeline_start_sec": c.timeline_start_sec, "clip_start_sec": c.clip_start_sec, "duration_sec": c.duration_sec, "track_index": c.track_index, "track_type": c.track_type, "group_id": c.group_id} for c in self.timeline.clips],
+            "clips": [{"source_path": c.source_path, "timeline_start_sec": c.timeline_start_sec, "clip_start_sec": c.clip_start_sec, "duration_sec": c.duration_sec, "track_index": c.track_index, "track_type": c.track_type, "media_type": c.media_type, "group_id": c.group_id} for c in self.timeline.clips],
             "settings": {"num_video_tracks": self.timeline.num_video_tracks, "num_audio_tracks": self.timeline.num_audio_tracks}
         }
         try:
@@ -1410,6 +1484,14 @@ class MainWindow(QMainWindow):
             for clip_data in project_data["clips"]:
                 if not os.path.exists(clip_data["source_path"]):
                     self.status_label.setText(f"Error: Missing media file {clip_data['source_path']}"); self.new_project(); return
+                
+                if 'media_type' not in clip_data:
+                    ext = os.path.splitext(clip_data['source_path'])[1].lower()
+                    if ext in ['.mp3', '.wav', '.m4a', '.aac']:
+                         clip_data['media_type'] = 'audio'
+                    else:
+                         clip_data['media_type'] = 'video'
+                
                 self.timeline.add_clip(TimelineClip(**clip_data))
             
             project_settings = project_data.get("settings", {})
@@ -1417,7 +1499,9 @@ class MainWindow(QMainWindow):
             self.timeline.num_audio_tracks = project_settings.get("num_audio_tracks", 1)
 
             self.current_project_path = path
-            if self.timeline.clips: self._set_project_properties_from_clip(self.timeline.clips[0].source_path)
+            video_clips = [c for c in self.timeline.clips if c.media_type == 'video']
+            if video_clips:
+                self._set_project_properties_from_clip(video_clips[0].source_path)
             self.prune_empty_tracks()
             self.timeline_widget.update(); self.stop_playback()
             self.status_label.setText(f"Project '{os.path.basename(path)}' loaded.")
@@ -1445,14 +1529,31 @@ class MainWindow(QMainWindow):
         if file_path in self.media_pool: return True
         try:
             self.status_label.setText(f"Probing {os.path.basename(file_path)}..."); QApplication.processEvents()
-            probe = ffmpeg.probe(file_path)
-            video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-            if not video_stream: raise ValueError("No video stream found.")
             
-            duration = float(video_stream.get('duration', probe['format'].get('duration', 0)))
-            has_audio = any(s['codec_type'] == 'audio' for s in probe['streams'])
+            file_ext = os.path.splitext(file_path)[1].lower()
+            media_info = {}
             
-            self.media_properties[file_path] = {'duration': duration, 'has_audio': has_audio}
+            if file_ext in ['.png', '.jpg', '.jpeg']:
+                media_info['media_type'] = 'image'
+                media_info['duration'] = 5.0
+                media_info['has_audio'] = False
+            else:
+                probe = ffmpeg.probe(file_path)
+                video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+                audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
+
+                if video_stream:
+                    media_info['media_type'] = 'video'
+                    media_info['duration'] = float(video_stream.get('duration', probe['format'].get('duration', 0)))
+                    media_info['has_audio'] = audio_stream is not None
+                elif audio_stream:
+                    media_info['media_type'] = 'audio'
+                    media_info['duration'] = float(audio_stream.get('duration', probe['format'].get('duration', 0)))
+                    media_info['has_audio'] = True
+                else:
+                    raise ValueError("No video or audio stream found.")
+
+            self.media_properties[file_path] = media_info
             self.media_pool.append(file_path)
             self.project_media_widget.add_media_item(file_path)
             
@@ -1477,33 +1578,42 @@ class MainWindow(QMainWindow):
         self.undo_stack.push(command)
 
 
-    def add_video_clip(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open Video File", "", "Video Files (*.mp4 *.mov *.avi)")
-        if not file_path: return
+    def add_media_files(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Open Media Files", "", "All Supported Files (*.mp4 *.mov *.avi *.png *.jpg *.jpeg *.mp3 *.wav);;Video Files (*.mp4 *.mov *.avi);;Image Files (*.png *.jpg *.jpeg);;Audio Files (*.mp3 *.wav)")
+        if not file_paths: return
+        self.media_dock.show()
 
-        if not self.timeline.clips and not self.media_pool:
-            if not self._set_project_properties_from_clip(file_path):
-                self.status_label.setText("Error: Could not determine video properties from file."); return
-        
-        if self._add_media_to_pool(file_path):
-             self.status_label.setText(f"Added {os.path.basename(file_path)} to project media.")
-        else:
-             self.status_label.setText(f"Failed to add {os.path.basename(file_path)}.")
+        first_video_added = any(c.media_type == 'video' for c in self.timeline.clips)
 
-    def _add_clip_to_timeline(self, source_path, timeline_start_sec, duration_sec, clip_start_sec=0.0, video_track_index=None, audio_track_index=None):
+        for file_path in file_paths:
+            if not self.timeline.clips and not self.media_pool and not first_video_added:
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext not in ['.png', '.jpg', '.jpeg', '.mp3', '.wav']:
+                    if self._set_project_properties_from_clip(file_path):
+                        first_video_added = True
+                    else:
+                        self.status_label.setText("Error: Could not determine video properties from file."); 
+                        continue
+            
+            if self._add_media_to_pool(file_path):
+                 self.status_label.setText(f"Added {os.path.basename(file_path)} to project media.")
+            else:
+                 self.status_label.setText(f"Failed to add {os.path.basename(file_path)}.")
+
+    def _add_clip_to_timeline(self, source_path, timeline_start_sec, duration_sec, media_type, clip_start_sec=0.0, video_track_index=None, audio_track_index=None):
         old_state = self._get_current_timeline_state()
         group_id = str(uuid.uuid4())
         
         if video_track_index is not None:
              if video_track_index > self.timeline.num_video_tracks:
                  self.timeline.num_video_tracks = video_track_index
-             video_clip = TimelineClip(source_path, timeline_start_sec, clip_start_sec, duration_sec, video_track_index, 'video', group_id)
+             video_clip = TimelineClip(source_path, timeline_start_sec, clip_start_sec, duration_sec, video_track_index, 'video', media_type, group_id)
              self.timeline.add_clip(video_clip)
         
         if audio_track_index is not None:
              if audio_track_index > self.timeline.num_audio_tracks:
                  self.timeline.num_audio_tracks = audio_track_index
-             audio_clip = TimelineClip(source_path, timeline_start_sec, clip_start_sec, duration_sec, audio_track_index, 'audio', group_id)
+             audio_clip = TimelineClip(source_path, timeline_start_sec, clip_start_sec, duration_sec, audio_track_index, 'audio', media_type, group_id)
              self.timeline.add_clip(audio_clip)
 
         new_state = self._get_current_timeline_state()
@@ -1517,7 +1627,7 @@ class MainWindow(QMainWindow):
         orig_dur = clip_to_split.duration_sec
         group_id_for_new_clip = new_group_id if new_group_id is not None else clip_to_split.group_id
         
-        new_clip = TimelineClip(clip_to_split.source_path, time_sec, clip_to_split.clip_start_sec + split_point, orig_dur - split_point, clip_to_split.track_index, clip_to_split.track_type, group_id_for_new_clip)
+        new_clip = TimelineClip(clip_to_split.source_path, time_sec, clip_to_split.clip_start_sec + split_point, orig_dur - split_point, clip_to_split.track_index, clip_to_split.track_type, clip_to_split.media_type, group_id_for_new_clip)
         clip_to_split.duration_sec = split_point
         self.timeline.add_clip(new_clip)
         return True
@@ -1707,8 +1817,8 @@ class MainWindow(QMainWindow):
         w, h, fr_str, total_dur = self.project_width, self.project_height, str(self.project_fps), self.timeline.get_total_duration()
         sample_rate, channel_layout = '44100', 'stereo'
         
-        input_files = {clip.source_path: ffmpeg.input(clip.source_path) for clip in self.timeline.clips}
-        
+        input_streams = {}
+
         last_video_stream = ffmpeg.input(f'color=c=black:s={w}x{h}:r={fr_str}:d={total_dur}', f='lavfi')
         for i in range(self.timeline.num_video_tracks):
             track_clips = sorted([c for c in self.timeline.clips if c.track_type == 'video' and c.track_index == i + 1], key=lambda c: c.timeline_start_sec)
@@ -1722,8 +1832,18 @@ class MainWindow(QMainWindow):
                 if gap > 0.01: 
                     track_segments.append(ffmpeg.input(f'color=c=black@0.0:s={w}x{h}:r={fr_str}:d={gap}', f='lavfi').filter('format', pix_fmts='rgba'))
                 
-                v_seg = (input_files[clip.source_path].video.trim(start=clip.clip_start_sec, duration=clip.duration_sec).setpts('PTS-STARTPTS')
-                        .filter('scale', w, h, force_original_aspect_ratio='decrease').filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black').filter('format', pix_fmts='rgba'))
+                if clip.source_path not in input_streams:
+                    if clip.media_type == 'image':
+                        input_streams[clip.source_path] = ffmpeg.input(clip.source_path, loop=1, framerate=self.project_fps)
+                    else:
+                        input_streams[clip.source_path] = ffmpeg.input(clip.source_path)
+
+                if clip.media_type == 'image':
+                    v_seg = (input_streams[clip.source_path].video.trim(duration=clip.duration_sec).setpts('PTS-STARTPTS'))
+                else: # video
+                    v_seg = (input_streams[clip.source_path].video.trim(start=clip.clip_start_sec, duration=clip.duration_sec).setpts('PTS-STARTPTS'))
+
+                v_seg = (v_seg.filter('scale', w, h, force_original_aspect_ratio='decrease').filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black').filter('format', pix_fmts='rgba'))
                 track_segments.append(v_seg)
                 last_end = clip.timeline_end_sec
             
@@ -1740,11 +1860,14 @@ class MainWindow(QMainWindow):
             last_end = track_clips[0].timeline_start_sec
 
             for clip in track_clips:
+                if clip.source_path not in input_streams:
+                    input_streams[clip.source_path] = ffmpeg.input(clip.source_path)
+
                 gap = clip.timeline_start_sec - last_end
                 if gap > 0.01: 
                     track_segments.append(ffmpeg.input(f'anullsrc=r={sample_rate}:cl={channel_layout}:d={gap}', f='lavfi'))
                 
-                a_seg = input_files[clip.source_path].audio.filter('atrim', start=clip.clip_start_sec, duration=clip.duration_sec).filter('asetpts', 'PTS-STARTPTS')
+                a_seg = input_streams[clip.source_path].audio.filter('atrim', start=clip.clip_start_sec, duration=clip.duration_sec).filter('asetpts', 'PTS-STARTPTS')
                 track_segments.append(a_seg)
                 last_end = clip.timeline_end_sec
 

@@ -291,6 +291,7 @@ class Plugin(VideoEditorPlugin):
                     timeline_start_sec=start_sec,
                     clip_start_sec=0,
                     duration_sec=actual_duration,
+                    media_type='video',
                     video_track_index=new_track_index,
                     audio_track_index=None
                 )
@@ -312,6 +313,7 @@ class Plugin(VideoEditorPlugin):
                     timeline_start_sec=start_sec,
                     clip_start_sec=0,
                     duration_sec=actual_duration,
+                    media_type='video',
                     video_track_index=1,
                     audio_track_index=None
                 )

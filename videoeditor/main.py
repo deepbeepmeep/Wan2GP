@@ -83,6 +83,7 @@ class TimelineWidget(QWidget):
     TRACK_HEIGHT = 50
     AUDIO_TRACKS_SEPARATOR_Y = 15
     RESIZE_HANDLE_WIDTH = 8
+    SNAP_THRESHOLD_PIXELS = 8
 
     split_requested = pyqtSignal(object)
     delete_clip_requested = pyqtSignal(object)
@@ -553,7 +554,11 @@ class TimelineWidget(QWidget):
 
                     if is_in_track_area:
                         self.creating_selection_region = True
-                        self.selection_drag_start_sec = self.x_to_sec(event.pos().x())
+                        playhead_x = self.sec_to_x(self.playhead_pos_sec)
+                        if abs(event.pos().x() - playhead_x) < self.SNAP_THRESHOLD_PIXELS:
+                            self.selection_drag_start_sec = self.playhead_pos_sec
+                        else:
+                            self.selection_drag_start_sec = self.x_to_sec(event.pos().x())
                         self.selection_regions.append([self.selection_drag_start_sec, self.selection_drag_start_sec])
                     elif is_on_timescale:
                         self.playhead_pos_sec = max(0, self.x_to_sec(event.pos().x()))
@@ -567,6 +572,8 @@ class TimelineWidget(QWidget):
             delta_x = event.pos().x() - self.resize_start_pos.x()
             time_delta = delta_x / self.pixels_per_second
             min_duration = 1.0 / self.project_fps
+            playhead_time = self.playhead_pos_sec
+            snap_time_delta = self.SNAP_THRESHOLD_PIXELS / self.pixels_per_second
 
             media_props = self.window().media_properties.get(self.resizing_clip.source_path)
             source_duration = media_props['duration'] if media_props else float('inf')
@@ -575,29 +582,27 @@ class TimelineWidget(QWidget):
                 original_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].timeline_start_sec
                 original_duration = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].duration_sec
                 original_clip_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].clip_start_sec
-                
-                new_start_sec = original_start + time_delta
-                
-                # Clamp to not move past the end of the clip
+                true_new_start_sec = original_start + time_delta
+                if abs(true_new_start_sec - playhead_time) < snap_time_delta:
+                    new_start_sec = playhead_time
+                else:
+                    new_start_sec = true_new_start_sec
+
                 if new_start_sec > original_start + original_duration - min_duration:
                     new_start_sec = original_start + original_duration - min_duration
-                
-                # Clamp to zero
+
                 new_start_sec = max(0, new_start_sec)
 
-                # For video/audio, don't allow extending beyond the source start
                 if self.resizing_clip.media_type != 'image':
                     if new_start_sec < original_start - original_clip_start:
                          new_start_sec = original_start - original_clip_start
 
                 new_duration = (original_start + original_duration) - new_start_sec
-                # FIX: Correctly calculate the new clip start by ADDING the time shift
                 new_clip_start = original_clip_start + (new_start_sec - original_start)
                 
                 if new_duration < min_duration:
                     new_duration = min_duration
                     new_start_sec = (original_start + original_duration) - new_duration
-                    # FIX: Apply the same corrected logic here after clamping duration
                     new_clip_start = original_clip_start + (new_start_sec - original_start)
 
                 self.resizing_clip.timeline_start_sec = new_start_sec
@@ -605,13 +610,20 @@ class TimelineWidget(QWidget):
                 self.resizing_clip.clip_start_sec = new_clip_start
 
             elif self.resize_edge == 'right':
+                original_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].timeline_start_sec
                 original_duration = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].duration_sec
-                new_duration = original_duration + time_delta
+                
+                true_new_duration = original_duration + time_delta
+                true_new_end_time = original_start + true_new_duration
+
+                if abs(true_new_end_time - playhead_time) < snap_time_delta:
+                    new_duration = playhead_time - original_start
+                else:
+                    new_duration = true_new_duration
                 
                 if new_duration < min_duration:
                     new_duration = min_duration
-                
-                # For video/audio, don't allow extending beyond the source end
+
                 if self.resizing_clip.media_type != 'image':
                     if self.resizing_clip.clip_start_sec + new_duration > source_duration:
                         new_duration = source_duration - self.resizing_clip.clip_start_sec
@@ -620,17 +632,26 @@ class TimelineWidget(QWidget):
 
             self.update()
             return
-            
-        # Update cursor for resizing
+
         if not self.dragging_clip and not self.dragging_playhead and not self.creating_selection_region:
             cursor_set = False
-            for clip in self.timeline.clips:
-                clip_rect = self.get_clip_rect(clip)
-                if (abs(event.pos().x() - clip_rect.left()) < self.RESIZE_HANDLE_WIDTH and clip_rect.contains(QPointF(clip_rect.left(), event.pos().y()))) or \
-                   (abs(event.pos().x() - clip_rect.right()) < self.RESIZE_HANDLE_WIDTH and clip_rect.contains(QPointF(clip_rect.right(), event.pos().y()))):
-                    self.setCursor(Qt.CursorShape.SizeHorCursor)
-                    cursor_set = True
-                    break
+            ### ADD BEGIN ###
+            # Check for playhead proximity for selection snapping
+            playhead_x = self.sec_to_x(self.playhead_pos_sec)
+            is_in_track_area = event.pos().y() > self.TIMESCALE_HEIGHT and event.pos().x() > self.HEADER_WIDTH
+            if is_in_track_area and abs(event.pos().x() - playhead_x) < self.SNAP_THRESHOLD_PIXELS:
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+                cursor_set = True
+            
+            if not cursor_set:
+            ### ADD END ###
+                for clip in self.timeline.clips:
+                    clip_rect = self.get_clip_rect(clip)
+                    if (abs(event.pos().x() - clip_rect.left()) < self.RESIZE_HANDLE_WIDTH and clip_rect.contains(QPointF(clip_rect.left(), event.pos().y()))) or \
+                       (abs(event.pos().x() - clip_rect.right()) < self.RESIZE_HANDLE_WIDTH and clip_rect.contains(QPointF(clip_rect.right(), event.pos().y()))):
+                        self.setCursor(Qt.CursorShape.SizeHorCursor)
+                        cursor_set = True
+                        break
             if not cursor_set:
                 self.unsetCursor()
 
@@ -683,7 +704,18 @@ class TimelineWidget(QWidget):
 
             delta_x = event.pos().x() - self.drag_start_pos.x()
             time_delta = delta_x / self.pixels_per_second
-            new_start_time = original_start_sec + time_delta
+            true_new_start_time = original_start_sec + time_delta
+
+            playhead_time = self.playhead_pos_sec
+            snap_time_delta = self.SNAP_THRESHOLD_PIXELS / self.pixels_per_second
+            
+            new_start_time = true_new_start_time
+            true_new_end_time = true_new_start_time + self.dragging_clip.duration_sec
+            
+            if abs(true_new_start_time - playhead_time) < snap_time_delta:
+                new_start_time = playhead_time
+            elif abs(true_new_end_time - playhead_time) < snap_time_delta:
+                new_start_time = playhead_time - self.dragging_clip.duration_sec
 
             for other_clip in self.timeline.clips:
                 if other_clip.id == self.dragging_clip.id: continue
@@ -696,8 +728,11 @@ class TimelineWidget(QWidget):
                                   new_start_time + self.dragging_clip.duration_sec > other_clip.timeline_start_sec)
                 
                 if is_overlapping:
-                    if time_delta > 0: new_start_time = other_clip.timeline_start_sec - self.dragging_clip.duration_sec
-                    else: new_start_time = other_clip.timeline_end_sec
+                    movement_direction = true_new_start_time - original_start_sec
+                    if movement_direction > 0:
+                        new_start_time = other_clip.timeline_start_sec - self.dragging_clip.duration_sec
+                    else:
+                        new_start_time = other_clip.timeline_end_sec
                     break 
 
             final_start_time = max(0, new_start_time)
@@ -725,7 +760,7 @@ class TimelineWidget(QWidget):
                 if self.selection_regions:
                     start, end = self.selection_regions[-1]
                     if (end - start) * self.pixels_per_second < 2:
-                        self.selection_regions.pop()
+                        self.clear_all_regions()
             
             if self.dragging_selection_region:
                 self.dragging_selection_region = None

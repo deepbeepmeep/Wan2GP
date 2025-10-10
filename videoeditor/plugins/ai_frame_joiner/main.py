@@ -4,6 +4,7 @@ import tempfile
 import shutil
 import requests
 from pathlib import Path
+import ffmpeg
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, 

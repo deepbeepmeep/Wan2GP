@@ -20,6 +20,17 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
+-----
+
+### You have your choice of Dark or Light Theme
+
+<img width="1919" height="1040" alt="Screenshot 2025-10-08 050947" src="https://github.com/user-attachments/assets/dbbf3f44-bddd-42e2-b6e3-57cc6a6214b2" />
+-----
+<img width="1919" height="1042" alt="Screenshot 2025-10-08 053500" src="https://github.com/user-attachments/assets/a446f977-d877-4fd4-b690-152b70d78f63" />
+-----
+<img width="1920" height="1080" alt="Snapshot - 3" src="https://github.com/user-attachments/assets/8b7ee1a2-da46-439c-8ac3-aa5a229927d7" />
+-----
+
 ## 🔥 Latest Updates : 
 ### October 6 2025: WanGP v8.994 - A few last things before the Big Unknown ...
 

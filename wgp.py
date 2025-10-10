@@ -6647,13 +6647,13 @@ def use_video_settings(state, input_file_list, choice):
             else:
                 gr.Info(f"Settings Loaded from Video with prompt '{prompt[:100]}'")
             if models_compatible:
-                return gr.update(), gr.update(), str(time.time())
+                return gr.update(), gr.update(), gr.update(), str(time.time())
             else:
                 return *generate_dropdown_model_list(model_type), gr.update()
     else:
         gr.Info(f"No Video is Selected")
 
-    return gr.update(), gr.update()
+    return gr.update(), gr.update(), gr.update(), gr.update()
 loras_url_cache = None
 def update_loras_url_cache(lora_dir, loras_selected):
     if loras_selected is None: return None

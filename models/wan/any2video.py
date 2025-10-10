@@ -59,14 +59,20 @@ def timestep_transform(t, shift=5.0, num_timesteps=1000 ):
     new_t = new_t * num_timesteps
     return new_t
     
-def preprocess_sd(sd):
+def preprocess_sd_with_dtype(dtype, sd):
     new_sd = {}
     prefix_list = ["model.diffusion_model"]
+    end_list = [".norm3.bias", ".norm3.weight", ".norm_q.bias", ".norm_q.weight", ".norm_k.bias", ".norm_k.weight" ]
     for k,v in sd.items():
         for prefix in prefix_list:
             if k.startswith(prefix): 
                 k = k[len(prefix)+1:]
-                continue
+                break
+        if v.dtype in (torch.float8_e5m2, torch.float8_e4m3fn):
+            for endfix in end_list:
+                if k.endswith(endfix):
+                    v = v.to(dtype)
+                    break
         if not k.startswith("vae."):
             new_sd[k] = v
     return new_sd
@@ -143,6 +149,8 @@ class WanAny2V:
         source2 = model_def.get("source2", None)
         module_source =  model_def.get("module_source", None)
         module_source2 =  model_def.get("module_source2", None)
+        def preprocess_sd(sd):
+            return preprocess_sd_with_dtype(dtype, sd)
         kwargs= { "modelClass": WanModel,"do_quantize": quantizeTransformer and not save_quantized, "defaultConfigPath": base_config_file , "ignore_unused_weights": ignore_unused_weights, "writable_tensors": False, "default_dtype": dtype, "preprocess_sd": preprocess_sd, "forcedConfigPath": forcedConfigPath, }
         kwargs_light= { "modelClass": WanModel,"writable_tensors": False, "preprocess_sd": preprocess_sd , "forcedConfigPath" : base_config_file}
         if module_source is not None:

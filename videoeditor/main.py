@@ -153,7 +153,11 @@ class TimelineWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("#333"))
 
-        self.draw_headers(painter)
+        h_offset = 0
+        if self.scroll_area and self.scroll_area.horizontalScrollBar():
+            h_offset = self.scroll_area.horizontalScrollBar().value()
+
+        self.draw_headers(painter, h_offset)
         self.draw_timescale(painter)
         self.draw_tracks_and_clips(painter)
         self.draw_selections(painter)
@@ -178,7 +182,7 @@ class TimelineWidget(QWidget):
         audio_tracks_height = (self.timeline.num_audio_tracks + 1) * self.TRACK_HEIGHT
         return self.TIMESCALE_HEIGHT + video_tracks_height + self.AUDIO_TRACKS_SEPARATOR_Y + audio_tracks_height + 20
 
-    def draw_headers(self, painter):
+    def draw_headers(self, painter, h_offset):
         painter.save()
         painter.setPen(QColor("#AAA"))
         header_font = QFont("Arial", 9, QFont.Weight.Bold)
@@ -187,9 +191,9 @@ class TimelineWidget(QWidget):
         y_cursor = self.TIMESCALE_HEIGHT
         
         rect = QRect(0, y_cursor, self.HEADER_WIDTH, self.TRACK_HEIGHT)
-        painter.fillRect(rect, QColor("#3a3a3a"))
-        painter.drawRect(rect)
-        self.add_video_track_btn_rect = QRect(rect.left() + 10, rect.top() + (rect.height() - 22)//2, self.HEADER_WIDTH - 20, 22)
+        painter.fillRect(rect.translated(h_offset, 0), QColor("#3a3a3a"))
+        painter.drawRect(rect.translated(h_offset, 0))
+        self.add_video_track_btn_rect = QRect(h_offset + rect.left() + 10, rect.top() + (rect.height() - 22)//2, self.HEADER_WIDTH - 20, 22)
         painter.setFont(button_font)
         painter.fillRect(self.add_video_track_btn_rect, QColor("#454"))
         painter.drawText(self.add_video_track_btn_rect, Qt.AlignmentFlag.AlignCenter, "Add Track (+)")
@@ -199,13 +203,13 @@ class TimelineWidget(QWidget):
         for i in range(self.timeline.num_video_tracks):
             track_number = self.timeline.num_video_tracks - i
             rect = QRect(0, y_cursor, self.HEADER_WIDTH, self.TRACK_HEIGHT)
-            painter.fillRect(rect, QColor("#444"))
-            painter.drawRect(rect)
+            painter.fillRect(rect.translated(h_offset, 0), QColor("#444"))
+            painter.drawRect(rect.translated(h_offset, 0))
             painter.setFont(header_font)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"Video {track_number}")
+            painter.drawText(rect.translated(h_offset, 0), Qt.AlignmentFlag.AlignCenter, f"Video {track_number}")
 
             if track_number == self.timeline.num_video_tracks and self.timeline.num_video_tracks > 1:
-                self.remove_video_track_btn_rect = QRect(rect.right() - 25, rect.top() + 5, 20, 20)
+                self.remove_video_track_btn_rect = QRect(h_offset + rect.right() - 25, rect.top() + 5, 20, 20)
                 painter.setFont(button_font)
                 painter.fillRect(self.remove_video_track_btn_rect, QColor("#833"))
                 painter.drawText(self.remove_video_track_btn_rect, Qt.AlignmentFlag.AlignCenter, "-")
@@ -217,22 +221,22 @@ class TimelineWidget(QWidget):
         for i in range(self.timeline.num_audio_tracks):
             track_number = i + 1
             rect = QRect(0, y_cursor, self.HEADER_WIDTH, self.TRACK_HEIGHT)
-            painter.fillRect(rect, QColor("#444"))
-            painter.drawRect(rect)
+            painter.fillRect(rect.translated(h_offset, 0), QColor("#444"))
+            painter.drawRect(rect.translated(h_offset, 0))
             painter.setFont(header_font)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"Audio {track_number}")
+            painter.drawText(rect.translated(h_offset, 0), Qt.AlignmentFlag.AlignCenter, f"Audio {track_number}")
 
             if track_number == self.timeline.num_audio_tracks and self.timeline.num_audio_tracks > 1:
-                self.remove_audio_track_btn_rect = QRect(rect.right() - 25, rect.top() + 5, 20, 20)
+                self.remove_audio_track_btn_rect = QRect(h_offset + rect.right() - 25, rect.top() + 5, 20, 20)
                 painter.setFont(button_font)
                 painter.fillRect(self.remove_audio_track_btn_rect, QColor("#833"))
                 painter.drawText(self.remove_audio_track_btn_rect, Qt.AlignmentFlag.AlignCenter, "-")
             y_cursor += self.TRACK_HEIGHT
         
         rect = QRect(0, y_cursor, self.HEADER_WIDTH, self.TRACK_HEIGHT)
-        painter.fillRect(rect, QColor("#3a3a3a"))
-        painter.drawRect(rect)
-        self.add_audio_track_btn_rect = QRect(rect.left() + 10, rect.top() + (rect.height() - 22)//2, self.HEADER_WIDTH - 20, 22)
+        painter.fillRect(rect.translated(h_offset, 0), QColor("#3a3a3a"))
+        painter.drawRect(rect.translated(h_offset, 0))
+        self.add_audio_track_btn_rect = QRect(h_offset + rect.left() + 10, rect.top() + (rect.height() - 22)//2, self.HEADER_WIDTH - 20, 22)
         painter.setFont(button_font)
         painter.fillRect(self.add_audio_track_btn_rect, QColor("#454"))
         painter.drawText(self.add_audio_track_btn_rect, Qt.AlignmentFlag.AlignCenter, "Add Track (+)")
@@ -477,15 +481,14 @@ class TimelineWidget(QWidget):
         event.accept()
 
     def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MouseButton.LeftButton:
-            if event.pos().x() < self.HEADER_WIDTH:
-                # Click in headers area
-                if self.add_video_track_btn_rect.contains(event.pos()): self.add_track.emit('video')
-                elif self.remove_video_track_btn_rect.contains(event.pos()): self.remove_track.emit('video')
-                elif self.add_audio_track_btn_rect.contains(event.pos()): self.add_track.emit('audio')
-                elif self.remove_audio_track_btn_rect.contains(event.pos()): self.remove_track.emit('audio')
-                return
+        if event.pos().x() < self.HEADER_WIDTH + self.scroll_area.horizontalScrollBar().value():
+            if self.add_video_track_btn_rect.contains(event.pos()): self.add_track.emit('video')
+            elif self.remove_video_track_btn_rect.contains(event.pos()): self.remove_track.emit('video')
+            elif self.add_audio_track_btn_rect.contains(event.pos()): self.add_track.emit('audio')
+            elif self.remove_audio_track_btn_rect.contains(event.pos()): self.remove_track.emit('audio')
+            return
 
+        if event.button() == Qt.MouseButton.LeftButton:
             self.dragging_clip = None
             self.dragging_linked_clip = None
             self.dragging_playhead = False

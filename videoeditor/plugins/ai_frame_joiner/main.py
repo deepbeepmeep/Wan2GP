@@ -94,7 +94,6 @@ class WgpClientWidget(QWidget):
 
     def start_polling(self):
         self.poll_timer.start()
-        self.check_server_status()
         
     def stop_polling(self):
         self.poll_timer.stop()
@@ -111,9 +110,11 @@ class WgpClientWidget(QWidget):
         try:
             requests.get(f"{API_BASE_URL}/api/latest_output", timeout=1)
             self.status_label.setText("Status: Connected to WanGP server.")
+            return True
         except requests.exceptions.ConnectionError:
             self.status_label.setText("Status: Error - Cannot connect to WanGP server.")
             QMessageBox.critical(self, "Connection Error", f"Could not connect to the WanGP API at {API_BASE_URL}.\n\nPlease ensure wgptool.py is running.")
+            return False
 
 
     def generate(self):
@@ -139,9 +140,9 @@ class WgpClientWidget(QWidget):
             if response.status_code == 200:
                 if payload['start_generation']:
                     self.status_label.setText("Status: Parameters set. Generation sent. Polling...")
-                    self.start_polling()
                 else:
-                    self.status_label.setText("Status: Parameters set. Waiting for manual start.")
+                    self.status_label.setText("Status: Parameters set. Polling for manually started generation...")
+                self.start_polling()
             else:
                 self.handle_api_error(response, "setting parameters")
         except requests.exceptions.RequestException as e:
@@ -216,9 +217,8 @@ class Plugin(VideoEditorPlugin):
         self._reset_state()
         self.active_region = region
         start_sec, end_sec = region
-        
-        self.client_widget.check_server_status()
-        
+        if not self.client_widget.check_server_status():
+            return
         start_data, w, h = self.app.get_frame_data_at_time(start_sec)
         end_data, _, _ = self.app.get_frame_data_at_time(end_sec)
 

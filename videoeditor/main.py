@@ -569,6 +569,7 @@ class TimelineWidget(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if self.resizing_clip:
+            linked_clip = next((c for c in self.timeline.clips if c.group_id == self.resizing_clip.group_id and c.id != self.resizing_clip.id), None)
             delta_x = event.pos().x() - self.resize_start_pos.x()
             time_delta = delta_x / self.pixels_per_second
             min_duration = 1.0 / self.project_fps
@@ -608,6 +609,10 @@ class TimelineWidget(QWidget):
                 self.resizing_clip.timeline_start_sec = new_start_sec
                 self.resizing_clip.duration_sec = new_duration
                 self.resizing_clip.clip_start_sec = new_clip_start
+                if linked_clip:
+                    linked_clip.timeline_start_sec = new_start_sec
+                    linked_clip.duration_sec = new_duration
+                    linked_clip.clip_start_sec = new_clip_start
 
             elif self.resize_edge == 'right':
                 original_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].timeline_start_sec
@@ -629,14 +634,14 @@ class TimelineWidget(QWidget):
                         new_duration = source_duration - self.resizing_clip.clip_start_sec
                 
                 self.resizing_clip.duration_sec = new_duration
+                if linked_clip:
+                    linked_clip.duration_sec = new_duration
 
             self.update()
             return
 
         if not self.dragging_clip and not self.dragging_playhead and not self.creating_selection_region:
             cursor_set = False
-            ### ADD BEGIN ###
-            # Check for playhead proximity for selection snapping
             playhead_x = self.sec_to_x(self.playhead_pos_sec)
             is_in_track_area = event.pos().y() > self.TIMESCALE_HEIGHT and event.pos().x() > self.HEADER_WIDTH
             if is_in_track_area and abs(event.pos().x() - playhead_x) < self.SNAP_THRESHOLD_PIXELS:
@@ -644,7 +649,6 @@ class TimelineWidget(QWidget):
                 cursor_set = True
             
             if not cursor_set:
-            ### ADD END ###
                 for clip in self.timeline.clips:
                     clip_rect = self.get_clip_rect(clip)
                     if (abs(event.pos().x() - clip_rect.left()) < self.RESIZE_HANDLE_WIDTH and clip_rect.contains(QPointF(clip_rect.left(), event.pos().y()))) or \
@@ -952,6 +956,18 @@ class TimelineWidget(QWidget):
         
         if clip_at_pos:
             if not menu.isEmpty(): menu.addSeparator()
+
+            linked_clip = next((c for c in self.timeline.clips if c.group_id == clip_at_pos.group_id and c.id != clip_at_pos.id), None)
+            if linked_clip:
+                unlink_action = menu.addAction("Unlink Audio Track")
+                unlink_action.triggered.connect(lambda: self.window().unlink_clip_pair(clip_at_pos))
+            else:
+                media_info = self.window().media_properties.get(clip_at_pos.source_path)
+                if (clip_at_pos.track_type == 'video' and
+                    media_info and media_info.get('has_audio')):
+                    relink_action = menu.addAction("Relink Audio Track")
+                    relink_action.triggered.connect(lambda: self.window().relink_clip_audio(clip_at_pos))
+
             split_action = menu.addAction("Split Clip")
             delete_action = menu.addAction("Delete Clip")
             playhead_time = self.playhead_pos_sec
@@ -1824,6 +1840,72 @@ class MainWindow(QMainWindow):
         command.undo()
         self.undo_stack.push(command)
         self.prune_empty_tracks()
+
+    def unlink_clip_pair(self, clip_to_unlink):
+        old_state = self._get_current_timeline_state()
+
+        linked_clip = next((c for c in self.timeline.clips if c.group_id == clip_to_unlink.group_id and c.id != clip_to_unlink.id), None)
+        
+        if linked_clip:
+            clip_to_unlink.group_id = str(uuid.uuid4())
+            linked_clip.group_id = str(uuid.uuid4())
+            
+            new_state = self._get_current_timeline_state()
+            command = TimelineStateChangeCommand("Unlink Clips", self.timeline, *old_state, *new_state)
+            command.undo()
+            self.undo_stack.push(command)
+            self.status_label.setText("Clips unlinked.")
+        else:
+            self.status_label.setText("Could not find a clip to unlink.")
+
+    def relink_clip_audio(self, video_clip):
+        def action():
+            media_info = self.media_properties.get(video_clip.source_path)
+            if not media_info or not media_info.get('has_audio'):
+                self.status_label.setText("Source media has no audio to relink.")
+                return
+
+            target_audio_track = 1
+            new_audio_start = video_clip.timeline_start_sec
+            new_audio_end = video_clip.timeline_end_sec
+            
+            conflicting_clips = [
+                c for c in self.timeline.clips
+                if c.track_type == 'audio' and c.track_index == target_audio_track and
+                c.timeline_start_sec < new_audio_end and c.timeline_end_sec > new_audio_start
+            ]
+
+            for conflict_clip in conflicting_clips:
+                found_spot = False
+                for check_track_idx in range(target_audio_track + 1, self.timeline.num_audio_tracks + 2):
+                    is_occupied = any(
+                        other.timeline_start_sec < conflict_clip.timeline_end_sec and other.timeline_end_sec > conflict_clip.timeline_start_sec
+                        for other in self.timeline.clips
+                        if other.id != conflict_clip.id and other.track_type == 'audio' and other.track_index == check_track_idx
+                    )
+                    
+                    if not is_occupied:
+                        if check_track_idx > self.timeline.num_audio_tracks:
+                            self.timeline.num_audio_tracks = check_track_idx
+                        
+                        conflict_clip.track_index = check_track_idx
+                        found_spot = True
+                        break
+            
+            new_audio_clip = TimelineClip(
+                source_path=video_clip.source_path,
+                timeline_start_sec=video_clip.timeline_start_sec,
+                clip_start_sec=video_clip.clip_start_sec,
+                duration_sec=video_clip.duration_sec,
+                track_index=target_audio_track,
+                track_type='audio',
+                media_type=video_clip.media_type,
+                group_id=video_clip.group_id
+            )
+            self.timeline.add_clip(new_audio_clip)
+            self.status_label.setText("Audio relinked.")
+
+        self._perform_complex_timeline_change("Relink Audio", action)
 
     def _perform_complex_timeline_change(self, description, change_function):
         old_state = self._get_current_timeline_state()

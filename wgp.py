@@ -3245,12 +3245,21 @@ def refresh_gallery(state): #, msg
     gen = get_gen_info(state)
 
     # gen["last_msg"] = msg
-    file_list = gen.get("file_list", None)      
-    choice = gen.get("selected",0)
-    header_text = gen.get("header_text", "")
-    in_progress = "in_progress" in gen
-    if gen.get("last_selected", True) and file_list is not None:
-        choice = max(len(file_list) - 1,0)  
+    with lock:
+        file_list = gen.get("file_list", None)      
+        choice = gen.get("selected",0)
+        header_text = gen.get("header_text", "")
+        in_progress = "in_progress" in gen
+        if gen.get("last_selected", True) and file_list is not None:
+            choice = max(len(file_list) - 1,0)  
+
+        # Filter out files that don't exist to prevent Gradio errors (inside lock to prevent race conditions)
+        file_settings_list = gen.get("file_settings_list", [])
+        file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
+        # Update gen with filtered lists (still inside same lock)
+        if file_list is not None:
+            gen["file_list"] = file_list
+            gen["file_settings_list"] = file_settings_list
 
     queue = gen.get("queue", [])
     abort_interactive = not gen.get("abort", False)
@@ -3338,6 +3347,38 @@ def get_default_video_info():
     return "Please Select an Video / Image"    
 
 
+def filter_existing_files(file_list, file_settings_list, choice):
+    """Filter out files that don't exist from the file list to prevent Gradio errors.
+    Returns: (filtered_file_list, filtered_settings_list, adjusted_choice)
+    """
+    if file_list is None or len(file_list) == 0:
+        return file_list, file_settings_list, choice
+    
+    filtered_files = []
+    filtered_settings = []
+    
+    for i, file_path in enumerate(file_list):
+        # Extract actual path if it's a tuple
+        actual_path = file_path[0] if isinstance(file_path, tuple) else file_path
+        
+        # Check if file exists
+        if os.path.exists(actual_path):
+            filtered_files.append(file_path)
+            if file_settings_list and i < len(file_settings_list):
+                filtered_settings.append(file_settings_list[i])
+        # If file doesn't exist and it's before our selected choice, adjust choice
+        elif choice is not None and i < choice:
+            choice = max(0, choice - 1)
+    
+    # Adjust choice to be within bounds if lists changed
+    if len(filtered_files) != len(file_list):
+        if choice is not None and len(filtered_files) > 0:
+            choice = min(choice, len(filtered_files) - 1)
+        elif len(filtered_files) == 0:
+            choice = -1
+    
+    return filtered_files, filtered_settings, choice
+
 def get_file_list(state, input_file_list):
     gen = get_gen_info(state)
     with lock:
@@ -3377,6 +3418,12 @@ def select_video(state, input_file_list, event_data: gr.EventData):
     if len(file_list) > 0:
         configs = file_settings_list[choice]
         file_name = file_list[choice]
+        
+        # Check if file exists, if not return a safe default
+        if not os.path.exists(file_name):
+            gr.Warning(f"File not found: {os.path.basename(file_name)}")
+            return choice, get_default_video_info(), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+        
         values = [  os.path.basename(file_name)]
         labels = [ "File Name"]
         misc_values= []
@@ -3384,16 +3431,20 @@ def select_video(state, input_file_list, event_data: gr.EventData):
         pp_values= []
         pp_labels = []
         extension = os.path.splitext(file_name)[-1]
-        if not has_video_file_extension(file_name):
-            img = Image.open(file_name)
-            width, height = img.size
-            is_image = True
-            frames_count = fps = 1
-            nb_audio_tracks =  0 
-        else:
-            fps, width, height, frames_count = get_video_info(file_name)
-            is_image = False
-            nb_audio_tracks = extract_audio_tracks(file_name,query_only = True)
+        try:
+            if not has_video_file_extension(file_name):
+                img = Image.open(file_name)
+                width, height = img.size
+                is_image = True
+                frames_count = fps = 1
+                nb_audio_tracks =  0 
+            else:
+                fps, width, height, frames_count = get_video_info(file_name)
+                is_image = False
+                nb_audio_tracks = extract_audio_tracks(file_name,query_only = True)
+        except Exception as e:
+            gr.Warning(f"Error reading file: {os.path.basename(file_name)}")
+            return choice, get_default_video_info(), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
         if configs != None:
             video_model_name =  configs.get("type", "Unknown model")
             if "-" in video_model_name: video_model_name =  video_model_name[video_model_name.find("-")+2:] 
@@ -4221,11 +4272,8 @@ def edit_video(
     if audio_source is not None:
         audio_tracks = [audio_source]
 
-    with lock:
-        file_list = gen["file_list"]
-        file_settings_list = gen["file_settings_list"]
-
-
+    # Don't hold references to file_list - append directly to gen dicts to avoid stale references
+    # when filter_existing_files() creates new lists
 
     seed = set_seed(seed)
 
@@ -4317,8 +4365,8 @@ def edit_video(
             else:
                 print(f"Postprocessed video saved to Path: "+ new_video_path)
             with lock:
-                file_list.append(new_video_path)
-                file_settings_list.append(configs)
+                gen["file_list"].append(new_video_path)
+                gen["file_settings_list"].append(configs)
 
             if configs != None:    
                 from mutagen.mp4 import MP4
@@ -4642,10 +4690,8 @@ def generate_video(
     if mode.startswith("edit_"):
         edit_video(send_cmd, state, mode, video_source, seed, temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, MMAudio_setting, MMAudio_prompt, MMAudio_neg_prompt, repeat_generation, audio_source)
         return
-    with lock:
-        file_list = gen["file_list"]
-        file_settings_list = gen["file_settings_list"]
-
+    # Don't hold references to file_list - append directly to gen dicts to avoid stale references
+    # when filter_existing_files() creates new lists
 
     model_def = get_model_def(model_type) 
     is_image = image_mode > 0
@@ -5551,8 +5597,8 @@ def generate_video(
                     else:
                         print(f"New video saved to Path: "+ path)
                     with lock:
-                        file_list.append(path)
-                        file_settings_list.append(configs if no > 0 else configs.copy())
+                        gen["file_list"].append(path)
+                        gen["file_settings_list"].append(configs if no > 0 else configs.copy())
                     
                 # Play notification sound for single video
                 try:
@@ -6544,6 +6590,12 @@ def eject_video_from_gallery(state, input_file_list, choice):
         file_settings_list[:] = file_settings_list[:choice]
         file_settings_list.extend(extend_list)
         choice = min(choice, len(file_list))
+        
+        # Filter out files that don't exist to prevent Gradio errors (inside lock to prevent race conditions)
+        file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
+        gen["file_list"] = file_list
+        gen["file_settings_list"] = file_settings_list
+    
     return gr.Gallery(value = file_list, selected_index= choice), gr.update() if len(file_list) >0 else get_default_video_info(), gr.Row(visible= len(file_list) > 0)
 
 def add_videos_to_gallery(state, input_file_list, choice, files_to_load):
@@ -6582,9 +6634,18 @@ def add_videos_to_gallery(state, input_file_list, choice, files_to_load):
         if invalid_files_count > 0:
             txt += f"Unable to add {invalid_files_count} files which were invalid. " if invalid_files_count > 1 else  f"Unable to add one file which was invalid."
         gr.Info(txt)
+    
     if choice != None and choice <= 0:
         choice = len(file_list)
-        gen["selected"] = choice
+    
+    with lock:
+        # Filter out files that don't exist to prevent Gradio errors (inside lock to prevent race conditions)
+        file_list, file_settings_list, choice = filter_existing_files(file_list, file_settings_list, choice)
+        gen["file_list"] = file_list
+        gen["file_settings_list"] = file_settings_list
+        if choice != None and choice <= 0:
+            gen["selected"] = choice
+    
     return gr.Gallery(value = file_list, selected_index=choice, preview= True), gr.Files(value=[]),  gr.Tabs(selected="video_info")
 
 def get_model_settings(state, model_type):
@@ -8596,7 +8657,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             show_advanced.change(fn=switch_advanced, inputs=[state, show_advanced, lset_name], outputs=[advanced_row, preset_buttons_rows, refresh_lora_btn, refresh2_row ,lset_name]).then(
                 fn=switch_prompt_type, inputs = [state, wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, *prompt_vars], outputs = [wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, prompt_column_advanced, prompt_column_wizard, prompt_column_wizard_vars, *prompt_vars])
             queue_df.select( fn=handle_celll_selection, inputs=state, outputs=[queue_df, modal_image_display, modal_container])
-            gr.on( triggers=[output.change, output.select], fn=select_video, inputs=[state, output], outputs=[last_choice, video_info, video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab], show_progress="hidden")
+            # Don't pass Gallery as input to avoid Gradio cache errors with generated files
+            # The file list is already stored in state, so we pass None for input_file_list
+            gr.on( triggers=[output.change, output.select], fn=select_video, inputs=[state, gr.State(None)], outputs=[last_choice, video_info, video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab], show_progress="hidden")
             preview_trigger.change(refresh_preview, inputs= [state], outputs= [preview], show_progress="hidden")
             PP_MMAudio_setting.change(fn = lambda value : [gr.update(visible = value == 1), gr.update(visible = value == 0)] , inputs = [PP_MMAudio_setting], outputs = [PP_MMAudio_row, PP_custom_audio_row] )
             download_lora_btn.click(fn=download_lora, inputs = [state, lora_url], outputs = [lora_url]).then(fn=refresh_lora_list, inputs=[state, lset_name,loras_choices], outputs=[lset_name, loras_choices])
@@ -8677,17 +8740,18 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             main_tabs.select(fn=detect_auto_save_form, inputs= [state], outputs= save_form_trigger, trigger_mode="multiple")
 
 
-            video_info_add_videos_btn.click(fn=add_videos_to_gallery, inputs =[state, output, last_choice, files_to_load], outputs = [output, files_to_load, video_info_tabs] )
-            gr.on(triggers=[video_info_eject_video_btn.click, video_info_eject_video2_btn.click, video_info_eject_video3_btn.click, video_info_eject_image_btn.click], fn=eject_video_from_gallery, inputs =[state, output, last_choice], outputs = [output, video_info, video_buttons_row] )
-            video_info_to_control_video_btn.click(fn=video_to_control_video, inputs =[state, output, last_choice], outputs = [video_guide] )
-            video_info_to_video_source_btn.click(fn=video_to_source_video, inputs =[state, output, last_choice], outputs = [video_source] )
-            video_info_to_start_image_btn.click(fn=image_to_ref_image_add, inputs =[state, output, last_choice, image_start, gr.State("Start Image")], outputs = [image_start] )
-            video_info_to_end_image_btn.click(fn=image_to_ref_image_add, inputs =[state, output, last_choice, image_end, gr.State("End Image")], outputs = [image_end] )
-            video_info_to_image_guide_btn.click(fn=image_to_ref_image_guide, inputs =[state, output, last_choice], outputs = [image_guide, image_mask_guide]).then(fn=None, inputs=[], outputs=[], js=click_brush_js )
-            video_info_to_image_mask_btn.click(fn=image_to_ref_image_set, inputs =[state, output, last_choice, image_mask, gr.State("Image Mask")], outputs = [image_mask] )
-            video_info_to_reference_image_btn.click(fn=image_to_ref_image_add, inputs =[state, output, last_choice, image_refs, gr.State("Ref Image")],  outputs = [image_refs] )
-            video_info_postprocessing_btn.click(fn=apply_post_processing, inputs =[state, output, last_choice, PP_temporal_upsampling, PP_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation], outputs = [mode, generate_trigger, add_to_queue_trigger ] )
-            video_info_remux_audio_btn.click(fn=remux_audio, inputs =[state, output, last_choice, PP_MMAudio_setting, PP_MMAudio_prompt, PP_MMAudio_neg_prompt, PP_MMAudio_seed, PP_repeat_generation, PP_custom_audio], outputs = [mode, generate_trigger, add_to_queue_trigger ] )
+            # Pass None instead of Gallery to avoid Gradio cache errors with generated files
+            video_info_add_videos_btn.click(fn=add_videos_to_gallery, inputs =[state, gr.State(None), last_choice, files_to_load], outputs = [output, files_to_load, video_info_tabs] )
+            gr.on(triggers=[video_info_eject_video_btn.click, video_info_eject_video2_btn.click, video_info_eject_video3_btn.click, video_info_eject_image_btn.click], fn=eject_video_from_gallery, inputs =[state, gr.State(None), last_choice], outputs = [output, video_info, video_buttons_row] )
+            video_info_to_control_video_btn.click(fn=video_to_control_video, inputs =[state, gr.State(None), last_choice], outputs = [video_guide] )
+            video_info_to_video_source_btn.click(fn=video_to_source_video, inputs =[state, gr.State(None), last_choice], outputs = [video_source] )
+            video_info_to_start_image_btn.click(fn=image_to_ref_image_add, inputs =[state, gr.State(None), last_choice, image_start, gr.State("Start Image")], outputs = [image_start] )
+            video_info_to_end_image_btn.click(fn=image_to_ref_image_add, inputs =[state, gr.State(None), last_choice, image_end, gr.State("End Image")], outputs = [image_end] )
+            video_info_to_image_guide_btn.click(fn=image_to_ref_image_guide, inputs =[state, gr.State(None), last_choice], outputs = [image_guide, image_mask_guide]).then(fn=None, inputs=[], outputs=[], js=click_brush_js )
+            video_info_to_image_mask_btn.click(fn=image_to_ref_image_set, inputs =[state, gr.State(None), last_choice, image_mask, gr.State("Image Mask")], outputs = [image_mask] )
+            video_info_to_reference_image_btn.click(fn=image_to_ref_image_add, inputs =[state, gr.State(None), last_choice, image_refs, gr.State("Ref Image")],  outputs = [image_refs] )
+            video_info_postprocessing_btn.click(fn=apply_post_processing, inputs =[state, gr.State(None), last_choice, PP_temporal_upsampling, PP_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation], outputs = [mode, generate_trigger, add_to_queue_trigger ] )
+            video_info_remux_audio_btn.click(fn=remux_audio, inputs =[state, gr.State(None), last_choice, PP_MMAudio_setting, PP_MMAudio_prompt, PP_MMAudio_neg_prompt, PP_MMAudio_seed, PP_repeat_generation, PP_custom_audio], outputs = [mode, generate_trigger, add_to_queue_trigger ] )
             save_lset_btn.click(validate_save_lset, inputs=[state, lset_name], outputs=[apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn,confirm_save_lset_btn, cancel_lset_btn, save_lset_prompt_drop])
             delete_lset_btn.click(validate_delete_lset, inputs=[state, lset_name], outputs=[apply_lset_btn, refresh_lora_btn, delete_lset_btn, save_lset_btn,confirm_delete_lset_btn, cancel_lset_btn ])
             confirm_save_lset_btn.click(fn=validate_wizard_prompt, inputs =[state, wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, *prompt_vars] , outputs= [prompt], show_progress="hidden",).then(
@@ -8787,7 +8851,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 inputs=[state],
                 outputs=[gen_status])
             
-            generate_btn.click(fn = init_generate, inputs = [state, output, last_choice], outputs=[generate_trigger, mode])
+            # Pass None instead of Gallery to avoid Gradio cache errors with generated files
+            generate_btn.click(fn = init_generate, inputs = [state, gr.State(None), last_choice], outputs=[generate_trigger, mode])
 
             generate_trigger.change(fn=validate_wizard_prompt,
                 inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,

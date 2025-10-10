@@ -1258,6 +1258,7 @@ class MainWindow(QMainWindow):
         self.project_height = 720
         self.playback_timer = QTimer(self)
         self.playback_process = None
+        self.playback_clip = None
 
         self._setup_ui()
         self._connect_signals()
@@ -1545,64 +1546,22 @@ class MainWindow(QMainWindow):
 
     def _start_playback_stream_at(self, time_sec):
         self._stop_playback_stream()
-        if not self.timeline.clips:
+        clips_at_time = [c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec]
+        if not clips_at_time:
             return
+        clip = sorted(clips_at_time, key=lambda c: c.track_index, reverse=True)[0]
 
-        w, h, fr = self.project_width, self.project_height, self.project_fps
-        total_dur = self.timeline.get_total_duration()
-        
-        video_stream = ffmpeg.input(f'color=c=black:s={w}x{h}:r={fr}:d={total_dur}', f='lavfi')
-        
-        all_video_clips = sorted(
-            [c for c in self.timeline.clips if c.track_type == 'video'],
-            key=lambda c: c.track_index
-        )
-        
-        input_nodes = {}
-        for clip in all_video_clips:
-            if clip.source_path not in input_nodes:
-                if clip.media_type == 'image':
-                    input_nodes[clip.source_path] = ffmpeg.input(clip.source_path, loop=1, framerate=fr)
-                else:
-                    input_nodes[clip.source_path] = ffmpeg.input(clip.source_path)
-            
-            clip_source_node = input_nodes[clip.source_path]
-
-            if clip.media_type == 'image':
-                segment_stream = (
-                    clip_source_node.video
-                    .trim(duration=clip.duration_sec)
-                    .setpts('PTS-STARTPTS')
-                )
-            else:
-                segment_stream = (
-                    clip_source_node.video
-                    .trim(start=clip.clip_start_sec, duration=clip.duration_sec)
-                    .setpts('PTS-STARTPTS')
-                )
-            
-            processed_segment = (
-                segment_stream
-                .filter('scale', w, h, force_original_aspect_ratio='decrease')
-                .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
-            )
-            
-            video_stream = ffmpeg.overlay(
-                video_stream, 
-                processed_segment, 
-                enable=f'between(t,{clip.timeline_start_sec},{clip.timeline_end_sec})'
-            )
-        
+        self.playback_clip = clip
+        clip_time = time_sec - clip.timeline_start_sec + clip.clip_start_sec
+        w, h = self.project_width, self.project_height
         try:
-            args = (
-                video_stream
-                .output('pipe:', format='rawvideo', pix_fmt='rgb24', r=fr, ss=time_sec)
-                .compile()
-            )
+            args = (ffmpeg.input(self.playback_clip.source_path, ss=clip_time)
+                    .filter('scale', w, h, force_original_aspect_ratio='decrease')
+                    .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
+                    .output('pipe:', format='rawvideo', pix_fmt='rgb24', r=self.project_fps).compile())
             self.playback_process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         except Exception as e:
-            print(f"Failed to start playback stream: {e}")
-            self._stop_playback_stream()
+            print(f"Failed to start playback stream: {e}"); self._stop_playback_stream()
 
     def _stop_playback_stream(self):
         if self.playback_process:
@@ -1611,6 +1570,7 @@ class MainWindow(QMainWindow):
                 try: self.playback_process.wait(timeout=0.5)
                 except subprocess.TimeoutExpired: self.playback_process.kill(); self.playback_process.wait()
             self.playback_process = None
+        self.playback_clip = None
 
     def _get_media_properties(self, file_path):
         """Probes a file to get its media properties. Returns a dict or None."""
@@ -1666,33 +1626,26 @@ class MainWindow(QMainWindow):
         return self._get_media_properties(file_path)
 
     def get_frame_data_at_time(self, time_sec):
-        clips_at_time = [
-            c for c in self.timeline.clips
-            if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec
-        ]
-
+        clips_at_time = [c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec]
         if not clips_at_time:
             return (None, 0, 0)
-        
-        clips_at_time.sort(key=lambda c: c.track_index, reverse=True)
-        clip_to_render = clips_at_time[0]
-
+        clip_at_time = sorted(clips_at_time, key=lambda c: c.track_index, reverse=True)[0]
         try:
             w, h = self.project_width, self.project_height
-            if clip_to_render.media_type == 'image':
+            if clip_at_time.media_type == 'image':
                 out, _ = (
                     ffmpeg
-                    .input(clip_to_render.source_path)
+                    .input(clip_at_time.source_path)
                     .filter('scale', w, h, force_original_aspect_ratio='decrease')
                     .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
                     .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
                     .run(capture_stdout=True, quiet=True)
                 )
             else:
-                clip_time = time_sec - clip_to_render.timeline_start_sec + clip_to_render.clip_start_sec
+                clip_time = time_sec - clip_at_time.timeline_start_sec + clip_at_time.clip_start_sec
                 out, _ = (
                     ffmpeg
-                    .input(clip_to_render.source_path, ss=clip_time)
+                    .input(clip_at_time.source_path, ss=clip_time)
                     .filter('scale', w, h, force_original_aspect_ratio='decrease')
                     .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
                     .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
@@ -1704,33 +1657,24 @@ class MainWindow(QMainWindow):
             return (None, 0, 0)
 
     def get_frame_at_time(self, time_sec):
-        clips_at_time = [
-            c for c in self.timeline.clips
-            if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec
-        ]
-
-        black_pixmap = QPixmap(self.project_width, self.project_height)
-        black_pixmap.fill(QColor("black"))
-
+        clips_at_time = [c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec]
+        black_pixmap = QPixmap(self.project_width, self.project_height); black_pixmap.fill(QColor("black"))
         if not clips_at_time:
             return black_pixmap
-
-        clips_at_time.sort(key=lambda c: c.track_index, reverse=True)
-        clip_to_render = clips_at_time[0]
-        
+        clip_at_time = sorted(clips_at_time, key=lambda c: c.track_index, reverse=True)[0]
         try:
             w, h = self.project_width, self.project_height
-            if clip_to_render.media_type == 'image':
+            if clip_at_time.media_type == 'image':
                 out, _ = (
-                    ffmpeg.input(clip_to_render.source_path)
+                    ffmpeg.input(clip_at_time.source_path)
                     .filter('scale', w, h, force_original_aspect_ratio='decrease')
                     .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
                     .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
                     .run(capture_stdout=True, quiet=True)
                 )
             else:
-                clip_time = time_sec - clip_to_render.timeline_start_sec + clip_to_render.clip_start_sec
-                out, _ = (ffmpeg.input(clip_to_render.source_path, ss=clip_time)
+                clip_time = time_sec - clip_at_time.timeline_start_sec + clip_at_time.clip_start_sec
+                out, _ = (ffmpeg.input(clip_at_time.source_path, ss=clip_time)
                           .filter('scale', w, h, force_original_aspect_ratio='decrease')
                           .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
                           .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
@@ -1738,16 +1682,10 @@ class MainWindow(QMainWindow):
             
             image = QImage(out, self.project_width, self.project_height, QImage.Format.Format_RGB888)
             return QPixmap.fromImage(image)
-        except ffmpeg.Error as e:
-            print(f"Error extracting frame: {e.stderr}")
-            return black_pixmap
+        except ffmpeg.Error as e: print(f"Error extracting frame: {e.stderr}"); return black_pixmap
 
     def seek_preview(self, time_sec):
-        if self.playback_timer.isActive():
-            self.playback_timer.stop()
-            self._stop_playback_stream()
-            self.play_pause_button.setText("Play")
-            
+        self._stop_playback_stream()
         self.timeline_widget.playhead_pos_sec = time_sec
         self.timeline_widget.update()
         frame_pixmap = self.get_frame_at_time(time_sec)
@@ -1756,35 +1694,16 @@ class MainWindow(QMainWindow):
             self.preview_widget.setPixmap(scaled_pixmap)
 
     def toggle_playback(self):
-        if self.playback_timer.isActive():
-            self.playback_timer.stop()
-            self._stop_playback_stream()
-            self.play_pause_button.setText("Play")
+        if self.playback_timer.isActive(): self.playback_timer.stop(); self._stop_playback_stream(); self.play_pause_button.setText("Play")
         else:
             if not self.timeline.clips: return
-            
-            playhead_time = self.timeline_widget.playhead_pos_sec
-            if playhead_time >= self.timeline.get_total_duration():
-                playhead_time = 0.0
-                self.timeline_widget.playhead_pos_sec = 0.0
-            
-            self._start_playback_stream_at(playhead_time)
-            
-            if self.playback_process:
-                self.playback_timer.start(int(1000 / self.project_fps))
-                self.play_pause_button.setText("Pause")
+            if self.timeline_widget.playhead_pos_sec >= self.timeline.get_total_duration(): self.timeline_widget.playhead_pos_sec = 0.0
+            self.playback_timer.start(int(1000 / self.project_fps)); self.play_pause_button.setText("Pause")
 
-    def stop_playback(self):
-        self.playback_timer.stop()
-        self._stop_playback_stream()
-        self.play_pause_button.setText("Play")
-        self.seek_preview(0.0)
-
+    def stop_playback(self): self.playback_timer.stop(); self._stop_playback_stream(); self.play_pause_button.setText("Play"); self.seek_preview(0.0)
     def step_frame(self, direction):
         if not self.timeline.clips: return
-        self.playback_timer.stop()
-        self._stop_playback_stream()
-        self.play_pause_button.setText("Play")
+        self.playback_timer.stop(); self.play_pause_button.setText("Play"); self._stop_playback_stream()
         frame_duration = 1.0 / self.project_fps
         new_time = self.timeline_widget.playhead_pos_sec + (direction * frame_duration)
         self.seek_preview(max(0, min(new_time, self.timeline.get_total_duration())))
@@ -1792,12 +1711,35 @@ class MainWindow(QMainWindow):
     def advance_playback_frame(self):
         frame_duration = 1.0 / self.project_fps
         new_time = self.timeline_widget.playhead_pos_sec + frame_duration
-        if new_time > self.timeline.get_total_duration():
-            self.stop_playback()
-            return
+        if new_time > self.timeline.get_total_duration(): self.stop_playback(); return
         
         self.timeline_widget.playhead_pos_sec = new_time
         self.timeline_widget.update()
+        
+        clips_at_new_time = [c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= new_time < c.timeline_end_sec]
+        clip_at_new_time = None
+        if clips_at_new_time:
+            clip_at_new_time = sorted(clips_at_new_time, key=lambda c: c.track_index, reverse=True)[0]
+        
+        if not clip_at_new_time:
+            self._stop_playback_stream()
+            black_pixmap = QPixmap(self.project_width, self.project_height); black_pixmap.fill(QColor("black"))
+            scaled_pixmap = black_pixmap.scaled(self.preview_widget.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.preview_widget.setPixmap(scaled_pixmap)
+            return
+
+        if clip_at_new_time.media_type == 'image':
+            if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id:
+                self._stop_playback_stream()
+                self.playback_clip = clip_at_new_time
+                frame_pixmap = self.get_frame_at_time(new_time)
+                if frame_pixmap:
+                    scaled_pixmap = frame_pixmap.scaled(self.preview_widget.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    self.preview_widget.setPixmap(scaled_pixmap)
+            return
+
+        if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id:
+            self._start_playback_stream_at(new_time)
         
         if self.playback_process:
             frame_size = self.project_width * self.project_height * 3
@@ -1809,8 +1751,6 @@ class MainWindow(QMainWindow):
                 self.preview_widget.setPixmap(scaled_pixmap)
             else:
                 self._stop_playback_stream()
-                if self.playback_timer.isActive():
-                    self.stop_playback()
 
     def _load_settings(self):
         self.settings_file_was_loaded = False

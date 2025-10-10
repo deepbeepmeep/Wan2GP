@@ -2277,40 +2277,51 @@ class MainWindow(QMainWindow):
 
         w, h, fr_str, total_dur = self.project_width, self.project_height, str(self.project_fps), self.timeline.get_total_duration()
         sample_rate, channel_layout = '44100', 'stereo'
-        
-        input_streams = {}
 
-        last_video_stream = ffmpeg.input(f'color=c=black:s={w}x{h}:r={fr_str}:d={total_dur}', f='lavfi')
-        for i in range(self.timeline.num_video_tracks):
-            track_clips = sorted([c for c in self.timeline.clips if c.track_type == 'video' and c.track_index == i + 1], key=lambda c: c.timeline_start_sec)
-            if not track_clips: continue
-            
-            track_segments = []
-            last_end = track_clips[0].timeline_start_sec 
-            
-            for clip in track_clips:
-                gap = clip.timeline_start_sec - last_end
-                if gap > 0.01: 
-                    track_segments.append(ffmpeg.input(f'color=c=black@0.0:s={w}x{h}:r={fr_str}:d={gap}', f='lavfi').filter('format', pix_fmts='rgba'))
-                
-                if clip.source_path not in input_streams:
-                    if clip.media_type == 'image':
-                        input_streams[clip.source_path] = ffmpeg.input(clip.source_path, loop=1, framerate=self.project_fps)
-                    else:
-                        input_streams[clip.source_path] = ffmpeg.input(clip.source_path)
+        video_stream = ffmpeg.input(f'color=c=black:s={w}x{h}:r={fr_str}:d={total_dur}', f='lavfi')
 
+        all_video_clips = sorted(
+            [c for c in self.timeline.clips if c.track_type == 'video'],
+            key=lambda c: c.track_index
+        )
+
+        input_nodes = {}
+
+        for clip in all_video_clips:
+            if clip.source_path not in input_nodes:
                 if clip.media_type == 'image':
-                    v_seg = (input_streams[clip.source_path].video.trim(duration=clip.duration_sec).setpts('PTS-STARTPTS'))
+                    input_nodes[clip.source_path] = ffmpeg.input(clip.source_path, loop=1, framerate=self.project_fps)
                 else:
-                    v_seg = (input_streams[clip.source_path].video.trim(start=clip.clip_start_sec, duration=clip.duration_sec).setpts('PTS-STARTPTS'))
-
-                v_seg = (v_seg.filter('scale', w, h, force_original_aspect_ratio='decrease').filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black').filter('format', pix_fmts='rgba'))
-                track_segments.append(v_seg)
-                last_end = clip.timeline_end_sec
+                    input_nodes[clip.source_path] = ffmpeg.input(clip.source_path)
             
-            track_stream = ffmpeg.concat(*track_segments, v=1, a=0).filter('setpts', f'PTS-STARTPTS+{track_clips[0].timeline_start_sec}/TB')
-            last_video_stream = ffmpeg.overlay(last_video_stream, track_stream)
-        final_video = last_video_stream.filter('format', pix_fmts='yuv420p').filter('fps', fps=self.project_fps)
+            clip_source_node = input_nodes[clip.source_path]
+
+            if clip.media_type == 'image':
+                segment_stream = (
+                    clip_source_node.video
+                    .trim(duration=clip.duration_sec)
+                    .setpts('PTS-STARTPTS')
+                )
+            else:
+                segment_stream = (
+                    clip_source_node.video
+                    .trim(start=clip.clip_start_sec, duration=clip.duration_sec)
+                    .setpts('PTS-STARTPTS')
+                )
+
+            processed_segment = (
+                segment_stream
+                .filter('scale', w, h, force_original_aspect_ratio='decrease')
+                .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
+            )
+
+            video_stream = ffmpeg.overlay(
+                video_stream, 
+                processed_segment, 
+                enable=f'between(t,{clip.timeline_start_sec},{clip.timeline_end_sec})'
+            )
+
+        final_video = video_stream.filter('format', pix_fmts='yuv420p').filter('fps', fps=self.project_fps)
 
         track_audio_streams = []
         for i in range(self.timeline.num_audio_tracks):
@@ -2321,14 +2332,14 @@ class MainWindow(QMainWindow):
             last_end = track_clips[0].timeline_start_sec
 
             for clip in track_clips:
-                if clip.source_path not in input_streams:
-                    input_streams[clip.source_path] = ffmpeg.input(clip.source_path)
+                if clip.source_path not in input_nodes:
+                    input_nodes[clip.source_path] = ffmpeg.input(clip.source_path)
 
                 gap = clip.timeline_start_sec - last_end
                 if gap > 0.01: 
                     track_segments.append(ffmpeg.input(f'anullsrc=r={sample_rate}:cl={channel_layout}:d={gap}', f='lavfi'))
                 
-                a_seg = input_streams[clip.source_path].audio.filter('atrim', start=clip.clip_start_sec, duration=clip.duration_sec).filter('asetpts', 'PTS-STARTPTS')
+                a_seg = input_nodes[clip.source_path].audio.filter('atrim', start=clip.clip_start_sec, duration=clip.duration_sec).filter('asetpts', 'PTS-STARTPTS')
                 track_segments.append(a_seg)
                 last_end = clip.timeline_end_sec
 

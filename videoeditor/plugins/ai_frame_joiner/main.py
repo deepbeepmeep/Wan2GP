@@ -5,6 +5,7 @@ import shutil
 import requests
 from pathlib import Path
 import ffmpeg
+import uuid
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, 
@@ -268,6 +269,8 @@ class Plugin(VideoEditorPlugin):
         self.dock_widget.raise_()
 
     def insert_generated_clip(self, video_path):
+        from main import TimelineClip
+
         if not self.active_region:
             self.update_main_status("AI Joiner Error: No active region to insert into.")
             return
@@ -277,25 +280,29 @@ class Plugin(VideoEditorPlugin):
             return
             
         start_sec, end_sec = self.active_region
+        is_new_track_mode = self.insert_on_new_track
+        
         self.update_main_status(f"AI Joiner: Inserting clip {os.path.basename(video_path)}")
 
-        try:
+        def complex_insertion_action():
             probe = ffmpeg.probe(video_path)
             actual_duration = float(probe['format']['duration'])
 
-            if self.insert_on_new_track:
-                self.app.add_track('video')
+            if is_new_track_mode:
+                self.app.timeline.num_video_tracks += 1
                 new_track_index = self.app.timeline.num_video_tracks
-                self.app._add_clip_to_timeline(
+                
+                new_clip = TimelineClip(
                     source_path=video_path,
                     timeline_start_sec=start_sec,
                     clip_start_sec=0,
                     duration_sec=actual_duration,
+                    track_index=new_track_index,
+                    track_type='video',
                     media_type='video',
-                    video_track_index=new_track_index,
-                    audio_track_index=None
+                    group_id=str(uuid.uuid4())
                 )
-                self.update_main_status("AI clip inserted successfully on new track.")
+                self.app.timeline.add_clip(new_clip)
             else:
                 for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, start_sec)
                 for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, end_sec)
@@ -308,18 +315,23 @@ class Plugin(VideoEditorPlugin):
                     if clip in self.app.timeline.clips:
                         self.app.timeline.clips.remove(clip)
                 
-                self.app._add_clip_to_timeline(
+                new_clip = TimelineClip(
                     source_path=video_path,
                     timeline_start_sec=start_sec,
                     clip_start_sec=0,
                     duration_sec=actual_duration,
+                    track_index=1,
+                    track_type='video',
                     media_type='video',
-                    video_track_index=1,
-                    audio_track_index=None
+                    group_id=str(uuid.uuid4())
                 )
-                self.update_main_status("AI clip inserted successfully.")
+                self.app.timeline.add_clip(new_clip)
 
+        try:
+            self.app._perform_complex_timeline_change("Insert AI Clip", complex_insertion_action)
+            
             self.app.prune_empty_tracks()
+            self.update_main_status("AI clip inserted successfully.")
 
         except Exception as e:
             error_message = f"AI Joiner Error during clip insertion/probing: {e}"

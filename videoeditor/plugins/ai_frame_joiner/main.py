@@ -21,6 +21,7 @@ API_BASE_URL = "http://127.0.0.1:5100"
 
 class WgpClientWidget(QWidget):
     generation_complete = pyqtSignal(str)
+    status_updated = pyqtSignal(str)
     
     def __init__(self):
         super().__init__()
@@ -60,10 +61,6 @@ class WgpClientWidget(QWidget):
         self.autostart_checkbox.setChecked(True)
 
         self.generate_button = QPushButton("Generate")
-        
-        self.status_label = QLabel("Status: Idle")
-        self.output_label = QLabel("Latest Output File: None")
-        self.output_label.setWordWrap(True)
 
         layout.addLayout(previews_layout) 
         form_layout.addRow("Model Type:", self.model_input)
@@ -71,8 +68,7 @@ class WgpClientWidget(QWidget):
         form_layout.addRow(self.generate_button)
         
         layout.addLayout(form_layout)
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.output_label)
+        layout.addStretch() 
 
         self.generate_button.clicked.connect(self.generate)
 
@@ -104,16 +100,16 @@ class WgpClientWidget(QWidget):
             error_msg = response.json().get("error", "Unknown error")
         except requests.exceptions.JSONDecodeError:
             error_msg = response.text
-        self.status_label.setText(f"Status: Error {action}: {error_msg}")
+        self.status_updated.emit(f"AI Joiner Error: {error_msg}")
         QMessageBox.warning(self, "API Error", f"Failed while {action}.\n\nServer response:\n{error_msg}")
 
     def check_server_status(self):
         try:
             requests.get(f"{API_BASE_URL}/api/latest_output", timeout=1)
-            self.status_label.setText("Status: Connected to WanGP server.")
+            self.status_updated.emit("AI Joiner: Connected to WanGP server.")
             return True
         except requests.exceptions.ConnectionError:
-            self.status_label.setText("Status: Error - Cannot connect to WanGP server.")
+            self.status_updated.emit("AI Joiner Error: Cannot connect to WanGP server.")
             QMessageBox.critical(self, "Connection Error", f"Could not connect to the WanGP API at {API_BASE_URL}.\n\nPlease ensure wgptool.py is running.")
             return False
 
@@ -135,19 +131,19 @@ class WgpClientWidget(QWidget):
         
         payload['start_generation'] = self.autostart_checkbox.isChecked()
         
-        self.status_label.setText("Status: Sending parameters...")
+        self.status_updated.emit("AI Joiner: Sending parameters...")
         try:
             response = requests.post(f"{API_BASE_URL}/api/generate", json=payload)
             if response.status_code == 200:
                 if payload['start_generation']:
-                    self.status_label.setText("Status: Parameters set. Generation sent. Polling...")
+                    self.status_updated.emit("AI Joiner: Generation sent to server. Polling for output...")
                 else:
-                    self.status_label.setText("Status: Parameters set. Polling for manually started generation...")
+                    self.status_updated.emit("AI Joiner: Parameters set. Polling for manually started generation...")
                 self.start_polling()
             else:
                 self.handle_api_error(response, "setting parameters")
         except requests.exceptions.RequestException as e:
-            self.status_label.setText(f"Status: Connection error: {e}")
+            self.status_updated.emit(f"AI Joiner Error: Connection error: {e}")
 
     def poll_for_output(self):
         try:
@@ -159,15 +155,12 @@ class WgpClientWidget(QWidget):
                 if latest_path and latest_path != self.last_known_output:
                     self.stop_polling()
                     self.last_known_output = latest_path
-                    self.output_label.setText(f"Latest Output File:\n{latest_path}")
-                    self.status_label.setText("Status: New output received! Inserting clip...")
+                    self.status_updated.emit(f"AI Joiner: New output received! Inserting clip...")
                     self.generation_complete.emit(latest_path)
             else:
-                 if "Error" not in self.status_label.text() and "waiting" not in self.status_label.text().lower():
-                    self.status_label.setText("Status: Polling for output...")
+                 self.status_updated.emit("AI Joiner: Polling for output...")
         except requests.exceptions.RequestException:
-            if "Error" not in self.status_label.text():
-                 self.status_label.setText("Status: Polling... (Connection issue)")
+             self.status_updated.emit("AI Joiner: Polling... (Connection issue)")
 
 class Plugin(VideoEditorPlugin):
     def initialize(self):
@@ -177,7 +170,9 @@ class Plugin(VideoEditorPlugin):
         self.dock_widget = None
         self.active_region = None
         self.temp_dir = None
+        self.insert_on_new_track = False
         self.client_widget.generation_complete.connect(self.insert_generated_clip)
+        self.client_widget.status_updated.connect(self.update_main_status)
 
     def enable(self):
         if not self.dock_widget:
@@ -195,6 +190,9 @@ class Plugin(VideoEditorPlugin):
         self._cleanup_temp_dir()
         self.client_widget.stop_polling()
 
+    def update_main_status(self, message):
+        self.app.status_label.setText(message)
+
     def _cleanup_temp_dir(self):
         if self.temp_dir and os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
@@ -202,9 +200,9 @@ class Plugin(VideoEditorPlugin):
             
     def _reset_state(self):
         self.active_region = None
+        self.insert_on_new_track = False
         self._cleanup_temp_dir()
-        self.client_widget.status_label.setText("Status: Idle")
-        self.client_widget.output_label.setText("Latest Output File: None")
+        self.update_main_status("AI Joiner: Idle")
         self.client_widget.set_previews(None, None)
 
     def on_timeline_context_menu(self, menu, event):
@@ -212,14 +210,20 @@ class Plugin(VideoEditorPlugin):
         if region:
             menu.addSeparator()
             action = menu.addAction("Join Frames With AI")
-            action.triggered.connect(lambda: self.setup_generator_for_region(region))
+            action.triggered.connect(lambda: self.setup_generator_for_region(region, on_new_track=False))
+            
+            action_new_track = menu.addAction("Join Frames With AI (New Track)")
+            action_new_track.triggered.connect(lambda: self.setup_generator_for_region(region, on_new_track=True))
 
-    def setup_generator_for_region(self, region):
+    def setup_generator_for_region(self, region, on_new_track=False):
         self._reset_state()
         self.active_region = region
+        self.insert_on_new_track = on_new_track
+        
         start_sec, end_sec = region
         if not self.client_widget.check_server_status():
             return
+            
         start_data, w, h = self.app.get_frame_data_at_time(start_sec)
         end_data, _, _ = self.app.get_frame_data_at_time(end_sec)
 
@@ -258,55 +262,66 @@ class Plugin(VideoEditorPlugin):
 
         self.client_widget.start_frame_input.setText(start_img_path)
         self.client_widget.end_frame_input.setText(end_img_path)
-        self.client_widget.status_label.setText(f"Status: Ready for region {start_sec:.2f}s - {end_sec:.2f}s")
+        self.update_main_status(f"AI Joiner: Ready for region {start_sec:.2f}s - {end_sec:.2f}s")
         
         self.dock_widget.show()
         self.dock_widget.raise_()
 
     def insert_generated_clip(self, video_path):
         if not self.active_region:
-            self.client_widget.status_label.setText("Status: Error - No active region to insert into.")
+            self.update_main_status("AI Joiner Error: No active region to insert into.")
             return
 
         if not os.path.exists(video_path):
-            self.client_widget.status_label.setText(f"Status: Error - Output file not found: {video_path}")
+            self.update_main_status(f"AI Joiner Error: Output file not found: {video_path}")
             return
             
         start_sec, end_sec = self.active_region
-        self.app.status_label.setText(f"Inserting AI clip: {os.path.basename(video_path)}")
+        self.update_main_status(f"AI Joiner: Inserting clip {os.path.basename(video_path)}")
 
         try:
             probe = ffmpeg.probe(video_path)
             actual_duration = float(probe['format']['duration'])
 
-            for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, start_sec)
-            for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, end_sec)
+            if self.insert_on_new_track:
+                self.app.add_track('video')
+                new_track_index = self.app.timeline.num_video_tracks
+                self.app._add_clip_to_timeline(
+                    source_path=video_path,
+                    timeline_start_sec=start_sec,
+                    clip_start_sec=0,
+                    duration_sec=actual_duration,
+                    video_track_index=new_track_index,
+                    audio_track_index=None
+                )
+                self.update_main_status("AI clip inserted successfully on new track.")
+            else:
+                for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, start_sec)
+                for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, end_sec)
 
-            clips_to_remove = [
-                c for c in self.app.timeline.clips 
-                if c.timeline_start_sec >= start_sec and c.timeline_end_sec <= end_sec
-            ]
-            for clip in clips_to_remove:
-                if clip in self.app.timeline.clips:
-                    self.app.timeline.clips.remove(clip)
-            
-            self.app._add_clip_to_timeline(
-                source_path=video_path,
-                timeline_start_sec=start_sec,
-                clip_start_sec=0,
-                duration_sec=actual_duration,
-                video_track_index=1,
-                audio_track_index=None
-            )
-            
-            self.app.status_label.setText("AI clip inserted successfully.")
-            self.client_widget.status_label.setText("Status: Success! Clip inserted.")
+                clips_to_remove = [
+                    c for c in self.app.timeline.clips 
+                    if c.timeline_start_sec >= start_sec and c.timeline_end_sec <= end_sec
+                ]
+                for clip in clips_to_remove:
+                    if clip in self.app.timeline.clips:
+                        self.app.timeline.clips.remove(clip)
+                
+                self.app._add_clip_to_timeline(
+                    source_path=video_path,
+                    timeline_start_sec=start_sec,
+                    clip_start_sec=0,
+                    duration_sec=actual_duration,
+                    video_track_index=1,
+                    audio_track_index=None
+                )
+                self.update_main_status("AI clip inserted successfully.")
+
             self.app.prune_empty_tracks()
 
         except Exception as e:
-            error_message = f"Error during clip insertion/probing: {e}"
-            self.app.status_label.setText(error_message)
-            self.client_widget.status_label.setText("Status: Failed to insert clip.")
+            error_message = f"AI Joiner Error during clip insertion/probing: {e}"
+            self.update_main_status(error_message)
             print(error_message)
         
         finally:

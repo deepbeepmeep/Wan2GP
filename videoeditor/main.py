@@ -143,6 +143,7 @@ class TimelineWidget(QWidget):
         self.drag_over_active = False
         self.drag_over_rect = QRectF()
         self.drag_over_audio_rect = QRectF()
+        self.drag_url_cache = {}
 
     def set_project_fps(self, fps):
         self.project_fps = fps if fps > 0 else 25.0
@@ -782,7 +783,9 @@ class TimelineWidget(QWidget):
             self.update()
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat('application/x-vnd.video.filepath'):
+        if event.mimeData().hasFormat('application/x-vnd.video.filepath') or event.mimeData().hasUrls():
+            if event.mimeData().hasUrls():
+                self.drag_url_cache.clear()
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -791,20 +794,65 @@ class TimelineWidget(QWidget):
         self.drag_over_active = False
         self.highlighted_ghost_track_info = None
         self.highlighted_track_info = None
+        self.drag_url_cache.clear()
         self.update()
 
     def dragMoveEvent(self, event):
         mime_data = event.mimeData()
-        if not mime_data.hasFormat('application/x-vnd.video.filepath'):
-            event.ignore()
-            return
+        media_props = None
         
+        if mime_data.hasUrls():
+            urls = mime_data.urls()
+            if not urls:
+                event.ignore()
+                return
+            
+            file_path = urls[0].toLocalFile()
+            
+            if file_path in self.drag_url_cache:
+                media_props = self.drag_url_cache[file_path]
+            else:
+                probed_props = self.window()._probe_for_drag(file_path)
+                if probed_props:
+                    self.drag_url_cache[file_path] = probed_props
+                    media_props = probed_props
+        
+        elif mime_data.hasFormat('application/x-vnd.video.filepath'):
+            json_data_bytes = mime_data.data('application/x-vnd.video.filepath').data()
+            media_props = json.loads(json_data_bytes.decode('utf-8'))
+        
+        if not media_props:
+            if mime_data.hasUrls():
+                event.acceptProposedAction()
+                pos = event.position()
+                track_info = self.y_to_track_info(pos.y())
+
+                self.drag_over_rect = QRectF()
+                self.drag_over_audio_rect = QRectF()
+                self.drag_over_active = False
+                self.highlighted_ghost_track_info = None
+                self.highlighted_track_info = None
+
+                if track_info:
+                    self.drag_over_active = True
+                    track_type, track_index = track_info
+                    is_ghost_track = (track_type == 'video' and track_index > self.timeline.num_video_tracks) or \
+                                     (track_type == 'audio' and track_index > self.timeline.num_audio_tracks)
+                    if is_ghost_track:
+                        self.highlighted_ghost_track_info = track_info
+                    else:
+                        self.highlighted_track_info = track_info
+                
+                self.update()
+            else:
+                event.ignore()
+            return
+
         event.acceptProposedAction()
         
-        json_data = json.loads(mime_data.data('application/x-vnd.video.filepath').data().decode('utf-8'))
-        duration = json_data['duration']
-        media_type = json_data['media_type']
-        has_audio = json_data['has_audio']
+        duration = media_props['duration']
+        media_type = media_props['media_type']
+        has_audio = media_props['has_audio']
 
         pos = event.position()
         start_sec = self.x_to_sec(pos.x())
@@ -859,9 +907,68 @@ class TimelineWidget(QWidget):
         self.drag_over_active = False
         self.highlighted_ghost_track_info = None
         self.highlighted_track_info = None
+        self.drag_url_cache.clear()
         self.update()
         
         mime_data = event.mimeData()
+        if mime_data.hasUrls():
+            file_paths = [url.toLocalFile() for url in mime_data.urls()]
+            main_window = self.window()
+            added_files = main_window._add_media_files_to_project(file_paths)
+            if not added_files:
+                event.ignore()
+                return
+
+            pos = event.position()
+            start_sec = self.x_to_sec(pos.x())
+            track_info = self.y_to_track_info(pos.y())
+            if not track_info:
+                event.ignore()
+                return
+            
+            current_timeline_pos = start_sec
+
+            for file_path in added_files:
+                media_info = main_window.media_properties.get(file_path)
+                if not media_info: continue
+
+                duration = media_info['duration']
+                has_audio = media_info['has_audio']
+                media_type = media_info['media_type']
+
+                drop_track_type, drop_track_index = track_info
+                video_track_idx = None
+                audio_track_idx = None
+
+                if media_type == 'image':
+                    if drop_track_type == 'video': video_track_idx = drop_track_index
+                elif media_type == 'audio':
+                    if drop_track_type == 'audio': audio_track_idx = drop_track_index
+                elif media_type == 'video':
+                    if drop_track_type == 'video':
+                        video_track_idx = drop_track_index
+                        if has_audio: audio_track_idx = 1
+                    elif drop_track_type == 'audio' and has_audio:
+                        audio_track_idx = drop_track_index
+                        video_track_idx = 1
+                
+                if video_track_idx is None and audio_track_idx is None:
+                    continue
+
+                main_window._add_clip_to_timeline(
+                    source_path=file_path,
+                    timeline_start_sec=current_timeline_pos,
+                    duration_sec=duration,
+                    media_type=media_type,
+                    clip_start_sec=0,
+                    video_track_index=video_track_idx,
+                    audio_track_index=audio_track_idx
+                )
+                current_timeline_pos += duration
+            
+            event.acceptProposedAction()
+            return
+
         if not mime_data.hasFormat('application/x-vnd.video.filepath'):
             return
 
@@ -1033,6 +1140,7 @@ class ProjectMediaWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.main_window = parent
+        self.setAcceptDrops(True)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         
@@ -1050,6 +1158,21 @@ class ProjectMediaWidget(QWidget):
         
         add_button.clicked.connect(self.add_media_requested.emit)
         remove_button.clicked.connect(self.remove_selected_media)
+        
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            file_paths = [url.toLocalFile() for url in event.mimeData().urls()]
+            self.main_window._add_media_files_to_project(file_paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
     def show_context_menu(self, pos):
         item = self.media_list.itemAt(pos)
         if not item:
@@ -1431,6 +1554,37 @@ class MainWindow(QMainWindow):
                 return True
         except Exception as e: print(f"Could not probe for project properties: {e}")
         return False
+
+    def _probe_for_drag(self, file_path):
+        if file_path in self.media_properties:
+            return self.media_properties[file_path]
+        try:
+            file_ext = os.path.splitext(file_path)[1].lower()
+            media_info = {}
+            
+            if file_ext in ['.png', '.jpg', '.jpeg']:
+                media_info['media_type'] = 'image'
+                media_info['duration'] = 5.0
+                media_info['has_audio'] = False
+            else:
+                probe = ffmpeg.probe(file_path)
+                video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+                audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
+
+                if video_stream:
+                    media_info['media_type'] = 'video'
+                    media_info['duration'] = float(video_stream.get('duration', probe['format'].get('duration', 0)))
+                    media_info['has_audio'] = audio_stream is not None
+                elif audio_stream:
+                    media_info['media_type'] = 'audio'
+                    media_info['duration'] = float(audio_stream.get('duration', probe['format'].get('duration', 0)))
+                    media_info['has_audio'] = True
+                else:
+                    return None
+            return media_info
+        except Exception as e:
+            print(f"Failed to probe dragged file {os.path.basename(file_path)}: {e}")
+            return None
 
     def get_frame_data_at_time(self, time_sec):
         clip_at_time = next((c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec), None)

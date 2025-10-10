@@ -1544,12 +1544,19 @@ class MainWindow(QMainWindow):
             data['action'] = action
             self.windows_menu.addAction(action)
 
+    def _get_topmost_video_clip_at(self, time_sec):
+        """Finds the video clip on the highest track at a specific time."""
+        top_clip = None
+        for c in self.timeline.clips:
+            if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec:
+                if top_clip is None or c.track_index > top_clip.track_index:
+                    top_clip = c
+        return top_clip
+
     def _start_playback_stream_at(self, time_sec):
         self._stop_playback_stream()
-        clips_at_time = [c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec]
-        if not clips_at_time:
-            return
-        clip = sorted(clips_at_time, key=lambda c: c.track_index, reverse=True)[0]
+        clip = self._get_topmost_video_clip_at(time_sec)
+        if not clip: return
 
         self.playback_clip = clip
         clip_time = time_sec - clip.timeline_start_sec + clip.clip_start_sec
@@ -1626,10 +1633,9 @@ class MainWindow(QMainWindow):
         return self._get_media_properties(file_path)
 
     def get_frame_data_at_time(self, time_sec):
-        clips_at_time = [c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec]
-        if not clips_at_time:
+        clip_at_time = self._get_topmost_video_clip_at(time_sec)
+        if not clip_at_time:
             return (None, 0, 0)
-        clip_at_time = sorted(clips_at_time, key=lambda c: c.track_index, reverse=True)[0]
         try:
             w, h = self.project_width, self.project_height
             if clip_at_time.media_type == 'image':
@@ -1657,11 +1663,9 @@ class MainWindow(QMainWindow):
             return (None, 0, 0)
 
     def get_frame_at_time(self, time_sec):
-        clips_at_time = [c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec]
         black_pixmap = QPixmap(self.project_width, self.project_height); black_pixmap.fill(QColor("black"))
-        if not clips_at_time:
-            return black_pixmap
-        clip_at_time = sorted(clips_at_time, key=lambda c: c.track_index, reverse=True)[0]
+        clip_at_time = self._get_topmost_video_clip_at(time_sec)
+        if not clip_at_time: return black_pixmap
         try:
             w, h = self.project_width, self.project_height
             if clip_at_time.media_type == 'image':
@@ -1716,10 +1720,7 @@ class MainWindow(QMainWindow):
         self.timeline_widget.playhead_pos_sec = new_time
         self.timeline_widget.update()
         
-        clips_at_new_time = [c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= new_time < c.timeline_end_sec]
-        clip_at_new_time = None
-        if clips_at_new_time:
-            clip_at_new_time = sorted(clips_at_new_time, key=lambda c: c.track_index, reverse=True)[0]
+        clip_at_new_time = self._get_topmost_video_clip_at(new_time)
         
         if not clip_at_new_time:
             self._stop_playback_stream()

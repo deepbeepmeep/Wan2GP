@@ -312,56 +312,49 @@ class MainWindow(QMainWindow):
             self.apply_initial_config()
             self.connect_signals()
             self.init_wgp_state()
-            
-            # --- CHANGE: Removed setModelSignal as it's no longer needed ---
+
             self.api_bridge.generateSignal.connect(self._api_generate)
     
     @pyqtSlot(str)
     def _api_set_model(self, model_type):
         """This slot is executed in the main GUI thread."""
         if not model_type or not wgp: return
-        
-        # 1. Check if the model is valid by looking it up in the master model definition dictionary.
+
         if model_type not in wgp.models_def:
             print(f"API Error: Model type '{model_type}' is not a valid model.")
             return
 
-        # 2. Check if already selected to avoid unnecessary UI refreshes.
         if self.state.get('model_type') == model_type:
             print(f"API: Model is already set to {model_type}.")
             return
 
-        # 3. Redraw all model dropdowns to ensure the correct hierarchy is displayed
-        #    and the target model is selected. This function handles finding the
-        #    correct Family and Base model for the given finetune model_type.
         self.update_model_dropdowns(model_type)
-        
-        # 4. Manually trigger the logic that normally runs when the user selects a model.
-        #    This is necessary because update_model_dropdowns blocks signals.
+
         self._on_model_changed()
 
-        # 5. Final check to see if the model was actually set.
         if self.state.get('model_type') == model_type:
             print(f"API: Successfully set model to {model_type}.")
         else:
-            # This could happen if update_model_dropdowns silently fails to find the model.
             print(f"API Error: Failed to set model to '{model_type}'. The model might be hidden by your current configuration.")
-    
-    # --- CHANGE: Slot now accepts model_type and duration_sec, and calculates frame count ---
+
     @pyqtSlot(object, object, object, object, bool)
     def _api_generate(self, start_frame, end_frame, duration_sec, model_type, start_generation):
         """This slot is executed in the main GUI thread."""
-        # 1. Set model if a new one is provided
         if model_type:
             self._api_set_model(model_type)
-
         if start_frame:
             self.widgets['mode_s'].setChecked(True)
             self.widgets['image_start'].setText(start_frame)
+        else:
+            self.widgets['mode_t'].setChecked(True)
+            self.widgets['image_start'].clear()
 
         if end_frame:
             self.widgets['image_end_checkbox'].setChecked(True)
             self.widgets['image_end'].setText(end_frame)
+        else:
+            self.widgets['image_end_checkbox'].setChecked(False)
+            self.widgets['image_end'].clear()
 
         if duration_sec is not None:
             try:
@@ -1707,7 +1700,7 @@ class MainWindow(QMainWindow):
     def _add_task_to_queue(self):
         queue_size_before = len(self.state["gen"]["queue"])
         all_inputs = self.collect_inputs()
-        keys_to_remove = ['type', 'settings_version', 'is_image', 'video_quality', 'image_quality']
+        keys_to_remove = ['type', 'settings_version', 'is_image', 'video_quality', 'image_quality', 'base_model_type']
         for key in keys_to_remove:
             all_inputs.pop(key, None)
 
@@ -1938,7 +1931,6 @@ def run_api_server():
         api_server.run(port=5100, host='127.0.0.1', debug=False)
 
 if FLASK_AVAILABLE:
-    # --- CHANGE: Removed /api/set_model endpoint ---
 
     @api_server.route('/api/generate', methods=['POST'])
     def generate():
@@ -1964,13 +1956,13 @@ if FLASK_AVAILABLE:
             return jsonify({"message": "Parameters set without starting generation."})
 
 
-    @api_server.route('/api/latest_output', methods=['GET'])
-    def get_latest_output():
+    @api_server.route('/api/outputs', methods=['GET'])
+    def get_outputs():
         if not main_window_instance:
             return jsonify({"error": "Application not ready"}), 503
-        
-        path = main_window_instance.latest_output_path
-        return jsonify({"latest_output_path": path})
+
+        file_list = main_window_instance.state.get('gen', {}).get('file_list', [])
+        return jsonify({"outputs": file_list})
 
 # =====================================================================
 # --- END OF API SERVER ADDITION ---
@@ -1978,13 +1970,11 @@ if FLASK_AVAILABLE:
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    
-    # Create and show the main window
+
     window = MainWindow()
-    main_window_instance = window  # Assign to global for API access
+    main_window_instance = window
     window.show()
 
-    # Start the Flask API server in a separate thread
     if FLASK_AVAILABLE:
         api_thread = threading.Thread(target=run_api_server, daemon=True)
         api_thread.start()

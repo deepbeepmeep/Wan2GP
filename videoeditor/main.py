@@ -139,11 +139,17 @@ class TimelineWidget(QWidget):
         
         self.video_tracks_y_start = 0
         self.audio_tracks_y_start = 0
-        
+        self.hover_preview_rect = None
+        self.hover_preview_audio_rect = None
         self.drag_over_active = False
         self.drag_over_rect = QRectF()
         self.drag_over_audio_rect = QRectF()
         self.drag_url_cache = {}
+
+    def set_hover_preview_rects(self, video_rect, audio_rect):
+        self.hover_preview_rect = video_rect
+        self.hover_preview_audio_rect = audio_rect
+        self.update()
 
     def set_project_fps(self, fps):
         self.project_fps = fps if fps > 0 else 25.0
@@ -176,6 +182,15 @@ class TimelineWidget(QWidget):
             if not self.drag_over_audio_rect.isNull():
                 painter.fillRect(self.drag_over_audio_rect, QColor(0, 255, 0, 80))
                 painter.drawRect(self.drag_over_audio_rect)
+
+        if self.hover_preview_rect:
+            painter.setPen(QPen(QColor(0, 255, 255, 180), 2, Qt.PenStyle.DashLine))
+            painter.fillRect(self.hover_preview_rect, QColor(0, 255, 255, 60))
+            painter.drawRect(self.hover_preview_rect)
+        if self.hover_preview_audio_rect:
+            painter.setPen(QPen(QColor(0, 255, 255, 180), 2, Qt.PenStyle.DashLine))
+            painter.fillRect(self.hover_preview_audio_rect, QColor(0, 255, 255, 60))
+            painter.drawRect(self.hover_preview_audio_rect)
 
         self.draw_playhead(painter)
 

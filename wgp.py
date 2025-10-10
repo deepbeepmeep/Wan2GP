@@ -2646,8 +2646,9 @@ def download_models(model_filename = None, model_type= None, module_type = False
 
         preload_URLs = get_model_recursive_prop(model_type, "preload_URLs", return_list= True)
         for url in preload_URLs:
-            filename = fl.get_download_location(url.split("/")[-1])
-            if not os.path.isfile(filename ): 
+            filename = fl.locate_file(os.path.basename(url))
+            if filename is None: 
+                filename = fl.get_download_location(os.path.basename(url))
                 if not url.startswith("http"):
                     raise Exception(f"File '{filename}' to preload was not found locally and no URL was provided to download it. Please add an URL in the model definition file.")
                 try:
@@ -4851,6 +4852,7 @@ def generate_video(
     trans.cache = skip_steps_cache
     if trans2 is not None: trans2.cache = skip_steps_cache
     face_arc_embeds = None
+    src_ref_images = src_ref_masks = None
     output_new_audio_data = None
     output_new_audio_filepath = None
     original_audio_guide = audio_guide
@@ -4945,7 +4947,7 @@ def generate_video(
 
     first_window_video_length = current_video_length
     original_prompts = prompts.copy()
-    gen["sliding_window"] = sliding_window    
+    gen["sliding_window"] = sliding_window 
     while not abort: 
         extra_generation += gen.get("extra_orders",0)
         gen["extra_orders"] = 0
@@ -4955,7 +4957,7 @@ def generate_video(
         if repeat_no >= total_generation: break
         repeat_no +=1
         gen["repeat_no"] = repeat_no
-        src_video = src_video2 = src_mask = src_mask2 = src_faces = src_ref_images = src_ref_masks = sparse_video_image = None
+        src_video = src_video2 = src_mask = src_mask2 = src_faces = sparse_video_image = None
         prefix_video = pre_video_frame = None
         source_video_overlap_frames_count = 0 # number of frames overalapped in source video for first window
         source_video_frames_count = 0  # number of frames to use in source video (processing starts source_video_overlap_frames_count frames before )
@@ -5212,6 +5214,7 @@ def generate_video(
                             if any_mask: save_video( src_mask2, "masks2.mp4", fps, value_range=(0, 1))
                 if video_guide is not None:                        
                     preview_frame_no = 0 if extract_guide_from_window_start or model_def.get("dont_cat_preguide", False) or sparse_video_image is not None else (guide_start_frame - window_start_frame) 
+                    preview_frame_no = min(src_video.shape[1] -1, preview_frame_no)
                     refresh_preview["video_guide"] = convert_tensor_to_image(src_video, preview_frame_no)
                     if src_video2 is not None:
                         refresh_preview["video_guide"] = [refresh_preview["video_guide"], convert_tensor_to_image(src_video2, preview_frame_no)] 

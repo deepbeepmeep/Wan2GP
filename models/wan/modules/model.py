@@ -1339,7 +1339,6 @@ class WanModel(ModelMixin, ConfigMixin):
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
         modulation_dtype = self.time_projection[1].weight.dtype
-
         if self.model_type == 'i2v':
             assert clip_fea is not None and y is not None
         # params

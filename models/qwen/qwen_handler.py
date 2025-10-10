@@ -46,7 +46,7 @@ class family_handler():
 
         if base_model_type in ["qwen_image_edit_plus_20B"]: 
             extra_model_def["guide_preprocessing"] = {
-                    "selection": ["", "PV", "SV", "CV"],
+                    "selection": ["", "PV", "DV", "SV", "CV"],
                 }
 
             extra_model_def["mask_preprocessing"] = {

@@ -149,6 +149,24 @@ def format_time(seconds):
     else:
         return f"{seconds:.1f}s"
 
+def format_generation_time(seconds):
+    """Format generation time showing raw seconds with human-readable time in parentheses when over 60s"""
+    raw_seconds = f"{int(seconds)}s"
+    
+    if seconds < 60:
+        return raw_seconds
+    
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    
+    if hours > 0:
+        human_readable = f"{hours}h {minutes}m {secs}s"
+    else:
+        human_readable = f"{minutes}m {secs}s"
+    
+    return f"{raw_seconds} ({human_readable})"
+
 def pil_to_base64_uri(pil_image, format="png", quality=75):
     if pil_image is None:
         return None
@@ -3513,7 +3531,7 @@ def select_video(state, input_file_list, event_data: gr.EventData):
             video_num_inference_steps = configs.get("num_inference_steps", 0)
             video_creation_date = str(get_file_creation_date(file_name))
             if "." in video_creation_date: video_creation_date = video_creation_date[:video_creation_date.rfind(".")]
-            video_generation_time =  str(configs.get("generation_time", "0")) + "s"
+            video_generation_time = format_generation_time(float(configs.get("generation_time", "0")))
             video_activated_loras = configs.get("activated_loras", [])
             video_loras_multipliers = configs.get("loras_multipliers", "")
             video_loras_multipliers =  preparse_loras_multipliers(video_loras_multipliers)

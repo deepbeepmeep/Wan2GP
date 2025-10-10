@@ -77,7 +77,6 @@ class ExportWorker(QObject):
             self.finished.emit(f"An exception occurred during export: {e}")
 
 class TimelineWidget(QWidget):
-    PIXELS_PER_SECOND = 50
     TIMESCALE_HEIGHT = 30
     HEADER_WIDTH = 120
     TRACK_HEIGHT = 50
@@ -97,11 +96,18 @@ class TimelineWidget(QWidget):
     operation_finished = pyqtSignal()
     context_menu_requested = pyqtSignal(QMenu, 'QContextMenuEvent')
 
-    def __init__(self, timeline_model, settings, parent=None):
+    def __init__(self, timeline_model, settings, project_fps, parent=None):
         super().__init__(parent)
         self.timeline = timeline_model
         self.settings = settings
         self.playhead_pos_sec = 0.0
+        self.scroll_area = None
+        
+        self.pixels_per_second = 50.0 
+        self.max_pixels_per_second = 1.0 # Will be updated by set_project_fps
+        self.project_fps = 25.0
+        self.set_project_fps(project_fps)
+
         self.setMinimumHeight(300)
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
@@ -132,8 +138,15 @@ class TimelineWidget(QWidget):
         self.drag_over_audio_rect = QRectF()
         self.drag_has_audio = False
 
-    def sec_to_x(self, sec): return self.HEADER_WIDTH + int(sec * self.PIXELS_PER_SECOND)
-    def x_to_sec(self, x): return float(x - self.HEADER_WIDTH) / self.PIXELS_PER_SECOND if x > self.HEADER_WIDTH else 0.0
+    def set_project_fps(self, fps):
+        self.project_fps = fps if fps > 0 else 25.0
+        # Set max zoom to be 10 pixels per frame
+        self.max_pixels_per_second = self.project_fps * 20
+        self.pixels_per_second = min(self.pixels_per_second, self.max_pixels_per_second)
+        self.update()
+
+    def sec_to_x(self, sec): return self.HEADER_WIDTH + int(sec * self.pixels_per_second)
+    def x_to_sec(self, x): return float(x - self.HEADER_WIDTH) / self.pixels_per_second if x > self.HEADER_WIDTH and self.pixels_per_second > 0 else 0.0
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -156,7 +169,7 @@ class TimelineWidget(QWidget):
 
         self.draw_playhead(painter)
 
-        total_width = self.sec_to_x(self.timeline.get_total_duration()) + 100
+        total_width = self.sec_to_x(self.timeline.get_total_duration()) + 200
         total_height = self.calculate_total_height()
         self.setMinimumSize(max(self.parent().width(), total_width), total_height)
 
@@ -225,30 +238,82 @@ class TimelineWidget(QWidget):
         painter.drawText(self.add_audio_track_btn_rect, Qt.AlignmentFlag.AlignCenter, "Add Track (+)")
         
         painter.restore()
+        
+    def _format_timecode(self, seconds):
+        if abs(seconds) < 1e-9: seconds = 0
+        sign = "-" if seconds < 0 else ""
+        seconds = abs(seconds)
+        
+        h = int(seconds / 3600)
+        m = int((seconds % 3600) / 60)
+        s = seconds % 60
+        
+        if h > 0: return f"{sign}{h}h:{m:02d}m"
+        if m > 0 or seconds >= 59.99: return f"{sign}{m}m:{int(round(s)):02d}s"
+        
+        precision = 2 if s < 1 else 1 if s < 10 else 0
+        val = f"{s:.{precision}f}"
+        # Remove trailing .0 or .00
+        if '.' in val: val = val.rstrip('0').rstrip('.')
+        return f"{sign}{val}s"
 
     def draw_timescale(self, painter):
         painter.save()
         painter.setPen(QColor("#AAA"))
         painter.setFont(QFont("Arial", 8))
         font_metrics = QFontMetrics(painter.font())
-        
+
         painter.fillRect(QRect(self.HEADER_WIDTH, 0, self.width() - self.HEADER_WIDTH, self.TIMESCALE_HEIGHT), QColor("#222"))
         painter.drawLine(self.HEADER_WIDTH, self.TIMESCALE_HEIGHT - 1, self.width(), self.TIMESCALE_HEIGHT - 1)
 
-        max_time_to_draw = self.x_to_sec(self.width())
-        major_interval_sec = 5
-        minor_interval_sec = 1
+        frame_dur = 1.0 / self.project_fps
+        intervals = [
+            frame_dur, 2*frame_dur, 5*frame_dur, 10*frame_dur,
+            0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30,
+            60, 120, 300, 600, 900, 1800,
+            3600, 2*3600, 5*3600, 10*3600
+        ]
+        
+        min_pixel_dist = 70
+        major_interval = next((i for i in intervals if i * self.pixels_per_second > min_pixel_dist), intervals[-1])
 
-        for t_sec in range(int(max_time_to_draw) + 2):
+        minor_interval = 0
+        for divisor in [5, 4, 2]:
+            if (major_interval / divisor) * self.pixels_per_second > 10:
+                minor_interval = major_interval / divisor
+                break
+        
+        start_sec = self.x_to_sec(self.HEADER_WIDTH)
+        end_sec = self.x_to_sec(self.width())
+
+        def draw_ticks(interval, height):
+            if interval <= 1e-6: return
+            start_tick_num = int(start_sec / interval)
+            end_tick_num = int(end_sec / interval) + 1
+            for i in range(start_tick_num, end_tick_num + 1):
+                t_sec = i * interval
+                x = self.sec_to_x(t_sec)
+                if x > self.width(): break
+                if x >= self.HEADER_WIDTH:
+                    painter.drawLine(x, self.TIMESCALE_HEIGHT - height, x, self.TIMESCALE_HEIGHT)
+        
+        if frame_dur * self.pixels_per_second > 4:
+            draw_ticks(frame_dur, 3)
+        if minor_interval > 0:
+            draw_ticks(minor_interval, 6)
+
+        start_major_tick = int(start_sec / major_interval)
+        end_major_tick = int(end_sec / major_interval) + 1
+        for i in range(start_major_tick, end_major_tick + 1):
+            t_sec = i * major_interval
             x = self.sec_to_x(t_sec)
-
-            if t_sec % major_interval_sec == 0:
-                painter.drawLine(x, self.TIMESCALE_HEIGHT - 10, x, self.TIMESCALE_HEIGHT - 1)
-                label = f"{t_sec}s"
+            if x > self.width() + 50: break
+            if x >= self.HEADER_WIDTH - 50:
+                painter.drawLine(x, self.TIMESCALE_HEIGHT - 12, x, self.TIMESCALE_HEIGHT)
+                label = self._format_timecode(t_sec)
                 label_width = font_metrics.horizontalAdvance(label)
-                painter.drawText(x - label_width // 2, self.TIMESCALE_HEIGHT - 12, label)
-            elif t_sec % minor_interval_sec == 0:
-                painter.drawLine(x, self.TIMESCALE_HEIGHT - 5, x, self.TIMESCALE_HEIGHT - 1)
+                painter.drawText(x - label_width // 2, self.TIMESCALE_HEIGHT - 14, label)
+
         painter.restore()
 
     def get_clip_rect(self, clip):
@@ -260,7 +325,7 @@ class TimelineWidget(QWidget):
             y = self.audio_tracks_y_start + visual_index * self.TRACK_HEIGHT
         
         x = self.sec_to_x(clip.timeline_start_sec)
-        w = int(clip.duration_sec * self.PIXELS_PER_SECOND)
+        w = int(clip.duration_sec * self.pixels_per_second)
         clip_height = self.TRACK_HEIGHT - 10
         y += (self.TRACK_HEIGHT - clip_height) / 2
         return QRectF(x, y, w, clip_height)
@@ -323,7 +388,7 @@ class TimelineWidget(QWidget):
     def draw_selections(self, painter):
         for start_sec, end_sec in self.selection_regions:
             x = self.sec_to_x(start_sec)
-            w = int((end_sec - start_sec) * self.PIXELS_PER_SECOND)
+            w = int((end_sec - start_sec) * self.pixels_per_second)
             selection_rect = QRectF(x, self.TIMESCALE_HEIGHT, w, self.height() - self.TIMESCALE_HEIGHT)
             painter.fillRect(selection_rect, QColor(100, 100, 255, 80))
             painter.setPen(QColor(150, 150, 255, 150))
@@ -370,6 +435,46 @@ class TimelineWidget(QWidget):
             if region[0] <= clicked_sec <= region[1]:
                 return region
         return None
+
+    def wheelEvent(self, event: QMouseEvent):
+        if not self.scroll_area or event.position().x() < self.HEADER_WIDTH:
+            event.ignore()
+            return
+
+        scrollbar = self.scroll_area.horizontalScrollBar()
+        mouse_x_abs = event.position().x()
+        
+        time_at_cursor = self.x_to_sec(mouse_x_abs)
+
+        delta = event.angleDelta().y()
+        zoom_factor = 1.15
+        old_pps = self.pixels_per_second
+
+        if delta > 0: new_pps = old_pps * zoom_factor
+        else: new_pps = old_pps / zoom_factor
+        
+        min_pps = 1 / (3600 * 10) # Min zoom of 1px per 10 hours
+        new_pps = max(min_pps, min(new_pps, self.max_pixels_per_second))
+        
+        if abs(new_pps - old_pps) < 1e-9:
+            return
+            
+        self.pixels_per_second = new_pps
+        # This will trigger a paintEvent, which resizes the widget.
+        # The scroll area will update its scrollbar ranges in response.
+        self.update() 
+        
+        # The new absolute x-coordinate for the time under the cursor
+        new_mouse_x_abs = self.sec_to_x(time_at_cursor)
+        
+        # The amount the content "shifted" at the cursor's location
+        shift_amount = new_mouse_x_abs - mouse_x_abs
+        
+        # Adjust the scrollbar by this shift amount to keep the content under the cursor
+        new_scroll_value = scrollbar.value() + shift_amount
+        scrollbar.setValue(int(new_scroll_value))
+        
+        event.accept()
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -435,7 +540,7 @@ class TimelineWidget(QWidget):
         
         if self.dragging_selection_region:
             delta_x = event.pos().x() - self.drag_start_pos.x()
-            time_delta = delta_x / self.PIXELS_PER_SECOND
+            time_delta = delta_x / self.pixels_per_second
             
             original_start, original_end = self.drag_selection_start_values
             duration = original_end - original_start
@@ -473,7 +578,7 @@ class TimelineWidget(QWidget):
                     self.dragging_clip.track_index = new_track_index
 
             delta_x = event.pos().x() - self.drag_start_pos.x()
-            time_delta = delta_x / self.PIXELS_PER_SECOND
+            time_delta = delta_x / self.pixels_per_second
             new_start_time = original_start_sec + time_delta
 
             for other_clip in self.timeline.clips:
@@ -504,7 +609,7 @@ class TimelineWidget(QWidget):
                 self.creating_selection_region = False
                 if self.selection_regions:
                     start, end = self.selection_regions[-1]
-                    if (end - start) * self.PIXELS_PER_SECOND < 2:
+                    if (end - start) * self.pixels_per_second < 2:
                         self.selection_regions.pop()
             
             if self.dragging_selection_region:
@@ -578,7 +683,7 @@ class TimelineWidget(QWidget):
                 self.highlighted_ghost_track_info = None
                 self.highlighted_track_info = track_info
             
-            width = int(duration * self.PIXELS_PER_SECOND)
+            width = int(duration * self.pixels_per_second)
             x = self.sec_to_x(start_sec)
             
             if track_type == 'video':
@@ -864,9 +969,11 @@ class MainWindow(QMainWindow):
         self.preview_widget.setStyleSheet("background-color: black; color: white;")
         self.splitter.addWidget(self.preview_widget)
 
-        self.timeline_widget = TimelineWidget(self.timeline, self.settings, self)
+        self.timeline_widget = TimelineWidget(self.timeline, self.settings, self.project_fps, self)
         self.timeline_scroll_area = QScrollArea()
-        self.timeline_scroll_area.setWidgetResizable(True)
+        self.timeline_widget.scroll_area = self.timeline_scroll_area
+        self.timeline_scroll_area.setWidgetResizable(False)
+        self.timeline_widget.setMinimumWidth(2000)
         self.timeline_scroll_area.setWidget(self.timeline_widget)
         self.timeline_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.timeline_scroll_area.setMinimumHeight(250)
@@ -1129,7 +1236,9 @@ class MainWindow(QMainWindow):
                 self.project_width = int(video_stream['width']); self.project_height = int(video_stream['height'])
                 if 'r_frame_rate' in video_stream and video_stream['r_frame_rate'] != '0/0':
                     num, den = map(int, video_stream['r_frame_rate'].split('/'))
-                    if den > 0: self.project_fps = num / den
+                    if den > 0:
+                        self.project_fps = num / den
+                        self.timeline_widget.set_project_fps(self.project_fps)
                 print(f"Project properties set: {self.project_width}x{self.project_height} @ {self.project_fps:.2f} FPS")
                 return True
         except Exception as e: print(f"Could not probe for project properties: {e}")
@@ -1260,7 +1369,10 @@ class MainWindow(QMainWindow):
     def new_project(self):
         self.timeline.clips.clear(); self.timeline.num_video_tracks = 1; self.timeline.num_audio_tracks = 1
         self.media_pool.clear(); self.media_properties.clear(); self.project_media_widget.clear_list()
-        self.current_project_path = None; self.stop_playback(); self.timeline_widget.update()
+        self.current_project_path = None; self.stop_playback()
+        self.project_fps = 25.0
+        self.timeline_widget.set_project_fps(self.project_fps)
+        self.timeline_widget.update()
         self.undo_stack = UndoStack()
         self.undo_stack.history_changed.connect(self.update_undo_redo_actions)
         self.update_undo_redo_actions()

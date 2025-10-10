@@ -1482,6 +1482,10 @@ class MainWindow(QMainWindow):
         command.undo()
         self.undo_stack.push(command)
 
+    def on_dock_visibility_changed(self, action, visible):
+        if self.isMinimized():
+            return
+        action.setChecked(visible)
 
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -1533,7 +1537,7 @@ class MainWindow(QMainWindow):
             action = QAction(data['name'], self, checkable=True)
             if hasattr(data['widget'], 'visibilityChanged'):
                 action.toggled.connect(data['widget'].setVisible)
-                data['widget'].visibilityChanged.connect(action.setChecked)
+                data['widget'].visibilityChanged.connect(lambda visible, a=action: self.on_dock_visibility_changed(a, visible))
             else:
                 action.toggled.connect(lambda checked, k=key: self.toggle_widget_visibility(k, checked))
 
@@ -1766,7 +1770,6 @@ class MainWindow(QMainWindow):
     def _apply_loaded_settings(self):
         visibility_settings = self.settings.get("window_visibility", {})
         for key, data in self.managed_widgets.items():
-            if data.get('plugin'): continue
             is_visible = visibility_settings.get(key, False if key == 'project_media' else True)
             if data['widget'] is not self.preview_widget:
                 data['widget'].setVisible(is_visible)
@@ -2373,7 +2376,7 @@ class MainWindow(QMainWindow):
         dock.setVisible(initial_visibility)
         action = QAction(title, self, checkable=True)
         action.toggled.connect(dock.setVisible)
-        dock.visibilityChanged.connect(action.setChecked)
+        dock.visibilityChanged.connect(lambda visible, a=action: self.on_dock_visibility_changed(a, visible))
         action.setChecked(dock.isVisible()) 
         self.windows_menu.addAction(action)
         self.managed_widgets[widget_key] = {'widget': dock, 'name': title, 'action': action, 'plugin': plugin_instance.name}

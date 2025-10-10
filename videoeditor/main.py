@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QScrollArea, QFrame, QProgressBar, QDialog,
                              QCheckBox, QDialogButtonBox, QMenu, QSplitter, QDockWidget, QListWidget, QListWidgetItem, QMessageBox)
 from PyQt6.QtGui import (QPainter, QColor, QPen, QFont, QFontMetrics, QMouseEvent, QAction,
-                         QPixmap, QImage, QDrag, QCursor)
+                         QPixmap, QImage, QDrag, QCursor, QKeyEvent)
 from PyQt6.QtCore import (Qt, QPoint, QRect, QRectF, QSize, QPointF, QObject, QThread,
                           pyqtSignal, QTimer, QByteArray, QMimeData)
 
@@ -87,6 +87,7 @@ class TimelineWidget(QWidget):
 
     split_requested = pyqtSignal(object)
     delete_clip_requested = pyqtSignal(object)
+    delete_clips_requested = pyqtSignal(list)
     playhead_moved = pyqtSignal(float)
     split_region_requested = pyqtSignal(list)
     split_all_regions_requested = pyqtSignal(list)
@@ -114,7 +115,9 @@ class TimelineWidget(QWidget):
         self.setMinimumHeight(300)
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.selection_regions = []
+        self.selected_clips = set()
         self.dragging_clip = None
         self.dragging_linked_clip = None
         self.dragging_playhead = False
@@ -404,6 +407,12 @@ class TimelineWidget(QWidget):
             
             color = QColor("#5A9") if self.dragging_clip and self.dragging_clip.id == clip.id else base_color
             painter.fillRect(clip_rect, color)
+
+            if clip.id in self.selected_clips:
+                pen = QPen(QColor(255, 255, 0, 220), 2)
+                painter.setPen(pen)
+                painter.drawRect(clip_rect)
+
             painter.setPen(QPen(QColor("#FFF"), 1))
             font = QFont("Arial", 10)
             painter.setFont(font)
@@ -502,11 +511,13 @@ class TimelineWidget(QWidget):
             return
 
         if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus()
+
             self.dragging_clip = None
             self.dragging_linked_clip = None
             self.dragging_playhead = False
-            self.dragging_selection_region = None
             self.creating_selection_region = False
+            self.dragging_selection_region = None
             self.resizing_clip = None
             self.resize_edge = None
             self.drag_original_clip_states.clear()
@@ -528,22 +539,36 @@ class TimelineWidget(QWidget):
                 self.update()
                 return
 
+            clicked_clip = None
             for clip in reversed(self.timeline.clips):
-                clip_rect = self.get_clip_rect(clip)
-                if clip_rect.contains(QPointF(event.pos())):
-                    self.dragging_clip = clip
+                if self.get_clip_rect(clip).contains(QPointF(event.pos())):
+                    clicked_clip = clip
+                    break
+            
+            if clicked_clip:
+                is_ctrl_pressed = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                
+                if clicked_clip.id in self.selected_clips:
+                    if is_ctrl_pressed:
+                        self.selected_clips.remove(clicked_clip.id)
+                else:
+                    if not is_ctrl_pressed:
+                        self.selected_clips.clear()
+                    self.selected_clips.add(clicked_clip.id)
+
+                if clicked_clip.id in self.selected_clips:
+                    self.dragging_clip = clicked_clip
                     self.drag_start_state = self.window()._get_current_timeline_state()
-                    self.drag_original_clip_states[clip.id] = (clip.timeline_start_sec, clip.track_index)
+                    self.drag_original_clip_states[clicked_clip.id] = (clicked_clip.timeline_start_sec, clicked_clip.track_index)
                     
-                    self.dragging_linked_clip = next((c for c in self.timeline.clips if c.group_id == clip.group_id and c.id != clip.id), None)
+                    self.dragging_linked_clip = next((c for c in self.timeline.clips if c.group_id == clicked_clip.group_id and c.id != clicked_clip.id), None)
                     if self.dragging_linked_clip:
                         self.drag_original_clip_states[self.dragging_linked_clip.id] = \
                             (self.dragging_linked_clip.timeline_start_sec, self.dragging_linked_clip.track_index)
-
                     self.drag_start_pos = event.pos()
-                    break
-            
-            if not self.dragging_clip:
+
+            else:
+                self.selected_clips.clear()
                 region_to_drag = self.get_region_at_pos(event.pos())
                 if region_to_drag:
                     self.dragging_selection_region = region_to_drag
@@ -1108,6 +1133,19 @@ class TimelineWidget(QWidget):
         self.selection_regions.clear()
         self.update()
 
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key.Key_Delete or event.key() == Qt.Key.Key_Backspace:
+            if self.selected_clips:
+                clips_to_delete = [c for c in self.timeline.clips if c.id in self.selected_clips]
+                if clips_to_delete:
+                    self.delete_clips_requested.emit(clips_to_delete)
+        elif event.key() == Qt.Key.Key_Left:
+            self.window().step_frame(-1)
+        elif event.key() == Qt.Key.Key_Right:
+            self.window().step_frame(1)
+        else:
+            super().keyPressEvent(event)
+
     
 class SettingsDialog(QDialog):
     def __init__(self, parent_settings, parent=None):
@@ -1352,6 +1390,7 @@ class MainWindow(QMainWindow):
 
         self.timeline_widget.split_requested.connect(self.split_clip_at_playhead)
         self.timeline_widget.delete_clip_requested.connect(self.delete_clip)
+        self.timeline_widget.delete_clips_requested.connect(self.delete_clips)
         self.timeline_widget.playhead_moved.connect(self.seek_preview)
         self.timeline_widget.split_region_requested.connect(self.on_split_region)
         self.timeline_widget.split_all_regions_requested.connect(self.on_split_all_regions)
@@ -2066,18 +2105,29 @@ class MainWindow(QMainWindow):
 
 
     def delete_clip(self, clip_to_delete):
+        self.delete_clips([clip_to_delete])
+
+    def delete_clips(self, clips_to_delete):
+        if not clips_to_delete: return
+
         old_state = self._get_current_timeline_state()
 
-        linked_clip = next((c for c in self.timeline.clips if c.group_id == clip_to_delete.group_id and c.id != clip_to_delete.id), None)
+        ids_to_remove = set()
+        for clip in clips_to_delete:
+            ids_to_remove.add(clip.id)
+            linked_clips = [c for c in self.timeline.clips if c.group_id == clip.group_id and c.id != clip.id]
+            for lc in linked_clips:
+                ids_to_remove.add(lc.id)
         
-        if clip_to_delete in self.timeline.clips: self.timeline.clips.remove(clip_to_delete)
-        if linked_clip and linked_clip in self.timeline.clips: self.timeline.clips.remove(linked_clip)
-            
+        self.timeline.clips = [c for c in self.timeline.clips if c.id not in ids_to_remove]
+        self.timeline_widget.selected_clips.clear()
+        
         new_state = self._get_current_timeline_state()
-        command = TimelineStateChangeCommand("Delete Clip", self.timeline, *old_state, *new_state)
+        command = TimelineStateChangeCommand(f"Delete {len(clips_to_delete)} Clip(s)", self.timeline, *old_state, *new_state)
         command.undo()
         self.undo_stack.push(command)
         self.prune_empty_tracks()
+        self.timeline_widget.update()
 
     def unlink_clip_pair(self, clip_to_unlink):
         old_state = self._get_current_timeline_state()

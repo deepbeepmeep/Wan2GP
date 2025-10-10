@@ -1539,25 +1539,11 @@ class MainWindow(QMainWindow):
             self.playback_process = None
         self.playback_clip = None
 
-    def _set_project_properties_from_clip(self, source_path):
-        try:
-            probe = ffmpeg.probe(source_path)
-            video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-            if video_stream:
-                self.project_width = int(video_stream['width']); self.project_height = int(video_stream['height'])
-                if 'r_frame_rate' in video_stream and video_stream['r_frame_rate'] != '0/0':
-                    num, den = map(int, video_stream['r_frame_rate'].split('/'))
-                    if den > 0:
-                        self.project_fps = num / den
-                        self.timeline_widget.set_project_fps(self.project_fps)
-                print(f"Project properties set: {self.project_width}x{self.project_height} @ {self.project_fps:.2f} FPS")
-                return True
-        except Exception as e: print(f"Could not probe for project properties: {e}")
-        return False
-
-    def _probe_for_drag(self, file_path):
+    def _get_media_properties(self, file_path):
+        """Probes a file to get its media properties. Returns a dict or None."""
         if file_path in self.media_properties:
             return self.media_properties[file_path]
+        
         try:
             file_ext = os.path.splitext(file_path)[1].lower()
             media_info = {}
@@ -1581,10 +1567,30 @@ class MainWindow(QMainWindow):
                     media_info['has_audio'] = True
                 else:
                     return None
+            
             return media_info
         except Exception as e:
-            print(f"Failed to probe dragged file {os.path.basename(file_path)}: {e}")
+            print(f"Failed to probe file {os.path.basename(file_path)}: {e}")
             return None
+
+    def _set_project_properties_from_clip(self, source_path):
+        try:
+            probe = ffmpeg.probe(source_path)
+            video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+            if video_stream:
+                self.project_width = int(video_stream['width']); self.project_height = int(video_stream['height'])
+                if 'r_frame_rate' in video_stream and video_stream['r_frame_rate'] != '0/0':
+                    num, den = map(int, video_stream['r_frame_rate'].split('/'))
+                    if den > 0:
+                        self.project_fps = num / den
+                        self.timeline_widget.set_project_fps(self.project_fps)
+                print(f"Project properties set: {self.project_width}x{self.project_height} @ {self.project_fps:.2f} FPS")
+                return True
+        except Exception as e: print(f"Could not probe for project properties: {e}")
+        return False
+
+    def _probe_for_drag(self, file_path):
+        return self._get_media_properties(file_path)
 
     def get_frame_data_at_time(self, time_sec):
         clip_at_time = next((c for c in self.timeline.clips if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec), None)
@@ -1838,41 +1844,21 @@ class MainWindow(QMainWindow):
                 self.recent_menu.addAction(action)
 
     def _add_media_to_pool(self, file_path):
-        if file_path in self.media_pool: return True
-        try:
-            self.status_label.setText(f"Probing {os.path.basename(file_path)}..."); QApplication.processEvents()
-            
-            file_ext = os.path.splitext(file_path)[1].lower()
-            media_info = {}
-            
-            if file_ext in ['.png', '.jpg', '.jpeg']:
-                media_info['media_type'] = 'image'
-                media_info['duration'] = 5.0
-                media_info['has_audio'] = False
-            else:
-                probe = ffmpeg.probe(file_path)
-                video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-                audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
-
-                if video_stream:
-                    media_info['media_type'] = 'video'
-                    media_info['duration'] = float(video_stream.get('duration', probe['format'].get('duration', 0)))
-                    media_info['has_audio'] = audio_stream is not None
-                elif audio_stream:
-                    media_info['media_type'] = 'audio'
-                    media_info['duration'] = float(audio_stream.get('duration', probe['format'].get('duration', 0)))
-                    media_info['has_audio'] = True
-                else:
-                    raise ValueError("No video or audio stream found.")
-
+        if file_path in self.media_pool:
+            return True
+        
+        self.status_label.setText(f"Probing {os.path.basename(file_path)}..."); QApplication.processEvents()
+        
+        media_info = self._get_media_properties(file_path)
+        
+        if media_info:
             self.media_properties[file_path] = media_info
             self.media_pool.append(file_path)
             self.project_media_widget.add_media_item(file_path)
-            
             self.status_label.setText(f"Added {os.path.basename(file_path)} to project.")
             return True
-        except Exception as e:
-            self.status_label.setText(f"Error probing file: {e}")
+        else:
+            self.status_label.setText(f"Error probing file: {os.path.basename(file_path)}")
             return False
 
     def on_media_removed_from_pool(self, file_path):

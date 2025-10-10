@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QScrollArea, QFrame, QProgressBar, QDialog,
                              QCheckBox, QDialogButtonBox, QMenu, QSplitter, QDockWidget, QListWidget, QListWidgetItem, QMessageBox)
 from PyQt6.QtGui import (QPainter, QColor, QPen, QFont, QFontMetrics, QMouseEvent, QAction,
-                         QPixmap, QImage, QDrag)
+                         QPixmap, QImage, QDrag, QCursor)
 from PyQt6.QtCore import (Qt, QPoint, QRect, QRectF, QSize, QPointF, QObject, QThread,
                           pyqtSignal, QTimer, QByteArray, QMimeData)
 
@@ -82,6 +82,7 @@ class TimelineWidget(QWidget):
     HEADER_WIDTH = 120
     TRACK_HEIGHT = 50
     AUDIO_TRACKS_SEPARATOR_Y = 15
+    RESIZE_HANDLE_WIDTH = 8
 
     split_requested = pyqtSignal(object)
     delete_clip_requested = pyqtSignal(object)
@@ -123,6 +124,10 @@ class TimelineWidget(QWidget):
         self.selection_drag_start_sec = 0.0
         self.drag_selection_start_values = None
         self.drag_start_state = None
+
+        self.resizing_clip = None
+        self.resize_edge = None # 'left' or 'right'
+        self.resize_start_pos = QPoint()
 
         self.highlighted_track_info = None
         self.highlighted_ghost_track_info = None
@@ -499,7 +504,27 @@ class TimelineWidget(QWidget):
             self.dragging_playhead = False
             self.dragging_selection_region = None
             self.creating_selection_region = False
+            self.resizing_clip = None
+            self.resize_edge = None
             self.drag_original_clip_states.clear()
+
+            # Check for resize handles first
+            for clip in reversed(self.timeline.clips):
+                clip_rect = self.get_clip_rect(clip)
+                if abs(event.pos().x() - clip_rect.left()) < self.RESIZE_HANDLE_WIDTH and clip_rect.contains(QPointF(clip_rect.left(), event.pos().y())):
+                    self.resizing_clip = clip
+                    self.resize_edge = 'left'
+                    break
+                elif abs(event.pos().x() - clip_rect.right()) < self.RESIZE_HANDLE_WIDTH and clip_rect.contains(QPointF(clip_rect.right(), event.pos().y())):
+                    self.resizing_clip = clip
+                    self.resize_edge = 'right'
+                    break
+            
+            if self.resizing_clip:
+                self.drag_start_state = self.window()._get_current_timeline_state()
+                self.resize_start_pos = event.pos()
+                self.update()
+                return
 
             for clip in reversed(self.timeline.clips):
                 clip_rect = self.get_clip_rect(clip)
@@ -538,6 +563,77 @@ class TimelineWidget(QWidget):
             self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        if self.resizing_clip:
+            delta_x = event.pos().x() - self.resize_start_pos.x()
+            time_delta = delta_x / self.pixels_per_second
+            min_duration = 1.0 / self.project_fps
+
+            media_props = self.window().media_properties.get(self.resizing_clip.source_path)
+            source_duration = media_props['duration'] if media_props else float('inf')
+
+            if self.resize_edge == 'left':
+                original_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].timeline_start_sec
+                original_duration = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].duration_sec
+                original_clip_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].clip_start_sec
+                
+                new_start_sec = original_start + time_delta
+                
+                # Clamp to not move past the end of the clip
+                if new_start_sec > original_start + original_duration - min_duration:
+                    new_start_sec = original_start + original_duration - min_duration
+                
+                # Clamp to zero
+                new_start_sec = max(0, new_start_sec)
+
+                # For video/audio, don't allow extending beyond the source start
+                if self.resizing_clip.media_type != 'image':
+                    if new_start_sec < original_start - original_clip_start:
+                         new_start_sec = original_start - original_clip_start
+
+                new_duration = (original_start + original_duration) - new_start_sec
+                # FIX: Correctly calculate the new clip start by ADDING the time shift
+                new_clip_start = original_clip_start + (new_start_sec - original_start)
+                
+                if new_duration < min_duration:
+                    new_duration = min_duration
+                    new_start_sec = (original_start + original_duration) - new_duration
+                    # FIX: Apply the same corrected logic here after clamping duration
+                    new_clip_start = original_clip_start + (new_start_sec - original_start)
+
+                self.resizing_clip.timeline_start_sec = new_start_sec
+                self.resizing_clip.duration_sec = new_duration
+                self.resizing_clip.clip_start_sec = new_clip_start
+
+            elif self.resize_edge == 'right':
+                original_duration = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].duration_sec
+                new_duration = original_duration + time_delta
+                
+                if new_duration < min_duration:
+                    new_duration = min_duration
+                
+                # For video/audio, don't allow extending beyond the source end
+                if self.resizing_clip.media_type != 'image':
+                    if self.resizing_clip.clip_start_sec + new_duration > source_duration:
+                        new_duration = source_duration - self.resizing_clip.clip_start_sec
+                
+                self.resizing_clip.duration_sec = new_duration
+
+            self.update()
+            return
+            
+        # Update cursor for resizing
+        if not self.dragging_clip and not self.dragging_playhead and not self.creating_selection_region:
+            cursor_set = False
+            for clip in self.timeline.clips:
+                clip_rect = self.get_clip_rect(clip)
+                if (abs(event.pos().x() - clip_rect.left()) < self.RESIZE_HANDLE_WIDTH and clip_rect.contains(QPointF(clip_rect.left(), event.pos().y()))) or \
+                   (abs(event.pos().x() - clip_rect.right()) < self.RESIZE_HANDLE_WIDTH and clip_rect.contains(QPointF(clip_rect.right(), event.pos().y()))):
+                    self.setCursor(Qt.CursorShape.SizeHorCursor)
+                    cursor_set = True
+                    break
+            if not cursor_set:
+                self.unsetCursor()
+
         if self.creating_selection_region:
             current_sec = self.x_to_sec(event.pos().x())
             start = min(self.selection_drag_start_sec, current_sec)
@@ -613,6 +709,17 @@ class TimelineWidget(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
+            if self.resizing_clip:
+                new_state = self.window()._get_current_timeline_state()
+                command = TimelineStateChangeCommand("Resize Clip", self.timeline, *self.drag_start_state, *new_state)
+                command.undo()
+                self.window().undo_stack.push(command)
+                self.resizing_clip = None
+                self.resize_edge = None
+                self.drag_start_state = None
+                self.update()
+                return
+
             if self.creating_selection_region:
                 self.creating_selection_region = False
                 if self.selection_regions:
@@ -1249,8 +1356,12 @@ class MainWindow(QMainWindow):
         if not clip: return
         self.playback_clip = clip
         clip_time = time_sec - clip.timeline_start_sec + clip.clip_start_sec
+        w, h = self.project_width, self.project_height
         try:
-            args = (ffmpeg.input(self.playback_clip.source_path, ss=clip_time).output('pipe:', format='rawvideo', pix_fmt='rgb24', r=self.project_fps).compile())
+            args = (ffmpeg.input(self.playback_clip.source_path, ss=clip_time)
+                    .filter('scale', w, h, force_original_aspect_ratio='decrease')
+                    .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
+                    .output('pipe:', format='rawvideo', pix_fmt='rgb24', r=self.project_fps).compile())
             self.playback_process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         except Exception as e:
             print(f"Failed to start playback stream: {e}"); self._stop_playback_stream()
@@ -1300,6 +1411,8 @@ class MainWindow(QMainWindow):
                 out, _ = (
                     ffmpeg
                     .input(clip_at_time.source_path, ss=clip_time)
+                    .filter('scale', w, h, force_original_aspect_ratio='decrease')
+                    .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
                     .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
                     .run(capture_stdout=True, quiet=True)
                 )
@@ -1324,7 +1437,11 @@ class MainWindow(QMainWindow):
                 )
             else:
                 clip_time = time_sec - clip_at_time.timeline_start_sec + clip_at_time.clip_start_sec
-                out, _ = (ffmpeg.input(clip_at_time.source_path, ss=clip_time).output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24').run(capture_stdout=True, quiet=True))
+                out, _ = (ffmpeg.input(clip_at_time.source_path, ss=clip_time)
+                          .filter('scale', w, h, force_original_aspect_ratio='decrease')
+                          .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
+                          .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
+                          .run(capture_stdout=True, quiet=True))
             
             image = QImage(out, self.project_width, self.project_height, QImage.Format.Format_RGB888)
             return QPixmap.fromImage(image)

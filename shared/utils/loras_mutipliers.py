@@ -9,7 +9,7 @@ def preparse_loras_multipliers(loras_multipliers):
     loras_mult_choices_list = loras_multipliers.replace("\r", "").split("\n")
     loras_mult_choices_list = [multi.strip() for multi in loras_mult_choices_list if len(multi)>0 and not multi.startswith("#")]
     loras_multipliers = " ".join(loras_mult_choices_list)
-    return loras_multipliers.replace("|"," ").split(" ")
+    return loras_multipliers.replace("|"," ").strip().split(" ")
 
 def expand_slist(slists_dict, mult_no, num_inference_steps, model_switch_step, model_switch_step2 ):
     def expand_one(slist, num_inference_steps):
@@ -306,6 +306,8 @@ def merge_loras_settings(
     update that preserved multiplier and drop the duplicate from the replaced side.
     """
     assert mode in ("merge before", "merge after")
+    mult_old= mult_old.strip()
+    mult_new= mult_new.strip()
 
     # Old split & alignment
     bi_old = _find_bar(mult_old)

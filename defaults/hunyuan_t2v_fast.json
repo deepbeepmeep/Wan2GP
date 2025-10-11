@@ -1,6 +1,6 @@
 {
   "model": {
-    "name": "Hunyuan Video FastHunyuan 720p 13B",
+    "name": "Hunyuan Video Text2video 720p FastHunyuan 13B",
     "architecture": "hunyuan",
     "description": "Fast Hunyuan is an accelerated HunyuanVideo model. It can sample high quality videos with 6 diffusion steps.",
 	"settings_dir": [ "" ],

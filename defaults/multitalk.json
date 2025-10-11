@@ -1,7 +1,7 @@
 {
 	"model":
 	{
-		"name": "Multitalk 480p",
+		"name": "Multitalk 480p 14B",
 		"architecture" : "multitalk",
 		"modules": [
 					["https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_multitalk_14B_mbf16.safetensors",

@@ -2,7 +2,7 @@
 	"model":
 	{
 		"name": "Wan2.2 Text2video 14B",
-		"architecture" : "t2v",
+		"architecture" : "t2v_2_2",
 		"description": "Wan 2.2 Text 2 Video model",
 		"URLs": [
 			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_text2video_14B_high_mbf16.safetensors",

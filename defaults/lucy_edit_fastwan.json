@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Wan2.2 FastWan Lucy Edit 5B",
+        "name": "Wan2.2 Lucy Edit FastWan 5B",
         "architecture": "lucy_edit",
         "description": "Lucy Edit is a video editing model that performs instruction-guided edits on videos using free-text prompts. It supports a variety of edits, such as clothing & accessory changes, character changes, object insertions, and scene replacements while preserving the motion and composition perfectly. This is the FastWan version for faster generation.",
         "URLs": "lucy_edit",

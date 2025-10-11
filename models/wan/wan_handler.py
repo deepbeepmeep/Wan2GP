@@ -126,15 +126,18 @@ class family_handler():
         extra_model_def["lynx_class"] = test_lynx(base_model_type)
         vace_class = base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"] 
         extra_model_def["vace_class"] = vace_class
+        if base_model_type in ["vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"]:
+            extra_model_def["parent_model_type"] = "vace_14B"
+
         group = "wan"
         if base_model_type in ["t2v_2_2", "i2v_2_2", "vace_14B_2_2"]:
             profiles_dir = "wan_2_2"
-            group = "wan_2_2"
+            group = "wan2_2"
         elif i2v:
             profiles_dir = "wan_i2v"
         elif test_wan_5B(base_model_type):
             profiles_dir = "wan_2_2_5B"
-            group = "wan_2_2"
+            group = "wan2_2"
         elif test_class_1_3B(base_model_type):
             profiles_dir = "wan_1.3B"
         else:
@@ -187,6 +190,7 @@ class family_handler():
                            ("Video to Video guided by Text Prompt", "GUV"),
                            ("Video to Video guided by Text Prompt and Restricted to the Area of the Video Mask", "GVA")],
                 "default": "",
+                "show_label" : False,
                 "letters_filter": "GUVA",
                 "label": "Video to Video"
             }
@@ -392,7 +396,7 @@ class family_handler():
                     "visible" : False,
                 }
 
-        if vace_class or base_model_type in ["animate"]:
+        if vace_class or base_model_type in ["animate", "t2v", "t2v_2_2"] :
             image_prompt_types_allowed = "TVL"
         elif base_model_type in ["infinitetalk"]:
             image_prompt_types_allowed = "TSVL"

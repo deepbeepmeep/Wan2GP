@@ -2,7 +2,7 @@
 	"model":
 	{
 		"name": "Wan2.2 Text2video Lightning Palingenesis 14B",
-		"architecture" : "t2v",
+		"architecture" : "t2v_2_2",
 		"description": "Wan 2.2 Text 2 Video Lightning Dyno model. Palingenesis a finetune praised for its high quality is used for the Low noise model whereas the High Noise model uses Lightning Finetune that offers natively Loras accelerators. ",
 		"URLs": [
 			"https://huggingface.co/lightx2v/Wan2.2-Lightning/resolve/main/Wan2.2-T2V-A14B-4steps-250928-dyno/Wan2.2-T2V-A14B-4steps-250928-dyno-high-lightx2v.safetensors"

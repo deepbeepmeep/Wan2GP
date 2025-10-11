@@ -59,8 +59,9 @@ python videoeditor.py
 
 ## Screenshots
 <img width="2341" height="1553" alt="image" src="https://github.com/user-attachments/assets/923a84db-5518-4a71-a852-977f1b3c31d5" />
-<img width="2341" height="1553" alt="image" src="https://github.com/user-attachments/assets/863337f6-f03e-4ce9-93e1-40abd8578daf" />
-<img width="2341" height="1553" alt="image" src="https://github.com/user-attachments/assets/0d8ca700-f1c7-44cb-87dc-aaef69c039e9" />
+<img width="2740" height="1826" alt="image" src="https://github.com/user-attachments/assets/4a996bb6-1768-4253-8e8d-574c7476be2d" />
+<img width="2740" height="1826" alt="image" src="https://github.com/user-attachments/assets/3ee91d55-59bf-4e55-b9a6-5d225c5586d1" />
+
 
 ## Credits
 The AI Video Generator plugin is built from a desktop port of WAN2GP by DeepBeepMeep.

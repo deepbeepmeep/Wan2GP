@@ -58,7 +58,7 @@ python videoeditor.py
 ```
 
 ## Screenshots
-<img width="2341" height="1553" alt="image" src="https://github.com/user-attachments/assets/760ea39e-5647-40df-a937-d63e3405de35" />
+<img width="2341" height="1553" alt="image" src="https://github.com/user-attachments/assets/f184eb7a-377a-4ea0-bfd5-060b828cb83b" />
 <img width="2740" height="1826" alt="image" src="https://github.com/user-attachments/assets/5459acd0-aaf1-43bb-93de-e61a4d7d7689" />
 <img width="2740" height="1826" alt="image" src="https://github.com/user-attachments/assets/94d7e163-5374-430f-9059-42ce3d217110" />
 

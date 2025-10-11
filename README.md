@@ -24,15 +24,31 @@ A simple, non-linear video editor built with Python, PyQt6, and FFmpeg. It provi
 
 ## Installation
 
+
+#### **Windows**
+
 ```bash
 git clone https://github.com/Tophness/Wan2GP.git
 cd Wan2GP
 git checkout video_editor
-conda create -n wan2gp python=3.10.9
-conda activate wan2gp
+python -m venv venv
+venv\Scripts\activate
 pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
 pip install -r requirements.txt
 ```
+
+#### **Linux / macOS**
+
+```
+git clone https://github.com/Tophness/Wan2GP.git
+cd Wan2GP
+git checkout video_editor
+python3 -m venv venv
+source venv/bin/activate
+pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+pip install -r requirements.txt
+```
+
 
 ## Usage
 

@@ -59,8 +59,9 @@ python videoeditor.py
 
 ## Screenshots
 <img width="2341" height="1553" alt="image" src="https://github.com/user-attachments/assets/923a84db-5518-4a71-a852-977f1b3c31d5" />
-<img width="2740" height="1826" alt="image" src="https://github.com/user-attachments/assets/4a996bb6-1768-4253-8e8d-574c7476be2d" />
-<img width="2740" height="1826" alt="image" src="https://github.com/user-attachments/assets/3ee91d55-59bf-4e55-b9a6-5d225c5586d1" />
+<img width="2740" height="1826" alt="image" src="https://github.com/user-attachments/assets/5459acd0-aaf1-43bb-93de-e61a4d7d7689" />
+<img width="2740" height="1826" alt="image" src="https://github.com/user-attachments/assets/94d7e163-5374-430f-9059-42ce3d217110" />
+
 
 
 ## Credits

@@ -16,8 +16,9 @@ class VideoEditorPlugin:
     Plugins should inherit from this class and be located in 'plugins/plugin_name/main.py'.
     The main class in main.py must be named 'Plugin'.
     """
-    def __init__(self, app_instance):
+    def __init__(self, app_instance, wgp_module=None):
         self.app = app_instance
+        self.wgp = wgp_module
         self.name = "Unnamed Plugin"
         self.description = "No description provided."
 
@@ -35,8 +36,9 @@ class VideoEditorPlugin:
 
 class PluginManager:
     """Manages the discovery, loading, and lifecycle of plugins."""
-    def __init__(self, main_app):
+    def __init__(self, main_app, wgp_module=None):
         self.app = main_app
+        self.wgp = wgp_module
         self.plugins_dir = "plugins"
         self.plugins = {}  # { 'plugin_name': {'instance': plugin_instance, 'enabled': False, 'module_path': path} }
         if not os.path.exists(self.plugins_dir):
@@ -58,7 +60,7 @@ class PluginManager:
 
                     if hasattr(module, 'Plugin'):
                         plugin_class = getattr(module, 'Plugin')
-                        instance = plugin_class(self.app)
+                        instance = plugin_class(self.app, self.wgp)
                         instance.initialize()
                         self.plugins[instance.name] = {
                             'instance': instance,
@@ -70,6 +72,8 @@ class PluginManager:
                         print(f"Warning: {main_py_path} does not have a 'Plugin' class.")
                 except Exception as e:
                     print(f"Error loading plugin {plugin_name}: {e}")
+                    import traceback
+                    traceback.print_exc() 
 
     def load_enabled_plugins_from_settings(self, enabled_plugins_list):
         """Enables plugins based on the loaded settings."""
@@ -264,3 +268,4 @@ class ManagePluginsDialog(QDialog):
         self.install_btn.setEnabled(True)
         if success:
             self.url_input.clear()
+            self.populate_list()

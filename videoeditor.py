@@ -1,3 +1,4 @@
+import wgp
 import sys
 import os
 import uuid
@@ -1288,7 +1289,7 @@ class MainWindow(QMainWindow):
         self.is_shutting_down = False
         self._load_settings()
 
-        self.plugin_manager = PluginManager(self)
+        self.plugin_manager = PluginManager(self, wgp)
         self.plugin_manager.discover_and_load_plugins()
 
         self.project_fps = 25.0

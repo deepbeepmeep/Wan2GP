@@ -183,6 +183,24 @@ class QueueTableWidget(QTableWidget):
         else:
             super().dropEvent(event)
 
+class HoverVideoPreview(QWidget):
+    def __init__(self, player, video_widget, parent=None):
+        super().__init__(parent)
+        self.player = player
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0,0,0,0)
+        layout.addWidget(video_widget)
+        self.setFixedSize(160, 90)
+    
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        if self.player.source().isValid():
+            self.player.play()
+    
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.player.pause()
+        self.player.setPosition(0)
 
 class Worker(QObject):
     progress = pyqtSignal(list)
@@ -287,26 +305,117 @@ class WgpDesktopPluginWidget(QWidget):
 
     def _create_file_input(self, name, label_text):
         container = self.create_widget(QWidget, f"{name}_container")
-        hbox = QHBoxLayout(container)
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(5)
+
+        input_widget = QWidget()
+        hbox = QHBoxLayout(input_widget)
         hbox.setContentsMargins(0, 0, 0, 0)
+
         line_edit = self.create_widget(QLineEdit, name)
         line_edit.setPlaceholderText("No file selected or path pasted")
         button = QPushButton("Browse...")
+
         def open_dialog():
             if "refs" in name:
-                filenames, _ = QFileDialog.getOpenFileNames(self, f"Select {label_text}")
+                filenames, _ = QFileDialog.getOpenFileNames(self, f"Select {label_text}", filter="Image Files (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)")
                 if filenames: line_edit.setText(";".join(filenames))
             else:
-                filename, _ = QFileDialog.getOpenFileName(self, f"Select {label_text}")
+                filter_str = "All Files (*)"
+                if 'video' in name:
+                    filter_str = "Video Files (*.mp4 *.mkv *.mov *.avi);;All Files (*)"
+                elif 'image' in name:
+                    filter_str = "Image Files (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)"
+                elif 'audio' in name:
+                    filter_str = "Audio Files (*.wav *.mp3 *.flac);;All Files (*)"
+
+                filename, _ = QFileDialog.getOpenFileName(self, f"Select {label_text}", filter=filter_str)
                 if filename: line_edit.setText(filename)
+
         button.clicked.connect(open_dialog)
         clear_button = QPushButton("X")
         clear_button.setFixedWidth(30)
         clear_button.clicked.connect(lambda: line_edit.clear())
+
         hbox.addWidget(QLabel(f"{label_text}:"))
         hbox.addWidget(line_edit, 1)
         hbox.addWidget(button)
         hbox.addWidget(clear_button)
+        vbox.addWidget(input_widget)
+
+        # Preview Widget
+        preview_container = self.create_widget(QWidget, f"{name}_preview_container")
+        preview_hbox = QHBoxLayout(preview_container)
+        preview_hbox.setContentsMargins(0, 0, 0, 0)
+        preview_hbox.addStretch()
+
+        is_image_input = 'image' in name and 'audio' not in name
+        is_video_input = 'video' in name and 'audio' not in name
+
+        if is_image_input:
+            preview_widget = self.create_widget(QLabel, f"{name}_preview")
+            preview_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            preview_widget.setFixedSize(160, 90)
+            preview_widget.setStyleSheet("border: 1px solid #cccccc; background-color: #f0f0f0;")
+            preview_widget.setText("Image Preview")
+            preview_hbox.addWidget(preview_widget)
+        elif is_video_input:
+            media_player = QMediaPlayer()
+            video_widget = QVideoWidget()
+            video_widget.setFixedSize(160, 90)
+            media_player.setVideoOutput(video_widget)
+            media_player.setLoops(QMediaPlayer.Loops.Infinite)
+            
+            self.widgets[f"{name}_player"] = media_player
+            
+            preview_widget = HoverVideoPreview(media_player, video_widget)
+            preview_hbox.addWidget(preview_widget)
+        else:
+            preview_widget = self.create_widget(QLabel, f"{name}_preview")
+            preview_widget.setText("No preview available")
+            preview_hbox.addWidget(preview_widget)
+
+        preview_hbox.addStretch()
+        vbox.addWidget(preview_container)
+        preview_container.setVisible(False)
+
+        def update_preview(path):
+            container = self.widgets.get(f"{name}_preview_container")
+            if not container: return
+
+            first_path = path.split(';')[0] if path else ''
+            
+            if not first_path or not os.path.exists(first_path):
+                container.setVisible(False)
+                if is_video_input:
+                    player = self.widgets.get(f"{name}_player")
+                    if player: player.setSource(QUrl())
+                return
+
+            container.setVisible(True)
+            
+            if is_image_input:
+                preview_label = self.widgets.get(f"{name}_preview")
+                if preview_label:
+                    pixmap = QPixmap(first_path)
+                    if not pixmap.isNull():
+                        preview_label.setPixmap(pixmap.scaled(preview_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                    else:
+                        preview_label.setText("Invalid Image")
+
+            elif is_video_input:
+                player = self.widgets.get(f"{name}_player")
+                if player:
+                    player.setSource(QUrl.fromLocalFile(first_path))
+
+            else: # Audio or other
+                preview_label = self.widgets.get(f"{name}_preview")
+                if preview_label:
+                    preview_label.setText(os.path.basename(path))
+
+        line_edit.textChanged.connect(update_preview)
+        
         return container
         
     def setup_generator_tab(self):
@@ -1481,8 +1590,8 @@ class WgpDesktopPluginWidget(QWidget):
 
 class Plugin(VideoEditorPlugin):
     def initialize(self):
-        self.name = "WanGP AI Generator"
-        self.description = "Uses the integrated WanGP library to generate video clips."
+        self.name = "AI Generator"
+        self.description = "Uses the integrated Wan2GP library to generate video clips."
         self.client_widget = WgpDesktopPluginWidget(self)
         self.dock_widget = None
         self.active_region = None; self.temp_dir = None
@@ -1524,12 +1633,14 @@ class Plugin(VideoEditorPlugin):
             start_data, _, _ = self.app.get_frame_data_at_time(start_sec)
             end_data, _, _ = self.app.get_frame_data_at_time(end_sec)
             if start_data and end_data:
-                join_action = menu.addAction("Join Frames With WanGP")
+                join_action = menu.addAction("Join Frames With AI")
                 join_action.triggered.connect(lambda: self.setup_generator_for_region(region, on_new_track=False))
-                join_action_new_track = menu.addAction("Join Frames With WanGP (New Track)")
+                join_action_new_track = menu.addAction("Join Frames With AI (New Track)")
                 join_action_new_track.triggered.connect(lambda: self.setup_generator_for_region(region, on_new_track=True))
-            create_action = menu.addAction("Create Video With WanGP")
-            create_action.triggered.connect(lambda: self.setup_creator_for_region(region))
+            create_action = menu.addAction("Create Frames With AI")
+            create_action.triggered.connect(lambda: self.setup_creator_for_region(region, on_new_track=False))
+            create_action_new_track = menu.addAction("Create Frames With AI (New Track)")
+            create_action_new_track.triggered.connect(lambda: self.setup_creator_for_region(region, on_new_track=True))
 
     def setup_generator_for_region(self, region, on_new_track=False):
         self._reset_state()
@@ -1577,14 +1688,14 @@ class Plugin(VideoEditorPlugin):
             QMessageBox.critical(self.app, "File Error", f"Could not save temporary frame images: {e}")
             self._cleanup_temp_dir()
             return
-        self.app.status_label.setText(f"WanGP: Ready to join frames from {start_sec:.2f}s to {end_sec:.2f}s.")
+        self.app.status_label.setText(f"Ready to join frames from {start_sec:.2f}s to {end_sec:.2f}s.")
         self.dock_widget.show()
         self.dock_widget.raise_()
 
-    def setup_creator_for_region(self, region):
+    def setup_creator_for_region(self, region, on_new_track=False):
         self._reset_state()
         self.active_region = region
-        self.insert_on_new_track = True 
+        self.insert_on_new_track = on_new_track
 
         model_to_set = 't2v_2_2'
         dropdown_types = self.wgp.transformer_types if len(self.wgp.transformer_types) > 0 else self.wgp.displayed_model_types
@@ -1606,16 +1717,16 @@ class Plugin(VideoEditorPlugin):
         self.client_widget.widgets['video_length'].setValue(video_length_frames)
         self.client_widget.widgets['mode_t'].setChecked(True)
 
-        self.app.status_label.setText(f"WanGP: Ready to create video from {start_sec:.2f}s to {end_sec:.2f}s.")
+        self.app.status_label.setText(f"Ready to create video from {start_sec:.2f}s to {end_sec:.2f}s.")
         self.dock_widget.show()
         self.dock_widget.raise_()
 
     def insert_generated_clip(self, video_path):
         from videoeditor import TimelineClip
         if not self.active_region:
-            self.app.status_label.setText("WanGP Error: No active region to insert into."); return
+            self.app.status_label.setText("Error: No active region to insert into."); return
         if not os.path.exists(video_path):
-            self.app.status_label.setText(f"WanGP Error: Output file not found: {video_path}"); return
+            self.app.status_label.setText(f"Error: Output file not found: {video_path}"); return
         start_sec, end_sec = self.active_region
         def complex_insertion_action():
             self.app._add_media_files_to_project([video_path])
@@ -1650,4 +1761,4 @@ class Plugin(VideoEditorPlugin):
                     self.client_widget.results_list.takeItem(i); break
         except Exception as e:
             import traceback; traceback.print_exc()
-            self.app.status_label.setText(f"WanGP Error during clip insertion: {e}")
+            self.app.status_label.setText(f"Error during clip insertion: {e}")

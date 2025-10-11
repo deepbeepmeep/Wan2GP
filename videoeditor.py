@@ -134,6 +134,10 @@ class TimelineWidget(QWidget):
         self.resize_edge = None
         self.resize_start_pos = QPoint()
 
+        self.resizing_selection_region = None
+        self.resize_selection_edge = None
+        self.resize_selection_start_values = None
+
         self.highlighted_track_info = None
         self.highlighted_ghost_track_info = None
         self.add_video_track_btn_rect = QRect()
@@ -522,6 +526,29 @@ class TimelineWidget(QWidget):
             self.resizing_clip = None
             self.resize_edge = None
             self.drag_original_clip_states.clear()
+            self.resizing_selection_region = None
+            self.resize_selection_edge = None
+            self.resize_selection_start_values = None
+
+            for region in self.selection_regions:
+                if not region: continue
+                x_start = self.sec_to_x(region[0])
+                x_end = self.sec_to_x(region[1])
+                if event.pos().y() > self.TIMESCALE_HEIGHT:
+                    if abs(event.pos().x() - x_start) < self.RESIZE_HANDLE_WIDTH:
+                        self.resizing_selection_region = region
+                        self.resize_selection_edge = 'left'
+                        break
+                    elif abs(event.pos().x() - x_end) < self.RESIZE_HANDLE_WIDTH:
+                        self.resizing_selection_region = region
+                        self.resize_selection_edge = 'right'
+                        break
+            
+            if self.resizing_selection_region:
+                self.resize_selection_start_values = tuple(self.resizing_selection_region)
+                self.drag_start_pos = event.pos()
+                self.update()
+                return
 
             for clip in reversed(self.timeline.clips):
                 clip_rect = self.get_clip_rect(clip)
@@ -595,6 +622,27 @@ class TimelineWidget(QWidget):
             self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        if self.resizing_selection_region:
+            current_sec = max(0, self.x_to_sec(event.pos().x()))
+            original_start, original_end = self.resize_selection_start_values
+
+            if self.resize_selection_edge == 'left':
+                new_start = current_sec
+                new_end = original_end
+            else: # right
+                new_start = original_start
+                new_end = current_sec
+
+            self.resizing_selection_region[0] = min(new_start, new_end)
+            self.resizing_selection_region[1] = max(new_start, new_end)
+
+            if (self.resize_selection_edge == 'left' and new_start > new_end) or \
+               (self.resize_selection_edge == 'right' and new_end < new_start):
+                self.resize_selection_edge = 'right' if self.resize_selection_edge == 'left' else 'left'
+                self.resize_selection_start_values = (original_end, original_start)
+
+            self.update()
+            return
         if self.resizing_clip:
             linked_clip = next((c for c in self.timeline.clips if c.group_id == self.resizing_clip.group_id and c.id != self.resizing_clip.id), None)
             delta_x = event.pos().x() - self.resize_start_pos.x()
@@ -686,6 +734,15 @@ class TimelineWidget(QWidget):
                 self.setCursor(Qt.CursorShape.SizeHorCursor)
                 cursor_set = True
             
+            if not cursor_set and is_in_track_area:
+                for region in self.selection_regions:
+                    x_start = self.sec_to_x(region[0])
+                    x_end = self.sec_to_x(region[1])
+                    if abs(event.pos().x() - x_start) < self.RESIZE_HANDLE_WIDTH or \
+                       abs(event.pos().x() - x_end) < self.RESIZE_HANDLE_WIDTH:
+                        self.setCursor(Qt.CursorShape.SizeHorCursor)
+                        cursor_set = True
+                        break
             if not cursor_set:
                 for clip in self.timeline.clips:
                     clip_rect = self.get_clip_rect(clip)
@@ -786,6 +843,12 @@ class TimelineWidget(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
+            if self.resizing_selection_region:
+                self.resizing_selection_region = None
+                self.resize_selection_edge = None
+                self.resize_selection_start_values = None
+                self.update()
+                return
             if self.resizing_clip:
                 new_state = self.window()._get_current_timeline_state()
                 command = TimelineStateChangeCommand("Resize Clip", self.timeline, *self.drag_start_state, *new_state)
@@ -1074,23 +1137,31 @@ class TimelineWidget(QWidget):
         
         region_at_pos = self.get_region_at_pos(event.pos())
         if region_at_pos:
-            split_this_action = menu.addAction("Split This Region")
-            split_all_action = menu.addAction("Split All Regions")
-            join_this_action = menu.addAction("Join This Region")
-            join_all_action = menu.addAction("Join All Regions")
-            delete_this_action = menu.addAction("Delete This Region")
-            delete_all_action = menu.addAction("Delete All Regions")
-            menu.addSeparator()
-            clear_this_action = menu.addAction("Clear This Region")
-            clear_all_action = menu.addAction("Clear All Regions")
-            split_this_action.triggered.connect(lambda: self.split_region_requested.emit(region_at_pos))
-            split_all_action.triggered.connect(lambda: self.split_all_regions_requested.emit(self.selection_regions))
-            join_this_action.triggered.connect(lambda: self.join_region_requested.emit(region_at_pos))
-            join_all_action.triggered.connect(lambda: self.join_all_regions_requested.emit(self.selection_regions))
-            delete_this_action.triggered.connect(lambda: self.delete_region_requested.emit(region_at_pos))
-            delete_all_action.triggered.connect(lambda: self.delete_all_regions_requested.emit(self.selection_regions))
-            clear_this_action.triggered.connect(lambda: self.clear_region(region_at_pos))
-            clear_all_action.triggered.connect(self.clear_all_regions)
+            num_regions = len(self.selection_regions)
+            
+            if num_regions == 1:
+                split_this_action = menu.addAction("Split Region")
+                join_this_action = menu.addAction("Join Region")
+                delete_this_action = menu.addAction("Delete Region")
+                menu.addSeparator()
+                clear_this_action = menu.addAction("Clear Region")
+
+                split_this_action.triggered.connect(lambda: self.split_region_requested.emit(region_at_pos))
+                join_this_action.triggered.connect(lambda: self.join_region_requested.emit(region_at_pos))
+                delete_this_action.triggered.connect(lambda: self.delete_region_requested.emit(region_at_pos))
+                clear_this_action.triggered.connect(lambda: self.clear_region(region_at_pos))
+
+            elif num_regions > 1:
+                split_all_action = menu.addAction("Split All Regions")
+                join_all_action = menu.addAction("Join All Regions")
+                delete_all_action = menu.addAction("Delete All Regions")
+                menu.addSeparator()
+                clear_all_action = menu.addAction("Clear All Regions")
+
+                split_all_action.triggered.connect(lambda: self.split_all_regions_requested.emit(self.selection_regions))
+                join_all_action.triggered.connect(lambda: self.join_all_regions_requested.emit(self.selection_regions))
+                delete_all_action.triggered.connect(lambda: self.delete_all_regions_requested.emit(self.selection_regions))
+                clear_all_action.triggered.connect(self.clear_all_regions)
 
         clip_at_pos = None
         for clip in self.timeline.clips:

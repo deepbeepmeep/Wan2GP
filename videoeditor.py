@@ -106,7 +106,10 @@ class TimelineWidget(QWidget):
         self.timeline = timeline_model
         self.settings = settings
         self.playhead_pos_sec = 0.0
-        self.scroll_area = None
+        self.view_start_sec = 0.0
+        self.panning = False
+        self.pan_start_pos = QPoint()
+        self.pan_start_view_sec = 0.0
         
         self.pixels_per_second = 50.0 
         self.max_pixels_per_second = 1.0
@@ -165,19 +168,19 @@ class TimelineWidget(QWidget):
         self.pixels_per_second = min(self.pixels_per_second, self.max_pixels_per_second)
         self.update()
 
-    def sec_to_x(self, sec): return self.HEADER_WIDTH + int(sec * self.pixels_per_second)
-    def x_to_sec(self, x): return float(x - self.HEADER_WIDTH) / self.pixels_per_second if x > self.HEADER_WIDTH and self.pixels_per_second > 0 else 0.0
+    def sec_to_x(self, sec): return self.HEADER_WIDTH + int((sec - self.view_start_sec) * self.pixels_per_second)
+    def x_to_sec(self, x): return self.view_start_sec + float(x - self.HEADER_WIDTH) / self.pixels_per_second if x > self.HEADER_WIDTH and self.pixels_per_second > 0 else self.view_start_sec
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("#333"))
 
-        h_offset = 0
-        if self.scroll_area and self.scroll_area.horizontalScrollBar():
-            h_offset = self.scroll_area.horizontalScrollBar().value()
+        self.draw_headers(painter)
 
-        self.draw_headers(painter, h_offset)
+        painter.save()
+        painter.setClipRect(self.HEADER_WIDTH, 0, self.width() - self.HEADER_WIDTH, self.height())
+        
         self.draw_timescale(painter)
         self.draw_tracks_and_clips(painter)
         self.draw_selections(painter)
@@ -201,17 +204,19 @@ class TimelineWidget(QWidget):
             painter.drawRect(self.hover_preview_audio_rect)
 
         self.draw_playhead(painter)
+        
+        painter.restore()
 
-        total_width = self.sec_to_x(self.timeline.get_total_duration()) + 200
         total_height = self.calculate_total_height()
-        self.setMinimumSize(max(self.parent().width(), total_width), total_height)
+        if self.minimumHeight() != total_height:
+            self.setMinimumHeight(total_height)
 
     def calculate_total_height(self):
         video_tracks_height = (self.timeline.num_video_tracks + 1) * self.TRACK_HEIGHT
         audio_tracks_height = (self.timeline.num_audio_tracks + 1) * self.TRACK_HEIGHT
         return self.TIMESCALE_HEIGHT + video_tracks_height + self.AUDIO_TRACKS_SEPARATOR_Y + audio_tracks_height + 20
 
-    def draw_headers(self, painter, h_offset):
+    def draw_headers(self, painter):
         painter.save()
         painter.setPen(QColor("#AAA"))
         header_font = QFont("Arial", 9, QFont.Weight.Bold)
@@ -220,9 +225,9 @@ class TimelineWidget(QWidget):
         y_cursor = self.TIMESCALE_HEIGHT
         
         rect = QRect(0, y_cursor, self.HEADER_WIDTH, self.TRACK_HEIGHT)
-        painter.fillRect(rect.translated(h_offset, 0), QColor("#3a3a3a"))
-        painter.drawRect(rect.translated(h_offset, 0))
-        self.add_video_track_btn_rect = QRect(h_offset + rect.left() + 10, rect.top() + (rect.height() - 22)//2, self.HEADER_WIDTH - 20, 22)
+        painter.fillRect(rect, QColor("#3a3a3a"))
+        painter.drawRect(rect)
+        self.add_video_track_btn_rect = QRect(rect.left() + 10, rect.top() + (rect.height() - 22)//2, self.HEADER_WIDTH - 20, 22)
         painter.setFont(button_font)
         painter.fillRect(self.add_video_track_btn_rect, QColor("#454"))
         painter.drawText(self.add_video_track_btn_rect, Qt.AlignmentFlag.AlignCenter, "Add Track (+)")
@@ -232,13 +237,13 @@ class TimelineWidget(QWidget):
         for i in range(self.timeline.num_video_tracks):
             track_number = self.timeline.num_video_tracks - i
             rect = QRect(0, y_cursor, self.HEADER_WIDTH, self.TRACK_HEIGHT)
-            painter.fillRect(rect.translated(h_offset, 0), QColor("#444"))
-            painter.drawRect(rect.translated(h_offset, 0))
+            painter.fillRect(rect, QColor("#444"))
+            painter.drawRect(rect)
             painter.setFont(header_font)
-            painter.drawText(rect.translated(h_offset, 0), Qt.AlignmentFlag.AlignCenter, f"Video {track_number}")
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"Video {track_number}")
 
             if track_number == self.timeline.num_video_tracks and self.timeline.num_video_tracks > 1:
-                self.remove_video_track_btn_rect = QRect(h_offset + rect.right() - 25, rect.top() + 5, 20, 20)
+                self.remove_video_track_btn_rect = QRect(rect.right() - 25, rect.top() + 5, 20, 20)
                 painter.setFont(button_font)
                 painter.fillRect(self.remove_video_track_btn_rect, QColor("#833"))
                 painter.drawText(self.remove_video_track_btn_rect, Qt.AlignmentFlag.AlignCenter, "-")
@@ -250,22 +255,22 @@ class TimelineWidget(QWidget):
         for i in range(self.timeline.num_audio_tracks):
             track_number = i + 1
             rect = QRect(0, y_cursor, self.HEADER_WIDTH, self.TRACK_HEIGHT)
-            painter.fillRect(rect.translated(h_offset, 0), QColor("#444"))
-            painter.drawRect(rect.translated(h_offset, 0))
+            painter.fillRect(rect, QColor("#444"))
+            painter.drawRect(rect)
             painter.setFont(header_font)
-            painter.drawText(rect.translated(h_offset, 0), Qt.AlignmentFlag.AlignCenter, f"Audio {track_number}")
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"Audio {track_number}")
 
             if track_number == self.timeline.num_audio_tracks and self.timeline.num_audio_tracks > 1:
-                self.remove_audio_track_btn_rect = QRect(h_offset + rect.right() - 25, rect.top() + 5, 20, 20)
+                self.remove_audio_track_btn_rect = QRect(rect.right() - 25, rect.top() + 5, 20, 20)
                 painter.setFont(button_font)
                 painter.fillRect(self.remove_audio_track_btn_rect, QColor("#833"))
                 painter.drawText(self.remove_audio_track_btn_rect, Qt.AlignmentFlag.AlignCenter, "-")
             y_cursor += self.TRACK_HEIGHT
         
         rect = QRect(0, y_cursor, self.HEADER_WIDTH, self.TRACK_HEIGHT)
-        painter.fillRect(rect.translated(h_offset, 0), QColor("#3a3a3a"))
-        painter.drawRect(rect.translated(h_offset, 0))
-        self.add_audio_track_btn_rect = QRect(h_offset + rect.left() + 10, rect.top() + (rect.height() - 22)//2, self.HEADER_WIDTH - 20, 22)
+        painter.fillRect(rect, QColor("#3a3a3a"))
+        painter.drawRect(rect)
+        self.add_audio_track_btn_rect = QRect(rect.left() + 10, rect.top() + (rect.height() - 22)//2, self.HEADER_WIDTH - 20, 22)
         painter.setFont(button_font)
         painter.fillRect(self.add_audio_track_btn_rect, QColor("#454"))
         painter.drawText(self.add_audio_track_btn_rect, Qt.AlignmentFlag.AlignCenter, "Add Track (+)")
@@ -476,39 +481,46 @@ class TimelineWidget(QWidget):
         return None
 
     def wheelEvent(self, event: QMouseEvent):
-        if not self.scroll_area or event.position().x() < self.HEADER_WIDTH:
+        if event.position().x() < self.HEADER_WIDTH:
             event.ignore()
             return
 
-        scrollbar = self.scroll_area.horizontalScrollBar()
-        mouse_x_abs = event.position().x()
-        
-        time_at_cursor = self.x_to_sec(mouse_x_abs)
+        mouse_x = event.position().x()
+        time_at_cursor = self.x_to_sec(mouse_x)
 
         delta = event.angleDelta().y()
         zoom_factor = 1.15
         old_pps = self.pixels_per_second
 
-        if delta > 0: new_pps = old_pps * zoom_factor
-        else: new_pps = old_pps / zoom_factor
-        
+        if delta > 0:
+            new_pps = old_pps * zoom_factor
+        else:
+            new_pps = old_pps / zoom_factor
+
         min_pps = 1 / (3600 * 10)
         new_pps = max(min_pps, min(new_pps, self.max_pixels_per_second))
-        
+
         if abs(new_pps - old_pps) < 1e-9:
             return
-            
-        self.pixels_per_second = new_pps
-        self.update() 
 
-        new_mouse_x_abs = self.sec_to_x(time_at_cursor)
-        shift_amount = new_mouse_x_abs - mouse_x_abs
-        new_scroll_value = scrollbar.value() + shift_amount
-        scrollbar.setValue(int(new_scroll_value))
+        self.pixels_per_second = new_pps
+
+        new_view_start_sec = time_at_cursor - (mouse_x - self.HEADER_WIDTH) / self.pixels_per_second
+        self.view_start_sec = max(0.0, new_view_start_sec)
+
+        self.update()
         event.accept()
 
     def mousePressEvent(self, event: QMouseEvent):
-        if event.pos().x() < self.HEADER_WIDTH + self.scroll_area.horizontalScrollBar().value():
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self.panning = True
+            self.pan_start_pos = event.pos()
+            self.pan_start_view_sec = self.view_start_sec
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+
+        if event.pos().x() < self.HEADER_WIDTH:
             if self.add_video_track_btn_rect.contains(event.pos()): self.add_track.emit('video')
             elif self.remove_video_track_btn_rect.contains(event.pos()): self.remove_track.emit('video')
             elif self.add_audio_track_btn_rect.contains(event.pos()): self.add_track.emit('audio')
@@ -622,6 +634,14 @@ class TimelineWidget(QWidget):
             self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        if self.panning:
+            delta_x = event.pos().x() - self.pan_start_pos.x()
+            time_delta = delta_x / self.pixels_per_second
+            new_view_start = self.pan_start_view_sec - time_delta
+            self.view_start_sec = max(0.0, new_view_start)
+            self.update()
+            return
+
         if self.resizing_selection_region:
             current_sec = max(0, self.x_to_sec(event.pos().x()))
             original_start, original_end = self.resize_selection_start_values
@@ -842,6 +862,12 @@ class TimelineWidget(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.MiddleButton and self.panning:
+            self.panning = False
+            self.unsetCursor()
+            event.accept()
+            return
+
         if event.button() == Qt.MouseButton.LeftButton:
             if self.resizing_selection_region:
                 self.resizing_selection_region = None
@@ -1419,14 +1445,8 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.preview_scroll_area)
 
         self.timeline_widget = TimelineWidget(self.timeline, self.settings, self.project_fps, self)
-        self.timeline_scroll_area = QScrollArea()
-        self.timeline_widget.scroll_area = self.timeline_scroll_area
-        self.timeline_scroll_area.setWidgetResizable(False)
-        self.timeline_widget.setMinimumWidth(2000)
-        self.timeline_scroll_area.setWidget(self.timeline_widget)
-        self.timeline_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.timeline_scroll_area.setMinimumHeight(250)
-        self.splitter.addWidget(self.timeline_scroll_area)
+        self.timeline_widget.setMinimumHeight(250)
+        self.splitter.addWidget(self.timeline_widget)
         
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 0)
@@ -1465,7 +1485,7 @@ class MainWindow(QMainWindow):
 
         self.managed_widgets = {
             'preview': {'widget': self.preview_scroll_area, 'name': 'Video Preview', 'action': None},
-            'timeline': {'widget': self.timeline_scroll_area, 'name': 'Timeline', 'action': None},
+            'timeline': {'widget': self.timeline_widget, 'name': 'Timeline', 'action': None},
             'project_media': {'widget': self.media_dock, 'name': 'Project Media', 'action': None}
         }
         self.plugin_menu_actions = {}
@@ -1676,7 +1696,7 @@ class MainWindow(QMainWindow):
         
         self.windows_menu = menu_bar.addMenu("&Windows")
         for key, data in self.managed_widgets.items():
-            if data['widget'] is self.preview_scroll_area: continue
+            if data['widget'] is self.preview_scroll_area or data['widget'] is self.timeline_widget: continue
             action = QAction(data['name'], self, checkable=True)
             if hasattr(data['widget'], 'visibilityChanged'):
                 action.toggled.connect(data['widget'].setVisible)

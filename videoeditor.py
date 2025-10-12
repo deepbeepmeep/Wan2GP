@@ -349,7 +349,10 @@ class TimelineWidget(QWidget):
                 painter.drawLine(x, self.TIMESCALE_HEIGHT - 12, x, self.TIMESCALE_HEIGHT)
                 label = self._format_timecode(t_sec)
                 label_width = font_metrics.horizontalAdvance(label)
-                painter.drawText(x - label_width // 2, self.TIMESCALE_HEIGHT - 14, label)
+                label_x = x - label_width // 2
+                if label_x < self.HEADER_WIDTH:
+                    label_x = self.HEADER_WIDTH
+                painter.drawText(label_x, self.TIMESCALE_HEIGHT - 14, label)
 
         painter.restore()
 
@@ -497,10 +500,8 @@ class TimelineWidget(QWidget):
             return
 
         if event.position().x() < self.HEADER_WIDTH:
-            # Zoom centered on time 0. Keep screen position of time 0 constant.
             new_view_start_sec = self.view_start_sec * (old_pps / new_pps)
         else:
-            # Zoom centered on mouse cursor.
             mouse_x = event.position().x()
             time_at_cursor = self.x_to_sec(mouse_x)
             new_view_start_sec = time_at_cursor - (mouse_x - self.HEADER_WIDTH) / new_pps

@@ -1363,9 +1363,15 @@ class MainWindow(QMainWindow):
         self.plugin_manager = PluginManager(self, wgp)
         self.plugin_manager.discover_and_load_plugins()
 
+        # Project settings with defaults
         self.project_fps = 25.0
         self.project_width = 1280
         self.project_height = 720
+        
+        # Preview settings
+        self.scale_to_fit = True
+        self.current_preview_pixmap = None
+
         self.playback_timer = QTimer(self)
         self.playback_process = None
         self.playback_clip = None
@@ -1379,6 +1385,10 @@ class MainWindow(QMainWindow):
         
         if not self.settings_file_was_loaded: self._save_settings()
         if project_to_load: QTimer.singleShot(100, lambda: self._load_project_from_path(project_to_load))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_preview_display()
 
     def _get_current_timeline_state(self):
         return (
@@ -1395,12 +1405,18 @@ class MainWindow(QMainWindow):
 
         self.splitter = QSplitter(Qt.Orientation.Vertical)
 
+        # --- PREVIEW WIDGET SETUP (CHANGED) ---
+        self.preview_scroll_area = QScrollArea()
+        self.preview_scroll_area.setWidgetResizable(False) # Important for 1:1 scaling
+        self.preview_scroll_area.setStyleSheet("background-color: black; border: 0px;")
+        
         self.preview_widget = QLabel()
         self.preview_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_widget.setMinimumSize(640, 360)
-        self.preview_widget.setFrameShape(QFrame.Shape.Box)
-        self.preview_widget.setStyleSheet("background-color: black; color: white;")
-        self.splitter.addWidget(self.preview_widget)
+        self.preview_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        
+        self.preview_scroll_area.setWidget(self.preview_widget)
+        self.splitter.addWidget(self.preview_scroll_area)
 
         self.timeline_widget = TimelineWidget(self.timeline, self.settings, self.project_fps, self)
         self.timeline_scroll_area = QScrollArea()
@@ -1412,6 +1428,9 @@ class MainWindow(QMainWindow):
         self.timeline_scroll_area.setMinimumHeight(250)
         self.splitter.addWidget(self.timeline_scroll_area)
         
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+
         container_widget = QWidget()
         main_layout = QVBoxLayout(container_widget)
         main_layout.setContentsMargins(0,0,0,0)
@@ -1445,7 +1464,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container_widget)
 
         self.managed_widgets = {
-            'preview': {'widget': self.preview_widget, 'name': 'Video Preview', 'action': None},
+            'preview': {'widget': self.preview_scroll_area, 'name': 'Video Preview', 'action': None},
             'timeline': {'widget': self.timeline_scroll_area, 'name': 'Timeline', 'action': None},
             'project_media': {'widget': self.media_dock, 'name': 'Project Media', 'action': None}
         }
@@ -1459,6 +1478,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self):
         self.splitter.splitterMoved.connect(self.on_splitter_moved)
+        self.preview_widget.customContextMenuRequested.connect(self._show_preview_context_menu)
 
         self.timeline_widget.split_requested.connect(self.split_clip_at_playhead)
         self.timeline_widget.delete_clip_requested.connect(self.delete_clip)
@@ -1486,6 +1506,18 @@ class MainWindow(QMainWindow):
         
         self.undo_stack.history_changed.connect(self.update_undo_redo_actions)
         self.undo_stack.timeline_changed.connect(self.on_timeline_changed_by_undo)
+
+    def _show_preview_context_menu(self, pos):
+        menu = QMenu(self)
+        scale_action = QAction("Scale to Fit", self, checkable=True)
+        scale_action.setChecked(self.scale_to_fit)
+        scale_action.toggled.connect(self._toggle_scale_to_fit)
+        menu.addAction(scale_action)
+        menu.exec(self.preview_widget.mapToGlobal(pos))
+
+    def _toggle_scale_to_fit(self, checked):
+        self.scale_to_fit = checked
+        self._update_preview_display()
 
     def on_timeline_changed_by_undo(self):
         self.prune_empty_tracks()
@@ -1644,7 +1676,7 @@ class MainWindow(QMainWindow):
         
         self.windows_menu = menu_bar.addMenu("&Windows")
         for key, data in self.managed_widgets.items():
-            if data['widget'] is self.preview_widget: continue
+            if data['widget'] is self.preview_scroll_area: continue
             action = QAction(data['name'], self, checkable=True)
             if hasattr(data['widget'], 'visibilityChanged'):
                 action.toggled.connect(data['widget'].setVisible)
@@ -1700,9 +1732,12 @@ class MainWindow(QMainWindow):
             media_info = {}
             
             if file_ext in ['.png', '.jpg', '.jpeg']:
+                img = QImage(file_path)
                 media_info['media_type'] = 'image'
                 media_info['duration'] = 5.0
                 media_info['has_audio'] = False
+                media_info['width'] = img.width()
+                media_info['height'] = img.height()
             else:
                 probe = ffmpeg.probe(file_path)
                 video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
@@ -1712,6 +1747,11 @@ class MainWindow(QMainWindow):
                     media_info['media_type'] = 'video'
                     media_info['duration'] = float(video_stream.get('duration', probe['format'].get('duration', 0)))
                     media_info['has_audio'] = audio_stream is not None
+                    media_info['width'] = int(video_stream['width'])
+                    media_info['height'] = int(video_stream['height'])
+                    if 'r_frame_rate' in video_stream and video_stream['r_frame_rate'] != '0/0':
+                        num, den = map(int, video_stream['r_frame_rate'].split('/'))
+                        if den > 0: media_info['fps'] = num / den
                 elif audio_stream:
                     media_info['media_type'] = 'audio'
                     media_info['duration'] = float(audio_stream.get('duration', probe['format'].get('duration', 0)))
@@ -1724,20 +1764,37 @@ class MainWindow(QMainWindow):
             print(f"Failed to probe file {os.path.basename(file_path)}: {e}")
             return None
 
-    def _set_project_properties_from_clip(self, source_path):
+    def _update_project_properties_from_clip(self, source_path):
         try:
-            probe = ffmpeg.probe(source_path)
-            video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-            if video_stream:
-                self.project_width = int(video_stream['width']); self.project_height = int(video_stream['height'])
-                if 'r_frame_rate' in video_stream and video_stream['r_frame_rate'] != '0/0':
-                    num, den = map(int, video_stream['r_frame_rate'].split('/'))
-                    if den > 0:
-                        self.project_fps = num / den
-                        self.timeline_widget.set_project_fps(self.project_fps)
-                print(f"Project properties set: {self.project_width}x{self.project_height} @ {self.project_fps:.2f} FPS")
-                return True
-        except Exception as e: print(f"Could not probe for project properties: {e}")
+            media_info = self._get_media_properties(source_path)
+            if not media_info or media_info['media_type'] not in ['video', 'image']:
+                return False
+
+            new_w = media_info.get('width')
+            new_h = media_info.get('height')
+            new_fps = media_info.get('fps')
+            
+            if not new_w or not new_h:
+                return False
+
+            is_first_video = not any(c.media_type in ['video', 'image'] for c in self.timeline.clips if c.source_path != source_path)
+            
+            if is_first_video:
+                self.project_width = new_w
+                self.project_height = new_h
+                if new_fps: self.project_fps = new_fps
+                self.timeline_widget.set_project_fps(self.project_fps)
+                print(f"Project properties set from first clip: {self.project_width}x{self.project_height} @ {self.project_fps:.2f} FPS")
+            else:
+                current_area = self.project_width * self.project_height
+                new_area = new_w * new_h
+                if new_area > current_area:
+                    self.project_width = new_w
+                    self.project_height = new_h
+                    print(f"Project resolution updated to: {self.project_width}x{self.project_height}")
+            return True
+        except Exception as e:
+            print(f"Could not probe for project properties: {e}")
         return False
 
     def _probe_for_drag(self, file_path):
@@ -1774,9 +1831,8 @@ class MainWindow(QMainWindow):
             return (None, 0, 0)
 
     def get_frame_at_time(self, time_sec):
-        black_pixmap = QPixmap(self.project_width, self.project_height); black_pixmap.fill(QColor("black"))
         clip_at_time = self._get_topmost_video_clip_at(time_sec)
-        if not clip_at_time: return black_pixmap
+        if not clip_at_time: return None
         try:
             w, h = self.project_width, self.project_height
             if clip_at_time.media_type == 'image':
@@ -1797,16 +1853,36 @@ class MainWindow(QMainWindow):
             
             image = QImage(out, self.project_width, self.project_height, QImage.Format.Format_RGB888)
             return QPixmap.fromImage(image)
-        except ffmpeg.Error as e: print(f"Error extracting frame: {e.stderr}"); return black_pixmap
+        except ffmpeg.Error as e: print(f"Error extracting frame: {e.stderr}"); return None
 
     def seek_preview(self, time_sec):
         self._stop_playback_stream()
         self.timeline_widget.playhead_pos_sec = time_sec
         self.timeline_widget.update()
-        frame_pixmap = self.get_frame_at_time(time_sec)
-        if frame_pixmap:
-            scaled_pixmap = frame_pixmap.scaled(self.preview_widget.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.current_preview_pixmap = self.get_frame_at_time(time_sec)
+        self._update_preview_display()
+
+    def _update_preview_display(self):
+        pixmap_to_show = self.current_preview_pixmap
+        if not pixmap_to_show:
+            pixmap_to_show = QPixmap(self.project_width, self.project_height)
+            pixmap_to_show.fill(QColor("black"))
+
+        if self.scale_to_fit:
+            # When fitting, we want the label to resize with the scroll area
+            self.preview_scroll_area.setWidgetResizable(True)
+            scaled_pixmap = pixmap_to_show.scaled(
+                self.preview_scroll_area.viewport().size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
             self.preview_widget.setPixmap(scaled_pixmap)
+        else:
+            # For 1:1, the label takes the size of the pixmap, and the scroll area handles overflow
+            self.preview_scroll_area.setWidgetResizable(False)
+            self.preview_widget.setPixmap(pixmap_to_show)
+            self.preview_widget.adjustSize()
+        
 
     def toggle_playback(self):
         if self.playback_timer.isActive(): self.playback_timer.stop(); self._stop_playback_stream(); self.play_pause_button.setText("Play")
@@ -1835,19 +1911,16 @@ class MainWindow(QMainWindow):
         
         if not clip_at_new_time:
             self._stop_playback_stream()
-            black_pixmap = QPixmap(self.project_width, self.project_height); black_pixmap.fill(QColor("black"))
-            scaled_pixmap = black_pixmap.scaled(self.preview_widget.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.preview_widget.setPixmap(scaled_pixmap)
+            self.current_preview_pixmap = None
+            self._update_preview_display()
             return
 
         if clip_at_new_time.media_type == 'image':
             if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id:
                 self._stop_playback_stream()
                 self.playback_clip = clip_at_new_time
-                frame_pixmap = self.get_frame_at_time(new_time)
-                if frame_pixmap:
-                    scaled_pixmap = frame_pixmap.scaled(self.preview_widget.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                    self.preview_widget.setPixmap(scaled_pixmap)
+                self.current_preview_pixmap = self.get_frame_at_time(new_time)
+                self._update_preview_display()
             return
 
         if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id:
@@ -1858,9 +1931,8 @@ class MainWindow(QMainWindow):
             frame_bytes = self.playback_process.stdout.read(frame_size)
             if len(frame_bytes) == frame_size:
                 image = QImage(frame_bytes, self.project_width, self.project_height, QImage.Format.Format_RGB888)
-                pixmap = QPixmap.fromImage(image)
-                scaled_pixmap = pixmap.scaled(self.preview_widget.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                self.preview_widget.setPixmap(scaled_pixmap)
+                self.current_preview_pixmap = QPixmap.fromImage(image)
+                self._update_preview_display()
             else:
                 self._stop_playback_stream()
 
@@ -1892,13 +1964,15 @@ class MainWindow(QMainWindow):
         visibility_settings = self.settings.get("window_visibility", {})
         for key, data in self.managed_widgets.items():
             is_visible = visibility_settings.get(key, False if key == 'project_media' else True)
-            if data['widget'] is not self.preview_widget:
+            if data['widget'] is not self.preview_scroll_area:
                 data['widget'].setVisible(is_visible)
             if data['action']: data['action'].setChecked(is_visible)
         splitter_state = self.settings.get("splitter_state")
         if splitter_state: self.splitter.restoreState(QByteArray.fromHex(splitter_state.encode('ascii')))
 
-    def on_splitter_moved(self, pos, index): self.splitter_save_timer.start(500)
+    def on_splitter_moved(self, pos, index): 
+        self.splitter_save_timer.start(500)
+        self._update_preview_display()
     
     def toggle_widget_visibility(self, key, checked):
         if self.is_shutting_down: return
@@ -1916,6 +1990,8 @@ class MainWindow(QMainWindow):
         self.media_pool.clear(); self.media_properties.clear(); self.project_media_widget.clear_list()
         self.current_project_path = None; self.stop_playback()
         self.project_fps = 25.0
+        self.project_width = 1280
+        self.project_height = 720
         self.timeline_widget.set_project_fps(self.project_fps)
         self.timeline_widget.update()
         self.undo_stack = UndoStack()
@@ -1929,7 +2005,13 @@ class MainWindow(QMainWindow):
         project_data = {
             "media_pool": self.media_pool,
             "clips": [{"source_path": c.source_path, "timeline_start_sec": c.timeline_start_sec, "clip_start_sec": c.clip_start_sec, "duration_sec": c.duration_sec, "track_index": c.track_index, "track_type": c.track_type, "media_type": c.media_type, "group_id": c.group_id} for c in self.timeline.clips],
-            "settings": {"num_video_tracks": self.timeline.num_video_tracks, "num_audio_tracks": self.timeline.num_audio_tracks}
+            "settings": {
+                "num_video_tracks": self.timeline.num_video_tracks, 
+                "num_audio_tracks": self.timeline.num_audio_tracks,
+                "project_width": self.project_width,
+                "project_height": self.project_height,
+                "project_fps": self.project_fps
+            }
         }
         try:
             with open(path, "w") as f: json.dump(project_data, f, indent=4)
@@ -1946,6 +2028,14 @@ class MainWindow(QMainWindow):
             with open(path, "r") as f: project_data = json.load(f)
             self.new_project()
             
+            project_settings = project_data.get("settings", {})
+            self.timeline.num_video_tracks = project_settings.get("num_video_tracks", 1)
+            self.timeline.num_audio_tracks = project_settings.get("num_audio_tracks", 1)
+            self.project_width = project_settings.get("project_width", 1280)
+            self.project_height = project_settings.get("project_height", 720)
+            self.project_fps = project_settings.get("project_fps", 25.0)
+            self.timeline_widget.set_project_fps(self.project_fps)
+
             self.media_pool = project_data.get("media_pool", [])
             for p in self.media_pool: self._add_media_to_pool(p)
             
@@ -1962,14 +2052,7 @@ class MainWindow(QMainWindow):
                 
                 self.timeline.add_clip(TimelineClip(**clip_data))
             
-            project_settings = project_data.get("settings", {})
-            self.timeline.num_video_tracks = project_settings.get("num_video_tracks", 1)
-            self.timeline.num_audio_tracks = project_settings.get("num_audio_tracks", 1)
-
             self.current_project_path = path
-            video_clips = [c for c in self.timeline.clips if c.media_type == 'video']
-            if video_clips:
-                self._set_project_properties_from_clip(video_clips[0].source_path)
             self.prune_empty_tracks()
             self.timeline_widget.update(); self.stop_playback()
             self.status_label.setText(f"Project '{os.path.basename(path)}' loaded.")
@@ -2030,20 +2113,10 @@ class MainWindow(QMainWindow):
             return []
 
         self.media_dock.show()
-
         added_files = []
-        first_video_added = any(c.media_type == 'video' for c in self.timeline.clips)
 
         for file_path in file_paths:
-            if not self.timeline.clips and not self.media_pool and not first_video_added:
-                ext = os.path.splitext(file_path)[1].lower()
-                if ext not in ['.png', '.jpg', '.jpeg', '.mp3', '.wav']:
-                    if self._set_project_properties_from_clip(file_path):
-                        first_video_added = True
-                    else:
-                        self.status_label.setText("Error: Could not determine video properties from file.")
-                        continue
-            
+            self._update_project_properties_from_clip(file_path)
             if self._add_media_to_pool(file_path):
                 added_files.append(file_path)
         
@@ -2118,6 +2191,9 @@ class MainWindow(QMainWindow):
             self._add_media_files_to_project(file_paths)
 
     def _add_clip_to_timeline(self, source_path, timeline_start_sec, duration_sec, media_type, clip_start_sec=0.0, video_track_index=None, audio_track_index=None):
+        if media_type in ['video', 'image']:
+            self._update_project_properties_from_clip(source_path)
+
         old_state = self._get_current_timeline_state()
         group_id = str(uuid.uuid4())
         

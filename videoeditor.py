@@ -1542,6 +1542,7 @@ class MainWindow(QMainWindow):
     def on_timeline_changed_by_undo(self):
         self.prune_empty_tracks()
         self.timeline_widget.update()
+        self.seek_preview(self.timeline_widget.playhead_pos_sec)
         self.status_label.setText("Operation undone/redone.")
 
     def update_undo_redo_actions(self):

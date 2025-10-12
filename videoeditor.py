@@ -181,20 +181,20 @@ def get_available_codecs(codec_type='video'):
     return _cached_video_codecs if codec_type == 'video' else _cached_audio_codecs
 
 class TimelineClip:
-    def __init__(self, source_path, timeline_start_sec, clip_start_sec, duration_sec, track_index, track_type, media_type, group_id):
+    def __init__(self, source_path, timeline_start_ms, clip_start_ms, duration_ms, track_index, track_type, media_type, group_id):
         self.id = str(uuid.uuid4())
         self.source_path = source_path
-        self.timeline_start_sec = timeline_start_sec
-        self.clip_start_sec = clip_start_sec
-        self.duration_sec = duration_sec
+        self.timeline_start_ms = int(timeline_start_ms)
+        self.clip_start_ms = int(clip_start_ms)
+        self.duration_ms = int(duration_ms)
         self.track_index = track_index
         self.track_type = track_type
         self.media_type = media_type
         self.group_id = group_id
 
     @property
-    def timeline_end_sec(self):
-        return self.timeline_start_sec + self.duration_sec
+    def timeline_end_ms(self):
+        return self.timeline_start_ms + self.duration_ms
 
 class Timeline:
     def __init__(self):
@@ -204,19 +204,20 @@ class Timeline:
 
     def add_clip(self, clip):
         self.clips.append(clip)
-        self.clips.sort(key=lambda c: c.timeline_start_sec)
+        self.clips.sort(key=lambda c: c.timeline_start_ms)
 
     def get_total_duration(self):
         if not self.clips: return 0
-        return max(c.timeline_end_sec for c in self.clips)
+        return max(c.timeline_end_ms for c in self.clips)
 
 class ExportWorker(QObject):
     progress = pyqtSignal(int)
     finished = pyqtSignal(str)
-    def __init__(self, ffmpeg_cmd, total_duration):
+    def __init__(self, ffmpeg_cmd, total_duration_ms):
         super().__init__()
         self.ffmpeg_cmd = ffmpeg_cmd
-        self.total_duration_secs = total_duration
+        self.total_duration_ms = total_duration_ms
+
     def run_export(self):
         try:
             process = subprocess.Popen(self.ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding="utf-8")
@@ -224,10 +225,10 @@ class ExportWorker(QObject):
             for line in iter(process.stdout.readline, ""):
                 match = time_pattern.search(line)
                 if match:
-                    hours, minutes, seconds = [int(g) for g in match.groups()[:3]]
-                    processed_time = hours * 3600 + minutes * 60 + seconds
-                    if self.total_duration_secs > 0:
-                        percentage = int((processed_time / self.total_duration_secs) * 100)
+                    h, m, s, cs = [int(g) for g in match.groups()]
+                    processed_ms = (h * 3600 + m * 60 + s) * 1000 + cs * 10
+                    if self.total_duration_ms > 0:
+                        percentage = int((processed_ms / self.total_duration_ms) * 100)
                         self.progress.emit(percentage)
             process.stdout.close()
             return_code = process.wait()
@@ -250,7 +251,7 @@ class TimelineWidget(QWidget):
     split_requested = pyqtSignal(object)
     delete_clip_requested = pyqtSignal(object)
     delete_clips_requested = pyqtSignal(list)
-    playhead_moved = pyqtSignal(float)
+    playhead_moved = pyqtSignal(int)
     split_region_requested = pyqtSignal(list)
     split_all_regions_requested = pyqtSignal(list)
     join_region_requested = pyqtSignal(list)
@@ -266,14 +267,14 @@ class TimelineWidget(QWidget):
         super().__init__(parent)
         self.timeline = timeline_model
         self.settings = settings
-        self.playhead_pos_sec = 0.0
-        self.view_start_sec = 0.0
+        self.playhead_pos_ms = 0
+        self.view_start_ms = 0
         self.panning = False
         self.pan_start_pos = QPoint()
-        self.pan_start_view_sec = 0.0
+        self.pan_start_view_ms = 0
         
-        self.pixels_per_second = 50.0 
-        self.max_pixels_per_second = 1.0
+        self.pixels_per_ms = 0.05
+        self.max_pixels_per_ms = 1.0
         self.project_fps = 25.0
         self.set_project_fps(project_fps)
 
@@ -290,7 +291,7 @@ class TimelineWidget(QWidget):
         self.dragging_selection_region = None
         self.drag_start_pos = QPoint()
         self.drag_original_clip_states = {}
-        self.selection_drag_start_sec = 0.0
+        self.selection_drag_start_ms = 0
         self.drag_selection_start_values = None
         self.drag_start_state = None
 
@@ -325,12 +326,12 @@ class TimelineWidget(QWidget):
 
     def set_project_fps(self, fps):
         self.project_fps = fps if fps > 0 else 25.0
-        self.max_pixels_per_second = self.project_fps * 20
-        self.pixels_per_second = min(self.pixels_per_second, self.max_pixels_per_second)
+        self.max_pixels_per_ms = (self.project_fps * 20) / 1000.0
+        self.pixels_per_ms = min(self.pixels_per_ms, self.max_pixels_per_ms)
         self.update()
 
-    def sec_to_x(self, sec): return self.HEADER_WIDTH + int((sec - self.view_start_sec) * self.pixels_per_second)
-    def x_to_sec(self, x): return self.view_start_sec + float(x - self.HEADER_WIDTH) / self.pixels_per_second if x > self.HEADER_WIDTH and self.pixels_per_second > 0 else self.view_start_sec
+    def ms_to_x(self, ms): return self.HEADER_WIDTH + int((ms - self.view_start_ms) * self.pixels_per_ms)
+    def x_to_ms(self, x): return self.view_start_ms + int(float(x - self.HEADER_WIDTH) / self.pixels_per_ms) if x > self.HEADER_WIDTH and self.pixels_per_ms > 0 else self.view_start_ms
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -438,11 +439,12 @@ class TimelineWidget(QWidget):
         
         painter.restore()
         
-    def _format_timecode(self, seconds):
-        if abs(seconds) < 1e-9: seconds = 0
-        sign = "-" if seconds < 0 else ""
-        seconds = abs(seconds)
+    def _format_timecode(self, total_ms):
+        if abs(total_ms) < 1: total_ms = 0
+        sign = "-" if total_ms < 0 else ""
+        total_ms = abs(total_ms)
         
+        seconds = total_ms / 1000.0
         h = int(seconds / 3600)
         m = int((seconds % 3600) / 60)
         s = seconds % 60
@@ -464,51 +466,51 @@ class TimelineWidget(QWidget):
         painter.fillRect(QRect(self.HEADER_WIDTH, 0, self.width() - self.HEADER_WIDTH, self.TIMESCALE_HEIGHT), QColor("#222"))
         painter.drawLine(self.HEADER_WIDTH, self.TIMESCALE_HEIGHT - 1, self.width(), self.TIMESCALE_HEIGHT - 1)
 
-        frame_dur = 1.0 / self.project_fps
-        intervals = [
-            frame_dur, 2*frame_dur, 5*frame_dur, 10*frame_dur,
-            0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30,
-            60, 120, 300, 600, 900, 1800,
-            3600, 2*3600, 5*3600, 10*3600
+        frame_dur_ms = 1000.0 / self.project_fps
+        intervals_ms = [
+            int(frame_dur_ms), int(2*frame_dur_ms), int(5*frame_dur_ms), int(10*frame_dur_ms),
+            100, 200, 500, 1000, 2000, 5000, 10000, 15000, 30000,
+            60000, 120000, 300000, 600000, 900000, 1800000,
+            3600000, 2*3600000, 5*3600000, 10*3600000
         ]
         
         min_pixel_dist = 70
-        major_interval = next((i for i in intervals if i * self.pixels_per_second > min_pixel_dist), intervals[-1])
+        major_interval = next((i for i in intervals_ms if i * self.pixels_per_ms > min_pixel_dist), intervals_ms[-1])
 
         minor_interval = 0
         for divisor in [5, 4, 2]:
-            if (major_interval / divisor) * self.pixels_per_second > 10:
+            if (major_interval / divisor) * self.pixels_per_ms > 10:
                 minor_interval = major_interval / divisor
                 break
         
-        start_sec = self.x_to_sec(self.HEADER_WIDTH)
-        end_sec = self.x_to_sec(self.width())
+        start_ms = self.x_to_ms(self.HEADER_WIDTH)
+        end_ms = self.x_to_ms(self.width())
 
-        def draw_ticks(interval, height):
-            if interval <= 1e-6: return
-            start_tick_num = int(start_sec / interval)
-            end_tick_num = int(end_sec / interval) + 1
+        def draw_ticks(interval_ms, height):
+            if interval_ms < 1: return
+            start_tick_num = int(start_ms / interval_ms)
+            end_tick_num = int(end_ms / interval_ms) + 1
             for i in range(start_tick_num, end_tick_num + 1):
-                t_sec = i * interval
-                x = self.sec_to_x(t_sec)
+                t_ms = i * interval_ms
+                x = self.ms_to_x(t_ms)
                 if x > self.width(): break
                 if x >= self.HEADER_WIDTH:
                     painter.drawLine(x, self.TIMESCALE_HEIGHT - height, x, self.TIMESCALE_HEIGHT)
         
-        if frame_dur * self.pixels_per_second > 4:
-            draw_ticks(frame_dur, 3)
+        if frame_dur_ms * self.pixels_per_ms > 4:
+            draw_ticks(frame_dur_ms, 3)
         if minor_interval > 0:
             draw_ticks(minor_interval, 6)
 
-        start_major_tick = int(start_sec / major_interval)
-        end_major_tick = int(end_sec / major_interval) + 1
+        start_major_tick = int(start_ms / major_interval)
+        end_major_tick = int(end_ms / major_interval) + 1
         for i in range(start_major_tick, end_major_tick + 1):
-            t_sec = i * major_interval
-            x = self.sec_to_x(t_sec)
+            t_ms = i * major_interval
+            x = self.ms_to_x(t_ms)
             if x > self.width() + 50: break
             if x >= self.HEADER_WIDTH - 50:
                 painter.drawLine(x, self.TIMESCALE_HEIGHT - 12, x, self.TIMESCALE_HEIGHT)
-                label = self._format_timecode(t_sec)
+                label = self._format_timecode(t_ms)
                 label_width = font_metrics.horizontalAdvance(label)
                 label_x = x - label_width // 2
                 if label_x < self.HEADER_WIDTH:
@@ -525,8 +527,8 @@ class TimelineWidget(QWidget):
             visual_index = clip.track_index - 1
             y = self.audio_tracks_y_start + visual_index * self.TRACK_HEIGHT
         
-        x = self.sec_to_x(clip.timeline_start_sec)
-        w = int(clip.duration_sec * self.pixels_per_second)
+        x = self.ms_to_x(clip.timeline_start_ms)
+        w = int(clip.duration_ms * self.pixels_per_ms)
         clip_height = self.TRACK_HEIGHT - 10
         y += (self.TRACK_HEIGHT - clip_height) / 2
         return QRectF(x, y, w, clip_height)
@@ -598,16 +600,16 @@ class TimelineWidget(QWidget):
         painter.restore()
 
     def draw_selections(self, painter):
-        for start_sec, end_sec in self.selection_regions:
-            x = self.sec_to_x(start_sec)
-            w = int((end_sec - start_sec) * self.pixels_per_second)
+        for start_ms, end_ms in self.selection_regions:
+            x = self.ms_to_x(start_ms)
+            w = int((end_ms - start_ms) * self.pixels_per_ms)
             selection_rect = QRectF(x, self.TIMESCALE_HEIGHT, w, self.height() - self.TIMESCALE_HEIGHT)
             painter.fillRect(selection_rect, QColor(100, 100, 255, 80))
             painter.setPen(QColor(150, 150, 255, 150))
             painter.drawRect(selection_rect)
 
     def draw_playhead(self, painter):
-        playhead_x = self.sec_to_x(self.playhead_pos_sec)
+        playhead_x = self.ms_to_x(self.playhead_pos_ms)
         painter.setPen(QPen(QColor("red"), 2))
         painter.drawLine(playhead_x, 0, playhead_x, self.height())
 
@@ -634,48 +636,48 @@ class TimelineWidget(QWidget):
             
         return None
 
-    def _snap_time_if_needed(self, time_sec):
-        frame_duration = 1.0 / self.project_fps
-        if frame_duration > 0 and frame_duration * self.pixels_per_second > 4:
-            frame_number = round(time_sec / frame_duration)
-            return frame_number * frame_duration
-        return time_sec
+    def _snap_time_if_needed(self, time_ms):
+        frame_duration_ms = 1000.0 / self.project_fps
+        if frame_duration_ms > 0 and frame_duration_ms * self.pixels_per_ms > 4:
+            frame_number = round(time_ms / frame_duration_ms)
+            return int(frame_number * frame_duration_ms)
+        return int(time_ms)
 
     def get_region_at_pos(self, pos: QPoint):
         if pos.y() <= self.TIMESCALE_HEIGHT or pos.x() <= self.HEADER_WIDTH:
             return None
         
-        clicked_sec = self.x_to_sec(pos.x())
+        clicked_ms = self.x_to_ms(pos.x())
         for region in reversed(self.selection_regions):
-            if region[0] <= clicked_sec <= region[1]:
+            if region[0] <= clicked_ms <= region[1]:
                 return region
         return None
 
     def wheelEvent(self, event: QMouseEvent):
         delta = event.angleDelta().y()
         zoom_factor = 1.15
-        old_pps = self.pixels_per_second
+        old_pps = self.pixels_per_ms
 
         if delta > 0:
             new_pps = old_pps * zoom_factor
         else:
             new_pps = old_pps / zoom_factor
 
-        min_pps = 1 / (3600 * 10)
-        new_pps = max(min_pps, min(new_pps, self.max_pixels_per_second))
+        min_pps = 1 / (3600 * 10 * 1000)
+        new_pps = max(min_pps, min(new_pps, self.max_pixels_per_ms))
 
         if abs(new_pps - old_pps) < 1e-9:
             return
 
         if event.position().x() < self.HEADER_WIDTH:
-            new_view_start_sec = self.view_start_sec * (old_pps / new_pps)
+            new_view_start_ms = self.view_start_ms * (old_pps / new_pps)
         else:
             mouse_x = event.position().x()
-            time_at_cursor = self.x_to_sec(mouse_x)
-            new_view_start_sec = time_at_cursor - (mouse_x - self.HEADER_WIDTH) / new_pps
+            time_at_cursor = self.x_to_ms(mouse_x)
+            new_view_start_ms = time_at_cursor - (mouse_x - self.HEADER_WIDTH) / new_pps
 
-        self.pixels_per_second = new_pps
-        self.view_start_sec = max(0.0, new_view_start_sec)
+        self.pixels_per_ms = new_pps
+        self.view_start_ms = int(max(0, new_view_start_ms))
 
         self.update()
         event.accept()
@@ -684,7 +686,7 @@ class TimelineWidget(QWidget):
         if event.button() == Qt.MouseButton.MiddleButton:
             self.panning = True
             self.pan_start_pos = event.pos()
-            self.pan_start_view_sec = self.view_start_sec
+            self.pan_start_view_ms = self.view_start_ms
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
@@ -713,8 +715,8 @@ class TimelineWidget(QWidget):
 
             for region in self.selection_regions:
                 if not region: continue
-                x_start = self.sec_to_x(region[0])
-                x_end = self.sec_to_x(region[1])
+                x_start = self.ms_to_x(region[0])
+                x_end = self.ms_to_x(region[1])
                 if event.pos().y() > self.TIMESCALE_HEIGHT:
                     if abs(event.pos().x() - x_start) < self.RESIZE_HANDLE_WIDTH:
                         self.resizing_selection_region = region
@@ -768,12 +770,12 @@ class TimelineWidget(QWidget):
                 if clicked_clip.id in self.selected_clips:
                     self.dragging_clip = clicked_clip
                     self.drag_start_state = self.window()._get_current_timeline_state()
-                    self.drag_original_clip_states[clicked_clip.id] = (clicked_clip.timeline_start_sec, clicked_clip.track_index)
+                    self.drag_original_clip_states[clicked_clip.id] = (clicked_clip.timeline_start_ms, clicked_clip.track_index)
                     
                     self.dragging_linked_clip = next((c for c in self.timeline.clips if c.group_id == clicked_clip.group_id and c.id != clicked_clip.id), None)
                     if self.dragging_linked_clip:
                         self.drag_original_clip_states[self.dragging_linked_clip.id] = \
-                            (self.dragging_linked_clip.timeline_start_sec, self.dragging_linked_clip.track_index)
+                            (self.dragging_linked_clip.timeline_start_ms, self.dragging_linked_clip.track_index)
                     self.drag_start_pos = event.pos()
 
             else:
@@ -789,16 +791,16 @@ class TimelineWidget(QWidget):
 
                     if is_in_track_area:
                         self.creating_selection_region = True
-                        playhead_x = self.sec_to_x(self.playhead_pos_sec)
+                        playhead_x = self.ms_to_x(self.playhead_pos_ms)
                         if abs(event.pos().x() - playhead_x) < self.SNAP_THRESHOLD_PIXELS:
-                            self.selection_drag_start_sec = self.playhead_pos_sec
+                            self.selection_drag_start_ms = self.playhead_pos_ms
                         else:
-                            self.selection_drag_start_sec = self.x_to_sec(event.pos().x())
-                        self.selection_regions.append([self.selection_drag_start_sec, self.selection_drag_start_sec])
+                            self.selection_drag_start_ms = self.x_to_ms(event.pos().x())
+                        self.selection_regions.append([self.selection_drag_start_ms, self.selection_drag_start_ms])
                     elif is_on_timescale:
-                        time_sec = max(0, self.x_to_sec(event.pos().x()))
-                        self.playhead_pos_sec = self._snap_time_if_needed(time_sec)
-                        self.playhead_moved.emit(self.playhead_pos_sec)
+                        time_ms = max(0, self.x_to_ms(event.pos().x()))
+                        self.playhead_pos_ms = self._snap_time_if_needed(time_ms)
+                        self.playhead_moved.emit(self.playhead_pos_ms)
                         self.dragging_playhead = True
             
             self.update()
@@ -806,22 +808,22 @@ class TimelineWidget(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent):
         if self.panning:
             delta_x = event.pos().x() - self.pan_start_pos.x()
-            time_delta = delta_x / self.pixels_per_second
-            new_view_start = self.pan_start_view_sec - time_delta
-            self.view_start_sec = max(0.0, new_view_start)
+            time_delta = delta_x / self.pixels_per_ms
+            new_view_start = self.pan_start_view_ms - time_delta
+            self.view_start_ms = int(max(0, new_view_start))
             self.update()
             return
 
         if self.resizing_selection_region:
-            current_sec = max(0, self.x_to_sec(event.pos().x()))
+            current_ms = max(0, self.x_to_ms(event.pos().x()))
             original_start, original_end = self.resize_selection_start_values
 
             if self.resize_selection_edge == 'left':
-                new_start = current_sec
+                new_start = current_ms
                 new_end = original_end
             else: # right
                 new_start = original_start
-                new_end = current_sec
+                new_end = current_ms
 
             self.resizing_selection_region[0] = min(new_start, new_end)
             self.resizing_selection_region[1] = max(new_start, new_end)
@@ -836,60 +838,60 @@ class TimelineWidget(QWidget):
         if self.resizing_clip:
             linked_clip = next((c for c in self.timeline.clips if c.group_id == self.resizing_clip.group_id and c.id != self.resizing_clip.id), None)
             delta_x = event.pos().x() - self.resize_start_pos.x()
-            time_delta = delta_x / self.pixels_per_second
-            min_duration = 1.0 / self.project_fps
-            snap_time_delta = self.SNAP_THRESHOLD_PIXELS / self.pixels_per_second
+            time_delta = delta_x / self.pixels_per_ms
+            min_duration_ms = int(1000 / self.project_fps)
+            snap_time_delta = self.SNAP_THRESHOLD_PIXELS / self.pixels_per_ms
 
-            snap_points = [self.playhead_pos_sec]
+            snap_points = [self.playhead_pos_ms]
             for clip in self.timeline.clips:
                 if clip.id == self.resizing_clip.id: continue
                 if linked_clip and clip.id == linked_clip.id: continue
-                snap_points.append(clip.timeline_start_sec)
-                snap_points.append(clip.timeline_end_sec)
+                snap_points.append(clip.timeline_start_ms)
+                snap_points.append(clip.timeline_end_ms)
 
             media_props = self.window().media_properties.get(self.resizing_clip.source_path)
-            source_duration = media_props['duration'] if media_props else float('inf')
+            source_duration_ms = media_props['duration_ms'] if media_props else float('inf')
 
             if self.resize_edge == 'left':
-                original_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].timeline_start_sec
-                original_duration = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].duration_sec
-                original_clip_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].clip_start_sec
-                true_new_start_sec = original_start + time_delta
+                original_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].timeline_start_ms
+                original_duration = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].duration_ms
+                original_clip_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].clip_start_ms
+                true_new_start_ms = original_start + time_delta
                 
-                new_start_sec = true_new_start_sec
+                new_start_ms = true_new_start_ms
                 for snap_point in snap_points:
-                    if abs(true_new_start_sec - snap_point) < snap_time_delta:
-                        new_start_sec = snap_point
+                    if abs(true_new_start_ms - snap_point) < snap_time_delta:
+                        new_start_ms = snap_point
                         break
 
-                if new_start_sec > original_start + original_duration - min_duration:
-                    new_start_sec = original_start + original_duration - min_duration
+                if new_start_ms > original_start + original_duration - min_duration_ms:
+                    new_start_ms = original_start + original_duration - min_duration_ms
 
-                new_start_sec = max(0, new_start_sec)
+                new_start_ms = max(0, new_start_ms)
 
                 if self.resizing_clip.media_type != 'image':
-                    if new_start_sec < original_start - original_clip_start:
-                         new_start_sec = original_start - original_clip_start
+                    if new_start_ms < original_start - original_clip_start:
+                         new_start_ms = original_start - original_clip_start
 
-                new_duration = (original_start + original_duration) - new_start_sec
-                new_clip_start = original_clip_start + (new_start_sec - original_start)
+                new_duration = (original_start + original_duration) - new_start_ms
+                new_clip_start = original_clip_start + (new_start_ms - original_start)
                 
-                if new_duration < min_duration:
-                    new_duration = min_duration
-                    new_start_sec = (original_start + original_duration) - new_duration
-                    new_clip_start = original_clip_start + (new_start_sec - original_start)
+                if new_duration < min_duration_ms:
+                    new_duration = min_duration_ms
+                    new_start_ms = (original_start + original_duration) - new_duration
+                    new_clip_start = original_clip_start + (new_start_ms - original_start)
 
-                self.resizing_clip.timeline_start_sec = new_start_sec
-                self.resizing_clip.duration_sec = new_duration
-                self.resizing_clip.clip_start_sec = new_clip_start
+                self.resizing_clip.timeline_start_ms = int(new_start_ms)
+                self.resizing_clip.duration_ms = int(new_duration)
+                self.resizing_clip.clip_start_ms = int(new_clip_start)
                 if linked_clip:
-                    linked_clip.timeline_start_sec = new_start_sec
-                    linked_clip.duration_sec = new_duration
-                    linked_clip.clip_start_sec = new_clip_start
+                    linked_clip.timeline_start_ms = int(new_start_ms)
+                    linked_clip.duration_ms = int(new_duration)
+                    linked_clip.clip_start_ms = int(new_clip_start)
 
             elif self.resize_edge == 'right':
-                original_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].timeline_start_sec
-                original_duration = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].duration_sec
+                original_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].timeline_start_ms
+                original_duration = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].duration_ms
                 
                 true_new_duration = original_duration + time_delta
                 true_new_end_time = original_start + true_new_duration
@@ -902,23 +904,23 @@ class TimelineWidget(QWidget):
                 
                 new_duration = new_end_time - original_start
                 
-                if new_duration < min_duration:
-                    new_duration = min_duration
+                if new_duration < min_duration_ms:
+                    new_duration = min_duration_ms
 
                 if self.resizing_clip.media_type != 'image':
-                    if self.resizing_clip.clip_start_sec + new_duration > source_duration:
-                        new_duration = source_duration - self.resizing_clip.clip_start_sec
+                    if self.resizing_clip.clip_start_ms + new_duration > source_duration_ms:
+                        new_duration = source_duration_ms - self.resizing_clip.clip_start_ms
                 
-                self.resizing_clip.duration_sec = new_duration
+                self.resizing_clip.duration_ms = int(new_duration)
                 if linked_clip:
-                    linked_clip.duration_sec = new_duration
+                    linked_clip.duration_ms = int(new_duration)
 
             self.update()
             return
 
         if not self.dragging_clip and not self.dragging_playhead and not self.creating_selection_region:
             cursor_set = False
-            playhead_x = self.sec_to_x(self.playhead_pos_sec)
+            playhead_x = self.ms_to_x(self.playhead_pos_ms)
             is_in_track_area = event.pos().y() > self.TIMESCALE_HEIGHT and event.pos().x() > self.HEADER_WIDTH
             if is_in_track_area and abs(event.pos().x() - playhead_x) < self.SNAP_THRESHOLD_PIXELS:
                 self.setCursor(Qt.CursorShape.SizeHorCursor)
@@ -926,8 +928,8 @@ class TimelineWidget(QWidget):
             
             if not cursor_set and is_in_track_area:
                 for region in self.selection_regions:
-                    x_start = self.sec_to_x(region[0])
-                    x_end = self.sec_to_x(region[1])
+                    x_start = self.ms_to_x(region[0])
+                    x_end = self.ms_to_x(region[1])
                     if abs(event.pos().x() - x_start) < self.RESIZE_HANDLE_WIDTH or \
                        abs(event.pos().x() - x_end) < self.RESIZE_HANDLE_WIDTH:
                         self.setCursor(Qt.CursorShape.SizeHorCursor)
@@ -945,16 +947,16 @@ class TimelineWidget(QWidget):
                 self.unsetCursor()
 
         if self.creating_selection_region:
-            current_sec = self.x_to_sec(event.pos().x())
-            start = min(self.selection_drag_start_sec, current_sec)
-            end = max(self.selection_drag_start_sec, current_sec)
+            current_ms = self.x_to_ms(event.pos().x())
+            start = min(self.selection_drag_start_ms, current_ms)
+            end = max(self.selection_drag_start_ms, current_ms)
             self.selection_regions[-1] = [start, end]
             self.update()
             return
         
         if self.dragging_selection_region:
             delta_x = event.pos().x() - self.drag_start_pos.x()
-            time_delta = delta_x / self.pixels_per_second
+            time_delta = int(delta_x / self.pixels_per_ms)
             
             original_start, original_end = self.drag_selection_start_values
             duration = original_end - original_start
@@ -967,16 +969,16 @@ class TimelineWidget(QWidget):
             return
 
         if self.dragging_playhead:
-            time_sec = max(0, self.x_to_sec(event.pos().x()))
-            self.playhead_pos_sec = self._snap_time_if_needed(time_sec)
-            self.playhead_moved.emit(self.playhead_pos_sec)
+            time_ms = max(0, self.x_to_ms(event.pos().x()))
+            self.playhead_pos_ms = self._snap_time_if_needed(time_ms)
+            self.playhead_moved.emit(self.playhead_pos_ms)
             self.update()
         elif self.dragging_clip:
             self.highlighted_track_info = None
             self.highlighted_ghost_track_info = None
             new_track_info = self.y_to_track_info(event.pos().y())
             
-            original_start_sec, _ = self.drag_original_clip_states[self.dragging_clip.id]
+            original_start_ms, _ = self.drag_original_clip_states[self.dragging_clip.id]
 
             if new_track_info:
                 new_track_type, new_track_index = new_track_info
@@ -993,19 +995,19 @@ class TimelineWidget(QWidget):
                     self.dragging_clip.track_index = new_track_index
 
             delta_x = event.pos().x() - self.drag_start_pos.x()
-            time_delta = delta_x / self.pixels_per_second
-            true_new_start_time = original_start_sec + time_delta
+            time_delta = delta_x / self.pixels_per_ms
+            true_new_start_time = original_start_ms + time_delta
 
-            playhead_time = self.playhead_pos_sec
-            snap_time_delta = self.SNAP_THRESHOLD_PIXELS / self.pixels_per_second
+            playhead_time = self.playhead_pos_ms
+            snap_time_delta = self.SNAP_THRESHOLD_PIXELS / self.pixels_per_ms
             
             new_start_time = true_new_start_time
-            true_new_end_time = true_new_start_time + self.dragging_clip.duration_sec
+            true_new_end_time = true_new_start_time + self.dragging_clip.duration_ms
             
             if abs(true_new_start_time - playhead_time) < snap_time_delta:
                 new_start_time = playhead_time
             elif abs(true_new_end_time - playhead_time) < snap_time_delta:
-                new_start_time = playhead_time - self.dragging_clip.duration_sec
+                new_start_time = playhead_time - self.dragging_clip.duration_ms
 
             for other_clip in self.timeline.clips:
                 if other_clip.id == self.dragging_clip.id: continue
@@ -1014,21 +1016,21 @@ class TimelineWidget(QWidget):
                     other_clip.track_index != self.dragging_clip.track_index):
                     continue
 
-                is_overlapping = (new_start_time < other_clip.timeline_end_sec and
-                                  new_start_time + self.dragging_clip.duration_sec > other_clip.timeline_start_sec)
+                is_overlapping = (new_start_time < other_clip.timeline_end_ms and
+                                  new_start_time + self.dragging_clip.duration_ms > other_clip.timeline_start_ms)
                 
                 if is_overlapping:
-                    movement_direction = true_new_start_time - original_start_sec
+                    movement_direction = true_new_start_time - original_start_ms
                     if movement_direction > 0:
-                        new_start_time = other_clip.timeline_start_sec - self.dragging_clip.duration_sec
+                        new_start_time = other_clip.timeline_start_ms - self.dragging_clip.duration_ms
                     else:
-                        new_start_time = other_clip.timeline_end_sec
+                        new_start_time = other_clip.timeline_end_ms
                     break 
 
             final_start_time = max(0, new_start_time)
-            self.dragging_clip.timeline_start_sec = final_start_time
+            self.dragging_clip.timeline_start_ms = int(final_start_time)
             if self.dragging_linked_clip:
-                self.dragging_linked_clip.timeline_start_sec = final_start_time
+                self.dragging_linked_clip.timeline_start_ms = int(final_start_time)
             
             self.update()
 
@@ -1061,7 +1063,7 @@ class TimelineWidget(QWidget):
                 self.creating_selection_region = False
                 if self.selection_regions:
                     start, end = self.selection_regions[-1]
-                    if (end - start) * self.pixels_per_second < 2:
+                    if (end - start) * self.pixels_per_ms < 2:
                         self.clear_all_regions()
             
             if self.dragging_selection_region:
@@ -1071,18 +1073,18 @@ class TimelineWidget(QWidget):
             self.dragging_playhead = False
             if self.dragging_clip:
                 orig_start, orig_track = self.drag_original_clip_states[self.dragging_clip.id]
-                moved = (orig_start != self.dragging_clip.timeline_start_sec or 
+                moved = (orig_start != self.dragging_clip.timeline_start_ms or 
                          orig_track != self.dragging_clip.track_index)
 
                 if self.dragging_linked_clip:
                     orig_start_link, orig_track_link = self.drag_original_clip_states[self.dragging_linked_clip.id]
-                    moved = moved or (orig_start_link != self.dragging_linked_clip.timeline_start_sec or 
+                    moved = moved or (orig_start_link != self.dragging_linked_clip.timeline_start_ms or 
                                       orig_track_link != self.dragging_linked_clip.track_index)
                 
                 if moved:
                     self.window().finalize_clip_drag(self.drag_start_state)
                 
-                self.timeline.clips.sort(key=lambda c: c.timeline_start_sec)
+                self.timeline.clips.sort(key=lambda c: c.timeline_start_ms)
                 self.highlighted_track_info = None
                 self.highlighted_ghost_track_info = None
                 self.operation_finished.emit()
@@ -1162,12 +1164,12 @@ class TimelineWidget(QWidget):
 
         event.acceptProposedAction()
         
-        duration = media_props['duration']
+        duration_ms = media_props['duration_ms']
         media_type = media_props['media_type']
         has_audio = media_props['has_audio']
 
         pos = event.position()
-        start_sec = self.x_to_sec(pos.x())
+        start_ms = self.x_to_ms(pos.x())
         track_info = self.y_to_track_info(pos.y())
 
         self.drag_over_rect = QRectF()
@@ -1187,8 +1189,8 @@ class TimelineWidget(QWidget):
             else:
                 self.highlighted_track_info = track_info
             
-            width = int(duration * self.pixels_per_second)
-            x = self.sec_to_x(start_sec)
+            width = int(duration_ms * self.pixels_per_ms)
+            x = self.ms_to_x(start_ms)
             
             video_y, audio_y = -1, -1
 
@@ -1232,19 +1234,19 @@ class TimelineWidget(QWidget):
                 return
 
             pos = event.position()
-            start_sec = self.x_to_sec(pos.x())
+            start_ms = self.x_to_ms(pos.x())
             track_info = self.y_to_track_info(pos.y())
             if not track_info:
                 event.ignore()
                 return
             
-            current_timeline_pos = start_sec
+            current_timeline_pos = start_ms
 
             for file_path in added_files:
                 media_info = main_window.media_properties.get(file_path)
                 if not media_info: continue
 
-                duration = media_info['duration']
+                duration_ms = media_info['duration_ms']
                 has_audio = media_info['has_audio']
                 media_type = media_info['media_type']
 
@@ -1269,14 +1271,14 @@ class TimelineWidget(QWidget):
 
                 main_window._add_clip_to_timeline(
                     source_path=file_path,
-                    timeline_start_sec=current_timeline_pos,
-                    duration_sec=duration,
+                    timeline_start_ms=current_timeline_pos,
+                    duration_ms=duration_ms,
                     media_type=media_type,
-                    clip_start_sec=0,
+                    clip_start_ms=0,
                     video_track_index=video_track_idx,
                     audio_track_index=audio_track_idx
                 )
-                current_timeline_pos += duration
+                current_timeline_pos += duration_ms
             
             event.acceptProposedAction()
             return
@@ -1286,12 +1288,12 @@ class TimelineWidget(QWidget):
 
         json_data = json.loads(mime_data.data('application/x-vnd.video.filepath').data().decode('utf-8'))
         file_path = json_data['path']
-        duration = json_data['duration']
+        duration_ms = json_data['duration_ms']
         has_audio = json_data['has_audio']
         media_type = json_data['media_type']
 
         pos = event.position()
-        start_sec = self.x_to_sec(pos.x())
+        start_ms = self.x_to_ms(pos.x())
         track_info = self.y_to_track_info(pos.y())
 
         if not track_info:
@@ -1321,10 +1323,10 @@ class TimelineWidget(QWidget):
         main_window = self.window()
         main_window._add_clip_to_timeline(
             source_path=file_path,
-            timeline_start_sec=start_sec,
-            duration_sec=duration,
+            timeline_start_ms=start_ms,
+            duration_ms=duration_ms,
             media_type=media_type,
-            clip_start_sec=0,
+            clip_start_ms=0,
             video_track_index=video_track_idx,
             audio_track_index=audio_track_idx
         )
@@ -1382,8 +1384,8 @@ class TimelineWidget(QWidget):
 
             split_action = menu.addAction("Split Clip")
             delete_action = menu.addAction("Delete Clip")
-            playhead_time = self.playhead_pos_sec
-            is_playhead_over_clip = (clip_at_pos.timeline_start_sec < playhead_time < clip_at_pos.timeline_end_sec)
+            playhead_time = self.playhead_pos_ms
+            is_playhead_over_clip = (clip_at_pos.timeline_start_ms < playhead_time < clip_at_pos.timeline_end_ms)
             split_action.setEnabled(is_playhead_over_clip)
             split_action.triggered.connect(lambda: self.split_requested.emit(clip_at_pos))
             delete_action.triggered.connect(lambda: self.delete_clip_requested.emit(clip_at_pos))
@@ -1672,7 +1674,7 @@ class MediaListWidget(QListWidget):
 
         payload = {
             "path": path,
-            "duration": media_info['duration'],
+            "duration_ms": media_info['duration_ms'],
             "has_audio": media_info['has_audio'],
             "media_type": media_info['media_type']
         }
@@ -1930,7 +1932,7 @@ class MainWindow(QMainWindow):
     def on_timeline_changed_by_undo(self):
         self.prune_empty_tracks()
         self.timeline_widget.update()
-        self.seek_preview(self.timeline_widget.playhead_pos_sec)
+        self.seek_preview(self.timeline_widget.playhead_pos_ms)
         self.status_label.setText("Operation undone/redone.")
 
     def update_undo_redo_actions(self):
@@ -1964,8 +1966,8 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Error: Could not find properties for {os.path.basename(file_path)}")
             return
 
-        playhead_pos = self.timeline_widget.playhead_pos_sec
-        duration = media_info['duration']
+        playhead_pos = self.timeline_widget.playhead_pos_ms
+        duration_ms = media_info['duration_ms']
         has_audio = media_info['has_audio']
         media_type = media_info['media_type']
 
@@ -1974,10 +1976,10 @@ class MainWindow(QMainWindow):
 
         self._add_clip_to_timeline(
             source_path=file_path,
-            timeline_start_sec=playhead_pos,
-            duration_sec=duration,
+            timeline_start_ms=playhead_pos,
+            duration_ms=duration_ms,
             media_type=media_type,
-            clip_start_sec=0.0,
+            clip_start_ms=0,
             video_track_index=video_track,
             audio_track_index=audio_track
         )
@@ -2102,25 +2104,25 @@ class MainWindow(QMainWindow):
             data['action'] = action
             self.windows_menu.addAction(action)
 
-    def _get_topmost_video_clip_at(self, time_sec):
+    def _get_topmost_video_clip_at(self, time_ms):
         """Finds the video clip on the highest track at a specific time."""
         top_clip = None
         for c in self.timeline.clips:
-            if c.track_type == 'video' and c.timeline_start_sec <= time_sec < c.timeline_end_sec:
+            if c.track_type == 'video' and c.timeline_start_ms <= time_ms < c.timeline_end_ms:
                 if top_clip is None or c.track_index > top_clip.track_index:
                     top_clip = c
         return top_clip
 
-    def _start_playback_stream_at(self, time_sec):
+    def _start_playback_stream_at(self, time_ms):
         self._stop_playback_stream()
-        clip = self._get_topmost_video_clip_at(time_sec)
+        clip = self._get_topmost_video_clip_at(time_ms)
         if not clip: return
 
         self.playback_clip = clip
-        clip_time = time_sec - clip.timeline_start_sec + clip.clip_start_sec
+        clip_time_sec = (time_ms - clip.timeline_start_ms + clip.clip_start_ms) / 1000.0
         w, h = self.project_width, self.project_height
         try:
-            args = (ffmpeg.input(self.playback_clip.source_path, ss=clip_time)
+            args = (ffmpeg.input(self.playback_clip.source_path, ss=f"{clip_time_sec:.6f}")
                     .filter('scale', w, h, force_original_aspect_ratio='decrease')
                     .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
                     .output('pipe:', format='rawvideo', pix_fmt='rgb24', r=self.project_fps).compile())
@@ -2149,7 +2151,7 @@ class MainWindow(QMainWindow):
             if file_ext in ['.png', '.jpg', '.jpeg']:
                 img = QImage(file_path)
                 media_info['media_type'] = 'image'
-                media_info['duration'] = 5.0
+                media_info['duration_ms'] = 5000
                 media_info['has_audio'] = False
                 media_info['width'] = img.width()
                 media_info['height'] = img.height()
@@ -2160,7 +2162,8 @@ class MainWindow(QMainWindow):
 
                 if video_stream:
                     media_info['media_type'] = 'video'
-                    media_info['duration'] = float(video_stream.get('duration', probe['format'].get('duration', 0)))
+                    duration_sec = float(video_stream.get('duration', probe['format'].get('duration', 0)))
+                    media_info['duration_ms'] = int(duration_sec * 1000)
                     media_info['has_audio'] = audio_stream is not None
                     media_info['width'] = int(video_stream['width'])
                     media_info['height'] = int(video_stream['height'])
@@ -2169,7 +2172,8 @@ class MainWindow(QMainWindow):
                         if den > 0: media_info['fps'] = num / den
                 elif audio_stream:
                     media_info['media_type'] = 'audio'
-                    media_info['duration'] = float(audio_stream.get('duration', probe['format'].get('duration', 0)))
+                    duration_sec = float(audio_stream.get('duration', probe['format'].get('duration', 0)))
+                    media_info['duration_ms'] = int(duration_sec * 1000)
                     media_info['has_audio'] = True
                 else:
                     return None
@@ -2215,8 +2219,8 @@ class MainWindow(QMainWindow):
     def _probe_for_drag(self, file_path):
         return self._get_media_properties(file_path)
 
-    def get_frame_data_at_time(self, time_sec):
-        clip_at_time = self._get_topmost_video_clip_at(time_sec)
+    def get_frame_data_at_time(self, time_ms):
+        clip_at_time = self._get_topmost_video_clip_at(time_ms)
         if not clip_at_time:
             return (None, 0, 0)
         try:
@@ -2231,10 +2235,10 @@ class MainWindow(QMainWindow):
                     .run(capture_stdout=True, quiet=True)
                 )
             else:
-                clip_time = time_sec - clip_at_time.timeline_start_sec + clip_at_time.clip_start_sec
+                clip_time_sec = (time_ms - clip_at_time.timeline_start_ms + clip_at_time.clip_start_ms) / 1000.0
                 out, _ = (
                     ffmpeg
-                    .input(clip_at_time.source_path, ss=clip_time)
+                    .input(clip_at_time.source_path, ss=f"{clip_time_sec:.6f}")
                     .filter('scale', w, h, force_original_aspect_ratio='decrease')
                     .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
                     .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
@@ -2245,8 +2249,8 @@ class MainWindow(QMainWindow):
             print(f"Error extracting frame data: {e.stderr}")
             return (None, 0, 0)
 
-    def get_frame_at_time(self, time_sec):
-        clip_at_time = self._get_topmost_video_clip_at(time_sec)
+    def get_frame_at_time(self, time_ms):
+        clip_at_time = self._get_topmost_video_clip_at(time_ms)
         if not clip_at_time: return None
         try:
             w, h = self.project_width, self.project_height
@@ -2259,8 +2263,8 @@ class MainWindow(QMainWindow):
                     .run(capture_stdout=True, quiet=True)
                 )
             else:
-                clip_time = time_sec - clip_at_time.timeline_start_sec + clip_at_time.clip_start_sec
-                out, _ = (ffmpeg.input(clip_at_time.source_path, ss=clip_time)
+                clip_time_sec = (time_ms - clip_at_time.timeline_start_ms + clip_at_time.clip_start_ms) / 1000.0
+                out, _ = (ffmpeg.input(clip_at_time.source_path, ss=f"{clip_time_sec:.6f}")
                           .filter('scale', w, h, force_original_aspect_ratio='decrease')
                           .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
                           .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
@@ -2270,11 +2274,11 @@ class MainWindow(QMainWindow):
             return QPixmap.fromImage(image)
         except ffmpeg.Error as e: print(f"Error extracting frame: {e.stderr}"); return None
 
-    def seek_preview(self, time_sec):
+    def seek_preview(self, time_ms):
         self._stop_playback_stream()
-        self.timeline_widget.playhead_pos_sec = time_sec
+        self.timeline_widget.playhead_pos_ms = int(time_ms)
         self.timeline_widget.update()
-        self.current_preview_pixmap = self.get_frame_at_time(time_sec)
+        self.current_preview_pixmap = self.get_frame_at_time(time_ms)
         self._update_preview_display()
 
     def _update_preview_display(self):
@@ -2303,26 +2307,26 @@ class MainWindow(QMainWindow):
         if self.playback_timer.isActive(): self.playback_timer.stop(); self._stop_playback_stream(); self.play_pause_button.setText("Play")
         else:
             if not self.timeline.clips: return
-            if self.timeline_widget.playhead_pos_sec >= self.timeline.get_total_duration(): self.timeline_widget.playhead_pos_sec = 0.0
+            if self.timeline_widget.playhead_pos_ms >= self.timeline.get_total_duration(): self.timeline_widget.playhead_pos_ms = 0
             self.playback_timer.start(int(1000 / self.project_fps)); self.play_pause_button.setText("Pause")
 
-    def stop_playback(self): self.playback_timer.stop(); self._stop_playback_stream(); self.play_pause_button.setText("Play"); self.seek_preview(0.0)
+    def stop_playback(self): self.playback_timer.stop(); self._stop_playback_stream(); self.play_pause_button.setText("Play"); self.seek_preview(0)
     def step_frame(self, direction):
         if not self.timeline.clips: return
         self.playback_timer.stop(); self.play_pause_button.setText("Play"); self._stop_playback_stream()
-        frame_duration = 1.0 / self.project_fps
-        new_time = self.timeline_widget.playhead_pos_sec + (direction * frame_duration)
-        self.seek_preview(max(0, min(new_time, self.timeline.get_total_duration())))
+        frame_duration_ms = 1000.0 / self.project_fps
+        new_time = self.timeline_widget.playhead_pos_ms + (direction * frame_duration_ms)
+        self.seek_preview(int(max(0, min(new_time, self.timeline.get_total_duration()))))
 
     def advance_playback_frame(self):
-        frame_duration = 1.0 / self.project_fps
-        new_time = self.timeline_widget.playhead_pos_sec + frame_duration
-        if new_time > self.timeline.get_total_duration(): self.stop_playback(); return
+        frame_duration_ms = 1000.0 / self.project_fps
+        new_time_ms = self.timeline_widget.playhead_pos_ms + frame_duration_ms
+        if new_time_ms > self.timeline.get_total_duration(): self.stop_playback(); return
         
-        self.timeline_widget.playhead_pos_sec = new_time
+        self.timeline_widget.playhead_pos_ms = round(new_time_ms)
         self.timeline_widget.update()
         
-        clip_at_new_time = self._get_topmost_video_clip_at(new_time)
+        clip_at_new_time = self._get_topmost_video_clip_at(new_time_ms)
         
         if not clip_at_new_time:
             self._stop_playback_stream()
@@ -2334,12 +2338,12 @@ class MainWindow(QMainWindow):
             if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id:
                 self._stop_playback_stream()
                 self.playback_clip = clip_at_new_time
-                self.current_preview_pixmap = self.get_frame_at_time(new_time)
+                self.current_preview_pixmap = self.get_frame_at_time(new_time_ms)
                 self._update_preview_display()
             return
 
         if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id:
-            self._start_playback_stream_at(new_time)
+            self._start_playback_stream_at(new_time_ms)
         
         if self.playback_process:
             frame_size = self.project_width * self.project_height * 3
@@ -2421,7 +2425,7 @@ class MainWindow(QMainWindow):
         if not path: return
         project_data = {
             "media_pool": self.media_pool,
-            "clips": [{"source_path": c.source_path, "timeline_start_sec": c.timeline_start_sec, "clip_start_sec": c.clip_start_sec, "duration_sec": c.duration_sec, "track_index": c.track_index, "track_type": c.track_type, "media_type": c.media_type, "group_id": c.group_id} for c in self.timeline.clips],
+            "clips": [{"source_path": c.source_path, "timeline_start_ms": c.timeline_start_ms, "clip_start_ms": c.clip_start_ms, "duration_ms": c.duration_ms, "track_index": c.track_index, "track_type": c.track_type, "media_type": c.media_type, "group_id": c.group_id} for c in self.timeline.clips],
             "selection_regions": self.timeline_widget.selection_regions,
             "last_export_path": self.last_export_path,
             "settings": {
@@ -2463,7 +2467,7 @@ class MainWindow(QMainWindow):
             for clip_data in project_data["clips"]:
                 if not os.path.exists(clip_data["source_path"]):
                     self.status_label.setText(f"Error: Missing media file {clip_data['source_path']}"); self.new_project(); return
-                
+
                 if 'media_type' not in clip_data:
                     ext = os.path.splitext(clip_data['source_path'])[1].lower()
                     if ext in ['.mp3', '.wav', '.m4a', '.aac']:
@@ -2552,19 +2556,19 @@ class MainWindow(QMainWindow):
         if not added_files:
             return
 
-        playhead_pos = self.timeline_widget.playhead_pos_sec
+        playhead_pos = self.timeline_widget.playhead_pos_ms
 
         def add_clips_action():
             for file_path in added_files:
                 media_info = self.media_properties.get(file_path)
                 if not media_info: continue
 
-                duration = media_info['duration']
+                duration_ms = media_info['duration_ms']
                 media_type = media_info['media_type']
                 has_audio = media_info['has_audio']
 
                 clip_start_time = playhead_pos
-                clip_end_time = playhead_pos + duration
+                clip_end_time = playhead_pos + duration_ms
 
                 video_track_index = None
                 audio_track_index = None
@@ -2572,7 +2576,7 @@ class MainWindow(QMainWindow):
                 if media_type in ['video', 'image']:
                     for i in range(1, self.timeline.num_video_tracks + 2):
                         is_occupied = any(
-                            c.timeline_start_sec < clip_end_time and c.timeline_end_sec > clip_start_time
+                            c.timeline_start_ms < clip_end_time and c.timeline_end_ms > clip_start_time
                             for c in self.timeline.clips if c.track_type == 'video' and c.track_index == i
                         )
                         if not is_occupied:
@@ -2582,7 +2586,7 @@ class MainWindow(QMainWindow):
                 if has_audio:
                     for i in range(1, self.timeline.num_audio_tracks + 2):
                         is_occupied = any(
-                            c.timeline_start_sec < clip_end_time and c.timeline_end_sec > clip_start_time
+                            c.timeline_start_ms < clip_end_time and c.timeline_end_ms > clip_start_time
                             for c in self.timeline.clips if c.track_type == 'audio' and c.track_index == i
                         )
                         if not is_occupied:
@@ -2593,13 +2597,13 @@ class MainWindow(QMainWindow):
                 if video_track_index is not None:
                     if video_track_index > self.timeline.num_video_tracks:
                         self.timeline.num_video_tracks = video_track_index
-                    video_clip = TimelineClip(file_path, clip_start_time, 0.0, duration, video_track_index, 'video', media_type, group_id)
+                    video_clip = TimelineClip(file_path, clip_start_time, 0, duration_ms, video_track_index, 'video', media_type, group_id)
                     self.timeline.add_clip(video_clip)
                 
                 if audio_track_index is not None:
                     if audio_track_index > self.timeline.num_audio_tracks:
                         self.timeline.num_audio_tracks = audio_track_index
-                    audio_clip = TimelineClip(file_path, clip_start_time, 0.0, duration, audio_track_index, 'audio', media_type, group_id)
+                    audio_clip = TimelineClip(file_path, clip_start_time, 0, duration_ms, audio_track_index, 'audio', media_type, group_id)
                     self.timeline.add_clip(audio_clip)
 
             self.status_label.setText(f"Added {len(added_files)} file(s) to timeline.")
@@ -2611,7 +2615,7 @@ class MainWindow(QMainWindow):
         if file_paths:
             self._add_media_files_to_project(file_paths)
 
-    def _add_clip_to_timeline(self, source_path, timeline_start_sec, duration_sec, media_type, clip_start_sec=0.0, video_track_index=None, audio_track_index=None):
+    def _add_clip_to_timeline(self, source_path, timeline_start_ms, duration_ms, media_type, clip_start_ms=0, video_track_index=None, audio_track_index=None):
         if media_type in ['video', 'image']:
             self._update_project_properties_from_clip(source_path)
 
@@ -2621,13 +2625,13 @@ class MainWindow(QMainWindow):
         if video_track_index is not None:
              if video_track_index > self.timeline.num_video_tracks:
                  self.timeline.num_video_tracks = video_track_index
-             video_clip = TimelineClip(source_path, timeline_start_sec, clip_start_sec, duration_sec, video_track_index, 'video', media_type, group_id)
+             video_clip = TimelineClip(source_path, timeline_start_ms, clip_start_ms, duration_ms, video_track_index, 'video', media_type, group_id)
              self.timeline.add_clip(video_clip)
         
         if audio_track_index is not None:
              if audio_track_index > self.timeline.num_audio_tracks:
                  self.timeline.num_audio_tracks = audio_track_index
-             audio_clip = TimelineClip(source_path, timeline_start_sec, clip_start_sec, duration_sec, audio_track_index, 'audio', media_type, group_id)
+             audio_clip = TimelineClip(source_path, timeline_start_ms, clip_start_ms, duration_ms, audio_track_index, 'audio', media_type, group_id)
              self.timeline.add_clip(audio_clip)
 
         new_state = self._get_current_timeline_state()
@@ -2635,21 +2639,21 @@ class MainWindow(QMainWindow):
         command.undo()
         self.undo_stack.push(command)
 
-    def _split_at_time(self, clip_to_split, time_sec, new_group_id=None):
-        if not (clip_to_split.timeline_start_sec < time_sec < clip_to_split.timeline_end_sec): return False
-        split_point = time_sec - clip_to_split.timeline_start_sec
-        orig_dur = clip_to_split.duration_sec
+    def _split_at_time(self, clip_to_split, time_ms, new_group_id=None):
+        if not (clip_to_split.timeline_start_ms < time_ms < clip_to_split.timeline_end_ms): return False
+        split_point = time_ms - clip_to_split.timeline_start_ms
+        orig_dur = clip_to_split.duration_ms
         group_id_for_new_clip = new_group_id if new_group_id is not None else clip_to_split.group_id
         
-        new_clip = TimelineClip(clip_to_split.source_path, time_sec, clip_to_split.clip_start_sec + split_point, orig_dur - split_point, clip_to_split.track_index, clip_to_split.track_type, clip_to_split.media_type, group_id_for_new_clip)
-        clip_to_split.duration_sec = split_point
+        new_clip = TimelineClip(clip_to_split.source_path, time_ms, clip_to_split.clip_start_ms + split_point, orig_dur - split_point, clip_to_split.track_index, clip_to_split.track_type, clip_to_split.media_type, group_id_for_new_clip)
+        clip_to_split.duration_ms = split_point
         self.timeline.add_clip(new_clip)
         return True
 
     def split_clip_at_playhead(self, clip_to_split=None):
-        playhead_time = self.timeline_widget.playhead_pos_sec
+        playhead_time = self.timeline_widget.playhead_pos_ms
         if not clip_to_split:
-            clips_at_playhead = [c for c in self.timeline.clips if c.timeline_start_sec < playhead_time < c.timeline_end_sec]
+            clips_at_playhead = [c for c in self.timeline.clips if c.timeline_start_ms < playhead_time < c.timeline_end_ms]
             if not clips_at_playhead:
                 self.status_label.setText("Playhead is not over a clip to split.")
                 return
@@ -2723,20 +2727,20 @@ class MainWindow(QMainWindow):
                 return
 
             target_audio_track = 1
-            new_audio_start = video_clip.timeline_start_sec
-            new_audio_end = video_clip.timeline_end_sec
+            new_audio_start = video_clip.timeline_start_ms
+            new_audio_end = video_clip.timeline_end_ms
             
             conflicting_clips = [
                 c for c in self.timeline.clips
                 if c.track_type == 'audio' and c.track_index == target_audio_track and
-                c.timeline_start_sec < new_audio_end and c.timeline_end_sec > new_audio_start
+                c.timeline_start_ms < new_audio_end and c.timeline_end_ms > new_audio_start
             ]
 
             for conflict_clip in conflicting_clips:
                 found_spot = False
                 for check_track_idx in range(target_audio_track + 1, self.timeline.num_audio_tracks + 2):
                     is_occupied = any(
-                        other.timeline_start_sec < conflict_clip.timeline_end_sec and other.timeline_end_sec > conflict_clip.timeline_start_sec
+                        other.timeline_start_ms < conflict_clip.timeline_end_ms and other.timeline_end_ms > conflict_clip.timeline_start_ms
                         for other in self.timeline.clips
                         if other.id != conflict_clip.id and other.track_type == 'audio' and other.track_index == check_track_idx
                     )
@@ -2751,9 +2755,9 @@ class MainWindow(QMainWindow):
             
             new_audio_clip = TimelineClip(
                 source_path=video_clip.source_path,
-                timeline_start_sec=video_clip.timeline_start_sec,
-                clip_start_sec=video_clip.clip_start_sec,
-                duration_sec=video_clip.duration_sec,
+                timeline_start_ms=video_clip.timeline_start_ms,
+                clip_start_ms=video_clip.clip_start_ms,
+                duration_ms=video_clip.duration_ms,
                 track_index=target_audio_track,
                 track_type='audio',
                 media_type=video_clip.media_type,
@@ -2778,10 +2782,10 @@ class MainWindow(QMainWindow):
 
     def on_split_region(self, region):
         def action():
-            start_sec, end_sec = region
+            start_ms, end_ms = region
             clips = list(self.timeline.clips)
-            for clip in clips: self._split_at_time(clip, end_sec)
-            for clip in clips: self._split_at_time(clip, start_sec)
+            for clip in clips: self._split_at_time(clip, end_ms)
+            for clip in clips: self._split_at_time(clip, start_ms)
             self.timeline_widget.clear_region(region)
         self._perform_complex_timeline_change("Split Region", action)
 
@@ -2793,7 +2797,7 @@ class MainWindow(QMainWindow):
                 split_points.add(end)
 
             for point in sorted(list(split_points)):
-                group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
+                group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_ms < point < c.timeline_end_ms}
                 new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
                 for clip in list(self.timeline.clips):
                     if clip.group_id in new_group_ids:
@@ -2803,98 +2807,98 @@ class MainWindow(QMainWindow):
 
     def on_join_region(self, region):
         def action():
-            start_sec, end_sec = region
-            duration_to_remove = end_sec - start_sec
-            if duration_to_remove <= 0.01: return
+            start_ms, end_ms = region
+            duration_to_remove = end_ms - start_ms
+            if duration_to_remove <= 10: return
 
-            for point in [start_sec, end_sec]:
-                 group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
+            for point in [start_ms, end_ms]:
+                 group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_ms < point < c.timeline_end_ms}
                  new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
                  for clip in list(self.timeline.clips):
                      if clip.group_id in new_group_ids: self._split_at_time(clip, point, new_group_ids[clip.group_id])
 
-            clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_start_sec < end_sec]
+            clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_ms >= start_ms and c.timeline_start_ms < end_ms]
             for clip in clips_to_remove: self.timeline.clips.remove(clip)
 
             for clip in self.timeline.clips:
-                if clip.timeline_start_sec >= end_sec:
-                    clip.timeline_start_sec -= duration_to_remove
+                if clip.timeline_start_ms >= end_ms:
+                    clip.timeline_start_ms -= duration_to_remove
             
-            self.timeline.clips.sort(key=lambda c: c.timeline_start_sec)
+            self.timeline.clips.sort(key=lambda c: c.timeline_start_ms)
             self.timeline_widget.clear_region(region)
         self._perform_complex_timeline_change("Join Region", action)
 
     def on_join_all_regions(self, regions):
         def action():
             for region in sorted(regions, key=lambda r: r[0], reverse=True):
-                start_sec, end_sec = region
-                duration_to_remove = end_sec - start_sec
-                if duration_to_remove <= 0.01: continue
+                start_ms, end_ms = region
+                duration_to_remove = end_ms - start_ms
+                if duration_to_remove <= 10: continue
 
-                for point in [start_sec, end_sec]:
-                    group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
+                for point in [start_ms, end_ms]:
+                    group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_ms < point < c.timeline_end_ms}
                     new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
                     for clip in list(self.timeline.clips):
                         if clip.group_id in new_group_ids: self._split_at_time(clip, point, new_group_ids[clip.group_id])
-                clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_start_sec < end_sec]
+                clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_ms >= start_ms and c.timeline_start_ms < end_ms]
                 for clip in clips_to_remove:
                     try: self.timeline.clips.remove(clip)
                     except ValueError: pass 
 
                 for clip in self.timeline.clips:
-                    if clip.timeline_start_sec >= end_sec:
-                        clip.timeline_start_sec -= duration_to_remove
+                    if clip.timeline_start_ms >= end_ms:
+                        clip.timeline_start_ms -= duration_to_remove
             
-            self.timeline.clips.sort(key=lambda c: c.timeline_start_sec)
+            self.timeline.clips.sort(key=lambda c: c.timeline_start_ms)
             self.timeline_widget.clear_all_regions()
         self._perform_complex_timeline_change("Join All Regions", action)
 
     def on_delete_region(self, region):
         def action():
-            start_sec, end_sec = region
-            duration_to_remove = end_sec - start_sec
-            if duration_to_remove <= 0.01: return
+            start_ms, end_ms = region
+            duration_to_remove = end_ms - start_ms
+            if duration_to_remove <= 10: return
 
-            for point in [start_sec, end_sec]:
-                 group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
+            for point in [start_ms, end_ms]:
+                 group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_ms < point < c.timeline_end_ms}
                  new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
                  for clip in list(self.timeline.clips):
                      if clip.group_id in new_group_ids: self._split_at_time(clip, point, new_group_ids[clip.group_id])
 
-            clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_start_sec < end_sec]
+            clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_ms >= start_ms and c.timeline_start_ms < end_ms]
             for clip in clips_to_remove: self.timeline.clips.remove(clip)
 
             for clip in self.timeline.clips:
-                if clip.timeline_start_sec >= end_sec:
-                    clip.timeline_start_sec -= duration_to_remove
+                if clip.timeline_start_ms >= end_ms:
+                    clip.timeline_start_ms -= duration_to_remove
             
-            self.timeline.clips.sort(key=lambda c: c.timeline_start_sec)
+            self.timeline.clips.sort(key=lambda c: c.timeline_start_ms)
             self.timeline_widget.clear_region(region)
         self._perform_complex_timeline_change("Delete Region", action)
 
     def on_delete_all_regions(self, regions):
         def action():
             for region in sorted(regions, key=lambda r: r[0], reverse=True):
-                start_sec, end_sec = region
-                duration_to_remove = end_sec - start_sec
-                if duration_to_remove <= 0.01: continue
+                start_ms, end_ms = region
+                duration_to_remove = end_ms - start_ms
+                if duration_to_remove <= 10: continue
 
-                for point in [start_sec, end_sec]:
-                    group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_sec < point < c.timeline_end_sec}
+                for point in [start_ms, end_ms]:
+                    group_ids_at_point = {c.group_id for c in self.timeline.clips if c.timeline_start_ms < point < c.timeline_end_ms}
                     new_group_ids = {gid: str(uuid.uuid4()) for gid in group_ids_at_point}
                     for clip in list(self.timeline.clips):
                         if clip.group_id in new_group_ids: self._split_at_time(clip, point, new_group_ids[clip.group_id])
 
-                clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_start_sec < end_sec]
+                clips_to_remove = [c for c in self.timeline.clips if c.timeline_start_ms >= start_ms and c.timeline_start_ms < end_ms]
                 for clip in clips_to_remove:
                     try: self.timeline.clips.remove(clip)
                     except ValueError: pass
 
                 for clip in self.timeline.clips:
-                    if clip.timeline_start_sec >= end_sec:
-                        clip.timeline_start_sec -= duration_to_remove
+                    if clip.timeline_start_ms >= end_ms:
+                        clip.timeline_start_ms -= duration_to_remove
             
-            self.timeline.clips.sort(key=lambda c: c.timeline_start_sec)
+            self.timeline.clips.sort(key=lambda c: c.timeline_start_ms)
             self.timeline_widget.clear_all_regions()
         self._perform_complex_timeline_change("Delete All Regions", action)
 
@@ -2936,10 +2940,12 @@ class MainWindow(QMainWindow):
 
         self.last_export_path = output_path
 
-        w, h, fr_str, total_dur = self.project_width, self.project_height, str(self.project_fps), self.timeline.get_total_duration()
+        total_dur_ms = self.timeline.get_total_duration()
+        total_dur_sec = total_dur_ms / 1000.0
+        w, h, fr_str = self.project_width, self.project_height, str(self.project_fps)
         sample_rate, channel_layout = '44100', 'stereo'
 
-        video_stream = ffmpeg.input(f'color=c=black:s={w}x{h}:r={fr_str}:d={total_dur}', f='lavfi')
+        video_stream = ffmpeg.input(f'color=c=black:s={w}x{h}:r={fr_str}:d={total_dur_sec}', f='lavfi')
 
         all_video_clips = sorted(
             [c for c in self.timeline.clips if c.track_type == 'video'],
@@ -2954,37 +2960,45 @@ class MainWindow(QMainWindow):
                     input_nodes[clip.source_path] = ffmpeg.input(clip.source_path)
             
             clip_source_node = input_nodes[clip.source_path]
+            clip_duration_sec = clip.duration_ms / 1000.0
+            clip_start_sec = clip.clip_start_ms / 1000.0
+            timeline_start_sec = clip.timeline_start_ms / 1000.0
+            timeline_end_sec = clip.timeline_end_ms / 1000.0
+
             if clip.media_type == 'image':
-                segment_stream = (clip_source_node.video.trim(duration=clip.duration_sec).setpts('PTS-STARTPTS'))
+                segment_stream = (clip_source_node.video.trim(duration=clip_duration_sec).setpts('PTS-STARTPTS'))
             else:
-                segment_stream = (clip_source_node.video.trim(start=clip.clip_start_sec, duration=clip.duration_sec).setpts('PTS-STARTPTS'))
+                segment_stream = (clip_source_node.video.trim(start=clip_start_sec, duration=clip_duration_sec).setpts('PTS-STARTPTS'))
 
             processed_segment = (segment_stream.filter('scale', w, h, force_original_aspect_ratio='decrease').filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black'))
-            video_stream = ffmpeg.overlay(video_stream, processed_segment, enable=f'between(t,{clip.timeline_start_sec},{clip.timeline_end_sec})')
+            video_stream = ffmpeg.overlay(video_stream, processed_segment, enable=f'between(t,{timeline_start_sec},{timeline_end_sec})')
 
         final_video = video_stream.filter('format', pix_fmts='yuv420p').filter('fps', fps=self.project_fps)
 
         track_audio_streams = []
         for i in range(self.timeline.num_audio_tracks):
-            track_clips = sorted([c for c in self.timeline.clips if c.track_type == 'audio' and c.track_index == i + 1], key=lambda c: c.timeline_start_sec)
+            track_clips = sorted([c for c in self.timeline.clips if c.track_type == 'audio' and c.track_index == i + 1], key=lambda c: c.timeline_start_ms)
             if not track_clips: continue
             track_segments = []
-            last_end = track_clips[0].timeline_start_sec
+            last_end_ms = track_clips[0].timeline_start_ms
             for clip in track_clips:
                 if clip.source_path not in input_nodes:
                     input_nodes[clip.source_path] = ffmpeg.input(clip.source_path)
-                gap = clip.timeline_start_sec - last_end
-                if gap > 0.01: 
-                    track_segments.append(ffmpeg.input(f'anullsrc=r={sample_rate}:cl={channel_layout}:d={gap}', f='lavfi'))
-                a_seg = input_nodes[clip.source_path].audio.filter('atrim', start=clip.clip_start_sec, duration=clip.duration_sec).filter('asetpts', 'PTS-STARTPTS')
+                gap_ms = clip.timeline_start_ms - last_end_ms
+                if gap_ms > 10: 
+                    track_segments.append(ffmpeg.input(f'anullsrc=r={sample_rate}:cl={channel_layout}:d={gap_ms/1000.0}', f='lavfi'))
+                
+                clip_start_sec = clip.clip_start_ms / 1000.0
+                clip_duration_sec = clip.duration_ms / 1000.0
+                a_seg = input_nodes[clip.source_path].audio.filter('atrim', start=clip_start_sec, duration=clip_duration_sec).filter('asetpts', 'PTS-STARTPTS')
                 track_segments.append(a_seg)
-                last_end = clip.timeline_end_sec
-            track_audio_streams.append(ffmpeg.concat(*track_segments, v=0, a=1).filter('adelay', f'{int(track_clips[0].timeline_start_sec * 1000)}ms', all=True))
+                last_end_ms = clip.timeline_end_ms
+            track_audio_streams.append(ffmpeg.concat(*track_segments, v=0, a=1).filter('adelay', f'{int(track_clips[0].timeline_start_ms)}ms', all=True))
         
         if track_audio_streams:
             final_audio = ffmpeg.filter(track_audio_streams, 'amix', inputs=len(track_audio_streams), duration='longest')
         else:
-            final_audio = ffmpeg.input(f'anullsrc=r={sample_rate}:cl={channel_layout}:d={total_dur}', f='lavfi')
+            final_audio = ffmpeg.input(f'anullsrc=r={sample_rate}:cl={channel_layout}:d={total_dur_sec}', f='lavfi')
 
         output_args = {'vcodec': settings['vcodec'], 'acodec': settings['acodec'], 'pix_fmt': 'yuv420p'}
         if settings['v_bitrate']: output_args['b:v'] = settings['v_bitrate']
@@ -2994,7 +3008,7 @@ class MainWindow(QMainWindow):
             ffmpeg_cmd = ffmpeg.output(final_video, final_audio, output_path, **output_args).overwrite_output().compile()
             self.progress_bar.setVisible(True); self.progress_bar.setValue(0); self.status_label.setText("Exporting...")
             self.export_thread = QThread()
-            self.export_worker = ExportWorker(ffmpeg_cmd, total_dur)
+            self.export_worker = ExportWorker(ffmpeg_cmd, total_dur_ms)
             self.export_worker.moveToThread(self.export_thread)
             self.export_thread.started.connect(self.export_worker.run_export)
             self.export_worker.finished.connect(self.on_export_finished)

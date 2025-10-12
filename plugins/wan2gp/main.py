@@ -124,11 +124,12 @@ class VideoResultItemWidget(QWidget):
         super().enterEvent(event)
         self.media_player.play()
         if not self.plugin.active_region or self.duration == 0: return
-        start_sec, _ = self.plugin.active_region
+        start_ms, _ = self.plugin.active_region
         timeline = self.app.timeline_widget
         video_rect, audio_rect = None, None
-        x = timeline.sec_to_x(start_sec)
-        w = int(self.duration * timeline.pixels_per_second)
+        x = timeline.ms_to_x(start_ms)
+        duration_ms = int(self.duration * 1000)
+        w = int(duration_ms * timeline.pixels_per_ms)
         if self.plugin.insert_on_new_track:
             video_y = timeline.TIMESCALE_HEIGHT
             video_rect = QRectF(x, video_y, w, timeline.TRACK_HEIGHT)
@@ -1705,9 +1706,9 @@ class Plugin(VideoEditorPlugin):
         region = self.app.timeline_widget.get_region_at_pos(event.pos())
         if region:
             menu.addSeparator()
-            start_sec, end_sec = region
-            start_data, _, _ = self.app.get_frame_data_at_time(start_sec)
-            end_data, _, _ = self.app.get_frame_data_at_time(end_sec)
+            start_ms, end_ms = region
+            start_data, _, _ = self.app.get_frame_data_at_time(start_ms)
+            end_data, _, _ = self.app.get_frame_data_at_time(end_ms)
 
             if start_data and end_data:
                 join_action = menu.addAction("Join Frames With AI")
@@ -1745,9 +1746,9 @@ class Plugin(VideoEditorPlugin):
         else:
             print(f"Warning: Default model '{model_to_set}' not found for AI Joiner. Using current model.")
         
-        start_sec, end_sec = region
-        start_data, w, h = self.app.get_frame_data_at_time(start_sec)
-        end_data, _, _ = self.app.get_frame_data_at_time(end_sec)
+        start_ms, end_ms = region
+        start_data, w, h = self.app.get_frame_data_at_time(start_ms)
+        end_data, _, _ = self.app.get_frame_data_at_time(end_ms)
         if not start_data or not end_data:
             QMessageBox.warning(self.app, "Frame Error", "Could not extract start and/or end frames.")
             return
@@ -1761,11 +1762,11 @@ class Plugin(VideoEditorPlugin):
             QImage(start_data, w, h, QImage.Format.Format_RGB888).save(self.start_frame_path)
             QImage(end_data, w, h, QImage.Format.Format_RGB888).save(self.end_frame_path)
             
-            duration_sec = end_sec - start_sec
+            duration_ms = end_ms - start_ms
             wgp = self.client_widget.wgp
             model_type = self.client_widget.state['model_type']
             fps = wgp.get_model_fps(model_type)
-            video_length_frames = int(duration_sec * fps) if fps > 0 else int(duration_sec * 16)
+            video_length_frames = int((duration_ms / 1000.0) * fps) if fps > 0 else int((duration_ms / 1000.0) * 16)
             widgets = self.client_widget.widgets
             
             for w_name in ['mode_s', 'mode_t', 'mode_v', 'mode_l', 'image_end_checkbox']:
@@ -1786,7 +1787,7 @@ class Plugin(VideoEditorPlugin):
             QMessageBox.critical(self.app, "File Error", f"Could not save temporary frame images: {e}")
             self._cleanup_temp_dir()
             return
-        self.app.status_label.setText(f"Ready to join frames from {start_sec:.2f}s to {end_sec:.2f}s.")
+        self.app.status_label.setText(f"Ready to join frames from {start_ms / 1000.0:.2f}s to {end_ms / 1000.0:.2f}s.")
         self.dock_widget.show()
         self.dock_widget.raise_()
 
@@ -1805,8 +1806,8 @@ class Plugin(VideoEditorPlugin):
         else:
             print(f"Warning: Default model '{model_to_set}' not found for AI Joiner. Using current model.")
         
-        start_sec, end_sec = region
-        start_data, w, h = self.app.get_frame_data_at_time(start_sec)
+        start_ms, end_ms = region
+        start_data, w, h = self.app.get_frame_data_at_time(start_ms)
         if not start_data:
             QMessageBox.warning(self.app, "Frame Error", "Could not extract start frame.")
             return
@@ -1818,11 +1819,11 @@ class Plugin(VideoEditorPlugin):
             self.start_frame_path = os.path.join(self.temp_dir, "start_frame.png")
             QImage(start_data, w, h, QImage.Format.Format_RGB888).save(self.start_frame_path)
             
-            duration_sec = end_sec - start_sec
+            duration_ms = end_ms - start_ms
             wgp = self.client_widget.wgp
             model_type = self.client_widget.state['model_type']
             fps = wgp.get_model_fps(model_type)
-            video_length_frames = int(duration_sec * fps) if fps > 0 else int(duration_sec * 16)
+            video_length_frames = int((duration_ms / 1000.0) * fps) if fps > 0 else int((duration_ms / 1000.0) * 16)
             widgets = self.client_widget.widgets
             
             widgets['video_length'].setValue(video_length_frames)
@@ -1845,7 +1846,7 @@ class Plugin(VideoEditorPlugin):
             self._cleanup_temp_dir()
             return
 
-        self.app.status_label.setText(f"Ready to generate from frame at {start_sec:.2f}s.")
+        self.app.status_label.setText(f"Ready to generate from frame at {start_ms / 1000.0:.2f}s.")
         self.dock_widget.show()
         self.dock_widget.raise_()
 
@@ -1864,8 +1865,8 @@ class Plugin(VideoEditorPlugin):
         else:
             print(f"Warning: Default model '{model_to_set}' not found for AI Joiner. Using current model.")
         
-        start_sec, end_sec = region
-        end_data, w, h = self.app.get_frame_data_at_time(end_sec)
+        start_ms, end_ms = region
+        end_data, w, h = self.app.get_frame_data_at_time(end_ms)
         if not end_data:
             QMessageBox.warning(self.app, "Frame Error", "Could not extract end frame.")
             return
@@ -1877,11 +1878,11 @@ class Plugin(VideoEditorPlugin):
             self.end_frame_path = os.path.join(self.temp_dir, "end_frame.png")
             QImage(end_data, w, h, QImage.Format.Format_RGB888).save(self.end_frame_path)
             
-            duration_sec = end_sec - start_sec
+            duration_ms = end_ms - start_ms
             wgp = self.client_widget.wgp
             model_type = self.client_widget.state['model_type']
             fps = wgp.get_model_fps(model_type)
-            video_length_frames = int(duration_sec * fps) if fps > 0 else int(duration_sec * 16)
+            video_length_frames = int((duration_ms / 1000.0) * fps) if fps > 0 else int((duration_ms / 1000.0) * 16)
             widgets = self.client_widget.widgets
             
             widgets['video_length'].setValue(video_length_frames)
@@ -1915,7 +1916,7 @@ class Plugin(VideoEditorPlugin):
             self._cleanup_temp_dir()
             return
             
-        self.app.status_label.setText(f"Ready to generate to frame at {end_sec:.2f}s.")
+        self.app.status_label.setText(f"Ready to generate to frame at {end_ms / 1000.0:.2f}s.")
         self.dock_widget.show()
         self.dock_widget.raise_()
 
@@ -1938,17 +1939,17 @@ class Plugin(VideoEditorPlugin):
         target_h = self.app.project_height
         self.client_widget.set_resolution_from_target(target_w, target_h)
 
-        start_sec, end_sec = region
-        duration_sec = end_sec - start_sec
+        start_ms, end_ms = region
+        duration_ms = end_ms - start_ms
         wgp = self.client_widget.wgp
         model_type = self.client_widget.state['model_type']
         fps = wgp.get_model_fps(model_type)
-        video_length_frames = int(duration_sec * fps) if fps > 0 else int(duration_sec * 16)
+        video_length_frames = int((duration_ms / 1000.0) * fps) if fps > 0 else int((duration_ms / 1000.0) * 16)
         
         self.client_widget.widgets['video_length'].setValue(video_length_frames)
         self.client_widget.widgets['mode_t'].setChecked(True)
 
-        self.app.status_label.setText(f"Ready to create video from {start_sec:.2f}s to {end_sec:.2f}s.")
+        self.app.status_label.setText(f"Ready to create video from {start_ms / 1000.0:.2f}s to {end_ms / 1000.0:.2f}s.")
         self.dock_widget.show()
         self.dock_widget.raise_()
 
@@ -1958,29 +1959,29 @@ class Plugin(VideoEditorPlugin):
             self.app.status_label.setText("Error: No active region to insert into."); return
         if not os.path.exists(video_path):
             self.app.status_label.setText(f"Error: Output file not found: {video_path}"); return
-        start_sec, end_sec = self.active_region
+        start_ms, end_ms = self.active_region
         def complex_insertion_action():
             self.app._add_media_files_to_project([video_path])
             media_info = self.app.media_properties.get(video_path)
             if not media_info: raise ValueError("Could not probe inserted clip.")
-            actual_duration, has_audio = media_info['duration'], media_info['has_audio']
+            actual_duration_ms, has_audio = media_info['duration_ms'], media_info['has_audio']
             if self.insert_on_new_track:
                 self.app.timeline.num_video_tracks += 1
                 video_track_index = self.app.timeline.num_video_tracks
                 audio_track_index = self.app.timeline.num_audio_tracks + 1 if has_audio else None
             else:
-                for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, start_sec)
-                for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, end_sec)
-                clips_to_remove = [c for c in self.app.timeline.clips if c.timeline_start_sec >= start_sec and c.timeline_end_sec <= end_sec]
+                for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, start_ms)
+                for clip in list(self.app.timeline.clips): self.app._split_at_time(clip, end_ms)
+                clips_to_remove = [c for c in self.app.timeline.clips if c.timeline_start_ms >= start_ms and c.timeline_end_ms <= end_ms]
                 for clip in clips_to_remove:
                     if clip in self.app.timeline.clips: self.app.timeline.clips.remove(clip)
                 video_track_index, audio_track_index = 1, 1 if has_audio else None
             group_id = str(uuid.uuid4())
-            new_clip = TimelineClip(video_path, start_sec, 0, actual_duration, video_track_index, 'video', 'video', group_id)
+            new_clip = TimelineClip(video_path, start_ms, 0, actual_duration_ms, video_track_index, 'video', 'video', group_id)
             self.app.timeline.add_clip(new_clip)
             if audio_track_index:
                 if audio_track_index > self.app.timeline.num_audio_tracks: self.app.timeline.num_audio_tracks = audio_track_index
-                audio_clip = TimelineClip(video_path, start_sec, 0, actual_duration, audio_track_index, 'audio', 'video', group_id)
+                audio_clip = TimelineClip(video_path, start_ms, 0, actual_duration_ms, audio_track_index, 'audio', 'video', group_id)
                 self.app.timeline.add_clip(audio_clip)
         try:
             self.app._perform_complex_timeline_change("Insert AI Clip", complex_insertion_action)

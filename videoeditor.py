@@ -468,7 +468,7 @@ class TimelineWidget(QWidget):
 
         frame_dur_ms = 1000.0 / self.project_fps
         intervals_ms = [
-            int(frame_dur_ms), int(2*frame_dur_ms), int(5*frame_dur_ms), int(10*frame_dur_ms),
+            frame_dur_ms, 2*frame_dur_ms, 5*frame_dur_ms, 10*frame_dur_ms,
             100, 200, 500, 1000, 2000, 5000, 10000, 15000, 30000,
             60000, 120000, 300000, 600000, 900000, 1800000,
             3600000, 2*3600000, 5*3600000, 10*3600000

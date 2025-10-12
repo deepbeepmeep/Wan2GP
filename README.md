@@ -186,6 +186,7 @@ If using Pinokio use Pinokio to update otherwise:
 Get in the directory where WanGP is installed and:
 ```bash
 git pull
+conda activate wan2gp
 pip install -r requirements.txt
 ```
 

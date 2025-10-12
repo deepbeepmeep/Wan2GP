@@ -1339,6 +1339,55 @@ class WgpDesktopPluginWidget(QWidget):
         self.widgets['resolution'].setCurrentIndex(self.widgets['resolution'].findData(last_resolution))
         self.widgets['resolution'].blockSignals(False)
 
+    def set_resolution_from_target(self, target_w, target_h):
+        if not self.full_resolution_choices:
+            print("Resolution choices not available for AI resolution matching.")
+            return
+
+        target_pixels = target_w * target_h
+        target_ar = target_w / target_h if target_h > 0 else 1.0
+
+        best_res_value = None
+        min_dist = float('inf')
+
+        for label, res_value in self.full_resolution_choices:
+            try:
+                w_str, h_str = res_value.split('x')
+                w, h = int(w_str), int(h_str)
+            except (ValueError, AttributeError):
+                continue
+
+            pixels = w * h
+            ar = w / h if h > 0 else 1.0
+
+            pixel_dist = abs(target_pixels - pixels) / target_pixels
+            ar_dist = abs(target_ar - ar) / target_ar
+            
+            dist = pixel_dist * 0.8 + ar_dist * 0.2
+            
+            if dist < min_dist:
+                min_dist = dist
+                best_res_value = res_value
+
+        if best_res_value:
+            best_group = self.wgp.categorize_resolution(best_res_value)
+
+            group_combo = self.widgets['resolution_group']
+            group_combo.blockSignals(True)
+            group_index = group_combo.findText(best_group)
+            if group_index != -1:
+                group_combo.setCurrentIndex(group_index)
+            group_combo.blockSignals(False)
+
+            self._on_resolution_group_changed()
+
+            res_combo = self.widgets['resolution']
+            res_index = res_combo.findData(best_res_value)
+            if res_index != -1:
+                res_combo.setCurrentIndex(res_index)
+            else:
+                print(f"Warning: Could not find resolution '{best_res_value}' in dropdown after group change.")
+
     def collect_inputs(self):
         full_inputs = self.wgp.get_current_model_settings(self.state).copy()
         full_inputs['lset_name'] = ""
@@ -1663,6 +1712,9 @@ class Plugin(VideoEditorPlugin):
         if not start_data or not end_data:
             QMessageBox.warning(self.app, "Frame Error", "Could not extract start and/or end frames.")
             return
+        
+        self.client_widget.set_resolution_from_target(w, h)
+        
         try:
             self.temp_dir = tempfile.mkdtemp(prefix="wgp_plugin_")
             self.start_frame_path = os.path.join(self.temp_dir, "start_frame.png")
@@ -1675,13 +1727,25 @@ class Plugin(VideoEditorPlugin):
             model_type = self.client_widget.state['model_type']
             fps = wgp.get_model_fps(model_type)
             video_length_frames = int(duration_sec * fps) if fps > 0 else int(duration_sec * 16)
-            
-            self.client_widget.widgets['video_length'].setValue(video_length_frames)
-            self.client_widget.widgets['mode_s'].setChecked(True)
-            self.client_widget.widgets['image_end_checkbox'].setChecked(True)
-            self.client_widget.widgets['image_start'].setText(self.start_frame_path)
-            self.client_widget.widgets['image_end'].setText(self.end_frame_path)
-            
+            widgets = self.client_widget.widgets
+            widgets['mode_s'].blockSignals(True)
+            widgets['mode_t'].blockSignals(True)
+            widgets['mode_v'].blockSignals(True)
+            widgets['mode_l'].blockSignals(True)
+            widgets['image_end_checkbox'].blockSignals(True)
+
+            widgets['video_length'].setValue(video_length_frames)
+            widgets['mode_s'].setChecked(True)
+            widgets['image_end_checkbox'].setChecked(True)
+            widgets['image_start'].setText(self.start_frame_path)
+            widgets['image_end'].setText(self.end_frame_path)
+
+            widgets['mode_s'].blockSignals(False)
+            widgets['mode_t'].blockSignals(False)
+            widgets['mode_v'].blockSignals(False)
+            widgets['mode_l'].blockSignals(False)
+            widgets['image_end_checkbox'].blockSignals(False)
+
             self.client_widget._update_input_visibility()
 
         except Exception as e:
@@ -1706,6 +1770,10 @@ class Plugin(VideoEditorPlugin):
                 self.client_widget._on_model_changed()
         else:
             print(f"Warning: Default model '{model_to_set}' not found for AI Creator. Using current model.")
+
+        target_w = self.app.project_width
+        target_h = self.app.project_height
+        self.client_widget.set_resolution_from_target(target_w, target_h)
 
         start_sec, end_sec = region
         duration_sec = end_sec - start_sec

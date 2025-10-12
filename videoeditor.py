@@ -439,23 +439,69 @@ class TimelineWidget(QWidget):
         
         painter.restore()
         
-    def _format_timecode(self, total_ms):
+    
+    def _format_timecode(self, total_ms, interval_ms):
         if abs(total_ms) < 1: total_ms = 0
         sign = "-" if total_ms < 0 else ""
         total_ms = abs(total_ms)
         
         seconds = total_ms / 1000.0
+
+        # Frame-based formatting for high zoom
+        is_frame_based = interval_ms < (1000.0 / self.project_fps) * 5
+        if is_frame_based:
+            total_frames = int(round(seconds * self.project_fps))
+            fps_int = int(round(self.project_fps))
+            if fps_int == 0: fps_int = 25 # Avoid division by zero
+            s_frames = total_frames % fps_int
+            total_seconds_from_frames = total_frames // fps_int
+            h_fr = total_seconds_from_frames // 3600
+            m_fr = (total_seconds_from_frames % 3600) // 60
+            s_fr = total_seconds_from_frames % 60
+
+            if h_fr > 0: return f"{sign}{h_fr}:{m_fr:02d}:{s_fr:02d}:{s_frames:02d}"
+            if m_fr > 0: return f"{sign}{m_fr}:{s_fr:02d}:{s_frames:02d}"
+            return f"{sign}{s_fr}:{s_frames:02d}"
+
+        # Sub-second formatting
+        if interval_ms < 1000:
+            precision = 2 if interval_ms < 100 else 1
+            s_float = seconds % 60
+            m = int((seconds % 3600) / 60)
+            h = int(seconds / 3600)
+
+            if h > 0: return f"{sign}{h}:{m:02d}:{s_float:0{4+precision}.{precision}f}"
+            if m > 0: return f"{sign}{m}:{s_float:0{4+precision}.{precision}f}"
+            
+            val = f"{s_float:.{precision}f}"
+            if '.' in val: val = val.rstrip('0').rstrip('.')
+            return f"{sign}{val}s"
+
+        # Seconds and M:SS formatting
+        if interval_ms < 60000:
+            rounded_seconds = int(round(seconds))
+            h = rounded_seconds // 3600
+            m = (rounded_seconds % 3600) // 60
+            s = rounded_seconds % 60
+
+            if h > 0:
+                return f"{sign}{h}:{m:02d}:{s:02d}"
+            
+            # Use "Xs" format for times under a minute
+            if rounded_seconds < 60:
+                return f"{sign}{rounded_seconds}s"
+            
+            # Use "M:SS" format for times over a minute
+            return f"{sign}{m}:{s:02d}"
+        
+        # Minute and Hh:MMm formatting for low zoom
         h = int(seconds / 3600)
         m = int((seconds % 3600) / 60)
-        s = seconds % 60
-        
+
         if h > 0: return f"{sign}{h}h:{m:02d}m"
-        if m > 0 or seconds >= 59.99: return f"{sign}{m}m:{int(round(s)):02d}s"
         
-        precision = 2 if s < 1 else 1 if s < 10 else 0
-        val = f"{s:.{precision}f}"
-        if '.' in val: val = val.rstrip('0').rstrip('.')
-        return f"{sign}{val}s"
+        total_minutes = int(seconds / 60)
+        return f"{sign}{total_minutes}m"
 
     def draw_timescale(self, painter):
         painter.save()
@@ -510,7 +556,7 @@ class TimelineWidget(QWidget):
             if x > self.width() + 50: break
             if x >= self.HEADER_WIDTH - 50:
                 painter.drawLine(x, self.TIMESCALE_HEIGHT - 12, x, self.TIMESCALE_HEIGHT)
-                label = self._format_timecode(t_ms)
+                label = self._format_timecode(t_ms, major_interval)
                 label_width = font_metrics.horizontalAdvance(label)
                 label_x = x - label_width // 2
                 if label_x < self.HEADER_WIDTH:

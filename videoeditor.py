@@ -473,6 +473,13 @@ class TimelineWidget(QWidget):
             
         return None
 
+    def _snap_time_if_needed(self, time_sec):
+        frame_duration = 1.0 / self.project_fps
+        if frame_duration > 0 and frame_duration * self.pixels_per_second > 4:
+            frame_number = round(time_sec / frame_duration)
+            return frame_number * frame_duration
+        return time_sec
+
     def get_region_at_pos(self, pos: QPoint):
         if pos.y() <= self.TIMESCALE_HEIGHT or pos.x() <= self.HEADER_WIDTH:
             return None
@@ -628,7 +635,8 @@ class TimelineWidget(QWidget):
                             self.selection_drag_start_sec = self.x_to_sec(event.pos().x())
                         self.selection_regions.append([self.selection_drag_start_sec, self.selection_drag_start_sec])
                     elif is_on_timescale:
-                        self.playhead_pos_sec = max(0, self.x_to_sec(event.pos().x()))
+                        time_sec = max(0, self.x_to_sec(event.pos().x()))
+                        self.playhead_pos_sec = self._snap_time_if_needed(time_sec)
                         self.playhead_moved.emit(self.playhead_pos_sec)
                         self.dragging_playhead = True
             
@@ -798,7 +806,8 @@ class TimelineWidget(QWidget):
             return
 
         if self.dragging_playhead:
-            self.playhead_pos_sec = max(0, self.x_to_sec(event.pos().x()))
+            time_sec = max(0, self.x_to_sec(event.pos().x()))
+            self.playhead_pos_sec = self._snap_time_if_needed(time_sec)
             self.playhead_moved.emit(self.playhead_pos_sec)
             self.update()
         elif self.dragging_clip:

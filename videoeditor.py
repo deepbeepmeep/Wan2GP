@@ -481,13 +481,6 @@ class TimelineWidget(QWidget):
         return None
 
     def wheelEvent(self, event: QMouseEvent):
-        if event.position().x() < self.HEADER_WIDTH:
-            event.ignore()
-            return
-
-        mouse_x = event.position().x()
-        time_at_cursor = self.x_to_sec(mouse_x)
-
         delta = event.angleDelta().y()
         zoom_factor = 1.15
         old_pps = self.pixels_per_second
@@ -503,9 +496,16 @@ class TimelineWidget(QWidget):
         if abs(new_pps - old_pps) < 1e-9:
             return
 
-        self.pixels_per_second = new_pps
+        if event.position().x() < self.HEADER_WIDTH:
+            # Zoom centered on time 0. Keep screen position of time 0 constant.
+            new_view_start_sec = self.view_start_sec * (old_pps / new_pps)
+        else:
+            # Zoom centered on mouse cursor.
+            mouse_x = event.position().x()
+            time_at_cursor = self.x_to_sec(mouse_x)
+            new_view_start_sec = time_at_cursor - (mouse_x - self.HEADER_WIDTH) / new_pps
 
-        new_view_start_sec = time_at_cursor - (mouse_x - self.HEADER_WIDTH) / self.pixels_per_second
+        self.pixels_per_second = new_pps
         self.view_start_sec = max(0.0, new_view_start_sec)
 
         self.update()

@@ -330,7 +330,7 @@ class TimelineWidget(QWidget):
         self.pixels_per_ms = min(self.pixels_per_ms, self.max_pixels_per_ms)
         self.update()
 
-    def ms_to_x(self, ms): return self.HEADER_WIDTH + int((ms - self.view_start_ms) * self.pixels_per_ms)
+    def ms_to_x(self, ms): return self.HEADER_WIDTH + int(max(-500_000_000, min((ms - self.view_start_ms) * self.pixels_per_ms, 500_000_000)))
     def x_to_ms(self, x): return self.view_start_ms + int(float(x - self.HEADER_WIDTH) / self.pixels_per_ms) if x > self.HEADER_WIDTH and self.pixels_per_ms > 0 else self.view_start_ms
 
     def paintEvent(self, event):
@@ -1861,7 +1861,7 @@ class MainWindow(QMainWindow):
         self.plugin_manager.discover_and_load_plugins()
 
         # Project settings with defaults
-        self.project_fps = 25.0
+        self.project_fps = 50.0
         self.project_width = 1280
         self.project_height = 720
         

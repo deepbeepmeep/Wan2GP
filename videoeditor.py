@@ -1626,12 +1626,18 @@ class MainWindow(QMainWindow):
             self.timeline.num_video_tracks += 1
         elif track_type == 'audio':
             self.timeline.num_audio_tracks += 1
+        else:
+            return
+
         new_state = self._get_current_timeline_state()
-        
         command = TimelineStateChangeCommand(f"Add {track_type.capitalize()} Track", self.timeline, *old_state, *new_state)
+
+        self.undo_stack.blockSignals(True)
         self.undo_stack.push(command)
-        command.undo()
-        self.undo_stack.push(command)
+        self.undo_stack.blockSignals(False)
+
+        self.update_undo_redo_actions()
+        self.timeline_widget.update()
     
     def remove_track(self, track_type):
         old_state = self._get_current_timeline_state()

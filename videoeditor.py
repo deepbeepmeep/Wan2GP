@@ -636,11 +636,17 @@ class TimelineWidget(QWidget):
             
         return None
 
+    def _snap_to_frame(self, time_ms):
+        frame_duration_ms = 1000.0 / self.project_fps
+        if frame_duration_ms <= 0:
+            return int(time_ms)
+        frame_number = round(time_ms / frame_duration_ms)
+        return int(frame_number * frame_duration_ms)
+
     def _snap_time_if_needed(self, time_ms):
         frame_duration_ms = 1000.0 / self.project_fps
         if frame_duration_ms > 0 and frame_duration_ms * self.pixels_per_ms > 4:
-            frame_number = round(time_ms / frame_duration_ms)
-            return int(frame_number * frame_duration_ms)
+            return self._snap_to_frame(time_ms)
         return int(time_ms)
 
     def get_region_at_pos(self, pos: QPoint):
@@ -791,15 +797,24 @@ class TimelineWidget(QWidget):
 
                     if is_in_track_area:
                         self.creating_selection_region = True
-                        playhead_x = self.ms_to_x(self.playhead_pos_ms)
-                        if abs(event.pos().x() - playhead_x) < self.SNAP_THRESHOLD_PIXELS:
-                            self.selection_drag_start_ms = self.playhead_pos_ms
+                        is_shift_pressed = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                        start_ms = self.x_to_ms(event.pos().x())
+
+                        if is_shift_pressed:
+                            self.selection_drag_start_ms = self._snap_to_frame(start_ms)
                         else:
-                            self.selection_drag_start_ms = self.x_to_ms(event.pos().x())
+                            playhead_x = self.ms_to_x(self.playhead_pos_ms)
+                            if abs(event.pos().x() - playhead_x) < self.SNAP_THRESHOLD_PIXELS:
+                                self.selection_drag_start_ms = self.playhead_pos_ms
+                            else:
+                                self.selection_drag_start_ms = start_ms
                         self.selection_regions.append([self.selection_drag_start_ms, self.selection_drag_start_ms])
                     elif is_on_timescale:
                         time_ms = max(0, self.x_to_ms(event.pos().x()))
-                        self.playhead_pos_ms = self._snap_time_if_needed(time_ms)
+                        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                            self.playhead_pos_ms = self._snap_to_frame(time_ms)
+                        else:
+                            self.playhead_pos_ms = self._snap_time_if_needed(time_ms)
                         self.playhead_moved.emit(self.playhead_pos_ms)
                         self.dragging_playhead = True
             
@@ -816,6 +831,8 @@ class TimelineWidget(QWidget):
 
         if self.resizing_selection_region:
             current_ms = max(0, self.x_to_ms(event.pos().x()))
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                current_ms = self._snap_to_frame(current_ms)
             original_start, original_end = self.resize_selection_start_values
 
             if self.resize_selection_edge == 'left':
@@ -836,6 +853,7 @@ class TimelineWidget(QWidget):
             self.update()
             return
         if self.resizing_clip:
+            is_shift_pressed = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             linked_clip = next((c for c in self.timeline.clips if c.group_id == self.resizing_clip.group_id and c.id != self.resizing_clip.id), None)
             delta_x = event.pos().x() - self.resize_start_pos.x()
             time_delta = delta_x / self.pixels_per_ms
@@ -858,11 +876,14 @@ class TimelineWidget(QWidget):
                 original_clip_start = self.drag_start_state[0][[c.id for c in self.drag_start_state[0]].index(self.resizing_clip.id)].clip_start_ms
                 true_new_start_ms = original_start + time_delta
                 
-                new_start_ms = true_new_start_ms
-                for snap_point in snap_points:
-                    if abs(true_new_start_ms - snap_point) < snap_time_delta:
-                        new_start_ms = snap_point
-                        break
+                if is_shift_pressed:
+                    new_start_ms = self._snap_to_frame(true_new_start_ms)
+                else:
+                    new_start_ms = true_new_start_ms
+                    for snap_point in snap_points:
+                        if abs(true_new_start_ms - snap_point) < snap_time_delta:
+                            new_start_ms = snap_point
+                            break
 
                 if new_start_ms > original_start + original_duration - min_duration_ms:
                     new_start_ms = original_start + original_duration - min_duration_ms
@@ -896,11 +917,14 @@ class TimelineWidget(QWidget):
                 true_new_duration = original_duration + time_delta
                 true_new_end_time = original_start + true_new_duration
                 
-                new_end_time = true_new_end_time
-                for snap_point in snap_points:
-                    if abs(true_new_end_time - snap_point) < snap_time_delta:
-                        new_end_time = snap_point
-                        break
+                if is_shift_pressed:
+                    new_end_time = self._snap_to_frame(true_new_end_time)
+                else:
+                    new_end_time = true_new_end_time
+                    for snap_point in snap_points:
+                        if abs(true_new_end_time - snap_point) < snap_time_delta:
+                            new_end_time = snap_point
+                            break
                 
                 new_duration = new_end_time - original_start
                 
@@ -948,6 +972,8 @@ class TimelineWidget(QWidget):
 
         if self.creating_selection_region:
             current_ms = self.x_to_ms(event.pos().x())
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                current_ms = self._snap_to_frame(current_ms)
             start = min(self.selection_drag_start_ms, current_ms)
             end = max(self.selection_drag_start_ms, current_ms)
             self.selection_regions[-1] = [start, end]
@@ -962,6 +988,9 @@ class TimelineWidget(QWidget):
             duration = original_end - original_start
             new_start = max(0, original_start + time_delta)
             
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                new_start = self._snap_to_frame(new_start)
+            
             self.dragging_selection_region[0] = new_start
             self.dragging_selection_region[1] = new_start + duration
             
@@ -970,7 +999,10 @@ class TimelineWidget(QWidget):
 
         if self.dragging_playhead:
             time_ms = max(0, self.x_to_ms(event.pos().x()))
-            self.playhead_pos_ms = self._snap_time_if_needed(time_ms)
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.playhead_pos_ms = self._snap_to_frame(time_ms)
+            else:
+                self.playhead_pos_ms = self._snap_time_if_needed(time_ms)
             self.playhead_moved.emit(self.playhead_pos_ms)
             self.update()
         elif self.dragging_clip:
@@ -997,17 +1029,20 @@ class TimelineWidget(QWidget):
             delta_x = event.pos().x() - self.drag_start_pos.x()
             time_delta = delta_x / self.pixels_per_ms
             true_new_start_time = original_start_ms + time_delta
-
-            playhead_time = self.playhead_pos_ms
-            snap_time_delta = self.SNAP_THRESHOLD_PIXELS / self.pixels_per_ms
             
-            new_start_time = true_new_start_time
-            true_new_end_time = true_new_start_time + self.dragging_clip.duration_ms
-            
-            if abs(true_new_start_time - playhead_time) < snap_time_delta:
-                new_start_time = playhead_time
-            elif abs(true_new_end_time - playhead_time) < snap_time_delta:
-                new_start_time = playhead_time - self.dragging_clip.duration_ms
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                new_start_time = self._snap_to_frame(true_new_start_time)
+            else:
+                playhead_time = self.playhead_pos_ms
+                snap_time_delta = self.SNAP_THRESHOLD_PIXELS / self.pixels_per_ms
+                
+                new_start_time = true_new_start_time
+                true_new_end_time = true_new_start_time + self.dragging_clip.duration_ms
+                
+                if abs(true_new_start_time - playhead_time) < snap_time_delta:
+                    new_start_time = playhead_time
+                elif abs(true_new_end_time - playhead_time) < snap_time_delta:
+                    new_start_time = playhead_time - self.dragging_clip.duration_ms
 
             for other_clip in self.timeline.clips:
                 if other_clip.id == self.dragging_clip.id: continue

@@ -1,11 +1,11 @@
-import os
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
 os.environ["GRADIO_LANG"] = "en"
 # # os.environ.pop("TORCH_LOGS", None)  # make sure no env var is suppressing/overriding
 # os.environ["TORCH_LOGS"]= "recompiles"
 import torch._logging as tlog
 # tlog.set_logs(recompiles=True, guards=True, graph_breaks=True)    
 import time
-import sys
 import threading
 import argparse
 from mmgp import offload, safetensors2, profile_type 

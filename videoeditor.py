@@ -10,7 +10,9 @@ import copy
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QFileDialog, QLabel,
                              QScrollArea, QFrame, QProgressBar, QDialog,
-                             QCheckBox, QDialogButtonBox, QMenu, QSplitter, QDockWidget, QListWidget, QListWidgetItem, QMessageBox)
+                             QCheckBox, QDialogButtonBox, QMenu, QSplitter, QDockWidget,
+                             QListWidget, QListWidgetItem, QMessageBox, QComboBox,
+                             QFormLayout, QGroupBox, QLineEdit)
 from PyQt6.QtGui import (QPainter, QColor, QPen, QFont, QFontMetrics, QMouseEvent, QAction,
                          QPixmap, QImage, QDrag, QCursor, QKeyEvent)
 from PyQt6.QtCore import (Qt, QPoint, QRect, QRectF, QSize, QPointF, QObject, QThread,
@@ -18,6 +20,165 @@ from PyQt6.QtCore import (Qt, QPoint, QRect, QRectF, QSize, QPointF, QObject, QT
 
 from plugins import PluginManager, ManagePluginsDialog
 from undo import UndoStack, TimelineStateChangeCommand, MoveClipsCommand
+
+CONTAINER_PRESETS = {
+    'mp4': {
+        'vcodec': 'libx264', 'acodec': 'aac', 
+        'allowed_vcodecs': ['libx264', 'libx265', 'mpeg4'],
+        'allowed_acodecs': ['aac', 'libmp3lame'],
+        'v_bitrate': '5M', 'a_bitrate': '192k'
+    },
+    'matroska': {
+        'vcodec': 'libx264', 'acodec': 'aac',
+        'allowed_vcodecs': ['libx264', 'libx265', 'libvpx-vp9'],
+        'allowed_acodecs': ['aac', 'libopus', 'libvorbis', 'flac'],
+        'v_bitrate': '5M', 'a_bitrate': '192k'
+    },
+    'mov': {
+        'vcodec': 'libx264', 'acodec': 'aac',
+        'allowed_vcodecs': ['libx264', 'prores_ks', 'mpeg4'],
+        'allowed_acodecs': ['aac', 'pcm_s16le'],
+        'v_bitrate': '8M', 'a_bitrate': '256k'
+    },
+    'avi': {
+        'vcodec': 'mpeg4', 'acodec': 'libmp3lame',
+        'allowed_vcodecs': ['mpeg4', 'msmpeg4'],
+        'allowed_acodecs': ['libmp3lame'],
+        'v_bitrate': '5M', 'a_bitrate': '192k'
+    },
+    'webm': {
+        'vcodec': 'libvpx-vp9', 'acodec': 'libopus',
+        'allowed_vcodecs': ['libvpx-vp9'],
+        'allowed_acodecs': ['libopus', 'libvorbis'],
+        'v_bitrate': '4M', 'a_bitrate': '192k'
+    },
+    'wav': {
+        'vcodec': None, 'acodec': 'pcm_s16le',
+        'allowed_vcodecs': [], 'allowed_acodecs': ['pcm_s16le', 'pcm_s24le'],
+        'v_bitrate': None, 'a_bitrate': None
+    },
+    'mp3': {
+        'vcodec': None, 'acodec': 'libmp3lame',
+        'allowed_vcodecs': [], 'allowed_acodecs': ['libmp3lame'],
+        'v_bitrate': None, 'a_bitrate': '192k'
+    },
+    'flac': {
+        'vcodec': None, 'acodec': 'flac',
+        'allowed_vcodecs': [], 'allowed_acodecs': ['flac'],
+        'v_bitrate': None, 'a_bitrate': None
+    },
+    'gif': {
+        'vcodec': 'gif', 'acodec': None,
+        'allowed_vcodecs': ['gif'], 'allowed_acodecs': [],
+        'v_bitrate': None, 'a_bitrate': None
+    },
+    'oga': { # Using oga for ogg audio
+        'vcodec': None, 'acodec': 'libvorbis',
+        'allowed_vcodecs': [], 'allowed_acodecs': ['libvorbis', 'libopus'],
+        'v_bitrate': None, 'a_bitrate': '192k'
+    }
+}
+
+_cached_formats = None
+_cached_video_codecs = None
+_cached_audio_codecs = None
+
+def run_ffmpeg_command(args):
+    try:
+        startupinfo = None
+        if hasattr(subprocess, 'STARTUPINFO'):
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+        
+        result = subprocess.run(
+            ['ffmpeg'] + args,
+            capture_output=True, text=True, encoding='utf-8',
+            errors='ignore', startupinfo=startupinfo
+        )
+        if result.returncode != 0 and "Unrecognized option" not in result.stderr:
+             print(f"FFmpeg command failed: {' '.join(args)}\n{result.stderr}")
+             return ""
+        return result.stdout
+    except FileNotFoundError:
+        print("Error: ffmpeg not found. Please ensure it is in your system's PATH.")
+        return None
+    except Exception as e:
+        print(f"An error occurred while running ffmpeg: {e}")
+        return None
+
+def get_available_formats():
+    global _cached_formats
+    if _cached_formats is not None:
+        return _cached_formats
+
+    output = run_ffmpeg_command(['-formats'])
+    if not output:
+        _cached_formats = {}
+        return {}
+
+    formats = {}
+    lines = output.split('\n')
+    header_found = False
+    for line in lines:
+        if "---" in line:
+            header_found = True
+            continue
+        if not header_found or not line.strip():
+            continue
+
+        if line[2] == 'E':
+            parts = line[4:].strip().split(None, 1)
+            if len(parts) == 2:
+                names, description = parts
+                primary_name = names.split(',')[0].strip()
+                formats[primary_name] = description.strip()
+
+    _cached_formats = dict(sorted(formats.items()))
+    return _cached_formats
+
+def get_available_codecs(codec_type='video'):
+    global _cached_video_codecs, _cached_audio_codecs
+    
+    if codec_type == 'video' and _cached_video_codecs is not None: return _cached_video_codecs
+    if codec_type == 'audio' and _cached_audio_codecs is not None: return _cached_audio_codecs
+
+    output = run_ffmpeg_command(['-encoders'])
+    if not output:
+        if codec_type == 'video': _cached_video_codecs = {}
+        else: _cached_audio_codecs = {}
+        return {}
+
+    video_codecs = {}
+    audio_codecs = {}
+    lines = output.split('\n')
+    
+    header_found = False
+    for line in lines:
+        if "------" in line:
+            header_found = True
+            continue
+
+        if not header_found or not line.strip():
+            continue
+
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+
+        flags, name, description = parts
+        type_flag = flags[0]
+        clean_description = re.sub(r'\s*\(codec .*\)$', '', description).strip()
+
+        if type_flag == 'V':
+            video_codecs[name] = clean_description
+        elif type_flag == 'A':
+            audio_codecs[name] = clean_description
+
+    _cached_video_codecs = dict(sorted(video_codecs.items()))
+    _cached_audio_codecs = dict(sorted(audio_codecs.items()))
+
+    return _cached_video_codecs if codec_type == 'video' else _cached_audio_codecs
 
 class TimelineClip:
     def __init__(self, source_path, timeline_start_sec, clip_start_sec, duration_sec, track_index, track_type, media_type, group_id):
@@ -1259,19 +1420,235 @@ class SettingsDialog(QDialog):
     def __init__(self, parent_settings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(350)
+        self.setMinimumWidth(450)
         layout = QVBoxLayout(self)
         self.confirm_on_exit_checkbox = QCheckBox("Confirm before exiting")
         self.confirm_on_exit_checkbox.setChecked(parent_settings.get("confirm_on_exit", True))
         layout.addWidget(self.confirm_on_exit_checkbox)
+
+        export_path_group = QGroupBox("Default Export Path (for new projects)")
+        export_path_layout = QHBoxLayout()
+        self.default_export_path_edit = QLineEdit()
+        self.default_export_path_edit.setPlaceholderText("Optional: e.g., C:/Users/YourUser/Videos/Exports")
+        self.default_export_path_edit.setText(parent_settings.get("default_export_path", ""))
+        browse_button = QPushButton("Browse...")
+        browse_button.clicked.connect(self.browse_default_export_path)
+        export_path_layout.addWidget(self.default_export_path_edit)
+        export_path_layout.addWidget(browse_button)
+        export_path_group.setLayout(export_path_layout)
+        layout.addWidget(export_path_group)
+
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
+    def browse_default_export_path(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Default Export Folder", self.default_export_path_edit.text())
+        if path:
+            self.default_export_path_edit.setText(path)
+
     def get_settings(self):
         return {
-            "confirm_on_exit": self.confirm_on_exit_checkbox.isChecked()
+            "confirm_on_exit": self.confirm_on_exit_checkbox.isChecked(),
+            "default_export_path": self.default_export_path_edit.text(),
+        }
+
+class ExportDialog(QDialog):
+    def __init__(self, default_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Export Settings")
+        self.setMinimumWidth(550)
+
+        self.video_bitrate_options = ["500k", "1M", "2.5M", "5M", "8M", "15M", "Custom..."]
+        self.audio_bitrate_options = ["96k", "128k", "192k", "256k", "320k", "Custom..."]
+        self.display_ext_map = {'matroska': 'mkv', 'oga': 'ogg'}
+
+        self.layout = QVBoxLayout(self)
+        self.formats = get_available_formats()
+        self.video_codecs = get_available_codecs('video')
+        self.audio_codecs = get_available_codecs('audio')
+
+        self._setup_ui()
+        
+        self.path_edit.setText(default_path)
+        self.on_advanced_toggled(False)
+
+    def _setup_ui(self):
+        output_group = QGroupBox("Output File")
+        output_layout = QHBoxLayout()
+        self.path_edit = QLineEdit()
+        browse_button = QPushButton("Browse...")
+        browse_button.clicked.connect(self.browse_output_path)
+        output_layout.addWidget(self.path_edit)
+        output_layout.addWidget(browse_button)
+        output_group.setLayout(output_layout)
+        self.layout.addWidget(output_group)
+
+        self.container_combo = QComboBox()
+        self.container_combo.currentIndexChanged.connect(self.on_container_changed)
+        
+        self.advanced_formats_checkbox = QCheckBox("Show Advanced Options")
+        self.advanced_formats_checkbox.toggled.connect(self.on_advanced_toggled)
+
+        container_layout = QFormLayout()
+        container_layout.addRow("Format Preset:", self.container_combo)
+        container_layout.addRow(self.advanced_formats_checkbox)
+        self.layout.addLayout(container_layout)
+
+        self.video_group = QGroupBox("Video Settings")
+        video_layout = QFormLayout()
+        self.video_codec_combo = QComboBox()
+        video_layout.addRow("Video Codec:", self.video_codec_combo)
+        self.v_bitrate_combo = QComboBox()
+        self.v_bitrate_combo.addItems(self.video_bitrate_options)
+        self.v_bitrate_custom_edit = QLineEdit()
+        self.v_bitrate_custom_edit.setPlaceholderText("e.g., 6500k")
+        self.v_bitrate_custom_edit.hide()
+        self.v_bitrate_combo.currentTextChanged.connect(self.on_v_bitrate_changed)
+        video_layout.addRow("Video Bitrate:", self.v_bitrate_combo)
+        video_layout.addRow(self.v_bitrate_custom_edit)
+        self.video_group.setLayout(video_layout)
+        self.layout.addWidget(self.video_group)
+
+        self.audio_group = QGroupBox("Audio Settings")
+        audio_layout = QFormLayout()
+        self.audio_codec_combo = QComboBox()
+        audio_layout.addRow("Audio Codec:", self.audio_codec_combo)
+        self.a_bitrate_combo = QComboBox()
+        self.a_bitrate_combo.addItems(self.audio_bitrate_options)
+        self.a_bitrate_custom_edit = QLineEdit()
+        self.a_bitrate_custom_edit.setPlaceholderText("e.g., 256k")
+        self.a_bitrate_custom_edit.hide()
+        self.a_bitrate_combo.currentTextChanged.connect(self.on_a_bitrate_changed)
+        audio_layout.addRow("Audio Bitrate:", self.a_bitrate_combo)
+        audio_layout.addRow(self.a_bitrate_custom_edit)
+        self.audio_group.setLayout(audio_layout)
+        self.layout.addWidget(self.audio_group)
+
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        self.layout.addWidget(self.button_box)
+
+    def _populate_combo(self, combo, data_dict, filter_keys=None):
+        current_selection = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+
+        keys_to_show = filter_keys if filter_keys is not None else data_dict.keys()
+        for codename in keys_to_show:
+            if codename in data_dict:
+                desc = data_dict[codename]
+                display_name = self.display_ext_map.get(codename, codename) if combo is self.container_combo else codename
+                combo.addItem(f"{desc} ({display_name})", codename)
+
+        new_index = combo.findData(current_selection)
+        combo.setCurrentIndex(new_index if new_index != -1 else 0)
+        combo.blockSignals(False)
+
+    def on_advanced_toggled(self, checked):
+        self._populate_combo(self.container_combo, self.formats, None if checked else CONTAINER_PRESETS.keys())
+
+        if not checked:
+            mp4_index = self.container_combo.findData("mp4")
+            if mp4_index != -1: self.container_combo.setCurrentIndex(mp4_index)
+
+        self.on_container_changed(self.container_combo.currentIndex())
+
+    def apply_preset(self, container_codename):
+        preset = CONTAINER_PRESETS.get(container_codename, {})
+        
+        vcodec = preset.get('vcodec')
+        self.video_group.setEnabled(vcodec is not None)
+        if vcodec:
+            vcodec_idx = self.video_codec_combo.findData(vcodec)
+            self.video_codec_combo.setCurrentIndex(vcodec_idx if vcodec_idx != -1 else 0)
+
+        v_bitrate = preset.get('v_bitrate')
+        self.v_bitrate_combo.setEnabled(v_bitrate is not None)
+        if v_bitrate:
+            v_bitrate_idx = self.v_bitrate_combo.findText(v_bitrate)
+            if v_bitrate_idx != -1: self.v_bitrate_combo.setCurrentIndex(v_bitrate_idx)
+            else:
+                self.v_bitrate_combo.setCurrentText("Custom...")
+                self.v_bitrate_custom_edit.setText(v_bitrate)
+        
+        acodec = preset.get('acodec')
+        self.audio_group.setEnabled(acodec is not None)
+        if acodec:
+            acodec_idx = self.audio_codec_combo.findData(acodec)
+            self.audio_codec_combo.setCurrentIndex(acodec_idx if acodec_idx != -1 else 0)
+
+        a_bitrate = preset.get('a_bitrate')
+        self.a_bitrate_combo.setEnabled(a_bitrate is not None)
+        if a_bitrate:
+            a_bitrate_idx = self.a_bitrate_combo.findText(a_bitrate)
+            if a_bitrate_idx != -1: self.a_bitrate_combo.setCurrentIndex(a_bitrate_idx)
+            else:
+                self.a_bitrate_combo.setCurrentText("Custom...")
+                self.a_bitrate_custom_edit.setText(a_bitrate)
+
+    def on_v_bitrate_changed(self, text):
+        self.v_bitrate_custom_edit.setVisible(text == "Custom...")
+
+    def on_a_bitrate_changed(self, text):
+        self.a_bitrate_custom_edit.setVisible(text == "Custom...")
+
+    def browse_output_path(self):
+        container_codename = self.container_combo.currentData()
+        all_formats_desc = [f"{desc} (*.{name})" for name, desc in self.formats.items()]
+        filter_str = ";;".join(all_formats_desc)
+        current_desc = self.formats.get(container_codename, "Custom Format")
+        specific_filter = f"{current_desc} (*.{container_codename})"
+        final_filter = f"{specific_filter};;{filter_str};;All Files (*)"
+        
+        path, _ = QFileDialog.getSaveFileName(self, "Save Video As", self.path_edit.text(), final_filter)
+        if path: self.path_edit.setText(path)
+
+    def on_container_changed(self, index):
+        if index == -1: return
+        new_container_codename = self.container_combo.itemData(index)
+        
+        is_advanced = self.advanced_formats_checkbox.isChecked()
+        preset = CONTAINER_PRESETS.get(new_container_codename)
+
+        if not is_advanced and preset:
+            v_filter = preset.get('allowed_vcodecs')
+            a_filter = preset.get('allowed_acodecs')
+            self._populate_combo(self.video_codec_combo, self.video_codecs, v_filter)
+            self._populate_combo(self.audio_codec_combo, self.audio_codecs, a_filter)
+        else:
+            self._populate_combo(self.video_codec_combo, self.video_codecs)
+            self._populate_combo(self.audio_codec_combo, self.audio_codecs)
+
+        if new_container_codename:
+            self.update_output_path_extension(new_container_codename)
+            self.apply_preset(new_container_codename)
+
+    def update_output_path_extension(self, new_container_codename):
+        current_path = self.path_edit.text()
+        if not current_path: return
+        directory, filename = os.path.split(current_path)
+        basename, _ = os.path.splitext(filename)
+        ext = self.display_ext_map.get(new_container_codename, new_container_codename)
+        new_path = os.path.join(directory, f"{basename}.{ext}")
+        self.path_edit.setText(new_path)
+        
+    def get_export_settings(self):
+        v_bitrate = self.v_bitrate_combo.currentText()
+        if v_bitrate == "Custom...": v_bitrate = self.v_bitrate_custom_edit.text()
+
+        a_bitrate = self.a_bitrate_combo.currentText()
+        if a_bitrate == "Custom...": a_bitrate = self.a_bitrate_custom_edit.text()
+
+        return {
+            "output_path": self.path_edit.text(),
+            "container": self.container_combo.currentData(),
+            "vcodec": self.video_codec_combo.currentData() if self.video_group.isEnabled() else None,
+            "v_bitrate": v_bitrate if self.v_bitrate_combo.isEnabled() else None,
+            "acodec": self.audio_codec_combo.currentData() if self.audio_group.isEnabled() else None,
+            "a_bitrate": a_bitrate if self.a_bitrate_combo.isEnabled() else None,
         }
 
 class MediaListWidget(QListWidget):
@@ -1391,6 +1768,7 @@ class MainWindow(QMainWindow):
         self.export_thread = None
         self.export_worker = None
         self.current_project_path = None
+        self.last_export_path = None
         self.settings = {}
         self.settings_file = "settings.json"
         self.is_shutting_down = False
@@ -1975,7 +2353,7 @@ class MainWindow(QMainWindow):
 
     def _load_settings(self):
         self.settings_file_was_loaded = False
-        defaults = {"window_visibility": {"project_media": False}, "splitter_state": None, "enabled_plugins": [], "recent_files": [], "confirm_on_exit": True}
+        defaults = {"window_visibility": {"project_media": False}, "splitter_state": None, "enabled_plugins": [], "recent_files": [], "confirm_on_exit": True, "default_export_path": ""}
         if os.path.exists(self.settings_file):
             try:
                 with open(self.settings_file, "r") as f: self.settings = json.load(f)
@@ -2026,6 +2404,7 @@ class MainWindow(QMainWindow):
         self.timeline.clips.clear(); self.timeline.num_video_tracks = 1; self.timeline.num_audio_tracks = 1
         self.media_pool.clear(); self.media_properties.clear(); self.project_media_widget.clear_list()
         self.current_project_path = None; self.stop_playback()
+        self.last_export_path = None
         self.project_fps = 25.0
         self.project_width = 1280
         self.project_height = 720
@@ -2044,6 +2423,7 @@ class MainWindow(QMainWindow):
             "media_pool": self.media_pool,
             "clips": [{"source_path": c.source_path, "timeline_start_sec": c.timeline_start_sec, "clip_start_sec": c.clip_start_sec, "duration_sec": c.duration_sec, "track_index": c.track_index, "track_type": c.track_type, "media_type": c.media_type, "group_id": c.group_id} for c in self.timeline.clips],
             "selection_regions": self.timeline_widget.selection_regions,
+            "last_export_path": self.last_export_path,
             "settings": {
                 "num_video_tracks": self.timeline.num_video_tracks, 
                 "num_audio_tracks": self.timeline.num_audio_tracks,
@@ -2074,11 +2454,11 @@ class MainWindow(QMainWindow):
             self.project_height = project_settings.get("project_height", 720)
             self.project_fps = project_settings.get("project_fps", 25.0)
             self.timeline_widget.set_project_fps(self.project_fps)
-
+            self.last_export_path = project_data.get("last_export_path")
             self.timeline_widget.selection_regions = project_data.get("selection_regions", [])
 
-            self.media_pool = project_data.get("media_pool", [])
-            for p in self.media_pool: self._add_media_to_pool(p)
+            media_pool_paths = project_data.get("media_pool", [])
+            for p in media_pool_paths: self._add_media_to_pool(p)
             
             for clip_data in project_data["clips"]:
                 if not os.path.exists(clip_data["source_path"]):
@@ -2520,9 +2900,41 @@ class MainWindow(QMainWindow):
 
 
     def export_video(self):
-        if not self.timeline.clips: self.status_label.setText("Timeline is empty."); return
-        output_path, _ = QFileDialog.getSaveFileName(self, "Save Video As", "", "MP4 Files (*.mp4)")
-        if not output_path: return
+        if not self.timeline.clips:
+            self.status_label.setText("Timeline is empty.")
+            return
+
+        default_path = ""
+        if self.last_export_path and os.path.isdir(os.path.dirname(self.last_export_path)):
+            default_path = self.last_export_path
+        elif self.settings.get("default_export_path") and os.path.isdir(self.settings.get("default_export_path")):
+            proj_basename = "output"
+            if self.current_project_path:
+                _, proj_file = os.path.split(self.current_project_path)
+                proj_basename, _ = os.path.splitext(proj_file)
+            
+            default_path = os.path.join(self.settings["default_export_path"], f"{proj_basename}_export.mp4")
+        elif self.current_project_path:
+            proj_dir, proj_file = os.path.split(self.current_project_path)
+            proj_basename, _ = os.path.splitext(proj_file)
+            default_path = os.path.join(proj_dir, f"{proj_basename}_export.mp4")
+        else:
+            default_path = "output.mp4"
+
+        default_path = os.path.normpath(default_path)
+
+        dialog = ExportDialog(default_path, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.status_label.setText("Export canceled.")
+            return
+
+        settings = dialog.get_export_settings()
+        output_path = settings["output_path"]
+        if not output_path:
+            self.status_label.setText("Export failed: No output path specified.")
+            return
+
+        self.last_export_path = output_path
 
         w, h, fr_str, total_dur = self.project_width, self.project_height, str(self.project_fps), self.timeline.get_total_duration()
         sample_rate, channel_layout = '44100', 'stereo'
@@ -2533,9 +2945,7 @@ class MainWindow(QMainWindow):
             [c for c in self.timeline.clips if c.track_type == 'video'],
             key=lambda c: c.track_index
         )
-
         input_nodes = {}
-
         for clip in all_video_clips:
             if clip.source_path not in input_nodes:
                 if clip.media_type == 'image':
@@ -2544,31 +2954,13 @@ class MainWindow(QMainWindow):
                     input_nodes[clip.source_path] = ffmpeg.input(clip.source_path)
             
             clip_source_node = input_nodes[clip.source_path]
-
             if clip.media_type == 'image':
-                segment_stream = (
-                    clip_source_node.video
-                    .trim(duration=clip.duration_sec)
-                    .setpts('PTS-STARTPTS')
-                )
+                segment_stream = (clip_source_node.video.trim(duration=clip.duration_sec).setpts('PTS-STARTPTS'))
             else:
-                segment_stream = (
-                    clip_source_node.video
-                    .trim(start=clip.clip_start_sec, duration=clip.duration_sec)
-                    .setpts('PTS-STARTPTS')
-                )
+                segment_stream = (clip_source_node.video.trim(start=clip.clip_start_sec, duration=clip.duration_sec).setpts('PTS-STARTPTS'))
 
-            processed_segment = (
-                segment_stream
-                .filter('scale', w, h, force_original_aspect_ratio='decrease')
-                .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
-            )
-
-            video_stream = ffmpeg.overlay(
-                video_stream, 
-                processed_segment, 
-                enable=f'between(t,{clip.timeline_start_sec},{clip.timeline_end_sec})'
-            )
+            processed_segment = (segment_stream.filter('scale', w, h, force_original_aspect_ratio='decrease').filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black'))
+            video_stream = ffmpeg.overlay(video_stream, processed_segment, enable=f'between(t,{clip.timeline_start_sec},{clip.timeline_end_sec})')
 
         final_video = video_stream.filter('format', pix_fmts='yuv420p').filter('fps', fps=self.project_fps)
 
@@ -2576,22 +2968,17 @@ class MainWindow(QMainWindow):
         for i in range(self.timeline.num_audio_tracks):
             track_clips = sorted([c for c in self.timeline.clips if c.track_type == 'audio' and c.track_index == i + 1], key=lambda c: c.timeline_start_sec)
             if not track_clips: continue
-
             track_segments = []
             last_end = track_clips[0].timeline_start_sec
-
             for clip in track_clips:
                 if clip.source_path not in input_nodes:
                     input_nodes[clip.source_path] = ffmpeg.input(clip.source_path)
-
                 gap = clip.timeline_start_sec - last_end
                 if gap > 0.01: 
                     track_segments.append(ffmpeg.input(f'anullsrc=r={sample_rate}:cl={channel_layout}:d={gap}', f='lavfi'))
-                
                 a_seg = input_nodes[clip.source_path].audio.filter('atrim', start=clip.clip_start_sec, duration=clip.duration_sec).filter('asetpts', 'PTS-STARTPTS')
                 track_segments.append(a_seg)
                 last_end = clip.timeline_end_sec
-
             track_audio_streams.append(ffmpeg.concat(*track_segments, v=0, a=1).filter('adelay', f'{int(track_clips[0].timeline_start_sec * 1000)}ms', all=True))
         
         if track_audio_streams:
@@ -2599,7 +2986,10 @@ class MainWindow(QMainWindow):
         else:
             final_audio = ffmpeg.input(f'anullsrc=r={sample_rate}:cl={channel_layout}:d={total_dur}', f='lavfi')
 
-        output_args = {'vcodec': 'libx264', 'acodec': 'aac', 'pix_fmt': 'yuv420p', 'b:v': '5M'}
+        output_args = {'vcodec': settings['vcodec'], 'acodec': settings['acodec'], 'pix_fmt': 'yuv420p'}
+        if settings['v_bitrate']: output_args['b:v'] = settings['v_bitrate']
+        if settings['a_bitrate']: output_args['b:a'] = settings['a_bitrate']
+        
         try:
             ffmpeg_cmd = ffmpeg.output(final_video, final_audio, output_path, **output_args).overwrite_output().compile()
             self.progress_bar.setVisible(True); self.progress_bar.setValue(0); self.status_label.setText("Exporting...")

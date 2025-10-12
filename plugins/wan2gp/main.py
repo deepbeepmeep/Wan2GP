@@ -1681,11 +1681,23 @@ class Plugin(VideoEditorPlugin):
             start_sec, end_sec = region
             start_data, _, _ = self.app.get_frame_data_at_time(start_sec)
             end_data, _, _ = self.app.get_frame_data_at_time(end_sec)
+
             if start_data and end_data:
                 join_action = menu.addAction("Join Frames With AI")
                 join_action.triggered.connect(lambda: self.setup_generator_for_region(region, on_new_track=False))
                 join_action_new_track = menu.addAction("Join Frames With AI (New Track)")
                 join_action_new_track.triggered.connect(lambda: self.setup_generator_for_region(region, on_new_track=True))
+            elif start_data:
+                from_start_action = menu.addAction("Generate from Start Frame with AI")
+                from_start_action.triggered.connect(lambda: self.setup_generator_from_start(region, on_new_track=False))
+                from_start_action_new_track = menu.addAction("Generate from Start Frame with AI (New Track)")
+                from_start_action_new_track.triggered.connect(lambda: self.setup_generator_from_start(region, on_new_track=True))
+            elif end_data:
+                to_end_action = menu.addAction("Generate to End Frame with AI")
+                to_end_action.triggered.connect(lambda: self.setup_generator_to_end(region, on_new_track=False))
+                to_end_action_new_track = menu.addAction("Generate to End Frame with AI (New Track)")
+                to_end_action_new_track.triggered.connect(lambda: self.setup_generator_to_end(region, on_new_track=True))
+
             create_action = menu.addAction("Create Frames With AI")
             create_action.triggered.connect(lambda: self.setup_creator_for_region(region, on_new_track=False))
             create_action_new_track = menu.addAction("Create Frames With AI (New Track)")
@@ -1728,11 +1740,9 @@ class Plugin(VideoEditorPlugin):
             fps = wgp.get_model_fps(model_type)
             video_length_frames = int(duration_sec * fps) if fps > 0 else int(duration_sec * 16)
             widgets = self.client_widget.widgets
-            widgets['mode_s'].blockSignals(True)
-            widgets['mode_t'].blockSignals(True)
-            widgets['mode_v'].blockSignals(True)
-            widgets['mode_l'].blockSignals(True)
-            widgets['image_end_checkbox'].blockSignals(True)
+            
+            for w_name in ['mode_s', 'mode_t', 'mode_v', 'mode_l', 'image_end_checkbox']:
+                widgets[w_name].blockSignals(True)
 
             widgets['video_length'].setValue(video_length_frames)
             widgets['mode_s'].setChecked(True)
@@ -1740,11 +1750,8 @@ class Plugin(VideoEditorPlugin):
             widgets['image_start'].setText(self.start_frame_path)
             widgets['image_end'].setText(self.end_frame_path)
 
-            widgets['mode_s'].blockSignals(False)
-            widgets['mode_t'].blockSignals(False)
-            widgets['mode_v'].blockSignals(False)
-            widgets['mode_l'].blockSignals(False)
-            widgets['image_end_checkbox'].blockSignals(False)
+            for w_name in ['mode_s', 'mode_t', 'mode_v', 'mode_l', 'image_end_checkbox']:
+                widgets[w_name].blockSignals(False)
 
             self.client_widget._update_input_visibility()
 
@@ -1753,6 +1760,135 @@ class Plugin(VideoEditorPlugin):
             self._cleanup_temp_dir()
             return
         self.app.status_label.setText(f"Ready to join frames from {start_sec:.2f}s to {end_sec:.2f}s.")
+        self.dock_widget.show()
+        self.dock_widget.raise_()
+
+    def setup_generator_from_start(self, region, on_new_track=False):
+        self._reset_state()
+        self.active_region = region
+        self.insert_on_new_track = on_new_track
+
+        model_to_set = 'i2v_2_2' 
+        dropdown_types = self.wgp.transformer_types if len(self.wgp.transformer_types) > 0 else self.wgp.displayed_model_types
+        _, _, all_models = self.wgp.get_sorted_dropdown(dropdown_types, None, None, False)
+        if any(model_to_set == m[1] for m in all_models):
+            if self.client_widget.state.get('model_type') != model_to_set:
+                self.client_widget.update_model_dropdowns(model_to_set)
+                self.client_widget._on_model_changed()
+        else:
+            print(f"Warning: Default model '{model_to_set}' not found for AI Joiner. Using current model.")
+        
+        start_sec, end_sec = region
+        start_data, w, h = self.app.get_frame_data_at_time(start_sec)
+        if not start_data:
+            QMessageBox.warning(self.app, "Frame Error", "Could not extract start frame.")
+            return
+        
+        self.client_widget.set_resolution_from_target(w, h)
+        
+        try:
+            self.temp_dir = tempfile.mkdtemp(prefix="wgp_plugin_")
+            self.start_frame_path = os.path.join(self.temp_dir, "start_frame.png")
+            QImage(start_data, w, h, QImage.Format.Format_RGB888).save(self.start_frame_path)
+            
+            duration_sec = end_sec - start_sec
+            wgp = self.client_widget.wgp
+            model_type = self.client_widget.state['model_type']
+            fps = wgp.get_model_fps(model_type)
+            video_length_frames = int(duration_sec * fps) if fps > 0 else int(duration_sec * 16)
+            widgets = self.client_widget.widgets
+            
+            widgets['video_length'].setValue(video_length_frames)
+            
+            for w_name in ['mode_s', 'mode_t', 'mode_v', 'mode_l', 'image_end_checkbox']:
+                widgets[w_name].blockSignals(True)
+            
+            widgets['mode_s'].setChecked(True)
+            widgets['image_end_checkbox'].setChecked(False)
+            widgets['image_start'].setText(self.start_frame_path)
+            widgets['image_end'].clear()
+
+            for w_name in ['mode_s', 'mode_t', 'mode_v', 'mode_l', 'image_end_checkbox']:
+                widgets[w_name].blockSignals(False)
+
+            self.client_widget._update_input_visibility()
+
+        except Exception as e:
+            QMessageBox.critical(self.app, "File Error", f"Could not save temporary frame image: {e}")
+            self._cleanup_temp_dir()
+            return
+
+        self.app.status_label.setText(f"Ready to generate from frame at {start_sec:.2f}s.")
+        self.dock_widget.show()
+        self.dock_widget.raise_()
+
+    def setup_generator_to_end(self, region, on_new_track=False):
+        self._reset_state()
+        self.active_region = region
+        self.insert_on_new_track = on_new_track
+
+        model_to_set = 'i2v_2_2' 
+        dropdown_types = self.wgp.transformer_types if len(self.wgp.transformer_types) > 0 else self.wgp.displayed_model_types
+        _, _, all_models = self.wgp.get_sorted_dropdown(dropdown_types, None, None, False)
+        if any(model_to_set == m[1] for m in all_models):
+            if self.client_widget.state.get('model_type') != model_to_set:
+                self.client_widget.update_model_dropdowns(model_to_set)
+                self.client_widget._on_model_changed()
+        else:
+            print(f"Warning: Default model '{model_to_set}' not found for AI Joiner. Using current model.")
+        
+        start_sec, end_sec = region
+        end_data, w, h = self.app.get_frame_data_at_time(end_sec)
+        if not end_data:
+            QMessageBox.warning(self.app, "Frame Error", "Could not extract end frame.")
+            return
+        
+        self.client_widget.set_resolution_from_target(w, h)
+        
+        try:
+            self.temp_dir = tempfile.mkdtemp(prefix="wgp_plugin_")
+            self.end_frame_path = os.path.join(self.temp_dir, "end_frame.png")
+            QImage(end_data, w, h, QImage.Format.Format_RGB888).save(self.end_frame_path)
+            
+            duration_sec = end_sec - start_sec
+            wgp = self.client_widget.wgp
+            model_type = self.client_widget.state['model_type']
+            fps = wgp.get_model_fps(model_type)
+            video_length_frames = int(duration_sec * fps) if fps > 0 else int(duration_sec * 16)
+            widgets = self.client_widget.widgets
+            
+            widgets['video_length'].setValue(video_length_frames)
+
+            model_def = self.client_widget.wgp.get_model_def(self.client_widget.state['model_type'])
+            allowed_modes = model_def.get("image_prompt_types_allowed", "")
+
+            if "E" not in allowed_modes:
+                QMessageBox.warning(self.app, "Model Incompatible", "The current model does not support generating to an end frame.")
+                return
+
+            if "S" not in allowed_modes:
+                 QMessageBox.warning(self.app, "Model Incompatible", "The current model supports end frames, but not in a way compatible with this UI feature (missing 'Start with Image' mode).")
+                 return
+
+            for w_name in ['mode_s', 'mode_t', 'mode_v', 'mode_l', 'image_end_checkbox']:
+                widgets[w_name].blockSignals(True)
+            
+            widgets['mode_s'].setChecked(True)
+            widgets['image_end_checkbox'].setChecked(True)
+            widgets['image_start'].clear()
+            widgets['image_end'].setText(self.end_frame_path)
+
+            for w_name in ['mode_s', 'mode_t', 'mode_v', 'mode_l', 'image_end_checkbox']:
+                widgets[w_name].blockSignals(False)
+
+            self.client_widget._update_input_visibility()
+
+        except Exception as e:
+            QMessageBox.critical(self.app, "File Error", f"Could not save temporary frame image: {e}")
+            self._cleanup_temp_dir()
+            return
+            
+        self.app.status_label.setText(f"Ready to generate to frame at {end_sec:.2f}s.")
         self.dock_widget.show()
         self.dock_widget.raise_()
 

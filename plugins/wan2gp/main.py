@@ -423,6 +423,7 @@ class WgpDesktopPluginWidget(QWidget):
         self.tabs.addTab(gen_tab, "Video Generator")
         gen_layout = QHBoxLayout(gen_tab)
         left_panel = QWidget()
+        left_panel.setMinimumWidth(628)
         left_layout = QVBoxLayout(left_panel)
         gen_layout.addWidget(left_panel, 1)
         right_panel = QWidget()

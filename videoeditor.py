@@ -2030,6 +2030,7 @@ class MainWindow(QMainWindow):
         self.project_width = 1280
         self.project_height = 720
         self.timeline_widget.set_project_fps(self.project_fps)
+        self.timeline_widget.clear_all_regions()
         self.timeline_widget.update()
         self.undo_stack = UndoStack()
         self.undo_stack.history_changed.connect(self.update_undo_redo_actions)
@@ -2042,6 +2043,7 @@ class MainWindow(QMainWindow):
         project_data = {
             "media_pool": self.media_pool,
             "clips": [{"source_path": c.source_path, "timeline_start_sec": c.timeline_start_sec, "clip_start_sec": c.clip_start_sec, "duration_sec": c.duration_sec, "track_index": c.track_index, "track_type": c.track_type, "media_type": c.media_type, "group_id": c.group_id} for c in self.timeline.clips],
+            "selection_regions": self.timeline_widget.selection_regions,
             "settings": {
                 "num_video_tracks": self.timeline.num_video_tracks, 
                 "num_audio_tracks": self.timeline.num_audio_tracks,
@@ -2072,6 +2074,8 @@ class MainWindow(QMainWindow):
             self.project_height = project_settings.get("project_height", 720)
             self.project_fps = project_settings.get("project_fps", 25.0)
             self.timeline_widget.set_project_fps(self.project_fps)
+
+            self.timeline_widget.selection_regions = project_data.get("selection_regions", [])
 
             self.media_pool = project_data.get("media_pool", [])
             for p in self.media_pool: self._add_media_to_pool(p)

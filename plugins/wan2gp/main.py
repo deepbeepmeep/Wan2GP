@@ -296,11 +296,35 @@ class WgpDesktopPluginWidget(QWidget):
         slider = self.create_widget(QSlider, name, Qt.Orientation.Horizontal)
         slider.setRange(min_val, max_val)
         slider.setValue(int(initial_val * scale))
-        value_label = self.create_widget(QLabel, f"{name}_label", f"{initial_val:.{precision}f}")
-        value_label.setMinimumWidth(50)
-        slider.valueChanged.connect(lambda v, lbl=value_label, s=scale, p=precision: lbl.setText(f"{v/s:.{p}f}"))
+        
+        value_edit = self.create_widget(QLineEdit, f"{name}_label", f"{initial_val:.{precision}f}")
+        value_edit.setFixedWidth(60)
+        value_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        def sync_slider_from_text():
+            try:
+                text_value = float(value_edit.text())
+                slider_value = int(round(text_value * scale))
+                
+                slider.blockSignals(True)
+                slider.setValue(slider_value)
+                slider.blockSignals(False)
+
+                actual_slider_value = slider.value()
+                if actual_slider_value != slider_value:
+                    value_edit.setText(f"{actual_slider_value / scale:.{precision}f}")
+            except (ValueError, TypeError):
+                value_edit.setText(f"{slider.value() / scale:.{precision}f}")
+
+        def sync_text_from_slider(value):
+            if not value_edit.hasFocus():
+                value_edit.setText(f"{value / scale:.{precision}f}")
+
+        value_edit.editingFinished.connect(sync_slider_from_text)
+        slider.valueChanged.connect(sync_text_from_slider)
+
         hbox.addWidget(slider)
-        hbox.addWidget(value_label)
+        hbox.addWidget(value_edit)
         return container
 
     def _create_file_input(self, name, label_text):

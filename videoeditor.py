@@ -1853,11 +1853,15 @@ class MainWindow(QMainWindow):
         self.stop_button = QPushButton("Stop")
         self.frame_back_button = QPushButton("<")
         self.frame_forward_button = QPushButton(">")
+        self.snap_back_button = QPushButton("|<")
+        self.snap_forward_button = QPushButton(">|")
         controls_layout.addStretch()
+        controls_layout.addWidget(self.snap_back_button)
         controls_layout.addWidget(self.frame_back_button)
         controls_layout.addWidget(self.play_pause_button)
         controls_layout.addWidget(self.stop_button)
         controls_layout.addWidget(self.frame_forward_button)
+        controls_layout.addWidget(self.snap_forward_button)
         controls_layout.addStretch()
         main_layout.addWidget(controls_widget)
 
@@ -1908,6 +1912,8 @@ class MainWindow(QMainWindow):
         self.stop_button.clicked.connect(self.stop_playback)
         self.frame_back_button.clicked.connect(lambda: self.step_frame(-1))
         self.frame_forward_button.clicked.connect(lambda: self.step_frame(1))
+        self.snap_back_button.clicked.connect(lambda: self.snap_playhead(-1))
+        self.snap_forward_button.clicked.connect(lambda: self.snap_playhead(1))
         self.playback_timer.timeout.connect(self.advance_playback_frame)
         
         self.project_media_widget.add_media_requested.connect(self.add_media_files)
@@ -2317,6 +2323,32 @@ class MainWindow(QMainWindow):
         frame_duration_ms = 1000.0 / self.project_fps
         new_time = self.timeline_widget.playhead_pos_ms + (direction * frame_duration_ms)
         self.seek_preview(int(max(0, min(new_time, self.timeline.get_total_duration()))))
+
+    def snap_playhead(self, direction):
+        if not self.timeline.clips:
+            return
+
+        current_time_ms = self.timeline_widget.playhead_pos_ms
+        
+        snap_points = set()
+        for clip in self.timeline.clips:
+            snap_points.add(clip.timeline_start_ms)
+            snap_points.add(clip.timeline_end_ms)
+        
+        sorted_points = sorted(list(snap_points))
+
+        TOLERANCE_MS = 1 
+
+        if direction == 1: # Forward
+            next_points = [p for p in sorted_points if p > current_time_ms + TOLERANCE_MS]
+            if next_points:
+                self.seek_preview(next_points[0])
+        elif direction == -1: # Backward
+            prev_points = [p for p in sorted_points if p < current_time_ms - TOLERANCE_MS]
+            if prev_points:
+                self.seek_preview(prev_points[-1])
+            elif current_time_ms > 0:
+                self.seek_preview(0)
 
     def advance_playback_frame(self):
         frame_duration_ms = 1000.0 / self.project_fps

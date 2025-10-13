@@ -57,6 +57,7 @@ ftfy
 piexif
 nvidia-ml-py 
 misaki
+gitpython
 
 # Optional / commented out
 # transformers==4.46.3  # for llamallava pre-patch

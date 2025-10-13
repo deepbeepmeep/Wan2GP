@@ -238,6 +238,7 @@ For detailed installation instructions for different GPU generations:
 - **[Finetunes](docs/FINETUNES.md)** - Add manually new models to WanGP
 - **[VACE ControlNet](docs/VACE.md)** - Advanced video control and manipulation
 - **[Command Line Reference](docs/CLI.md)** - All available command line options
+- **[Plugins API](docs/CLI.md)** - Develop your own WAN2GP extensions
 
 ## 📚 Documentation
 

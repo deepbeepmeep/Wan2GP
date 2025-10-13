@@ -449,6 +449,8 @@ class WanAny2V:
 
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
+        injection_denoising_step = bbargs.get("injection_denoising_step", 5)
+        inject_from_start = bbargs.get("inject_from_start", False)
         image_outputs = image_mode == 1
         kwargs = {'pipeline': self, 'callback': callback}
         color_reference_frame = None
@@ -879,6 +881,8 @@ class WanAny2V:
             scheduler_kwargs = {} if isinstance(sample_scheduler, FlowMatchScheduler) else {"generator": seed_g}
         # b, c, lat_f, lat_h, lat_w
         latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=seed_g)
+        if 'source_latents' not in locals():
+            source_latents = latents.clone()
         if "G" in video_prompt_type: randn = latents
         if apg_switch != 0:  
             apg_momentum = -0.75
@@ -904,7 +908,8 @@ class WanAny2V:
                         
             kwargs.update({"t": timestep, "current_step_no": i, "real_step_no": start_step_no + i })  
             kwargs["slg_layers"] = slg_layers if int(slg_start * sampling_steps) <= i < int(slg_end * sampling_steps) else None
-
+          
+            randn = torch.randn_like(source_latents)
             if denoising_strength < 1 and i <= injection_denoising_step:
                 sigma = t / 1000
                 if inject_from_start:

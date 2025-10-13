@@ -4597,6 +4597,7 @@ def generate_video(
     image_guide,
     keep_frames_video_guide,
     denoising_strength,
+	injection_denoising_step,
     video_guide_outpainting,
     video_mask,
     image_mask,

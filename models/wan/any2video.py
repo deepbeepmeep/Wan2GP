@@ -881,6 +881,8 @@ class WanAny2V:
             scheduler_kwargs = {} if isinstance(sample_scheduler, FlowMatchScheduler) else {"generator": seed_g}
         # b, c, lat_f, lat_h, lat_w
         latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=seed_g)
+                  
+        # Ensure source_latents is defined
         if 'source_latents' not in locals():
             source_latents = latents.clone()
         if "G" in video_prompt_type: randn = latents
@@ -908,8 +910,11 @@ class WanAny2V:
                         
             kwargs.update({"t": timestep, "current_step_no": i, "real_step_no": start_step_no + i })  
             kwargs["slg_layers"] = slg_layers if int(slg_start * sampling_steps) <= i < int(slg_end * sampling_steps) else None
-          
+
+            # Initialize randn for injection
             randn = torch.randn_like(source_latents)
+
+            # Inject latents if within denoising step
             if denoising_strength < 1 and i <= injection_denoising_step:
                 sigma = t / 1000
                 if inject_from_start:

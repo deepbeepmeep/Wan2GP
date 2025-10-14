@@ -1,5 +1,0 @@
-{
-    "preload_modules": [
-        "onnxruntime"
-    ]
-}

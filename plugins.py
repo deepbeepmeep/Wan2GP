@@ -5,7 +5,6 @@ import subprocess
 import shutil
 import git
 import json
-import importlib
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
                              QPushButton, QLabel, QLineEdit, QMessageBox, QProgressBar,
                              QDialogButtonBox, QWidget, QCheckBox)
@@ -33,29 +32,6 @@ class PluginManager:
         self.plugins = {}
         if not os.path.exists(self.plugins_dir):
             os.makedirs(self.plugins_dir)
-
-    def run_preloads(plugins_dir="plugins"):
-        print("Running plugin pre-load scan...")
-        if not os.path.isdir(plugins_dir):
-            return
-
-        for plugin_name in os.listdir(plugins_dir):
-            plugin_path = os.path.join(plugins_dir, plugin_name)
-            manifest_path = os.path.join(plugin_path, 'plugin.json')
-            if os.path.isfile(manifest_path):
-                try:
-                    with open(manifest_path, 'r') as f:
-                        manifest = json.load(f)
-                    
-                    preload_modules = manifest.get("preload_modules", [])
-                    if preload_modules:
-                        for module_name in preload_modules:
-                            try:
-                                importlib.import_module(module_name)
-                            except ImportError as e:
-                                print(f"    - WARNING: Could not pre-load '{module_name}'. Error: {e}")
-                except Exception as e:
-                    print(f"  - WARNING: Could not read or parse manifest for plugin '{plugin_name}': {e}")
 
     def discover_and_load_plugins(self):
         for plugin_name in os.listdir(self.plugins_dir):

@@ -3088,7 +3088,6 @@ class MainWindow(QMainWindow):
         event.accept()
 
 if __name__ == '__main__':
-    PluginManager.run_preloads()
     app = QApplication(sys.argv)
     project_to_load_on_startup = None
     if len(sys.argv) > 1:

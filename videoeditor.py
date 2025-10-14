@@ -1,4 +1,4 @@
-import wgp
+import onnxruntime
 import sys
 import os
 import uuid
@@ -7,19 +7,21 @@ import re
 import json
 import ffmpeg
 import copy
+from plugins import PluginManager, ManagePluginsDialog
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QFileDialog, QLabel,
                              QScrollArea, QFrame, QProgressBar, QDialog,
                              QCheckBox, QDialogButtonBox, QMenu, QSplitter, QDockWidget,
                              QListWidget, QListWidgetItem, QMessageBox, QComboBox,
-                             QFormLayout, QGroupBox, QLineEdit)
+                             QFormLayout, QGroupBox, QLineEdit, QSlider)
 from PyQt6.QtGui import (QPainter, QColor, QPen, QFont, QFontMetrics, QMouseEvent, QAction,
                          QPixmap, QImage, QDrag, QCursor, QKeyEvent)
 from PyQt6.QtCore import (Qt, QPoint, QRect, QRectF, QSize, QPointF, QObject, QThread,
                           pyqtSignal, QTimer, QByteArray, QMimeData)
 
-from plugins import PluginManager, ManagePluginsDialog
 from undo import UndoStack, TimelineStateChangeCommand, MoveClipsCommand
+from playback import PlaybackManager
+from encoding import Encoder
 
 CONTAINER_PRESETS = {
     'mp4': {
@@ -210,36 +212,6 @@ class Timeline:
         if not self.clips: return 0
         return max(c.timeline_end_ms for c in self.clips)
 
-class ExportWorker(QObject):
-    progress = pyqtSignal(int)
-    finished = pyqtSignal(str)
-    def __init__(self, ffmpeg_cmd, total_duration_ms):
-        super().__init__()
-        self.ffmpeg_cmd = ffmpeg_cmd
-        self.total_duration_ms = total_duration_ms
-
-    def run_export(self):
-        try:
-            process = subprocess.Popen(self.ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding="utf-8")
-            time_pattern = re.compile(r"time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})")
-            for line in iter(process.stdout.readline, ""):
-                match = time_pattern.search(line)
-                if match:
-                    h, m, s, cs = [int(g) for g in match.groups()]
-                    processed_ms = (h * 3600 + m * 60 + s) * 1000 + cs * 10
-                    if self.total_duration_ms > 0:
-                        percentage = int((processed_ms / self.total_duration_ms) * 100)
-                        self.progress.emit(percentage)
-            process.stdout.close()
-            return_code = process.wait()
-            if return_code == 0:
-                self.progress.emit(100)
-                self.finished.emit("Export completed successfully!")
-            else:
-                self.finished.emit(f"Export failed! Check console for FFmpeg errors.")
-        except Exception as e:
-            self.finished.emit(f"An exception occurred during export: {e}")
-
 class TimelineWidget(QWidget):
     TIMESCALE_HEIGHT = 30
     HEADER_WIDTH = 120
@@ -332,6 +304,10 @@ class TimelineWidget(QWidget):
 
     def ms_to_x(self, ms): return self.HEADER_WIDTH + int(max(-500_000_000, min((ms - self.view_start_ms) * self.pixels_per_ms, 500_000_000)))
     def x_to_ms(self, x): return self.view_start_ms + int(float(x - self.HEADER_WIDTH) / self.pixels_per_ms) if x > self.HEADER_WIDTH and self.pixels_per_ms > 0 else self.view_start_ms
+
+    def set_playhead_pos(self, time_ms):
+        self.playhead_pos_ms = time_ms
+        self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1848,8 +1824,6 @@ class MainWindow(QMainWindow):
         self.undo_stack = UndoStack()
         self.media_pool = []
         self.media_properties = {}
-        self.export_thread = None
-        self.export_worker = None
         self.current_project_path = None
         self.last_export_path = None
         self.settings = {}
@@ -1857,7 +1831,10 @@ class MainWindow(QMainWindow):
         self.is_shutting_down = False
         self._load_settings()
 
-        self.plugin_manager = PluginManager(self, wgp)
+        self.playback_manager = PlaybackManager(self._get_playback_data)
+        self.encoder = Encoder()
+
+        self.plugin_manager = PluginManager(self)
         self.plugin_manager.discover_and_load_plugins()
 
         # Project settings with defaults
@@ -1869,16 +1846,12 @@ class MainWindow(QMainWindow):
         self.scale_to_fit = True
         self.current_preview_pixmap = None
 
-        self.playback_timer = QTimer(self)
-        self.playback_process = None
-        self.playback_clip = None
-
         self._setup_ui()
         self._connect_signals()
 
         self.plugin_manager.load_enabled_plugins_from_settings(self.settings.get("enabled_plugins", []))
         self._apply_loaded_settings()
-        self.seek_preview(0)
+        self.playback_manager.seek_to_frame(0)
         
         if not self.settings_file_was_loaded: self._save_settings()
         if project_to_load: QTimer.singleShot(100, lambda: self._load_project_from_path(project_to_load))
@@ -1892,6 +1865,17 @@ class MainWindow(QMainWindow):
             copy.deepcopy(self.timeline.clips),
             self.timeline.num_video_tracks,
             self.timeline.num_audio_tracks
+        )
+    
+    def _get_playback_data(self):
+        return (
+            self.timeline,
+            self.timeline.clips,
+            {
+                'width': self.project_width,
+                'height': self.project_height,
+                'fps': self.project_fps
+            }
         )
 
     def _setup_ui(self):
@@ -1946,15 +1930,33 @@ class MainWindow(QMainWindow):
         controls_layout.addStretch()
         main_layout.addWidget(controls_widget)
 
-        status_layout = QHBoxLayout()
+        status_bar_widget = QWidget()
+        status_layout = QHBoxLayout(status_bar_widget)
+        status_layout.setContentsMargins(5,2,5,2)
+
         self.status_label = QLabel("Ready. Create or open a project from the File menu.")
+        self.stats_label = QLabel("AQ: 0/0 | VQ: 0/0")
+        self.stats_label.setMinimumWidth(120)
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         self.progress_bar.setTextVisible(True)
         self.progress_bar.setRange(0, 100)
+
+        self.mute_button = QPushButton("Mute")
+        self.mute_button.setCheckable(True)
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(100)
+        self.volume_slider.setMaximumWidth(100)
+        
         status_layout.addWidget(self.status_label, 1)
+        status_layout.addWidget(self.stats_label)
         status_layout.addWidget(self.progress_bar, 1)
-        main_layout.addLayout(status_layout)
+        status_layout.addStretch()
+        status_layout.addWidget(self.mute_button)
+        status_layout.addWidget(self.volume_slider)
+        
+        main_layout.addWidget(status_bar_widget)
         
         self.setCentralWidget(container_widget)
 
@@ -1978,7 +1980,7 @@ class MainWindow(QMainWindow):
         self.timeline_widget.split_requested.connect(self.split_clip_at_playhead)
         self.timeline_widget.delete_clip_requested.connect(self.delete_clip)
         self.timeline_widget.delete_clips_requested.connect(self.delete_clips)
-        self.timeline_widget.playhead_moved.connect(self.seek_preview)
+        self.timeline_widget.playhead_moved.connect(self.playback_manager.seek_to_frame)
         self.timeline_widget.split_region_requested.connect(self.on_split_region)
         self.timeline_widget.split_all_regions_requested.connect(self.on_split_all_regions)
         self.timeline_widget.join_region_requested.connect(self.on_join_region)
@@ -1995,7 +1997,6 @@ class MainWindow(QMainWindow):
         self.frame_forward_button.clicked.connect(lambda: self.step_frame(1))
         self.snap_back_button.clicked.connect(lambda: self.snap_playhead(-1))
         self.snap_forward_button.clicked.connect(lambda: self.snap_playhead(1))
-        self.playback_timer.timeout.connect(self.advance_playback_frame)
         
         self.project_media_widget.add_media_requested.connect(self.add_media_files)
         self.project_media_widget.media_removed.connect(self.on_media_removed_from_pool)
@@ -2003,6 +2004,19 @@ class MainWindow(QMainWindow):
         
         self.undo_stack.history_changed.connect(self.update_undo_redo_actions)
         self.undo_stack.timeline_changed.connect(self.on_timeline_changed_by_undo)
+
+        self.playback_manager.new_frame.connect(self._on_new_frame)
+        self.playback_manager.playback_pos_changed.connect(self._on_playback_pos_changed)
+        self.playback_manager.stopped.connect(self._on_playback_stopped)
+        self.playback_manager.started.connect(self._on_playback_started)
+        self.playback_manager.paused.connect(self._on_playback_paused)
+        self.playback_manager.stats_updated.connect(self.stats_label.setText)
+
+        self.encoder.progress.connect(self.progress_bar.setValue)
+        self.encoder.finished.connect(self.on_export_finished)
+
+        self.mute_button.toggled.connect(self._on_mute_toggled)
+        self.volume_slider.valueChanged.connect(self._on_volume_changed)
 
     def _show_preview_context_menu(self, pos):
         menu = QMenu(self)
@@ -2019,7 +2033,7 @@ class MainWindow(QMainWindow):
     def on_timeline_changed_by_undo(self):
         self.prune_empty_tracks()
         self.timeline_widget.update()
-        self.seek_preview(self.timeline_widget.playhead_pos_ms)
+        self.playback_manager.seek_to_frame(self.timeline_widget.playhead_pos_ms)
         self.status_label.setText("Operation undone/redone.")
 
     def update_undo_redo_actions(self):
@@ -2191,41 +2205,6 @@ class MainWindow(QMainWindow):
             data['action'] = action
             self.windows_menu.addAction(action)
 
-    def _get_topmost_video_clip_at(self, time_ms):
-        """Finds the video clip on the highest track at a specific time."""
-        top_clip = None
-        for c in self.timeline.clips:
-            if c.track_type == 'video' and c.timeline_start_ms <= time_ms < c.timeline_end_ms:
-                if top_clip is None or c.track_index > top_clip.track_index:
-                    top_clip = c
-        return top_clip
-
-    def _start_playback_stream_at(self, time_ms):
-        self._stop_playback_stream()
-        clip = self._get_topmost_video_clip_at(time_ms)
-        if not clip: return
-
-        self.playback_clip = clip
-        clip_time_sec = (time_ms - clip.timeline_start_ms + clip.clip_start_ms) / 1000.0
-        w, h = self.project_width, self.project_height
-        try:
-            args = (ffmpeg.input(self.playback_clip.source_path, ss=f"{clip_time_sec:.6f}")
-                    .filter('scale', w, h, force_original_aspect_ratio='decrease')
-                    .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
-                    .output('pipe:', format='rawvideo', pix_fmt='rgb24', r=self.project_fps).compile())
-            self.playback_process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            print(f"Failed to start playback stream: {e}"); self._stop_playback_stream()
-
-    def _stop_playback_stream(self):
-        if self.playback_process:
-            if self.playback_process.poll() is None:
-                self.playback_process.terminate()
-                try: self.playback_process.wait(timeout=0.5)
-                except subprocess.TimeoutExpired: self.playback_process.kill(); self.playback_process.wait()
-            self.playback_process = None
-        self.playback_clip = None
-
     def _get_media_properties(self, file_path):
         """Probes a file to get its media properties. Returns a dict or None."""
         if file_path in self.media_properties:
@@ -2307,11 +2286,16 @@ class MainWindow(QMainWindow):
         return self._get_media_properties(file_path)
 
     def get_frame_data_at_time(self, time_ms):
-        clip_at_time = self._get_topmost_video_clip_at(time_ms)
+        """Blocking frame grab for plugin compatibility."""
+        _, clips, proj_settings = self._get_playback_data()
+        w, h = proj_settings['width'], proj_settings['height']
+
+        clip_at_time = next((c for c in sorted(clips, key=lambda x: x.track_index, reverse=True) 
+                         if c.track_type == 'video' and c.timeline_start_ms <= time_ms < c.timeline_end_ms), None)
+        
         if not clip_at_time:
             return (None, 0, 0)
         try:
-            w, h = self.project_width, self.project_height
             if clip_at_time.media_type == 'image':
                 out, _ = (
                     ffmpeg
@@ -2333,40 +2317,15 @@ class MainWindow(QMainWindow):
                 )
             return (out, self.project_width, self.project_height)
         except ffmpeg.Error as e:
-            print(f"Error extracting frame data: {e.stderr}")
+            print(f"Error extracting frame data for plugin: {e.stderr}")
             return (None, 0, 0)
 
-    def get_frame_at_time(self, time_ms):
-        clip_at_time = self._get_topmost_video_clip_at(time_ms)
-        if not clip_at_time: return None
-        try:
-            w, h = self.project_width, self.project_height
-            if clip_at_time.media_type == 'image':
-                out, _ = (
-                    ffmpeg.input(clip_at_time.source_path)
-                    .filter('scale', w, h, force_original_aspect_ratio='decrease')
-                    .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
-                    .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
-                    .run(capture_stdout=True, quiet=True)
-                )
-            else:
-                clip_time_sec = (time_ms - clip_at_time.timeline_start_ms + clip_at_time.clip_start_ms) / 1000.0
-                out, _ = (ffmpeg.input(clip_at_time.source_path, ss=f"{clip_time_sec:.6f}")
-                          .filter('scale', w, h, force_original_aspect_ratio='decrease')
-                          .filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black')
-                          .output('pipe:', vframes=1, format='rawvideo', pix_fmt='rgb24')
-                          .run(capture_stdout=True, quiet=True))
-            
-            image = QImage(out, self.project_width, self.project_height, QImage.Format.Format_RGB888)
-            return QPixmap.fromImage(image)
-        except ffmpeg.Error as e: print(f"Error extracting frame: {e.stderr}"); return None
-
-    def seek_preview(self, time_ms):
-        self._stop_playback_stream()
-        self.timeline_widget.playhead_pos_ms = int(time_ms)
-        self.timeline_widget.update()
-        self.current_preview_pixmap = self.get_frame_at_time(time_ms)
+    def _on_new_frame(self, pixmap):
+        self.current_preview_pixmap = pixmap
         self._update_preview_display()
+
+    def _on_playback_pos_changed(self, time_ms):
+        self.timeline_widget.set_playhead_pos(time_ms)
 
     def _update_preview_display(self):
         pixmap_to_show = self.current_preview_pixmap
@@ -2388,22 +2347,42 @@ class MainWindow(QMainWindow):
             self.preview_scroll_area.setWidgetResizable(False)
             self.preview_widget.setPixmap(pixmap_to_show)
             self.preview_widget.adjustSize()
-        
 
     def toggle_playback(self):
-        if self.playback_timer.isActive(): self.playback_timer.stop(); self._stop_playback_stream(); self.play_pause_button.setText("Play")
+        if not self.timeline.clips:
+            return
+            
+        if self.playback_manager.is_playing:
+            if self.playback_manager.is_paused:
+                self.playback_manager.resume()
+            else:
+                self.playback_manager.pause()
         else:
-            if not self.timeline.clips: return
-            if self.timeline_widget.playhead_pos_ms >= self.timeline.get_total_duration(): self.timeline_widget.playhead_pos_ms = 0
-            self.playback_timer.start(int(1000 / self.project_fps)); self.play_pause_button.setText("Pause")
+            current_pos = self.timeline_widget.playhead_pos_ms
+            if current_pos >= self.timeline.get_total_duration():
+                current_pos = 0
+            self.playback_manager.play(current_pos)
 
-    def stop_playback(self): self.playback_timer.stop(); self._stop_playback_stream(); self.play_pause_button.setText("Play"); self.seek_preview(0)
+    def _on_playback_started(self):
+        self.play_pause_button.setText("Pause")
+
+    def _on_playback_paused(self):
+        self.play_pause_button.setText("Play")
+
+    def _on_playback_stopped(self):
+        self.play_pause_button.setText("Play")
+
+    def stop_playback(self):
+        self.playback_manager.stop()
+        self.playback_manager.seek_to_frame(0)
+
     def step_frame(self, direction):
         if not self.timeline.clips: return
-        self.playback_timer.stop(); self.play_pause_button.setText("Play"); self._stop_playback_stream()
+        self.playback_manager.pause()
         frame_duration_ms = 1000.0 / self.project_fps
         new_time = self.timeline_widget.playhead_pos_ms + (direction * frame_duration_ms)
-        self.seek_preview(int(max(0, min(new_time, self.timeline.get_total_duration()))))
+        final_time = int(max(0, min(new_time, self.timeline.get_total_duration())))
+        self.playback_manager.seek_to_frame(final_time)
 
     def snap_playhead(self, direction):
         if not self.timeline.clips:
@@ -2423,50 +2402,20 @@ class MainWindow(QMainWindow):
         if direction == 1: # Forward
             next_points = [p for p in sorted_points if p > current_time_ms + TOLERANCE_MS]
             if next_points:
-                self.seek_preview(next_points[0])
+                self.playback_manager.seek_to_frame(next_points[0])
         elif direction == -1: # Backward
             prev_points = [p for p in sorted_points if p < current_time_ms - TOLERANCE_MS]
             if prev_points:
-                self.seek_preview(prev_points[-1])
+                self.playback_manager.seek_to_frame(prev_points[-1])
             elif current_time_ms > 0:
-                self.seek_preview(0)
+                self.playback_manager.seek_to_frame(0)
 
-    def advance_playback_frame(self):
-        frame_duration_ms = 1000.0 / self.project_fps
-        new_time_ms = self.timeline_widget.playhead_pos_ms + frame_duration_ms
-        if new_time_ms > self.timeline.get_total_duration(): self.stop_playback(); return
-        
-        self.timeline_widget.playhead_pos_ms = round(new_time_ms)
-        self.timeline_widget.update()
-        
-        clip_at_new_time = self._get_topmost_video_clip_at(new_time_ms)
-        
-        if not clip_at_new_time:
-            self._stop_playback_stream()
-            self.current_preview_pixmap = None
-            self._update_preview_display()
-            return
+    def _on_volume_changed(self, value):
+        self.playback_manager.set_volume(value / 100.0)
 
-        if clip_at_new_time.media_type == 'image':
-            if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id:
-                self._stop_playback_stream()
-                self.playback_clip = clip_at_new_time
-                self.current_preview_pixmap = self.get_frame_at_time(new_time_ms)
-                self._update_preview_display()
-            return
-
-        if self.playback_clip is None or self.playback_clip.id != clip_at_new_time.id:
-            self._start_playback_stream_at(new_time_ms)
-        
-        if self.playback_process:
-            frame_size = self.project_width * self.project_height * 3
-            frame_bytes = self.playback_process.stdout.read(frame_size)
-            if len(frame_bytes) == frame_size:
-                image = QImage(frame_bytes, self.project_width, self.project_height, QImage.Format.Format_RGB888)
-                self.current_preview_pixmap = QPixmap.fromImage(image)
-                self._update_preview_display()
-            else:
-                self._stop_playback_stream()
+    def _on_mute_toggled(self, checked):
+        self.playback_manager.set_muted(checked)
+        self.mute_button.setText("Unmute" if checked else "Mute")
 
     def _load_settings(self):
         self.settings_file_was_loaded = False
@@ -2518,9 +2467,10 @@ class MainWindow(QMainWindow):
             self.settings.update(dialog.get_settings()); self._save_settings(); self.status_label.setText("Settings updated.")
 
     def new_project(self):
+        self.playback_manager.stop()
         self.timeline.clips.clear(); self.timeline.num_video_tracks = 1; self.timeline.num_audio_tracks = 1
         self.media_pool.clear(); self.media_properties.clear(); self.project_media_widget.clear_list()
-        self.current_project_path = None; self.stop_playback()
+        self.current_project_path = None
         self.last_export_path = None
         self.project_fps = 25.0
         self.project_width = 1280
@@ -2532,6 +2482,7 @@ class MainWindow(QMainWindow):
         self.undo_stack.history_changed.connect(self.update_undo_redo_actions)
         self.update_undo_redo_actions()
         self.status_label.setText("New project created. Add media to begin.")
+        self.playback_manager.seek_to_frame(0)
 
     def save_project_as(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save Project", "", "JSON Project Files (*.json)")
@@ -2592,7 +2543,8 @@ class MainWindow(QMainWindow):
             
             self.current_project_path = path
             self.prune_empty_tracks()
-            self.timeline_widget.update(); self.stop_playback()
+            self.timeline_widget.update()
+            self.playback_manager.seek_to_frame(0)
             self.status_label.setText(f"Project '{os.path.basename(path)}' loaded.")
             self._add_to_recent_files(path)
         except Exception as e: self.status_label.setText(f"Error opening project: {e}")
@@ -3045,103 +2997,29 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Export canceled.")
             return
 
-        settings = dialog.get_export_settings()
-        output_path = settings["output_path"]
+        export_settings = dialog.get_export_settings()
+        output_path = export_settings["output_path"]
         if not output_path:
             self.status_label.setText("Export failed: No output path specified.")
             return
 
         self.last_export_path = output_path
 
-        total_dur_ms = self.timeline.get_total_duration()
-        total_dur_sec = total_dur_ms / 1000.0
-        w, h, fr_str = self.project_width, self.project_height, str(self.project_fps)
-        sample_rate, channel_layout = '44100', 'stereo'
+        project_settings = {
+            'width': self.project_width,
+            'height': self.project_height,
+            'fps': self.project_fps
+        }
 
-        video_stream = ffmpeg.input(f'color=c=black:s={w}x{h}:r={fr_str}:d={total_dur_sec}', f='lavfi')
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setText("Exporting...")
 
-        all_video_clips = sorted(
-            [c for c in self.timeline.clips if c.track_type == 'video'],
-            key=lambda c: c.track_index
-        )
-        input_nodes = {}
-        for clip in all_video_clips:
-            if clip.source_path not in input_nodes:
-                if clip.media_type == 'image':
-                    input_nodes[clip.source_path] = ffmpeg.input(clip.source_path, loop=1, framerate=self.project_fps)
-                else:
-                    input_nodes[clip.source_path] = ffmpeg.input(clip.source_path)
-            
-            clip_source_node = input_nodes[clip.source_path]
-            clip_duration_sec = clip.duration_ms / 1000.0
-            clip_start_sec = clip.clip_start_ms / 1000.0
-            timeline_start_sec = clip.timeline_start_ms / 1000.0
-            timeline_end_sec = clip.timeline_end_ms / 1000.0
+        self.encoder.start_export(self.timeline, project_settings, export_settings)
 
-            if clip.media_type == 'image':
-                segment_stream = (clip_source_node.video.trim(duration=clip_duration_sec).setpts('PTS-STARTPTS'))
-            else:
-                segment_stream = (clip_source_node.video.trim(start=clip_start_sec, duration=clip_duration_sec).setpts('PTS-STARTPTS'))
-
-            processed_segment = (segment_stream.filter('scale', w, h, force_original_aspect_ratio='decrease').filter('pad', w, h, '(ow-iw)/2', '(oh-ih)/2', 'black'))
-            video_stream = ffmpeg.overlay(video_stream, processed_segment, enable=f'between(t,{timeline_start_sec},{timeline_end_sec})')
-
-        final_video = video_stream.filter('format', pix_fmts='yuv420p').filter('fps', fps=self.project_fps)
-
-        track_audio_streams = []
-        for i in range(self.timeline.num_audio_tracks):
-            track_clips = sorted([c for c in self.timeline.clips if c.track_type == 'audio' and c.track_index == i + 1], key=lambda c: c.timeline_start_ms)
-            if not track_clips: continue
-            track_segments = []
-            last_end_ms = track_clips[0].timeline_start_ms
-            for clip in track_clips:
-                if clip.source_path not in input_nodes:
-                    input_nodes[clip.source_path] = ffmpeg.input(clip.source_path)
-                gap_ms = clip.timeline_start_ms - last_end_ms
-                if gap_ms > 10: 
-                    track_segments.append(ffmpeg.input(f'anullsrc=r={sample_rate}:cl={channel_layout}:d={gap_ms/1000.0}', f='lavfi'))
-                
-                clip_start_sec = clip.clip_start_ms / 1000.0
-                clip_duration_sec = clip.duration_ms / 1000.0
-                a_seg = input_nodes[clip.source_path].audio.filter('atrim', start=clip_start_sec, duration=clip_duration_sec).filter('asetpts', 'PTS-STARTPTS')
-                track_segments.append(a_seg)
-                last_end_ms = clip.timeline_end_ms
-            track_audio_streams.append(ffmpeg.concat(*track_segments, v=0, a=1).filter('adelay', f'{int(track_clips[0].timeline_start_ms)}ms', all=True))
-        
-        if track_audio_streams:
-            final_audio = ffmpeg.filter(track_audio_streams, 'amix', inputs=len(track_audio_streams), duration='longest')
-        else:
-            final_audio = ffmpeg.input(f'anullsrc=r={sample_rate}:cl={channel_layout}:d={total_dur_sec}', f='lavfi')
-
-        output_args = {'vcodec': settings['vcodec'], 'acodec': settings['acodec'], 'pix_fmt': 'yuv420p'}
-        if settings['v_bitrate']: output_args['b:v'] = settings['v_bitrate']
-        if settings['a_bitrate']: output_args['b:a'] = settings['a_bitrate']
-        
-        try:
-            ffmpeg_cmd = ffmpeg.output(final_video, final_audio, output_path, **output_args).overwrite_output().compile()
-            self.progress_bar.setVisible(True); self.progress_bar.setValue(0); self.status_label.setText("Exporting...")
-            self.export_thread = QThread()
-            self.export_worker = ExportWorker(ffmpeg_cmd, total_dur_ms)
-            self.export_worker.moveToThread(self.export_thread)
-            self.export_thread.started.connect(self.export_worker.run_export)
-            self.export_worker.finished.connect(self.on_export_finished)
-            self.export_worker.progress.connect(self.progress_bar.setValue)
-            self.export_worker.finished.connect(self.export_thread.quit)
-            self.export_worker.finished.connect(self.export_worker.deleteLater)
-            self.export_thread.finished.connect(self.export_thread.deleteLater)
-            self.export_thread.finished.connect(self.on_thread_finished_cleanup)
-            self.export_thread.start()
-        except ffmpeg.Error as e:
-            self.status_label.setText(f"FFmpeg error: {e.stderr}")
-            print(e.stderr)
-
-    def on_export_finished(self, message):
+    def on_export_finished(self, success, message):
         self.status_label.setText(message)
         self.progress_bar.setVisible(False)
-
-    def on_thread_finished_cleanup(self):
-        self.export_thread = None
-        self.export_worker = None
     
     def add_dock_widget(self, plugin_instance, widget, title, area=Qt.DockWidgetArea.RightDockWidgetArea, show_on_creation=True):
         widget_key = f"plugin_{plugin_instance.name}_{title}".replace(' ', '_').lower()
@@ -3205,14 +3083,12 @@ class MainWindow(QMainWindow):
                 return
 
         self.is_shutting_down = True
+        self.playback_manager.stop()
         self._save_settings()
-        self._stop_playback_stream()
-        if self.export_thread and self.export_thread.isRunning():
-            self.export_thread.quit()
-            self.export_thread.wait()
         event.accept()
 
 if __name__ == '__main__':
+    PluginManager.run_preloads()
     app = QApplication(sys.argv)
     project_to_load_on_startup = None
     if len(sys.argv) > 1:

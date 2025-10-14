@@ -50,10 +50,11 @@ sys.modules['gradio.gallery'] = MockGradioModule()
 sys.modules['shared.gradio.gallery'] = MockGradioModule()
 # --- End of Gradio Hijacking ---
 
+wgp = None
 import ffmpeg
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QPushButton, QLabel, QLineEdit, QTextEdit, QSlider, QCheckBox, QComboBox,
     QFileDialog, QGroupBox, QFormLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QProgressBar, QScrollArea, QListWidget, QListWidgetItem,
@@ -213,7 +214,6 @@ class Worker(QObject):
     def __init__(self, plugin, state):
         super().__init__()
         self.plugin = plugin
-        self.wgp = plugin.wgp
         self.state = state
         self._is_running = True
         self._last_progress_phase = None
@@ -222,7 +222,7 @@ class Worker(QObject):
     def run(self):
         def generation_target():
             try:
-                for _ in self.wgp.process_tasks(self.state):
+                for _ in wgp.process_tasks(self.state):
                     if self._is_running: self.output.emit()
                     else: break
             except Exception as e:
@@ -243,7 +243,7 @@ class Worker(QObject):
                 phase_name, step = current_phase
                 total_steps = gen.get("num_inference_steps", 1)
                 high_level_status = gen.get("progress_status", "")
-                status_msg = self.wgp.merge_status_context(high_level_status, phase_name)
+                status_msg = wgp.merge_status_context(high_level_status, phase_name)
                 progress_args = [(step, total_steps), status_msg]
                 self.progress.emit(progress_args)
             preview_img = gen.get('preview')
@@ -260,7 +260,6 @@ class WgpDesktopPluginWidget(QWidget):
     def __init__(self, plugin):
         super().__init__()
         self.plugin = plugin
-        self.wgp = plugin.wgp
         self.widgets = {}
         self.state = {}
         self.worker = None
@@ -739,7 +738,7 @@ class WgpDesktopPluginWidget(QWidget):
         layout.addRow("Force FPS:", fps_combo)
         profile_combo = self.create_widget(QComboBox, 'override_profile')
         profile_combo.addItem("Default Profile", -1)
-        for text, val in self.wgp.memory_profile_choices: profile_combo.addItem(text.split(':')[0], val)
+        for text, val in wgp.memory_profile_choices: profile_combo.addItem(text.split(':')[0], val)
         layout.addRow("Override Memory Profile:", profile_combo)
         combo = self.create_widget(QComboBox, 'multi_prompts_gen_type')
         combo.addItem("Generate new Video per line", 0)
@@ -777,7 +776,7 @@ class WgpDesktopPluginWidget(QWidget):
     def _create_config_combo(self, form_layout, label, key, choices, default_value):
         combo = QComboBox()
         for text, data in choices: combo.addItem(text, data)
-        index = combo.findData(self.wgp.server_config.get(key, default_value))
+        index = combo.findData(wgp.server_config.get(key, default_value))
         if index != -1: combo.setCurrentIndex(index)
         self.widgets[f'config_{key}'] = combo
         form_layout.addRow(label, combo)
@@ -789,7 +788,7 @@ class WgpDesktopPluginWidget(QWidget):
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(min_val, max_val)
         slider.setSingleStep(step)
-        slider.setValue(self.wgp.server_config.get(key, default_value))
+        slider.setValue(wgp.server_config.get(key, default_value))
         value_label = QLabel(str(slider.value()))
         value_label.setMinimumWidth(40)
         slider.valueChanged.connect(lambda v, lbl=value_label: lbl.setText(str(v)))
@@ -801,7 +800,7 @@ class WgpDesktopPluginWidget(QWidget):
     def _create_config_checklist(self, form_layout, label, key, choices, default_value):
         list_widget = QListWidget()
         list_widget.setMinimumHeight(100)
-        current_values = self.wgp.server_config.get(key, default_value)
+        current_values = wgp.server_config.get(key, default_value)
         for text, data in choices:
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, data)
@@ -822,8 +821,8 @@ class WgpDesktopPluginWidget(QWidget):
 
     def _create_general_config_tab(self):
         tab, form = self._create_scrollable_form_tab()
-        _, _, dropdown_choices = self.wgp.get_sorted_dropdown(self.wgp.displayed_model_types, None, None, False)
-        self._create_config_checklist(form, "Selectable Models:", "transformer_types", dropdown_choices, self.wgp.transformer_types)
+        _, _, dropdown_choices = wgp.get_sorted_dropdown(wgp.displayed_model_types, None, None, False)
+        self._create_config_checklist(form, "Selectable Models:", "transformer_types", dropdown_choices, wgp.transformer_types)
         self._create_config_combo(form, "Model Hierarchy:", "model_hierarchy_type", [("Two Levels (Family > Model)", 0), ("Three Levels (Family > Base > Finetune)", 1)], 1)
         self._create_config_combo(form, "Video Dimensions:", "fit_canvas", [("Dimensions are Pixels Budget", 0), ("Dimensions are Max Width/Height", 1), ("Dimensions are Output Width/Height (Cropped)", 2)], 0)
         self._create_config_combo(form, "Attention Type:", "attention_mode", [("Auto (Recommended)", "auto"), ("SDPA", "sdpa"), ("Flash", "flash"), ("Xformers", "xformers"), ("Sage", "sage"), ("Sage2/2++", "sage2")], "auto")
@@ -832,7 +831,7 @@ class WgpDesktopPluginWidget(QWidget):
         self._create_config_combo(form, "Keep Previous Videos:", "clear_file_list", [("None", 0), ("Keep last video", 1), ("Keep last 5", 5), ("Keep last 10", 10), ("Keep last 20", 20), ("Keep last 30", 30)], 5)
         self._create_config_combo(form, "Display RAM/VRAM Stats:", "display_stats", [("Disabled", 0), ("Enabled", 1)], 0)
         self._create_config_combo(form, "Max Frames Multiplier:", "max_frames_multiplier", [(f"x{i}", i) for i in range(1, 8)], 1)
-        checkpoints_paths_text = "\n".join(self.wgp.server_config.get("checkpoints_paths", self.wgp.fl.default_checkpoints_paths))
+        checkpoints_paths_text = "\n".join(wgp.server_config.get("checkpoints_paths", wgp.fl.default_checkpoints_paths))
         checkpoints_textbox = QTextEdit()
         checkpoints_textbox.setPlainText(checkpoints_paths_text)
         checkpoints_textbox.setAcceptRichText(False)
@@ -853,7 +852,7 @@ class WgpDesktopPluginWidget(QWidget):
         self._create_config_combo(form, "DepthAnything v2 Variant:", "depth_anything_v2_variant", [("Large (more precise)", "vitl"), ("Big (faster)", "vitb")], "vitl")
         self._create_config_combo(form, "VAE Tiling:", "vae_config", [("Auto", 0), ("Disabled", 1), ("256x256 (~8GB VRAM)", 2), ("128x128 (~6GB VRAM)", 3)], 0)
         self._create_config_combo(form, "Boost:", "boost", [("On", 1), ("Off", 2)], 1)
-        self._create_config_combo(form, "Memory Profile:", "profile", self.wgp.memory_profile_choices, self.wgp.profile_type.LowRAM_LowVRAM)
+        self._create_config_combo(form, "Memory Profile:", "profile", wgp.memory_profile_choices, wgp.profile_type.LowRAM_LowVRAM)
         self._create_config_slider(form, "Preload in VRAM (MB):", "preload_in_VRAM", 0, 40000, 0, 100)
         release_ram_btn = QPushButton("Force Release Models from RAM")
         release_ram_btn.clicked.connect(self._on_release_ram)
@@ -882,7 +881,6 @@ class WgpDesktopPluginWidget(QWidget):
         return tab
         
     def init_wgp_state(self):
-        wgp = self.wgp
         initial_model = wgp.server_config.get("last_model_type", wgp.transformer_type)
         dropdown_types = wgp.transformer_types if len(wgp.transformer_types) > 0 else wgp.displayed_model_types
         _, _, all_models = wgp.get_sorted_dropdown(dropdown_types, None, None, False)
@@ -903,14 +901,16 @@ class WgpDesktopPluginWidget(QWidget):
         self._update_input_visibility()
 
     def update_model_dropdowns(self, current_model_type):
-        wgp = self.wgp
         family_mock, base_type_mock, choice_mock = wgp.generate_dropdown_model_list(current_model_type)
         for combo_name, mock in [('model_family', family_mock), ('model_base_type_choice', base_type_mock), ('model_choice', choice_mock)]:
             combo = self.widgets[combo_name]
             combo.blockSignals(True)
             combo.clear()
             if mock.choices:
-                for display_name, internal_key in mock.choices: combo.addItem(display_name, internal_key)
+                for item in mock.choices:
+                    if isinstance(item, (list, tuple)) and len(item) >= 2:
+                        display_name, internal_key = item[0], item[1]
+                        combo.addItem(display_name, internal_key)
             index = combo.findData(mock.value)
             if index != -1: combo.setCurrentIndex(index)
             
@@ -925,7 +925,6 @@ class WgpDesktopPluginWidget(QWidget):
 
     def refresh_ui_from_model_change(self, model_type):
         """Update UI controls with default settings when the model is changed."""
-        wgp = self.wgp
         self.header_info.setText(wgp.generate_header(model_type, wgp.compile, wgp.attention_mode))
         ui_defaults = wgp.get_default_settings(model_type)
         wgp.set_model_settings(self.state, model_type, ui_defaults)
@@ -1286,7 +1285,7 @@ class WgpDesktopPluginWidget(QWidget):
     def _on_family_changed(self):
         family = self.widgets['model_family'].currentData()
         if not family or not self.state: return
-        base_type_mock, choice_mock = self.wgp.change_model_family(self.state, family)
+        base_type_mock, choice_mock = wgp.change_model_family(self.state, family)
 
         if hasattr(base_type_mock, 'kwargs') and isinstance(base_type_mock.kwargs, dict):
             is_visible_base = base_type_mock.kwargs.get('visible', True)
@@ -1324,7 +1323,7 @@ class WgpDesktopPluginWidget(QWidget):
         family = self.widgets['model_family'].currentData()
         base_type = self.widgets['model_base_type_choice'].currentData()
         if not family or not base_type or not self.state: return
-        base_type_mock, choice_mock = self.wgp.change_model_base_types(self.state, family, base_type)
+        base_type_mock, choice_mock = wgp.change_model_base_types(self.state, family, base_type)
 
         if hasattr(choice_mock, 'kwargs') and isinstance(choice_mock.kwargs, dict):
             is_visible_choice = choice_mock.kwargs.get('visible', True)
@@ -1345,18 +1344,18 @@ class WgpDesktopPluginWidget(QWidget):
     def _on_model_changed(self):
         model_type = self.widgets['model_choice'].currentData()
         if not model_type or model_type == self.state.get('model_type'): return
-        self.wgp.change_model(self.state, model_type)
+        wgp.change_model(self.state, model_type)
         self.refresh_ui_from_model_change(model_type)
 
     def _on_resolution_group_changed(self):
         selected_group = self.widgets['resolution_group'].currentText()
         if not selected_group or not hasattr(self, 'full_resolution_choices'): return
         model_type = self.state['model_type']
-        model_def = self.wgp.get_model_def(model_type)
+        model_def = wgp.get_model_def(model_type)
         model_resolutions = model_def.get("resolutions", None)
         group_resolution_choices = []
         if model_resolutions is None:
-            group_resolution_choices = [res for res in self.full_resolution_choices if self.wgp.categorize_resolution(res[1]) == selected_group]
+            group_resolution_choices = [res for res in self.full_resolution_choices if wgp.categorize_resolution(res[1]) == selected_group]
         else: return
         last_resolution = self.state.get("last_resolution_per_group", {}).get(selected_group, "")
         if not any(last_resolution == res[1] for res in group_resolution_choices) and group_resolution_choices:
@@ -1398,7 +1397,7 @@ class WgpDesktopPluginWidget(QWidget):
                 best_res_value = res_value
 
         if best_res_value:
-            best_group = self.wgp.categorize_resolution(best_res_value)
+            best_group = wgp.categorize_resolution(best_res_value)
 
             group_combo = self.widgets['resolution_group']
             group_combo.blockSignals(True)
@@ -1417,7 +1416,7 @@ class WgpDesktopPluginWidget(QWidget):
                 print(f"Warning: Could not find resolution '{best_res_value}' in dropdown after group change.")
 
     def collect_inputs(self):
-        full_inputs = self.wgp.get_current_model_settings(self.state).copy()
+        full_inputs = wgp.get_current_model_settings(self.state).copy()
         full_inputs['lset_name'] = ""
         full_inputs['image_mode'] = 0
         expected_keys = { "audio_guide": None, "audio_guide2": None, "image_guide": None, "image_mask": None, "speakers_locations": "", "frames_positions": "", "keep_frames_video_guide": "", "keep_frames_video_source": "", "video_guide_outpainting": "", "switch_threshold2": 0, "model_switch_phase": 1, "batch_size": 1, "control_net_weight_alt": 1.0, "image_refs_relative_size": 50, }
@@ -1512,9 +1511,9 @@ class WgpDesktopPluginWidget(QWidget):
         all_inputs = self.collect_inputs()
         for key in ['type', 'settings_version', 'is_image', 'video_quality', 'image_quality', 'base_model_type']: all_inputs.pop(key, None)
         all_inputs['state'] = self.state
-        self.wgp.set_model_settings(self.state, self.state['model_type'], all_inputs)
+        wgp.set_model_settings(self.state, self.state['model_type'], all_inputs)
         self.state["validate_success"] = 1
-        self.wgp.process_prompt_and_add_tasks(self.state, self.state['model_type'])
+        wgp.process_prompt_and_add_tasks(self.state, self.state['model_type'])
         self.update_queue_table()
         
     def start_generation(self):
@@ -1582,11 +1581,11 @@ class WgpDesktopPluginWidget(QWidget):
         self.results_list.setItemWidget(list_item, item_widget)
 
     def update_queue_table(self):
-        with self.wgp.lock:
+        with wgp.lock:
             queue = self.state.get('gen', {}).get('queue', [])
             is_running = self.thread and self.thread.isRunning()
             queue_to_display = queue if is_running else [None] + queue
-            table_data = self.wgp.get_queue_table(queue_to_display)
+            table_data = wgp.get_queue_table(queue_to_display)
             self.queue_table.setRowCount(0)
             self.queue_table.setRowCount(len(table_data))
             self.queue_table.setColumnCount(4) 
@@ -1601,7 +1600,7 @@ class WgpDesktopPluginWidget(QWidget):
     def _on_remove_selected_from_queue(self):
         selected_row = self.queue_table.currentRow()
         if selected_row < 0: return
-        with self.wgp.lock:
+        with wgp.lock:
             is_running = self.thread and self.thread.isRunning()
             offset = 1 if is_running else 0
             queue = self.state.get('gen', {}).get('queue', [])
@@ -1609,7 +1608,7 @@ class WgpDesktopPluginWidget(QWidget):
         self.update_queue_table()
 
     def _on_queue_rows_moved(self, source_row, dest_row):
-        with self.wgp.lock:
+        with wgp.lock:
             queue = self.state.get('gen', {}).get('queue', [])
             is_running = self.thread and self.thread.isRunning()
             offset = 1 if is_running else 0
@@ -1620,17 +1619,17 @@ class WgpDesktopPluginWidget(QWidget):
         self.update_queue_table()
 
     def _on_clear_queue(self):
-        self.wgp.clear_queue_action(self.state)
+        wgp.clear_queue_action(self.state)
         self.update_queue_table()
         
     def _on_abort(self):
         if self.worker:
-            self.wgp.abort_generation(self.state)
+            wgp.abort_generation(self.state)
             self.status_label.setText("Aborting...")
             self.worker._is_running = False
     
     def _on_release_ram(self):
-        self.wgp.release_RAM()
+        wgp.release_RAM()
         QMessageBox.information(self, "RAM Released", "Models stored in RAM have been released.")
 
     def _on_apply_config_changes(self):
@@ -1655,12 +1654,12 @@ class WgpDesktopPluginWidget(QWidget):
         changes['notification_sound_volume_choice'] = self.widgets['config_notification_sound_volume'].value()
         changes['last_resolution_choice'] = self.widgets['resolution'].currentData()
         try:
-            msg, header_mock, family_mock, base_type_mock, choice_mock, refresh_trigger = self.wgp.apply_changes(self.state, **changes)
+            msg, header_mock, family_mock, base_type_mock, choice_mock, refresh_trigger = wgp.apply_changes(self.state, **changes)
             self.config_status_label.setText("Changes applied successfully. Some settings may require a restart.")
-            self.header_info.setText(self.wgp.generate_header(self.state['model_type'], self.wgp.compile, self.wgp.attention_mode))
+            self.header_info.setText(wgp.generate_header(self.state['model_type'], wgp.compile, wgp.attention_mode))
             if family_mock.choices is not None or choice_mock.choices is not None:
-                self.update_model_dropdowns(self.wgp.transformer_type)
-                self.refresh_ui_from_model_change(self.wgp.transformer_type)
+                self.update_model_dropdowns(wgp.transformer_type)
+                self.refresh_ui_from_model_change(wgp.transformer_type)
         except Exception as e:
             self.config_status_label.setText(f"Error applying changes: {e}")
             import traceback; traceback.print_exc()
@@ -1669,22 +1668,81 @@ class Plugin(VideoEditorPlugin):
     def initialize(self):
         self.name = "AI Generator"
         self.description = "Uses the integrated Wan2GP library to generate video clips."
-        self.client_widget = WgpDesktopPluginWidget(self)
+        self.client_widget = None
         self.dock_widget = None
-        self.active_region = None; self.temp_dir = None
-        self.insert_on_new_track = False; self.start_frame_path = None; self.end_frame_path = None
+        self._heavy_content_loaded = False
+
+        self.active_region = None
+        self.temp_dir = None
+        self.insert_on_new_track = False
+        self.start_frame_path = None
+        self.end_frame_path = None
 
     def enable(self):
-        if not self.dock_widget: self.dock_widget = self.app.add_dock_widget(self, self.client_widget, self.name)
+        if not self.dock_widget:
+            placeholder = QLabel("Loading AI Generator...")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.dock_widget = self.app.add_dock_widget(self, placeholder, self.name)
+            self.dock_widget.visibilityChanged.connect(self._on_visibility_changed)
+        
         self.app.timeline_widget.context_menu_requested.connect(self.on_timeline_context_menu)
         self.app.status_label.setText(f"{self.name}: Enabled.")
+
+    def _on_visibility_changed(self, visible):
+        if visible and not self._heavy_content_loaded:
+            self._load_heavy_ui()
+
+    def _load_heavy_ui(self):
+        if self._heavy_content_loaded:
+            return True
+
+        self.app.status_label.setText("Loading AI Generator...")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        try:
+            global wgp
+            if wgp is None:
+                import wgp as wgp_module
+                wgp = wgp_module
+            
+            self.client_widget = WgpDesktopPluginWidget(self)
+            self.dock_widget.setWidget(self.client_widget)
+            self._heavy_content_loaded = True
+            self.app.status_label.setText("AI Generator loaded.")
+            return True
+        except Exception as e:
+            print(f"Failed to load AI Generator plugin backend: {e}")
+            import traceback
+            traceback.print_exc()
+            error_label = QLabel(f"Failed to load AI Generator:\n\n{e}\n\nPlease see console for details.")
+            error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            error_label.setWordWrap(True)
+            if self.dock_widget:
+                self.dock_widget.setWidget(error_label)
+            QMessageBox.critical(self.app, "Plugin Load Error", f"Failed to load the AI Generator backend.\n\n{e}")
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def disable(self):
         try: self.app.timeline_widget.context_menu_requested.disconnect(self.on_timeline_context_menu)
         except TypeError: pass
+
+        if self.dock_widget:
+            try: self.dock_widget.visibilityChanged.disconnect(self._on_visibility_changed)
+            except TypeError: pass
+
         self._cleanup_temp_dir()
-        if self.client_widget.worker: self.client_widget._on_abort()
+        if self.client_widget and self.client_widget.worker:
+            self.client_widget._on_abort()
+            
         self.app.status_label.setText(f"{self.name}: Disabled.")
+
+    def _ensure_ui_loaded(self):
+        if not self._heavy_content_loaded:
+            if not self._load_heavy_ui():
+                return False
+        return True
 
     def _cleanup_temp_dir(self):
         if self.temp_dir and os.path.exists(self.temp_dir):
@@ -1694,11 +1752,12 @@ class Plugin(VideoEditorPlugin):
     def _reset_state(self):
         self.active_region = None; self.insert_on_new_track = False
         self.start_frame_path = None; self.end_frame_path = None
-        self.client_widget.processed_files.clear()
-        self.client_widget.results_list.clear()
-        self.client_widget.widgets['image_start'].clear()
-        self.client_widget.widgets['image_end'].clear()
-        self.client_widget.widgets['video_source'].clear()
+        if self._heavy_content_loaded:
+            self.client_widget.processed_files.clear()
+            self.client_widget.results_list.clear()
+            self.client_widget.widgets['image_start'].clear()
+            self.client_widget.widgets['image_end'].clear()
+            self.client_widget.widgets['video_source'].clear()
         self._cleanup_temp_dir()
         self.app.status_label.setText(f"{self.name}: Ready.")
 
@@ -1732,13 +1791,14 @@ class Plugin(VideoEditorPlugin):
             create_action_new_track.triggered.connect(lambda: self.setup_creator_for_region(region, on_new_track=True))
 
     def setup_generator_for_region(self, region, on_new_track=False):
+        if not self._ensure_ui_loaded(): return
         self._reset_state()
         self.active_region = region
         self.insert_on_new_track = on_new_track
 
         model_to_set = 'i2v_2_2' 
-        dropdown_types = self.wgp.transformer_types if len(self.wgp.transformer_types) > 0 else self.wgp.displayed_model_types
-        _, _, all_models = self.wgp.get_sorted_dropdown(dropdown_types, None, None, False)
+        dropdown_types = wgp.transformer_types if len(wgp.transformer_types) > 0 else wgp.displayed_model_types
+        _, _, all_models = wgp.get_sorted_dropdown(dropdown_types, None, None, False)
         if any(model_to_set == m[1] for m in all_models):
             if self.client_widget.state.get('model_type') != model_to_set:
                 self.client_widget.update_model_dropdowns(model_to_set)
@@ -1763,7 +1823,6 @@ class Plugin(VideoEditorPlugin):
             QImage(end_data, w, h, QImage.Format.Format_RGB888).save(self.end_frame_path)
             
             duration_ms = end_ms - start_ms
-            wgp = self.client_widget.wgp
             model_type = self.client_widget.state['model_type']
             fps = wgp.get_model_fps(model_type)
             video_length_frames = int((duration_ms / 1000.0) * fps) if fps > 0 else int((duration_ms / 1000.0) * 16)
@@ -1792,13 +1851,14 @@ class Plugin(VideoEditorPlugin):
         self.dock_widget.raise_()
 
     def setup_generator_from_start(self, region, on_new_track=False):
+        if not self._ensure_ui_loaded(): return
         self._reset_state()
         self.active_region = region
         self.insert_on_new_track = on_new_track
 
         model_to_set = 'i2v_2_2' 
-        dropdown_types = self.wgp.transformer_types if len(self.wgp.transformer_types) > 0 else self.wgp.displayed_model_types
-        _, _, all_models = self.wgp.get_sorted_dropdown(dropdown_types, None, None, False)
+        dropdown_types = wgp.transformer_types if len(wgp.transformer_types) > 0 else wgp.displayed_model_types
+        _, _, all_models = wgp.get_sorted_dropdown(dropdown_types, None, None, False)
         if any(model_to_set == m[1] for m in all_models):
             if self.client_widget.state.get('model_type') != model_to_set:
                 self.client_widget.update_model_dropdowns(model_to_set)
@@ -1820,7 +1880,6 @@ class Plugin(VideoEditorPlugin):
             QImage(start_data, w, h, QImage.Format.Format_RGB888).save(self.start_frame_path)
             
             duration_ms = end_ms - start_ms
-            wgp = self.client_widget.wgp
             model_type = self.client_widget.state['model_type']
             fps = wgp.get_model_fps(model_type)
             video_length_frames = int((duration_ms / 1000.0) * fps) if fps > 0 else int((duration_ms / 1000.0) * 16)
@@ -1851,13 +1910,14 @@ class Plugin(VideoEditorPlugin):
         self.dock_widget.raise_()
 
     def setup_generator_to_end(self, region, on_new_track=False):
+        if not self._ensure_ui_loaded(): return
         self._reset_state()
         self.active_region = region
         self.insert_on_new_track = on_new_track
 
         model_to_set = 'i2v_2_2' 
-        dropdown_types = self.wgp.transformer_types if len(self.wgp.transformer_types) > 0 else self.wgp.displayed_model_types
-        _, _, all_models = self.wgp.get_sorted_dropdown(dropdown_types, None, None, False)
+        dropdown_types = wgp.transformer_types if len(wgp.transformer_types) > 0 else wgp.displayed_model_types
+        _, _, all_models = wgp.get_sorted_dropdown(dropdown_types, None, None, False)
         if any(model_to_set == m[1] for m in all_models):
             if self.client_widget.state.get('model_type') != model_to_set:
                 self.client_widget.update_model_dropdowns(model_to_set)
@@ -1879,7 +1939,6 @@ class Plugin(VideoEditorPlugin):
             QImage(end_data, w, h, QImage.Format.Format_RGB888).save(self.end_frame_path)
             
             duration_ms = end_ms - start_ms
-            wgp = self.client_widget.wgp
             model_type = self.client_widget.state['model_type']
             fps = wgp.get_model_fps(model_type)
             video_length_frames = int((duration_ms / 1000.0) * fps) if fps > 0 else int((duration_ms / 1000.0) * 16)
@@ -1887,7 +1946,7 @@ class Plugin(VideoEditorPlugin):
             
             widgets['video_length'].setValue(video_length_frames)
 
-            model_def = self.client_widget.wgp.get_model_def(self.client_widget.state['model_type'])
+            model_def = wgp.get_model_def(self.client_widget.state['model_type'])
             allowed_modes = model_def.get("image_prompt_types_allowed", "")
 
             if "E" not in allowed_modes:
@@ -1921,13 +1980,14 @@ class Plugin(VideoEditorPlugin):
         self.dock_widget.raise_()
 
     def setup_creator_for_region(self, region, on_new_track=False):
+        if not self._ensure_ui_loaded(): return
         self._reset_state()
         self.active_region = region
         self.insert_on_new_track = on_new_track
 
         model_to_set = 't2v_2_2'
-        dropdown_types = self.wgp.transformer_types if len(self.wgp.transformer_types) > 0 else self.wgp.displayed_model_types
-        _, _, all_models = self.wgp.get_sorted_dropdown(dropdown_types, None, None, False)
+        dropdown_types = wgp.transformer_types if len(wgp.transformer_types) > 0 else wgp.displayed_model_types
+        _, _, all_models = wgp.get_sorted_dropdown(dropdown_types, None, None, False)
         if any(model_to_set == m[1] for m in all_models):
             if self.client_widget.state.get('model_type') != model_to_set:
                 self.client_widget.update_model_dropdowns(model_to_set)
@@ -1941,7 +2001,6 @@ class Plugin(VideoEditorPlugin):
 
         start_ms, end_ms = region
         duration_ms = end_ms - start_ms
-        wgp = self.client_widget.wgp
         model_type = self.client_widget.state['model_type']
         fps = wgp.get_model_fps(model_type)
         video_length_frames = int((duration_ms / 1000.0) * fps) if fps > 0 else int((duration_ms / 1000.0) * 16)

@@ -5,47 +5,59 @@ import subprocess
 import shutil
 import git
 import json
+import importlib
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
                              QPushButton, QLabel, QLineEdit, QMessageBox, QProgressBar,
                              QDialogButtonBox, QWidget, QCheckBox)
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread
 
 class VideoEditorPlugin:
-    """
-    Base class for all plugins.
-    Plugins should inherit from this class and be located in 'plugins/plugin_name/main.py'.
-    The main class in main.py must be named 'Plugin'.
-    """
-    def __init__(self, app_instance, wgp_module=None):
+    def __init__(self, app_instance):
         self.app = app_instance
-        self.wgp = wgp_module
         self.name = "Unnamed Plugin"
         self.description = "No description provided."
 
     def initialize(self):
-        """Called once when the plugin is loaded by the PluginManager."""
         pass
 
     def enable(self):
-        """Called when the plugin is enabled by the user (e.g., checking the box in the menu)."""
         pass
 
     def disable(self):
-        """Called when the plugin is disabled by the user."""
         pass
 
 class PluginManager:
-    """Manages the discovery, loading, and lifecycle of plugins."""
-    def __init__(self, main_app, wgp_module=None):
+    def __init__(self, main_app):
         self.app = main_app
-        self.wgp = wgp_module
         self.plugins_dir = "plugins"
-        self.plugins = {}  # { 'plugin_name': {'instance': plugin_instance, 'enabled': False, 'module_path': path} }
+        self.plugins = {}
         if not os.path.exists(self.plugins_dir):
             os.makedirs(self.plugins_dir)
 
+    def run_preloads(plugins_dir="plugins"):
+        print("Running plugin pre-load scan...")
+        if not os.path.isdir(plugins_dir):
+            return
+
+        for plugin_name in os.listdir(plugins_dir):
+            plugin_path = os.path.join(plugins_dir, plugin_name)
+            manifest_path = os.path.join(plugin_path, 'plugin.json')
+            if os.path.isfile(manifest_path):
+                try:
+                    with open(manifest_path, 'r') as f:
+                        manifest = json.load(f)
+                    
+                    preload_modules = manifest.get("preload_modules", [])
+                    if preload_modules:
+                        for module_name in preload_modules:
+                            try:
+                                importlib.import_module(module_name)
+                            except ImportError as e:
+                                print(f"    - WARNING: Could not pre-load '{module_name}'. Error: {e}")
+                except Exception as e:
+                    print(f"  - WARNING: Could not read or parse manifest for plugin '{plugin_name}': {e}")
+
     def discover_and_load_plugins(self):
-        """Scans the plugins directory, loads valid plugins, and calls their initialize method."""
         for plugin_name in os.listdir(self.plugins_dir):
             plugin_path = os.path.join(self.plugins_dir, plugin_name)
             main_py_path = os.path.join(plugin_path, 'main.py')
@@ -60,7 +72,7 @@ class PluginManager:
 
                     if hasattr(module, 'Plugin'):
                         plugin_class = getattr(module, 'Plugin')
-                        instance = plugin_class(self.app, self.wgp)
+                        instance = plugin_class(self.app)
                         instance.initialize()
                         self.plugins[instance.name] = {
                             'instance': instance,
@@ -76,17 +88,14 @@ class PluginManager:
                     traceback.print_exc() 
 
     def load_enabled_plugins_from_settings(self, enabled_plugins_list):
-        """Enables plugins based on the loaded settings."""
         for name in enabled_plugins_list:
             if name in self.plugins:
                 self.enable_plugin(name)
 
     def get_enabled_plugin_names(self):
-        """Returns a list of names of all enabled plugins."""
         return [name for name, data in self.plugins.items() if data['enabled']]
 
     def enable_plugin(self, name):
-        """Enables a specific plugin by name and updates the UI."""
         if name in self.plugins and not self.plugins[name]['enabled']:
             self.plugins[name]['instance'].enable()
             self.plugins[name]['enabled'] = True
@@ -95,7 +104,6 @@ class PluginManager:
             self.app.update_plugin_ui_visibility(name, True)
 
     def disable_plugin(self, name):
-        """Disables a specific plugin by name and updates the UI."""
         if name in self.plugins and self.plugins[name]['enabled']:
             self.plugins[name]['instance'].disable()
             self.plugins[name]['enabled'] = False
@@ -104,7 +112,6 @@ class PluginManager:
             self.app.update_plugin_ui_visibility(name, False)
 
     def uninstall_plugin(self, name):
-        """Uninstalls (deletes) a plugin by name."""
         if name in self.plugins:
             path = self.plugins[name]['module_path']
             if self.plugins[name]['enabled']:
@@ -174,12 +181,10 @@ class ManagePluginsDialog(QDialog):
         
         self.status_label = QLabel("Ready.")
         layout.addWidget(self.status_label)
-        
-        # Dialog buttons
+
         self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         layout.addWidget(self.button_box)
 
-        # Connections
         self.install_btn.clicked.connect(self.install_plugin)
         self.button_box.accepted.connect(self.save_changes)
         self.button_box.rejected.connect(self.reject)

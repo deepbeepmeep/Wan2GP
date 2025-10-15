@@ -1,4 +1,4 @@
-<img width="3840" height="2118" alt="image" src="https://github.com/user-attachments/assets/3877a532-30ea-411e-997a-016075af98d8" /># Inline AI Video Editor
+# Inline AI Video Editor
 
 A simple, non-linear video editor built with Python, PyQt6, and FFmpeg. It provides a multi-track timeline, a media preview window, and basic clip manipulation capabilities, all wrapped in a dockable user interface. The editor is designed to be extensible through a plugin system.
 

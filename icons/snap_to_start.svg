@@ -1,0 +1,8 @@
+<svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Snap to first frame">
+  <title>Snap to first frame</title>
+  <rect rx="10" ry="10" width="48" height="48" fill="#FFD6E0"/>
+  <g transform="translate(7,9)" fill="#B5BAC3">
+    <rect x="0" y="6.5" width="4" height="18" rx="1.5" />
+    <path d="M26 3 L8 15 L26 27 Z"/>
+  </g>
+</svg>

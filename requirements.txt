@@ -1,3 +1,4 @@
+
 # Core AI stack
 diffusers==0.34.0
 transformers==4.53.1
@@ -25,6 +26,7 @@ audio-separator==0.36.1
 
 # UI & interaction
 gradio==5.29.0
+PyQt6
 dashscope
 loguru
 
@@ -57,6 +59,7 @@ ftfy
 piexif
 nvidia-ml-py 
 misaki
+GitPython
 
 # Optional / commented out
 # transformers==4.46.3  # for llamallava pre-patch

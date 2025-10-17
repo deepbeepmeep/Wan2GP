@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QListWidget, QListWidgetItem, QMessageBox, QComboBox,
                              QFormLayout, QGroupBox, QLineEdit, QSlider)
 from PyQt6.QtGui import (QPainter, QColor, QPen, QFont, QFontMetrics, QMouseEvent, QAction,
-                         QPixmap, QImage, QDrag, QCursor, QKeyEvent)
+                         QPixmap, QImage, QDrag, QCursor, QKeyEvent, QIcon, QTransform)
 from PyQt6.QtCore import (Qt, QPoint, QRect, QRectF, QSize, QPointF, QObject, QThread,
                           pyqtSignal, QTimer, QByteArray, QMimeData)
 
@@ -1886,9 +1886,8 @@ class MainWindow(QMainWindow):
 
         self.splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # --- PREVIEW WIDGET SETUP (CHANGED) ---
         self.preview_scroll_area = QScrollArea()
-        self.preview_scroll_area.setWidgetResizable(False) # Important for 1:1 scaling
+        self.preview_scroll_area.setWidgetResizable(False)
         self.preview_scroll_area.setStyleSheet("background-color: black; border: 0px;")
         
         self.preview_widget = QLabel()
@@ -1914,12 +1913,55 @@ class MainWindow(QMainWindow):
         controls_widget = QWidget()
         controls_layout = QHBoxLayout(controls_widget)
         controls_layout.setContentsMargins(0, 5, 0, 5)
-        self.play_pause_button = QPushButton("Play")
-        self.stop_button = QPushButton("Stop")
-        self.frame_back_button = QPushButton("<")
-        self.frame_forward_button = QPushButton(">")
-        self.snap_back_button = QPushButton("|<")
-        self.snap_forward_button = QPushButton(">|")
+
+        icon_dir = "icons"
+        icon_size = QSize(32, 32)
+        button_size = QSize(40, 40)
+
+        self.play_icon = QIcon(os.path.join(icon_dir, "play.svg"))
+        self.pause_icon = QIcon(os.path.join(icon_dir, "pause.svg"))
+        stop_icon = QIcon(os.path.join(icon_dir, "stop.svg"))
+        back_pixmap = QPixmap(os.path.join(icon_dir, "previous_frame.svg"))
+        snap_back_pixmap = QPixmap(os.path.join(icon_dir, "snap_to_start.svg"))
+
+        transform = QTransform().rotate(180)
+
+        frame_forward_icon = QIcon(back_pixmap.transformed(transform))
+        snap_forward_icon = QIcon(snap_back_pixmap.transformed(transform))
+        frame_back_icon = QIcon(back_pixmap)
+        snap_back_icon = QIcon(snap_back_pixmap)
+
+        self.play_pause_button = QPushButton()
+        self.play_pause_button.setIcon(self.play_icon)
+        self.play_pause_button.setToolTip("Play/Pause")
+
+        self.stop_button = QPushButton()
+        self.stop_button.setIcon(stop_icon)
+        self.stop_button.setToolTip("Stop")
+
+        self.frame_back_button = QPushButton()
+        self.frame_back_button.setIcon(frame_back_icon)
+        self.frame_back_button.setToolTip("Previous Frame (Left Arrow)")
+
+        self.frame_forward_button = QPushButton()
+        self.frame_forward_button.setIcon(frame_forward_icon)
+        self.frame_forward_button.setToolTip("Next Frame (Right Arrow)")
+
+        self.snap_back_button = QPushButton()
+        self.snap_back_button.setIcon(snap_back_icon)
+        self.snap_back_button.setToolTip("Snap to Previous Clip Edge")
+
+        self.snap_forward_button = QPushButton()
+        self.snap_forward_button.setIcon(snap_forward_icon)
+        self.snap_forward_button.setToolTip("Snap to Next Clip Edge")
+
+        button_list = [self.snap_back_button, self.frame_back_button, self.play_pause_button, 
+                       self.stop_button, self.frame_forward_button, self.snap_forward_button]
+        for btn in button_list:
+            btn.setIconSize(icon_size)
+            btn.setFixedSize(button_size)
+            btn.setStyleSheet("QPushButton { border: none; background-color: transparent; }")
+
         controls_layout.addStretch()
         controls_layout.addWidget(self.snap_back_button)
         controls_layout.addWidget(self.frame_back_button)
@@ -2364,13 +2406,13 @@ class MainWindow(QMainWindow):
             self.playback_manager.play(current_pos)
 
     def _on_playback_started(self):
-        self.play_pause_button.setText("Pause")
+        self.play_pause_button.setIcon(self.pause_icon)
 
     def _on_playback_paused(self):
-        self.play_pause_button.setText("Play")
+        self.play_pause_button.setIcon(self.play_icon)
 
     def _on_playback_stopped(self):
-        self.play_pause_button.setText("Play")
+        self.play_pause_button.setIcon(self.play_icon)
 
     def stop_playback(self):
         self.playback_manager.stop()

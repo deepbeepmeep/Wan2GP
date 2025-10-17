@@ -1,0 +1,8 @@
+<svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pause">
+  <title>Pause</title>
+  <rect rx="10" ry="10" width="48" height="48" fill="#D9F2FF"/>
+  <g transform="translate(14,12)" fill="#B5BAC3">
+    <rect x="0" y="0" width="8" height="24" rx="2"/>
+    <rect x="12" y="0" width="8" height="24" rx="2"/>
+  </g>
+</svg>

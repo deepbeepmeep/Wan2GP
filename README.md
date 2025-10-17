@@ -58,11 +58,9 @@ python videoeditor.py
 ```
 
 ## Screenshots
-![sc1](https://github.com/user-attachments/assets/d624100d-5b4d-48f0-85e2-706482d4311a)
-![sc2](https://github.com/user-attachments/assets/a9509acd-b423-4313-a0fc-e51479373089)
-![sc3](https://github.com/user-attachments/assets/e639d3b4-c2cd-445f-9f00-72597ff70248)
-
-
+![sc1_](https://github.com/user-attachments/assets/98247de8-613d-418a-b71e-fdf2d6b547f4)
+![sc2_](https://github.com/user-attachments/assets/41c3f885-2fa9-4a81-911c-68c13da1e97b)
+![sc3_](https://github.com/user-attachments/assets/ec129087-03f5-43e5-a102-934efc62b001)
 
 
 

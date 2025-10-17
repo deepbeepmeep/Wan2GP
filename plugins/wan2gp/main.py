@@ -827,6 +827,10 @@ class WgpDesktopPluginWidget(QWidget):
         self._create_config_combo(form, "Video Dimensions:", "fit_canvas", [("Dimensions are Pixels Budget", 0), ("Dimensions are Max Width/Height", 1), ("Dimensions are Output Width/Height (Cropped)", 2)], 0)
         self._create_config_combo(form, "Attention Type:", "attention_mode", [("Auto (Recommended)", "auto"), ("SDPA", "sdpa"), ("Flash", "flash"), ("Xformers", "xformers"), ("Sage", "sage"), ("Sage2/2++", "sage2")], "auto")
         self._create_config_combo(form, "Metadata Handling:", "metadata_type", [("Embed in file (Exif/Comment)", "metadata"), ("Export separate JSON", "json"), ("None", "none")], "metadata")
+        checkbox = QCheckBox()
+        checkbox.setChecked(wgp.server_config.get("embed_source_images", False))
+        self.widgets['config_embed_source_images'] = checkbox
+        form.addRow("Embed Source Images in MP4:", checkbox)
         self._create_config_checklist(form, "RAM Loading Policy:", "preload_model_policy", [("Preload on App Launch", "P"), ("Preload on Model Switch", "S"), ("Unload when Queue is Done", "U")], [])
         self._create_config_combo(form, "Keep Previous Videos:", "clear_file_list", [("None", 0), ("Keep last video", 1), ("Keep last 5", 5), ("Keep last 10", 10), ("Keep last 20", 20), ("Keep last 30", 30)], 5)
         self._create_config_combo(form, "Display RAM/VRAM Stats:", "display_stats", [("Disabled", 0), ("Enabled", 1)], 0)
@@ -839,6 +843,7 @@ class WgpDesktopPluginWidget(QWidget):
         self.widgets['config_checkpoints_paths'] = checkpoints_textbox
         form.addRow("Checkpoints Paths:", checkpoints_textbox)
         self._create_config_combo(form, "UI Theme (requires restart):", "UI_theme", [("Blue Sky", "default"), ("Classic Gradio", "gradio")], "default")
+        self._create_config_combo(form, "Queue Color Scheme:", "queue_color_scheme", [("Pastel (Unique color per item)", "pastel"), ("Alternating Grey Shades", "alternating_grey")], "pastel")
         return tab
 
     def _create_performance_config_tab(self):
@@ -870,8 +875,9 @@ class WgpDesktopPluginWidget(QWidget):
         tab, form = self._create_scrollable_form_tab()
         self._create_config_combo(form, "Video Codec:", "video_output_codec", [("x265 Balanced", 'libx265_28'), ("x264 Balanced", 'libx264_8'), ("x265 High Quality", 'libx265_8'), ("x264 High Quality", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], 'libx264_8')
         self._create_config_combo(form, "Image Codec:", "image_output_codec", [("JPEG Q85", 'jpeg_85'), ("WEBP Q85", 'webp_85'), ("JPEG Q95", 'jpeg_95'), ("WEBP Q95", 'webp_95'), ("WEBP Lossless", 'webp_lossless'), ("PNG Lossless", 'png')], 'jpeg_95')
-        self._create_config_textbox(form, "Video Output Folder:", "save_path", "outputs")
-        self._create_config_textbox(form, "Image Output Folder:", "image_save_path", "outputs")
+        self._create_config_combo(form, "Audio Codec:", "audio_output_codec", [("AAC 128 kbit", 'aac_128')], 'aac_128')
+        self._create_config_textbox(form, "Video Output Folder:", "save_path", wgp.server_config.get("save_path", "outputs"))
+        self._create_config_textbox(form, "Image Output Folder:", "image_save_path", wgp.server_config.get("image_save_path", "outputs"))
         return tab
 
     def _create_notifications_config_tab(self):
@@ -1419,7 +1425,8 @@ class WgpDesktopPluginWidget(QWidget):
         full_inputs = wgp.get_current_model_settings(self.state).copy()
         full_inputs['lset_name'] = ""
         full_inputs['image_mode'] = 0
-        expected_keys = { "audio_guide": None, "audio_guide2": None, "image_guide": None, "image_mask": None, "speakers_locations": "", "frames_positions": "", "keep_frames_video_guide": "", "keep_frames_video_source": "", "video_guide_outpainting": "", "switch_threshold2": 0, "model_switch_phase": 1, "batch_size": 1, "control_net_weight_alt": 1.0, "image_refs_relative_size": 50, }
+        full_inputs['mode'] = ""
+        expected_keys = { "audio_guide": None, "audio_guide2": None, "image_guide": None, "image_mask": None, "speakers_locations": "", "frames_positions": "", "keep_frames_video_guide": "", "keep_frames_video_source": "", "video_guide_outpainting": "", "switch_threshold2": 0, "model_switch_phase": 1, "batch_size": 1, "control_net_weight_alt": 1.0, "image_refs_relative_size": 50, "embedded_guidance_scale": None, "model_mode": None, "control_net_weight": 1.0, "control_net_weight2": 1.0, "mask_expand": 0, "remove_background_images_ref": 0, "prompt_enhancer": ""}
         for key, default_value in expected_keys.items():
             if key not in full_inputs: full_inputs[key] = default_value
         full_inputs['prompt'] = self.widgets['prompt'].toPlainText()
@@ -1633,33 +1640,90 @@ class WgpDesktopPluginWidget(QWidget):
         QMessageBox.information(self, "RAM Released", "Models stored in RAM have been released.")
 
     def _on_apply_config_changes(self):
-        changes = {}
-        list_widget = self.widgets['config_transformer_types']
-        changes['transformer_types_choices'] = [item.data(Qt.ItemDataRole.UserRole) for i in range(list_widget.count()) if list_widget.item(i).checkState() == Qt.CheckState.Checked]
-        list_widget = self.widgets['config_preload_model_policy']
-        changes['preload_model_policy_choice'] = [item.data(Qt.ItemDataRole.UserRole) for i in range(list_widget.count()) if list_widget.item(i).checkState() == Qt.CheckState.Checked]
-        changes['model_hierarchy_type_choice'] = self.widgets['config_model_hierarchy_type'].currentData()
-        changes['checkpoints_paths'] = self.widgets['config_checkpoints_paths'].toPlainText()
-        for key in ["fit_canvas", "attention_mode", "metadata_type", "clear_file_list", "display_stats", "max_frames_multiplier", "UI_theme"]:
-            changes[f'{key}_choice'] = self.widgets[f'config_{key}'].currentData()
-        for key in ["transformer_quantization", "transformer_dtype_policy", "mixed_precision", "text_encoder_quantization", "vae_precision", "compile", "depth_anything_v2_variant", "vae_config", "boost", "profile"]:
-             changes[f'{key}_choice'] = self.widgets[f'config_{key}'].currentData()
-        changes['preload_in_VRAM_choice'] = self.widgets['config_preload_in_VRAM'].value()
-        for key in ["enhancer_enabled", "enhancer_mode", "mmaudio_enabled"]:
-             changes[f'{key}_choice'] = self.widgets[f'config_{key}'].currentData()
-        for key in ["video_output_codec", "image_output_codec", "save_path", "image_save_path"]:
-             widget = self.widgets[f'config_{key}']
-             changes[f'{key}_choice'] = widget.currentData() if isinstance(widget, QComboBox) else widget.text()
-        changes['notification_sound_enabled_choice'] = self.widgets['config_notification_sound_enabled'].currentData()
-        changes['notification_sound_volume_choice'] = self.widgets['config_notification_sound_volume'].value()
-        changes['last_resolution_choice'] = self.widgets['resolution'].currentData()
+        if wgp.args.lock_config:
+            self.config_status_label.setText("Configuration is locked by command-line arguments.")
+            return
+        if self.thread and self.thread.isRunning():
+            self.config_status_label.setText("Cannot change config while a generation is in progress.")
+            return
+
         try:
-            msg, header_mock, family_mock, base_type_mock, choice_mock, refresh_trigger = wgp.apply_changes(self.state, **changes)
-            self.config_status_label.setText("Changes applied successfully. Some settings may require a restart.")
+            ui_settings = {}
+            list_widget = self.widgets['config_transformer_types']
+            ui_settings['transformer_types'] = [list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(list_widget.count()) if list_widget.item(i).checkState() == Qt.CheckState.Checked]
+            list_widget = self.widgets['config_preload_model_policy']
+            ui_settings['preload_model_policy'] = [list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(list_widget.count()) if list_widget.item(i).checkState() == Qt.CheckState.Checked]
+
+            ui_settings['model_hierarchy_type'] = self.widgets['config_model_hierarchy_type'].currentData()
+            ui_settings['fit_canvas'] = self.widgets['config_fit_canvas'].currentData()
+            ui_settings['attention_mode'] = self.widgets['config_attention_mode'].currentData()
+            ui_settings['metadata_type'] = self.widgets['config_metadata_type'].currentData()
+            ui_settings['clear_file_list'] = self.widgets['config_clear_file_list'].currentData()
+            ui_settings['display_stats'] = self.widgets['config_display_stats'].currentData()
+            ui_settings['max_frames_multiplier'] = self.widgets['config_max_frames_multiplier'].currentData()
+            ui_settings['checkpoints_paths'] = [p.strip() for p in self.widgets['config_checkpoints_paths'].toPlainText().replace("\r", "").split("\n") if p.strip()]
+            ui_settings['UI_theme'] = self.widgets['config_UI_theme'].currentData()
+            ui_settings['queue_color_scheme'] = self.widgets['config_queue_color_scheme'].currentData()
+
+            ui_settings['transformer_quantization'] = self.widgets['config_transformer_quantization'].currentData()
+            ui_settings['transformer_dtype_policy'] = self.widgets['config_transformer_dtype_policy'].currentData()
+            ui_settings['mixed_precision'] = self.widgets['config_mixed_precision'].currentData()
+            ui_settings['text_encoder_quantization'] = self.widgets['config_text_encoder_quantization'].currentData()
+            ui_settings['vae_precision'] = self.widgets['config_vae_precision'].currentData()
+            ui_settings['compile'] = self.widgets['config_compile'].currentData()
+            ui_settings['depth_anything_v2_variant'] = self.widgets['config_depth_anything_v2_variant'].currentData()
+            ui_settings['vae_config'] = self.widgets['config_vae_config'].currentData()
+            ui_settings['boost'] = self.widgets['config_boost'].currentData()
+            ui_settings['profile'] = self.widgets['config_profile'].currentData()
+            ui_settings['preload_in_VRAM'] = self.widgets['config_preload_in_VRAM'].value()
+
+            ui_settings['enhancer_enabled'] = self.widgets['config_enhancer_enabled'].currentData()
+            ui_settings['enhancer_mode'] = self.widgets['config_enhancer_mode'].currentData()
+            ui_settings['mmaudio_enabled'] = self.widgets['config_mmaudio_enabled'].currentData()
+
+            ui_settings['video_output_codec'] = self.widgets['config_video_output_codec'].currentData()
+            ui_settings['image_output_codec'] = self.widgets['config_image_output_codec'].currentData()
+            ui_settings['audio_output_codec'] = self.widgets['config_audio_output_codec'].currentData()
+            ui_settings['embed_source_images'] = self.widgets['config_embed_source_images'].isChecked()
+            ui_settings['save_path'] = self.widgets['config_save_path'].text()
+            ui_settings['image_save_path'] = self.widgets['config_image_save_path'].text()
+
+            ui_settings['notification_sound_enabled'] = self.widgets['config_notification_sound_enabled'].currentData()
+            ui_settings['notification_sound_volume'] = self.widgets['config_notification_sound_volume'].value()
+
+            ui_settings['last_model_type'] = self.state["model_type"]
+            ui_settings['last_model_per_family'] = self.state["last_model_per_family"]
+            ui_settings['last_model_per_type'] = self.state["last_model_per_type"]
+            ui_settings['last_advanced_choice'] = self.state["advanced"]
+            ui_settings['last_resolution_choice'] = self.widgets['resolution'].currentData()
+            ui_settings['last_resolution_per_group'] = self.state["last_resolution_per_group"]
+
+            wgp.server_config.update(ui_settings)
+
+            wgp.fl.set_checkpoints_paths(ui_settings['checkpoints_paths'])
+            wgp.three_levels_hierarchy = ui_settings["model_hierarchy_type"] == 1
+            wgp.attention_mode = ui_settings["attention_mode"]
+            wgp.default_profile = ui_settings["profile"]
+            wgp.compile = ui_settings["compile"]
+            wgp.text_encoder_quantization = ui_settings["text_encoder_quantization"]
+            wgp.vae_config = ui_settings["vae_config"]
+            wgp.boost = ui_settings["boost"]
+            wgp.save_path = ui_settings["save_path"]
+            wgp.image_save_path = ui_settings["image_save_path"]
+            wgp.preload_model_policy = ui_settings["preload_model_policy"]
+            wgp.transformer_quantization = ui_settings["transformer_quantization"]
+            wgp.transformer_dtype_policy = ui_settings["transformer_dtype_policy"]
+            wgp.transformer_types = ui_settings["transformer_types"]
+            wgp.reload_needed = True
+
+            with open(wgp.server_config_filename, "w", encoding="utf-8") as writer:
+                json.dump(wgp.server_config, writer, indent=4)
+
+            self.config_status_label.setText("Settings saved successfully. Restart may be required for some changes.")
             self.header_info.setText(wgp.generate_header(self.state['model_type'], wgp.compile, wgp.attention_mode))
-            if family_mock.choices is not None or choice_mock.choices is not None:
-                self.update_model_dropdowns(wgp.transformer_type)
-                self.refresh_ui_from_model_change(wgp.transformer_type)
+            self.update_model_dropdowns(wgp.transformer_type)
+            self.refresh_ui_from_model_change(wgp.transformer_type)
+
         except Exception as e:
             self.config_status_label.setText(f"Error applying changes: {e}")
             import traceback; traceback.print_exc()

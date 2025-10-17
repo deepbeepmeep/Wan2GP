@@ -179,7 +179,6 @@ class QueueTableWidget(QTableWidget):
             source_row = self.currentRow()
             target_item = self.itemAt(event.position().toPoint())
             dest_row = target_item.row() if target_item else self.rowCount()
-            if source_row < dest_row: dest_row -=1
             if source_row != dest_row: self.rowsMoved.emit(source_row, dest_row)
             event.acceptProposedAction()
         else:

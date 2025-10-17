@@ -563,9 +563,18 @@ class WgpDesktopPluginWidget(QWidget):
         results_layout.addWidget(self.results_list)
         right_layout.addWidget(results_group)
 
-        right_layout.addWidget(QLabel("Queue:"))
+        right_layout.addWidget(QLabel("Queue"))
         self.queue_table = self.create_widget(QueueTableWidget, 'queue_table')
+        self.queue_table.verticalHeader().setVisible(False)
+        self.queue_table.setColumnCount(4)
+        self.queue_table.setHorizontalHeaderLabels(["Qty", "Prompt", "Length", "Steps"])
+        header = self.queue_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         right_layout.addWidget(self.queue_table)
+
         queue_btn_layout = QHBoxLayout()
         self.remove_queue_btn = self.create_widget(QPushButton, 'remove_queue_btn', "Remove Selected")
         self.clear_queue_btn = self.create_widget(QPushButton, 'clear_queue_btn', "Clear Queue")
@@ -1594,14 +1603,10 @@ class WgpDesktopPluginWidget(QWidget):
             table_data = wgp.get_queue_table(queue_to_display)
             self.queue_table.setRowCount(0)
             self.queue_table.setRowCount(len(table_data))
-            self.queue_table.setColumnCount(4) 
-            self.queue_table.setHorizontalHeaderLabels(["Qty", "Prompt", "Length", "Steps"])
             for row_idx, row_data in enumerate(table_data):
                 prompt_text = str(row_data[1]).split('>')[1].split('<')[0] if '>' in str(row_data[1]) else str(row_data[1])
                 for col_idx, cell_data in enumerate([row_data[0], prompt_text, row_data[2], row_data[3]]):
                     self.queue_table.setItem(row_idx, col_idx, QTableWidgetItem(str(cell_data)))
-            self.queue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-            self.queue_table.resizeColumnsToContents()
 
     def _on_remove_selected_from_queue(self):
         selected_row = self.queue_table.currentRow()

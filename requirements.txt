@@ -27,6 +27,9 @@ audio-separator==0.36.1
 gradio==5.29.0
 dashscope
 loguru
+s3tokenizer
+conformer==0.3.2
+spacy_pkuseg
 
 # Vision & segmentation
 opencv-python>=4.12.0.88

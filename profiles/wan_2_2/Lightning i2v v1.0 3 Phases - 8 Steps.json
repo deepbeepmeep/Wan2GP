@@ -1,0 +1,18 @@
+{
+    "num_inference_steps": 8,
+    "guidance_scale": 3.5,
+    "guidance2_scale": 1,
+    "guidance3_scale": 1,
+    "switch_threshold": 965,
+    "switch_threshold2": 800,
+    "guidance_phases": 3,
+    "model_switch_phase": 2,
+    "flow_shift": 3,
+    "sample_solver": "euler",	
+    "activated_loras": [
+        "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2_I2V_A14B_HIGH_4steps_lora_rank64_Seko_V1_forKJ.safetensors",
+        "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2_I2V_A14B_LOW_4steps_lora_rank64_Seko_V1_forKJ.safetensors"
+	],
+	"loras_multipliers": "0;1;0 0;0;1",
+	"help": "This finetune uses the Lightning 250928 4 steps Loras Accelerator for Wan 2.2 but extend them to 8 steps in order to insert a CFG phase before the 2 accelerated phases with no Guidance. The ultimate goal is reduce the slow motion effect of these Loras Accelerators."
+}

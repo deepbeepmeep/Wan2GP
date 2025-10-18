@@ -41,6 +41,10 @@ def has_image_file_extension(filename):
     extension = os.path.splitext(filename)[-1].lower()
     return extension in [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"]
 
+def has_audio_file_extension(filename):
+    extension = os.path.splitext(filename)[-1].lower()
+    return extension in [".wav", ".mp3", ".aac"]
+
 def resample(video_fps, video_frames_count, max_target_frames_count, target_fps, start_target_frame ):
     import math
 

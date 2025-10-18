@@ -6666,7 +6666,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
             inputs = app.plugin_manager.run_data_hooks(
                 'before_metadata_save',
                 configs=inputs,
-                plugin_data=inputs.pop('plugin_data', {}),
+                plugin_data=_plugin_data),
                 model_type=model_type
             )
 

@@ -21,7 +21,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
 ## 🔥 Latest Updates : 
-### October 6 2025: WanGP v8.994 - A few last things before the Big Unknown ...
+### October 6 2025: WanGP v8.999 - A few last things before the Big Unknown ...
 
 This new version hasn't any new model...
 
@@ -46,6 +46,7 @@ Last but not least the Lora's documentation has been updated.
 *update 8.992*: optimized gen with Lora, should be 10% faster if many loras
 *update 8.993*: Support for *Scaled FP8* format and samples *Paligenesis* finetunes, merged Loras Accelerators and Non Accelerators
 *update 8.994*: Added custom checkpoints folders
+*update 8.999*: fixed a lora + fp8 bug and version sync for the jump to the unknown 
 
 ### September 30 2025: WanGP v8.9 - Combinatorics
 

@@ -1182,8 +1182,8 @@ class WanModel(ModelMixin, ConfigMixin):
                 if hasattr(layer, "weight") and layer.weight.dtype != current_dtype:
                     if not isinstance(layer.weight.data, QTensor):
                         layer.weight.data = layer.weight.data.to(current_dtype)
-                    if hasattr(layer, "bias"):
-                        layer.bias.data = layer.bias.data.to(current_dtype)
+                        if hasattr(layer, "bias"):
+                            layer.bias.data = layer.bias.data.to(current_dtype)
 
         self._lock_dtype = dtype
 

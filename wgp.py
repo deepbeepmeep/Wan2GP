@@ -4395,9 +4395,14 @@ def any_audio_track(model_type):
     model_def = get_model_def(model_type)
     return model_def.get("multitalk_class", False) if model_def else False
 
-def get_available_filename(target_path, video_source, suffix = "", force_extension = None):
-    name, extension =  os.path.splitext(os.path.basename(video_source))
-    if force_extension != None:
+def get_available_filename(target_path, video_source, suffix = "", force_extension = None, treat_as_stem=False):
+    if treat_as_stem:
+        name = os.path.basename(video_source)
+        extension = ""
+    else:
+        name, extension =  os.path.splitext(os.path.basename(video_source))
+
+    if force_extension is not None:
         extension = force_extension
     name+= suffix
     full_path= os.path.join(target_path, f"{name}{extension}")
@@ -4776,6 +4781,7 @@ def generate_video(
     sample_solver,
     embedded_guidance_scale,
     repeat_generation,
+    filename,
     multi_prompts_gen_type,
     multi_images_gen_type,
     skip_steps_cache_type,
@@ -5690,8 +5696,12 @@ def generate_video(
                     container = server_config.get("video_container", "mp4")
                     extension = container 
 
-                file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt)).strip()}.{extension}"
-                video_path = os.path.join(save_path, file_name)
+                if filename:
+                    video_path = get_available_filename(save_path, filename, force_extension=f".{extension}", treat_as_stem=True)
+                    file_name = os.path.basename(video_path)
+                else:
+                    file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt)).strip()}.{extension}"
+                    video_path = os.path.join(save_path, file_name)
                 any_mmaudio = MMAudio_setting != 0 and server_config.get("mmaudio_enabled", 0) != 0 and sample.shape[1] >=fps
                 if BGRA_frames is not None:
                     from models.wan.alpha.utils import write_zip_file
@@ -5765,6 +5775,8 @@ def generate_video(
                     })
                 embedded_images = {img_name: inputs[img_name] for img_name in image_names_list } if server_config.get("embed_source_images", False) else None
                 configs = prepare_inputs_dict("metadata", inputs, model_type)
+                if filename:
+                    configs["filename"] = filename
                 if sliding_window: configs["window_no"] = window_no
                 configs["prompt"] = "\n".join(original_prompts)
                 if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0:
@@ -7225,6 +7237,7 @@ def save_inputs(
             sample_solver,
             embedded_guidance_scale,
             repeat_generation,
+            filename,
             multi_prompts_gen_type,
             multi_images_gen_type,
             skip_steps_cache_type,
@@ -8552,6 +8565,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.1, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0)
                         with gr.Row(visible = not (hunyuan_t2v or hunyuan_i2v or no_negative_prompt)) as negative_prompt_row:
                             negative_prompt = gr.Textbox(label="Negative Prompt (ignored if no Guidance that is if CFG = 1)", value=ui_defaults.get("negative_prompt", "")  )
+                        filename = gr.Textbox(label="Output File Name", value=ui_defaults.get("filename", ""))    
                         with gr.Column(visible = vace or t2v or test_class_i2v(model_type)) as NAG_col:
                             gr.Markdown("<B>NAG enforces Negative Prompt even if no Guidance is set (CFG = 1), set NAG Scale to > 1 to enable it</B>")
                             with gr.Row():

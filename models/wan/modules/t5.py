@@ -468,6 +468,158 @@ def umt5_xxl(**kwargs):
     cfg.update(**kwargs)
     return _t5('umt5-xxl', **cfg)
 
+import re
+from typing import Dict, Any, Tuple, Callable
+
+_FP8_SUFFIX_RE = re.compile(r"(?:\.weight)(\..+)$")  # e.g. ".weight._scale", ".weight.amax_history.0"
+_WEIGHT_TAIL_RE = re.compile(r"(\.weight)(\..+)?$")  # split base ".weight" and any suffix
+
+def _split_weight_suffix(key: str) -> Tuple[str, str]:
+    """
+    If key ends with ".weight" or ".weight.<anything>", split into:
+      (base_without_suffix, suffix_including_dot or '')
+    Examples:
+      "x.weight"               -> ("x.weight", "")
+      "x.weight._scale"        -> ("x.weight", "._scale")
+      "x.weight.amax_history"  -> ("x.weight", ".amax_history")
+    """
+    m = _WEIGHT_TAIL_RE.search(key)
+    if not m:
+        return key, ""
+    base = key[:m.end(1)]
+    suffix = m.group(2) or ""
+    return base, suffix
+
+
+def convert_umt5_encoder_to_wan_format(
+    src: Dict[str, Any],
+    *,
+    duplicate_shared_relpos: bool = True,
+    prefer_shared_embedding: bool = True,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    dst: Dict[str, Any] = {}
+
+    def put(dst_key_base: str, src_key_full: str):
+        # preserve any FP8-like suffix after ".weight"
+        _, suffix = _split_weight_suffix(src_key_full)
+        final_key = dst_key_base + suffix
+        if final_key in dst and verbose:
+            print(f"[WARN] Destination key collision: {final_key} (keeping existing)")
+        else:
+            dst[final_key] = src[src_key_full]
+
+    # 1) Token embedding -> token_embedding.weight
+    shared_key = "shared.weight"
+    embed_key = "encoder.embed_tokens.weight"
+    tok_src = None
+    if prefer_shared_embedding and shared_key in src:
+        tok_src = shared_key
+    elif embed_key in src:
+        tok_src = embed_key
+    elif shared_key in src:
+        tok_src = shared_key
+
+    if tok_src is not None:
+        put("token_embedding.weight", tok_src)
+
+    # 2) Encoder final layer norm
+    if "encoder.final_layer_norm.weight" in src:
+        put("norm.weight", "encoder.final_layer_norm.weight")
+
+    # Helper: collect max block id for duplication heuristics
+    block_ids = set()
+    for k in src:
+        m = re.match(r"^encoder\.block\.(\d+)\.", k)
+        if m:
+            block_ids.add(int(m.group(1)))
+    n_blocks = (max(block_ids) + 1) if block_ids else 0
+
+    # Pre-fetch shared relative bias if only block 0 exists (classic T5 sharing)
+    shared_relpos = None
+    has_layerwise_relpos = False
+    for i in range(n_blocks):
+        key = f"encoder.block.{i}.layer.0.SelfAttention.relative_attention_bias.weight"
+        if key in src:
+            if i == 0 and not has_layerwise_relpos:
+                shared_relpos = key
+            if i > 0:
+                has_layerwise_relpos = True
+
+    # Regex rules (base without FP8 suffix):
+    rules: list[tuple[re.Pattern, Callable[[re.Match], str]]] = [
+        # layernorms
+        (
+            re.compile(r"^encoder\.block\.(\d+)\.layer\.0\.layer_norm\.weight$"),
+            lambda m: f"blocks.{m.group(1)}.norm1.weight",
+        ),
+        (
+            re.compile(r"^encoder\.block\.(\d+)\.layer\.1\.layer_norm\.weight$"),
+            lambda m: f"blocks.{m.group(1)}.norm2.weight",
+        ),
+        # attention projections
+        (
+            re.compile(r"^encoder\.block\.(\d+)\.layer\.0\.SelfAttention\.(q|k|v|o)\.weight$"),
+            lambda m: f"blocks.{m.group(1)}.attn.{m.group(2)}.weight",
+        ),
+        # relative position bias -> per-block pos_embedding
+        (
+            re.compile(r"^encoder\.block\.(\d+)\.layer\.0\.SelfAttention\.relative_attention_bias\.weight$"),
+            lambda m: f"blocks.{m.group(1)}.pos_embedding.embedding.weight",
+        ),
+        # FFN (gated-gelu: wi_0, wi_1, wo)
+        (
+            re.compile(r"^encoder\.block\.(\d+)\.layer\.1\.DenseReluDense\.wi_0\.weight$"),
+            lambda m: f"blocks.{m.group(1)}.ffn.gate.0.weight",   # gate Linear
+        ),
+        (
+            re.compile(r"^encoder\.block\.(\d+)\.layer\.1\.DenseReluDense\.wi_1\.weight$"),
+            lambda m: f"blocks.{m.group(1)}.ffn.fc1.weight",
+        ),
+        (
+            re.compile(r"^encoder\.block\.(\d+)\.layer\.1\.DenseReluDense\.wo\.weight$"),
+            lambda m: f"blocks.{m.group(1)}.ffn.fc2.weight",
+        ),
+        # FFN (relu variant: wi, wo) -> map to fc1/fc2; there is no "gate" in this case
+        (
+            re.compile(r"^encoder\.block\.(\d+)\.layer\.1\.DenseReluDense\.wi\.weight$"),
+            lambda m: f"blocks.{m.group(1)}.ffn.fc1.weight",
+        ),
+        (
+            re.compile(r"^encoder\.block\.(\d+)\.layer\.1\.DenseReluDense\.wo\.weight$"),
+            lambda m: f"blocks.{m.group(1)}.ffn.fc2.weight",
+        ),
+    ]
+
+    compiled = [(pat, repl) for pat, repl in rules]
+
+    # 3) Apply mapping (preserving FP8 suffixes)
+    for src_key in list(src.keys()):
+        base, _ = _split_weight_suffix(src_key)  # match on the ".weight" base
+        mapped = False
+        for pat, repl in compiled:
+            m = pat.match(base)
+            if m:
+                dst_key_base = repl(m)
+                put(dst_key_base, src_key)
+                mapped = True
+                break
+        if not mapped and verbose:
+            # not necessarily an error: we only handle encoder weights
+            # silently ignore non-encoder or non-weight parameters
+            pass
+
+    # 4) If only block 0 has relative bias but others don't (classic T5 sharing),
+    #    optionally duplicate to all missing blocks.
+    if duplicate_shared_relpos and shared_relpos and not has_layerwise_relpos and n_blocks > 1:
+        for i in range(1, n_blocks):
+            dst_key_base = f"blocks.{i}.pos_embedding.embedding.weight"
+            # Only fill if not already present
+            if not any(k == dst_key_base or k.startswith(dst_key_base + ".") for k in dst.keys()):
+                put(dst_key_base, shared_relpos)
+
+    return dst
+
 
 class T5EncoderModel:
 
@@ -496,7 +648,14 @@ class T5EncoderModel:
                 device=device).eval().requires_grad_(False)
         logging.info(f'loading {checkpoint_path}')
         from mmgp import offload
-        offload.load_model_data(model,checkpoint_path, writable_tensors= False )
+        def preprocess_sd(sd):
+            first = next(iter(sd))
+            if first.startswith("encoder."):
+                new_sd = convert_umt5_encoder_to_wan_format(sd)
+                return new_sd
+            else:
+                return sd            
+        offload.load_model_data(model,checkpoint_path, writable_tensors= False,  preprocess_sd= preprocess_sd )
 
         self.model = model
         if shard_fn is not None:

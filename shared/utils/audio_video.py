@@ -265,6 +265,7 @@ def save_video(tensor,
                 writer.append_data(frame)
         
             writer.close()
+
             return cache_file
             
         except Exception as e:
@@ -301,7 +302,11 @@ def save_image(tensor,
                 quality='jpeg_95',  # 'jpeg_95', 'jpeg_85', 'jpeg_70', 'jpeg_50', 'webp_95', 'webp_85', 'webp_70', 'webp_50', 'png', 'webp_lossless'
                 retry=5):
     """Save tensor as image with configurable format and quality."""
-    
+
+    RGBA = tensor.shape[0] == 4
+    if RGBA:
+        quality = "png"
+
     # Get format and quality settings
     format_info = _get_format_info(quality)
     
@@ -310,16 +315,18 @@ def save_image(tensor,
     
     # Save image
     error = None
+                         
     for _ in range(retry):
         try:
             tensor = tensor.clamp(min(value_range), max(value_range))
             
-            if format_info['use_pil']:
+            if format_info['use_pil'] or RGBA:
                 # Use PIL for WebP and advanced options
                 grid = torchvision.utils.make_grid(tensor, nrow=nrow, normalize=normalize, value_range=value_range)
                 # Convert to PIL Image
                 grid = grid.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
-                img = Image.fromarray(grid)
+                mode = 'RGBA' if RGBA else 'RGB'
+                img = Image.fromarray(grid, mode=mode)
                 img.save(save_file, **format_info['params'])
             else:
                 # Use torchvision for JPEG and PNG

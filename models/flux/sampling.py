@@ -129,6 +129,19 @@ def prepare_redux(
         "vec": vec.to(img.device),
     }
 
+def resizeinput(img):
+    multiple_of = 16
+    image_height, image_width = img.height, img.width
+    aspect_ratio = image_width / image_height
+    _, image_width, image_height = min(
+        (abs(aspect_ratio - w / h), w, h) for w, h in PREFERED_KONTEXT_RESOLUTIONS
+    )
+    image_width = image_width // multiple_of * multiple_of
+    image_height = image_height // multiple_of * multiple_of
+    if (image_width, image_height) != img.size:
+        img = img.resize((image_width, image_height), Image.LANCZOS)
+    return img
+
 
 def prepare_kontext(
     ae: AutoEncoder,
@@ -150,17 +163,14 @@ def prepare_kontext(
     height_offset = 0
     width_offset = 0
     for cond_no, img_cond in enumerate(img_cond_list): 
-        width, height = img_cond.size
-        aspect_ratio = width / height
         if res_match_output:
-            width, height = target_width, target_height
+            if img_cond.size != (target_width, target_height):
+                img_cond = img_cond.resize((target_width, target_height), Image.Resampling.LANCZOS)
         else:
-            # Kontext is trained on specific resolutions, using one of them is recommended
-            _, width, height = min((abs(aspect_ratio - w / h), w, h) for w, h in PREFERED_KONTEXT_RESOLUTIONS)
-        width = 2 * int(width / 16)
-        height = 2 * int(height / 16)
+            img_cond = resizeinput(img_cond)
+        width, height = img_cond.size
+        width, height = width // 8, height // 8
 
-        img_cond = img_cond.resize((8 * width, 8 * height), Image.Resampling.LANCZOS)
         img_cond = np.array(img_cond)
         img_cond = torch.from_numpy(img_cond).float() / 127.5 - 1.0
         img_cond = rearrange(img_cond, "h w c -> 1 c h w")
@@ -396,9 +406,19 @@ def prepare_multi_ip(
     target_height: int | None = None,
     bs: int = 1,
     pe: Literal["d", "h", "w", "o"] = "d",
+    conditions_zero_start = False,
+    set_cond_index = False,
+    res_match_output = True,
+    
 ) -> dict[str, Tensor]:
-    ref_imgs = img_cond_list
+
     assert pe in ["d", "h", "w", "o"]
+
+    if img_cond_list == None: img_cond_list = []
+
+    if not res_match_output:
+        for i, img_cond in enumerate(img_cond_list):
+            img_cond_list[i]= resizeinput(img_cond)
 
     ref_imgs = [
         ae.encode(
@@ -421,7 +441,10 @@ def prepare_multi_ip(
     img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // 2)[None, :]
     img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
     img_cond_seq = img_cond_seq_ids = None
-    pe_shift_w, pe_shift_h = w // 2, h // 2
+    if conditions_zero_start:
+        pe_shift_w = pe_shift_h = 0
+    else:
+        pe_shift_w, pe_shift_h = w // 2, h // 2
     for cond_no, ref_img in enumerate(ref_imgs):
         _, _, ref_h1, ref_w1 = ref_img.shape
         ref_img = rearrange(
@@ -430,7 +453,8 @@ def prepare_multi_ip(
         if ref_img.shape[0] == 1 and bs > 1:
             ref_img = repeat(ref_img, "1 ... -> bs ...", bs=bs)
         ref_img_ids1 = torch.zeros(ref_h1 // 2, ref_w1 // 2, 3)
-        # img id分别在宽高偏移各自最大值
+        if set_cond_index:
+            ref_img_ids1[..., 0] = cond_no + 1
         h_offset = pe_shift_h if pe in {"d", "h"} else 0
         w_offset = pe_shift_w if pe in {"d", "w"} else 0
         ref_img_ids1[..., 1] = (

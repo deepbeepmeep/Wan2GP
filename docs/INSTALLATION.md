@@ -10,7 +10,7 @@ This guide covers installation for different GPU generations and operating syste
 
 ## Installation for RTX 10XX to RTX 50XX (Stable)
 
-This installation uses PyTorch 2.7.0 which is well-tested and stable.
+This installation uses PyTorch 2.8.0 which is well-tested and stable.
 
 ### Step 1: Download and Setup Environment
 
@@ -27,8 +27,8 @@ conda activate wan2gp
 ### Step 2: Install PyTorch
 
 ```shell
-# Install PyTorch 2.7.0 with CUDA 12.8
-pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+# Install PyTorch 2.8.0 with CUDA 12.8
+pip install torch==2.8.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
 ```
 
 ### Step 3: Install Dependencies
@@ -55,7 +55,7 @@ pip install sageattention==1.0.6
 ```shell
 # Windows
 pip install triton-windows 
-pip install https://github.com/woct0rdho/SageAttention/releases/download/v2.1.1-windows/sageattention-2.1.1+cu126torch2.6.0-cp310-cp310-win_amd64.whl
+pip install https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post2/sageattention-2.2.0+cu128torch2.8.0.post2-cp39-abi3-win_amd64.whl
 
 # Linux (manual compilation required)
 python -m pip install "setuptools<=75.8.2" --force-reinstall

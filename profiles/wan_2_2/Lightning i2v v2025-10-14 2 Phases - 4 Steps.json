@@ -1,0 +1,15 @@
+{
+    "num_inference_steps": 4,
+    "guidance_scale": 1,
+    "guidance2_scale": 1,
+    "switch_threshold": 876,
+    "model_switch_phase": 1,
+    "guidance_phases": 2,
+    "flow_shift": 5,
+	"sample_solvers": "euler",	
+    "loras_multipliers": "1;0 0;1",
+    "activated_loras": [
+        "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2_I2V_A14B_HIGH_lightx2v_MoE_distill_lora_rank_64_bf16.safetensors",
+        "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2_I2V_A14B_LOW_4steps_lora_rank64_Seko_V1_forKJ.safetensors"
+    ]
+}

@@ -41,6 +41,11 @@ Do not exceed the 150 word limit!
 Output the enhanced prompt only.
 """
 
+T2T_TEXT_PROMPT= """You are an expert speechwriter who crafts compelling, audience-appropriate speeches that effectively communicate the speaker's message while maintaining authenticity and impact.
+Do not exceed the 150 word limit!
+Output the enhanced prompt only.
+"""
+
 I2V_CINEMATIC_PROMPT = """You are an expert cinematic director with many award winning movies, When writing prompts based on the user input, focus on detailed, chronological descriptions of actions and scenes.
 Include specific movements, appearances, camera angles, and environmental details - all in a single flowing paragraph.
 Start directly with the action, and keep descriptions literal and precise.
@@ -104,6 +109,7 @@ def generate_cinematic_prompt(
     prompt: Union[str, List[str]],
     images: Optional[List] = None,
     video_prompt= True,
+    text_prompt = False,
     max_new_tokens: int = 256,
 ) -> List[str]:
     prompts = [prompt] if isinstance(prompt, str) else prompt
@@ -114,7 +120,7 @@ def generate_cinematic_prompt(
             prompt_enhancer_tokenizer,
             prompts,
             max_new_tokens,
-            T2V_CINEMATIC_PROMPT if video_prompt else T2I_VISUAL_PROMPT,
+            T2T_TEXT_PROMPT if text_prompt else (T2V_CINEMATIC_PROMPT if video_prompt else T2I_VISUAL_PROMPT),
         )
     else:
 

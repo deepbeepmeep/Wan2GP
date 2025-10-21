@@ -27,7 +27,7 @@ class family_handler():
             extra_model_def["image_ref_choices"] = {
             "choices": [
                 ("None", ""),
-                ("Conditional Images is first Main Subject / Landscape and may be followed by People / Objects", "KI"),
+                ("Conditional Image is first Main Subject / Landscape and may be followed by People / Objects", "KI"),
                 ("Conditional Images are People / Objects", "I"),
                 ],
             "letters_filter": "KI",
@@ -81,7 +81,7 @@ class family_handler():
             }
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None):
         from .qwen_main import model_factory
         from mmgp import offload
 
@@ -91,7 +91,7 @@ class family_handler():
             model_type = model_type, 
             model_def = model_def,
             base_model_type=base_model_type,
-            text_encoder_filename= get_qwen_text_encoder_filename(text_encoder_quantization),
+            text_encoder_filename= get_qwen_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
             quantizeTransformer = quantizeTransformer,
             dtype = dtype,
             VAE_dtype = VAE_dtype, 
@@ -143,7 +143,7 @@ class family_handler():
             if denoising_strength < 1 and model_mode == 1:
                 gr.Info("Denoising Strength will be ignored while using Lora Inpainting")
             if outpainting_dims is not None and model_mode == 0 :
-                return "Outpainting is not supported with Masked Denoising  "
+                return "Outpainting is not supported with Masked Denoising"
             
     @staticmethod
     def get_rgb_factors(base_model_type ):

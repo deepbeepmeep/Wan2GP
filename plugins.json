@@ -1,0 +1,16 @@
+[
+  {
+    "name": "File Gallery",
+    "author": "Tophness",
+    "version": "1.0.0",
+    "description": "Adds a Gallery tab that allows you to view metadata of all files in your output folders, join video frames, and more.",
+    "url": "https://github.com/Tophness/wan2gp-gallery.git"
+  },
+  {
+    "name": "Lora Multipliers UI",
+    "author": "Tophness",
+    "version": "1.0.0",
+    "description": "Dynamically set lora multipliers with a fast, JavaScript-powered UI.",
+    "url": "https://github.com/Tophness/wan2gp-lora-multipliers-ui.git"
+  }
+]

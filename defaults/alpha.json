@@ -1,0 +1,19 @@
+{
+	"model":
+	{
+		"name": "Wan2.1 Alpha 14B",
+		"architecture" : "alpha",
+		"description": "This model successfully generates various scenes with accurate and clearly rendered transparency. Notably, it can synthesize diverse semi-transparent objects, glowing effects, and fine-grained details such as hair. For each video generated you will find a Zip file with the same name that will contain the corresponding RGBA images.",
+		"URLs": "t2v",
+		"preload_URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan_alpha_2.1_vae_rgb_channel.safetensors", 
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan_alpha_2.1_vae_alpha_channel.safetensors"
+			],
+		"loras": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan_alpha_2.1_dora.safetensors"
+			],		
+		"loras_multipliers": [ 1 ]	
+	},
+	"prompt": "A large orange octopus is seen resting. The background of the video is transparent."
+	
+}

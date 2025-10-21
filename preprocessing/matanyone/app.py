@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import gradio as gr
+from datetime import datetime
 from .tools.painter import mask_painter
 from .tools.interact_tools import SamControler
 from .tools.misc import get_device
@@ -23,6 +24,8 @@ from .matanyone_wrapper import matanyone
 from shared.utils.audio_video import save_video, save_image
 from mmgp import offload
 from shared.utils import files_locator as fl 
+from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, calculate_new_dimensions, get_default_workers
+from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, any_GPU_process_running
 
 arg_device = "cuda"
 arg_sam_model_type="vit_h"
@@ -35,6 +38,46 @@ matanyone_in_GPU = False
 bfloat16_supported = False
 # SAM generator
 import copy
+GPU_process_was_running = False
+def acquire_GPU(state):
+    global GPU_process_was_running
+    GPU_process_was_running = any_GPU_process_running(state, "matanyone")
+    acquire_GPU_ressources(state, "matanyone", "MatAnyone", gr= gr)      
+def release_GPU(state):
+    release_GPU_ressources(state, "matanyone")
+    if GPU_process_was_running:
+        global matanyone_in_GPU, model_in_GPU
+        if model_in_GPU:  
+            model.samcontroler.sam_controler.model.to("cpu")
+            model_in_GPU = False
+        if matanyone_in_GPU:
+            matanyone_model.to("cpu")
+            matanyone_in_GPU = False
+
+
+def perform_spatial_upsampling(frames, new_dim):
+    if new_dim =="":
+        return frames
+    h, w = frames[0].shape[:2]
+    
+    from shared.utils.utils import resize_lanczos 
+    pos = new_dim.find(" ")
+    fit_into_canvas = "Outer" in new_dim
+    new_dim = new_dim[:pos]
+    if new_dim == "1080p":
+        canvas_w, canvas_h = 1920, 1088
+    elif new_dim == "720p":
+        canvas_w, canvas_h = 1280, 720
+    else:
+        canvas_w, canvas_h = 832, 480
+    h, w = calculate_new_dimensions(canvas_h, canvas_w, h, w, fit_into_canvas=fit_into_canvas,  block_size= 16  )
+
+
+    def upsample_frames(frame):
+        return np.array(Image.fromarray(frame).resize((w,h), resample=Image.Resampling.LANCZOS))
+    
+    output_frames = process_images_multithread(upsample_frames, frames, "upsample", wrap_in_list = False, max_workers=get_default_workers(), in_place=True)    
+    return output_frames
 
 class MaskGenerator():
     def __init__(self, sam_checkpoint, device):
@@ -64,7 +107,7 @@ def get_prompt(click_state, click_input):
     }
     return prompt
 
-def get_frames_from_image(image_input, image_state):
+def get_frames_from_image(state, image_input, image_state, new_dim):
     """
     Args:
         video_path:str
@@ -75,7 +118,11 @@ def get_frames_from_image(image_input, image_state):
 
     if image_input is None:
        gr.Info("Please select an Image file")
-       return [gr.update()] * 17
+       return [gr.update()] * 20
+
+
+    if len(new_dim)  > 0:
+        image_input = perform_spatial_upsampling([image_input], new_dim)[0]
 
     user_name = time.time()
     frames = [image_input] * 2  # hardcode: mimic a video with 2 frames
@@ -90,27 +137,32 @@ def get_frames_from_image(image_input, image_state):
         "logits": [None]*len(frames),
         "select_frame_number": 0,
         "last_frame_numer": 0,
-        "fps": None
+        "fps": None,
+        "new_dim": new_dim,
         }
         
     image_info = "Image Name: N/A,\nFPS: N/A,\nTotal Frames: {},\nImage Size:{}".format(len(frames), image_size)
+    acquire_GPU(state)
     set_image_encoder_patch()
-    select_SAM()
+    select_SAM(state)
     model.samcontroler.sam_controler.reset_image() 
     model.samcontroler.sam_controler.set_image(image_state["origin_images"][0])
     torch.cuda.empty_cache()
-    return image_state, image_info, image_state["origin_images"][0], \
+    release_GPU(state)
+
+    return image_state, gr.update(interactive=False), image_info, image_state["origin_images"][0], \
                         gr.update(visible=True, maximum=10, value=10), gr.update(visible=False, maximum=len(frames), value=len(frames)), \
                         gr.update(visible=True), gr.update(visible=True), \
                         gr.update(visible=True), gr.update(visible=True),\
                         gr.update(visible=True), gr.update(visible=False), \
+                        gr.update(visible=False), gr.update(), \
                         gr.update(visible=False), gr.update(value="", visible=False),  gr.update(visible=False), \
                         gr.update(visible=False), gr.update(visible=True), \
                         gr.update(visible=True)
 
 
 # extract frames from upload video
-def get_frames_from_video(video_input, video_state):
+def get_frames_from_video(state, video_input, video_state, new_dim):
     """
     Args:
         video_path:str
@@ -120,10 +172,8 @@ def get_frames_from_video(video_input, video_state):
     """
     if video_input is None:
        gr.Info("Please select a Video file")
-       return [gr.update()] * 18 
-
-    while model == None:
-        time.sleep(1)
+       return [gr.update()] * 19
+     
         
     video_path = video_input
     frames = []
@@ -155,6 +205,10 @@ def get_frames_from_video(video_input, video_state):
         print("read_frame_source:{} error. {}\n".format(video_path, str(e)))
     image_size = (frames[0].shape[0],frames[0].shape[1]) 
 
+    if len(new_dim) > 0:
+        frames = perform_spatial_upsampling(frames, new_dim)
+        image_size = (frames[0].shape[0],frames[0].shape[1]) 
+
     # resize if resolution too big
     if image_size[0]>=1280 and image_size[0]>=1280:
         scale = 1080 / min(image_size)
@@ -176,15 +230,18 @@ def get_frames_from_video(video_input, video_state):
         "select_frame_number": 0,
         "last_frame_number": 0,
         "fps": fps,
-        "audio": audio_path
+        "audio": audio_path,
+        "new_dim": new_dim,
         }
     video_info = "Video Name: {},\nFPS: {},\nTotal Frames: {},\nImage Size:{}".format(video_state["video_name"], round(video_state["fps"], 0), len(frames), image_size)
+    acquire_GPU(state)
     set_image_encoder_patch()
-    select_SAM()
+    select_SAM(state)
     model.samcontroler.sam_controler.reset_image() 
     model.samcontroler.sam_controler.set_image(video_state["origin_images"][0])
     torch.cuda.empty_cache()    
-    return video_state, video_info, video_state["origin_images"][0], \
+    release_GPU(state)
+    return video_state, gr.update(interactive=False), video_info, video_state["origin_images"][0], \
                         gr.update(visible=True, maximum=len(frames), value=1), gr.update(visible=True, maximum=len(frames), value=len(frames)), gr.update(visible=False, maximum=len(frames), value=len(frames)), \
                         gr.update(visible=True), gr.update(visible=True), gr.update(visible=True), \
                         gr.update(visible=True), gr.update(visible=True),\
@@ -315,7 +372,7 @@ def set_image_encoder_patch():
         image_encoder_block.patched = True
 
 # use sam to get the mask
-def sam_refine(video_state, point_prompt, click_state, interactive_state, evt:gr.SelectData ): #
+def sam_refine(state, video_state, point_prompt, click_state, interactive_state, evt:gr.SelectData ): #
     """
     Args:
         template_frame: PIL.Image
@@ -329,7 +386,8 @@ def sam_refine(video_state, point_prompt, click_state, interactive_state, evt:gr
         coordinate = "[[{},{},0]]".format(evt.index[0], evt.index[1])
         interactive_state["negative_click_times"] += 1
 
-    select_SAM()
+    acquire_GPU(state)
+    select_SAM(state)
     # prompt for sam model
     set_image_encoder_patch()
     model.samcontroler.sam_controler.reset_image()
@@ -348,10 +406,15 @@ def sam_refine(video_state, point_prompt, click_state, interactive_state, evt:gr
     video_state["painted_images"][video_state["select_frame_number"]] = painted_image
 
     torch.cuda.empty_cache()
+    release_GPU(state)
     return painted_image, video_state, interactive_state
 
 def add_multi_mask(video_state, interactive_state, mask_dropdown):
-    mask = video_state["masks"][video_state["select_frame_number"]]
+    masks = video_state["masks"]
+    if video_state["masks"] is None:
+        gr.Info("Matanyone Session Lost. Please reload a Video")
+        return [gr.update()]*4
+    mask = masks[video_state["select_frame_number"]]
     interactive_state["multi_mask"]["masks"].append(mask)
     interactive_state["multi_mask"]["mask_names"].append("mask_{:03d}".format(len(interactive_state["multi_mask"]["masks"])))
     mask_dropdown.append("mask_{:03d}".format(len(interactive_state["multi_mask"]["masks"])))
@@ -360,6 +423,11 @@ def add_multi_mask(video_state, interactive_state, mask_dropdown):
     return interactive_state, gr.update(choices=interactive_state["multi_mask"]["mask_names"], value=mask_dropdown), select_frame, [[],[]]
 
 def clear_click(video_state, click_state):
+    masks = video_state["masks"]
+    if video_state["masks"] is None:
+        gr.Info("Matanyone Session Lost. Please reload a Video")
+        return [gr.update()]*2
+
     click_state = [[],[]]
     template_frame = video_state["origin_images"][video_state["select_frame_number"]]
     return template_frame, click_state
@@ -406,8 +474,21 @@ def mask_to_xyxy_box(mask):
     box = [int(x) for x in box]
     return box
 
+def get_dim_file_suffix(new_dim):
+    if not " " in new_dim: return ""
+    pos = new_dim.find(" ")
+    return new_dim[:pos]
+
 # image matting
-def image_matting(video_state, interactive_state, mask_dropdown, erode_kernel_size, dilate_kernel_size, refine_iter):
+def image_matting(state, video_state, interactive_state, mask_type, matting_type, new_new_dim, mask_dropdown, erode_kernel_size, dilate_kernel_size, refine_iter):
+    if video_state["masks"] is None:
+        gr.Info("Matanyone Session Lost. Please reload an Image")
+        return [gr.update(visible=False)]*12
+
+    new_dim = video_state.get("new_dim", "")
+    if new_new_dim != new_dim:
+        gr.Info(f"You have changed the Input / Output Dimensions after loading the Video into Matanyone. The output dimension will be the ones when loading the image ({'original' if len(new_dim) == 0 else new_dim})")
+
     matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
     if interactive_state["track_end_number"]:
         following_frames = video_state["origin_images"][video_state["select_frame_number"]:interactive_state["track_end_number"]]
@@ -429,36 +510,61 @@ def image_matting(video_state, interactive_state, mask_dropdown, erode_kernel_si
     # operation error
     if len(np.unique(template_mask))==1:
         template_mask[0][0]=1
-    select_matanyone()
+    acquire_GPU(state)
+    select_matanyone(state)
     foreground, alpha = matanyone(matanyone_processor, following_frames, template_mask*255, r_erode=erode_kernel_size, r_dilate=dilate_kernel_size, n_warmup=refine_iter)
     torch.cuda.empty_cache()    
+    release_GPU(state)
 
-
-    foreground_mat = False
+    foreground_mat = matting_type == "Foreground"
     
-    output_frames = []
-    for frame_origin, frame_alpha in zip(following_frames, alpha):
-        if foreground_mat:
-            frame_alpha[frame_alpha > 127] = 255
-            frame_alpha[frame_alpha <= 127] = 0
-        else:
-            frame_temp = frame_alpha.copy()
-            frame_alpha[frame_temp > 127] = 0
-            frame_alpha[frame_temp <= 127] = 255
+    foreground_output = None
+    foreground_title = "Image with Background"
+    alpha_title = "Alpha Mask Image Output"
+
+    if mask_type == "wangp":
+        white_image = np.full_like(following_frames[-1], 255, dtype=np.uint8)
+        alpha_output = alpha[-1] if foreground_mat else 255 - alpha[-1] 
+        output_frame = (white_image.astype(np.uint16) * (255 - alpha_output.astype(np.uint16)) + 
+                        following_frames[-1].astype(np.uint16) * alpha_output.astype(np.uint16))
+        output_frame = output_frame // 255
+        output_frame = output_frame.astype(np.uint8)
+        foreground_output = output_frame
+        control_output = following_frames[-1]
+        alpha_output = alpha_output[:,:,0]     
+
+        foreground_title = "Image without Background" if foreground_mat else "Image with Background"
+        control_title = "Control Image"
+        allow_export = True
+        control_output = following_frames[-1]
+        tab_label = "Control Image & Mask"
+    elif mask_type == "greenscreen":
+        green_image = np.zeros_like(following_frames[-1], dtype=np.uint8)
+        green_image[:, :, 1] = 255          
+        alpha_output = alpha[-1] if foreground_mat else 255 - alpha[-1] 
+
+        output_frame = (following_frames[-1].astype(np.uint16) * (255 - alpha_output.astype(np.uint16)) + 
+                        green_image.astype(np.uint16) * alpha_output.astype(np.uint16))
+        output_frame = output_frame // 255
+        output_frame = output_frame.astype(np.uint8)
+        control_output = output_frame    
+        alpha_output = alpha_output[:,:,0]                
+        control_title = "Green Screen Output"
+        tab_label = "Green Screen"
+        allow_export = False
+    elif mask_type == "alpha":
+        alpha_output = alpha[-1] if foreground_mat else 255 - alpha[-1] 
+        from models.wan.alpha.utils import render_video, from_BRGA_numpy_to_RGBA_torch
+        from shared.utils.utils import convert_tensor_to_image
+        _, BGRA_frames =  render_video(following_frames[-1:], [alpha_output])
+        RGBA_image = from_BRGA_numpy_to_RGBA_torch(BGRA_frames).squeeze(1)
+        control_output = convert_tensor_to_image(RGBA_image)
+        alpha_output = alpha_output[:,:,0]                
+        control_title = "RGBA Output"
+        tab_label = "RGBA"
+        allow_export = False
 
 
-        output_frame = np.bitwise_and(frame_origin, 255-frame_alpha)
-        frame_grey = frame_alpha.copy()
-        frame_grey[frame_alpha == 255] = 255
-        output_frame += frame_grey
-        output_frames.append(output_frame)
-    foreground = output_frames
-
-    foreground_output = Image.fromarray(foreground[-1])
-    alpha_output = alpha[-1][:,:,0]
-    frame_temp = alpha_output.copy()
-    alpha_output[frame_temp > 127] = 0
-    alpha_output[frame_temp <= 127] = 255
     bbox_info = mask_to_xyxy_box(alpha_output)
     h = alpha_output.shape[0]
     w = alpha_output.shape[1]
@@ -468,13 +574,16 @@ def image_matting(video_state, interactive_state, mask_dropdown, erode_kernel_si
         bbox_info = [str(int(bbox_info[0]/ w * 100 )), str(int(bbox_info[1]/ h * 100 )),  str(int(bbox_info[2]/ w * 100 )), str(int(bbox_info[3]/ h * 100 )) ]
         bbox_info = ":".join(bbox_info)
     alpha_output = Image.fromarray(alpha_output)
-    # return gr.update(value=foreground_output, visible= True), gr.update(value=alpha_output, visible= True), gr.update(value=bbox_info, visible= True), gr.update(visible=True), gr.update(visible=True)
  
-    return foreground_output, alpha_output, gr.update(visible = True), gr.update(visible = True), gr.update(value=bbox_info, visible= True), gr.update(visible=True), gr.update(visible=True)
+    return gr.update(visible=True, selected =0), gr.update(label=tab_label, visible=True), gr.update(visible = foreground_output is not None), foreground_output, control_output, alpha_output, gr.update(visible=foreground_output is not None, label=foreground_title),gr.update(visible=True, label=control_title), gr.update(visible=True, label=alpha_title), gr.update(value=bbox_info, visible= True), gr.update(visible=allow_export), gr.update(visible=allow_export)
+
 
 # video matting
-def video_matting(video_state,video_input, end_slider, matting_type, interactive_state, mask_dropdown, erode_kernel_size, dilate_kernel_size):
-    matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
+def video_matting(state, video_state, mask_type, video_input, end_slider, matting_type, new_new_dim, interactive_state, mask_dropdown, erode_kernel_size, dilate_kernel_size):
+    if video_state["masks"] is None:
+        gr.Info("Matanyone Session Lost. Please reload a Video")
+        return [gr.update(visible=False)]*6
+
     # if interactive_state["track_end_number"]:
     #     following_frames = video_state["origin_images"][video_state["select_frame_number"]:interactive_state["track_end_number"]]
     # else:
@@ -493,69 +602,86 @@ def video_matting(video_state,video_input, end_slider, matting_type, interactive
     else:      
         template_mask = video_state["masks"][video_state["select_frame_number"]]
     fps = video_state["fps"]
-
+    new_dim = video_state.get("new_dim", "")
+    if new_new_dim != new_dim:
+        gr.Info(f"You have changed the Input / Output Dimensions after loading the Video into Matanyone. The output dimension will be the ones when loading the video ({'original' if len(new_dim) == 0 else new_dim})")
     audio_path = video_state["audio"]
 
     # operation error
     if len(np.unique(template_mask))==1:
         template_mask[0][0]=1
-    select_matanyone()
+    acquire_GPU(state)
+    select_matanyone(state)
+    matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
     foreground, alpha = matanyone(matanyone_processor, following_frames, template_mask*255, r_erode=erode_kernel_size, r_dilate=dilate_kernel_size)
     torch.cuda.empty_cache()    
-    output_frames = []
+    release_GPU(state)
     foreground_mat = matting_type == "Foreground"
+    alpha_title = "Alpha Mask Video Output"
+    alpha_suffix = "_alpha"
+    output_frames = []
     new_alpha = []
-    if not foreground_mat:
-        for frame_alpha in alpha:
-            frame_temp = frame_alpha.copy()
-            frame_alpha[frame_temp > 127] = 0
-            frame_alpha[frame_temp <= 127] = 255
-            new_alpha.append(frame_alpha)
-    else:
-        for frame_alpha in alpha:
-            frame_alpha[frame_alpha > 127] = 255
-            frame_alpha[frame_alpha <= 127] = 0
-            new_alpha.append(frame_alpha)
-    alpha = new_alpha
+    BGRA_frames = None
+    if mask_type == "" or mask_type == "wangp":
+        if not foreground_mat:
+            alpha = [255 - frame_alpha for frame_alpha in alpha ]
+        output_frames = following_frames
+        foreground_title = "Original Video Input"
+        foreground_suffix = ""
+        allow_export = True
+    elif mask_type == "greenscreen":
+        green_image = np.zeros_like(following_frames[0], dtype=np.uint8)
+        green_image[:, :, 1] = 255          
+        for frame_origin, frame_alpha in zip(following_frames, alpha):
+            if not foreground_mat:
+                frame_alpha = 255 - frame_alpha 
 
-    # for frame_origin, frame_alpha in zip(following_frames, alpha):
-    #     if foreground_mat:
-    #         frame_alpha[frame_alpha > 127] = 255
-    #         frame_alpha[frame_alpha <= 127] = 0
-    #     else:
-    #         frame_temp = frame_alpha.copy()
-    #         frame_alpha[frame_temp > 127] = 0
-    #         frame_alpha[frame_temp <= 127] = 255
-
-    #     output_frame = np.bitwise_and(frame_origin, 255-frame_alpha)
-    #     frame_grey = frame_alpha.copy()
-    #     frame_grey[frame_alpha == 255] = 127
-    #     output_frame += frame_grey
-    #     output_frames.append(output_frame)
-    foreground = following_frames
+            output_frame = (frame_origin.astype(np.uint16) * (255 - frame_alpha.astype(np.uint16)) + 
+                            green_image.astype(np.uint16) * frame_alpha.astype(np.uint16))
+            output_frame = output_frame // 255
+            output_frame = output_frame.astype(np.uint8)            
+            output_frames.append(output_frame)
+            new_alpha.append(frame_alpha)
+        alpha = new_alpha 
+        foreground_title = "Green Screen Output"
+        foreground_suffix = "_greenscreen"
+        allow_export = False
+    elif mask_type == "alpha":
+        if not foreground_mat:
+            alpha = [255 - frame_alpha for frame_alpha in alpha ]
+        from models.wan.alpha.utils import render_video
+        output_frames, BGRA_frames =  render_video(following_frames, alpha)
+        foreground_title = "Checkboard Output"
+        foreground_suffix = "_RGBA"
+        allow_export = False
 
     if not os.path.exists("mask_outputs"):
         os.makedirs("mask_outputs")
 
     file_name= video_state["video_name"]
     file_name = ".".join(file_name.split(".")[:-1]) 
+    time_flag = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss")
+    file_name = f"{file_name}_{time_flag}"
+    if len(new_dim) > 0: file_name += "_" + get_dim_file_suffix(new_dim) 
  
     from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, cleanup_temp_audio_files    
     source_audio_tracks, audio_metadata  = extract_audio_tracks(video_input, verbose= offload.default_verboseLevel )
-    output_fg_path =  f"./mask_outputs/{file_name}_fg.mp4"
-    output_fg_temp_path =  f"./mask_outputs/{file_name}_fg_tmp.mp4"
+    output_fg_path =  f"./mask_outputs/{file_name}{foreground_suffix}.mp4"
+    output_fg_temp_path =  f"./mask_outputs/{file_name}{foreground_suffix}_tmp.mp4"
     if len(source_audio_tracks) == 0:
-        foreground_output = save_video(foreground,output_fg_path , fps=fps, codec_type= video_output_codec)
+        foreground_output = save_video(output_frames, output_fg_path , fps=fps, codec_type= video_output_codec)
     else:
-        foreground_output_tmp = save_video(foreground, output_fg_temp_path , fps=fps,  codec_type= video_output_codec)
+        foreground_output_tmp = save_video(output_frames, output_fg_temp_path , fps=fps,  codec_type= video_output_codec)
         combine_video_with_audio_tracks(output_fg_temp_path, source_audio_tracks, output_fg_path, audio_metadata=audio_metadata)
         cleanup_temp_audio_files(source_audio_tracks)
         os.remove(foreground_output_tmp)
         foreground_output = output_fg_path
 
-    alpha_output = save_video(alpha, "./mask_outputs/{}_alpha.mp4".format(file_name), fps=fps, codec_type= video_output_codec)
-
-    return foreground_output, alpha_output, gr.update(visible=True), gr.update(visible=True), gr.update(visible=True), gr.update(visible=True)
+    alpha_output = save_video(alpha, f"./mask_outputs/{file_name}{alpha_suffix}.mp4", fps=fps, codec_type= video_output_codec)
+    if BGRA_frames is not None:
+        from models.wan.alpha.utils import write_zip_file
+        write_zip_file(f"./mask_outputs/{file_name}{foreground_suffix}.zip", BGRA_frames)
+    return foreground_output, alpha_output, gr.update(visible=True, label=foreground_title), gr.update(visible=True, label=alpha_title), gr.update(visible=allow_export), gr.update(visible=allow_export)
 
 
 def show_outputs():
@@ -609,7 +735,8 @@ def generate_video_from_frames(frames, output_path, fps=30, gray2rgb=False, audi
         return video_temp_path
 
 # reset all states for a new input
-def restart():
+
+def get_default_states():
     return {
             "user_name": "",
             "video_name": "",
@@ -630,7 +757,10 @@ def restart():
                 "masks": []
             },
             "track_end_number": None,
-        }, [[],[]], None, None, \
+        }, [[],[]]
+
+def restart():
+    return *(get_default_states()), gr.update(interactive=True), gr.update(visible=False), None,  None, None, \
         gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),\
         gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), \
         gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), \
@@ -645,8 +775,10 @@ def restart():
 #     matanyone_model.to(arg_device)
 
 
-def select_matanyone():
+def select_matanyone(state):
     global matanyone_in_GPU, model_in_GPU 
+    if matanyone_model is None: 
+        load_unload_models(state, True, True)
     if matanyone_in_GPU: return
     model.samcontroler.sam_controler.model.to("cpu")
     model_in_GPU = False
@@ -654,8 +786,10 @@ def select_matanyone():
     matanyone_model.to(arg_device)
     matanyone_in_GPU = True
 
-def select_SAM():
+def select_SAM(state):
     global matanyone_in_GPU, model_in_GPU 
+    if matanyone_model is None: 
+        load_unload_models(state, True, True)
     if model_in_GPU: return
     matanyone_model.to("cpu")
     matanyone_in_GPU = False
@@ -663,16 +797,27 @@ def select_SAM():
     model.samcontroler.sam_controler.model.to(arg_device)
     model_in_GPU = True
 
-def load_unload_models(selected):
-    global model_loaded
+load_in_progress = False
+
+def load_unload_models(state = None, selected = True, force = False):
+    global model_loaded, load_in_progress
     global model
     global matanyone_model, matanyone_processor, matanyone_in_GPU , model_in_GPU, bfloat16_supported
+
     if selected:
+        if (not force) and any_GPU_process_running(state, "matanyone"):
+            return
+
+        if load_in_progress:
+            while model == None:
+                time.sleep(1)
+            return
         # print("Matanyone Tab Selected")
-        if model_loaded:
+        if model_loaded or load_in_progress:
             pass
             # load_sam()
         else:
+            load_in_progress = True
             # args, defined in track_anything.py
             sam_checkpoint_url_dict = {
                 'vit_h': "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
@@ -706,6 +851,8 @@ def load_unload_models(selected):
                 matanyone_in_GPU = False
                 matanyone_processor = InferenceCore(matanyone_model, cfg=matanyone_model.cfg)
             model_loaded  = True
+            load_in_progress = False
+
     else:
         # print("Matanyone Tab UnSelected")
         import gc
@@ -724,7 +871,7 @@ def get_vmc_event_handler():
 
 def export_image(state, image_output):
     ui_settings = get_current_model_settings(state)
-    image_refs = ui_settings["image_refs"]
+    image_refs = ui_settings.get("image_refs", None)
     if image_refs == None:
         image_refs =[]
     image_refs.append( image_output)
@@ -734,7 +881,7 @@ def export_image(state, image_output):
 
 def export_image_mask(state, image_input, image_mask):
     ui_settings = get_current_model_settings(state)
-    ui_settings["image_guide"] = Image.fromarray(image_input)
+    ui_settings["image_guide"] = image_input
     ui_settings["image_mask"] = image_mask
 
     gr.Info("Input Image & Mask transferred to Current Image Generator")
@@ -750,9 +897,9 @@ def export_to_current_video_engine(state, foreground_video_output, alpha_video_o
     return time.time()
 
 
-def teleport_to_video_tab(tab_state):
+def teleport_to_video_tab(tab_state, state):
     from wgp import set_new_tab
-    set_new_tab(tab_state, 0)
+    set_new_tab(tab_state, state, 0)
     return gr.Tabs(selected="video_gen")
 
 
@@ -781,7 +928,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
 
     # download assets
 
-    gr.Markdown("<B>Mast Edition is provided by MatAnyone and VRAM optimized by DeepBeepMeep</B>")
+    gr.Markdown("<B>Mast Edition is provided by MatAnyone, VRAM optimizations & Extended Masks by DeepBeepMeep</B>")
     gr.Markdown("If you have some trouble creating the perfect mask, be aware of these tips:")
     gr.Markdown("- Using the Matanyone Settings you can also define Negative Point Prompts to remove parts of the current selection.")
     gr.Markdown("- Sometime it is very hard to fit everything you want in a single mask, it may be much easier to combine multiple independent sub Masks before producing the Matting : each sub Mask is created by selecting an  area of an image and by clicking the Add Mask button. Sub masks can then be enabled / disabled in the Matanyone settings.")
@@ -799,8 +946,36 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                         gr.Markdown("### Case 2: Multiple Targets")
                         gr.Video(value="preprocessing/matanyone/tutorial_multi_targets.mp4", elem_classes="video")
 
+        with gr.Row():
+            new_dim= gr.Dropdown(
+                choices=[
+                    ("Original Dimensions", ""),
+                    ("1080p - Pixels Budgets", "1080p - Pixels Budget"),
+                    ("720p - Pixels Budgets", "720p - Pixels Budget"),
+                    ("480p - Pixels Budgets", "480p - Pixels Budget"),                     
+                    ("1080p - Outer Frame", "1080p - Outer Frame"),
+                    ("720p - Outer Frame", "720p - Outer Frame"),
+                    ("480p - Outer Frame", "480p - Outer Frame"),                     
+                ],   label = "Resize Input / Output", value = ""
+            ) 
 
-        
+            mask_type= gr.Dropdown(
+                choices=[
+                    ("Grey with Alpha (used by WanGP)", "wangp"),
+                    ("Green Screen", "greenscreen"),
+                    ("RGB With Alpha Channel (local Zip file)", "alpha")
+                ],   label = "Mask Type", value = "wangp"
+            ) 
+
+            matting_type = gr.Radio(
+                choices=["Foreground", "Background"],
+                value="Foreground",
+                label="Type of Video Matting to Generate",
+                scale=1)
+
+            
+        with gr.Row(visible=False):
+            dummy = gr.Text()        
 
         with gr.Tabs():
             with gr.TabItem("Video"):
@@ -869,16 +1044,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                     visible=False,
                                     min_width=100,
                                     scale=1)
-                                matting_type = gr.Radio(
-                                    choices=["Foreground", "Background"],
-                                    value="Foreground",
-                                    label="Matting Type",
-                                    info="Type of Video Matting to Generate",
-                                    interactive=True,
-                                    visible=False,
-                                    min_width=100,
-                                    scale=1)
-                                mask_dropdown = gr.Dropdown(multiselect=True, value=[], label="Mask Selection", info="Choose 1~all mask(s) added in Step 2", visible=False, scale=2)
+                                mask_dropdown = gr.Dropdown(multiselect=True, value=[], label="Mask Selection", info="Choose 1~all mask(s) added in Step 2", visible=False, scale=2, allow_custom_value=True)
 
                     # input video
                     with gr.Row(equal_height=True):
@@ -908,7 +1074,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                 foreground_video_output = gr.Video(label="Original Video Input", visible=False, elem_classes="video")
                                 foreground_output_button = gr.Button(value="Black & White Video Output", visible=False, elem_classes="new_button")
                             with gr.Column(scale=2):
-                                alpha_video_output = gr.Video(label="B & W Mask Video Output", visible=False, elem_classes="video")
+                                alpha_video_output = gr.Video(label="Mask Video Output", visible=False, elem_classes="video")
                                 export_image_mask_btn = gr.Button(value="Alpha Mask Output", visible=False, elem_classes="new_button")
                         with gr.Row():
                             with gr.Row(visible= False):
@@ -917,17 +1083,17 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                 export_to_current_video_engine_btn = gr.Button("Export to Control Video Input and Video Mask Input", visible= False)
                                     
                 export_to_current_video_engine_btn.click(  fn=export_to_current_video_engine, inputs= [state, foreground_video_output, alpha_video_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
-                    fn=teleport_to_video_tab, inputs= [tab_state], outputs= [tabs])
+                    fn=teleport_to_video_tab, inputs= [tab_state, state], outputs= [tabs])
 
 
                 # first step: get the video information     
                 extract_frames_button.click(
                     fn=get_frames_from_video,
                     inputs=[
-                        video_input, video_state
+                        state, video_input, video_state, new_dim
                     ],
-                    outputs=[video_state, video_info, template_frame,
-                            image_selection_slider, end_selection_slider,  track_pause_number_slider, point_prompt, matting_type, clear_button_click, add_mask_button, matting_button, template_frame,
+                    outputs=[video_state, extract_frames_button, video_info, template_frame,
+                            image_selection_slider, end_selection_slider,  track_pause_number_slider, point_prompt, dummy, clear_button_click, add_mask_button, matting_button, template_frame,
                             foreground_video_output, alpha_video_output, foreground_output_button, export_image_mask_btn, mask_dropdown, step2_title]
                 )   
 
@@ -942,7 +1108,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                 # click select image to get mask using sam
                 template_frame.select(
                     fn=sam_refine,
-                    inputs=[video_state, point_prompt, click_state, interactive_state],
+                    inputs=[state, video_state, point_prompt, click_state, interactive_state],
                     outputs=[template_frame, video_state, interactive_state]
                 )
 
@@ -965,7 +1131,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                     inputs=[],
                     outputs=[foreground_video_output, alpha_video_output]).then(
                     fn=video_matting,
-                    inputs=[video_state, video_input, end_selection_slider,  matting_type, interactive_state, mask_dropdown, erode_kernel_size, dilate_kernel_size],
+                    inputs=[state, video_state, mask_type, video_input, end_selection_slider, matting_type, new_dim, interactive_state, mask_dropdown, erode_kernel_size, dilate_kernel_size],
                     outputs=[foreground_video_output, alpha_video_output,foreground_video_output, alpha_video_output, export_to_vace_video_14B_btn, export_to_current_video_engine_btn]
                 )
 
@@ -983,10 +1149,11 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                     outputs=[ 
                         video_state,
                         interactive_state,
-                        click_state,
-                        foreground_video_output, alpha_video_output,
+                        click_state, 
+                        extract_frames_button, dummy,
+                        foreground_video_output, dummy, alpha_video_output,
                         template_frame,
-                        image_selection_slider, end_selection_slider, track_pause_number_slider,point_prompt, export_to_vace_video_14B_btn, export_to_current_video_engine_btn, matting_type, clear_button_click, 
+                        image_selection_slider, end_selection_slider, track_pause_number_slider,point_prompt, export_to_vace_video_14B_btn, export_to_current_video_engine_btn, dummy, clear_button_click, 
                         add_mask_button, matting_button, template_frame, foreground_video_output, alpha_video_output, remove_mask_button, foreground_output_button, export_image_mask_btn, mask_dropdown, video_info, step2_title
                     ],
                     queue=False,
@@ -999,9 +1166,10 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                         video_state,
                         interactive_state,
                         click_state,
-                        foreground_video_output, alpha_video_output,
+                        extract_frames_button, dummy,
+                        foreground_video_output, dummy, alpha_video_output,
                         template_frame,
-                        image_selection_slider , end_selection_slider, track_pause_number_slider,point_prompt, export_to_vace_video_14B_btn, export_to_current_video_engine_btn, matting_type, clear_button_click, 
+                        image_selection_slider , end_selection_slider, track_pause_number_slider,point_prompt, export_to_vace_video_14B_btn, export_to_current_video_engine_btn, dummy, clear_button_click, 
                         add_mask_button, matting_button, template_frame, foreground_video_output, alpha_video_output, remove_mask_button, foreground_output_button, export_image_mask_btn, mask_dropdown, video_info, step2_title
                     ],
                     queue=False,
@@ -1102,31 +1270,36 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                                 matting_button = gr.Button(value="Image Matting", interactive=True, visible=False, elem_classes="green_button", min_width=100)
 
                     # output image
-                    with gr.Row(equal_height=True):
-                        foreground_image_output = gr.Image(type="pil", label="Foreground Output", visible=False, elem_classes="image")
-                        alpha_image_output = gr.Image(type="pil", label="Mask", visible=False, elem_classes="image")
+                    with gr.Tabs(visible = False) as image_tabs:
+                        with gr.TabItem("Control Image & Mask", visible = False) as image_first_tab:
+                            with gr.Row(equal_height=True):
+                                control_image_output = gr.Image(type="pil", label="Control Image", visible=False, elem_classes="image")
+                                alpha_image_output = gr.Image(type="pil", label="Mask", visible=False, elem_classes="image")
+                            with gr.Row():
+                                export_image_mask_btn = gr.Button(value="Set to Control Image & Mask", visible=False, elem_classes="new_button")
+                        with gr.TabItem("Reference Image", visible = False) as image_second_tab:
+                            with gr.Row():
+                                foreground_image_output = gr.Image(type="pil", label="Foreground Output", visible=False, elem_classes="image")
+                            with gr.Row():
+                                export_image_btn = gr.Button(value="Add to current Reference Images", visible=False, elem_classes="new_button")
+
                     with gr.Row(equal_height=True):
                         bbox_info = gr.Text(label ="Mask BBox Info (Left:Top:Right:Bottom)", visible = False, interactive= False)
-                    with gr.Row():
-                        # with gr.Row():
-                        export_image_btn = gr.Button(value="Add to current Reference Images", visible=False, elem_classes="new_button")
-                    # with gr.Column(scale=2, visible= True):
-                        export_image_mask_btn = gr.Button(value="Set to Control Image & Mask", visible=False, elem_classes="new_button")
 
                 export_image_btn.click(  fn=export_image, inputs= [state, foreground_image_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
-                    fn=teleport_to_video_tab, inputs= [tab_state], outputs= [tabs])
-                export_image_mask_btn.click(  fn=export_image_mask, inputs= [state, image_input, alpha_image_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
-                    fn=teleport_to_video_tab, inputs= [tab_state], outputs= [tabs]).then(fn=None, inputs=None, outputs=None, js=click_brush_js)
+                    fn=teleport_to_video_tab, inputs= [tab_state, state], outputs= [tabs])
+                export_image_mask_btn.click(  fn=export_image_mask, inputs= [state, control_image_output, alpha_image_output], outputs= [refresh_form_trigger]).then( #video_prompt_video_guide_trigger, 
+                    fn=teleport_to_video_tab, inputs= [tab_state, state], outputs= [tabs]).then(fn=None, inputs=None, outputs=None, js=click_brush_js)
 
                 # first step: get the image information 
                 extract_frames_button.click(
                     fn=get_frames_from_image,
                     inputs=[
-                        image_input, image_state
+                        state, image_input, image_state, new_dim
                     ],
-                    outputs=[image_state, image_info, template_frame,
+                    outputs=[image_state, extract_frames_button, image_info, template_frame,
                             image_selection_slider, track_pause_number_slider,point_prompt, clear_button_click, add_mask_button, matting_button, template_frame,
-                            foreground_image_output, alpha_image_output, bbox_info, export_image_btn, export_image_mask_btn, mask_dropdown, step2_title]
+                            foreground_image_output, alpha_image_output, control_image_output, image_tabs, bbox_info, export_image_btn, export_image_mask_btn, mask_dropdown, step2_title]
                 )   
 
                 # points clear
@@ -1148,7 +1321,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                 # click select image to get mask using sam
                 template_frame.select(
                     fn=sam_refine,
-                    inputs=[image_state, point_prompt, click_state, interactive_state],
+                    inputs=[state, image_state, point_prompt, click_state, interactive_state],
                     outputs=[template_frame, image_state, interactive_state]
                 )
 
@@ -1168,8 +1341,8 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                 # image matting
                 matting_button.click(
                     fn=image_matting,
-                    inputs=[image_state, interactive_state, mask_dropdown, erode_kernel_size, dilate_kernel_size, image_selection_slider],
-                    outputs=[foreground_image_output, alpha_image_output,foreground_image_output, alpha_image_output,bbox_info, export_image_btn, export_image_mask_btn]
+                    inputs=[state, image_state, interactive_state, mask_type, matting_type, new_dim, mask_dropdown, erode_kernel_size, dilate_kernel_size, image_selection_slider],
+                    outputs=[image_tabs, image_first_tab, image_second_tab, foreground_image_output, control_image_output, alpha_image_output, foreground_image_output, control_image_output, alpha_image_output, bbox_info, export_image_btn, export_image_mask_btn]
                 )
 
                 nada = gr.State({})
@@ -1182,7 +1355,8 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
                         image_state,
                         interactive_state,
                         click_state,
-                        foreground_image_output, alpha_image_output,
+                        extract_frames_button, image_tabs,
+                        foreground_image_output, control_image_output, alpha_image_output,
                         template_frame,
                         image_selection_slider, image_selection_slider, track_pause_number_slider,point_prompt, export_image_btn, export_image_mask_btn, bbox_info, clear_button_click, 
                         add_mask_button, matting_button, template_frame, foreground_image_output, alpha_image_output, remove_mask_button, export_image_btn, export_image_mask_btn, mask_dropdown, nada, step2_title

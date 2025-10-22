@@ -74,7 +74,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.6"
-WanGP_version = "9.0"
+WanGP_version = "9.01"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2963,7 +2963,7 @@ def download_models(model_filename = None, model_type= None, module_type = False
             if module_type: return
         model_filename = None
 
-    for prop in ["preload_URLs", "loras", "text_encoder_URLs"]:
+    for prop in ["preload_URLs", "text_encoder_URLs"]:
         preload_URLs = get_model_recursive_prop(model_type, prop, return_list= True)
         if prop in  ["text_encoder_URLs"]:
             preload_URLs = [get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=preload_URLs)] if len(preload_URLs) > 0 else []
@@ -2979,7 +2979,19 @@ def download_models(model_filename = None, model_type= None, module_type = False
                 except Exception as e:
                     if os.path.isfile(filename): os.remove(filename) 
                     raise Exception(f"{prop} '{url}' is invalid: {str(e)}'")
-                
+
+    model_loras = get_model_recursive_prop(model_type, "loras", return_list= True)
+    for url in model_loras:
+        filename = os.path.join(get_lora_dir(model_type), url.split("/")[-1])
+        if not os.path.isfile(filename ): 
+            if not url.startswith("http"):
+                raise Exception(f"Lora '{filename}' was not found in the Loras Folder and no URL was provided to download it. Please add an URL in the model definition file.")
+            try:
+                download_file(url, filename)
+            except Exception as e:
+                if os.path.isfile(filename): os.remove(filename) 
+                raise Exception(f"Lora URL '{url}' is invalid: {str(e)}'")
+            
     if module_type: return            
     model_files = model_type_handler.query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization)
     if not isinstance(model_files, list): model_files = [model_files]
@@ -5010,8 +5022,7 @@ def generate_video(
         else:
             mp4_files = glob.glob(os.path.join(save_path, "*.mp4"))
             video_source = max(mp4_files, key=os.path.getmtime) if mp4_files else None                            
-
-    fps = get_computed_fps(force_fps, base_model_type , video_guide, video_source )
+    fps = 1 if is_image else get_computed_fps(force_fps, base_model_type , video_guide, video_source )
     control_audio_tracks = source_audio_tracks = source_audio_metadata = []
     if "R" in audio_prompt_type and video_guide is not None and MMAudio_setting == 0 and not any_letters(audio_prompt_type, "ABX"):
         control_audio_tracks, _  = extract_audio_tracks(video_guide)

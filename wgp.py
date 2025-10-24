@@ -73,8 +73,8 @@ from collections import defaultdict
 global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.6.6"
-WanGP_version = "9.01"
+target_mmgp_version = "3.6.7"
+WanGP_version = "9.10"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -171,25 +171,6 @@ def format_time(seconds):
         return f"{minutes}m {secs:02d}s"
     else:
         return f"{seconds:.1f}s"
-
-def get_pastel_color(index):
-    hue = (index * 137.508 + 22241) % 360
-    saturation = 70 + (index * 47) % 11
-    lightness = 90 + (index * 23) % 5
-    return f"hsl({hue:.0f}, {saturation}%, {lightness}%)"
-
-def get_alternating_grey_color(index):
-    if index % 2 == 0:
-        return "#F8FAFC"
-    else:
-        return "transparent"
-
-def get_queue_item_color(index):
-    scheme = server_config.get("queue_color_scheme", "pastel")
-    if scheme == "alternating_grey":
-        return get_alternating_grey_color(index)
-    else:
-        return get_pastel_color(index)
 
 def format_generation_time(seconds):
     """Format generation time showing raw seconds with human-readable time in parentheses when over 60s"""
@@ -968,14 +949,12 @@ def add_video_task(**inputs):
     queue = gen["queue"]
     task_id += 1
     current_task_id = task_id
-    item_color = get_queue_item_color(current_task_id)
 
     start_image_data, end_image_data, start_image_labels, end_image_labels = get_preview_images(inputs)
     plugin_data = inputs.pop('plugin_data', {})
     
     queue.append({
         "id": current_task_id,
-        "color": item_color,
         "params": inputs.copy(),
         "plugin_data": plugin_data,
         "repeats": inputs.get("repeat_generation",1),
@@ -1320,8 +1299,6 @@ def load_queue_action(filepath, state, evt:gr.EventData):
                 }
                 newly_loaded_queue.append(runtime_task)
                 print(f"[load_queue_action] Reconstructed task {task_index+1}/{len(loaded_manifest)}, ID: {task_id_loaded}")
-        for i, task in enumerate(newly_loaded_queue):
-            task['color'] = get_queue_item_color(i)
 
         with lock:
             print("[load_queue_action] Acquiring lock to update state...")
@@ -1600,6 +1577,8 @@ def generate_queue_html(queue):
     """
     
     table_rows = []
+    scheme = server_config.get("queue_color_scheme", "pastel")
+
     for i, item in enumerate(queue):
         if i == 0:
             continue
@@ -1632,9 +1611,20 @@ def generate_queue_html(queue):
         edit_btn = f"""<button onclick="updateAndTrigger('edit_{task_id}')" class="action-button" title="Edit"><img src="/gradio_api/file=icons/edit.svg" style="width: 20px; height: 20px;"></button>"""
         remove_btn = f"""<button onclick="updateAndTrigger('remove_{task_id}')" class="action-button" title="Remove"><img src="/gradio_api/file=icons/remove.svg" style="width: 20px; height: 20px;"></button>"""
 
-        item_color = item.get('color', 'transparent')
+        row_class = "draggable-row"
+        row_style = ""
+        
+        if scheme == "pastel":
+            hue = (task_id * 137.508 + 22241) % 360
+            row_class += " pastel-row"
+            row_style = f'--item-hue: {hue:.0f};'
+        else:
+            row_class += " alternating-grey-row"
+            if row_index % 2 == 0:
+                row_class += " even-row"
+                
         row_html = f"""
-        <tr draggable="true" class="draggable-row" data-index="{row_index}" style="background-color: {item_color};" title="Drag to reorder">
+        <tr draggable="true" class="{row_class}" data-index="{row_index}" style="{row_style}" title="Drag to reorder">
             <td class="center-align">{item.get('repeats', "1")}</td>
             <td>{prompt_cell}</td>
             <td class="center-align">{length}</td>
@@ -3469,7 +3459,7 @@ def refresh_gallery(state): #, msg
     queue = gen.get("queue", [])
     abort_interactive = not gen.get("abort", False)
     if not in_progress or len(queue) == 0:
-        return gr.Gallery(value = file_list) if last_was_audio else gr.Gallery(selected_index=choice, value = file_list),  *pack_audio_gallery_state(audio_file_list, audio_choice), gr.HTML("", visible= False),  gr.Button(visible=True), gr.Button(visible=False), gr.Row(visible=False), gr.Row(visible=False), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(visible= False)
+        return gr.Gallery(value = file_list) if last_was_audio else gr.Gallery(selected_index=choice, value = file_list), gr.update() if last_was_audio else choice, *pack_audio_gallery_state(audio_file_list, audio_choice), gr.HTML("", visible= False),  gr.Button(visible=True), gr.Button(visible=False), gr.Row(visible=False), gr.Row(visible=False), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(visible= False)
     else:
         task = queue[0]
         prompt =  task["prompt"]
@@ -3527,7 +3517,11 @@ def refresh_gallery(state): #, msg
         gen_buttons_visible = True
         html =  f"<TABLE WIDTH=100% ID=PINFO style='{table_style}'><TR style='height:140px'><TD width=100% style='{table_style}'>" + prompt + "</TD>" + thumbnails + "</TR></TABLE>" 
         html_output = gr.HTML(html, visible= True)
-        return gr.Gallery(value = file_list) if last_was_audio else gr.Gallery(selected_index=choice, value = file_list), *pack_audio_gallery_state(audio_file_list, audio_choice), html_output, gr.Button(visible=False), gr.Button(visible=True), gr.Row(visible=True), gr.Row(visible= gen_buttons_visible), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(visible= onemorewindow_visible)
+        if last_was_audio:
+            audio_choice = max(0, audio_choice)
+        else:
+            choice = max(0, choice)
+        return gr.Gallery(value = file_list) if last_was_audio else gr.Gallery(selected_index=choice, value = file_list), gr.update() if last_was_audio else choice, *pack_audio_gallery_state(audio_file_list, audio_choice), html_output, gr.Button(visible=False), gr.Button(visible=True), gr.Row(visible=True), gr.Row(visible= gen_buttons_visible), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(visible= onemorewindow_visible)
 
 
 
@@ -7004,7 +6998,8 @@ def use_video_settings(state, input_file_list, choice, source):
     if any_audio:
         input_file_list = unpack_audio_list(input_file_list)
     file_list, file_settings_list = get_file_list(state, input_file_list, audio_files=any_audio)
-    if choice != None and choice >=0 and len(file_list)>0:
+    if choice != None and len(file_list)>0:
+        choice= max(0, choice)
         configs = file_settings_list[choice]
         file_name= file_list[choice]
         if configs == None:
@@ -7039,7 +7034,7 @@ def use_video_settings(state, input_file_list, choice, source):
             else:
                 return *generate_dropdown_model_list(model_type), gr.update()
     else:
-        gr.Info(f"No Medium is Selected")
+        gr.Info(f"Please Select a File")
 
     return gr.update(), gr.update(), gr.update(), gr.update()
 loras_url_cache = None
@@ -9110,7 +9105,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             if tab_id == 'generate':
                 output_trigger.change(refresh_gallery,
                     inputs = [state], 
-                    outputs = [output, audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger, gen_info, generate_btn, add_to_queue_btn, current_gen_column, current_gen_buttons_row, queue_html, abort_btn, onemorewindow_btn],
+                    outputs = [output, last_choice, audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger, gen_info, generate_btn, add_to_queue_btn, current_gen_column, current_gen_buttons_row, queue_html, abort_btn, onemorewindow_btn],
                     show_progress="hidden"
                     )
 
@@ -9825,6 +9820,26 @@ def create_ui():
         }
         #edit_tab_cancel_button:hover {
             background-color: #e2505c !important;
+        }
+        #queue_html_container .pastel-row {
+            background-color: hsl(var(--item-hue, 0), 80%, 92%);
+        }
+        #queue_html_container .alternating-grey-row.even-row {
+            background-color: #F8FAFC; /* Light mode grey */
+        }
+        @media (prefers-color-scheme: dark) {
+            #queue_html_container tr:hover td {
+                 background-color: rgba(255, 255, 255, 0.1) !important;
+            }
+            #queue_html_container .pastel-row {
+                background-color: hsl(var(--item-hue, 0), 35%, 25%);
+            }
+            #queue_html_container .alternating-grey-row.even-row {
+                background-color: #2a3748; /* Dark mode grey */
+            }
+            #queue_html_container .alternating-grey-row {
+                background-color: transparent;
+            }
         }
         #queue_html_container table {
             font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;

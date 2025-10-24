@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Ditto 14B",
+        "architecture": "vace_ditto_14B",
+        "modules": [
+			"vace_14B"
+        ],
+        "description": "Ditto demonstrates superior instruction-following ability and establish a new SOTA in instruction-based video editing (style, transfer, change of material, etc...). This model expects the Prompt to contain instructions to apply to the whole frames. The Masked Area option is experimental.",
+        "URLs": "t2v",
+        "preload_URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/ditto_global.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/ditto_global_style.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/ditto_sim2real.safetensors"
+		]
+		
+    },
+	"prompt": "Render the subjects as classical sculptures carved from single blocks of pristine white marble"
+}

@@ -900,8 +900,8 @@ class WanModel(ModelMixin, ConfigMixin):
         if first == None:
             return sd
 
-        new_sd = {}
 
+        # new_sd = {}
         # for k,v in sd.items():
         #     if k.endswith("modulation.diff"):
         #         pass
@@ -914,6 +914,25 @@ class WanModel(ModelMixin, ConfigMixin):
         #     for k,v in sd.items():
         #         new_sd["diffusion_model." + k] = v
         #     sd = new_sd
+        if ".default." in first:
+            new_sd = {}
+            for k,v in sd.items():
+                k = k.replace(".default.", ".")
+                new_sd[k] = v 
+            sd = new_sd
+
+        if first.startswith("vace_blocks."):
+            new_sd = {}
+            for k,v in sd.items():
+                if k.startswith("vace_blocks."):
+                    l = k.split(".")
+                    block_no = self.vace_layers[int(l[1])]
+                    l[0] = "blocks." + str(block_no)
+                    l[1] = "vace"
+                    k = ".".join(l)
+                    print(k)
+                new_sd[k] = v 
+            sd = new_sd
 
         if first.startswith("lora_unet_"):
             new_sd = {}

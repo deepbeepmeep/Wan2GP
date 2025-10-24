@@ -4,7 +4,7 @@ import gradio as gr
 from shared.utils import files_locator as fl 
 
 def test_vace(base_model_type):
-    return base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"]     
+    return base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B", "vace_ditto_14B"]     
 
 def test_class_i2v(base_model_type):    
     return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate" ]
@@ -37,7 +37,7 @@ class family_handler():
     @staticmethod
     def query_supported_types():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
-                    "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "phantom_1.3B", "phantom_14B", 
+                    "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B", 
                     "recam_1.3B", "animate", "alpha", "alpha_lynx",
                     "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp"]
 
@@ -332,7 +332,17 @@ class family_handler():
                     ("Positioned Frames followed by People / Objects (if any) then a Face", "FI")]
                 extra_model_def["background_removal_label"]= "Remove Backgrounds behind People / Objects, keep it for Landscape, Lynx Face or Positioned Frames"
                 extra_model_def["no_processing_on_last_images_refs"] = 1
-
+            if base_model_type in ["vace_ditto_14B"]:
+                del extra_model_def["guide_preprocessing"], extra_model_def["image_ref_choices"], extra_model_def["video_guide_outpainting"]
+                extra_model_def["mask_preprocessing"] = { "selection": ["", "A"], }
+                extra_model_def["model_modes"] = {
+                            "choices": [
+                                ("Global", 0),
+                                ("Global Style", 1),
+                                ("Sim 2 Real", 2)],
+                            "default": 0,
+                            "label" : "Ditto Process"
+                }
             
 
         if (not vace_class) and standin: 
@@ -654,6 +664,10 @@ class family_handler():
                 "video_prompt_type": "PVBKI", 
                 "mask_expand": 20,
                 "audio_prompt_type": "R",
+            })
+        elif base_model_type in ["vace_ditto_14B"]:
+            ui_defaults.update({ 
+                "video_prompt_type": "V", 
             })
 
         if text_oneframe_overlap(base_model_type):

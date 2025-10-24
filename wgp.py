@@ -2737,7 +2737,7 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
         saved_finetune_def = json.load(reader)
 
     update_model_def = False
-    model_filename_path = os.path.join(fl.get_download_folder(), model_filename)
+    model_filename_path = os.path.join(fl.get_download_location(), model_filename)
     quanto_dtypestr= "bf16" if dtype == torch.bfloat16 else "fp16"
     if ("m" + dtypestr) in model_filename: 
         dtypestr = "m" + dtypestr 

@@ -10,9 +10,9 @@ def test_class_i2v(base_model_type):
     return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate" ]
 
 def test_class_t2v(base_model_type):    
-    return base_model_type in ["t2v", "t2v_2_2", "alpha"]
+    return base_model_type in ["t2v", "t2v_2_2", "alpha", "lynx"]
 
-def text_oneframe_overlap(base_model_type):
+def test_oneframe_overlap(base_model_type):
     return test_class_i2v(base_model_type) and not (test_multitalk(base_model_type) or base_model_type in ["animate"]) or test_wan_5B(base_model_type)
 
 def test_class_1_3B(base_model_type):    
@@ -419,7 +419,8 @@ class family_handler():
                     "labels" : { "UV": "Control Video"},
                     "visible" : False,
                 }
-
+            extra_model_def["video_length_locked"] = 81
+            
         if vace_class or base_model_type in ["animate", "t2v", "t2v_2_2", "lynx"] :
             image_prompt_types_allowed = "TVL"
         elif base_model_type in ["infinitetalk"]:
@@ -435,8 +436,10 @@ class family_handler():
         else:
             image_prompt_types_allowed = ""
         extra_model_def["image_prompt_types_allowed"] = image_prompt_types_allowed
+        if base_model_type in ["fantasy"] or multitalk:
+            extra_model_def["audio_guidance"] = True
 
-        if text_oneframe_overlap(base_model_type):
+        if test_oneframe_overlap(base_model_type):
             extra_model_def["sliding_window_defaults"] = { "overlap_min" : 1, "overlap_max" : 1, "overlap_step": 0, "overlap_default": 1}
 
         # if base_model_type in ["phantom_1.3B", "phantom_14B"]: 
@@ -550,7 +553,7 @@ class family_handler():
                     ui_defaults["video_prompt_type"] = video_prompt_type 
                     ui_defaults["image_prompt_type"] = ""
 
-            if text_oneframe_overlap(base_model_type):
+            if test_oneframe_overlap(base_model_type):
                 ui_defaults["sliding_window_overlap"] = 1
 
         if settings_version < 2.32:
@@ -670,7 +673,7 @@ class family_handler():
                 "video_prompt_type": "V", 
             })
 
-        if text_oneframe_overlap(base_model_type):
+        if test_oneframe_overlap(base_model_type):
             ui_defaults["sliding_window_overlap"] = 1
             ui_defaults["color_correction_strength"]= 0
 

@@ -69,7 +69,10 @@ class family_handler():
                     ],
                 "letters_filter": "KI",
             }
-            extra_model_def["background_removal_label"]= "Remove Backgrounds only behind People / Objects except main Subject / Landscape" 
+            if flux_kontext_dreamomni2:
+                extra_model_def["no_background_removal"] = True
+            else:                
+                extra_model_def["background_removal_label"]= "Remove Backgrounds only behind People / Objects except main Subject / Landscape" 
         elif flux_umo:
             extra_model_def["image_ref_choices"] = {
                 "choices": [

@@ -8,7 +8,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHON_VERSION: 3.10.9
-      TORCH_INDEX: https://download.pytorch.org/whl/test/cu128
+      TORCH_INDEX: https://download.pytorch.org/whl/cu128
 
     steps:
       # Checkout repo

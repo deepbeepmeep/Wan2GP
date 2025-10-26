@@ -61,13 +61,11 @@ jobs:
           python_embedded\python.exe -m pip --version
 
       # Install core dependencies (Torch, SageAttention)
-      - name: Install Torch and SageAttention
+      - name: Install Torch
         run: |
           python_embedded\python.exe -m pip install --upgrade pip 
           python_embedded\python.exe -m pip install  torch==2.8.0 torchvision torchaudio --index-url ${{ env.TORCH_INDEX }}
-          python_embedded\python.exe -m pip install  triton-windows
-          python_embedded\python.exe -m pip install  https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post2/sageattention-2.2.0+cu128torch2.8.0.post2-cp39-abi3-win_amd64.whl
-
+          
       # Install FilterPy
       - name: Install FilterPy
         run: |

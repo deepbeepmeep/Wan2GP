@@ -14,17 +14,22 @@ jobs:
       #  Checkout repo
       - uses: actions/checkout@v4
         with:
-          ref: portable-release
+          ref: main
           
-      - name: Clone another repo
-        run: git clone https://github.com/deepbeepmeep/Wan2GP.git
-
+      - name: Copy repo into Wan2GP folder (keep bat files in root)
+        shell: pwsh
+        run: |
+            mkdir Wan2GP
+            Get-ChildItem -Force | Where-Object { $_.Name -notin @("Launch_WanGP.bat","Update.bat","Wan2GP") } | ForEach-Object {
+            Copy-Item $_.FullName -Destination Wan2GP -Recurse -Force
+            }
+          
          # 🔹 Extract version from wgp.py (Windows compatible)
       - name: Read version from wgp.py
         id: get_version
         shell: pwsh
         run: |
-          $content = Get-Content wgp.py -Raw
+          $content = Get-Content Wan2gp\wgp.py -Raw
           if ($content -match 'WanGP_version\s*=\s*"([^"]+)"') {
             $version = $matches[1]
             Write-Host "Found version: $version"

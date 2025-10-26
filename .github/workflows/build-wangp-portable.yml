@@ -111,26 +111,12 @@ jobs:
           }
           echo "new_tag=$new_tag" >> $env:GITHUB_OUTPUT
 
-      # Read Change Log    
-      - name: Read CHANGELOG.md
-        id: changelog
-        shell: pwsh
-        run: |
-          if (Test-Path "docs/CHANGELOG.md") {
-            $changelog = Get-Content docs/CHANGELOG.md -Raw
-            # Escape for GitHub Actions output
-            $changelog = $changelog -replace '%','%25' -replace '\n','%0A' -replace '\r',''
-            echo "body=$changelog" >> $env:GITHUB_OUTPUT
-          } else {
-            echo "body=No changelog found." >> $env:GITHUB_OUTPUT
-          }
-
       - name: Create or Update Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tag.outputs.new_tag }}
           files: WanGP-Portable.7z.*
-          body: ${{ steps.changelog.outputs.body }}
+          body: "For details, see the [README](https://github.com/deepbeepmeep/Wan2GP/blob/main/README.md)"
           overwrite: true
           fail_on_unmatched_files: false
         env:

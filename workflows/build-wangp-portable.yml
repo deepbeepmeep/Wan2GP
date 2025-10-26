@@ -1,0 +1,118 @@
+name: Build WanGP Portable
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-portable:
+    runs-on: windows-latest
+    env:
+      PYTHON_VERSION: 3.10.9
+      TORCH_INDEX: https://download.pytorch.org/whl/test/cu128
+
+    steps:
+      #  Checkout repo
+      - uses: actions/checkout@v4
+        with:
+          ref: portable-release
+          
+      - name: Clone another repo
+        run: git clone https://github.com/deepbeepmeep/Wan2GP.git
+
+         # 🔹 Extract version from wgp.py (Windows compatible)
+      - name: Read version from wgp.py
+        id: get_version
+        shell: pwsh
+        run: |
+          $content = Get-Content wgp.py -Raw
+          if ($content -match 'WanGP_version\s*=\s*"([^"]+)"') {
+            $version = $matches[1]
+            Write-Host "Found version: $version"
+            echo "version=$version" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "⚠️ WanGP_version not found in wgp.py"
+            echo "version=unknown" >> $env:GITHUB_OUTPUT
+          }
+
+      #  Download Python Embedded
+      - name: Download Python Embedded
+        run: |
+          curl -L -o python-embed.zip https://www.python.org/ftp/python/${{ env.PYTHON_VERSION }}/python-${{ env.PYTHON_VERSION }}-embed-amd64.zip
+          mkdir python_embedded
+          tar -xf python-embed.zip -C python_embedded
+          
+          # Uncomment import site and add site-packages path
+          (Get-Content python_embedded\python310._pth) -replace '# import site','import site' | Set-Content python_embedded\python310._pth
+          Add-Content python_embedded\python310._pth "Lib\site-packages"
+          
+          # Create folders for packages
+          mkdir python_embedded\Lib\site-packages
+
+      #  Install pip directly into Lib\site-packages
+      - name: Install pip
+        run: |
+          curl -L -o get-pip.py https://bootstrap.pypa.io/get-pip.py
+          python_embedded\python.exe get-pip.py
+          python_embedded\python.exe -m pip --version
+
+      #  Install core dependencies (Torch, SageAttention)
+      - name: Install Torch and SageAttention
+        run: |
+          python_embedded\python.exe -m pip install --upgrade pip 
+          python_embedded\python.exe -m pip install  torch==2.8.0 torchvision torchaudio --index-url ${{ env.TORCH_INDEX }}
+          python_embedded\python.exe -m pip install  triton-windows
+          python_embedded\python.exe -m pip install  https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post2/sageattention-2.2.0+cu128torch2.8.0.post2-cp39-abi3-win_amd64.whl
+
+      #  Install FilterPy
+      - name: Install FilterPy
+        run: |
+          python_embedded\python.exe -m pip install https://www.piwheels.org/simple/filterpy/filterpy-1.4.5-py3-none-any.whl
+
+      #  Install remaining requirements
+      - name: Install requirements
+        run: |
+          python_embedded\python.exe -m pip install --upgrade -r Wan2GP/requirements.txt
+
+      - name: Prepare portable folder and package
+        shell: pwsh
+        run: |
+          mkdir WanGP-Portable
+          Copy-Item Launch_WanGP.bat WanGP-Portable\
+          Copy-Item Update.bat WanGP-Portable\
+          robocopy python_embedded WanGP-Portable\python_embedded /E /COPYALL
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          robocopy Wan2GP WanGP-Portable\Wan2GP /E /COPYALL
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          7z a -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -ms=on -v2000m "WanGP-Portable.7z" "WanGP-Portable\*" -xr!"__pycache__" -xr!"*.pyc" -xr!".gitignore"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    
+        #  Create version-based tag
+      - name: Create tag
+        id: tag
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          $new_tag = "v$env:VERSION"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git fetch --tags
+          if (git tag -l $new_tag) {
+            Write-Host "Tag $new_tag already exists, skipping creation."
+          } else {
+            git tag $new_tag
+            git push origin $new_tag
+          }
+          echo "new_tag=$new_tag" >> $env:GITHUB_OUTPUT
+
+
+      - name: Create or Update Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.new_tag }}
+          files: WanGP-Portable.7z.*
+          overwrite: true
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

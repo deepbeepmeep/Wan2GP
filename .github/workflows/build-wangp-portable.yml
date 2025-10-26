@@ -11,7 +11,7 @@ jobs:
       TORCH_INDEX: https://download.pytorch.org/whl/test/cu128
 
     steps:
-      #  Checkout repo
+      # Checkout repo
       - uses: actions/checkout@v4
         with:
           ref: main
@@ -24,7 +24,7 @@ jobs:
             Copy-Item $_.FullName -Destination Wan2GP -Recurse -Force
             }
           
-         # 🔹 Extract version from wgp.py (Windows compatible)
+      # Extract version from wgp.py (Windows compatible)
       - name: Read version from wgp.py
         id: get_version
         shell: pwsh
@@ -39,7 +39,7 @@ jobs:
             echo "version=unknown" >> $env:GITHUB_OUTPUT
           }
 
-      #  Download Python Embedded
+      # Download Python Embedded
       - name: Download Python Embedded
         run: |
           curl -L -o python-embed.zip https://www.python.org/ftp/python/${{ env.PYTHON_VERSION }}/python-${{ env.PYTHON_VERSION }}-embed-amd64.zip
@@ -53,14 +53,14 @@ jobs:
           # Create folders for packages
           mkdir python_embedded\Lib\site-packages
 
-      #  Install pip directly into Lib\site-packages
+      # Install pip directly into Lib\site-packages
       - name: Install pip
         run: |
           curl -L -o get-pip.py https://bootstrap.pypa.io/get-pip.py
           python_embedded\python.exe get-pip.py
           python_embedded\python.exe -m pip --version
 
-      #  Install core dependencies (Torch, SageAttention)
+      # Install core dependencies (Torch, SageAttention)
       - name: Install Torch and SageAttention
         run: |
           python_embedded\python.exe -m pip install --upgrade pip 
@@ -68,16 +68,17 @@ jobs:
           python_embedded\python.exe -m pip install  triton-windows
           python_embedded\python.exe -m pip install  https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post2/sageattention-2.2.0+cu128torch2.8.0.post2-cp39-abi3-win_amd64.whl
 
-      #  Install FilterPy
+      # Install FilterPy
       - name: Install FilterPy
         run: |
           python_embedded\python.exe -m pip install https://www.piwheels.org/simple/filterpy/filterpy-1.4.5-py3-none-any.whl
 
-      #  Install remaining requirements
+      # Install remaining requirements
       - name: Install requirements
         run: |
           python_embedded\python.exe -m pip install --upgrade -r Wan2GP/requirements.txt
 
+      # Prepare portable folder and 7z package
       - name: Prepare portable folder and package
         shell: pwsh
         run: |
@@ -91,7 +92,7 @@ jobs:
           7z a -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -ms=on -v2000m "WanGP-Portable.7z" "WanGP-Portable\*" -xr!"__pycache__" -xr!"*.pyc" -xr!".gitignore"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     
-        #  Create version-based tag
+      # Create version-based tag
       - name: Create tag
         id: tag
         shell: pwsh
@@ -110,14 +111,27 @@ jobs:
           }
           echo "new_tag=$new_tag" >> $env:GITHUB_OUTPUT
 
+      # Read Change Log    
+      - name: Read CHANGELOG.md
+        id: changelog
+        shell: pwsh
+        run: |
+          if (Test-Path "docs/CHANGELOG.md") {
+            $changelog = Get-Content docs/CHANGELOG.md -Raw
+            # Escape for GitHub Actions output
+            $changelog = $changelog -replace '%','%25' -replace '\n','%0A' -replace '\r',''
+            echo "body=$changelog" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "body=No changelog found." >> $env:GITHUB_OUTPUT
+          }
 
       - name: Create or Update Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tag.outputs.new_tag }}
           files: WanGP-Portable.7z.*
+          body: ${{ steps.changelog.outputs.body }}
           overwrite: true
           fail_on_unmatched_files: false
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -2823,12 +2823,13 @@ def get_loras_preprocessor(transformer, model_type):
 
     return preprocessor_wrapper
 
-def get_local_model_filename(model_filename):
+def get_local_model_filename(model_filename, use_locator = True):
     if model_filename.startswith("http"):
         local_model_filename =os.path.basename(model_filename)
     else:
         local_model_filename = model_filename
-    local_model_filename = fl.locate_file(local_model_filename, error_if_none= False)
+    if use_locator:
+        local_model_filename = fl.locate_file(local_model_filename, error_if_none= False)
     return local_model_filename
     
 
@@ -3233,7 +3234,7 @@ def load_models(model_type, override_profile = -1):
     for filename, file_model_type, file_module_type, submodel_no in zip(model_file_list, model_type_list, module_type_list, model_submodel_no_list):
         if len(filename) == 0: continue 
         download_models(filename, file_model_type, file_module_type, submodel_no)
-        local_model_file_list.append( get_local_model_filename(filename) )
+        local_model_file_list.append( get_local_model_filename(filename, use_locator = False ))
     if len(local_model_file_list) == 0:
         download_models("", model_type, "", -1)
 
@@ -3251,7 +3252,7 @@ def load_models(model_type, override_profile = -1):
     if len( override_text_encoder) > 0:
         override_text_encoder = get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=override_text_encoder) if len(override_text_encoder) > 0 else None
         if override_text_encoder is not None:
-            override_text_encoder =  get_local_model_filename(override_text_encoder)
+            override_text_encoder =  get_local_model_filename(override_text_encoder, use_locator = False)
             if override_text_encoder is not None:
                 print(f"Loading Text Encoder '{override_text_encoder}' ...")
     else:

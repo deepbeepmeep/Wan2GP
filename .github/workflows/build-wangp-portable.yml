@@ -16,20 +16,21 @@ jobs:
         with:
           ref: main
           
-      - name: Copy repo into Wan2GP folder (keep bat files in root)
+      # Clone Wan2GP source publicly to include inside portable
+      - name: Clone Wan2GP source
         shell: pwsh
         run: |
-          mkdir Wan2GP
-          Get-ChildItem -Force | Where-Object { $_.Name -notin @("Launch_WanGP.bat","Update.bat","Wan2GP") } | ForEach-Object {
-            Copy-Item $_.FullName -Destination Wan2GP -Recurse -Force
-          }
+          mkdir WanGP-Portable
+          if (Test-Path Wan2GP) { Remove-Item -Recurse -Force Wan2GP }
+          git clone https://github.com/deepbeepmeep/Wan2GP.git WanGP-Portable\Wan2GP
+          Write-Host "✅ Cloned Wan2GP repository into portable workspace."
           
       # Extract version from wgp.py (Windows compatible)
       - name: Read version from wgp.py
         id: get_version
         shell: pwsh
         run: |
-          $content = Get-Content Wan2gp\wgp.py -Raw
+          $content = Get-Content WanGP-Portable\Wan2GP\wgp.py -Raw
           if ($content -match 'WanGP_version\s*=\s*"([^"]+)"') {
             $version = $matches[1]
             Write-Host "Found version: $version"
@@ -74,47 +75,15 @@ jobs:
       # Install remaining requirements
       - name: Install requirements
         run: |
-          python_embedded\python.exe -m pip install --upgrade -r Wan2GP/requirements.txt
+          python_embedded\python.exe -m pip install --upgrade -r WanGP-Portable\Wan2GP\requirements.txt
           
-      - name: Use clean public git config
-        shell: pwsh
-        run: |
-          $gitConfigPath = "Wan2GP\.git\config"
-          if (Test-Path $gitConfigPath) {
-            $config = @()
-            $config += "[core]"
-            $config += "repositoryformatversion = 0"
-            $config += "filemode = false"
-            $config += "bare = false"
-            $config += "logallrefupdates = true"
-            $config += "ignorecase = true"
-            $config += ""
-            $config += '[remote "origin"]'
-            $config += "url = https://github.com/deepbeepmeep/Wan2GP.git"
-            $config += "fetch = +refs/heads/*:refs/remotes/origin/*"
-            $config += ""
-            $config += '[branch "main"]'
-            $config += "remote = origin"
-            $config += "merge = refs/heads/main"
-            $config += ""
-            $config += "[gc]"
-            $config += "auto = 0"
-            $config | Out-File -FilePath $gitConfigPath -Encoding UTF8 -Force
-            Write-Host "Replaced .git/config with clean public version"
-          } else {
-            Write-Host "No .git/config found in Wan2GP, skipping"
-          }
-
       # Prepare portable folder and 7z package
       - name: Prepare portable folder and package
         shell: pwsh
-        run: |
-          mkdir WanGP-Portable
+        run: |         
           Copy-Item Launch_WanGP.bat WanGP-Portable\
           Copy-Item Update.bat WanGP-Portable\
           robocopy python_embedded WanGP-Portable\python_embedded /E /COPYALL
-          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
-          robocopy Wan2GP WanGP-Portable\Wan2GP /E /COPYALL
           if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
           7z a -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -ms=on -v2000m "WanGP-Portable.7z" "WanGP-Portable\*" -xr!"__pycache__" -xr!"*.pyc" -xr!".gitignore"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

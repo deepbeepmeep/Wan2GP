@@ -19,10 +19,10 @@ jobs:
       - name: Copy repo into Wan2GP folder (keep bat files in root)
         shell: pwsh
         run: |
-            mkdir Wan2GP
-            Get-ChildItem -Force | Where-Object { $_.Name -notin @("Launch_WanGP.bat","Update.bat","Wan2GP") } | ForEach-Object {
+          mkdir Wan2GP
+          Get-ChildItem -Force | Where-Object { $_.Name -notin @("Launch_WanGP.bat","Update.bat","Wan2GP") } | ForEach-Object {
             Copy-Item $_.FullName -Destination Wan2GP -Recurse -Force
-            }
+          }
           
       # Extract version from wgp.py (Windows compatible)
       - name: Read version from wgp.py
@@ -64,7 +64,7 @@ jobs:
       - name: Install Torch
         run: |
           python_embedded\python.exe -m pip install --upgrade pip 
-          python_embedded\python.exe -m pip install  torch==2.8.0 torchvision torchaudio --index-url ${{ env.TORCH_INDEX }}
+          python_embedded\python.exe -m pip install torch==2.8.0 torchvision torchaudio --index-url ${{ env.TORCH_INDEX }}
           
       # Install FilterPy
       - name: Install FilterPy
@@ -76,11 +76,12 @@ jobs:
         run: |
           python_embedded\python.exe -m pip install --upgrade -r Wan2GP/requirements.txt
           
+      # ✅ FIXED INDENTATION BLOCK HERE
       - name: Use clean public git config
         shell: pwsh
         run: |
-            $gitConfigPath = "Wan2GP\.git\config"
-            if (Test-Path $gitConfigPath) {
+          $gitConfigPath = "Wan2GP\.git\config"
+          if (Test-Path $gitConfigPath) {
             $configContent = @'
 [core]
 repositoryformatversion = 0
@@ -99,10 +100,10 @@ merge = refs/heads/main
 [gc]
 auto = 0
 '@
-          Set-Content -Path $gitConfigPath -Value $configContent -Encoding UTF8
-          Write-Host "Replaced .git/config with clean public version"
+            Set-Content -Path $gitConfigPath -Value $configContent -Encoding UTF8
+            Write-Host "Replaced .git/config with clean public version"
           } else {
-          Write-Host "No .git/config found in Wan2GP, skipping"
+            Write-Host "No .git/config found in Wan2GP, skipping"
           }
    
       # Prepare portable folder and 7z package

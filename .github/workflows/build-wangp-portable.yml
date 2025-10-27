@@ -75,7 +75,35 @@ jobs:
       - name: Install requirements
         run: |
           python_embedded\python.exe -m pip install --upgrade -r Wan2GP/requirements.txt
+          
+      - name: Use clean public git config
+        shell: pwsh
+        run: |
+            $gitConfigPath = "Wan2GP\.git\config"
+            if (Test-Path $gitConfigPath) {
+            Set-Content $gitConfigPath @"
+[core]
+repositoryformatversion = 0
+filemode = false
+bare = false
+logallrefupdates = true
+ignorecase = true
 
+[remote "origin"]
+url = https://github.com/deepbeepmeep/Wan2GP.git
+fetch = +refs/heads/*:refs/remotes/origin/*
+
+[branch "main"]
+remote = origin
+merge = refs/heads/main
+[gc]
+auto = 0
+"@
+            Write-Host "Replaced .git/config with clean public version"
+            } else {
+            Write-Host "No .git/config found in Wan2GP, skipping"
+            }
+   
       # Prepare portable folder and 7z package
       - name: Prepare portable folder and package
         shell: pwsh

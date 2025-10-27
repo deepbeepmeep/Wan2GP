@@ -89,11 +89,11 @@ jobs:
             $config += "logallrefupdates = true"
             $config += "ignorecase = true"
             $config += ""
-            $config += "[remote \"origin\"]"
+            $config += '[remote "origin"]'
             $config += "url = https://github.com/deepbeepmeep/Wan2GP.git"
             $config += "fetch = +refs/heads/*:refs/remotes/origin/*"
             $config += ""
-            $config += "[branch \"main\"]"
+            $config += '[branch "main"]'
             $config += "remote = origin"
             $config += "merge = refs/heads/main"
             $config += ""

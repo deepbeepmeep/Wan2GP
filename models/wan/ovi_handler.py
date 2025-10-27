@@ -35,7 +35,7 @@ class family_handler:
     def query_model_def(base_model_type: str, model_def: Dict[str, Any]):
         cfg = {
             "wan_5B_class": True,
-            "profiles_dir": [""],
+            "profiles_dir": ["wan_2_2_ovi"],
             "group": "wan2_2",
             "fps": 24,
             "frames_minimum": 121,
@@ -70,7 +70,7 @@ class family_handler:
         download_def  += [{
             "repoId" : "DeepBeepMeep/Wan2.1", 
             "sourceFolderList" :  ["mmaudio", ],
-            "fileList" : [ [ "v1-44.pth", "best_netG.pt"]]   
+            "fileList" : [ [ "v1-16.pth", "best_netG.pt"]]   
         }]
 
         return download_def

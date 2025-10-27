@@ -12,7 +12,6 @@
             "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_ovi_audio_10B_quanto_bf16_int8.safetensors"
         ]
     },
-    "resolution": "1280x720",
 	"num_inference_steps": 30,
 	"prompt" : "A singer in a glittering jacket grips the microphone, sweat shining on his brow, and shouts, <S>The end is night<E>. The crowd roars in response, fists in the air. Behind him, a guitarist steps to the mic and adds to say <S>We must all find a bunker where to hide.<E>. The energy peaks as the lights flare brighter.. <AUDCAP>Electric guitar riffs, cheering crowd, shouted male voices.<ENDAUDCAP>"
 

@@ -366,3 +366,5 @@ class OviFusionEngine:
     def custom_compile(self, **compile_kwargs):
         self.model.custom_compile(compile_kwargs)
 
+    def get_trans_lora(self):
+        return self.model.video_model, None

@@ -81,7 +81,7 @@ jobs:
         run: |
             $gitConfigPath = "Wan2GP\.git\config"
             if (Test-Path $gitConfigPath) {
-            Set-Content $gitConfigPath @"
+            Set-Content $gitConfigPath @'
 [core]
 repositoryformatversion = 0
 filemode = false
@@ -98,7 +98,7 @@ remote = origin
 merge = refs/heads/main
 [gc]
 auto = 0
-"@
+            '@
             Write-Host "Replaced .git/config with clean public version"
             } else {
             Write-Host "No .git/config found in Wan2GP, skipping"

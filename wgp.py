@@ -4775,6 +4775,12 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, overri
 def get_outpainting_dims(video_guide_outpainting):
     return None if video_guide_outpainting== None or len(video_guide_outpainting) == 0 or video_guide_outpainting == "0 0 0 0" or video_guide_outpainting.startswith("#") else [int(v) for v in video_guide_outpainting.split(" ")] 
 
+def truncate_audio(generated_audio, trim_video_frames_beginning, trim_video_frames_end, video_fps, audio_sampling_rate):
+    samples_per_frame = audio_sampling_rate / video_fps
+    start = int(trim_video_frames_beginning * samples_per_frame)
+    end = len(generated_audio) - int(trim_video_frames_end * samples_per_frame)
+    return generated_audio[start:end if end > 0 else None]
+    
 def generate_video(
     task,
     send_cmd,
@@ -5206,7 +5212,7 @@ def generate_video(
         if repeat_no >= total_generation: break
         repeat_no +=1
         gen["repeat_no"] = repeat_no
-        src_video = src_video2 = src_mask = src_mask2 = src_faces = sparse_video_image = None
+        src_video = src_video2 = src_mask = src_mask2 = src_faces = sparse_video_image = full_generated_audio =None
         prefix_video = pre_video_frame = None
         source_video_overlap_frames_count = 0 # number of frames overalapped in source video for first window
         source_video_frames_count = 0  # number of frames to use in source video (processing starts source_video_overlap_frames_count frames before )
@@ -5514,7 +5520,6 @@ def generate_video(
                 gen["header_text"] = txt
                 send_cmd("output")
 
-            generated_audio = None
             try:
                 samples = wan_model.generate(
                     input_prompt = prompt,
@@ -5642,6 +5647,7 @@ def generate_video(
                 skip_steps_cache.previous_residual = None
                 skip_steps_cache.previous_modulated_input = None
                 print(f"Skipped Steps:{skip_steps_cache.skipped_steps}/{skip_steps_cache.num_steps}" )
+            generated_audio = None
             BGRA_frames = None
             if samples != None:
                 if isinstance(samples, dict):
@@ -5667,8 +5673,6 @@ def generate_video(
                 send_cmd("output")  
             else:
                 sample = samples.cpu()
-                if generated_audio is not None:
-                    output_new_audio_data = generated_audio
                 abort = not (is_image or audio_only) and sample.shape[1] < current_video_length    
                 # if True: # for testing
                 #     torch.save(sample, "output.pt")
@@ -5682,6 +5686,9 @@ def generate_video(
                     if discard_last_frames > 0:
                         sample = sample[: , :-discard_last_frames]
                         guide_start_frame -= discard_last_frames
+                        if generated_audio is not None:
+                            generated_audio = truncate_audio(generated_audio, 0, discard_last_frames, fps, audio_sampling_rate)
+
                     if reuse_frames == 0:
                         pre_video_guide =  sample[:,max_source_video_frames :].clone()
                     else:
@@ -5692,12 +5699,20 @@ def generate_video(
                     # remove source video overlapped frames at the beginning of the generation
                     sample = torch.cat([ prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
                     guide_start_frame -= source_video_overlap_frames_count 
+                    if generated_audio is not None:
+                        generated_audio = truncate_audio(generated_audio, source_video_overlap_frames_count, 0, fps, audio_sampling_rate)
                 elif sliding_window and window_no > 1 and reuse_frames > 0:
                     # remove sliding window overlapped frames at the beginning of the generation
                     sample = sample[: , reuse_frames:]
                     guide_start_frame -= reuse_frames 
+                    if generated_audio is not None:
+                        generated_audio = truncate_audio(generated_audio, reuse_frames, 0, fps, audio_sampling_rate)
 
                 num_frames_generated = guide_start_frame - (source_video_frames_count - source_video_overlap_frames_count) 
+                if generated_audio is not None:
+                    full_generated_audio =  generated_audio if full_generated_audio is None else np.concatenate([full_generated_audio, generated_audio], axis=0)
+                    output_new_audio_data = full_generated_audio
+
 
                 if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0:                
                     send_cmd("progress", [0, get_latest_status(state,"Upsampling")])
@@ -5754,7 +5769,7 @@ def generate_video(
                     save_path_tmp = video_path.rsplit('.', 1)[0] + f"_tmp.{container}"
                     save_video( tensor=sample[None], save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None), container=container)
                     output_new_audio_temp_filepath = None
-                    new_audio_added_from_audio_start =  reset_control_aligment or generated_audio is not None # if not beginning of audio will be skipped
+                    new_audio_added_from_audio_start =  reset_control_aligment or full_generated_audio is not None # if not beginning of audio will be skipped
                     source_audio_duration = source_video_frames_count / fps
                     if any_mmaudio:
                         send_cmd("progress", [0, get_latest_status(state,"MMAudio Soundtrack Generation")])

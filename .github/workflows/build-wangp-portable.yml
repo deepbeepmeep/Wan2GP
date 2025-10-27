@@ -82,7 +82,7 @@ jobs:
         run: |
           $gitConfigPath = "Wan2GP\.git\config"
           if (Test-Path $gitConfigPath) {
-            $configContent = @'
+            $configContent = @"
 [core]
 repositoryformatversion = 0
 filemode = false
@@ -99,7 +99,7 @@ remote = origin
 merge = refs/heads/main
 [gc]
 auto = 0
-'@
+"@
             Set-Content -Path $gitConfigPath -Value $configContent -Encoding UTF8
             Write-Host "Replaced .git/config with clean public version"
           } else {

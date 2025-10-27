@@ -2746,7 +2746,7 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
     if ("m" + dtypestr) in model_filename: 
         dtypestr = "m" + dtypestr 
         quanto_dtypestr = "m" + quanto_dtypestr 
-    if fl.locate_file(model_filename) is None and (not no_fp16_main_model or dtype == torch.bfloat16):
+    if fl.locate_file(model_filename, error_if_none= False) is None and (not no_fp16_main_model or dtype == torch.bfloat16):
         offload.save_model(model, model_filename_path, config_file_path=config_file, filter_sd=filter)
         print(f"New model file '{model_filename}' had been created for finetune Id '{model_type}'.")
         del saved_finetune_def["model"][source_key]
@@ -2759,7 +2759,7 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
         quanto_filename_path = os.path.join(fl.get_download_folder() , quanto_filename)
         if hasattr(model, "_quanto_map"):
             print("unable to generate quantized module, the main model should at full 16 bits before quantization can be done")
-        elif fl.locate_file(quanto_filename) is None:
+        elif fl.locate_file(quanto_filename, error_if_none= False) is None:
             offload.save_model(model, quanto_filename_path, config_file_path=config_file, do_quantize= True, filter_sd=filter)
             print(f"New quantized file '{quanto_filename}' had been created for finetune Id '{model_type}'.")
             if isinstance(model_def[url_key][0],dict): 
@@ -3234,7 +3234,7 @@ def load_models(model_type, override_profile = -1):
     for filename, file_model_type, file_module_type, submodel_no in zip(model_file_list, model_type_list, module_type_list, model_submodel_no_list):
         if len(filename) == 0: continue 
         download_models(filename, file_model_type, file_module_type, submodel_no)
-        local_model_file_list.append( get_local_model_filename(filename, use_locator = False ))
+        local_model_file_list.append( get_local_model_filename(filename ))
     if len(local_model_file_list) == 0:
         download_models("", model_type, "", -1)
 
@@ -3252,7 +3252,7 @@ def load_models(model_type, override_profile = -1):
     if len( override_text_encoder) > 0:
         override_text_encoder = get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=override_text_encoder) if len(override_text_encoder) > 0 else None
         if override_text_encoder is not None:
-            override_text_encoder =  get_local_model_filename(override_text_encoder, use_locator = False)
+            override_text_encoder =  get_local_model_filename(override_text_encoder)
             if override_text_encoder is not None:
                 print(f"Loading Text Encoder '{override_text_encoder}' ...")
     else:

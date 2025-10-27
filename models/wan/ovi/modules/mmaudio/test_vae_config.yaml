@@ -1,0 +1,5 @@
+audio_vae:
+  tod_vae_ckpt: /data/weiminwang/ckpts/mm_audio_ckpts/v1-16.pth
+  bigvgan_vocoder_ckpt: /data/weiminwang/ckpts/mm_audio_ckpts/best_netG.pt
+  mode: 16k
+  need_vae_encoder: True 

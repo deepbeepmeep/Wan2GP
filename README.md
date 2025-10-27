@@ -36,6 +36,14 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
+### October 26 2025: WanGP v9.21, Why isn't all my VRAM used ?
+
+*WanGP exclusive*
+
+**Wan 2.2 Ovi 10 GB** for all the GPU Poors of the World: *only 6 GB of VRAM to generate 121 frames at 720p*. With 16 GB of VRAM, you may even be able to load all the model in VRAM with *Memory Profile 3*
+
+*update v9.21*: Got FastWan to work with Ovi: it is now 10 times faster ! (not including the VAE)
+
 ### October 24 2025: WanGP v9.10, What else will you ever need after this one ?
 
 With WanGP v9 you will have enough features to go to a desert island with no internet connection and comes back with a full Hollywood movie.

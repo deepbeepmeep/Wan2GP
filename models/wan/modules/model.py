@@ -338,9 +338,9 @@ class WanSelfAttention(nn.Module):
         self.norm_k(k)
         q,k,v = q.view(b, s, n, d), k.view(b, s, n, d), v.view(b, s, n, d)
         del x
+
         qklist = [q,k]
         del q,k
-
         q,k = apply_rotary_emb(qklist, freqs, head_first=False)
 
         if standin_phase >= 1:

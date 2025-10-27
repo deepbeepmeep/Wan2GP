@@ -8,7 +8,10 @@ p = os.path.dirname(os.path.abspath(__file__))
 if p not in sys.path:
     sys.path.insert(0, p)
 import asyncio
-if os.name == "nt": asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+if os.name == "nt":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+from shared.asyncio_utils import silence_proactor_connection_reset
+silence_proactor_connection_reset()
 import time
 import threading
 import argparse
@@ -58,6 +61,7 @@ import atexit
 import shutil
 import glob
 import cv2
+import html
 from transformers.utils import logging
 logging.set_verbosity_error
 from tqdm import tqdm
@@ -74,7 +78,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.7"
-WanGP_version = "9.10"
+WanGP_version = "9.21"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1585,8 +1589,8 @@ def generate_queue_html(queue):
         
         row_index = i - 1
         task_id = item['id']
-        truncated_prompt = (item['prompt'][:97] + '...') if len(item['prompt']) > 100 else item['prompt']
-        full_prompt = item['prompt'].replace('"', '&quot;')
+        full_prompt = html.escape(item['prompt'])
+        truncated_prompt = (html.escape(item['prompt'][:97]) + '...') if len(item['prompt']) > 100 else full_prompt
         prompt_cell = f'<div class="prompt-cell" title="{full_prompt}">{truncated_prompt}</div>'
         
         start_img_data = item.get('start_image_data_base64') or [None]
@@ -2030,7 +2034,7 @@ def get_lora_dir(model_type):
             lora_dir_1_3B = os.path.join(root_lora_dir, "1.3B")
             if os.path.isdir(lora_dir_1_3B ):
                 return lora_dir_1_3B
-        elif base_model_type == "ti2v_2_2":
+        elif base_model_type in ["ti2v_2_2", "ovi"]:
             lora_dir_5B = os.path.join(root_lora_dir, "5B")
             if os.path.isdir(lora_dir_5B ):
                 return lora_dir_5B
@@ -2093,7 +2097,7 @@ if not os.path.isfile(server_config_filename) and os.path.isfile("gradio_config.
 src_move = [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "models_t5_umt5-xxl-enc-bf16.safetensors", "models_t5_umt5-xxl-enc-quanto_int8.safetensors" ]
 tgt_move = [ "xlm-roberta-large", "umt5-xxl", "umt5-xxl"]
 for src,tgt in zip(src_move,tgt_move):
-    src = fl.locate_file(src)
+    src = fl.locate_file(src, error_if_none= False)
     tgt = fl.get_download_location(tgt)
     if src is not None:
         try:
@@ -2147,11 +2151,11 @@ for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion
 "wan2.1_Vace_14B_mbf16.safetensors", "wan2.1_Vace_14B_quanto_mbf16_int8.safetensors", "wan2.1_FLF2V_720p_14B_quanto_int8.safetensors", "wan2.1_FLF2V_720p_14B_bf16.safetensors",  "wan2.1_FLF2V_720p_14B_fp16.safetensors", "wan2.1_Vace_1.3B_mbf16.safetensors", "wan2.1_text2video_1.3B_bf16.safetensors",
 "ltxv_0.9.7_13B_dev_bf16.safetensors"
 ]:
-    if fl.locate_file(path) is not None:
+    if fl.locate_file(path, error_if_none= False) is not None:
         print(f"Removing old version of model '{path}'. A new version of this model will be downloaded next time you use it.")
         os.remove( fl.locate_file(path))
 
-for f, s in [(fl.locate_file("Florence2/modeling_florence2.py"), 127287)]:
+for f, s in [(fl.locate_file("Florence2/modeling_florence2.py", error_if_none= False), 127287)]:
     try:
         if os.path.isfile(f) and os.path.getsize(f) == s:
             print(f"Removing old version of model '{f}'. A new version of this model will be downloaded next time you use it.")
@@ -2159,7 +2163,7 @@ for f, s in [(fl.locate_file("Florence2/modeling_florence2.py"), 127287)]:
     except: pass
 
 models_def = {}
-family_handlers = ["models.wan.wan_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.chatterbox.chatterbox_handler"]
+family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.chatterbox.chatterbox_handler"]
 
 
 # only needed for imported old settings files
@@ -2824,7 +2828,7 @@ def get_local_model_filename(model_filename):
         local_model_filename =os.path.basename(model_filename)
     else:
         local_model_filename = model_filename
-    local_model_filename = fl.locate_file(local_model_filename)
+    local_model_filename = fl.locate_file(local_model_filename, error_if_none= False)
     return local_model_filename
     
 
@@ -2837,15 +2841,15 @@ def process_files_def(repoId = None, sourceFolderList = None, fileList = None, t
         if targetFolder is not None and len(targetFolder) == 0:  targetFolder = None
         targetRoot = os.path.join(original_targetRoot, targetFolder) if targetFolder is not None else original_targetRoot            
         if len(files)==0:
-            if fl.locate_folder(sourceFolder if targetFolder is None else os.path.join(targetFolder, sourceFolder) ) is None:
+            if fl.locate_folder(sourceFolder if targetFolder is None else os.path.join(targetFolder, sourceFolder), error_if_none= False ) is None:
                 snapshot_download(repo_id=repoId,  allow_patterns=sourceFolder +"/*", local_dir= targetRoot)
         else:
             for onefile in files:     
                 if len(sourceFolder) > 0: 
-                    if fl.locate_file( (sourceFolder + "/" + onefile)  if targetFolder is None else os.path.join(targetFolder, sourceFolder, onefile)) is None:   
+                    if fl.locate_file( (sourceFolder + "/" + onefile)  if targetFolder is None else os.path.join(targetFolder, sourceFolder, onefile), error_if_none= False) is None:   
                         hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = targetRoot, subfolder=sourceFolder)
                 else:
-                    if fl.locate_file(onefile if targetFolder is None else os.path.join(targetFolder, onefile)) is None:          
+                    if fl.locate_file(onefile if targetFolder is None else os.path.join(targetFolder, onefile), error_if_none= False) is None:          
                         hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = targetRoot)
 
 def download_mmaudio():
@@ -2959,7 +2963,7 @@ def download_models(model_filename = None, model_type= None, module_type = False
             preload_URLs = [get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=preload_URLs)] if len(preload_URLs) > 0 else []
 
         for url in preload_URLs:
-            filename = fl.locate_file(os.path.basename(url))
+            filename = fl.locate_file(os.path.basename(url), error_if_none= False)
             if filename is None: 
                 filename = fl.get_download_location(os.path.basename(url))
                 if not url.startswith("http"):
@@ -3258,6 +3262,11 @@ def load_models(model_type, override_profile = -1):
                 dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, override_text_encoder = override_text_encoder )
 
     kwargs = {}
+    if "pipe" in pipe:
+        kwargs = pipe
+        pipe = kwargs.pop("pipe")
+    if "coTenantsMap" not in kwargs: kwargs["coTenantsMap"] = {}
+
     profile = init_pipe(pipe, kwargs, override_profile)
     if server_config.get("enhancer_mode", 0) == 0:
         setup_prompt_enhancer(pipe, kwargs)
@@ -3265,8 +3274,11 @@ def load_models(model_type, override_profile = -1):
     if "transformer" in pipe:
         loras_transformer += ["transformer"]        
     if "transformer2" in pipe:
-        loras_transformer += ["transformer2"]        
-    offloadobj = offload.profile(pipe, profile_no= profile, compile = compile, quantizeTransformer = False, loras = loras_transformer, coTenantsMap= {}, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)  
+        loras_transformer += ["transformer2"]
+    if len(compile) > 0 and hasattr(wan_model, "custom_compile"):
+        wan_model.custom_compile(backend= "inductor", mode ="default")
+    compile_modules = model_def.get("compile", compile) if len(compile) > 0 else ""
+    offloadobj = offload.profile(pipe, profile_no= profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)  
     if len(args.gpu) > 0:
         torch.set_default_device(args.gpu)
     transformer_type = model_type
@@ -3472,6 +3484,7 @@ def refresh_gallery(state): #, msg
         if prompt.startswith("!enhanced!\n"):
             enhanced = True
             prompt = prompt[len("!enhanced!\n"):]
+        prompt = html.escape(prompt)
         if "\n" in prompt :
             prompts = prompt.split("\n")
             window_no= gen.get("window_no",1)
@@ -3515,8 +3528,8 @@ def refresh_gallery(state): #, msg
         """
         if params.get("mode", None) in ['edit'] : onemorewindow_visible = False
         gen_buttons_visible = True
-        html =  f"<TABLE WIDTH=100% ID=PINFO style='{table_style}'><TR style='height:140px'><TD width=100% style='{table_style}'>" + prompt + "</TD>" + thumbnails + "</TR></TABLE>" 
-        html_output = gr.HTML(html, visible= True)
+        html_content =  f"<TABLE WIDTH=100% ID=PINFO style='{table_style}'><TR style='height:140px'><TD width=100% style='{table_style}'>" + prompt + "</TD>" + thumbnails + "</TR></TABLE>" 
+        html_output = gr.HTML(html_content, visible= True)
         if last_was_audio:
             audio_choice = max(0, audio_choice)
         else:
@@ -3702,7 +3715,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             values +=[video_creation_date]
             labels +=["Creation Date"]
         else: 
-            video_prompt =  configs.get("prompt", "")[:1024]
+            video_prompt =  html.escape(configs.get("prompt", "")[:1024])
             video_video_prompt_type = configs.get("video_prompt_type", "")
             video_image_prompt_type = configs.get("image_prompt_type", "")
             video_audio_prompt_type = configs.get("audio_prompt_type", "")
@@ -3874,11 +3887,11 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             </STYLE>
         """
         rows = [f"<TR><TD style='text-align: right;' WIDTH=1% NOWRAP VALIGN=TOP>{label}</TD><TD><B>{value}</B></TD></TR>" for label, value in zip(labels, values)]
-        html = f"{table_style}<TABLE ID=video_info WIDTH=100%>" + "".join(rows) + "</TABLE>"
+        html_content = f"{table_style}<TABLE ID=video_info WIDTH=100%>" + "".join(rows) + "</TABLE>"
     else:
-        html =  get_default_video_info()
+        html_content =  get_default_video_info()
     visible= len(files) > 0 
-    return choice if source=="video" else gr.update(), html, gr.update(visible=visible and is_video) , gr.update(visible=visible and is_image), gr.update(visible=visible and is_audio), gr.update(visible=visible and is_video) , gr.update(visible=visible and is_video) 
+    return choice if source=="video" else gr.update(), html_content, gr.update(visible=visible and is_video) , gr.update(visible=visible and is_image), gr.update(visible=visible and is_audio), gr.update(visible=visible and is_video) , gr.update(visible=visible and is_video) 
 
 def convert_image(image):
 
@@ -4399,7 +4412,11 @@ def any_audio_track(model_type):
     if base_model_type in ["fantasy", "hunyuan_avatar", "hunyuan_custom_audio", "chatterbox"]:
         return True
     model_def = get_model_def(model_type)
-    return model_def.get("multitalk_class", False) if model_def else False
+    if not model_def:
+        return False
+    if model_def.get("returns_audio", False):
+        return True
+    return model_def.get("multitalk_class", False)
 
 def get_available_filename(target_path, video_source, suffix = "", force_extension = None):
     name, extension =  os.path.splitext(os.path.basename(video_source))
@@ -4970,16 +4987,21 @@ def generate_video(
         if len(errors) > 0 : raise gr.Error(errors)
         loras_selected += [ os.path.join(lora_dir, os.path.basename(lora)) for lora in activated_loras]
 
+    if hasattr(wan_model, "get_trans_lora"):
+        trans_lora, trans2_lora = wan_model.get_trans_lora()
+    else:     
+        trans_lora, trans2_lora = trans, trans2
+
     if len(loras_selected) > 0:
         pinnedLora = loaded_profile !=5  # and transformer_loras_filenames == None False # # # 
         split_linear_modules_map = getattr(trans,"split_linear_modules_map", None)
-        offload.load_loras_into_model(trans , loras_selected, loras_list_mult_choices_nums, activate_all_loras=True, preprocess_sd=get_loras_preprocessor(trans, base_model_type), pinnedLora=pinnedLora, split_linear_modules_map = split_linear_modules_map) 
-        errors = trans._loras_errors
+        offload.load_loras_into_model(trans_lora, loras_selected, loras_list_mult_choices_nums, activate_all_loras=True, preprocess_sd=get_loras_preprocessor(trans, base_model_type), pinnedLora=pinnedLora, split_linear_modules_map = split_linear_modules_map) 
+        errors = trans_lora._loras_errors
         if len(errors) > 0:
             error_files = [msg for _ ,  msg  in errors]
             raise gr.Error("Error while loading Loras: " + ", ".join(error_files))
-        if trans2 is not None: 
-            offload.sync_models_loras(trans, trans2)
+        if trans2_lora is not None: 
+            offload.sync_models_loras(trans_lora, trans2_lora)
         
     seed = None if seed == -1 else seed
     # negative_prompt = "" # not applicable in the inference
@@ -4988,6 +5010,12 @@ def generate_video(
 
     _, _, latent_size = get_model_min_frames_and_step(model_type)  
     video_length = (video_length -1) // latent_size * latent_size + 1
+    if sliding_window_size !=0:
+        sliding_window_size = (sliding_window_size -1) // latent_size * latent_size + 1
+    if sliding_window_overlap !=0:
+        sliding_window_overlap = (sliding_window_overlap -1) // latent_size * latent_size + 1
+    if sliding_window_discard_last_frames !=0:
+        sliding_window_discard_last_frames = sliding_window_discard_last_frames // latent_size * latent_size 
 
     current_video_length = video_length
     # VAE Tiling
@@ -5486,6 +5514,7 @@ def generate_video(
                 gen["header_text"] = txt
                 send_cmd("output")
 
+            generated_audio = None
             try:
                 samples = wan_model.generate(
                     input_prompt = prompt,
@@ -5576,10 +5605,11 @@ def generate_video(
                 clear_gen_cache()
                 offloadobj.unload_all()
                 trans.cache = None 
-                offload.unload_loras_from_model(trans)
                 if trans2 is not None: 
                     trans2.cache = None 
-                    offload.unload_loras_from_model(trans2)
+                offload.unload_loras_from_model(trans_lora)
+                if trans2_lora is not None: 
+                    offload.unload_loras_from_model(trans2_lora)
                 skip_steps_cache = None
                 # if compile:
                 #     cache_size = torch._dynamo.config.cache_size_limit                                      
@@ -5617,8 +5647,10 @@ def generate_video(
                 if isinstance(samples, dict):
                     overlapped_latents = samples.get("latent_slice", None)
                     BGRA_frames = samples.get("BGRA_frames", None)
-                    samples= samples["x"]
-                samples = samples.to("cpu")
+                    generated_audio = samples.get("audio", generated_audio)
+                    samples = samples.get("x", None)
+                if samples is not None:
+                    samples = samples.to("cpu")
             clear_gen_cache()
             offloadobj.unload_all()
             gc.collect()
@@ -5629,13 +5661,14 @@ def generate_video(
             # file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(save_prompt[:50]).strip()}.mp4"
             # sample = samples.cpu()
             # cache_video( tensor=sample[None].clone(), save_file=os.path.join(save_path, file_name), fps=16, nrow=1, normalize=True, value_range=(-1, 1))
-
             if samples == None:
                 abort = True
                 state["prompt"] = ""
                 send_cmd("output")  
             else:
                 sample = samples.cpu()
+                if generated_audio is not None:
+                    output_new_audio_data = generated_audio
                 abort = not (is_image or audio_only) and sample.shape[1] < current_video_length    
                 # if True: # for testing
                 #     torch.save(sample, "output.pt")
@@ -5721,17 +5754,17 @@ def generate_video(
                     save_path_tmp = video_path.rsplit('.', 1)[0] + f"_tmp.{container}"
                     save_video( tensor=sample[None], save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None), container=container)
                     output_new_audio_temp_filepath = None
-                    new_audio_from_start =  reset_control_aligment
+                    new_audio_added_from_audio_start =  reset_control_aligment or generated_audio is not None # if not beginning of audio will be skipped
                     source_audio_duration = source_video_frames_count / fps
                     if any_mmaudio:
                         send_cmd("progress", [0, get_latest_status(state,"MMAudio Soundtrack Generation")])
                         from postprocessing.mmaudio.mmaudio import video_to_audio
                         output_new_audio_filepath = output_new_audio_temp_filepath = get_available_filename(save_path, f"tmp{time_flag}.wav" )
                         video_to_audio(save_path_tmp, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= sample.shape[1] /fps, save_path = output_new_audio_filepath, persistent_models = server_config.get("mmaudio_enabled", 0) == 2, audio_file_only = True, verboseLevel = verbose_level)
-                        new_audio_from_start =  False
+                        new_audio_added_from_audio_start =  False
                     elif audio_source is not None:
                         output_new_audio_filepath = audio_source
-                        new_audio_from_start =  True
+                        new_audio_added_from_audio_start =  True
                     elif output_new_audio_data is not None:
                         import soundfile as sf
                         output_new_audio_filepath = output_new_audio_temp_filepath = get_available_filename(save_path, f"tmp{time_flag}.wav" )
@@ -5741,7 +5774,7 @@ def generate_video(
                     else:
                         new_audio_tracks = control_audio_tracks
 
-                    combine_and_concatenate_video_with_audio_tracks(video_path, save_path_tmp,  source_audio_tracks, new_audio_tracks, source_audio_duration, audio_sampling_rate, new_audio_from_start = new_audio_from_start, source_audio_metadata= source_audio_metadata, verbose = verbose_level>=2 )
+                    combine_and_concatenate_video_with_audio_tracks(video_path, save_path_tmp,  source_audio_tracks, new_audio_tracks, source_audio_duration, audio_sampling_rate, new_audio_from_start = new_audio_added_from_audio_start, source_audio_metadata= source_audio_metadata, verbose = verbose_level>=2 )
                     os.remove(save_path_tmp)
                     if output_new_audio_temp_filepath is not None: os.remove(output_new_audio_temp_filepath)
 
@@ -5821,11 +5854,13 @@ def generate_video(
         seed = set_seed(-1)
     clear_status(state)
     trans.cache = None
-    offload.unload_loras_from_model(trans)
-    if not trans2 is None:
-        trans2.cache = None
-        offload.unload_loras_from_model(trans2)
+    offload.unload_loras_from_model(trans_lora)
+    if not trans2_lora is None:
+        offload.unload_loras_from_model(trans2_lora)
 
+    if not trans2 is None:
+       trans2.cache = None
+ 
     if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:
         cleanup_temp_audio_files(control_audio_tracks + source_audio_tracks)
 
@@ -6603,10 +6638,6 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     vace =  test_vace_module(base_model_type) 
     t2v=   test_class_t2v(base_model_type) 
     ltxv = base_model_type in ["ltxv_13B"]
-    recammaster = base_model_type in ["recam_1.3B"]
-    phantom = base_model_type in ["phantom_1.3B", "phantom_14B"]
-    flux = model_family in ["flux"]
-    hunyuan_video_custom =  base_model_type in ["hunyuan_custom", "hunyuan_custom_audio", "hunyuan_custom_edit"]
     if target == "settings":
         return inputs
 
@@ -6622,9 +6653,6 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if model_def.get("sample_solvers", None) is None:
         pop += ["sample_solver"]
     
-    # if not (test_class_i2v(base_model_type) or diffusion_forcing or ltxv or recammaster or vace):
-    #     pop += ["image_prompt_type"]
-
     if any_audio_track(base_model_type) or server_config.get("mmaudio_enabled", 0) == 0:
         pop += ["MMAudio_setting", "MMAudio_prompt", "MMAudio_neg_prompt"]
 
@@ -6664,7 +6692,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if not test_any_sliding_window( base_model_type):
         pop += ["sliding_window_size", "sliding_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames", "sliding_window_color_correction_strength"]
 
-    if not (base_model_type in ["fantasy"] or model_def.get("multitalk_class", False)):
+    if not model_def.get("audio_guidance", False):
         pop += ["audio_guidance_scale", "speakers_locations"]
 
     if not model_def.get("embedded_guidance", False):
@@ -7181,7 +7209,7 @@ def load_settings_from_file(state, file_path):
     # Extract and apply embedded source images from video files
     extracted_images = 0
     if file_path.endswith('.mkv') or file_path.endswith('.mp4'):
-        extracted_images = extract_and_apply_source_images(file_path, state)
+        extracted_images = extract_and_apply_source_images(file_path, configs)
     if any_audio:
         gr.Info(f"Settings Loaded from Audio file with prompt '{prompt[:100]}'")
     elif any_video_or_image_file:    
@@ -7724,7 +7752,7 @@ def get_image_end_label(multi_prompts_gen_type):
 def refresh_prompt_labels(state, multi_prompts_gen_type, image_mode):
     mode_def = get_model_def(state["model_type"])
 
-    prompt_label, wizard_prompt_label =  get_prompt_labels(multi_prompts_gen_type, image_mode > 0, mode_def("audio_only", False))
+    prompt_label, wizard_prompt_label =  get_prompt_labels(multi_prompts_gen_type, image_mode > 0, mode_def.get("audio_only", False))
     return gr.update(label=prompt_label), gr.update(label = wizard_prompt_label), gr.update(label=get_image_end_label(multi_prompts_gen_type))
 
 def update_video_guide_outpainting(video_guide_outpainting_value, value, pos):
@@ -7916,12 +7944,14 @@ def detect_auto_save_form(state, evt:gr.SelectData):
     else:
         return gr.update()
 
-def compute_video_length_label(fps, current_video_length):
+def compute_video_length_label(fps, current_video_length, video_length_locked = None):
     if fps is None:
-        return f"Number of frames"
+        ret = f"Number of frames"
     else:
-        return f"Number of frames ({fps} frames = 1s), current duration: {(current_video_length / fps):.1f}s",  
-
+        ret = f"Number of frames ({fps} frames = 1s), current duration: {(current_video_length / fps):.1f}s"
+    if video_length_locked is not None:
+        ret += ", locked"
+    return ret
 def refresh_video_length_label(state, current_video_length, force_fps, video_guide, video_source):
     base_model_type = get_base_model_type(state["model_type"])
     computed_fps = get_computed_fps(force_fps, base_model_type , video_guide, video_source )
@@ -8046,10 +8076,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         delete_lset_btn = gr.Button("Delete", size="sm", min_width= 1, visible = True)
                         cancel_lset_btn = gr.Button("Don't do it !", size="sm", min_width= 1 , visible=False)  
                         #confirm_save_lset_btn, confirm_delete_lset_btn, save_lset_btn, delete_lset_btn, cancel_lset_btn
-            trigger_refresh_input_type = gr.Text(interactive= False, visible= False)
             t2v =  test_class_t2v(base_model_type) 
-            t2v_1_3B =  base_model_type in ["t2v_1.3B"] 
-            flf2v = base_model_type == "flf2v_720p"
             base_model_family = get_model_family(base_model_type)
             diffusion_forcing = "diffusion_forcing" in model_filename 
             ltxv = "ltxv" in model_filename 
@@ -8058,7 +8085,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             any_mag_cache = model_def.get("mag_cache", False)
             recammaster = base_model_type in ["recam_1.3B"]
             vace = test_vace_module(base_model_type)
-            phantom = base_model_type in ["phantom_1.3B", "phantom_14B"]
             fantasy = base_model_type in ["fantasy"]
             multitalk = model_def.get("multitalk_class", False)
             infinitetalk =  base_model_type in ["infinitetalk"]
@@ -8066,8 +8092,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             hunyuan_i2v = "hunyuan_video_i2v" in model_filename
             hunyuan_video_custom_edit = base_model_type in ["hunyuan_custom_edit"]
             hunyuan_video_avatar = "hunyuan_video_avatar" in model_filename
-            flux =  base_model_family in ["flux"]
-            qwen =  base_model_family in ["qwen"]
             image_outputs = model_def.get("image_outputs", False)
             sliding_window_enabled = test_any_sliding_window(model_type)
             multi_prompts_gen_type_value = ui_defaults.get("multi_prompts_gen_type_value",0)
@@ -8275,7 +8299,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label= video_prompt_type_video_mask_label , scale = 1, visible= "V" in video_prompt_type_value and not "U" in video_prompt_type_value and mask_preprocessing.get("visible", True), 
                             show_label= True,
                         )
-
+                        any_control_video = True
+                        any_control_image = image_outputs 
 
                     # Image Refs Selection
                     if image_ref_choices is None:
@@ -8481,16 +8506,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 batch_size = gr.Slider(1, 16, value=ui_defaults.get("batch_size", 1), step=1, label="Number of Images to Generate", visible = image_outputs)
                 if image_outputs:
                     video_length = gr.Slider(1, 9999, value=ui_defaults.get("video_length", 1), step=1, label="Number of frames", visible = False)
-                elif recammaster:
-                    video_length = gr.Slider(5, 193, value=ui_defaults.get("video_length", get_max_frames(81)), step=4, label="Number of frames (16 = 1s), locked", interactive= False, visible = True)
                 else:
+                    video_length_locked = model_def.get("video_length_locked", None)
                     min_frames, frames_step, _ = get_model_min_frames_and_step(base_model_type)
                     
-                    current_video_length = ui_defaults.get("video_length", 81 if get_model_family(base_model_type)=="wan" else 97)
+                    current_video_length = video_length_locked if video_length_locked is not None else ui_defaults.get("video_length", 81 if get_model_family(base_model_type)=="wan" else 97)
 
                     computed_fps = get_computed_fps(ui_defaults.get("force_fps",""), base_model_type , ui_defaults.get("video_guide", None), ui_defaults.get("video_source", None))
                     video_length = gr.Slider(min_frames, get_max_frames(737 if test_any_sliding_window(base_model_type) else 337), value=current_video_length, 
-                         step=frames_step, label=compute_video_length_label(computed_fps, current_video_length) , visible = True, interactive= True)
+                         step=frames_step, label=compute_video_length_label(computed_fps, current_video_length, video_length_locked) , visible = True, interactive= video_length_locked is None)
 
             with gr.Row(visible = not lock_inference_steps) as inference_steps_row:                                       
                 num_inference_steps = gr.Slider(1, 100, value=ui_defaults.get("num_inference_steps",30), step=1, label="Number of Inference Steps", visible = True)
@@ -8500,7 +8524,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             with gr.Tabs(visible=advanced_ui) as advanced_row:
                 guidance_max_phases = model_def.get("guidance_max_phases", 0)
                 no_negative_prompt = model_def.get("no_negative_prompt", False)
-                any_audio_guidance = fantasy or multitalk
                 with gr.Tab("General"):
                     with gr.Column():
                         with gr.Row():                        
@@ -8534,6 +8557,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             guidance2_scale = gr.Slider(1.0, 20.0, value=ui_defaults.get("guidance2_scale",5), step=0.5, label="Guidance2 (CFG)", visible= guidance_max_phases >=2 and guidance_phases_value >= 2)
                             guidance3_scale = gr.Slider(1.0, 20.0, value=ui_defaults.get("guidance3_scale",5), step=0.5, label="Guidance3 (CFG)", visible= guidance_max_phases >=3  and guidance_phases_value >= 3)
 
+                        any_audio_guidance = model_def.get("audio_guidance", False) 
                         any_embedded_guidance = model_def.get("embedded_guidance", False)
                         with gr.Row(visible =any_embedded_guidance or any_audio_guidance) as embedded_guidance_row:
                             audio_guidance_scale = gr.Slider(1.0, 20.0, value=ui_defaults.get("audio_guidance_scale", 4), step=0.5, label="Audio Guidance", visible= any_audio_guidance )
@@ -8790,7 +8814,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             sliding_window_discard_last_frames = gr.Slider(0, 20, value=ui_defaults.get("sliding_window_discard_last_frames", 0), step=4, label="Discard Last Frames of a Window (that may have bad quality)", visible = True)
                         else: # Vace, Multitalk
                             sliding_window_defaults = model_def.get("sliding_window_defaults", {})                            
-                            sliding_window_size = gr.Slider(5, get_max_frames(257), value=ui_defaults.get("sliding_window_size", 129), step=4, label="Sliding Window Size")
+                            sliding_window_size = gr.Slider(5, get_max_frames(257), value=ui_defaults.get("sliding_window_size", 129), step=4, label="Sliding Window Size", interactive=not model_def.get("sliding_window_size_locked"))
                             sliding_window_overlap = gr.Slider(sliding_window_defaults.get("overlap_min", 1), sliding_window_defaults.get("overlap_max", 97), value=ui_defaults.get("sliding_window_overlap",sliding_window_defaults.get("overlap_default", 5)), step=sliding_window_defaults.get("overlap_step", 4), label="Windows Frames Overlap (needed to maintain continuity between windows, a higher value will require more windows)")
                             sliding_window_color_correction_strength = gr.Slider(0, 1, value=ui_defaults.get("sliding_window_color_correction_strength",0), step=0.01, label="Color Correction Strength (match colors of new window with previous one, 0 = disabled)", visible = True)
                             sliding_window_overlap_noise = gr.Slider(0, 150, value=ui_defaults.get("sliding_window_overlap_noise",20 if vace else 0), step=1, label="Noise to be added to overlapped frames to reduce blur effect" , visible = vace)

@@ -228,6 +228,28 @@ def rotate_half(x):
     )  # [B, S, H, D//2]
     return torch.stack([-x_imag, x_real], dim=-1).flatten(3)
 
+def apply_rotary_emb_single( qklist,
+    freqs_cis: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
+    head_first: bool = False,
+):
+    xq = qklist[0]
+    qklist.clear()
+    xk_out = None
+    cos, sin = reshape_for_broadcast(freqs_cis, xq, head_first)  # [S, D]
+    cos, sin = cos.to(xq.device), sin.to(xq.device)
+    # real * cos - imag * sin
+    # imag * cos + real * sin
+    xq_dtype = xq.dtype
+    xq_out = xq.to(torch.float)
+    xq = None        
+    xq_rot = rotate_half(xq_out)
+    xq_out *= cos
+    xq_rot *= sin
+    xq_out += xq_rot
+    del xq_rot
+    xq_out = xq_out.to(xq_dtype)
+    return xq_out
+
 
 def apply_rotary_emb( qklist,
     freqs_cis: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
@@ -308,7 +330,9 @@ def get_nd_rotary_pos_embed(
     interpolation_factor: Union[float, List[float]] = 1.0,
     k = 6,
     L_test = 66,
-    enable_riflex = False
+    enable_riflex = False,
+    rope_dim_list = [44, 42, 42],
+    head_dim = 128,
 ):
     """
     This is a n-d version of precompute_freqs_cis, which is a RoPE for tokens with n-d structure.
@@ -328,8 +352,6 @@ def get_nd_rotary_pos_embed(
     Returns:
         pos_embed (torch.Tensor): [HW, D/2]
     """
-    head_dim = 128
-    rope_dim_list = [44, 42, 42]
     if rope_dim_list is None:
         rope_dim_list = [head_dim // target_ndim for _ in range(target_ndim)]
     assert (

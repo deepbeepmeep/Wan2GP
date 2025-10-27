@@ -137,7 +137,7 @@ class WanAny2V:
         self.patch_size = config.patch_size 
         
         self.vae = vae( vae_pth=fl.locate_file(vae_checkpoint), dtype= VAE_dtype, device="cpu")
-        self.vae.device = self.device
+        self.vae.device = self.device # need to set to cuda so that vae buffers are properly moved (although the rest will stay in the CPU)
         self.vae2 = None
         if vae_checkpoint2 is not None:
             self.vae2 = vae( vae_pth=fl.locate_file(vae_checkpoint2), dtype= VAE_dtype, device="cpu")

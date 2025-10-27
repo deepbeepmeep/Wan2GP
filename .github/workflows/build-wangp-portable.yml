@@ -81,30 +81,30 @@ jobs:
         run: |
           $gitConfigPath = "Wan2GP\.git\config"
           if (Test-Path $gitConfigPath) {
-            @"
-[core]
-repositoryformatversion = 0
-filemode = false
-bare = false
-logallrefupdates = true
-ignorecase = true
-
-[remote "origin"]
-url = https://github.com/deepbeepmeep/Wan2GP.git
-fetch = +refs/heads/*:refs/remotes/origin/*
-
-[branch "main"]
-remote = origin
-merge = refs/heads/main
-
-[gc]
-auto = 0
-"@ | Out-File -FilePath $gitConfigPath -Encoding UTF8 -Force
+            $config = @()
+            $config += "[core]"
+            $config += "repositoryformatversion = 0"
+            $config += "filemode = false"
+            $config += "bare = false"
+            $config += "logallrefupdates = true"
+            $config += "ignorecase = true"
+            $config += ""
+            $config += "[remote \"origin\"]"
+            $config += "url = https://github.com/deepbeepmeep/Wan2GP.git"
+            $config += "fetch = +refs/heads/*:refs/remotes/origin/*"
+            $config += ""
+            $config += "[branch \"main\"]"
+            $config += "remote = origin"
+            $config += "merge = refs/heads/main"
+            $config += ""
+            $config += "[gc]"
+            $config += "auto = 0"
+            $config | Out-File -FilePath $gitConfigPath -Encoding UTF8 -Force
             Write-Host "Replaced .git/config with clean public version"
           } else {
             Write-Host "No .git/config found in Wan2GP, skipping"
           }
- 
+
       # Prepare portable folder and 7z package
       - name: Prepare portable folder and package
         shell: pwsh

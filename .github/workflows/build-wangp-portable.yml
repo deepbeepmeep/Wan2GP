@@ -81,7 +81,7 @@ jobs:
         run: |
             $gitConfigPath = "Wan2GP\.git\config"
             if (Test-Path $gitConfigPath) {
-            Set-Content $gitConfigPath @'
+            $configContent = @'
 [core]
 repositoryformatversion = 0
 filemode = false
@@ -98,11 +98,12 @@ remote = origin
 merge = refs/heads/main
 [gc]
 auto = 0
-            '@
-            Write-Host "Replaced .git/config with clean public version"
-            } else {
-            Write-Host "No .git/config found in Wan2GP, skipping"
-            }
+'@
+          Set-Content -Path $gitConfigPath -Value $configContent -Encoding UTF8
+          Write-Host "Replaced .git/config with clean public version"
+          } else {
+          Write-Host "No .git/config found in Wan2GP, skipping"
+          }
    
       # Prepare portable folder and 7z package
       - name: Prepare portable folder and package

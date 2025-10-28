@@ -242,7 +242,7 @@ class OviFusionEngine:
 
         # Sampling loop
         with torch.amp.autocast('cuda', enabled=self.target_dtype != torch.float32, dtype=self.target_dtype):
-            for i, (t_v, t_a) in tqdm(enumerate(zip(timesteps_video, timesteps_audio))):
+            for i, (t_v, t_a) in tqdm(enumerate(zip(timesteps_video, timesteps_audio)), total=min(len(timesteps_video), len(timesteps_audio))):
                 timestep_input = torch.full((1,), t_v, device=self.device)
                 kwargs.update({
                     "vid": video_noise,

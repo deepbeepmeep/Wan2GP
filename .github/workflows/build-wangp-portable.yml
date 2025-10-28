@@ -81,8 +81,20 @@ jobs:
       - name: Prepare portable folder and package
         shell: pwsh
         run: |         
-          Copy-Item Launch_WanGP.bat WanGP-Portable\
-          Copy-Item Update.bat WanGP-Portable\
+          # Prefer Wan2GP's .bat files, fallback to mine root-level ones
+          $batFiles = @("Launch_WanGP.bat", "Update.bat")
+          foreach ($file in $batFiles) {
+            $wan2gpPath = "WanGP-Portable\Wan2GP\$file"
+            if (Test-Path $wan2gpPath) {
+              Copy-Item $wan2gpPath WanGP-Portable\
+              Write-Host "✅ Copied $file from Wan2GP source."
+            } elseif (Test-Path $file) {
+              Copy-Item $file WanGP-Portable\
+              Write-Host "✅ Copied fallback $file from root."
+            } else {
+              Write-Host "⚠️ $file not found anywhere, skipping."
+            }
+          }
           robocopy python_embedded WanGP-Portable\python_embedded /E /COPYALL
           if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
           7z a -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -ms=on -v2000m "WanGP-Portable.7z" "WanGP-Portable\*" -xr!"__pycache__" -xr!"*.pyc" -xr!".gitignore"

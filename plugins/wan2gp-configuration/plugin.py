@@ -215,8 +215,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
         )
 
         def release_ram_and_notify():
-            self.release_model()
-            gr.Info("Models unloaded from RAM.")
+            if self.is_generation_in_progress():
+                gr.Info("Unable to unload Models when a generation is in progress.")            
+            else:
+                self.release_model()
+                gr.Info("Models unloaded from RAM.")
         
         self.release_RAM_btn.click(fn=release_ram_and_notify)
         return [self.release_RAM_btn]

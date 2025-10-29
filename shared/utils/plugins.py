@@ -3,7 +3,7 @@ import sys
 import importlib
 import importlib.util
 import inspect
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Set
 from dataclasses import dataclass
 import gradio as gr
 import traceback
@@ -146,6 +146,7 @@ class PluginManager:
         if self.plugins_dir not in sys.path:
             sys.path.insert(0, self.plugins_dir)
         self.data_hooks: Dict[str, List[callable]] = {}
+        self.restricted_globals: Set[str] = set()
 
     def get_plugins_info(self) -> List[Dict[str, str]]:
         plugins_info = []
@@ -372,10 +373,21 @@ class PluginManager:
                 if 'set_wgp_global' in global_references:
                     plugin._set_wgp_global_func = global_references['set_wgp_global']
                 for global_name in plugin.global_requests:
-                    if global_name in global_references:
+                    if global_name in self.restricted_globals:
+                        setattr(plugin, global_name, None)
+                    elif global_name in global_references:
                         setattr(plugin, global_name, global_references[global_name])
             except Exception as e:
                 print(f"  [!] ERROR injecting globals for {plugin_id}: {str(e)}")
+
+    def update_global_reference(self, global_name: str, new_value: Any) -> None:
+        safe_value = None if global_name in self.restricted_globals else new_value
+        for plugin_id, plugin in self.plugins.items():
+            try:
+                if hasattr(plugin, '_global_requests') and global_name in plugin._global_requests:
+                    setattr(plugin, global_name, safe_value)
+            except Exception as e:
+                print(f"  [!] ERROR updating global '{global_name}' for plugin {plugin_id}: {str(e)}")
 
     def setup_ui(self) -> Dict[str, Dict[str, Any]]:
         tabs = {}

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor, nn
+import torch.nn.functional as F
 
 from .modules.layers import (
     DoubleStreamBlock,
@@ -15,6 +16,7 @@ from .modules.layers import (
     SigLIPMultiFeatProjModel,
 )
 from .modules.lora import LinearLora, replace_linear_with_lora
+from .radiance import apply_radiance_head, inject_radiance_modules
 
 
 @dataclass
@@ -34,6 +36,14 @@ class FluxParams:
     guidance_embed: bool
     chroma: bool = False
     eso: bool = False
+    radiance: bool = False
+    radiance_patch_size: int = 16
+    radiance_hidden_size: int = 64
+    radiance_mlp_ratio: int = 4
+    radiance_depth: int = 4
+    radiance_max_freqs: int = 8
+    radiance_tile_size: int = 0
+    radiance_final_head_type: str = "conv"
 
 class Flux(nn.Module):
     """
@@ -73,6 +83,7 @@ class Flux(nn.Module):
         self.in_channels = params.in_channels
         self.out_channels = params.out_channels
         self.chroma = params.chroma
+        self.radiance = getattr(params, "radiance", False)
         if params.hidden_size % params.num_heads != 0:
             raise ValueError(
                 f"Hidden size {params.hidden_size} must be divisible by num_heads {params.num_heads}"
@@ -83,7 +94,11 @@ class Flux(nn.Module):
         self.hidden_size = params.hidden_size
         self.num_heads = params.num_heads
         self.pe_embedder = EmbedND(dim=pe_dim, theta=params.theta, axes_dim=params.axes_dim)
-        self.img_in = nn.Linear(self.in_channels, self.hidden_size, bias=True)
+        self.img_in = (
+            nn.Identity()
+            if self.radiance
+            else nn.Linear(self.in_channels, self.hidden_size, bias=True)
+        )
 
         self.guidance_in = (
             MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size) if params.guidance_embed else nn.Identity()
@@ -120,7 +135,32 @@ class Flux(nn.Module):
             ]
         )
 
-        self.final_layer = LastLayer(self.hidden_size, 1, self.out_channels, chroma_modulation = self.chroma)
+        if self.radiance:
+            inject_radiance_modules(self, params)
+            self.final_layer = None
+        else:
+            self.final_layer = LastLayer(
+                self.hidden_size,
+                1,
+                self.out_channels,
+                chroma_modulation=self.chroma,
+                use_linear=True,
+            )
+
+    def _apply_final_layer(self, tokens: Tensor, vec):
+        final_layer = self.final_layer
+        normed = final_layer.norm_final(tokens)
+        if self.chroma:
+            shift, scale = vec
+            shift = shift.squeeze(1)
+            scale = scale.squeeze(1)
+        else:
+            shift, scale = final_layer.adaLN_modulation(vec).chunk(2, dim=1)
+        modulated = torch.addcmul(shift[:, None, :], 1 + scale[:, None, :], normed)
+        if final_layer.linear is None:
+            raise RuntimeError("Final layer projection is not available.")
+        base_tokens = final_layer.linear(modulated)
+        return modulated, base_tokens
 
     def preprocess_loras(self, model_type, sd):
         new_sd = {}
@@ -223,12 +263,33 @@ class Flux(nn.Module):
         pipeline =None,
         siglip_embedding = None,
         siglip_embedding_ids = None,
+        radiance_cache: dict | None = None,
     ) -> Tensor:
 
-        sz = len(txt_list)        
-        # running on sequences img
-        img = self.img_in(img)
-        img_list = [img] if sz==1 else [img, img.clone()]
+        sz = len(txt_list)
+        height = width = None
+        base_image_list = None
+        if self.radiance:
+            patch_size = self.patch_size
+            # Determine spatial dimensions from image ids.
+            base_ids = img_ids[:, :img_len, :]
+            height = int(base_ids[..., 1].max().item() + 1) * patch_size
+            width = int(base_ids[..., 2].max().item() + 1) * patch_size
+            # Convert tokens back to image space.
+            tokens = img[:, :img_len, :].transpose(1, 2)
+            image = F.fold(
+                tokens,
+                output_size=(height, width),
+                kernel_size=patch_size,
+                stride=patch_size,
+            )
+            # Project image patches into hidden space.
+            hidden = self.img_in_patch(image).flatten(2).transpose(1, 2)
+            img = hidden
+            base_image_list = [image] if sz == 1 else [image, image.clone()]
+        else:
+            img = self.img_in(img)
+        img_list = [img] if sz == 1 else [img, img.clone()]
         
         if self.chroma:
             mod_index_length = 344
@@ -277,13 +338,33 @@ class Flux(nn.Module):
             for img, pe, vec in zip(img_list, pe_list, vec_list):
                 img[...]= block(x=img, vec=vec, pe=pe)
                 img = pe = vec = None
-        img_list = [ img[:, txt.shape[1] : txt.shape[1] + img_len, ...] for img, txt in zip(img_list, txt_list)]
+        img_list = [img[:, txt.shape[1] : txt.shape[1] + img_len, ...] for img, txt in zip(img_list, txt_list)]
 
-        if self.chroma: vec_list = [self.get_modulations(mod_vectors, "final")] * sz
+        if self.radiance:
+            final_vecs = None
+        elif self.chroma:
+            final_vecs = [self.get_modulations(mod_vectors, "final")] * sz
+        else:
+            final_vecs = vec_list
         out_list = []
-        for i, (img, vec) in enumerate(zip(img_list, vec_list)):
-            out_list.append( self.final_layer(img, vec)) # (N, T, patch_size ** 2 * out_channels)
-            img_list[i] = img = vec = None
+        for i in range(sz):
+            hidden_seq = img_list[i]
+            if self.radiance:
+                base_image = base_image_list[i]
+                pred_tokens = apply_radiance_head(
+                    module=self,
+                    hidden_seq=hidden_seq,
+                    base_image=base_image,
+                    height=height,
+                    width=width,
+                )
+                base_image_list[i] = base_image = None
+                img_list[i] = hidden_seq = None
+            else:
+                vec = final_vecs[i]
+                modulated, pred_tokens = self._apply_final_layer(hidden_seq, vec)
+                img_list[i] = hidden_seq = vec = modulated = None
+            out_list.append(pred_tokens)
         return out_list
 
 

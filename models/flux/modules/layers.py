@@ -338,11 +338,23 @@ class SingleStreamBlock(nn.Module):
 
 
 class LastLayer(nn.Module):
-    def __init__(self, hidden_size: int, patch_size: int, out_channels: int, chroma_modulation = False):
+    def __init__(
+        self,
+        hidden_size: int,
+        patch_size: int,
+        out_channels: int,
+        chroma_modulation: bool = False,
+        use_linear: bool = True,
+    ):
         super().__init__()
         self.chroma_modulation = chroma_modulation
+        self.use_linear = use_linear
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
+        self.linear = (
+            nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
+            if use_linear
+            else None
+        )
         if not chroma_modulation:        
             self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True))
 
@@ -355,6 +367,8 @@ class LastLayer(nn.Module):
             shift, scale = self.adaLN_modulation(vec).chunk(2, dim=1)
         # x = (1 + scale[:, None, :]) * self.norm_final(x) + shift[:, None, :]
         x = torch.addcmul(shift[:, None, :], 1 + scale[:, None, :], self.norm_final(x))
+        if self.linear is None:
+            raise RuntimeError("LastLayer.linear is disabled for this configuration.")
         x = self.linear(x)
         return x
 
@@ -377,7 +391,7 @@ class DistilledGuidance(nn.Module):
         x = self.out_proj(x)
 
         return x
-    
+
 
 class SigLIPMultiFeatProjModel(torch.nn.Module):
     """

@@ -6,7 +6,7 @@ from glob import iglob
 from mmgp import offload as offload
 import torch
 from shared.utils.utils import calculate_new_dimensions
-from .sampling import denoise, get_schedule, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack, resizeinput
+from .sampling import denoise, get_schedule, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack, resizeinput, patches_to_image
 from .modules.layers import get_linear_split_map
 from transformers import SiglipVisionModel, SiglipImageProcessor
 import torchvision.transforms.functional as TVF
@@ -99,7 +99,7 @@ class model_factory:
         source =  model_def.get("source", None)
         self.model = load_flow_model(self.name, model_filename[0] if source is None else source, torch_device)
         self.model_def = model_def 
-        self.vae = load_ae(self.name, device=torch_device)
+        self.vae = None if getattr(self.model, "radiance", False) else load_ae(self.name, device=torch_device)
 
         siglip_processor = siglip_model = feature_embedder = None
         if self.name == 'flux-dev-uso':
@@ -211,9 +211,9 @@ class model_factory:
             device="cuda"
             flux_dev_uso = self.name in ['flux-dev-uso']
             flux_dev_umo = self.name in ['flux-dev-umo']
+            radiance = self.name in ['flux-chroma-radiance']
             flux_kontext_dreamomni2 = self.name in ['flux-dev-kontext-dreamomni2']
             latent_stiching = flux_dev_uso or  flux_dev_umo or flux_kontext_dreamomni2
-
             lock_dimensions=  False
 
             input_ref_images = [] if input_ref_images is None else input_ref_images[:]
@@ -259,6 +259,8 @@ class model_factory:
                 input_ref_images = None
             image_mask = None if input_masks is None else convert_tensor_to_image(input_masks, mask_levels= True) 
         
+            noise_patch_size = self.model.patch_size if radiance else 2
+            noise_channels = self.model.out_channels if radiance else 16
 
             if latent_stiching  :
                 inp, height, width = prepare_multi_ip(
@@ -284,7 +286,11 @@ class model_factory:
                     seed=seed,
                     device=device,
                     img_mask=image_mask,
+                    patch_size=noise_patch_size,
+                    noise_channels=noise_channels,
                 )
+
+            radiance_cache = None
 
             inp.update(prepare_prompt(self.t5, self.clip, batch_size, input_prompt))
             if guide_scale != 1:
@@ -301,16 +307,34 @@ class model_factory:
                 inp["siglip_embedding"] = siglip_embedding
                 inp["siglip_embedding_ids"] = siglip_embedding_ids
 
-            def unpack_latent(x):
-                return unpack(x.float(), height, width) 
+            if radiance:
+                def unpack_latent(x):
+                    return patches_to_image(x.float(), height, width, noise_patch_size)
+            else:
+                def unpack_latent(x):
+                    return unpack(x.float(), height, width) 
 
             # denoise initial noise
-            x = denoise(self.model, **inp, timesteps=timesteps, guidance=embedded_guidance_scale, real_guidance_scale =guide_scale, callback=callback, pipeline=self, loras_slists= loras_slists, unpack_latent = unpack_latent, joint_pass = joint_pass, denoising_strength = denoising_strength)
+            x = denoise(
+                self.model,
+                **inp,
+                timesteps=timesteps,
+                guidance=embedded_guidance_scale,
+                real_guidance_scale=guide_scale,
+                callback=callback,
+                pipeline=self,
+                loras_slists=loras_slists,
+                unpack_latent=unpack_latent,
+                joint_pass=joint_pass,
+                denoising_strength=denoising_strength,
+                radiance_cache=radiance_cache,
+            )
             if x==None: return None
             # decode latents to pixel space
             x = unpack_latent(x)
-            with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                x = self.vae.decode(x)
+            if self.vae is not None:
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                    x = self.vae.decode(x)
 
             if image_mask is not None:
                 img_msk_rebuilt = inp["img_msk_rebuilt"]

@@ -2796,11 +2796,12 @@ def save_quantized_model(model, model_type, model_filename, dtype,  config_file,
     if not "quanto" in model_filename:
         pos = model_filename.rfind(".")
         model_filename =  model_filename[:pos] + "_quanto_int8" + model_filename[pos+1:] 
-    
-    if fl.locate_file(model_filename) is not None:
+
+    model_filename = os.path.basename(model_filename)
+    if fl.locate_file(model_filename, error_if_none= False) is not None:
         print(f"There isn't any model to quantize as quantized model '{model_filename}' aready exists")
     else:
-        model_filename_path = os.path.join(fl.get_download_folder(), model_filename)
+        model_filename_path = os.path.join(fl.get_download_location(), model_filename)
         offload.save_model(model, model_filename_path, do_quantize= True, config_file_path=config_file)
         print(f"New quantized file '{model_filename}' had been created for finetune Id '{model_type}'.")
         if not model_filename in URLs:
@@ -3353,11 +3354,11 @@ def get_gen_info(state):
         state["gen"] = cache
     return cache
 
-def build_callback(state, pipe, send_cmd, status, num_inference_steps):
+def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None):
     gen = get_gen_info(state)
     gen["num_inference_steps"] = num_inference_steps
     start_time = time.time()    
-    def callback(step_idx = -1, latent = None, force_refresh = True, read_state = False, override_num_inference_steps = -1, pass_no = -1, denoising_extra =""):
+    def callback(step_idx = -1, latent = None, force_refresh = True, read_state = False, override_num_inference_steps = -1, pass_no = -1, preview_meta=preview_meta, denoising_extra =""):
         in_pause = False
         with gen_lock:
             process_status = gen.get("process_status", None)
@@ -3427,9 +3428,18 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps):
         
         # progress(*progress_args)
         send_cmd("progress", progress_args)
-        if latent != None:
-            latent = latent.to("cpu", non_blocking=True)
-            send_cmd("preview", latent)
+        if latent is not None:
+            payload = pipe.prepare_preview_payload(latent, preview_meta) if hasattr(pipe, "prepare_preview_payload") else latent
+            if isinstance(payload, dict):
+                data = payload.copy()
+                lat = data.get("latents")
+                if torch.is_tensor(lat):
+                    data["latents"] = lat.to("cpu", non_blocking=True)
+                payload = data
+            elif torch.is_tensor(payload):
+                payload = payload.to("cpu", non_blocking=True)
+            if payload is not None:
+                send_cmd("preview", payload)
             
         # gen["progress_args"] = progress_args
             
@@ -5754,7 +5764,7 @@ def generate_video(
                 if audio_only:
                     import soundfile as sf
                     audio_path = os.path.join(image_save_path, file_name)
-                    sf.write(audio_path, sample.squeeze(0), wan_model.sr)
+                    sf.write(audio_path, sample.squeeze(0), audio_sample_rate)
                     video_path= audio_path                      
                 elif is_image:    
                     image_path = os.path.join(image_save_path, file_name)
@@ -5890,11 +5900,27 @@ def prepare_generate_video(state):
         return gr.Button(visible= False), gr.Button(visible= True), gr.Column(visible= True), gr.update(visible= False)
 
 
-def generate_preview(model_type, latents):
+def generate_preview(model_type, payload):
     import einops
-    if latents is None: return None
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        meta = {k: v for k, v in payload.items() if k != "latents"}
+        latents = payload.get("latents")
+    else:
+        meta = {}
+        latents = payload
+    if latents is None:
+        return None
+    if not torch.is_tensor(latents):
+        return None
     model_handler = get_model_handler(model_type)
     base_model_type = get_base_model_type(model_type)
+    custom_preview = getattr(model_handler, "preview_latents", None)
+    if callable(custom_preview):
+        preview = custom_preview(base_model_type, latents, meta)
+        if preview is not None:
+            return preview
     if hasattr(model_handler, "get_rgb_factors"):
         latent_rgb_factors, latent_rgb_factors_bias = model_handler.get_rgb_factors(base_model_type )
     else:

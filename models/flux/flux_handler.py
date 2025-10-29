@@ -1,4 +1,5 @@
 import torch
+from PIL import Image
 from shared.utils import files_locator as fl 
 
 def get_ltxv_text_encoder_filename(text_encoder_quantization):
@@ -10,7 +11,7 @@ def get_ltxv_text_encoder_filename(text_encoder_quantization):
 class family_handler():
     @staticmethod
     def query_supported_types():
-        return ["flux", "flux_chroma", "flux_dev_kontext", "flux_dev_umo", "flux_dev_uso", "flux_schnell", "flux_dev_kontext_dreamomni2" ]
+        return ["flux", "flux_chroma", "flux_chroma_radiance", "flux_dev_kontext", "flux_dev_umo", "flux_dev_uso", "flux_schnell", "flux_dev_kontext_dreamomni2" ]
 
     @staticmethod
     def query_family_maps():
@@ -21,11 +22,12 @@ class family_handler():
             "flux_dev_uso" : "flux",
             "flux_schnell" : "flux",
             "flux_chroma" : "flux",
+            "flux_chroma_radiance": "flux",
             "flux_dev_kontext_dreamomni2": "flux",
         }
 
         models_comp_map = { 
-                    "flux": ["flux_chroma", "flux_dev_kontext", "flux_dev_umo", "flux_dev_uso", "flux_schnell", "flux_dev_kontext_dreamomni2" ]
+                    "flux": ["flux_chroma", "flux_chroma_radiance", "flux_dev_kontext", "flux_dev_umo", "flux_dev_uso", "flux_schnell", "flux_dev_kontext_dreamomni2" ]
                     }
         return models_eqv_map, models_comp_map
     @staticmethod
@@ -33,6 +35,7 @@ class family_handler():
         flux_model = "flux-dev" if base_model_type == "flux" else base_model_type.replace("_", "-")
         flux_schnell = flux_model == "flux-schnell" 
         flux_chroma = flux_model == "flux-chroma" 
+        flux_chroma_radiance = flux_model == "flux-chroma-radiance"
         flux_uso = flux_model == "flux-dev-uso"
         flux_umo = flux_model == "flux-dev-umo"
         flux_kontext = flux_model == "flux-dev-kontext"
@@ -40,12 +43,14 @@ class family_handler():
 
         extra_model_def = {
             "image_outputs" : True,
-            "no_negative_prompt" : not flux_chroma,
+            "no_negative_prompt" : not (flux_chroma or flux_chroma_radiance),
             "flux-model": flux_model,
         }
         extra_model_def["profiles_dir"] = [] if flux_schnell else  ["flux"] 
-        if flux_chroma:
+        if flux_chroma or flux_chroma_radiance:
             extra_model_def["guidance_max_phases"] = 1
+        if flux_chroma_radiance:
+            extra_model_def["radiance"] = True
         elif not flux_schnell:
             extra_model_def["embedded_guidance"] = True
         if flux_uso :
@@ -60,7 +65,7 @@ class family_handler():
             }
         
         if flux_kontext or flux_kontext_dreamomni2:
-            extra_model_def["inpaint_support"] = True
+            extra_model_def["inpaint_support"] = flux_kontext
             extra_model_def["image_ref_choices"] = {
                 "choices": [
                     ("None", ""),
@@ -90,9 +95,48 @@ class family_handler():
 
     @staticmethod
     def get_rgb_factors(base_model_type ):
+        if base_model_type == "flux_chroma_radiance":
+            return None, None
         from shared.RGB_factors import get_rgb_factors
         latent_rgb_factors, latent_rgb_factors_bias = get_rgb_factors("flux")
         return latent_rgb_factors, latent_rgb_factors_bias
+
+    @staticmethod
+    def preview_latents(base_model_type, latents, meta):
+        if base_model_type != "flux_chroma_radiance":
+            return None
+        from .sampling import patches_to_image
+
+        tensor = latents
+        if not torch.is_tensor(tensor):
+            return None
+        tensor = tensor.detach()
+        if tensor.dim() == 4:
+            if tensor.shape[1] == 1 and tensor.shape[0] in (1, 3, 4):
+                tensor = tensor[:, 0, ...]
+            elif tensor.shape[0] == 1 and tensor.shape[1] in (3, 4):
+                tensor = tensor[0, ...]
+        if tensor.dim() == 3 and tensor.shape[0] in (3, 4):
+            image = tensor[:3, ...].to(torch.float32)
+        else:
+            height = meta.get("height")
+            width = meta.get("width")
+            patch_size = meta.get("patch_size", 16)
+            if height is None or width is None:
+                return None
+            tensor = tensor.to(torch.float32)
+            image = patches_to_image(tensor, height, width, patch_size)[0]
+        image = image.clamp(-1, 1).cpu()
+        image = image.add(1).mul(127.5).clamp(0, 255).to(torch.uint8)
+        image = image.permute(1, 2, 0).numpy()
+        preview = Image.fromarray(image)
+        if preview.height > 0:
+            scale = 200 / preview.height
+            width_px = max(1, int(round(preview.width * scale)))
+            resampling_module = getattr(Image, "Resampling", Image)
+            resample_filter = getattr(resampling_module, "BILINEAR", Image.BILINEAR)
+            preview = preview.resize((width_px, 200), resample=resample_filter)
+        return preview
 
 
     @staticmethod

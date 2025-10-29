@@ -65,7 +65,7 @@ jobs:
       - name: Install Torch
         run: |
           python_embedded\python.exe -m pip install --upgrade pip 
-          python_embedded\python.exe -m pip install torch==2.8.0 torchvision torchaudio --index-url ${{ env.TORCH_INDEX }}
+          python_embedded\python.exe -m pip install torch==2.7.1 torchvision torchaudio --index-url ${{ env.TORCH_INDEX }}
           
       # Install FilterPy
       - name: Install FilterPy

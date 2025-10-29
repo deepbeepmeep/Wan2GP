@@ -174,7 +174,7 @@ class ChineseCangjieConverter:
             #     filename="Cangjie5_TC.json",
             #     cache_dir=model_dir
             # )
-            cangjie_file = fl.locate_file(os.path.join(model_dir,"Cangjie5_TC.json"))
+            cangjie_file = os.path.join(model_dir,"Cangjie5_TC.json")
             
             with open(cangjie_file, "r", encoding="utf-8") as fp:
                 data = json.load(fp)

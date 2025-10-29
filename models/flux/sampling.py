@@ -439,6 +439,7 @@ def prepare_multi_ip(
     conditions_zero_start = False,
     set_cond_index = False,
     res_match_output = True,
+    patch_size: int = 2    
     
 ) -> dict[str, Tensor]:
 

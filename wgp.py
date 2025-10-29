@@ -78,7 +78,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.7"
-WanGP_version = "9.21"
+WanGP_version = "9.25"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -155,6 +155,11 @@ def release_model():
         offloadobj.release()
         offloadobj = None
     _flush_torch_memory()
+    from accelerate import init_empty_weights
+    with init_empty_weights():
+        for _ in range(3):
+            dummy_tensor = torch.nn.Embedding(256384, 1024)
+            dummy_tensor = None    
     reload_needed = True
 def get_unique_id():
     global unique_id  
@@ -5683,11 +5688,13 @@ def generate_video(
                 print(f"Skipped Steps:{skip_steps_cache.skipped_steps}/{skip_steps_cache.num_steps}" )
             generated_audio = None
             BGRA_frames = None
+            output_audio_sampling_rate= audio_sampling_rate
             if samples != None:
                 if isinstance(samples, dict):
                     overlapped_latents = samples.get("latent_slice", None)
                     BGRA_frames = samples.get("BGRA_frames", None)
                     generated_audio = samples.get("audio", generated_audio)
+                    output_audio_sampling_rate =  samples.get("audio_sampling_rate", audio_sampling_rate)
                     samples = samples.get("x", None)
                 if samples is not None:
                     samples = samples.to("cpu")
@@ -5787,7 +5794,7 @@ def generate_video(
                 if audio_only:
                     import soundfile as sf
                     audio_path = os.path.join(image_save_path, file_name)
-                    sf.write(audio_path, sample.squeeze(0), audio_sample_rate)
+                    sf.write(audio_path, sample.squeeze(0), output_audio_sampling_rate)
                     video_path= audio_path                      
                 elif is_image:    
                     image_path = os.path.join(image_save_path, file_name)

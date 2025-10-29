@@ -111,22 +111,10 @@ class family_handler():
         if not torch.is_tensor(tensor):
             return None
         tensor = tensor.detach()
-        if tensor.dim() == 4:
-            if tensor.shape[1] == 1 and tensor.shape[0] in (1, 3, 4):
-                tensor = tensor[:, 0, ...]
-            elif tensor.shape[0] == 1 and tensor.shape[1] in (3, 4):
-                tensor = tensor[0, ...]
-        if tensor.dim() == 3 and tensor.shape[0] in (3, 4):
-            image = tensor[:3, ...].to(torch.float32)
-        else:
-            height = meta.get("height")
-            width = meta.get("width")
-            patch_size = meta.get("patch_size", 16)
-            if height is None or width is None:
-                return None
-            tensor = tensor.to(torch.float32)
-            image = patches_to_image(tensor, height, width, patch_size)[0]
-        image = image.clamp(-1, 1).cpu()
+        C, T, H, W = tensor.shape
+        image = tensor.cpu().clamp(-1, 1)
+        image = image.permute(0, 2, 1, 3) # (C, T, H, W) -> (C, H, T, W)        
+        image = image.reshape(C, H, T * W) # (C, H, T, W) -> (C, H, T*W)
         image = image.add(1).mul(127.5).clamp(0, 255).to(torch.uint8)
         image = image.permute(1, 2, 0).numpy()
         preview = Image.fromarray(image)

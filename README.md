@@ -36,7 +36,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### October 26 2025: WanGP v9.21, Why isn't all my VRAM used ?
+### October 29 2025: WanGP v9.21, Why isn't all my VRAM used ?
 
 
 *WanGP exclusive*:  VRAM requirements have never been that low !
@@ -45,7 +45,17 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 To get the x10 speed effect just apply the FastWan Lora Accelerator that comes prepackaged with Ovi (acccessible in the  dropdown box Settings at the top)
 
+After thorough testing it appears that *Pytorch 2.8* is causing RAM memory leaks when switching models as it won't release all the RAM. I could not find any workaround. So the default Pytorch version to use with WanGP is back to *Pytorch 2.7*
+Unless you want absolutely to use Pytorch compilation which is not stable with Pytorch 2.7 with RTX 50xx , it is recommended to switch back to Pytorch 2.7.1 (tradeoff between 2.8 and 2.7):
+```bash
+cd Wan2GP
+conda activate wan2gp
+pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+```
+You will need to reinstall SageAttention FlashAttnetion, ...
+
 *update v9.21*: Got FastWan to work with Ovi: it is now 10 times faster ! (not including the VAE)
+*update v9.25*: added Chroma Radiance october edition + reverted to pytorch 2.7
 
 ### October 24 2025: WanGP v9.10, What else will you ever need after this one ?
 
@@ -154,7 +164,7 @@ git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
 conda create -n wan2gp python=3.10.9
 conda activate wan2gp
-pip install torch==2.8.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
 pip install -r requirements.txt
 ```
 

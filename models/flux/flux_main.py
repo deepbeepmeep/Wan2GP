@@ -180,13 +180,6 @@ class model_factory:
         )
         return output_text[0]
 
-    def prepare_preview_payload(self, latent, meta=None):
-        if getattr(self.model, "radiance", False) and isinstance(meta, dict):
-            data = dict(meta)
-            data["latents"] = latent
-            return data
-        return latent
-
     
     def generate(
             self,
@@ -211,7 +204,6 @@ class model_factory:
             denoising_strength = 1.,
             **bbargs
     ):
-            radiance = getattr(self.model, "radiance", False)
             if self._interrupt:
                 return None
             if self.guidance_max_phases < 1: guide_scale = 1
@@ -219,14 +211,9 @@ class model_factory:
             device="cuda"
             flux_dev_uso = self.name in ['flux-dev-uso']
             flux_dev_umo = self.name in ['flux-dev-umo']
+            radiance = self.name in ['flux-chroma-radiance']
             flux_kontext_dreamomni2 = self.name in ['flux-dev-kontext-dreamomni2']
             latent_stiching = flux_dev_uso or  flux_dev_umo or flux_kontext_dreamomni2
-            if radiance and latent_stiching:
-                raise ValueError("Multi image latent stitching is not supported for Chroma Radiance.")
-
-            if radiance and (input_ref_images or input_frames is not None or input_masks is not None):
-                raise ValueError("Image conditioning and masking are not supported for Chroma Radiance yet.")
-
             lock_dimensions=  False
 
             input_ref_images = [] if input_ref_images is None else input_ref_images[:]
@@ -303,12 +290,6 @@ class model_factory:
                     noise_channels=noise_channels,
                 )
 
-            preview_meta = {
-                "height": height,
-                "width": width,
-                "patch_size": noise_patch_size,
-                "radiance": radiance,
-            }
             radiance_cache = None
 
             inp.update(prepare_prompt(self.t5, self.clip, batch_size, input_prompt))
@@ -346,7 +327,6 @@ class model_factory:
                 unpack_latent=unpack_latent,
                 joint_pass=joint_pass,
                 denoising_strength=denoising_strength,
-                preview_meta=preview_meta,
                 radiance_cache=radiance_cache,
             )
             if x==None: return None

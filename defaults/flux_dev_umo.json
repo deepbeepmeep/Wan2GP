@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Flux 1 UMO Dev 12B",
+        "name": "Flux 1 UMO 12B",
         "architecture": "flux_dev_umo",
         "description": "FLUX.1 UMO Dev is a model that can Edit Images with a specialization in combining multiple image references (resized internally at 512x512 max) to produce an Image output. Best Image preservation at 768x768 Resolution Output.",
         "URLs": "flux",

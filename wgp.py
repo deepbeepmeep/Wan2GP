@@ -115,24 +115,47 @@ def clear_gen_cache():
     if "_cache" in offload.shared_state:
         del offload.shared_state["_cache"]
 
+def _flush_torch_memory():
+    gc.collect()
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.synchronize()
+        except torch.cuda.CudaError:
+            pass
+        for idx in range(torch.cuda.device_count()):
+            with torch.cuda.device(idx):
+                torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        torch.cuda.reset_peak_memory_stats()
+    try:
+        torch._C._host_emptyCache()
+    except AttributeError:
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes, ctypes.wintypes as wintypes, os as _os
+            PROCESS_SET_QUOTA = 0x0100
+            PROCESS_QUERY_INFORMATION = 0x0400
+            kernel32 = ctypes.windll.kernel32
+            psapi = ctypes.windll.psapi
+            handle = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, False, _os.getpid())
+            if handle:
+                psapi.EmptyWorkingSet(handle)
+                kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
 def release_model():
     global wan_model, offloadobj, reload_needed
-    wan_model = None    
+    wan_model = None
     clear_gen_cache()
-    offload.shared_state
+    if "_cache" in offload.shared_state:
+        del offload.shared_state["_cache"]
     if offloadobj is not None:
         offloadobj.release()
         offloadobj = None
-        torch.cuda.empty_cache()
-        gc.collect()
-        try:
-            torch._C._host_emptyCache()
-        except:
-            pass
-        reload_needed = True
-    else:
-        gc.collect()
-
+    _flush_torch_memory()
+    reload_needed = True
 def get_unique_id():
     global unique_id  
     with unique_id_lock:

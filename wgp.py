@@ -78,7 +78,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.7"
-WanGP_version = "9.21"
+WanGP_version = "9.25"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -115,24 +115,52 @@ def clear_gen_cache():
     if "_cache" in offload.shared_state:
         del offload.shared_state["_cache"]
 
+def _flush_torch_memory():
+    gc.collect()
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.synchronize()
+        except torch.cuda.CudaError:
+            pass
+        for idx in range(torch.cuda.device_count()):
+            with torch.cuda.device(idx):
+                torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        torch.cuda.reset_peak_memory_stats()
+    try:
+        torch._C._host_emptyCache()
+    except AttributeError:
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes, ctypes.wintypes as wintypes, os as _os
+            PROCESS_SET_QUOTA = 0x0100
+            PROCESS_QUERY_INFORMATION = 0x0400
+            kernel32 = ctypes.windll.kernel32
+            psapi = ctypes.windll.psapi
+            handle = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, False, _os.getpid())
+            if handle:
+                psapi.EmptyWorkingSet(handle)
+                kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
 def release_model():
     global wan_model, offloadobj, reload_needed
-    wan_model = None    
+    wan_model = None
     clear_gen_cache()
-    offload.shared_state
+    if "_cache" in offload.shared_state:
+        del offload.shared_state["_cache"]
     if offloadobj is not None:
         offloadobj.release()
         offloadobj = None
-        torch.cuda.empty_cache()
-        gc.collect()
-        try:
-            torch._C._host_emptyCache()
-        except:
-            pass
-        reload_needed = True
-    else:
-        gc.collect()
-
+    _flush_torch_memory()
+    from accelerate import init_empty_weights
+    with init_empty_weights():
+        for _ in range(3):
+            dummy_tensor = torch.nn.Embedding(256384, 1024)
+            dummy_tensor = None    
+    reload_needed = True
 def get_unique_id():
     global unique_id  
     with unique_id_lock:
@@ -2796,11 +2824,12 @@ def save_quantized_model(model, model_type, model_filename, dtype,  config_file,
     if not "quanto" in model_filename:
         pos = model_filename.rfind(".")
         model_filename =  model_filename[:pos] + "_quanto_int8" + model_filename[pos+1:] 
-    
-    if fl.locate_file(model_filename) is not None:
+
+    model_filename = os.path.basename(model_filename)
+    if fl.locate_file(model_filename, error_if_none= False) is not None:
         print(f"There isn't any model to quantize as quantized model '{model_filename}' aready exists")
     else:
-        model_filename_path = os.path.join(fl.get_download_folder(), model_filename)
+        model_filename_path = os.path.join(fl.get_download_location(), model_filename)
         offload.save_model(model, model_filename_path, do_quantize= True, config_file_path=config_file)
         print(f"New quantized file '{model_filename}' had been created for finetune Id '{model_type}'.")
         if not model_filename in URLs:
@@ -3353,11 +3382,11 @@ def get_gen_info(state):
         state["gen"] = cache
     return cache
 
-def build_callback(state, pipe, send_cmd, status, num_inference_steps):
+def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None):
     gen = get_gen_info(state)
     gen["num_inference_steps"] = num_inference_steps
     start_time = time.time()    
-    def callback(step_idx = -1, latent = None, force_refresh = True, read_state = False, override_num_inference_steps = -1, pass_no = -1, denoising_extra =""):
+    def callback(step_idx = -1, latent = None, force_refresh = True, read_state = False, override_num_inference_steps = -1, pass_no = -1, preview_meta=preview_meta, denoising_extra =""):
         in_pause = False
         with gen_lock:
             process_status = gen.get("process_status", None)
@@ -3427,9 +3456,18 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps):
         
         # progress(*progress_args)
         send_cmd("progress", progress_args)
-        if latent != None:
-            latent = latent.to("cpu", non_blocking=True)
-            send_cmd("preview", latent)
+        if latent is not None:
+            payload = pipe.prepare_preview_payload(latent, preview_meta) if hasattr(pipe, "prepare_preview_payload") else latent
+            if isinstance(payload, dict):
+                data = payload.copy()
+                lat = data.get("latents")
+                if torch.is_tensor(lat):
+                    data["latents"] = lat.to("cpu", non_blocking=True)
+                payload = data
+            elif torch.is_tensor(payload):
+                payload = payload.to("cpu", non_blocking=True)
+            if payload is not None:
+                send_cmd("preview", payload)
             
         # gen["progress_args"] = progress_args
             
@@ -5656,11 +5694,13 @@ def generate_video(
                 print(f"Skipped Steps:{skip_steps_cache.skipped_steps}/{skip_steps_cache.num_steps}" )
             generated_audio = None
             BGRA_frames = None
+            output_audio_sampling_rate= audio_sampling_rate
             if samples != None:
                 if isinstance(samples, dict):
                     overlapped_latents = samples.get("latent_slice", None)
                     BGRA_frames = samples.get("BGRA_frames", None)
                     generated_audio = samples.get("audio", generated_audio)
+                    output_audio_sampling_rate =  samples.get("audio_sampling_rate", audio_sampling_rate)
                     samples = samples.get("x", None)
                 if samples is not None:
                     samples = samples.to("cpu")
@@ -5764,7 +5804,7 @@ def generate_video(
                 if audio_only:
                     import soundfile as sf
                     audio_path = os.path.join(image_save_path, file_name)
-                    sf.write(audio_path, sample.squeeze(0), wan_model.sr)
+                    sf.write(audio_path, sample.squeeze(0), output_audio_sampling_rate)
                     video_path= audio_path                      
                 elif is_image:    
                     image_path = os.path.join(image_save_path, file_name)
@@ -5902,11 +5942,27 @@ def prepare_generate_video(state):
         return gr.Button(visible= False), gr.Button(visible= True), gr.Column(visible= True), gr.update(visible= False)
 
 
-def generate_preview(model_type, latents):
+def generate_preview(model_type, payload):
     import einops
-    if latents is None: return None
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        meta = {k: v for k, v in payload.items() if k != "latents"}
+        latents = payload.get("latents")
+    else:
+        meta = {}
+        latents = payload
+    if latents is None:
+        return None
+    if not torch.is_tensor(latents):
+        return None
     model_handler = get_model_handler(model_type)
     base_model_type = get_base_model_type(model_type)
+    custom_preview = getattr(model_handler, "preview_latents", None)
+    if callable(custom_preview):
+        preview = custom_preview(base_model_type, latents, meta)
+        if preview is not None:
+            return preview
     if hasattr(model_handler, "get_rgb_factors"):
         latent_rgb_factors, latent_rgb_factors_bias = model_handler.get_rgb_factors(base_model_type )
     else:

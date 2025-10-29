@@ -86,7 +86,7 @@ class ChatterboxPipeline:
             min_p=min_p,
             top_p=top_p,
         )
-        return wav
+        return {"x": wav, "audio_sampling_rate": self.sr } 
 
     def release(self) -> None:
         if hasattr(self.model, "to"):

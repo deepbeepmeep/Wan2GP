@@ -448,6 +448,39 @@ AG.tryInstall();
 
         gallery_html = f"""
         <style>
+            :root {{
+                --bg-primary: #fafafa;
+                --bg-secondary: white;
+                --bg-selected-filename: #f0f0f0;
+                --bg-selected-thumbnail: #E3F2FD;
+                --bg-tooltip: rgba(0, 0, 0, 0.85);
+                --text-primary: #333;
+                --text-secondary: #666;
+                --text-tooltip: white;
+                --border-primary: #e0e0e0;
+                --border-secondary: #d0d0d0;
+                --accent-color: #2196F3;
+                --shadow-color: rgba(33, 150, 243, 0.3);
+                --shadow-color-selected: rgba(33, 150, 243, 0.4);
+            }}
+
+            @media (prefers-color-scheme: dark) {{
+                :root {{
+                    --bg-primary: #27272a;
+                    --bg-secondary: #52525b;
+                    --bg-selected-filename: #2c2c2c;
+                    --bg-selected-thumbnail: #0d2a40;
+                    --bg-tooltip: rgba(255, 255, 255, 0.85);
+                    --text-primary: #e0e0e0;
+                    --text-secondary: #a0a0a0;
+                    --text-tooltip: black;
+                    --border-primary: #333;
+                    --border-secondary: #444;
+                    --shadow-color: rgba(33, 150, 243, 0.5);
+                    --shadow-color-selected: rgba(33, 150, 243, 0.6);
+                }}
+            }}
+
             /* Fix audio player height */
             .audio-player-wrapper {{
                 min-height: 200px;
@@ -472,7 +505,7 @@ AG.tryInstall();
 
             .selected-filename {{
                 padding: 4px 12px;
-                background: #f0f0f0;
+                background: var(--bg-selected-filename);
                 border-radius: 4px;
                 font-size: 14px;
                 font-weight: 500;
@@ -481,6 +514,7 @@ AG.tryInstall();
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
+                color: var(--text-primary);
             }}
 
             .thumbnails-container {{
@@ -491,9 +525,9 @@ AG.tryInstall();
                 overflow-x: auto;
                 overflow-y: hidden;
                 flex-direction: row;
-                border: 1px solid #e0e0e0;
+                border: 1px solid var(--border-primary);
                 border-radius: 8px;
-                background: #fafafa;
+                background: var(--bg-primary);
                 min-height: 120px;
             }}
 
@@ -503,10 +537,10 @@ AG.tryInstall();
                 width: {thumbnail_width}px;
                 flex-shrink: 0;
                 padding: 12px;
-                border: 2px solid #d0d0d0;
+                border: 2px solid var(--border-secondary);
                 border-radius: 8px;
                 cursor: pointer;
-                background: white;
+                background: var(--bg-secondary);
                 transition: all 0.2s ease;
                 display: flex;
                 flex-direction: column;
@@ -516,8 +550,8 @@ AG.tryInstall();
             }}
 
             .audio-thumbnail:hover {{
-                border-color: #2196F3;
-                box-shadow: 0 2px 8px rgba(33, 150, 243, 0.3);
+                border-color: var(--accent-color);
+                box-shadow: 0 2px 8px var(--shadow-color);
                 transform: translateY(-2px);
             }}
 
@@ -527,8 +561,8 @@ AG.tryInstall();
                 bottom: calc(100% + 5px);
                 left: 50%;
                 transform: translateX(-50%);
-                background: rgba(0, 0, 0, 0.85);
-                color: white;
+                background: var(--bg-tooltip);
+                color: var(--text-tooltip);
                 padding: 6px 10px;
                 border-radius: 4px;
                 font-size: 12px;
@@ -541,28 +575,28 @@ AG.tryInstall();
             }}
 
             .audio-thumbnail.selected {{
-                border-color: #2196F3;
-                background: #E3F2FD;
-                box-shadow: 0 2px 12px rgba(33, 150, 243, 0.4);
+                border-color: var(--accent-color);
+                background: var(--bg-selected-thumbnail);
+                box-shadow: 0 2px 12px var(--shadow-color-selected);
             }}
 
             .thumbnail-date {{
-                font-size: 11px;
+                font-size: 13px;
                 font-weight: 600;
-                color: #333;
+                color: var(--text-primary);
                 white-space: nowrap;
             }}
 
             .thumbnail-time {{
-                font-size: 10px;
-                color: #666;
+                font-size: 12px;
+                color: var(--text-secondary);
                 white-space: nowrap;
             }}
 
             .thumbnail-duration {{
-                font-size: 12px;
+                font-size: 13px;
                 font-weight: bold;
-                color: #2196F3;
+                color: var(--accent-color);
                 margin-top: 4px;
                 white-space: nowrap;
             }}

@@ -4,10 +4,9 @@
         "architecture": "flux_chroma_radiance",
         "description": "FLUX.1 Chroma Radiance 20th of October 2025 version) is a 8.9 billion parameters model. As a base model, Chroma Radiance is intentionally designed to be an excellent starting point for finetuning. It provides a strong, neutral foundation for developers, researchers, and artists to create specialized models.",
         "URLs": [
-            "flux1-chroma_radiance_201025_bf16.safetensors",
-            "flux1-chroma_radiance_201025_quanto_bf16_int8.safetensors"
+            "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1-chroma_radiance_201025_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1-chroma_radiance_201025_quanto_bf16_int8.safetensors"
         ],
-        "source": "c:/temp/chroma_radiance.pth",
         "image_outputs": true
     },
     "prompt": "draw a hat",

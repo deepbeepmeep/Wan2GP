@@ -5,8 +5,10 @@ This guide covers installation for different GPU generations and operating syste
 ## Requirements
 
 - Git [Git Download](https://git-scm.com/install/windows)
-- Build Tools for Visual Studio 2022 {Vs
-- Nvidia Drivers Up to Date [Nvidia Drivers](https://www.nvidia.com/en-us/software/nvidia-app/)
+- Build Tools for Visual Studio 2022 with C++ Extentions [Vs2022 Download](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022)
+- Cuda Toolkit 12.8 or higher [Cuda Toolkit Download](https://developer.nvidia.com/cuda-downloads)
+- Nvidia Drivers Up to Date [Nvidia Drivers Download](https://www.nvidia.com/en-us/software/nvidia-app/)
+- ffmpeg downloaded & on PATH [ffmpeg download](https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-win64-lgpl-8.0.zip)
 - Python 3.10.9
 - Conda or Python venv
 - Compatible GPU (GTX 10XX - RTX 50XX)
@@ -167,7 +169,7 @@ pip install torch==2.6.0+cu126 torchvision==0.21.0+cu126 torchaudio==2.6.0+cu126
 ```
 pip install -U "triton<3.3"
 ```
-#### Install Sage Attention for RTX QUADRO - 20XX Only
+#### Install Sage1 Attention for RTX QUADRO - 20XX Only
 ```
 pip install sageattention==1.0.6
 ```
@@ -188,7 +190,7 @@ pip install torch==2.6.0+cu126 torchvision==0.21.0+cu126 torchaudio==2.6.0+cu126
 ```
 pip install -U "triton<3.3"
 ```
-#### Install Sage Attention for RTX 30XX Only
+#### Install Sage2 Attention for RTX 30XX Only. Make sure it's Sage 2.1.1
 ```
 python -m pip install "setuptools<=75.8.2" --force-reinstall
 git clone https://github.com/thu-ml/SageAttention
@@ -211,7 +213,7 @@ pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https
 ```
 pip install -U "triton<3.4"
 ```
-#### Install Sage Attention for RTX 40XX, 50XX Only
+#### Install Sage Attention for RTX 40XX, 50XX Only. Make sure it's Sage 2.2.0
 ```
 python -m pip install "setuptools<=75.8.2" --force-reinstall
 git clone https://github.com/thu-ml/SageAttention
@@ -222,17 +224,7 @@ pip install -e .
 ```
 pip install -r requirements.txt
 ```
-
-
-
-
-#### Linux Sage Attention (manual compilation required)
-```
-python -m pip install "setuptools<=75.8.2" --force-reinstall
-git clone https://github.com/thu-ml/SageAttention
-cd SageAttention 
-pip install -e .
-```
+## Optional
 
 ### Flash Attention
 

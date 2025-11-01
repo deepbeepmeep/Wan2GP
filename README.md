@@ -161,6 +161,7 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 ## 🚀 Quick Start
 
 **One-click installation:** 
+- Install with [**Dione**](https://getdione.app): **one click, zero complications**.
 - Get started instantly with [Pinokio App](https://pinokio.computer/)
 - Use Redtash1 [One Click Install with Sage](https://github.com/Redtash1/Wan2GP-Windows-One-Click-Install-With-Sage)
 

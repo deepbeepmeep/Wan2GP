@@ -881,12 +881,14 @@ class QwenImagePipeline(): #DiffusionPipeline
 
             # latent_model_input = latents
             def denoise(latent_model_input, true_cfg_scale):
+                latent_input = latent_model_input
                 if image_latents is not None:
-                    latent_model_input = torch.cat([latents, image_latents], dim=1)
+                    latent_input = torch.cat([latent_model_input, image_latents], dim=1)
+                base_seq_len = latent_model_input.size(1)
                 do_true_cfg = true_cfg_scale > 1
                 if do_true_cfg and joint_pass:
                     noise_pred, neg_noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
+                        hidden_states=latent_input,
                         timestep=timestep / 1000,
                         guidance=guidance, #!!!!
                         encoder_hidden_states_mask_list=[prompt_embeds_mask,negative_prompt_embeds_mask],
@@ -897,12 +899,12 @@ class QwenImagePipeline(): #DiffusionPipeline
                         **kwargs
                     )
                     if noise_pred == None: return None, None
-                    noise_pred = noise_pred[:, : latents.size(1)]
-                    neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
+                    noise_pred = noise_pred[:, : base_seq_len]
+                    neg_noise_pred = neg_noise_pred[:, : base_seq_len]
                 else:
                     neg_noise_pred = None
                     noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
+                        hidden_states=latent_input,
                         timestep=timestep / 1000,
                         guidance=guidance,
                         encoder_hidden_states_mask_list=[prompt_embeds_mask],
@@ -913,11 +915,11 @@ class QwenImagePipeline(): #DiffusionPipeline
                         **kwargs
                     )[0]
                     if noise_pred == None: return None, None
-                    noise_pred = noise_pred[:, : latents.size(1)]
+                    noise_pred = noise_pred[:, : base_seq_len]
 
                 if do_true_cfg:
                     neg_noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
+                        hidden_states=latent_input,
                         timestep=timestep / 1000,
                         guidance=guidance,
                         encoder_hidden_states_mask_list=[negative_prompt_embeds_mask],
@@ -928,7 +930,7 @@ class QwenImagePipeline(): #DiffusionPipeline
                         **kwargs
                     )[0]
                     if neg_noise_pred == None: return None, None
-                    neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
+                    neg_noise_pred = neg_noise_pred[:, : base_seq_len]
                 return noise_pred, neg_noise_pred
             def cfg_predictions( noise_pred, neg_noise_pred, guidance, t):
                 if do_true_cfg:

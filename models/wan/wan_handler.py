@@ -7,7 +7,7 @@ def test_vace(base_model_type):
     return base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B", "vace_ditto_14B"]     
 
 def test_class_i2v(base_model_type):    
-    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate" ]
+    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit" ]
 
 def test_class_t2v(base_model_type):    
     return base_model_type in ["t2v", "t2v_2_2", "alpha", "lynx"]
@@ -38,7 +38,7 @@ class family_handler():
     def query_supported_types():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B", 
-                    "recam_1.3B", "animate", "alpha", "alpha_lynx",
+                    "recam_1.3B", "animate", "alpha", "alpha_lynx", "chrono_edit",
                     "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp"]
 
 
@@ -146,6 +146,8 @@ class family_handler():
             group = "wan2_2"
         elif i2v:
             profiles_dir = "wan_i2v"
+            if base_model_type in ["chrono_edit"]:
+                profiles_dir = "wan_chrono_edit"
         elif test_wan_5B(base_model_type):
             profiles_dir = "wan_2_2_5B"
             group = "wan2_2"
@@ -181,7 +183,8 @@ class family_handler():
         "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "t2v_2_2", "fantasy", "animate", "lynx"] or test_class_i2v(base_model_type) or test_wan_5B(base_model_type) or vace_class,  #"ti2v_2_2",
         "multiple_submodels" : multiple_submodels,
         "guidance_max_phases" : 3,
-        "skip_layer_guidance" : True,        
+        "skip_layer_guidance" : True,
+        "flow_shift": True,
         "cfg_zero" : True,
         "cfg_star" : True,
         "adaptive_projected_guidance" : True,  
@@ -420,7 +423,13 @@ class family_handler():
                     "visible" : False,
                 }
             extra_model_def["video_length_locked"] = 81
-            
+        if base_model_type in ["chrono_edit"]:
+            from .chono_edit_prompt import image_prompt_enhancer_instructions        
+            extra_model_def["image_prompt_enhancer_instructions"] = image_prompt_enhancer_instructions
+            extra_model_def["video_prompt_enhancer_instructions"] = image_prompt_enhancer_instructions
+            extra_model_def["image_outputs"] = True
+            extra_model_def["prompt_enhancer_choices_allowed"] = ["TI"]
+
         if vace_class or base_model_type in ["animate", "t2v", "t2v_2_2", "lynx"] :
             image_prompt_types_allowed = "TVL"
         elif base_model_type in ["infinitetalk"]:
@@ -672,6 +681,9 @@ class family_handler():
             ui_defaults.update({ 
                 "video_prompt_type": "V", 
             })
+
+        if base_model_type in ["chrono_edit"]:
+            ui_defaults.update({"image_mode": 1, "prompt_enhancer":"TI"})
 
         if test_oneframe_overlap(base_model_type):
             ui_defaults["sliding_window_overlap"] = 1

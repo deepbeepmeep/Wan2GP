@@ -78,7 +78,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.7"
-WanGP_version = "9.25"
+WanGP_version = "9.3"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -3263,7 +3263,8 @@ def load_models(model_type, override_profile = -1):
     for filename, file_model_type, file_module_type, submodel_no in zip(model_file_list, model_type_list, module_type_list, model_submodel_no_list):
         if len(filename) == 0: continue 
         download_models(filename, file_model_type, file_module_type, submodel_no)
-        local_model_file_list.append( get_local_model_filename(filename ))
+        local_file_name = get_local_model_filename(filename )
+        local_model_file_list.append( os.path.basename(filename) if local_file_name is None else local_file_name )
     if len(local_model_file_list) == 0:
         download_models("", model_type, "", -1)
 
@@ -3823,10 +3824,10 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                     video_guidance_scale = f"{video_guidance_scale}, {video_guidance2_scale} & {video_guidance3_scale} with Switch at Noise Levels {video_switch_threshold} & {video_switch_threshold2}"
                     if multiple_submodels:
                         video_guidance_scale += f" + Model Switch at {video_switch_threshold if video_model_switch_phase ==1 else video_switch_threshold2}"
-            if image_outputs or is_audio: 
-                video_flow_shift = None 
-            else:
+            if  model_def.get("flow_shift", False): 
                 video_flow_shift = configs.get("flow_shift", None)
+            else:
+                video_flow_shift = None 
 
             video_video_guide_outpainting = configs.get("video_guide_outpainting", "")
             video_outpainting = ""
@@ -4687,7 +4688,7 @@ class DynamicClass:
         return self.assign(**dict)
 
 
-def process_prompt_enhancer(prompt_enhancer, original_prompts,  image_start, original_image_refs, is_image, audio_only, seed ):
+def process_prompt_enhancer(prompt_enhancer, original_prompts,  image_start, original_image_refs, is_image, audio_only, seed, prompt_enhancer_instructions = None ):
 
     text_encoder_max_tokens = 256
     from models.ltx_video.utils.prompt_enhance_utils import generate_cinematic_prompt
@@ -4715,6 +4716,7 @@ def process_prompt_enhancer(prompt_enhancer, original_prompts,  image_start, ori
             video_prompt = not is_image,
             text_prompt = audio_only,
             max_new_tokens=text_encoder_max_tokens,
+            prompt_enhancer_instructions = prompt_enhancer_instructions,
         )
         return prompts
 
@@ -4784,13 +4786,15 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, overri
     seed = inputs["seed"]
     seed = set_seed(seed)
     enhanced_prompts = []
+    prompt_enhancer_instructions = model_def.get("image_prompt_enhancer_instructions" if is_image else "video_prompt_enhancer_instructions", None)
+
     for i, (one_prompt, one_image) in enumerate(zip(original_prompts, image_start)):
         start_images = [one_image] if one_image is not None else None
         status = f'Please Wait While Enhancing Prompt' if num_prompts==1 else f'Please Wait While Enhancing Prompt #{i+1}'
         progress((i , num_prompts), desc=status, total= num_prompts)
 
         try:
-            enhanced_prompt = process_prompt_enhancer(prompt_enhancer, [one_prompt],  start_images, original_image_refs, is_image, audio_only, seed )    
+            enhanced_prompt = process_prompt_enhancer(prompt_enhancer, [one_prompt],  start_images, original_image_refs, is_image, audio_only, seed, prompt_enhancer_instructions )    
         except Exception as e:
             enhancer_offloadobj.unload_all()
             release_GPU_ressources(state, "prompt_enhancer")
@@ -6784,7 +6788,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if guidance_max_phases < 3 or guidance_phases < 3:
         pop += ["guidance3_scale", "switch_threshold2", "model_switch_phase"]
 
-    if ltxv or image_outputs:
+    if not model_def.get("flow_shift", False):
         pop += ["flow_shift"]
 
     if model_def.get("no_negative_prompt", False) :
@@ -8202,8 +8206,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             model_mode_choices = model_def.get("model_modes", None)
             model_modes_visibility = [0,1,2]
             if model_mode_choices is not None: model_modes_visibility= model_mode_choices.get("image_modes", model_modes_visibility)
-            
-            with gr.Column(visible= image_mode_value == 0 and len(image_prompt_types_allowed)> 0 or model_mode_choices is not None and image_mode_value in model_modes_visibility ) as image_prompt_column: 
+            if image_mode_value != 0:
+                image_prompt_types_allowed = del_in_sequence(image_prompt_types_allowed, "EVL")
+            with gr.Column(visible= image_prompt_types_allowed not in ("", "T") or model_mode_choices is not None and image_mode_value in model_modes_visibility ) as image_prompt_column: 
                 # Video Continue /  Start Frame / End Frame
                 image_prompt_type_value= ui_defaults.get("image_prompt_type","")
                 image_prompt_type = gr.Text(value= image_prompt_type_value, visible= False)
@@ -8531,16 +8536,18 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 wizard_variables_var = gr.Text(wizard_variables, visible = False)
             with gr.Row(visible= server_config.get("enhancer_enabled", 0) > 0  ) as prompt_enhancer_row:
                 on_demand_prompt_enhancer = server_config.get("enhancer_mode", 0) == 1
+                prompt_enhancer_choices_allowed = model_def.get("prompt_enhancer_choices_allowed", ["T"] if audio_only else ["T", "I", "TI"])
                 prompt_enhancer_value = ui_defaults.get("prompt_enhancer", "")
-                if len(prompt_enhancer_value) == 0 and on_demand_prompt_enhancer: prompt_enhancer_value = "T"  
                 prompt_enhancer_btn = gr.Button( value ="Enhance Prompt", visible= on_demand_prompt_enhancer, size="lg",  elem_classes="btn_centered")
-                prompt_enhancer_choices= ([] if on_demand_prompt_enhancer else [("Disabled", "")]) +  [("Based on Text Prompt Content", "T")]
-                if not audio_only:
-                    prompt_enhancer_choices += [
-                        ("Based on Images Prompts Content (such as Start Image and Reference Images)", "I"),
-                        ("Based on both Text Prompt and Images Prompts Content", "TI"),
-                    ]
+                prompt_enhancer_choices= ([] if on_demand_prompt_enhancer else [("Disabled", "")]) 
+                if "T" in prompt_enhancer_choices_allowed:
+                    prompt_enhancer_choices +=  [("Based on Text Prompt Content", "T")]
+                if "I" in prompt_enhancer_choices_allowed:
+                    prompt_enhancer_choices += [("Based on Images Prompts Content (such as Start Image and Reference Images)", "I")]
+                if "TI" in prompt_enhancer_choices_allowed:
+                    prompt_enhancer_choices += [("Based on both Text Prompt and Images Prompts Content", "TI")]
 
+                if len(prompt_enhancer_value) == 0 and on_demand_prompt_enhancer: prompt_enhancer_value = prompt_enhancer_choices[0][1] 
                 prompt_enhancer = gr.Dropdown(
                     choices=prompt_enhancer_choices,
                     value=prompt_enhancer_value,
@@ -8639,14 +8646,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             temperature = gr.Slider( 0.1, 1.5, value=ui_defaults.get("temperature", 0.8), step=0.01, label="Temperature")
 
                         sample_solver_choices = model_def.get("sample_solvers", None)
-                        with gr.Row(visible = sample_solver_choices is not None or not (image_outputs or audio_only)) as sample_solver_row:
+                        any_flow_shift = model_def.get("flow_shift", False) 
+                        with gr.Row(visible = sample_solver_choices is not None or any_flow_shift ) as sample_solver_row:
                             if sample_solver_choices is None:
                                 sample_solver = gr.Dropdown( value="",  choices=[ ("", ""), ], visible= False, label= "Sampler Solver / Scheduler" )
                             else:
                                 sample_solver = gr.Dropdown( value=ui_defaults.get("sample_solver", sample_solver_choices[0][1]), 
                                     choices= sample_solver_choices, visible= True, label= "Sampler Solver / Scheduler"
                                 )
-                            flow_shift = gr.Slider(1.0, 25.0, value=ui_defaults.get("flow_shift",3), step=0.1, label="Shift Scale", visible = not (image_outputs or audio_only)) 
+                            flow_shift = gr.Slider(1.0, 25.0, value=ui_defaults.get("flow_shift",3), step=0.1, label="Shift Scale", visible = any_flow_shift) 
                         control_net_weight_alt_name = model_def.get("control_net_weight_alt_name", "")
                         with gr.Row(visible = vace or len(control_net_weight_alt_name) >0 ) as control_net_weights_row:
                             control_net_weight = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight",1), step=0.1, label="Vace Weight #1", visible=vace)

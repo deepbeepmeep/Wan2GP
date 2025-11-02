@@ -50,6 +50,7 @@ class family_handler:
                 ("dpm++", "dpm++"),
                 ("euler", "euler"),
             ],
+            "flow_shift": True,
             "audio_guidance": True,
             "image_prompt_types_allowed" : "TSVL",
             "sliding_window": True,

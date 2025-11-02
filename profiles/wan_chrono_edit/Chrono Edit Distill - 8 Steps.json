@@ -1,0 +1,11 @@
+{
+
+    "activated_loras": [
+        "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/chronoedit_distill_lora.safetensors"
+	],
+	"loras_multipliers": "1",
+	"num_inference_steps": 8,
+	"flow_shift": 2,
+    "guidance_phases": 1,
+    "guidance_scale": 1	
+}

@@ -163,13 +163,13 @@ class WanAny2V:
         kwargs= { "modelClass": WanModel,"do_quantize": quantizeTransformer and not save_quantized, "defaultConfigPath": base_config_file , "ignore_unused_weights": ignore_unused_weights, "writable_tensors": False, "default_dtype": dtype, "preprocess_sd": preprocess_sd, "forcedConfigPath": forcedConfigPath, }
         kwargs_light= { "modelClass": WanModel,"writable_tensors": False, "preprocess_sd": preprocess_sd , "forcedConfigPath" : base_config_file}
         if module_source is not None:
-            self.model = offload.fast_load_transformers_model(model_filename[:1] + [module_source], **kwargs)
+            self.model = offload.fast_load_transformers_model(model_filename[:1] + [fl.locate_file(module_source)], **kwargs)
         if module_source2 is not None:
-            self.model2 = offload.fast_load_transformers_model(model_filename[1:2] + [module_source2], **kwargs)
+            self.model2 = offload.fast_load_transformers_model(model_filename[1:2] + [fl.locate_file(module_source2)], **kwargs)
         if source is not None:
-            self.model = offload.fast_load_transformers_model(source,  **kwargs_light)
+            self.model = offload.fast_load_transformers_model(fl.locate_file(source),  **kwargs_light)
         if source2 is not None:
-            self.model2 = offload.fast_load_transformers_model(source2, **kwargs_light)
+            self.model2 = offload.fast_load_transformers_model(fl.locate_file(source2), **kwargs_light)
 
         if self.model is not None or self.model2 is not None:
             from wgp import save_model
@@ -508,15 +508,22 @@ class WanAny2V:
         alpha_class = model_def.get("alpha_class", False)
         lucy_edit=  model_type in ["lucy_edit"]
         animate=  model_type in ["animate"]
+        chrono_edit = model_type in ["chrono_edit"]
         start_step_no = 0
         ref_images_count = 0
         trim_frames = 0
+        last_latent_output = False
         extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = None
         no_noise_latents_injection = infinitetalk
         timestep_injection = False
+
+        if chrono_edit:
+            frame_num = 29
+            last_latent_output = True
+
         lat_frames = int((frame_num - 1) // self.vae_stride[0]) + 1
         extended_input_dim = 0
-        ref_images_before = False
+        ref_images_before = False            
         # image2video 
         if model_def.get("i2v_class", False) and not animate:
             any_end_frame = False
@@ -1098,7 +1105,7 @@ class WanAny2V:
                 latents_preview = latents
                 if ref_images_before and ref_images_count > 0: latents_preview = latents_preview[:, :, ref_images_count: ] 
                 if trim_frames > 0:  latents_preview=  latents_preview[:, :,:-trim_frames]
-                if image_outputs: latents_preview=  latents_preview[:, :,:1]
+                if image_outputs: latents_preview= latents_preview[:, :,-1:] if last_latent_output else latents_preview[:, :,:1]
                 if len(latents_preview) > 1: latents_preview = latents_preview.transpose(0,2)
                 callback(i, latents_preview[0], False, denoising_extra =denoising_extra )
                 latents_preview = None
@@ -1116,6 +1123,9 @@ class WanAny2V:
 
         if chipmunk:
             self.model.release_chipmunk() # need to add it at every exit when in prod
+
+        if image_outputs :
+            x0 = [x[:,-1:] if last_latent_output else x[:,:1] for x in x0 ]
 
         videos = self.vae.decode(x0, VAE_tile_size)
         any_vae2= self.vae2 is not None

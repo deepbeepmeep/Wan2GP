@@ -475,8 +475,10 @@ class WanI2VCrossAttention(WanSelfAttention):
             audio_x = self.processor(q, audio_proj, grid_sizes[0], audio_context_lens)
         k_img = self.k_img(context_img)
         self.norm_k_img(k_img)
-        k_img = k_img.view(b, -1, n, d)
-        v_img = self.v_img(context_img).view(b, -1, n, d)
+        k_img = k_img.view(1, -1, n, d)
+        v_img = self.v_img(context_img).view(1, -1, n, d)
+        if b > 1:
+            k_img, v_img = k_img.expand(b, -1, -1, -1), v_img.expand(b, -1, -1, -1)
         qkv_list = [q, k_img, v_img]
         del q, k_img, v_img
         img_x = pay_attention(qkv_list)
@@ -901,13 +903,13 @@ class WanModel(ModelMixin, ConfigMixin):
             return sd
 
 
-        # new_sd = {}
-        # for k,v in sd.items():
-        #     if k.endswith("modulation.diff"):
-        #         pass
-        #     else:
-        #         new_sd[ k] = v
-        # sd = new_sd
+        new_sd = {}
+        for k,v in sd.items():
+            if k.endswith("modulation.diff"):
+                pass
+            else:
+                new_sd[ k] = v
+        sd = new_sd
 
         # if first.startswith("blocks."):
         #     new_sd = {}
@@ -1715,3 +1717,4 @@ class WanModel(ModelMixin, ConfigMixin):
 
         # init output layer
         nn.init.zeros_(self.head.head.weight)
+

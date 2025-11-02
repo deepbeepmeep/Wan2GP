@@ -493,6 +493,7 @@ class QwenImageTransformer2DModel(nn.Module):
         new_sd = {}
         for k,v in sd.items():
             k = k.replace(".lora.", ".lora_")
+            k = k.replace(".default.weight", ".weight")
             new_sd[k] = v
         sd = new_sd  
 
@@ -525,6 +526,7 @@ class QwenImageTransformer2DModel(nn.Module):
                         new_sd[k] = v
                 sd = new_sd  
                 return sd
+        
         return sd
 
     def __init__(

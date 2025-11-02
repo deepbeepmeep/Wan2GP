@@ -59,23 +59,6 @@ def timestep_transform(t, shift=5.0, num_timesteps=1000 ):
     new_t = new_t * num_timesteps
     return new_t
     
-def preprocess_sd_with_dtype(dtype, sd):
-    new_sd = {}
-    prefix_list = ["model.diffusion_model"]
-    end_list = [".norm3.bias", ".norm3.weight", ".norm_q.bias", ".norm_q.weight", ".norm_k.bias", ".norm_k.weight" ]
-    for k,v in sd.items():
-        for prefix in prefix_list:
-            if k.startswith(prefix): 
-                k = k[len(prefix)+1:]
-                break
-        if v.dtype in (torch.float8_e5m2, torch.float8_e4m3fn):
-            for endfix in end_list:
-                if k.endswith(endfix):
-                    v = v.to(dtype)
-                    break
-        if not k.startswith("vae."):
-            new_sd[k] = v
-    return new_sd
 
 class WanAny2V:
 
@@ -159,7 +142,7 @@ class WanAny2V:
         module_source =  model_def.get("module_source", None)
         module_source2 =  model_def.get("module_source2", None)
         def preprocess_sd(sd):
-            return preprocess_sd_with_dtype(dtype, sd)
+            return WanModel.preprocess_sd_with_dtype(dtype, sd)
         kwargs= { "modelClass": WanModel,"do_quantize": quantizeTransformer and not save_quantized, "defaultConfigPath": base_config_file , "ignore_unused_weights": ignore_unused_weights, "writable_tensors": False, "default_dtype": dtype, "preprocess_sd": preprocess_sd, "forcedConfigPath": forcedConfigPath, }
         kwargs_light= { "modelClass": WanModel,"writable_tensors": False, "preprocess_sd": preprocess_sd , "forcedConfigPath" : base_config_file}
         if module_source is not None:
@@ -220,13 +203,8 @@ class WanAny2V:
                 save_quantized_model(self.model2, model_type, model_filename[1], dtype, base_config_file, submodel_no=2)
         self.sample_neg_prompt = config.sample_neg_prompt
 
-        if hasattr(self.model, "vace_blocks"):
-            self.adapt_vace_model(self.model)
-            if self.model2 is not None: self.adapt_vace_model(self.model2)
-
-        if hasattr(self.model, "face_adapter"):
-            self.adapt_animate_model(self.model)
-            if self.model2 is not None: self.adapt_animate_model(self.model2)
+        self.model.apply_post_init_changes()
+        if self.model2 is not None: self.model2.apply_post_init_changes()
         
         self.num_timesteps = 1000 
         self.use_timestep_transform = True 
@@ -1156,24 +1134,6 @@ class WanAny2V:
         if return_latent_slice != None or BGRA_frames != None:
             return { "x" : videos, "latent_slice" : latent_slice, "BGRA_frames" : BGRA_frames }
         return videos
-
-    def adapt_vace_model(self, model):
-        modules_dict= { k: m for k, m in model.named_modules()}
-        for model_layer, vace_layer in model.vace_layers_mapping.items():
-            module = modules_dict[f"vace_blocks.{vace_layer}"]
-            target = modules_dict[f"blocks.{model_layer}"]
-            setattr(target, "vace", module )
-        delattr(model, "vace_blocks")
-
-
-    def adapt_animate_model(self, model):
-        modules_dict= { k: m for k, m in model.named_modules()}
-        for animate_layer in range(8):
-            module = modules_dict[f"face_adapter.fuser_blocks.{animate_layer}"]
-            model_layer = animate_layer * 5
-            target = modules_dict[f"blocks.{model_layer}"]
-            setattr(target, "face_adapter_fuser_blocks", module )
-        delattr(model, "face_adapter")
 
     def get_loras_transformer(self, get_model_recursive_prop, base_model_type, model_type, video_prompt_type, model_mode, **kwargs):
         if base_model_type == "animate":

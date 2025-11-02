@@ -618,7 +618,7 @@ class WanAttentionBlock(nn.Module):
                     hints_processed.append(self.vace(hint, x, **kwargs) if self.block_id == 0 else self.vace(hint, None, **kwargs))
                      
         latent_frames = e.shape[0]
-        e = (self.modulation + e).chunk(6, dim=1)
+        e = (self.modulation.weight + e).chunk(6, dim=1)
         # self-attention
         x_mod = self.norm1(x)
         x_mod = reshape_latent(x_mod , latent_frames)
@@ -840,7 +840,7 @@ class Head(nn.Module):
         dtype = x.dtype
 
         latent_frames = e.shape[0]
-        e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
+        e = (self.modulation.weight + e.unsqueeze(1)).chunk(2, dim=1)
         x = self.norm(x).to(dtype)
         x = reshape_latent(x , latent_frames)
         x *= (1 + e[1])
@@ -896,6 +896,24 @@ class WanModel(ModelMixin, ConfigMixin):
     def release_chipmunk(self):
         offload.shared_state["_chipmunk_layers"] = None
 
+    @staticmethod
+    def preprocess_sd_with_dtype(dtype, sd):
+        new_sd = {}
+        prefix_list = ["model.diffusion_model"]
+        end_list = [".norm3.bias", ".norm3.weight", ".norm_q.bias", ".norm_q.weight", ".norm_k.bias", ".norm_k.weight" ]
+        for k,v in sd.items():
+            for prefix in prefix_list:
+                if k.startswith(prefix): 
+                    k = k[len(prefix)+1:]
+                    break
+            if v.dtype in (torch.float8_e5m2, torch.float8_e4m3fn):
+                for endfix in end_list:
+                    if k.endswith(endfix):
+                        v = v.to(dtype)
+                        break
+            if not k.startswith("vae."):
+                new_sd[k] = v
+        return new_sd
     def preprocess_loras(self, model_type, sd):
 
         first = next(iter(sd), None)
@@ -1163,6 +1181,46 @@ class WanModel(ModelMixin, ConfigMixin):
                 num_heads=4,
             )
 
+
+    def adapt_modulation(self, block_name ='blocks'):
+        modules_dict= { k: m for k, m in self.named_modules()}
+        for k,v in modules_dict[block_name]._modules.items():            
+            module = torch.nn.Module()
+            module.weight = v.modulation
+            delattr(v, "modulation")
+            v.modulation = module
+
+        if block_name != "blocks": return
+        parent_module = modules_dict["head"]
+        module = torch.nn.Module()
+        module.weight = parent_module.modulation
+        delattr(parent_module, "modulation")
+        parent_module.modulation = module
+
+    def adapt_vace_model(self):
+        self.adapt_modulation("vace_blocks")
+
+        modules_dict= { k: m for k, m in self.named_modules()}
+        for model_layer, vace_layer in self.vace_layers_mapping.items():
+            module = modules_dict[f"vace_blocks.{vace_layer}"]
+            target = modules_dict[f"blocks.{model_layer}"]
+            setattr(target, "vace", module )
+        delattr(self, "vace_blocks")
+
+
+    def adapt_animate_model(self):
+        modules_dict= { k: m for k, m in self.named_modules()}
+        for animate_layer in range(8):
+            module = modules_dict[f"face_adapter.fuser_blocks.{animate_layer}"]
+            model_layer = animate_layer * 5
+            target = modules_dict[f"blocks.{model_layer}"]
+            setattr(target, "face_adapter_fuser_blocks", module )
+        delattr(self, "face_adapter")
+
+    def apply_post_init_changes(self):
+        self.adapt_modulation()
+        if hasattr(self, "vace_blocks"): self.adapt_vace_model()
+        if hasattr(self, "face_adapter"): self.adapt_animate_model()
 
     def lock_layers_dtypes(self, hybrid_dtype = None, dtype = torch.float32):
         from optimum.quanto import QTensor

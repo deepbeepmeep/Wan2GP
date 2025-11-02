@@ -853,8 +853,8 @@ class QwenImagePipeline(): #DiffusionPipeline
                 timesteps = timesteps[first_step:]
                 self.scheduler.timesteps = timesteps
                 self.scheduler.sigmas= self.scheduler.sigmas[first_step:]
-            # from shared.inpainting.lanpaint import LanPaint
-            # lanpaint_proc = LanPaint()
+            from shared.inpainting.lanpaint import LanPaint
+            lanpaint_proc = LanPaint()
         # 6. Denoising loop
         self.scheduler.set_begin_index(0)
         updated_num_steps= len(timesteps)

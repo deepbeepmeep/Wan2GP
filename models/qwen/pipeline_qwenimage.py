@@ -948,6 +948,8 @@ class QwenImagePipeline(): #DiffusionPipeline
                 return noise_pred
 
 
+            latent_model_input = latents
+            denoiser_latents = latent_model_input
             if lanpaint_proc is not None and (max_lanpaint_step is None or i < max_lanpaint_step):
                 sigma = None
                 if lanpaint_sigmas is not None and i < lanpaint_sigmas.numel():
@@ -958,12 +960,12 @@ class QwenImagePipeline(): #DiffusionPipeline
                     sigma = sigma.to(latents.device, torch.float32)
                 else:
                     sigma = torch.tensor(sigma, device=latents.device, dtype=torch.float32)
-                latents = lanpaint_proc(
+                lanpaint_latents = lanpaint_proc(
                     denoise,
                     cfg_predictions,
                     true_cfg_scale,
                     1.,
-                    latents,
+                    denoiser_latents,
                     original_image_latents,
                     randn,
                     sigma,
@@ -972,14 +974,16 @@ class QwenImagePipeline(): #DiffusionPipeline
                     width=width,
                     vae_scale_factor=self.vae_scale_factor,
                 )
-                if latents is None: return None
+                if lanpaint_latents is None:
+                    return None
+                denoiser_latents = lanpaint_latents.to(latent_model_input.device, latent_model_input.dtype)
 
-            noise_pred, neg_noise_pred = denoise(latents, true_cfg_scale)
+            noise_pred, neg_noise_pred = denoise(denoiser_latents, true_cfg_scale)
             if noise_pred == None: return None
             noise_pred = cfg_predictions(noise_pred, neg_noise_pred, true_cfg_scale, t)
             neg_noise_pred = None
             # compute the previous noisy sample x_t -> x_t-1
-            latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+            latents = self.scheduler.step(noise_pred, t, latent_model_input, return_dict=False)[0]
             noise_pred = None
 
             if image_mask_latents is not None:

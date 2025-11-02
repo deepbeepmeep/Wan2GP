@@ -842,17 +842,21 @@ class QwenImagePipeline(): #DiffusionPipeline
         )
         morph, first_step = False, 0
         lanpaint_proc = None
+        lanpaint_sigmas = None
+        max_lanpaint_step = None
+        lanpaint_early_stop = 1
         if image_mask_latents is not None:
             randn = torch.randn_like(original_image_latents)
             if denoising_strength < 1.:
                 first_step = int(len(timesteps) * (1. - denoising_strength))
             if not morph:
-                latent_noise_factor = timesteps[first_step]/1000
-                # latents  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
-                latents  = original_image_latents  * (1.0 - latent_noise_factor) + randn * latent_noise_factor 
+                latent_noise_factor = timesteps[first_step] / 1000
+                latents = original_image_latents * (1.0 - latent_noise_factor) + randn * latent_noise_factor
                 timesteps = timesteps[first_step:]
                 self.scheduler.timesteps = timesteps
-                self.scheduler.sigmas= self.scheduler.sigmas[first_step:]
+                self.scheduler.sigmas = self.scheduler.sigmas[first_step:]
+            lanpaint_sigmas = self.scheduler.sigmas.clone()
+            max_lanpaint_step = max(lanpaint_sigmas.numel() - 1 - lanpaint_early_stop, 0)
             from shared.inpainting.lanpaint import LanPaint
             lanpaint_proc = LanPaint()
         # 6. Denoising loop
@@ -944,8 +948,30 @@ class QwenImagePipeline(): #DiffusionPipeline
                 return noise_pred
 
 
-            if lanpaint_proc is not None and i<=3:
-                latents = lanpaint_proc(denoise, cfg_predictions, true_cfg_scale, 1., latents, original_image_latents, randn, t/1000, image_mask_latents, height=height , width= width, vae_scale_factor= 8)
+            if lanpaint_proc is not None and (max_lanpaint_step is None or i < max_lanpaint_step):
+                sigma = None
+                if lanpaint_sigmas is not None and i < lanpaint_sigmas.numel():
+                    sigma = lanpaint_sigmas[i]
+                else:
+                    sigma = t.float() / 1000
+                if torch.is_tensor(sigma):
+                    sigma = sigma.to(latents.device, torch.float32)
+                else:
+                    sigma = torch.tensor(sigma, device=latents.device, dtype=torch.float32)
+                latents = lanpaint_proc(
+                    denoise,
+                    cfg_predictions,
+                    true_cfg_scale,
+                    1.,
+                    latents,
+                    original_image_latents,
+                    randn,
+                    sigma,
+                    image_mask_latents,
+                    height=height,
+                    width=width,
+                    vae_scale_factor=self.vae_scale_factor,
+                )
                 if latents is None: return None
 
             noise_pred, neg_noise_pred = denoise(latents, true_cfg_scale)

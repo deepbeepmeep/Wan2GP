@@ -54,22 +54,6 @@ PREFERRED_QWENIMAGE_RESOLUTIONS = [
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
-EXAMPLE_DOC_STRING = """
-    Examples:
-        ```py
-        >>> import torch
-        >>> from diffusers import QwenImagePipeline
-
-        >>> pipe = QwenImagePipeline.from_pretrained("Qwen/QwenImage-20B", torch_dtype=torch.bfloat16)
-        >>> pipe.to("cuda")
-        >>> prompt = "A cat holding a sign that says hello world"
-        >>> # Depending on the variant being used, the pipeline call will slightly vary.
-        >>> # Refer to the pipeline documentation for more details.
-        >>> image = pipe(prompt, num_inference_steps=4, guidance_scale=0.0).images[0]
-        >>> image.save("qwenimage.png")
-        ```
-"""
-
 
 def calculate_shift(
     image_seq_len,
@@ -537,10 +521,6 @@ class QwenImagePipeline(): #DiffusionPipeline
         return latents, image_latents
 
     @property
-    def guidance_scale(self):
-        return self._guidance_scale
-
-    @property
     def attention_kwargs(self):
         return self._attention_kwargs
 
@@ -557,7 +537,6 @@ class QwenImagePipeline(): #DiffusionPipeline
         return self._interrupt
 
     @torch.no_grad()
-    @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
         self,
         prompt: Union[str, List[str]] = None,
@@ -567,7 +546,6 @@ class QwenImagePipeline(): #DiffusionPipeline
         width: Optional[int] = None,
         num_inference_steps: int = 50,
         sigmas: Optional[List[float]] = None,
-        guidance_scale: float = 1.0,
         num_images_per_prompt: int = 1,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.Tensor] = None,
@@ -616,12 +594,6 @@ class QwenImagePipeline(): #DiffusionPipeline
                 Custom sigmas to use for the denoising process with schedulers which support a `sigmas` argument in
                 their `set_timesteps` method. If not defined, the default behavior when `num_inference_steps` is passed
                 will be used.
-            guidance_scale (`float`, *optional*, defaults to 3.5):
-                Guidance scale as defined in [Classifier-Free Diffusion
-                Guidance](https://huggingface.co/papers/2207.12598). `guidance_scale` is defined as `w` of equation 2.
-                of [Imagen Paper](https://huggingface.co/papers/2205.11487). Guidance scale is enabled by setting
-                `guidance_scale > 1`. Higher guidance scale encourages to generate images that are closely linked to
-                the text `prompt`, usually at the expense of lower image quality.
             num_images_per_prompt (`int`, *optional*, defaults to 1):
                 The number of images to generate per prompt.
             generator (`torch.Generator` or `List[torch.Generator]`, *optional*):
@@ -692,7 +664,6 @@ class QwenImagePipeline(): #DiffusionPipeline
             max_sequence_length=max_sequence_length,
         )
 
-        self._guidance_scale = guidance_scale
         self._attention_kwargs = attention_kwargs
         self._current_timestep = None
         self._interrupt = False
@@ -826,12 +797,6 @@ class QwenImagePipeline(): #DiffusionPipeline
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         self._num_timesteps = len(timesteps)
         original_timesteps = timesteps
-        # handle guidance
-        if self.transformer.guidance_embeds:
-            guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
-            guidance = guidance.expand(latents.shape[0])
-        else:
-            guidance = None
 
         if self.attention_kwargs is None:
             self._attention_kwargs = {}
@@ -882,13 +847,12 @@ class QwenImagePipeline(): #DiffusionPipeline
             # latent_model_input = latents
             def denoise(latent_model_input, true_cfg_scale):
                 if image_latents is not None:
-                    latent_model_input = torch.cat([latents, image_latents], dim=1)
+                    latent_model_input = torch.cat([latent_model_input, image_latents], dim=1)
                 do_true_cfg = true_cfg_scale > 1
                 if do_true_cfg and joint_pass:
                     noise_pred, neg_noise_pred = self.transformer(
                         hidden_states=latent_model_input,
                         timestep=timestep / 1000,
-                        guidance=guidance, #!!!!
                         encoder_hidden_states_mask_list=[prompt_embeds_mask,negative_prompt_embeds_mask],
                         encoder_hidden_states_list=[prompt_embeds, negative_prompt_embeds],
                         img_shapes=img_shapes,
@@ -904,7 +868,6 @@ class QwenImagePipeline(): #DiffusionPipeline
                     noise_pred = self.transformer(
                         hidden_states=latent_model_input,
                         timestep=timestep / 1000,
-                        guidance=guidance,
                         encoder_hidden_states_mask_list=[prompt_embeds_mask],
                         encoder_hidden_states_list=[prompt_embeds],
                         img_shapes=img_shapes,
@@ -915,20 +878,19 @@ class QwenImagePipeline(): #DiffusionPipeline
                     if noise_pred == None: return None, None
                     noise_pred = noise_pred[:, : latents.size(1)]
 
-                if do_true_cfg:
-                    neg_noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
-                        timestep=timestep / 1000,
-                        guidance=guidance,
-                        encoder_hidden_states_mask_list=[negative_prompt_embeds_mask],
-                        encoder_hidden_states_list=[negative_prompt_embeds],
-                        img_shapes=img_shapes,
-                        txt_seq_lens_list=[negative_txt_seq_lens],
-                        attention_kwargs=self.attention_kwargs,
-                        **kwargs
-                    )[0]
-                    if neg_noise_pred == None: return None, None
-                    neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
+                    if do_true_cfg:
+                        neg_noise_pred = self.transformer(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            encoder_hidden_states_mask_list=[negative_prompt_embeds_mask],
+                            encoder_hidden_states_list=[negative_prompt_embeds],
+                            img_shapes=img_shapes,
+                            txt_seq_lens_list=[negative_txt_seq_lens],
+                            attention_kwargs=self.attention_kwargs,
+                            **kwargs
+                        )[0]
+                        if neg_noise_pred == None: return None, None
+                        neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
                 return noise_pred, neg_noise_pred
             def cfg_predictions( noise_pred, neg_noise_pred, guidance, t):
                 if do_true_cfg:

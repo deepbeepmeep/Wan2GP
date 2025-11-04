@@ -640,7 +640,7 @@ class WanAny2V:
 
         # VAP
         if vap: 
-            clip_image_start, clip_image_end = input_frames[:, 1].to(self.device), input_frames[:, -1].to(self.device) if any_end_frame else None
+            clip_image_start, clip_image_end = input_frames[:, 0].to(self.device), input_frames[:, -1].to(self.device) if any_end_frame else None
             kwargs.update({'clip_fea_mot_ref': get_clip_encodes(clip_image_start, clip_image_end)})
             clip_image_start = clip_image_end = None
             y_mot_ref = kwargs["y_mot_ref"] = kwargs["y"].clone()

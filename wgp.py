@@ -3955,7 +3955,7 @@ def get_resampled_video(video_in, start_frame, max_frames, target_fps, bridge='t
     reader = decord.VideoReader(video_in)
     fps = round(reader.get_avg_fps())
     if max_frames < 0:
-        max_frames = max(len(reader)/ fps * target_fps + max_frames, 0)
+        max_frames = int(max(len(reader)/ fps * target_fps + max_frames, 0))
 
 
     frame_nos = resample(fps, len(reader), max_target_frames_count= max_frames, target_fps=target_fps, start_target_frame= start_frame)

@@ -7,7 +7,7 @@ def test_vace(base_model_type):
     return base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B", "vace_ditto_14B"]     
 
 def test_class_i2v(base_model_type):    
-    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit" ]
+    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "vap" ]
 
 def test_class_t2v(base_model_type):    
     return base_model_type in ["t2v", "t2v_2_2", "alpha", "lynx"]
@@ -38,7 +38,7 @@ class family_handler():
     def query_supported_types():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B", 
-                    "recam_1.3B", "animate", "alpha", "alpha_lynx", "chrono_edit",
+                    "recam_1.3B", "animate", "alpha", "alpha_lynx", "chrono_edit", "vap",
                     "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp"]
 
 
@@ -47,6 +47,8 @@ class family_handler():
 
         models_eqv_map = {
             "flf2v_720p" : "i2v",
+            "chrono_edit" : "i2v",
+            "vap" : "i2v",
             "t2v_1.3B" : "t2v", 
             "t2v_2_2" : "t2v", 
             "t2v_2_2" : "alpha", 
@@ -58,7 +60,7 @@ class family_handler():
         models_comp_map = { 
                     "vace_14B" : [ "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_lite_14B", "vace_lynx_14B", "vace_14B_2_2"],
                     "t2v" : [ "vace_14B", "vace_1.3B" "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_lite_14B", "vace_lynx_14B", "vace_14B_2_2", "t2v_1.3B", "phantom_1.3B","phantom_14B", "standin", "lynx_lite", "lynx", "alpha"],
-                    "i2v" : [ "fantasy", "multitalk", "flf2v_720p" ],
+                    "i2v" : [ "fantasy", "multitalk", "flf2v_720p", "chrono_edit", "vap" ],
                     "i2v_2_2" : ["i2v_2_2_multitalk"],
                     "fantasy": ["multitalk"],
                     }
@@ -218,6 +220,22 @@ class family_handler():
                 }
             extra_model_def["v2i_switch_supported"] = True
 
+        if base_model_type in ["vap"]: 
+            extra_model_def["guide_custom_choices"] = {
+            "choices":[
+                ("Control Video", "V"),
+            ],
+            "default": "V",
+            "letters_filter": "V",
+            "label": "Video to Video",
+            "scale": 3,
+            "show_label" : False,
+            # "visible": False,
+            }
+            extra_model_def["video_length_locked"] = 49
+            extra_model_def["extra_prompt"] = "Prompt that Describes the Content of the Control Video"
+            extra_model_def["squeeze_control_video"] = True
+            
 
         if base_model_type in ["infinitetalk"]: 
             extra_model_def["no_background_removal"] = True
@@ -442,6 +460,8 @@ class family_handler():
             image_prompt_types_allowed = "SVL"
         elif i2v:
             image_prompt_types_allowed = "SEVL"
+            if base_model_type in ["vap"]:
+                image_prompt_types_allowed = "S"
         else:
             image_prompt_types_allowed = ""
         extra_model_def["image_prompt_types_allowed"] = image_prompt_types_allowed
@@ -678,6 +698,10 @@ class family_handler():
                 "audio_prompt_type": "R",
             })
         elif base_model_type in ["vace_ditto_14B"]:
+            ui_defaults.update({ 
+                "video_prompt_type": "V", 
+            })
+        elif base_model_type in ["vap"]:
             ui_defaults.update({ 
                 "video_prompt_type": "V", 
             })

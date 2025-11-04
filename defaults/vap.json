@@ -1,0 +1,10 @@
+{
+	"model":
+	{
+		"name": "Wan2.1 VAP 480p 14B",
+		"architecture" : "vap",
+		"modules": [["https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Video-as-prompt/Wan2_1-I2V-14B-VAP_module_bf16.safetensors"]],
+		"description": "Video As Prompt",
+		"URLs": "i2v"
+	}	
+}

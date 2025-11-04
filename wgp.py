@@ -4120,7 +4120,7 @@ def extract_faces_from_video_with_mask(input_video_path, input_mask_path, max_fr
     return face_tensor
 
 
-def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,  max_frames, start_frame=0, fit_canvas = None, fit_crop = False, target_fps = 16, block_size= 16, expand_scale = 2, process_type = "inpaint", process_type2 = None, to_bbox = False, RGB_Mask = False, negate_mask = False, process_outside_mask = None, inpaint_color = 127, outpainting_dims = None, proc_no = 1):
+def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,  max_frames, start_frame=0, fit_canvas = None, fit_crop = False, target_fps = 16, block_size= 16, expand_scale = 2, process_type = "inpaint", process_type2 = None, to_bbox = False, RGB_Mask = False, negate_mask = False, process_outside_mask = None, inpaint_color = 127, outpainting_dims = None, proc_no = 1, squeeze= False):
 
     def mask_to_xyxy_box(mask):
         rows, cols = np.where(mask == 255)
@@ -4161,7 +4161,12 @@ def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,
         preproc_outside = preproc2
     else:
         preproc_outside = get_preprocessor(process_outside_mask, inpaint_color)
-    video = get_resampled_video(input_video_path, start_frame, max_frames, target_fps)
+    if squeeze:
+        ref_video = get_resampled_video(input_video_path, start_frame, 9999, target_fps)
+        indices = torch.linspace(0, len(ref_video) - 1, 49).long().tolist()
+        video = [ref_video[i] for i in indices]        
+    else:
+        video = get_resampled_video(input_video_path, start_frame, max_frames, target_fps)
     if any_mask:
         mask_video = get_resampled_video(input_mask_path, start_frame, max_frames, target_fps)
 
@@ -4829,7 +4834,8 @@ def generate_video(
     send_cmd,
     image_mode,
     prompt,
-    negative_prompt,    
+    negative_prompt,
+    extra_prompt,
     resolution,
     video_length,
     batch_size,
@@ -5425,7 +5431,7 @@ def generate_video(
                 context_scale = [control_net_weight /2, control_net_weight2 /2] if preprocess_type2 is not None else [control_net_weight]
                 if not (preprocess_type == "identity" and preprocess_type2 is None and video_mask is None):send_cmd("progress", [0, get_latest_status(state, status_info)])
                 inpaint_color = 0 if preprocess_type=="pose" and process_outside_mask == "inpaint" else guide_inpaint_color
-                video_guide_processed, video_mask_processed = preprocess_video_with_mask(video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type )
+                video_guide_processed, video_mask_processed = preprocess_video_with_mask(video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type, squeeze = model_def.get("squeeze_control_video", False)  )
                 if preprocess_type2 != None:
                     video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type  )
 
@@ -5595,6 +5601,7 @@ def generate_video(
                     model_switch_phase = model_switch_phase,
                     embedded_guidance_scale=embedded_guidance_scale,
                     n_prompt=negative_prompt,
+                    extra_prompt = extra_prompt,
                     seed=seed,
                     callback=callback,
                     enable_RIFLEx = enable_RIFLEx,
@@ -6794,6 +6801,9 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if model_def.get("no_negative_prompt", False) :
         pop += ["negative_prompt" ] 
 
+    if len(model_def.get("extra_prompt", ""))==0 :
+        pop += ["extra_prompt" ] 
+
     if not model_def.get("skip_layer_guidance", False):
         pop += ["slg_switch", "slg_layers", "slg_start_perc", "slg_end_perc"]
 
@@ -7317,6 +7327,7 @@ def save_inputs(
             image_mode,
             prompt,
             negative_prompt,
+            extra_prompt,
             resolution,
             video_length,
             batch_size,
@@ -8400,6 +8411,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                 image_guide = gr.Image(label= "Control Image", height = 800, type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and ("U" in video_prompt_type_value or not "A" in video_prompt_type_value ) , value= ui_defaults.get("image_guide", None))
                 video_guide = gr.Video(label= "Control Video", height = gallery_height, visible= (not image_outputs) and "V" in video_prompt_type_value, value= ui_defaults.get("video_guide", None), elem_id="video_input")
+                extra_prompt_label = model_def.get("extra_prompt", "")
+                extra_prompt = gr.Textbox(label=extra_prompt_label, value=ui_defaults.get("extra_prompt", ""), visible= len(extra_prompt_label)  )
+
                 if image_mode_value >= 1:  
                     image_guide_value = ui_defaults.get("image_guide", None)
                     image_mask_value = ui_defaults.get("image_mask", None)

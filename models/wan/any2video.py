@@ -336,6 +336,7 @@ class WanAny2V:
         input_video = None,
         image_start = None,
         image_end = None,
+        extra_prompt = None,
         denoising_strength = 1.0,
         target_camera=None,                  
         context_scale=None,
@@ -451,14 +452,18 @@ class WanAny2V:
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
         text_len = self.model.text_len
+        context_null = context_extra = None
+
         any_guidance_at_all = guide_scale > 1 or guide2_scale > 1 and guide_phases >=2 or guide3_scale > 1 and guide_phases >=3
         context = self.text_encoder([input_prompt], self.device)[0].to(self.dtype)
         context = torch.cat([context, context.new_zeros(text_len -context.size(0), context.size(1)) ]).unsqueeze(0)
+        if extra_prompt is not None and len(extra_prompt) > 0:
+            context_extra = self.text_encoder([extra_prompt], self.device)[0].to(self.dtype)
+            context_extra = torch.cat([context_extra, context_extra.new_zeros(text_len -context_extra.size(0), context_extra.size(1)) ]).unsqueeze(0)
+
         if NAG_scale > 1 or any_guidance_at_all:      
             context_null = self.text_encoder([n_prompt], self.device)[0].to(self.dtype)
             context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0) 
-        else:
-            context_null = None
         if input_video is not None: height, width = input_video.shape[-2:]
 
         # NAG_prompt =  "static, low resolution, blurry"
@@ -487,6 +492,7 @@ class WanAny2V:
         lucy_edit=  model_type in ["lucy_edit"]
         animate=  model_type in ["animate"]
         chrono_edit = model_type in ["chrono_edit"]
+        vap = model_type in ["vap"]
         start_step_no = 0
         ref_images_count = 0
         trim_frames = 0
@@ -619,16 +625,31 @@ class WanAny2V:
             lat_frames = int((input_frames.shape[1] - 1) // self.vae_stride[0]) + 1
                         
         # Clip image
-        if hasattr(self, "clip") and clip_image_start is not None:                                   
-            clip_image_size = self.clip.model.image_size
-            clip_image_start = resize_lanczos(clip_image_start, clip_image_size, clip_image_size)
-            clip_image_end = resize_lanczos(clip_image_end, clip_image_size, clip_image_size) if clip_image_end is not None else clip_image_start
-            if model_type == "flf2v_720p":                    
-                clip_context = self.clip.visual([clip_image_start[:, None, :, :], clip_image_end[:, None, :, :] if clip_image_end is not None else clip_image_start[:, None, :, :]])
-            else:
-                clip_context = self.clip.visual([clip_image_start[:, None, :, :]])
+        if hasattr(self, "clip") and clip_image_start is not None:
+            def get_clip_encodes(clip_image_start, clip_image_end):                          
+                clip_image_size = self.clip.model.image_size
+                clip_image_start = resize_lanczos(clip_image_start, clip_image_size, clip_image_size)
+                clip_image_end = resize_lanczos(clip_image_end, clip_image_size, clip_image_size) if clip_image_end is not None else clip_image_start
+                if model_type == "flf2v_720p":                    
+                    clip_context = self.clip.visual([clip_image_start[:, None, :, :], clip_image_end[:, None, :, :] if clip_image_end is not None else clip_image_start[:, None, :, :]])
+                else:
+                    clip_context = self.clip.visual([clip_image_start[:, None, :, :]])
+                return clip_context
+            kwargs.update({'clip_fea': get_clip_encodes(clip_image_start, clip_image_end)})
             clip_image_start = clip_image_end = None
-            kwargs.update({'clip_fea': clip_context})
+
+        # VAP
+        if vap: 
+            clip_image_start, clip_image_end = input_frames[:, 1].to(self.device), input_frames[:, -1].to(self.device) if any_end_frame else None
+            kwargs.update({'clip_fea_mot_ref': get_clip_encodes(clip_image_start, clip_image_end)})
+            clip_image_start = clip_image_end = None
+            y_mot_ref = kwargs["y_mot_ref"] = kwargs["y"].clone()
+            y_mot_ref[4:, :1] = self.vae.encode([input_frames[:, :1]], VAE_tile_size)[0]
+            if any_end_frame:
+                y_mot_ref[4:, -1:] = self.vae.encode([input_frames[:, -1:]], VAE_tile_size)[0]
+            latent_mot_ref = self.vae.encode([input_frames.to(self.device)], VAE_tile_size)[0].unsqueeze(0)
+            kwargs["freqs_mot_ref"] = get_nd_rotary_pos_embed((-lat_frames, 0, 0), (0, lat_h // 2, lat_w // 2 )) 
+
 
         # Recam Master & Lucy Edit
         if recam or lucy_edit:
@@ -953,6 +974,13 @@ class WanAny2V:
                     "context" : [context, context_null],
                     # "face_pixel_values": [face_pixel_values, None]
                     "face_pixel_values": [face_pixel_values, face_pixel_values] # seems to look better this way
+                }
+            elif vap:
+                gen_args = {
+                    "x" : [latent_model_input, latent_model_input],
+                    "x_mot_ref" : [latent_mot_ref, latent_mot_ref],
+                    "context" : [context, context_null],
+                    "context_mot_ref" : [context_extra, context_null],
                 }
             elif lynx:
                 gen_args = {

@@ -78,7 +78,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.7"
-WanGP_version = "9.3"
+WanGP_version = "9.31"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -3955,7 +3955,7 @@ def get_resampled_video(video_in, start_frame, max_frames, target_fps, bridge='t
     reader = decord.VideoReader(video_in)
     fps = round(reader.get_avg_fps())
     if max_frames < 0:
-        max_frames = max(len(reader)/ fps * target_fps + max_frames, 0)
+        max_frames = int(max(len(reader)/ fps * target_fps + max_frames, 0))
 
 
     frame_nos = resample(fps, len(reader), max_target_frames_count= max_frames, target_fps=target_fps, start_target_frame= start_frame)

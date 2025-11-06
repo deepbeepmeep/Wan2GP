@@ -1619,7 +1619,7 @@ class WanModel(ModelMixin, ConfigMixin):
                 if x_id != 0:
                     should_calc = skips_steps_cache.should_calc
                 else:
-                    if real_step_no <= skips_steps_cache.start_step or real_step_no == skips_steps_cache.num_steps-1:
+                    if real_step_no <= skips_steps_cache.start_step or real_step_no == skips_steps_cache.num_steps-1 or skips_steps_cache.previous_modulated_input is None:
                         should_calc = True
                         skips_steps_cache.accumulated_rel_l1_distance = 0
                     else:

@@ -1183,19 +1183,18 @@ class WanModel(ModelMixin, ConfigMixin):
 
 
     def adapt_modulation(self, block_name ='blocks'):
-        modules_dict= { k: m for k, m in self.named_modules()}
-        for k,v in modules_dict[block_name]._modules.items():            
+        def move(v, param_name = "modulation"):
             module = torch.nn.Module()
-            module.weight = v.modulation
-            delattr(v, "modulation")
-            v.modulation = module
+            module.weight = getattr(v, param_name)
+            delattr(v, param_name)
+            setattr(v, param_name, module)
+
+        modules_dict= { k: m for k, m in self.named_modules()}
+        for k,v in modules_dict[block_name]._modules.items():
+            move(v)
 
         if block_name != "blocks": return
-        parent_module = modules_dict["head"]
-        module = torch.nn.Module()
-        module.weight = parent_module.modulation
-        delattr(parent_module, "modulation")
-        parent_module.modulation = module
+        move(modules_dict["head"])
 
     def adapt_vace_model(self):
         self.adapt_modulation("vace_blocks")
@@ -1225,7 +1224,7 @@ class WanModel(ModelMixin, ConfigMixin):
     def lock_layers_dtypes(self, hybrid_dtype = None, dtype = torch.float32):
         from optimum.quanto import QTensor
 
-        layer_list = [self.head, self.head.head, self.patch_embedding]
+        layer_list = [self.head, self.head.head, self.head.modulation, self.patch_embedding]
         target_dype= dtype
         
         layer_list2 = [ self.time_embedding, self.time_embedding[0], self.time_embedding[2], 
@@ -1257,8 +1256,10 @@ class WanModel(ModelMixin, ConfigMixin):
         for current_layer_list, current_dtype in zip([layer_list, layer_list2], [target_dype, target_dype2]):
             for layer in current_layer_list:
                 layer._lock_dtype = dtype
-
-                if hasattr(layer, "weight") and layer.weight.dtype != current_dtype:
+                if isinstance(layer, nn.Parameter):
+                    if not isinstance(layer.data, QTensor):
+                        layer.data = layer.data.to(current_dtype)
+                elif hasattr(layer, "weight") and layer.weight.dtype != current_dtype:
                     if not isinstance(layer.weight.data, QTensor):
                         layer.weight.data = layer.weight.data.to(current_dtype)
                         if hasattr(layer, "bias"):

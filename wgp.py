@@ -78,7 +78,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.7"
-WanGP_version = "9.35"
+WanGP_version = "9.37"
 settings_version = 2.39
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -795,7 +795,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         if image_start == None :
             gr.Info("Start Image should be an Image") 
             return ret()
-        if  multi_prompts_gen_type == 1 and len(image_start) > 1:
+        if  multi_prompts_gen_type in (1,2) and len(image_start) > 1:
             gr.Info("Only one Start Image is supported") 
             return ret()       
     else:
@@ -847,9 +847,12 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
             gr.Info("Filtering Frames with this model is not supported")
             return ret()
 
-    if inputs["multi_prompts_gen_type"] != 0:
+    if multi_prompts_gen_type != 0:
         if image_start != None and len(image_start) > 1:
-            gr.Info("Only one Start Image must be provided if multiple prompts are used for different windows") 
+            if multi_prompts_gen_type == 1:
+                gr.Info("Only one Start Image must be provided if multiple prompts are used for different windows") 
+            else:
+                gr.Info("Only one Start Image must be provided if there is a single Prompt") 
             return ret()
 
         # if image_end != None and len(image_end) > 1:
@@ -879,7 +882,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         "model_switch_phase": model_switch_phase,
     } 
 
-    if inputs["multi_prompts_gen_type"] == 0:
+    if multi_prompts_gen_type == 0:
         if image_start != None and len(image_start) > 0:
             if inputs["multi_images_gen_type"] == 0:
                 new_prompts = []
@@ -3517,6 +3520,7 @@ def refresh_gallery(state): #, msg
         prompt =  task["prompt"]
         params = task["params"]
         model_type = params["model_type"] 
+        multi_prompts_gen_type = params["multi_prompts_gen_type"]
         base_model_type = get_base_model_type(model_type)
         model_def = get_model_def(model_type) 
         onemorewindow_visible = test_any_sliding_window(base_model_type) and params.get("image_mode",0) == 0 and not params.get("mode","").startswith("edit_")
@@ -3525,7 +3529,9 @@ def refresh_gallery(state): #, msg
             enhanced = True
             prompt = prompt[len("!enhanced!\n"):]
         prompt = html.escape(prompt)
-        if "\n" in prompt :
+        if multi_prompts_gen_type == 2:
+            prompt = prompt.replace("\n", "<BR>")
+        elif "\n" in prompt :
             prompts = prompt.split("\n")
             window_no= gen.get("window_no",1)
             if window_no > len(prompts):
@@ -3755,7 +3761,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             values +=[video_creation_date]
             labels +=["Creation Date"]
         else: 
-            video_prompt =  html.escape(configs.get("prompt", "")[:1024])
+            video_prompt =  html.escape(configs.get("prompt", "")[:1024]).replace("\n", "<BR>")
             video_video_prompt_type = configs.get("video_prompt_type", "")
             video_image_prompt_type = configs.get("image_prompt_type", "")
             video_audio_prompt_type = configs.get("audio_prompt_type", "")
@@ -5011,8 +5017,11 @@ def generate_video(
     trans2 = get_transformer_model(wan_model, 2)
     audio_sampling_rate = 16000
 
-    prompts = prompt.split("\n")
-    prompts = [part for part in prompts if len(prompt)>0]
+    if multi_prompts_gen_type == 2:
+        prompts = [prompt]
+    else:
+        prompts = prompt.split("\n")
+        prompts = [part.strip() for part in prompts if len(prompt)>0]
     parsed_keep_frames_video_source= max_source_video_frames if len(keep_frames_video_source) ==0 else int(keep_frames_video_source) 
     transformer_loras_filenames, transformer_loras_multipliers  = get_transformer_loras(model_type)
     if guidance_phases < 1: guidance_phases = 1
@@ -7821,7 +7830,13 @@ def show_modal_image(state, action_string):
     return gr.HTML(value=html_content), gr.Column(visible=True)
 
 def get_prompt_labels(multi_prompts_gen_type, image_outputs = False, audio_only = False):
-    new_line_text = "each new line of prompt will be used for a window" if multi_prompts_gen_type != 0 else "each new line of prompt will generate " + ("a new image" if image_outputs else ("a new audio file" if audio_only else "a new video"))
+    if multi_prompts_gen_type == 1:
+        new_line_text = "each Line of Prompt will be used for a Sliding Window"  
+    elif multi_prompts_gen_type == 0:
+        new_line_text = "each Line of Prompt will generate " + ("a new Image" if image_outputs else ("a new Audio File" if audio_only else "a new Video"))
+    else:
+        new_line_text = "all the Lines are Parts of the Same Prompt"  
+
     return "Prompts (" + new_line_text + ", # lines = comments, ! lines = macros)", "Prompts (" + new_line_text + ", # lines = comments)"
 
 def get_image_end_label(multi_prompts_gen_type):
@@ -8172,7 +8187,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             hunyuan_video_avatar = "hunyuan_video_avatar" in model_filename
             image_outputs = model_def.get("image_outputs", False)
             sliding_window_enabled = test_any_sliding_window(model_type)
-            multi_prompts_gen_type_value = ui_defaults.get("multi_prompts_gen_type_value",0)
+            multi_prompts_gen_type_value = ui_defaults.get("multi_prompts_gen_type",0)
             prompt_label, wizard_prompt_label = get_prompt_labels(multi_prompts_gen_type_value, image_outputs, audio_only)            
             any_video_source = False
             fps = get_model_fps(base_model_type)
@@ -8204,6 +8219,12 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 with gr.Tab("Image Inpainting", id = "inpaint", elem_classes="compact_tab", visible=inpaint_support) as tab_inpaint:
                     pass
 
+            if audio_only:
+                medium = "Audio"
+            elif image_outputs:
+                medium = "Image"
+            else:
+                medium = "Video"
             image_prompt_types_allowed = model_def.get("image_prompt_types_allowed", "")
             model_mode_choices = model_def.get("model_modes", None)
             model_modes_visibility = [0,1,2]
@@ -8678,6 +8699,21 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     ("Match images and text prompts", 1),
                                 ], visible= test_class_i2v(model_type), label= "Multiple Images as Texts Prompts"
                             )
+
+                        with gr.Row():
+                            multi_prompts_gen_choices = [(f"Each New Line Will Add a new {medium} Request to the Generation Queue", 0)]
+                            if sliding_window_enabled:
+                                multi_prompts_gen_choices += [("Each Line Will be used for a new Sliding Window of the same Video Generation", 1)]
+                            multi_prompts_gen_choices += [("All the Lines are Part of the Same Prompt", 2)]
+
+                            multi_prompts_gen_type = gr.Dropdown(
+                                choices=multi_prompts_gen_choices,
+                                value=ui_defaults.get("multi_prompts_gen_type",0),
+                                visible=True,
+                                scale = 1,
+                                label= "How to Process each Line of the Text Prompt"
+                            )
+
                 with gr.Tab("Loras", visible= not audio_only) as loras_tab:
                     with gr.Column(visible = True): #as loras_column:
                         gr.Markdown("<B>Loras can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
@@ -8912,16 +8948,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             visible = vace or ltxv or t2v or infinitetalk
                         )
 
-                        multi_prompts_gen_type = gr.Dropdown(
-                            choices=[
-                                ("Will create a new generated Video added to the Generation Queue", 0),
-                                ("Will be used for a new Sliding Window of the same Video Generation", 1),
-                           ],
-                            value=ui_defaults.get("multi_prompts_gen_type",0),
-                            visible=True,
-                            scale = 1,
-                            label="Images & Text Prompts separated by a Carriage Return" if (any_start_image or any_end_image) else "Text Prompts separated by a Carriage Return"
-                        )
                         
                 with gr.Tab("Misc.", visible = not audio_only) as misc_tab:
                     with gr.Column(visible = not (recammaster or ltxv or diffusion_forcing)) as RIFLEx_setting_col:

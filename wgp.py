@@ -8949,8 +8949,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         )
 
                         
-                with gr.Tab("Misc.", visible = not audio_only) as misc_tab:
-                    with gr.Column(visible = not (recammaster or ltxv or diffusion_forcing)) as RIFLEx_setting_col:
+                with gr.Tab("Misc.") as misc_tab:
+                    with gr.Column(visible = not (recammaster or ltxv or diffusion_forcing or audio_only or image_outputs)) as RIFLEx_setting_col:
                         gr.Markdown("<B>With Riflex you can generate videos longer than 5s which is the default duration of videos used to train the model</B>")
                         RIFLEx_setting = gr.Dropdown(
                             choices=[
@@ -8962,33 +8962,33 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label="RIFLEx positional embedding to generate long video",
                             visible = True
                         )
-
-                    gr.Markdown("<B>You can change the Default number of Frames Per Second of the output Video, in the absence of Control Video this may create unwanted slow down / acceleration</B>")
-                    force_fps_choices =  [(f"Model Default ({fps} fps)", "")]
-                    if any_control_video and (any_video_source or recammaster):
-                        force_fps_choices +=  [("Auto fps: Source Video if any, or Control Video if any, or Model Default", "auto")]
-                    elif any_control_video :
-                        force_fps_choices +=  [("Auto fps: Control Video if any, or Model Default", "auto")]
-                    elif any_control_video and (any_video_source or recammaster):
-                        force_fps_choices +=  [("Auto fps: Source Video if any, or Model Default", "auto")]
-                    if any_control_video:
-                        force_fps_choices +=  [("Control Video fps", "control")]
-                    if any_video_source or recammaster:
-                        force_fps_choices +=  [("Source Video fps", "source")]
-                    force_fps_choices += [
-                            ("15", "15"), 
-                            ("16", "16"), 
-                            ("23", "23"), 
-                            ("24", "24"), 
-                            ("25", "25"), 
-                            ("30", "30"), 
-                        ]
+                    with gr.Column(visible = not (audio_only or image_outputs)) as force_fps_col:
+                        gr.Markdown("<B>You can change the Default number of Frames Per Second of the output Video, in the absence of Control Video this may create unwanted slow down / acceleration</B>")
+                        force_fps_choices =  [(f"Model Default ({fps} fps)", "")]
+                        if any_control_video and (any_video_source or recammaster):
+                            force_fps_choices +=  [("Auto fps: Source Video if any, or Control Video if any, or Model Default", "auto")]
+                        elif any_control_video :
+                            force_fps_choices +=  [("Auto fps: Control Video if any, or Model Default", "auto")]
+                        elif any_control_video and (any_video_source or recammaster):
+                            force_fps_choices +=  [("Auto fps: Source Video if any, or Model Default", "auto")]
+                        if any_control_video:
+                            force_fps_choices +=  [("Control Video fps", "control")]
+                        if any_video_source or recammaster:
+                            force_fps_choices +=  [("Source Video fps", "source")]
+                        force_fps_choices += [
+                                ("15", "15"), 
+                                ("16", "16"), 
+                                ("23", "23"), 
+                                ("24", "24"), 
+                                ("25", "25"), 
+                                ("30", "30"), 
+                            ]
                     
-                    force_fps = gr.Dropdown(
-                        choices=force_fps_choices,
-                        value=ui_defaults.get("force_fps",""),
-                        label=f"Override Frames Per Second (model default={fps} fps)"
-                    )
+                        force_fps = gr.Dropdown(
+                            choices=force_fps_choices,
+                            value=ui_defaults.get("force_fps",""),
+                            label=f"Override Frames Per Second (model default={fps} fps)"
+                        )
 
 
                     gr.Markdown("<B>You can set a more agressive Memory Profile if you generate only Short Videos or Images<B>")
@@ -9136,7 +9136,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       prompt_column_advanced, prompt_column_wizard_vars, prompt_column_wizard, lset_name, save_lset_prompt_drop, advanced_row, speed_tab, audio_tab, mmaudio_col, quality_tab,
                                       sliding_window_tab, misc_tab, prompt_enhancer_row, inference_steps_row, skip_layer_guidance_row, audio_guide_row, RIFLEx_setting_col,
                                       video_prompt_type_video_guide, video_prompt_type_video_guide_alt, video_prompt_type_video_mask, video_prompt_type_image_refs, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox,
-                                      apg_col, audio_prompt_type_sources,  audio_prompt_type_remux, audio_prompt_type_remux_row,
+                                      apg_col, audio_prompt_type_sources,  audio_prompt_type_remux, audio_prompt_type_remux_row, force_fps_col,
                                       video_guide_outpainting_col,video_guide_outpainting_top, video_guide_outpainting_bottom, video_guide_outpainting_left, video_guide_outpainting_right,
                                       video_guide_outpainting_checkbox, video_guide_outpainting_row, show_advanced, video_info_to_control_video_btn, video_info_to_video_source_btn, sample_solver_row,
                                       video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab, PP_MMAudio_setting, PP_MMAudio_row, PP_custom_audio_row, 

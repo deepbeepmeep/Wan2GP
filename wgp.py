@@ -3297,7 +3297,6 @@ def load_models(model_type, override_profile = -1, **model_kwargs):
                 print(f"Loading Text Encoder '{override_text_encoder}' ...")
     else:
         override_text_encoder = None
-    set_seed(42)
     torch.set_default_device('cpu')    
     wan_model, pipe = model_types_handlers[base_model_type].load_model(
                 local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,

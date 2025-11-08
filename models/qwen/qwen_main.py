@@ -88,7 +88,7 @@ class model_factory():
         # text_encoder = offload.fast_load_transformers_model(text_encoder_filename, do_quantize=True,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration, defaultConfigPath="text_encoder_config.json", verboseLevel=2)
         # text_encoder.to(torch.float16)
         # offload.save_model(text_encoder, "text_encoder_quanto_fp16.safetensors", do_quantize= True)
-        use_Wan_VAE = True
+        use_Wan_VAE = False
         VAE_upsampler_factor = 2 if VAE_upsampling is not None else 1
 
         if use_Wan_VAE:

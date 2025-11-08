@@ -76,7 +76,8 @@ class WanAny2V:
         save_quantized = False,
         dtype = torch.bfloat16,
         VAE_dtype = torch.float32,
-        mixed_precision_transformer = False
+        mixed_precision_transformer = False,
+        VAE_upsampling = None,
     ):
         self.device = torch.device(f"cuda")
         self.config = config
@@ -103,7 +104,7 @@ class WanAny2V:
                 tokenizer_path=fl.locate_folder("xlm-roberta-large"))
 
         ignore_unused_weights = model_def.get("ignore_unused_weights", False)
-
+        vae_upsampler_factor = 1
         vae_checkpoint2 = None
         if model_def.get("wan_5B_class", False):
             self.vae_stride = (4, 16, 16)
@@ -111,15 +112,19 @@ class WanAny2V:
             vae = Wan2_2_VAE
         else:
             vae = WanVAE
-            self.vae_stride = config.vae_stride
-            if model_def.get("alpha_class", False):
+            self.vae_stride = config.vae_stride            
+            if VAE_upsampling is not None:
+                vae_upsampler_factor = 2
+                vae_checkpoint ="Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
+            elif model_def.get("alpha_class", False):
                 vae_checkpoint ="wan_alpha_2.1_vae_rgb_channel.safetensors"
                 vae_checkpoint2 ="wan_alpha_2.1_vae_alpha_channel.safetensors"
             else:
                 vae_checkpoint = "Wan2.1_VAE.safetensors"                
         self.patch_size = config.patch_size 
         
-        self.vae = vae( vae_pth=fl.locate_file(vae_checkpoint), dtype= VAE_dtype, device="cpu")
+        self.vae = vae( vae_pth=fl.locate_file(vae_checkpoint), dtype= VAE_dtype, upsampler_factor = vae_upsampler_factor, device="cpu")
+        self.vae.upsampling_set = VAE_upsampling
         self.vae.device = self.device # need to set to cuda so that vae buffers are properly moved (although the rest will stay in the CPU)
         self.vae2 = None
         if vae_checkpoint2 is not None:

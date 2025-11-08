@@ -46,6 +46,7 @@ class model_factory():
         dtype = torch.bfloat16,
         VAE_dtype = torch.float32,
         mixed_precision_transformer = False,
+        VAE_upsampling = None,
     ):
     
 
@@ -87,10 +88,25 @@ class model_factory():
         # text_encoder = offload.fast_load_transformers_model(text_encoder_filename, do_quantize=True,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration, defaultConfigPath="text_encoder_config.json", verboseLevel=2)
         # text_encoder.to(torch.float16)
         # offload.save_model(text_encoder, "text_encoder_quanto_fp16.safetensors", do_quantize= True)
+        use_Wan_VAE = True
+        VAE_upsampler_factor = 2 if VAE_upsampling is not None else 1
 
-        vae = offload.fast_load_transformers_model( fl.locate_file("qwen_vae.safetensors"), writable_tensors= True , modelClass=AutoencoderKLQwenImage, defaultConfigPath= fl.locate_file("qwen_vae_config.json"))
-        
+        if use_Wan_VAE:
+            vae_checkpoint = "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors" if VAE_upsampler_factor == 2 else "Wan2.1_VAE.safetensors"
+            from ..wan.modules.vae import WanVAE
+            vae = WanVAE( vae_pth=fl.locate_file(vae_checkpoint), dtype= VAE_dtype, upsampler_factor = VAE_upsampler_factor, device="cpu")
+            vae.device = "cuda" #self.device # need to set to cuda so that vae buffers are properly moved (although the rest will stay in the CPU)
+        else:
+            if VAE_upsampler_factor ==2 :
+                from .convert_diffusers_qwen_vae import convert_state_dict
+                vae_checkpoint = "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
+            else:
+                convert_state_dict = None
+                vae_checkpoint = "qwen_vae.safetensors"
+            vae = offload.fast_load_transformers_model( fl.locate_file(vae_checkpoint), writable_tensors= True , modelClass=AutoencoderKLQwenImage, defaultConfigPath= fl.locate_file("qwen_vae_config.json"), configKwargs={"upsampler_factor": VAE_upsampler_factor}, preprocess_sd=convert_state_dict)
+        vae.upsampling_set = VAE_upsampling
         self.pipeline = QwenImagePipeline(vae, text_encoder, tokenizer, transformer, processor)
+        self.pipeline.use_Wan_VAE = use_Wan_VAE
         self.vae=vae
         self.text_encoder=text_encoder
         self.tokenizer=tokenizer
@@ -170,12 +186,17 @@ class model_factory():
         self.scheduler=FlowMatchEulerDiscreteScheduler(**scheduler_config)
         self.pipeline.scheduler = self.scheduler 
         if VAE_tile_size is not None:
+            if isinstance(VAE_tile_size, int):
+                tiling_type = VAE_tile_size
+                VAE_tile_size = [False, 0] if tiling_type == 0 else [True, 256]  
             self.vae.use_tiling  = VAE_tile_size[0] 
             self.vae.tile_latent_min_height  = VAE_tile_size[1] 
             self.vae.tile_latent_min_width  = VAE_tile_size[1]
-
+            tile_size  = VAE_tile_size[1]
+        # tile_size = 256
         qwen_edit_plus = self.base_model_type in ["qwen_image_edit_plus_20B"]
-        self.vae.enable_slicing()
+        if hasattr(self.vae, "enable_slicing"):
+            self.vae.enable_slicing()
         # width, height = aspect_ratios["16:9"]
 
         if n_prompt is None or len(n_prompt) == 0:
@@ -216,6 +237,7 @@ class model_factory():
             lora_inpaint = image_mask is not None and model_mode == 1,
             outpainting_dims = outpainting_dims,
             qwen_edit_plus = qwen_edit_plus,
+            VAE_tile_size = tile_size,
         )      
         if image is None: return None
         return image.transpose(0, 1)

@@ -177,8 +177,8 @@ class QwenImagePipeline(): #DiffusionPipeline
         self.transformer=transformer
         self.processor = processor
 
-        self.latent_channels = self.vae.config.z_dim if getattr(self, "vae", None) else 16
-        self.vae_scale_factor = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
+        self.latent_channels = self.vae.z_dim if getattr(self, "vae", None) else 16
+        self.vae_scale_factor = 8 # 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
         # QwenImage latents are turned into 2x2 patches and packed. This means the latent width and height has to be divisible
         # by the patch size. So the vae scale factor is multiplied by the patch size to account for this
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
@@ -473,6 +473,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         device,
         generator,
         latents=None,
+        tile_size=0,
     ):
         # VAE applies 8x compression on images but we must also account for packing which requires
         # latent height and width to be divisible by 2.
@@ -489,7 +490,10 @@ class QwenImagePipeline(): #DiffusionPipeline
             for image in images:
                 image = image.to(device=device, dtype=dtype)
                 if image.shape[1] != self.latent_channels:
-                    image_latents = self._encode_vae_image(image=image, generator=generator)
+                    if self.use_Wan_VAE:
+                        image_latents = self.vae.encode(image, tile_size = tile_size)[0].unsqueeze(0)
+                    else:
+                        image_latents = self._encode_vae_image(image=image, generator=generator)
                 else:
                     image_latents = image
                 if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
@@ -569,6 +573,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         lora_inpaint = False,
         outpainting_dims = None,
         qwen_edit_plus = False,
+        VAE_tile_size = 0,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -642,7 +647,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         if callback != None:
             callback(-1, None, True)
 
-
+        vae_z_dim = self.vae.z_dim
         height = height or self.default_sample_size * self.vae_scale_factor
         width = width or self.default_sample_size * self.vae_scale_factor
 
@@ -759,6 +764,7 @@ class QwenImagePipeline(): #DiffusionPipeline
             device,
             generator,
             latents,
+            tile_size=VAE_tile_size
         )
         original_image_latents = None if image_latents is None else image_latents.clone() 
 
@@ -944,17 +950,21 @@ class QwenImagePipeline(): #DiffusionPipeline
         else:
             latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
             latents = latents.to(self.vae.dtype)
-            latents_mean = (
-                torch.tensor(self.vae.config.latents_mean)
-                .view(1, self.vae.config.z_dim, 1, 1, 1)
-                .to(latents.device, latents.dtype)
-            )
-            latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, self.vae.config.z_dim, 1, 1, 1).to(
-                latents.device, latents.dtype
-            )
-            latents = latents / latents_std + latents_mean
-            output_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
-            if image_mask is not None and not lora_inpaint :  #not (lora_inpaint and outpainting_dims is not None):
+            if self.use_Wan_VAE:
+                output_image = torch.cat([image.transpose(0,1) for image in self.vae.decode(latents, tile_size= VAE_tile_size)])
+            else:
+                latents_mean = (
+                    torch.tensor(self.vae.config.latents_mean)
+                    .view(1, vae_z_dim, 1, 1, 1)
+                    .to(latents.device, latents.dtype)
+                )
+                latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, vae_z_dim, 1, 1, 1).to(
+                    latents.device, latents.dtype
+                )
+                latents = latents / latents_std + latents_mean
+                output_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
+
+            if image_mask is not None and not lora_inpaint and self.vae.upsampling_set is None:  #not (lora_inpaint and outpainting_dims is not None):
                 output_image = vae_images[0].squeeze(2) * (1 - image_mask_rebuilt) + output_image.to(vae_images[0]  ) * image_mask_rebuilt 
 
 

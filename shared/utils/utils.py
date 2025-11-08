@@ -220,10 +220,10 @@ def convert_image_to_video(image):
         out.release()
         return temp_video.name
     
-def resize_lanczos(img, h, w):
+def resize_lanczos(img, h, w, method = None):
     img = (img + 1).float().mul_(127.5)
     img = Image.fromarray(np.clip(img.movedim(0, -1).cpu().numpy(), 0, 255).astype(np.uint8))
-    img = img.resize((w,h), resample=Image.Resampling.LANCZOS) 
+    img = img.resize((w,h), resample=Image.Resampling.LANCZOS if method is None else method) 
     img = torch.from_numpy(np.array(img).astype(np.float32)).movedim(-1, 0)
     img = img.div(127.5).sub_(1)
     return img

@@ -158,6 +158,9 @@ class family_handler():
         else:
             profiles_dir = "wan"
 
+        if  (test_class_t2v(base_model_type) or vace_class or not base_model_type in ["chrono_edit"]) and not base_model_type in ["alpha"]:
+            extra_model_def["vae_upsampler"] = [1,2]
+
         extra_model_def["profiles_dir"] = [profiles_dir]
         extra_model_def["group"] = group
 
@@ -476,21 +479,21 @@ class family_handler():
         download_def  = [{
             "repoId" : "DeepBeepMeep/Wan2.1", 
             "sourceFolderList" :  ["xlm-roberta-large", "umt5-xxl", ""  ],
-            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors" ] +  computeList(model_filename)  ]   
+            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"] +  computeList(model_filename)  ]   
         }]
 
         if test_wan_5B(base_model_type):
             download_def += [    {
                 "repoId" : "DeepBeepMeep/Wan2.2", 
                 "sourceFolderList" :  [""],
-                "fileList" : [ [ "Wan2.2_VAE.safetensors" ]  ]
+                "fileList" : [ [ "Wan2.2_VAE.safetensors"]  ]
             }]
 
         return download_def
 
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, override_text_encoder = None):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, override_text_encoder = None, VAE_upsampling = None, **kwargs):
         from .configs import WAN_CONFIGS
 
         if test_class_i2v(base_model_type):
@@ -512,7 +515,8 @@ class family_handler():
             dtype = dtype,
             VAE_dtype = VAE_dtype, 
             mixed_precision_transformer = mixed_precision_transformer,
-            save_quantized = save_quantized
+            save_quantized = save_quantized,
+            VAE_upsampling = VAE_upsampling,            
         )
 
         pipe = {"transformer": wan_model.model, "text_encoder" : wan_model.text_encoder.model, "vae": wan_model.vae.model }

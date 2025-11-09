@@ -78,8 +78,13 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.7"
+<<<<<<< HEAD
 WanGP_version = "9.41"
 settings_version = 2.40
+=======
+WanGP_version = "9.4"
+settings_version = 2.39
+>>>>>>> 3f50631bfb34a981bcb7dad4280638aa550a5f46
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]

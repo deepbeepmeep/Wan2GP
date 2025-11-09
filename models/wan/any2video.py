@@ -313,9 +313,11 @@ class WanAny2V:
         context = torch.cat([context, context.new_zeros(self.model.text_len -context.size(0), context.size(1)) ]).unsqueeze(0) 
         clear_caches()
         get_cache("lynx_ref_buffer").update({ 0: {}, 1: {} })
+        _loras_active_adapters = None
         if not enable_loras:
-            _loras_active_adapters = self.model._loras_active_adapters
-            self.model._loras_active_adapters = []
+            if hasattr(self.model, "_loras_active_adapters"):
+                _loras_active_adapters = self.model._loras_active_adapters
+                self.model._loras_active_adapters = []
         ref_buffer = self.model(
             pipeline =self,
             x = [vae_feat, vae_feat_uncond] if any_guidance else [vae_feat],
@@ -324,7 +326,7 @@ class WanAny2V:
             t=torch.stack([torch.tensor(0, dtype=torch.float)]).to(self.device),
             lynx_feature_extractor = True,
         )
-        if not enable_loras:
+        if _loras_active_adapters is not None:
             self.model._loras_active_adapters = _loras_active_adapters
 
         clear_caches()

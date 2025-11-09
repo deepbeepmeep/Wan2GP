@@ -712,6 +712,7 @@ class family_handler():
         elif base_model_type in ["mocha"]:
             ui_defaults.update({ 
                 "video_prompt_type": "VAI", 
+                "audio_prompt_type": "R",
 	            "force_fps": "control",
             })
 

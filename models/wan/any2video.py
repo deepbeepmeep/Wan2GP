@@ -76,7 +76,8 @@ class WanAny2V:
         save_quantized = False,
         dtype = torch.bfloat16,
         VAE_dtype = torch.float32,
-        mixed_precision_transformer = False
+        mixed_precision_transformer = False,
+        VAE_upsampling = None,
     ):
         self.device = torch.device(f"cuda")
         self.config = config
@@ -87,6 +88,7 @@ class WanAny2V:
         self.model_def = model_def
         self.model2 = None
         self.transformer_switch = model_def.get("URLs2", None) is not None
+        self.is_mocha = model_def.get("mocha_mode", False)
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
             dtype=config.t5_dtype,
@@ -103,7 +105,7 @@ class WanAny2V:
                 tokenizer_path=fl.locate_folder("xlm-roberta-large"))
 
         ignore_unused_weights = model_def.get("ignore_unused_weights", False)
-
+        vae_upsampler_factor = 1
         vae_checkpoint2 = None
         if model_def.get("wan_5B_class", False):
             self.vae_stride = (4, 16, 16)
@@ -111,15 +113,19 @@ class WanAny2V:
             vae = Wan2_2_VAE
         else:
             vae = WanVAE
-            self.vae_stride = config.vae_stride
-            if model_def.get("alpha_class", False):
+            self.vae_stride = config.vae_stride            
+            if VAE_upsampling is not None:
+                vae_upsampler_factor = 2
+                vae_checkpoint ="Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
+            elif model_def.get("alpha_class", False):
                 vae_checkpoint ="wan_alpha_2.1_vae_rgb_channel.safetensors"
                 vae_checkpoint2 ="wan_alpha_2.1_vae_alpha_channel.safetensors"
             else:
                 vae_checkpoint = "Wan2.1_VAE.safetensors"                
         self.patch_size = config.patch_size 
         
-        self.vae = vae( vae_pth=fl.locate_file(vae_checkpoint), dtype= VAE_dtype, device="cpu")
+        self.vae = vae( vae_pth=fl.locate_file(vae_checkpoint), dtype= VAE_dtype, upsampler_factor = vae_upsampler_factor, device="cpu")
+        self.vae.upsampling_set = VAE_upsampling
         self.vae.device = self.device # need to set to cuda so that vae buffers are properly moved (although the rest will stay in the CPU)
         self.vae2 = None
         if vae_checkpoint2 is not None:
@@ -324,6 +330,33 @@ class WanAny2V:
         clear_caches()
         return ref_buffer[0], (ref_buffer[1] if any_guidance else None)
 
+    def _build_mocha_latents(self, source_video, mask_tensor, ref_images, frame_num, lat_frames, lat_h, lat_w, tile_size):
+        video = source_video.to(device=self.device, dtype=self.VAE_dtype)
+        source_latents = self.vae.encode([video], tile_size=tile_size)[0].unsqueeze(0).to(self.dtype)
+        mask = mask_tensor[:, :1].to(device=self.device, dtype=self.dtype)
+        mask_latents = F.interpolate(mask, size=(lat_h, lat_w), mode="nearest").unsqueeze(2).repeat(1, self.vae.model.z_dim, 1, 1, 1)
+
+        ref_latents = [self.vae.encode([convert_image_to_tensor(img).unsqueeze(1).to(device=self.device, dtype=self.VAE_dtype)], tile_size=tile_size)[0].unsqueeze(0).to(self.dtype) for img in ref_images[:2]]
+        ref_latents = torch.cat(ref_latents, dim=2)
+
+        mocha_latents = torch.cat([source_latents, mask_latents, ref_latents], dim=2)
+
+        base_len, source_len, mask_len = lat_frames, source_latents.shape[2], mask_latents.shape[2]
+        cos_parts, sin_parts = [], []
+
+        def append_freq(start_t, length, h_offset=1, w_offset=1):
+            cos, sin = get_nd_rotary_pos_embed( (start_t, h_offset, w_offset), (start_t + length, h_offset + lat_h // 2, w_offset + lat_w // 2))
+            cos_parts.append(cos)
+            sin_parts.append(sin)
+            
+        append_freq(1, base_len)
+        append_freq(1, source_len)
+        append_freq(1, mask_len)
+        append_freq(0, 1)
+        if ref_latents.shape[2] > 1: append_freq(0, 1, 1 + lat_h // 2, 1 + lat_w // 2)
+
+        return mocha_latents, (torch.cat(cos_parts, dim=0), torch.cat(sin_parts, dim=0))
+
     def generate(self,
         input_prompt,
         input_frames= None,
@@ -487,11 +520,12 @@ class WanAny2V:
         lucy_edit=  model_type in ["lucy_edit"]
         animate=  model_type in ["animate"]
         chrono_edit = model_type in ["chrono_edit"]
+        mocha = model_type in ["mocha"]
         start_step_no = 0
         ref_images_count = 0
         trim_frames = 0
         last_latent_output = False
-        extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = None
+        extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = None
         no_noise_latents_injection = infinitetalk
         timestep_injection = False
 
@@ -789,6 +823,12 @@ class WanAny2V:
             if prefix_frames_count > 0:
                 color_reference_frame = input_frames[0][:, prefix_frames_count -1:prefix_frames_count].clone()
         lat_h, lat_w = height // self.vae_stride[1], width // self.vae_stride[2]
+
+        # Mocha
+        if mocha:
+            extended_latents, freqs = self._build_mocha_latents( input_frames, input_masks,  input_ref_images[:2], frame_num, lat_frames, lat_h, lat_w, VAE_tile_size )
+            extended_input_dim = 2
+
         target_shape = (self.vae.model.z_dim, lat_frames + ref_images_count, lat_h, lat_w)
 
         if multitalk:
@@ -808,7 +848,9 @@ class WanAny2V:
 
         expand_shape = [batch_size] + [-1] * len(target_shape)
         # Ropes
-        if extended_input_dim>=2:
+        if freqs is not None:
+            pass
+        elif extended_input_dim>=2:
             shape = list(target_shape[1:])
             shape[extended_input_dim-2] *= 2
             freqs = get_rotary_pos_embed(shape, enable_RIFLEx= False) 

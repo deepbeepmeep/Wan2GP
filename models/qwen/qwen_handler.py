@@ -22,6 +22,8 @@ class family_handler():
             "profiles_dir": ["qwen"],
         }
 
+        extra_model_def["vae_upsampler"] = [1,2]
+
         if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]: 
             extra_model_def["inpaint_support"] = True
             extra_model_def["image_ref_choices"] = {
@@ -74,14 +76,21 @@ class family_handler():
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
         text_encoder_filename = get_qwen_text_encoder_filename(text_encoder_quantization)    
-        return  {  
+        download_def = [{  
             "repoId" : "DeepBeepMeep/Qwen_image", 
             "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
             "fileList" : [ ["qwen_vae.safetensors", "qwen_vae_config.json"], ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json"] + computeList(text_encoder_filename)  ]
-            }
+            }]
+
+        download_def  += [{
+            "repoId" : "DeepBeepMeep/Wan2.1", 
+            "sourceFolderList" :  [""  ],
+            "fileList" : [ ["Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]  ]   
+        }]
+        return download_def
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None, VAE_upsampling = None, **kwargs):
         from .qwen_main import model_factory
         from mmgp import offload
 
@@ -96,10 +105,12 @@ class family_handler():
             dtype = dtype,
             VAE_dtype = VAE_dtype, 
             mixed_precision_transformer = mixed_precision_transformer,
-            save_quantized = save_quantized
+            save_quantized = save_quantized,
+            VAE_upsampling = VAE_upsampling,
         )
 
-        pipe = {"tokenizer" : pipe_processor.tokenizer, "transformer" : pipe_processor.transformer, "text_encoder" : pipe_processor.text_encoder, "vae" : pipe_processor.vae}
+        from ..wan.modules.vae import WanVAE
+        pipe = {"tokenizer" : pipe_processor.tokenizer, "transformer" : pipe_processor.transformer, "text_encoder" : pipe_processor.text_encoder, "vae" : pipe_processor.vae.model if isinstance(pipe_processor.vae, WanVAE) else pipe_processor.vae }
 
         return pipe_processor, pipe
 

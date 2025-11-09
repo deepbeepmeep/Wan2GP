@@ -78,8 +78,8 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.7"
-WanGP_version = "9.37"
-settings_version = 2.39
+WanGP_version = "9.41"
+settings_version = 2.40
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -616,11 +616,18 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     switch_threshold2 = inputs["switch_threshold2"]
     multi_prompts_gen_type = inputs["multi_prompts_gen_type"]
     video_guide_outpainting = inputs["video_guide_outpainting"]
+    spatial_upsampling = inputs["spatial_upsampling"]
+    medium = "Videos" if image_mode == 0 else "Images"
 
     outpainting_dims = get_outpainting_dims(video_guide_outpainting)
 
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
+
+    if "vae" in spatial_upsampling:
+        if image_mode not in model_def.get("vae_upsampler", []):
+            gr.Info(f"VAE Spatial Upsampling is not available for {medium}")
+            return ret()
 
     if len(activated_loras) > 0:
         error = check_loras_exist(model_type, activated_loras)
@@ -3208,7 +3215,7 @@ def setup_prompt_enhancer(pipe, kwargs):
 
 
 
-def load_models(model_type, override_profile = -1):
+def load_models(model_type, override_profile = -1, **model_kwargs):
     global transformer_type, loaded_profile
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(model_type)
@@ -3290,10 +3297,10 @@ def load_models(model_type, override_profile = -1):
                 print(f"Loading Text Encoder '{override_text_encoder}' ...")
     else:
         override_text_encoder = None
-
+    torch.set_default_device('cpu')    
     wan_model, pipe = model_types_handlers[base_model_type].load_model(
                 local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
-                dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, override_text_encoder = override_text_encoder )
+                dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, override_text_encoder = override_text_encoder, **model_kwargs )
 
     kwargs = {}
     if "pipe" in pipe:
@@ -4435,7 +4442,13 @@ def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling
 
 def perform_spatial_upsampling(sample, spatial_upsampling):
     from shared.utils.utils import resize_lanczos 
-    if spatial_upsampling == "lanczos1.5":
+    if spatial_upsampling == "vae2":
+        return sample
+    method = None
+    if spatial_upsampling == "vae1":
+        scale = 0.5
+        method = Image.Resampling.BICUBIC
+    elif spatial_upsampling == "lanczos1.5":
         scale = 1.5
     else:
         scale = 2
@@ -4448,7 +4461,7 @@ def perform_spatial_upsampling(sample, spatial_upsampling):
     w = int(w)
     frames_to_upsample = [sample[:, i] for i in range( sample.shape[1]) ] 
     def upsample_frames(frame):
-        return resize_lanczos(frame, h, w).unsqueeze(1)
+        return resize_lanczos(frame, h, w, method).unsqueeze(1)
     sample = torch.cat(process_images_multithread(upsample_frames, frames_to_upsample, "upsample", wrap_in_list = False, max_workers=get_default_workers(), in_place=True), dim=1)
     frames_to_upsample = None
     return sample 
@@ -4981,12 +4994,18 @@ def generate_video(
     if "P" in preload_model_policy and not "U" in preload_model_policy:
         while wan_model == None:
             time.sleep(1)
-        
+    vae_upsampling = model_def.get("vae_upsampler", None)
+    model_kwargs = {}
+    if vae_upsampling is not None:
+        new_vae_upsampling = None if image_mode not in vae_upsampling or "vae" not in spatial_upsampling else spatial_upsampling
+        old_vae_upsampling =  None if reload_needed or wan_model is None or not hasattr(wan_model, "vae") else wan_model.vae.upsampling_set
+        reload_needed = reload_needed or old_vae_upsampling != new_vae_upsampling
+        if new_vae_upsampling: model_kwargs = {"VAE_upsampling": new_vae_upsampling}
     if model_type !=  transformer_type or reload_needed or override_profile>0 and override_profile != loaded_profile or override_profile<0 and default_profile != loaded_profile:
         wan_model = None
         release_model()
         send_cmd("status", f"Loading model {get_model_name(model_type)}...")
-        wan_model, offloadobj = load_models(model_type, override_profile)
+        wan_model, offloadobj = load_models(model_type, override_profile, **model_kwargs)
         send_cmd("status", "Model loaded")
         reload_needed=  False
     overridden_attention = get_overridden_attention(model_type)
@@ -5485,7 +5504,8 @@ def generate_video(
                                                                                         outpainting_dims =outpainting_dims,
                                                                                         background_ref_outpainted = model_def.get("background_ref_outpainted", True),
                                                                                         return_tensor= model_def.get("return_image_refs_tensor", False),
-                                                                                        ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0))
+                                                                                        ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0),
+                                                                                        background_removal_color = model_def.get("background_removal_color", [255, 255, 255] ))
 
             frames_to_inject_parsed = frames_to_inject[ window_start_frame if extract_guide_from_window_start else guide_start_frame: guide_end_frame]
             if video_guide is not None or len(frames_to_inject_parsed) > 0 or model_def.get("forced_guide_mask_inputs", False): 
@@ -5768,7 +5788,7 @@ def generate_video(
                     output_new_audio_data = full_generated_audio
 
 
-                if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0:                
+                if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and not "vae2" in spatial_upsampling:                
                     send_cmd("progress", [0, get_latest_status(state,"Upsampling")])
                 
                 output_fps  = fps
@@ -8264,7 +8284,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 video_source = gr.Video(label= "Video to Continue", height = gallery_height, visible= "V" in image_prompt_type_value, value= ui_defaults.get("video_source", None), elem_id="video_input")
                 image_end_row, image_end, image_end_extra = get_image_gallery(label= get_image_end_label(ui_defaults.get("multi_prompts_gen_type", 0)), value = ui_defaults.get("image_end", None), visible= any_letters(image_prompt_type_value, "SVL") and ("E" in image_prompt_type_value)     ) 
                 if model_mode_choices is None or image_mode_value not in model_modes_visibility:
-                    model_mode = gr.Dropdown(value=None, visible=False)
+                    model_mode = gr.Dropdown(value=None, label="model mode", visible=False, allow_custom_value= True)
                 else:
                     model_mode_value = get_default_value(model_mode_choices["choices"], ui_defaults.get("model_mode", None), model_mode_choices["default"] )
                     model_mode = gr.Dropdown(choices=model_mode_choices["choices"], value=model_mode_value, label=model_mode_choices["label"],  visible=True)                        
@@ -8342,6 +8362,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         )
                         any_control_video = True
                         any_control_image = image_outputs 
+                        any_reference_image = any("I" in choice for label, choice in guide_custom_choices["choices"])
 
                     # Custom dropdown box & checkbox
                     custom_video_selection = model_def.get("custom_video_selection", None)
@@ -8411,7 +8432,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             visible = False,
                             label="Start / Reference Images", scale = 1
                         )
-                        any_reference_image = False
                     else:
                         any_reference_image = True
                         video_prompt_type_image_refs = gr.Dropdown(
@@ -8482,7 +8502,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 frames_positions = gr.Text(value=ui_defaults.get("frames_positions","") , visible= "F" in video_prompt_type_value, scale = 2, label= "Positions of Injected Frames (1=first, L=last of a window) no position for other Image Refs)" ) 
                 image_refs_relative_size = gr.Slider(20, 100, value=ui_defaults.get("image_refs_relative_size", 50), step=1, label="Rescale Internaly Image Ref (% in relation to Output Video) to change Output Composition", visible = model_def.get("any_image_refs_relative_size", False) and image_outputs)
 
-                no_background_removal = model_def.get("no_background_removal", False) or image_ref_choices is None
+                no_background_removal = model_def.get("no_background_removal", False) #or image_ref_choices is None
                 background_removal_label = model_def.get("background_removal_label", "Remove Background behind People / Objects") 
  
                 remove_background_images_ref = gr.Dropdown(
@@ -8760,7 +8780,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                     with gr.Column():
                         gr.Markdown("<B>Upsampling - postprocessing that may improve fluidity and the size of the video</B>")
-                        def gen_upsampling_dropdowns(temporal_upsampling, spatial_upsampling , film_grain_intensity, film_grain_saturation, element_class= None, max_height= None, image_outputs = False):
+                        def gen_upsampling_dropdowns(temporal_upsampling, spatial_upsampling , film_grain_intensity, film_grain_saturation, element_class= None, max_height= None, image_outputs = False, any_vae_upsampling = False):
                             temporal_upsampling = gr.Dropdown(
                                 choices=[
                                     ("Disabled", ""),
@@ -8774,12 +8794,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 elem_classes= element_class
                                 # max_height = max_height
                             )
+                            
                             spatial_upsampling = gr.Dropdown(
                                 choices=[
                                     ("Disabled", ""),
                                     ("Lanczos x1.5", "lanczos1.5"), 
                                     ("Lanczos x2.0", "lanczos2"), 
-                                ],
+                                ] + ([("VAE x1.0 (refined)", "vae1"),("VAE x2.0", "vae2")] if any_vae_upsampling else []) ,
                                 value=spatial_upsampling,
                                 visible=True,
                                 scale = 1,
@@ -8793,7 +8814,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 film_grain_saturation = gr.Slider(0.0, 1, value=film_grain_saturation, step=0.01, label="Film Grain Saturation") 
 
                             return temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation
-                        temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation = gen_upsampling_dropdowns(ui_defaults.get("temporal_upsampling", ""), ui_defaults.get("spatial_upsampling", ""), ui_defaults.get("film_grain_intensity", 0), ui_defaults.get("film_grain_saturation", 0.5), image_outputs= image_outputs)
+                        temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation = gen_upsampling_dropdowns(ui_defaults.get("temporal_upsampling", ""), ui_defaults.get("spatial_upsampling", ""), ui_defaults.get("film_grain_intensity", 0), ui_defaults.get("film_grain_saturation", 0.5), image_outputs= image_outputs, any_vae_upsampling= "vae_upsampler"in model_def)
 
                 with gr.Tab("Audio", visible = not (image_outputs or audio_only)) as audio_tab:
                     any_audio_source = not (image_outputs or audio_only)

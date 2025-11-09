@@ -42,7 +42,9 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 **Mocha**: an alternative to *Wan Animate*. Use this model to replace a person in a control video. For best results you will need to provide two reference images for the new the person, the second image should be a face close up. This model seems to be optimized to generate 81 frames. *t2v fusionix 10 steps Lora Accelarator* works well.
 
-*update 9.41*: Added a Sample PlugIn App that shows how to collect and modify settings from a PlugIn\
+**Lucy Edit v1.1**: a new version (finetune) has been released. Not sure yet if I like it better than the original one. In theory it should work better with changing the background for instance.
+
+*update 9.41*: Added Mocha & Lucy Edit 1.1
 
 ### November 6 2025: WanGP v9.35, How many bananas are too many bananas ?
 

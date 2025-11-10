@@ -43,6 +43,8 @@ class family_handler():
         extra_model_def["frames_minimum"] = 5
         extra_model_def["frames_steps"] = 4
         extra_model_def["sliding_window"] = False
+        extra_model_def["flow_shift"] = True
+
         if base_model_type in ["hunyuan", "hunyuan_i2v"]:
             extra_model_def["embedded_guidance"] = True
         else:

@@ -54,22 +54,6 @@ PREFERRED_QWENIMAGE_RESOLUTIONS = [
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
-EXAMPLE_DOC_STRING = """
-    Examples:
-        ```py
-        >>> import torch
-        >>> from diffusers import QwenImagePipeline
-
-        >>> pipe = QwenImagePipeline.from_pretrained("Qwen/QwenImage-20B", torch_dtype=torch.bfloat16)
-        >>> pipe.to("cuda")
-        >>> prompt = "A cat holding a sign that says hello world"
-        >>> # Depending on the variant being used, the pipeline call will slightly vary.
-        >>> # Refer to the pipeline documentation for more details.
-        >>> image = pipe(prompt, num_inference_steps=4, guidance_scale=0.0).images[0]
-        >>> image.save("qwenimage.png")
-        ```
-"""
-
 
 def calculate_shift(
     image_seq_len,
@@ -193,8 +177,8 @@ class QwenImagePipeline(): #DiffusionPipeline
         self.transformer=transformer
         self.processor = processor
 
-        self.latent_channels = self.vae.config.z_dim if getattr(self, "vae", None) else 16
-        self.vae_scale_factor = 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
+        self.latent_channels = self.vae.z_dim if getattr(self, "vae", None) else 16
+        self.vae_scale_factor = 8 # 2 ** len(self.vae.temperal_downsample) if getattr(self, "vae", None) else 8
         # QwenImage latents are turned into 2x2 patches and packed. This means the latent width and height has to be divisible
         # by the patch size. So the vae scale factor is multiplied by the patch size to account for this
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
@@ -489,6 +473,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         device,
         generator,
         latents=None,
+        tile_size=0,
     ):
         # VAE applies 8x compression on images but we must also account for packing which requires
         # latent height and width to be divisible by 2.
@@ -505,7 +490,10 @@ class QwenImagePipeline(): #DiffusionPipeline
             for image in images:
                 image = image.to(device=device, dtype=dtype)
                 if image.shape[1] != self.latent_channels:
-                    image_latents = self._encode_vae_image(image=image, generator=generator)
+                    if self.use_Wan_VAE:
+                        image_latents = self.vae.encode(image, tile_size = tile_size)[0].unsqueeze(0)
+                    else:
+                        image_latents = self._encode_vae_image(image=image, generator=generator)
                 else:
                     image_latents = image
                 if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
@@ -537,10 +525,6 @@ class QwenImagePipeline(): #DiffusionPipeline
         return latents, image_latents
 
     @property
-    def guidance_scale(self):
-        return self._guidance_scale
-
-    @property
     def attention_kwargs(self):
         return self._attention_kwargs
 
@@ -557,7 +541,6 @@ class QwenImagePipeline(): #DiffusionPipeline
         return self._interrupt
 
     @torch.no_grad()
-    @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
         self,
         prompt: Union[str, List[str]] = None,
@@ -567,7 +550,6 @@ class QwenImagePipeline(): #DiffusionPipeline
         width: Optional[int] = None,
         num_inference_steps: int = 50,
         sigmas: Optional[List[float]] = None,
-        guidance_scale: float = 1.0,
         num_images_per_prompt: int = 1,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.Tensor] = None,
@@ -591,6 +573,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         lora_inpaint = False,
         outpainting_dims = None,
         qwen_edit_plus = False,
+        VAE_tile_size = 0,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -616,12 +599,6 @@ class QwenImagePipeline(): #DiffusionPipeline
                 Custom sigmas to use for the denoising process with schedulers which support a `sigmas` argument in
                 their `set_timesteps` method. If not defined, the default behavior when `num_inference_steps` is passed
                 will be used.
-            guidance_scale (`float`, *optional*, defaults to 3.5):
-                Guidance scale as defined in [Classifier-Free Diffusion
-                Guidance](https://huggingface.co/papers/2207.12598). `guidance_scale` is defined as `w` of equation 2.
-                of [Imagen Paper](https://huggingface.co/papers/2205.11487). Guidance scale is enabled by setting
-                `guidance_scale > 1`. Higher guidance scale encourages to generate images that are closely linked to
-                the text `prompt`, usually at the expense of lower image quality.
             num_images_per_prompt (`int`, *optional*, defaults to 1):
                 The number of images to generate per prompt.
             generator (`torch.Generator` or `List[torch.Generator]`, *optional*):
@@ -670,7 +647,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         if callback != None:
             callback(-1, None, True)
 
-
+        vae_z_dim = self.vae.z_dim
         height = height or self.default_sample_size * self.vae_scale_factor
         width = width or self.default_sample_size * self.vae_scale_factor
 
@@ -692,7 +669,6 @@ class QwenImagePipeline(): #DiffusionPipeline
             max_sequence_length=max_sequence_length,
         )
 
-        self._guidance_scale = guidance_scale
         self._attention_kwargs = attention_kwargs
         self._current_timestep = None
         self._interrupt = False
@@ -788,6 +764,7 @@ class QwenImagePipeline(): #DiffusionPipeline
             device,
             generator,
             latents,
+            tile_size=VAE_tile_size
         )
         original_image_latents = None if image_latents is None else image_latents.clone() 
 
@@ -826,12 +803,6 @@ class QwenImagePipeline(): #DiffusionPipeline
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         self._num_timesteps = len(timesteps)
         original_timesteps = timesteps
-        # handle guidance
-        if self.transformer.guidance_embeds:
-            guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
-            guidance = guidance.expand(latents.shape[0])
-        else:
-            guidance = None
 
         if self.attention_kwargs is None:
             self._attention_kwargs = {}
@@ -882,13 +853,12 @@ class QwenImagePipeline(): #DiffusionPipeline
             # latent_model_input = latents
             def denoise(latent_model_input, true_cfg_scale):
                 if image_latents is not None:
-                    latent_model_input = torch.cat([latents, image_latents], dim=1)
+                    latent_model_input = torch.cat([latent_model_input, image_latents], dim=1)
                 do_true_cfg = true_cfg_scale > 1
                 if do_true_cfg and joint_pass:
                     noise_pred, neg_noise_pred = self.transformer(
                         hidden_states=latent_model_input,
                         timestep=timestep / 1000,
-                        guidance=guidance, #!!!!
                         encoder_hidden_states_mask_list=[prompt_embeds_mask,negative_prompt_embeds_mask],
                         encoder_hidden_states_list=[prompt_embeds, negative_prompt_embeds],
                         img_shapes=img_shapes,
@@ -904,7 +874,6 @@ class QwenImagePipeline(): #DiffusionPipeline
                     noise_pred = self.transformer(
                         hidden_states=latent_model_input,
                         timestep=timestep / 1000,
-                        guidance=guidance,
                         encoder_hidden_states_mask_list=[prompt_embeds_mask],
                         encoder_hidden_states_list=[prompt_embeds],
                         img_shapes=img_shapes,
@@ -915,20 +884,19 @@ class QwenImagePipeline(): #DiffusionPipeline
                     if noise_pred == None: return None, None
                     noise_pred = noise_pred[:, : latents.size(1)]
 
-                if do_true_cfg:
-                    neg_noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
-                        timestep=timestep / 1000,
-                        guidance=guidance,
-                        encoder_hidden_states_mask_list=[negative_prompt_embeds_mask],
-                        encoder_hidden_states_list=[negative_prompt_embeds],
-                        img_shapes=img_shapes,
-                        txt_seq_lens_list=[negative_txt_seq_lens],
-                        attention_kwargs=self.attention_kwargs,
-                        **kwargs
-                    )[0]
-                    if neg_noise_pred == None: return None, None
-                    neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
+                    if do_true_cfg:
+                        neg_noise_pred = self.transformer(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            encoder_hidden_states_mask_list=[negative_prompt_embeds_mask],
+                            encoder_hidden_states_list=[negative_prompt_embeds],
+                            img_shapes=img_shapes,
+                            txt_seq_lens_list=[negative_txt_seq_lens],
+                            attention_kwargs=self.attention_kwargs,
+                            **kwargs
+                        )[0]
+                        if neg_noise_pred == None: return None, None
+                        neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
                 return noise_pred, neg_noise_pred
             def cfg_predictions( noise_pred, neg_noise_pred, guidance, t):
                 if do_true_cfg:
@@ -982,17 +950,21 @@ class QwenImagePipeline(): #DiffusionPipeline
         else:
             latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
             latents = latents.to(self.vae.dtype)
-            latents_mean = (
-                torch.tensor(self.vae.config.latents_mean)
-                .view(1, self.vae.config.z_dim, 1, 1, 1)
-                .to(latents.device, latents.dtype)
-            )
-            latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, self.vae.config.z_dim, 1, 1, 1).to(
-                latents.device, latents.dtype
-            )
-            latents = latents / latents_std + latents_mean
-            output_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
-            if image_mask is not None and not lora_inpaint :  #not (lora_inpaint and outpainting_dims is not None):
+            if self.use_Wan_VAE:
+                output_image = torch.cat([image.transpose(0,1) for image in self.vae.decode(latents, tile_size= VAE_tile_size)])
+            else:
+                latents_mean = (
+                    torch.tensor(self.vae.config.latents_mean)
+                    .view(1, vae_z_dim, 1, 1, 1)
+                    .to(latents.device, latents.dtype)
+                )
+                latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, vae_z_dim, 1, 1, 1).to(
+                    latents.device, latents.dtype
+                )
+                latents = latents / latents_std + latents_mean
+                output_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
+
+            if image_mask is not None and not lora_inpaint and self.vae.upsampling_set is None:  #not (lora_inpaint and outpainting_dims is not None):
                 output_image = vae_images[0].squeeze(2) * (1 - image_mask_rebuilt) + output_image.to(vae_images[0]  ) * image_mask_rebuilt 
 
 

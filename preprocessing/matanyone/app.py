@@ -36,6 +36,8 @@ matanyone_model = None
 model_in_GPU = False
 matanyone_in_GPU = False
 bfloat16_supported = False
+PlugIn = None
+
 # SAM generator
 import copy
 GPU_process_was_running = False
@@ -898,9 +900,7 @@ def export_to_current_video_engine(state, foreground_video_output, alpha_video_o
 
 
 def teleport_to_video_tab(tab_state, state):
-    from wgp import set_new_tab
-    set_new_tab(tab_state, state, 0)
-    return gr.Tabs(selected="video_gen")
+    return PlugIn.goto_video_tab(state)
 
 
 def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_current_model_settings_fn): #,  vace_video_input, vace_image_input, vace_video_mask, vace_image_mask, vace_image_refs):

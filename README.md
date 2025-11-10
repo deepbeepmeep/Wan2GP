@@ -36,6 +36,29 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
+### November 9 2025: WanGP v9.41, Free Lunch
+
+**VAE Upsampler** for Wan 2.1/2.2 Text 2 Image and Qwen Image: *spacepxl* has tweaked the VAE Decoder used by *Wan* & *Qwen* so that it can decode and upsample x2 at the same time. The end Result is a Fast High Quality Image Upsampler (much better than Lanczos). Check the *Postprocessing Tab* / *Spatial Upsampling* Dropdown box. Unfortunately this will work only with Image Generation, no support yet for Video Generation. I have also added a VAE Refiner that keeps the existing resolution but slightly improves the details.
+
+**Mocha**: a very requested alternative to *Wan Animate* . Use this model to replace a person in a control video. For best results you will need to provide two reference images for the new the person, the second image should be a face close up. This model seems to be optimized to generate 81 frames. First output frame is often messed up. *Lightx2v t2v 4 steps Lora Accelarator* works well. Please note this model is VRAM hungry, for 81 frames to generate it will process internaly 161 frames.
+
+**Lucy Edit v1.1**: a new version (finetune) has been released. Not sure yet if I like it better than the original one. In theory it should work better with changing the background setting for instance.
+
+*update 9.41*: Added Mocha & Lucy Edit 1.1
+
+### November 6 2025: WanGP v9.35, How many bananas are too many bananas ?
+
+**Chrono Edit**: a new original way to edit an Image. This one will generate a Video will that performs the full edition work and return the last Image. It can be hit or a miss but when it works it is quite impressive. Please note you must absolutely use the *Prompt Enhancer* on your *Prompt Instruction* because this model expects a very specific format. The Prompt Enhancer for this model has a specific System Prompt to generate the right Chrono Edit Prompt.
+
+**LyCoris** support: preliminary basic Lycoris support for this Lora format. At least Qwen Multi Camera should work (https://huggingface.co/dx8152/Qwen-Edit-2509-Multiple-angles). If you have a Lycoris that does not work and it may be interesting please mention it in the Request Channel
+
+**i2v Enhanced Lightning v2** (update 9.37): added this impressive *Finetune* in the default selection of models, not only it is accelerated (4 steps), but it is very good at following camera and timing instructions.
+
+This finetune loves long prompts. Therefore to increase the prompt readability WanGP supports now multilines prompts (in option).
+
+*update 9.35*: Added a Sample PlugIn App that shows how to collect and modify settings from a PlugIn\
+*update 9.37*: Added i2v Enhanced Lightning
+
 ### October 29 2025: WanGP v9.21, Why isn't all my VRAM used ?
 
 
@@ -54,7 +77,7 @@ pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pyt
 ```
 You will need to reinstall SageAttention FlashAttnetion, ...
 
-*update v9.21*: Got FastWan to work with Ovi: it is now 10 times faster ! (not including the VAE)
+*update v9.21*: Got FastWan to work with Ovi: it is now 10 times faster ! (not including the VAE)\
 *update v9.25*: added Chroma Radiance october edition + reverted to pytorch 2.7
 
 ### October 24 2025: WanGP v9.10, What else will you ever need after this one ?
@@ -126,10 +149,10 @@ Not enough Space left on your SSD to download more models ? Would like to reuse 
 
 Last but not least the Lora's documentation has been updated.
 
-*update 8.991*: full power of *Vace Lynx* unleashed with new combinations such as Landscape + Face / Clothes + Face  / Injectd Frame (Start/End frames/...) + Face
-*update 8.992*: optimized gen with Lora, should be 10% faster if many loras
-*update 8.993*: Support for *Scaled FP8* format and samples *Paligenesis* finetunes, merged Loras Accelerators and Non Accelerators
-*update 8.994*: Added custom checkpoints folders
+*update 8.991*: full power of *Vace Lynx* unleashed with new combinations such as Landscape + Face / Clothes + Face  / Injectd Frame (Start/End frames/...) + Face\
+*update 8.992*: optimized gen with Lora, should be 10% faster if many loras\
+*update 8.993*: Support for *Scaled FP8* format and samples *Paligenesis* finetunes, merged Loras Accelerators and Non Accelerators\
+*update 8.994*: Added custom checkpoints folders\
 *update 8.999*: fixed a lora + fp8 bug and version sync for the jump to the unknown 
 
 ### September 30 2025: WanGP v8.9 - Combinatorics

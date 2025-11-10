@@ -59,23 +59,6 @@ def timestep_transform(t, shift=5.0, num_timesteps=1000 ):
     new_t = new_t * num_timesteps
     return new_t
     
-def preprocess_sd_with_dtype(dtype, sd):
-    new_sd = {}
-    prefix_list = ["model.diffusion_model"]
-    end_list = [".norm3.bias", ".norm3.weight", ".norm_q.bias", ".norm_q.weight", ".norm_k.bias", ".norm_k.weight" ]
-    for k,v in sd.items():
-        for prefix in prefix_list:
-            if k.startswith(prefix): 
-                k = k[len(prefix)+1:]
-                break
-        if v.dtype in (torch.float8_e5m2, torch.float8_e4m3fn):
-            for endfix in end_list:
-                if k.endswith(endfix):
-                    v = v.to(dtype)
-                    break
-        if not k.startswith("vae."):
-            new_sd[k] = v
-    return new_sd
 
 class WanAny2V:
 
@@ -93,7 +76,8 @@ class WanAny2V:
         save_quantized = False,
         dtype = torch.bfloat16,
         VAE_dtype = torch.float32,
-        mixed_precision_transformer = False
+        mixed_precision_transformer = False,
+        VAE_upsampling = None,
     ):
         self.device = torch.device(f"cuda")
         self.config = config
@@ -104,6 +88,7 @@ class WanAny2V:
         self.model_def = model_def
         self.model2 = None
         self.transformer_switch = model_def.get("URLs2", None) is not None
+        self.is_mocha = model_def.get("mocha_mode", False)
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
             dtype=config.t5_dtype,
@@ -120,7 +105,7 @@ class WanAny2V:
                 tokenizer_path=fl.locate_folder("xlm-roberta-large"))
 
         ignore_unused_weights = model_def.get("ignore_unused_weights", False)
-
+        vae_upsampler_factor = 1
         vae_checkpoint2 = None
         if model_def.get("wan_5B_class", False):
             self.vae_stride = (4, 16, 16)
@@ -128,15 +113,19 @@ class WanAny2V:
             vae = Wan2_2_VAE
         else:
             vae = WanVAE
-            self.vae_stride = config.vae_stride
-            if model_def.get("alpha_class", False):
+            self.vae_stride = config.vae_stride            
+            if VAE_upsampling is not None:
+                vae_upsampler_factor = 2
+                vae_checkpoint ="Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
+            elif model_def.get("alpha_class", False):
                 vae_checkpoint ="wan_alpha_2.1_vae_rgb_channel.safetensors"
                 vae_checkpoint2 ="wan_alpha_2.1_vae_alpha_channel.safetensors"
             else:
                 vae_checkpoint = "Wan2.1_VAE.safetensors"                
         self.patch_size = config.patch_size 
         
-        self.vae = vae( vae_pth=fl.locate_file(vae_checkpoint), dtype= VAE_dtype, device="cpu")
+        self.vae = vae( vae_pth=fl.locate_file(vae_checkpoint), dtype= VAE_dtype, upsampler_factor = vae_upsampler_factor, device="cpu")
+        self.vae.upsampling_set = VAE_upsampling
         self.vae.device = self.device # need to set to cuda so that vae buffers are properly moved (although the rest will stay in the CPU)
         self.vae2 = None
         if vae_checkpoint2 is not None:
@@ -159,17 +148,17 @@ class WanAny2V:
         module_source =  model_def.get("module_source", None)
         module_source2 =  model_def.get("module_source2", None)
         def preprocess_sd(sd):
-            return preprocess_sd_with_dtype(dtype, sd)
+            return WanModel.preprocess_sd_with_dtype(dtype, sd)
         kwargs= { "modelClass": WanModel,"do_quantize": quantizeTransformer and not save_quantized, "defaultConfigPath": base_config_file , "ignore_unused_weights": ignore_unused_weights, "writable_tensors": False, "default_dtype": dtype, "preprocess_sd": preprocess_sd, "forcedConfigPath": forcedConfigPath, }
         kwargs_light= { "modelClass": WanModel,"writable_tensors": False, "preprocess_sd": preprocess_sd , "forcedConfigPath" : base_config_file}
         if module_source is not None:
-            self.model = offload.fast_load_transformers_model(model_filename[:1] + [module_source], **kwargs)
+            self.model = offload.fast_load_transformers_model(model_filename[:1] + [fl.locate_file(module_source)], **kwargs)
         if module_source2 is not None:
-            self.model2 = offload.fast_load_transformers_model(model_filename[1:2] + [module_source2], **kwargs)
+            self.model2 = offload.fast_load_transformers_model(model_filename[1:2] + [fl.locate_file(module_source2)], **kwargs)
         if source is not None:
-            self.model = offload.fast_load_transformers_model(source,  **kwargs_light)
+            self.model = offload.fast_load_transformers_model(fl.locate_file(source),  **kwargs_light)
         if source2 is not None:
-            self.model2 = offload.fast_load_transformers_model(source2, **kwargs_light)
+            self.model2 = offload.fast_load_transformers_model(fl.locate_file(source2), **kwargs_light)
 
         if self.model is not None or self.model2 is not None:
             from wgp import save_model
@@ -220,13 +209,8 @@ class WanAny2V:
                 save_quantized_model(self.model2, model_type, model_filename[1], dtype, base_config_file, submodel_no=2)
         self.sample_neg_prompt = config.sample_neg_prompt
 
-        if hasattr(self.model, "vace_blocks"):
-            self.adapt_vace_model(self.model)
-            if self.model2 is not None: self.adapt_vace_model(self.model2)
-
-        if hasattr(self.model, "face_adapter"):
-            self.adapt_animate_model(self.model)
-            if self.model2 is not None: self.adapt_animate_model(self.model2)
+        self.model.apply_post_init_changes()
+        if self.model2 is not None: self.model2.apply_post_init_changes()
         
         self.num_timesteps = 1000 
         self.use_timestep_transform = True 
@@ -329,9 +313,11 @@ class WanAny2V:
         context = torch.cat([context, context.new_zeros(self.model.text_len -context.size(0), context.size(1)) ]).unsqueeze(0) 
         clear_caches()
         get_cache("lynx_ref_buffer").update({ 0: {}, 1: {} })
+        _loras_active_adapters = None
         if not enable_loras:
-            _loras_active_adapters = self.model._loras_active_adapters
-            self.model._loras_active_adapters = []
+            if hasattr(self.model, "_loras_active_adapters"):
+                _loras_active_adapters = self.model._loras_active_adapters
+                self.model._loras_active_adapters = []
         ref_buffer = self.model(
             pipeline =self,
             x = [vae_feat, vae_feat_uncond] if any_guidance else [vae_feat],
@@ -340,11 +326,38 @@ class WanAny2V:
             t=torch.stack([torch.tensor(0, dtype=torch.float)]).to(self.device),
             lynx_feature_extractor = True,
         )
-        if not enable_loras:
+        if _loras_active_adapters is not None:
             self.model._loras_active_adapters = _loras_active_adapters
 
         clear_caches()
         return ref_buffer[0], (ref_buffer[1] if any_guidance else None)
+
+    def _build_mocha_latents(self, source_video, mask_tensor, ref_images, frame_num, lat_frames, lat_h, lat_w, tile_size):
+        video = source_video.to(device=self.device, dtype=self.VAE_dtype)
+        source_latents = self.vae.encode([video], tile_size=tile_size)[0].unsqueeze(0).to(self.dtype)
+        mask = mask_tensor[:, :1].to(device=self.device, dtype=self.dtype)
+        mask_latents = F.interpolate(mask, size=(lat_h, lat_w), mode="nearest").unsqueeze(2).repeat(1, self.vae.model.z_dim, 1, 1, 1)
+
+        ref_latents = [self.vae.encode([convert_image_to_tensor(img).unsqueeze(1).to(device=self.device, dtype=self.VAE_dtype)], tile_size=tile_size)[0].unsqueeze(0).to(self.dtype) for img in ref_images[:2]]
+        ref_latents = torch.cat(ref_latents, dim=2)
+
+        mocha_latents = torch.cat([source_latents, mask_latents, ref_latents], dim=2)
+
+        base_len, source_len, mask_len = lat_frames, source_latents.shape[2], mask_latents.shape[2]
+        cos_parts, sin_parts = [], []
+
+        def append_freq(start_t, length, h_offset=1, w_offset=1):
+            cos, sin = get_nd_rotary_pos_embed( (start_t, h_offset, w_offset), (start_t + length, h_offset + lat_h // 2, w_offset + lat_w // 2))
+            cos_parts.append(cos)
+            sin_parts.append(sin)
+            
+        append_freq(1, base_len)
+        append_freq(1, source_len)
+        append_freq(1, mask_len)
+        append_freq(0, 1)
+        if ref_latents.shape[2] > 1: append_freq(0, 1, 1 + lat_h // 2, 1 + lat_w // 2)
+
+        return mocha_latents, (torch.cat(cos_parts, dim=0), torch.cat(sin_parts, dim=0))
 
     def generate(self,
         input_prompt,
@@ -508,15 +521,23 @@ class WanAny2V:
         alpha_class = model_def.get("alpha_class", False)
         lucy_edit=  model_type in ["lucy_edit"]
         animate=  model_type in ["animate"]
+        chrono_edit = model_type in ["chrono_edit"]
+        mocha = model_type in ["mocha"]
         start_step_no = 0
         ref_images_count = 0
         trim_frames = 0
-        extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = None
+        last_latent_output = False
+        extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = None
         no_noise_latents_injection = infinitetalk
         timestep_injection = False
+
+        if chrono_edit:
+            frame_num = 29
+            last_latent_output = True
+
         lat_frames = int((frame_num - 1) // self.vae_stride[0]) + 1
         extended_input_dim = 0
-        ref_images_before = False
+        ref_images_before = False            
         # image2video 
         if model_def.get("i2v_class", False) and not animate:
             any_end_frame = False
@@ -804,6 +825,12 @@ class WanAny2V:
             if prefix_frames_count > 0:
                 color_reference_frame = input_frames[0][:, prefix_frames_count -1:prefix_frames_count].clone()
         lat_h, lat_w = height // self.vae_stride[1], width // self.vae_stride[2]
+
+        # Mocha
+        if mocha:
+            extended_latents, freqs = self._build_mocha_latents( input_frames, input_masks,  input_ref_images[:2], frame_num, lat_frames, lat_h, lat_w, VAE_tile_size )
+            extended_input_dim = 2
+
         target_shape = (self.vae.model.z_dim, lat_frames + ref_images_count, lat_h, lat_w)
 
         if multitalk:
@@ -823,7 +850,9 @@ class WanAny2V:
 
         expand_shape = [batch_size] + [-1] * len(target_shape)
         # Ropes
-        if extended_input_dim>=2:
+        if freqs is not None:
+            pass
+        elif extended_input_dim>=2:
             shape = list(target_shape[1:])
             shape[extended_input_dim-2] *= 2
             freqs = get_rotary_pos_embed(shape, enable_RIFLEx= False) 
@@ -1098,7 +1127,7 @@ class WanAny2V:
                 latents_preview = latents
                 if ref_images_before and ref_images_count > 0: latents_preview = latents_preview[:, :, ref_images_count: ] 
                 if trim_frames > 0:  latents_preview=  latents_preview[:, :,:-trim_frames]
-                if image_outputs: latents_preview=  latents_preview[:, :,:1]
+                if image_outputs: latents_preview= latents_preview[:, :,-1:] if last_latent_output else latents_preview[:, :,:1]
                 if len(latents_preview) > 1: latents_preview = latents_preview.transpose(0,2)
                 callback(i, latents_preview[0], False, denoising_extra =denoising_extra )
                 latents_preview = None
@@ -1116,6 +1145,9 @@ class WanAny2V:
 
         if chipmunk:
             self.model.release_chipmunk() # need to add it at every exit when in prod
+
+        if image_outputs :
+            x0 = [x[:,-1:] if last_latent_output else x[:,:1] for x in x0 ]
 
         videos = self.vae.decode(x0, VAE_tile_size)
         any_vae2= self.vae2 is not None
@@ -1146,24 +1178,6 @@ class WanAny2V:
         if return_latent_slice != None or BGRA_frames != None:
             return { "x" : videos, "latent_slice" : latent_slice, "BGRA_frames" : BGRA_frames }
         return videos
-
-    def adapt_vace_model(self, model):
-        modules_dict= { k: m for k, m in model.named_modules()}
-        for model_layer, vace_layer in model.vace_layers_mapping.items():
-            module = modules_dict[f"vace_blocks.{vace_layer}"]
-            target = modules_dict[f"blocks.{model_layer}"]
-            setattr(target, "vace", module )
-        delattr(model, "vace_blocks")
-
-
-    def adapt_animate_model(self, model):
-        modules_dict= { k: m for k, m in model.named_modules()}
-        for animate_layer in range(8):
-            module = modules_dict[f"face_adapter.fuser_blocks.{animate_layer}"]
-            model_layer = animate_layer * 5
-            target = modules_dict[f"blocks.{model_layer}"]
-            setattr(target, "face_adapter_fuser_blocks", module )
-        delattr(model, "face_adapter")
 
     def get_loras_transformer(self, get_model_recursive_prop, base_model_type, model_type, video_prompt_type, model_mode, **kwargs):
         if base_model_type == "animate":

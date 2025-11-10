@@ -1,0 +1,14 @@
+{
+    "model": {
+        "name": "Wan2.1 MoCha 14B",
+        "architecture": "mocha",
+        "description": "MoCha enables single-character replacement using a source video, a first-frame mask, and up to two clean reference images of a person. It is tuned to generate 81 frames. The second reference frame should be a Face Close up.",
+        "URLs": ["https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled/resolve/main/MoCha/Wan2_1_mocha-14B-preview_fp8_e4m3fn_scaled_KJ.safetensors"]
+    },
+	"prompt": "video",
+	"force_fps": "control",
+	"guidance_scale": 5,
+	"flow_shift": 5,
+	"num_inference_steps": 20,
+	"video_length": 81
+}

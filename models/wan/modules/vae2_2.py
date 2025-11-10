@@ -1037,12 +1037,13 @@ class Wan2_2_VAE:
         dim_mult=[1, 2, 4, 4],
         temperal_downsample=[False, True, True],
         dtype=torch.float,
+        upsampler_factor=1,
         device="cuda",
     ):
 
         self.dtype = dtype
         self.device = device
-
+        assert upsampler_factor == 1
         mean = torch.tensor(
             [
                 -0.2289,

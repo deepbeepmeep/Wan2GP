@@ -26,7 +26,7 @@ class family_handler():
         extra_model_def["skip_layer_guidance"] = True
         extra_model_def["tea_cache"] = True
         extra_model_def["guidance_max_phases"] = 1
-
+        extra_model_def["flow_shift"] = True
         extra_model_def["model_modes"] = {
                     "choices": [
                         ("Synchronous", 0),

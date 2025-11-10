@@ -475,8 +475,10 @@ class WanI2VCrossAttention(WanSelfAttention):
             audio_x = self.processor(q, audio_proj, grid_sizes[0], audio_context_lens)
         k_img = self.k_img(context_img)
         self.norm_k_img(k_img)
-        k_img = k_img.view(b, -1, n, d)
-        v_img = self.v_img(context_img).view(b, -1, n, d)
+        k_img = k_img.view(1, -1, n, d)
+        v_img = self.v_img(context_img).view(1, -1, n, d)
+        if b > 1:
+            k_img, v_img = k_img.expand(b, -1, -1, -1), v_img.expand(b, -1, -1, -1)
         qkv_list = [q, k_img, v_img]
         del q, k_img, v_img
         img_x = pay_attention(qkv_list)
@@ -616,7 +618,7 @@ class WanAttentionBlock(nn.Module):
                     hints_processed.append(self.vace(hint, x, **kwargs) if self.block_id == 0 else self.vace(hint, None, **kwargs))
                      
         latent_frames = e.shape[0]
-        e = (self.modulation + e).chunk(6, dim=1)
+        e = (self.modulation.weight + e).chunk(6, dim=1)
         # self-attention
         x_mod = self.norm1(x)
         x_mod = reshape_latent(x_mod , latent_frames)
@@ -838,7 +840,7 @@ class Head(nn.Module):
         dtype = x.dtype
 
         latent_frames = e.shape[0]
-        e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
+        e = (self.modulation.weight + e.unsqueeze(1)).chunk(2, dim=1)
         x = self.norm(x).to(dtype)
         x = reshape_latent(x , latent_frames)
         x *= (1 + e[1])
@@ -894,6 +896,24 @@ class WanModel(ModelMixin, ConfigMixin):
     def release_chipmunk(self):
         offload.shared_state["_chipmunk_layers"] = None
 
+    @staticmethod
+    def preprocess_sd_with_dtype(dtype, sd):
+        new_sd = {}
+        prefix_list = ["model.diffusion_model"]
+        end_list = [".norm3.bias", ".norm3.weight", ".norm_q.bias", ".norm_q.weight", ".norm_k.bias", ".norm_k.weight" ]
+        for k,v in sd.items():
+            for prefix in prefix_list:
+                if k.startswith(prefix): 
+                    k = k[len(prefix)+1:]
+                    break
+            if v.dtype in (torch.float8_e5m2, torch.float8_e4m3fn):
+                for endfix in end_list:
+                    if k.endswith(endfix):
+                        v = v.to(dtype)
+                        break
+            if not k.startswith("vae."):
+                new_sd[k] = v
+        return new_sd
     def preprocess_loras(self, model_type, sd):
 
         first = next(iter(sd), None)
@@ -901,13 +921,13 @@ class WanModel(ModelMixin, ConfigMixin):
             return sd
 
 
-        # new_sd = {}
-        # for k,v in sd.items():
-        #     if k.endswith("modulation.diff"):
-        #         pass
-        #     else:
-        #         new_sd[ k] = v
-        # sd = new_sd
+        new_sd = {}
+        for k,v in sd.items():
+            if k.endswith("modulation.diff"):
+                pass
+            else:
+                new_sd[ k] = v
+        sd = new_sd
 
         # if first.startswith("blocks."):
         #     new_sd = {}
@@ -1162,10 +1182,49 @@ class WanModel(ModelMixin, ConfigMixin):
             )
 
 
+    def adapt_modulation(self, block_name ='blocks'):
+        def move(v, param_name = "modulation"):
+            module = torch.nn.Module()
+            module.weight = getattr(v, param_name)
+            delattr(v, param_name)
+            setattr(v, param_name, module)
+
+        modules_dict= { k: m for k, m in self.named_modules()}
+        for k,v in modules_dict[block_name]._modules.items():
+            move(v)
+
+        if block_name != "blocks": return
+        move(modules_dict["head"])
+
+    def adapt_vace_model(self):
+        self.adapt_modulation("vace_blocks")
+
+        modules_dict= { k: m for k, m in self.named_modules()}
+        for model_layer, vace_layer in self.vace_layers_mapping.items():
+            module = modules_dict[f"vace_blocks.{vace_layer}"]
+            target = modules_dict[f"blocks.{model_layer}"]
+            setattr(target, "vace", module )
+        delattr(self, "vace_blocks")
+
+
+    def adapt_animate_model(self):
+        modules_dict= { k: m for k, m in self.named_modules()}
+        for animate_layer in range(8):
+            module = modules_dict[f"face_adapter.fuser_blocks.{animate_layer}"]
+            model_layer = animate_layer * 5
+            target = modules_dict[f"blocks.{model_layer}"]
+            setattr(target, "face_adapter_fuser_blocks", module )
+        delattr(self, "face_adapter")
+
+    def apply_post_init_changes(self):
+        self.adapt_modulation()
+        if hasattr(self, "vace_blocks"): self.adapt_vace_model()
+        if hasattr(self, "face_adapter"): self.adapt_animate_model()
+
     def lock_layers_dtypes(self, hybrid_dtype = None, dtype = torch.float32):
         from optimum.quanto import QTensor
 
-        layer_list = [self.head, self.head.head, self.patch_embedding]
+        layer_list = [self.head, self.head.head, self.head.modulation, self.patch_embedding]
         target_dype= dtype
         
         layer_list2 = [ self.time_embedding, self.time_embedding[0], self.time_embedding[2], 
@@ -1197,8 +1256,10 @@ class WanModel(ModelMixin, ConfigMixin):
         for current_layer_list, current_dtype in zip([layer_list, layer_list2], [target_dype, target_dype2]):
             for layer in current_layer_list:
                 layer._lock_dtype = dtype
-
-                if hasattr(layer, "weight") and layer.weight.dtype != current_dtype:
+                if isinstance(layer, nn.Parameter):
+                    if not isinstance(layer.data, QTensor):
+                        layer.data = layer.data.to(current_dtype)
+                elif hasattr(layer, "weight") and layer.weight.dtype != current_dtype:
                     if not isinstance(layer.weight.data, QTensor):
                         layer.weight.data = layer.weight.data.to(current_dtype)
                         if hasattr(layer, "bias"):
@@ -1558,7 +1619,7 @@ class WanModel(ModelMixin, ConfigMixin):
                 if x_id != 0:
                     should_calc = skips_steps_cache.should_calc
                 else:
-                    if real_step_no <= skips_steps_cache.start_step or real_step_no == skips_steps_cache.num_steps-1:
+                    if real_step_no <= skips_steps_cache.start_step or real_step_no == skips_steps_cache.num_steps-1 or skips_steps_cache.previous_modulated_input is None:
                         should_calc = True
                         skips_steps_cache.accumulated_rel_l1_distance = 0
                     else:
@@ -1715,3 +1776,4 @@ class WanModel(ModelMixin, ConfigMixin):
 
         # init output layer
         nn.init.zeros_(self.head.head.weight)
+

@@ -12,7 +12,7 @@ import git
 import shutil
 import stat
 import json
-
+video_gen_label = "Video Generator"
 def auto_install_and_enable_default_plugins(manager: 'PluginManager', wgp_globals: dict):
     server_config = wgp_globals.get("server_config")
     server_config_filename = wgp_globals.get("server_config_filename")
@@ -489,9 +489,9 @@ class WAN2GPApplication:
         self.plugin_manager.load_plugins_from_directory(self.enabled_plugins)
         self.plugin_manager.inject_globals(wgp_globals)
 
-    def setup_ui_tabs(self, main_tabs_component: gr.Tabs, state_component: gr.State):
+    def setup_ui_tabs(self, main_tabs_component: gr.Tabs, state_component: gr.State, set_save_form_event):
         self._create_plugin_tabs()
-        self._setup_tab_events(main_tabs_component, state_component)
+        self._setup_tab_events(main_tabs_component, state_component, set_save_form_event)
     
     def _create_plugin_tabs(self):
         if not hasattr(self, 'plugin_manager'):
@@ -523,7 +523,7 @@ class WAN2GPApplication:
                 self.all_rendered_tabs.append(new_tab)
                 tab_info['component_constructor']()
 
-    def _setup_tab_events(self, main_tabs_component: gr.Tabs, state_component: gr.State):
+    def _setup_tab_events(self, main_tabs_component: gr.Tabs, state_component: gr.State, set_save_form_event):
         if main_tabs_component and state_component:
             main_tabs_component.select(
                 fn=self._handle_tab_selection,
@@ -531,12 +531,39 @@ class WAN2GPApplication:
                 outputs=None,
                 show_progress="hidden",
             )
+
+            def goto_video_tab(state):
+                self._handle_tab_selection(state, None)
+                return  gr.Tabs(selected="video_gen")
+
+            for tab in self.all_rendered_tabs:
+                # def test_tab(state_component, evt: gr.SelectData):
+                #     last_save_form = state_component.get("last_save_form", video_gen_label)
+                #     if last_save_form != video_gen_label :
+                #         state_component["ignore_save_form"] = True
+                #     else:
+                #         state_component["last_save_form"] = evt.value
+
+
+                plugin = self.tab_to_plugin_map[tab.label]
+                plugin.goto_video_tab = goto_video_tab 
+                # event = tab.select(fn=test_tab, inputs=[state_component])
+                # event = set_save_form_event(event.then)
+                event = set_save_form_event(tab.select)
+                event.then(
+                        fn=self._handle_one_tab_selection,
+                        inputs=[state_component, gr.State(tab.label)],
+                        outputs=plugin.on_tab_outputs if hasattr(plugin, "on_tab_outputs") else None,
+                        show_progress="hidden",
+                        trigger_mode="multiple",
+                    )
+
             
     def _handle_tab_selection(self, state: dict, evt: gr.SelectData):
         if not hasattr(self, 'previous_tab_id'):
-            self.previous_tab_id = "video_gen"
+            self.previous_tab_id = video_gen_label
         
-        new_tab_id = evt.value
+        new_tab_id = video_gen_label if evt is None else evt.value
         
         if self.previous_tab_id == new_tab_id:
             return
@@ -549,16 +576,26 @@ class WAN2GPApplication:
                 print(f"[PluginManager] Error in on_tab_deselect for plugin {plugin_to_deselect.name}: {e}")
                 traceback.print_exc()
 
-        if new_tab_id and new_tab_id in self.tab_to_plugin_map:
-            plugin_to_select = self.tab_to_plugin_map[new_tab_id]
-            try:
-                plugin_to_select.on_tab_select(state)
-            except Exception as e:
-                print(f"[PluginManager] Error in on_tab_select for plugin {plugin_to_select.name}: {e}")
-                traceback.print_exc()
+        # if new_tab_id and new_tab_id in self.tab_to_plugin_map:
+            # plugin_to_select = self.tab_to_plugin_map[new_tab_id]
+            # if not hasattr(plugin_to_select, "on_tab_outputs"):
+            #     try:
+            #         plugin_to_select.on_tab_select(state)
+            #     except Exception as e:
+            #         print(f"[PluginManager] Error in on_tab_select for plugin {plugin_to_select.name}: {e}")
+            #         traceback.print_exc()
 
         self.previous_tab_id = new_tab_id
-        
+
+    def _handle_one_tab_selection(self, state: dict, new_tab_id): #, evt: gr.SelectData
+        plugin_to_select = self.tab_to_plugin_map.get(new_tab_id, None)
+        try:
+            ret = plugin_to_select.on_tab_select(state)
+        except Exception as e:
+            print(f"[PluginManager] Error in on_tab_select for plugin {plugin_to_select.name}: {e}")
+            traceback.print_exc()
+        return ret
+    
     def run_component_insertion(self, components_dict: Dict[str, Any]):
         if hasattr(self, 'plugin_manager'):
             self.plugin_manager.run_component_insertion_and_setup(components_dict)

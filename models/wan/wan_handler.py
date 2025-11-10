@@ -39,7 +39,7 @@ class family_handler():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B", 
                     "recam_1.3B", "animate", "alpha", "alpha_lynx", "chrono_edit",
-                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp"]
+                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha"]
 
 
     @staticmethod
@@ -49,7 +49,9 @@ class family_handler():
             "flf2v_720p" : "i2v",
             "t2v_1.3B" : "t2v", 
             "t2v_2_2" : "t2v", 
-            "t2v_2_2" : "alpha", 
+            "alpha" : "t2v", 
+            "lynx" : "t2v", 
+            "standin" : "t2v", 
             "vace_standin_14B" : "vace_14B",
             "vace_lynx_14B" : "vace_14B",
             "vace_14B_2_2": "vace_14B",
@@ -85,7 +87,7 @@ class family_handler():
             "magcache_thresh" : 0,
             "magcache_K" : 2,
             })
-            if base_model_type in ["t2v"] and "URLs2" in model_def:
+            if base_model_type in ["t2v", "mocha"] and "URLs2" in model_def:
                 def_mag_ratios = [1.00124, 1.00155, 0.99822, 0.99851, 0.99696, 0.99687, 0.99703, 0.99732, 0.9966, 0.99679, 0.99602, 0.99658, 0.99578, 0.99664, 0.99484, 0.9949, 0.99633, 0.996, 0.99659, 0.99683, 0.99534, 0.99549, 0.99584, 0.99577, 0.99681, 0.99694, 0.99563, 0.99554, 0.9944, 0.99473, 0.99594, 0.9964, 0.99466, 0.99461, 0.99453, 0.99481, 0.99389, 0.99365, 0.99391, 0.99406, 0.99354, 0.99361, 0.99283, 0.99278, 0.99268, 0.99263, 0.99057, 0.99091, 0.99125, 0.99126, 0.65523, 0.65252, 0.98808, 0.98852, 0.98765, 0.98736, 0.9851, 0.98535, 0.98311, 0.98339, 0.9805, 0.9806, 0.97776, 0.97771, 0.97278, 0.97286, 0.96731, 0.96728, 0.95857, 0.95855, 0.94385, 0.94385, 0.92118, 0.921, 0.88108, 0.88076, 0.80263, 0.80181]
             elif base_model_type in ["i2v_2_2"]:
                 def_mag_ratios = [0.99191, 0.99144, 0.99356, 0.99337, 0.99326, 0.99285, 0.99251, 0.99264, 0.99393, 0.99366, 0.9943, 0.9943, 0.99276, 0.99288, 0.99389, 0.99393, 0.99274, 0.99289, 0.99316, 0.9931, 0.99379, 0.99377, 0.99268, 0.99271, 0.99222, 0.99227, 0.99175, 0.9916, 0.91076, 0.91046, 0.98931, 0.98933, 0.99087, 0.99088, 0.98852, 0.98855, 0.98895, 0.98896, 0.98806, 0.98808, 0.9871, 0.98711, 0.98613, 0.98618, 0.98434, 0.98435, 0.983, 0.98307, 0.98185, 0.98187, 0.98131, 0.98131, 0.9783, 0.97835, 0.97619, 0.9762, 0.97264, 0.9727, 0.97088, 0.97098, 0.96568, 0.9658, 0.96045, 0.96055, 0.95322, 0.95335, 0.94579, 0.94594, 0.93297, 0.93311, 0.91699, 0.9172, 0.89174, 0.89202, 0.8541, 0.85446, 0.79823, 0.79902]
@@ -157,6 +159,9 @@ class family_handler():
             profiles_dir = "wan_alpha"
         else:
             profiles_dir = "wan"
+
+        if  (test_class_t2v(base_model_type) or vace_class or not base_model_type in ["chrono_edit"]) and not base_model_type in ["alpha"]:
+            extra_model_def["vae_upsampler"] = [1,2]
 
         extra_model_def["profiles_dir"] = [profiles_dir]
         extra_model_def["group"] = group
@@ -294,6 +299,7 @@ class family_handler():
             extra_model_def["keep_frames_video_guide_not_supported"] = True
             extra_model_def["extract_guide_from_window_start"] = True
             extra_model_def["forced_guide_mask_inputs"] = True
+            extra_model_def["no_background_removal"] = True
             extra_model_def["background_removal_label"]= "Remove Backgrounds behind People (Animate Mode Only)"
             extra_model_def["background_ref_outpainted"] = False
             extra_model_def["return_image_refs_tensor"] = True
@@ -445,6 +451,19 @@ class family_handler():
         else:
             image_prompt_types_allowed = ""
         extra_model_def["image_prompt_types_allowed"] = image_prompt_types_allowed
+        if base_model_type in ["mocha"]:
+            extra_model_def["guide_custom_choices"] = {
+            "choices":[
+                ("Transfer Person In Reference Images (Second Image must be a Close Up) in Control Video", "VAI"),
+            ],
+            "default": "VAI",
+            "letters_filter": "VAI",
+            "label": "Type of Process",
+            "scale": 3,
+            "show_label" : False,
+            "visible": True,
+            }
+            extra_model_def["background_removal_color"] = [128, 128, 128]  
         if base_model_type in ["fantasy"] or multitalk:
             extra_model_def["audio_guidance"] = True
 
@@ -476,21 +495,21 @@ class family_handler():
         download_def  = [{
             "repoId" : "DeepBeepMeep/Wan2.1", 
             "sourceFolderList" :  ["xlm-roberta-large", "umt5-xxl", ""  ],
-            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors" ] +  computeList(model_filename)  ]   
+            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"] +  computeList(model_filename)  ]   
         }]
 
         if test_wan_5B(base_model_type):
             download_def += [    {
                 "repoId" : "DeepBeepMeep/Wan2.2", 
                 "sourceFolderList" :  [""],
-                "fileList" : [ [ "Wan2.2_VAE.safetensors" ]  ]
+                "fileList" : [ [ "Wan2.2_VAE.safetensors"]  ]
             }]
 
         return download_def
 
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, override_text_encoder = None):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, override_text_encoder = None, VAE_upsampling = None, **kwargs):
         from .configs import WAN_CONFIGS
 
         if test_class_i2v(base_model_type):
@@ -512,7 +531,8 @@ class family_handler():
             dtype = dtype,
             VAE_dtype = VAE_dtype, 
             mixed_precision_transformer = mixed_precision_transformer,
-            save_quantized = save_quantized
+            save_quantized = save_quantized,
+            VAE_upsampling = VAE_upsampling,            
         )
 
         pipe = {"transformer": wan_model.model, "text_encoder" : wan_model.text_encoder.model, "vae": wan_model.vae.model }
@@ -591,6 +611,12 @@ class family_handler():
                 if not "A" in audio_prompt_type:
                     audio_prompt_type +=  "A"
                     ui_defaults["audio_prompt_type"] = audio_prompt_type 
+
+        if settings_version < 2.40:
+            if base_model_type in ["animate"]:
+                remove_background_images_ref = ui_defaults.get("remove_background_images_ref", None)
+                if remove_background_images_ref !=0:
+                    ui_defaults["remove_background_images_ref"] = 0
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
@@ -676,10 +702,18 @@ class family_handler():
                 "video_prompt_type": "PVBKI", 
                 "mask_expand": 20,
                 "audio_prompt_type": "R",
+                "remove_background_images_ref" : 0,
+	            "force_fps": "control",
             })
         elif base_model_type in ["vace_ditto_14B"]:
             ui_defaults.update({ 
                 "video_prompt_type": "V", 
+            })
+        elif base_model_type in ["mocha"]:
+            ui_defaults.update({ 
+                "video_prompt_type": "VAI", 
+                "audio_prompt_type": "R",
+	            "force_fps": "control",
             })
 
         if base_model_type in ["chrono_edit"]:

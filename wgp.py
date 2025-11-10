@@ -78,8 +78,8 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.7"
-WanGP_version = "9.3"
-settings_version = 2.39
+WanGP_version = "9.41"
+settings_version = 2.40
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -616,11 +616,18 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     switch_threshold2 = inputs["switch_threshold2"]
     multi_prompts_gen_type = inputs["multi_prompts_gen_type"]
     video_guide_outpainting = inputs["video_guide_outpainting"]
+    spatial_upsampling = inputs["spatial_upsampling"]
+    medium = "Videos" if image_mode == 0 else "Images"
 
     outpainting_dims = get_outpainting_dims(video_guide_outpainting)
 
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
+
+    if "vae" in spatial_upsampling:
+        if image_mode not in model_def.get("vae_upsampler", []):
+            gr.Info(f"VAE Spatial Upsampling is not available for {medium}")
+            return ret()
 
     if len(activated_loras) > 0:
         error = check_loras_exist(model_type, activated_loras)
@@ -795,7 +802,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         if image_start == None :
             gr.Info("Start Image should be an Image") 
             return ret()
-        if  multi_prompts_gen_type == 1 and len(image_start) > 1:
+        if  multi_prompts_gen_type in (1,2) and len(image_start) > 1:
             gr.Info("Only one Start Image is supported") 
             return ret()       
     else:
@@ -847,9 +854,12 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
             gr.Info("Filtering Frames with this model is not supported")
             return ret()
 
-    if inputs["multi_prompts_gen_type"] != 0:
+    if multi_prompts_gen_type != 0:
         if image_start != None and len(image_start) > 1:
-            gr.Info("Only one Start Image must be provided if multiple prompts are used for different windows") 
+            if multi_prompts_gen_type == 1:
+                gr.Info("Only one Start Image must be provided if multiple prompts are used for different windows") 
+            else:
+                gr.Info("Only one Start Image must be provided if there is a single Prompt") 
             return ret()
 
         # if image_end != None and len(image_end) > 1:
@@ -879,7 +889,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         "model_switch_phase": model_switch_phase,
     } 
 
-    if inputs["multi_prompts_gen_type"] == 0:
+    if multi_prompts_gen_type == 0:
         if image_start != None and len(image_start) > 0:
             if inputs["multi_images_gen_type"] == 0:
                 new_prompts = []
@@ -3205,7 +3215,7 @@ def setup_prompt_enhancer(pipe, kwargs):
 
 
 
-def load_models(model_type, override_profile = -1):
+def load_models(model_type, override_profile = -1, **model_kwargs):
     global transformer_type, loaded_profile
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(model_type)
@@ -3287,10 +3297,10 @@ def load_models(model_type, override_profile = -1):
                 print(f"Loading Text Encoder '{override_text_encoder}' ...")
     else:
         override_text_encoder = None
-
+    torch.set_default_device('cpu')    
     wan_model, pipe = model_types_handlers[base_model_type].load_model(
                 local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
-                dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, override_text_encoder = override_text_encoder )
+                dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, override_text_encoder = override_text_encoder, **model_kwargs )
 
     kwargs = {}
     if "pipe" in pipe:
@@ -3517,6 +3527,7 @@ def refresh_gallery(state): #, msg
         prompt =  task["prompt"]
         params = task["params"]
         model_type = params["model_type"] 
+        multi_prompts_gen_type = params["multi_prompts_gen_type"]
         base_model_type = get_base_model_type(model_type)
         model_def = get_model_def(model_type) 
         onemorewindow_visible = test_any_sliding_window(base_model_type) and params.get("image_mode",0) == 0 and not params.get("mode","").startswith("edit_")
@@ -3525,7 +3536,9 @@ def refresh_gallery(state): #, msg
             enhanced = True
             prompt = prompt[len("!enhanced!\n"):]
         prompt = html.escape(prompt)
-        if "\n" in prompt :
+        if multi_prompts_gen_type == 2:
+            prompt = prompt.replace("\n", "<BR>")
+        elif "\n" in prompt :
             prompts = prompt.split("\n")
             window_no= gen.get("window_no",1)
             if window_no > len(prompts):
@@ -3755,7 +3768,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             values +=[video_creation_date]
             labels +=["Creation Date"]
         else: 
-            video_prompt =  html.escape(configs.get("prompt", "")[:1024])
+            video_prompt =  html.escape(configs.get("prompt", "")[:1024]).replace("\n", "<BR>")
             video_video_prompt_type = configs.get("video_prompt_type", "")
             video_image_prompt_type = configs.get("image_prompt_type", "")
             video_audio_prompt_type = configs.get("audio_prompt_type", "")
@@ -3955,7 +3968,7 @@ def get_resampled_video(video_in, start_frame, max_frames, target_fps, bridge='t
     reader = decord.VideoReader(video_in)
     fps = round(reader.get_avg_fps())
     if max_frames < 0:
-        max_frames = max(len(reader)/ fps * target_fps + max_frames, 0)
+        max_frames = int(max(len(reader)/ fps * target_fps + max_frames, 0))
 
 
     frame_nos = resample(fps, len(reader), max_target_frames_count= max_frames, target_fps=target_fps, start_target_frame= start_frame)
@@ -4429,7 +4442,13 @@ def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling
 
 def perform_spatial_upsampling(sample, spatial_upsampling):
     from shared.utils.utils import resize_lanczos 
-    if spatial_upsampling == "lanczos1.5":
+    if spatial_upsampling == "vae2":
+        return sample
+    method = None
+    if spatial_upsampling == "vae1":
+        scale = 0.5
+        method = Image.Resampling.BICUBIC
+    elif spatial_upsampling == "lanczos1.5":
         scale = 1.5
     else:
         scale = 2
@@ -4442,7 +4461,7 @@ def perform_spatial_upsampling(sample, spatial_upsampling):
     w = int(w)
     frames_to_upsample = [sample[:, i] for i in range( sample.shape[1]) ] 
     def upsample_frames(frame):
-        return resize_lanczos(frame, h, w).unsqueeze(1)
+        return resize_lanczos(frame, h, w, method).unsqueeze(1)
     sample = torch.cat(process_images_multithread(upsample_frames, frames_to_upsample, "upsample", wrap_in_list = False, max_workers=get_default_workers(), in_place=True), dim=1)
     frames_to_upsample = None
     return sample 
@@ -4975,12 +4994,18 @@ def generate_video(
     if "P" in preload_model_policy and not "U" in preload_model_policy:
         while wan_model == None:
             time.sleep(1)
-        
+    vae_upsampling = model_def.get("vae_upsampler", None)
+    model_kwargs = {}
+    if vae_upsampling is not None:
+        new_vae_upsampling = None if image_mode not in vae_upsampling or "vae" not in spatial_upsampling else spatial_upsampling
+        old_vae_upsampling =  None if reload_needed or wan_model is None or not hasattr(wan_model, "vae") else wan_model.vae.upsampling_set
+        reload_needed = reload_needed or old_vae_upsampling != new_vae_upsampling
+        if new_vae_upsampling: model_kwargs = {"VAE_upsampling": new_vae_upsampling}
     if model_type !=  transformer_type or reload_needed or override_profile>0 and override_profile != loaded_profile or override_profile<0 and default_profile != loaded_profile:
         wan_model = None
         release_model()
         send_cmd("status", f"Loading model {get_model_name(model_type)}...")
-        wan_model, offloadobj = load_models(model_type, override_profile)
+        wan_model, offloadobj = load_models(model_type, override_profile, **model_kwargs)
         send_cmd("status", "Model loaded")
         reload_needed=  False
     overridden_attention = get_overridden_attention(model_type)
@@ -5011,8 +5036,11 @@ def generate_video(
     trans2 = get_transformer_model(wan_model, 2)
     audio_sampling_rate = 16000
 
-    prompts = prompt.split("\n")
-    prompts = [part for part in prompts if len(prompt)>0]
+    if multi_prompts_gen_type == 2:
+        prompts = [prompt]
+    else:
+        prompts = prompt.split("\n")
+        prompts = [part.strip() for part in prompts if len(prompt)>0]
     parsed_keep_frames_video_source= max_source_video_frames if len(keep_frames_video_source) ==0 else int(keep_frames_video_source) 
     transformer_loras_filenames, transformer_loras_multipliers  = get_transformer_loras(model_type)
     if guidance_phases < 1: guidance_phases = 1
@@ -5476,7 +5504,8 @@ def generate_video(
                                                                                         outpainting_dims =outpainting_dims,
                                                                                         background_ref_outpainted = model_def.get("background_ref_outpainted", True),
                                                                                         return_tensor= model_def.get("return_image_refs_tensor", False),
-                                                                                        ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0))
+                                                                                        ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0),
+                                                                                        background_removal_color = model_def.get("background_removal_color", [255, 255, 255] ))
 
             frames_to_inject_parsed = frames_to_inject[ window_start_frame if extract_guide_from_window_start else guide_start_frame: guide_end_frame]
             if video_guide is not None or len(frames_to_inject_parsed) > 0 or model_def.get("forced_guide_mask_inputs", False): 
@@ -5759,7 +5788,7 @@ def generate_video(
                     output_new_audio_data = full_generated_audio
 
 
-                if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0:                
+                if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and not "vae2" in spatial_upsampling:                
                     send_cmd("progress", [0, get_latest_status(state,"Upsampling")])
                 
                 output_fps  = fps
@@ -7403,6 +7432,8 @@ def save_inputs(
             plugin_data,
 ):
 
+    if state.pop("ignore_save_form", False):
+        return
 
     model_type = state["model_type"]
     if image_mask_guide is not None and image_mode >= 1 and video_prompt_type is not None and "A" in video_prompt_type and not "U" in video_prompt_type:
@@ -7819,7 +7850,13 @@ def show_modal_image(state, action_string):
     return gr.HTML(value=html_content), gr.Column(visible=True)
 
 def get_prompt_labels(multi_prompts_gen_type, image_outputs = False, audio_only = False):
-    new_line_text = "each new line of prompt will be used for a window" if multi_prompts_gen_type != 0 else "each new line of prompt will generate " + ("a new image" if image_outputs else ("a new audio file" if audio_only else "a new video"))
+    if multi_prompts_gen_type == 1:
+        new_line_text = "each Line of Prompt will be used for a Sliding Window"  
+    elif multi_prompts_gen_type == 0:
+        new_line_text = "each Line of Prompt will generate " + ("a new Image" if image_outputs else ("a new Audio File" if audio_only else "a new Video"))
+    else:
+        new_line_text = "all the Lines are Parts of the Same Prompt"  
+
     return "Prompts (" + new_line_text + ", # lines = comments, ! lines = macros)", "Prompts (" + new_line_text + ", # lines = comments)"
 
 def get_image_end_label(multi_prompts_gen_type):
@@ -8170,7 +8207,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             hunyuan_video_avatar = "hunyuan_video_avatar" in model_filename
             image_outputs = model_def.get("image_outputs", False)
             sliding_window_enabled = test_any_sliding_window(model_type)
-            multi_prompts_gen_type_value = ui_defaults.get("multi_prompts_gen_type_value",0)
+            multi_prompts_gen_type_value = ui_defaults.get("multi_prompts_gen_type",0)
             prompt_label, wizard_prompt_label = get_prompt_labels(multi_prompts_gen_type_value, image_outputs, audio_only)            
             any_video_source = False
             fps = get_model_fps(base_model_type)
@@ -8202,6 +8239,12 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 with gr.Tab("Image Inpainting", id = "inpaint", elem_classes="compact_tab", visible=inpaint_support) as tab_inpaint:
                     pass
 
+            if audio_only:
+                medium = "Audio"
+            elif image_outputs:
+                medium = "Image"
+            else:
+                medium = "Video"
             image_prompt_types_allowed = model_def.get("image_prompt_types_allowed", "")
             model_mode_choices = model_def.get("model_modes", None)
             model_modes_visibility = [0,1,2]
@@ -8241,7 +8284,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 video_source = gr.Video(label= "Video to Continue", height = gallery_height, visible= "V" in image_prompt_type_value, value= ui_defaults.get("video_source", None), elem_id="video_input")
                 image_end_row, image_end, image_end_extra = get_image_gallery(label= get_image_end_label(ui_defaults.get("multi_prompts_gen_type", 0)), value = ui_defaults.get("image_end", None), visible= any_letters(image_prompt_type_value, "SVL") and ("E" in image_prompt_type_value)     ) 
                 if model_mode_choices is None or image_mode_value not in model_modes_visibility:
-                    model_mode = gr.Dropdown(value=None, visible=False)
+                    model_mode = gr.Dropdown(value=None, label="model mode", visible=False, allow_custom_value= True)
                 else:
                     model_mode_value = get_default_value(model_mode_choices["choices"], ui_defaults.get("model_mode", None), model_mode_choices["default"] )
                     model_mode = gr.Dropdown(choices=model_mode_choices["choices"], value=model_mode_value, label=model_mode_choices["label"],  visible=True)                        
@@ -8319,6 +8362,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         )
                         any_control_video = True
                         any_control_image = image_outputs 
+                        any_reference_image = any("I" in choice for label, choice in guide_custom_choices["choices"])
 
                     # Custom dropdown box & checkbox
                     custom_video_selection = model_def.get("custom_video_selection", None)
@@ -8388,7 +8432,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             visible = False,
                             label="Start / Reference Images", scale = 1
                         )
-                        any_reference_image = False
                     else:
                         any_reference_image = True
                         video_prompt_type_image_refs = gr.Dropdown(
@@ -8459,7 +8502,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 frames_positions = gr.Text(value=ui_defaults.get("frames_positions","") , visible= "F" in video_prompt_type_value, scale = 2, label= "Positions of Injected Frames (1=first, L=last of a window) no position for other Image Refs)" ) 
                 image_refs_relative_size = gr.Slider(20, 100, value=ui_defaults.get("image_refs_relative_size", 50), step=1, label="Rescale Internaly Image Ref (% in relation to Output Video) to change Output Composition", visible = model_def.get("any_image_refs_relative_size", False) and image_outputs)
 
-                no_background_removal = model_def.get("no_background_removal", False) or image_ref_choices is None
+                no_background_removal = model_def.get("no_background_removal", False) #or image_ref_choices is None
                 background_removal_label = model_def.get("background_removal_label", "Remove Background behind People / Objects") 
  
                 remove_background_images_ref = gr.Dropdown(
@@ -8659,7 +8702,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         with gr.Row(visible = vace or len(control_net_weight_alt_name) >0 ) as control_net_weights_row:
                             control_net_weight = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight",1), step=0.1, label="Vace Weight #1", visible=vace)
                             control_net_weight2 = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.1, label="Vace Weight #2", visible=vace)
-                            control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.1, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0)
+                            control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight_alt",1), step=0.1, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0)
                         with gr.Row(visible = not (hunyuan_t2v or hunyuan_i2v or no_negative_prompt)) as negative_prompt_row:
                             negative_prompt = gr.Textbox(label="Negative Prompt (ignored if no Guidance that is if CFG = 1)", value=ui_defaults.get("negative_prompt", "")  )
                         with gr.Column(visible = vace or t2v or test_class_i2v(model_type)) as NAG_col:
@@ -8676,6 +8719,21 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     ("Match images and text prompts", 1),
                                 ], visible= test_class_i2v(model_type), label= "Multiple Images as Texts Prompts"
                             )
+
+                        with gr.Row():
+                            multi_prompts_gen_choices = [(f"Each New Line Will Add a new {medium} Request to the Generation Queue", 0)]
+                            if sliding_window_enabled:
+                                multi_prompts_gen_choices += [("Each Line Will be used for a new Sliding Window of the same Video Generation", 1)]
+                            multi_prompts_gen_choices += [("All the Lines are Part of the Same Prompt", 2)]
+
+                            multi_prompts_gen_type = gr.Dropdown(
+                                choices=multi_prompts_gen_choices,
+                                value=ui_defaults.get("multi_prompts_gen_type",0),
+                                visible=True,
+                                scale = 1,
+                                label= "How to Process each Line of the Text Prompt"
+                            )
+
                 with gr.Tab("Loras", visible= not audio_only) as loras_tab:
                     with gr.Column(visible = True): #as loras_column:
                         gr.Markdown("<B>Loras can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
@@ -8722,7 +8780,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                     with gr.Column():
                         gr.Markdown("<B>Upsampling - postprocessing that may improve fluidity and the size of the video</B>")
-                        def gen_upsampling_dropdowns(temporal_upsampling, spatial_upsampling , film_grain_intensity, film_grain_saturation, element_class= None, max_height= None, image_outputs = False):
+                        def gen_upsampling_dropdowns(temporal_upsampling, spatial_upsampling , film_grain_intensity, film_grain_saturation, element_class= None, max_height= None, image_outputs = False, any_vae_upsampling = False):
                             temporal_upsampling = gr.Dropdown(
                                 choices=[
                                     ("Disabled", ""),
@@ -8736,12 +8794,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 elem_classes= element_class
                                 # max_height = max_height
                             )
+                            
                             spatial_upsampling = gr.Dropdown(
                                 choices=[
                                     ("Disabled", ""),
                                     ("Lanczos x1.5", "lanczos1.5"), 
                                     ("Lanczos x2.0", "lanczos2"), 
-                                ],
+                                ] + ([("VAE x1.0 (refined)", "vae1"),("VAE x2.0", "vae2")] if any_vae_upsampling else []) ,
                                 value=spatial_upsampling,
                                 visible=True,
                                 scale = 1,
@@ -8755,7 +8814,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 film_grain_saturation = gr.Slider(0.0, 1, value=film_grain_saturation, step=0.01, label="Film Grain Saturation") 
 
                             return temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation
-                        temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation = gen_upsampling_dropdowns(ui_defaults.get("temporal_upsampling", ""), ui_defaults.get("spatial_upsampling", ""), ui_defaults.get("film_grain_intensity", 0), ui_defaults.get("film_grain_saturation", 0.5), image_outputs= image_outputs)
+                        temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation = gen_upsampling_dropdowns(ui_defaults.get("temporal_upsampling", ""), ui_defaults.get("spatial_upsampling", ""), ui_defaults.get("film_grain_intensity", 0), ui_defaults.get("film_grain_saturation", 0.5), image_outputs= image_outputs, any_vae_upsampling= "vae_upsampler"in model_def)
 
                 with gr.Tab("Audio", visible = not (image_outputs or audio_only)) as audio_tab:
                     any_audio_source = not (image_outputs or audio_only)
@@ -8910,19 +8969,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             visible = vace or ltxv or t2v or infinitetalk
                         )
 
-                        multi_prompts_gen_type = gr.Dropdown(
-                            choices=[
-                                ("Will create a new generated Video added to the Generation Queue", 0),
-                                ("Will be used for a new Sliding Window of the same Video Generation", 1),
-                           ],
-                            value=ui_defaults.get("multi_prompts_gen_type",0),
-                            visible=True,
-                            scale = 1,
-                            label="Images & Text Prompts separated by a Carriage Return" if (any_start_image or any_end_image) else "Text Prompts separated by a Carriage Return"
-                        )
                         
-                with gr.Tab("Misc.", visible = not audio_only) as misc_tab:
-                    with gr.Column(visible = not (recammaster or ltxv or diffusion_forcing)) as RIFLEx_setting_col:
+                with gr.Tab("Misc.") as misc_tab:
+                    with gr.Column(visible = not (recammaster or ltxv or diffusion_forcing or audio_only or image_outputs)) as RIFLEx_setting_col:
                         gr.Markdown("<B>With Riflex you can generate videos longer than 5s which is the default duration of videos used to train the model</B>")
                         RIFLEx_setting = gr.Dropdown(
                             choices=[
@@ -8934,33 +8983,33 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label="RIFLEx positional embedding to generate long video",
                             visible = True
                         )
-
-                    gr.Markdown("<B>You can change the Default number of Frames Per Second of the output Video, in the absence of Control Video this may create unwanted slow down / acceleration</B>")
-                    force_fps_choices =  [(f"Model Default ({fps} fps)", "")]
-                    if any_control_video and (any_video_source or recammaster):
-                        force_fps_choices +=  [("Auto fps: Source Video if any, or Control Video if any, or Model Default", "auto")]
-                    elif any_control_video :
-                        force_fps_choices +=  [("Auto fps: Control Video if any, or Model Default", "auto")]
-                    elif any_control_video and (any_video_source or recammaster):
-                        force_fps_choices +=  [("Auto fps: Source Video if any, or Model Default", "auto")]
-                    if any_control_video:
-                        force_fps_choices +=  [("Control Video fps", "control")]
-                    if any_video_source or recammaster:
-                        force_fps_choices +=  [("Source Video fps", "source")]
-                    force_fps_choices += [
-                            ("15", "15"), 
-                            ("16", "16"), 
-                            ("23", "23"), 
-                            ("24", "24"), 
-                            ("25", "25"), 
-                            ("30", "30"), 
-                        ]
+                    with gr.Column(visible = not (audio_only or image_outputs)) as force_fps_col:
+                        gr.Markdown("<B>You can change the Default number of Frames Per Second of the output Video, in the absence of Control Video this may create unwanted slow down / acceleration</B>")
+                        force_fps_choices =  [(f"Model Default ({fps} fps)", "")]
+                        if any_control_video and (any_video_source or recammaster):
+                            force_fps_choices +=  [("Auto fps: Source Video if any, or Control Video if any, or Model Default", "auto")]
+                        elif any_control_video :
+                            force_fps_choices +=  [("Auto fps: Control Video if any, or Model Default", "auto")]
+                        elif any_control_video and (any_video_source or recammaster):
+                            force_fps_choices +=  [("Auto fps: Source Video if any, or Model Default", "auto")]
+                        if any_control_video:
+                            force_fps_choices +=  [("Control Video fps", "control")]
+                        if any_video_source or recammaster:
+                            force_fps_choices +=  [("Source Video fps", "source")]
+                        force_fps_choices += [
+                                ("15", "15"), 
+                                ("16", "16"), 
+                                ("23", "23"), 
+                                ("24", "24"), 
+                                ("25", "25"), 
+                                ("30", "30"), 
+                            ]
                     
-                    force_fps = gr.Dropdown(
-                        choices=force_fps_choices,
-                        value=ui_defaults.get("force_fps",""),
-                        label=f"Override Frames Per Second (model default={fps} fps)"
-                    )
+                        force_fps = gr.Dropdown(
+                            choices=force_fps_choices,
+                            value=ui_defaults.get("force_fps",""),
+                            label=f"Override Frames Per Second (model default={fps} fps)"
+                        )
 
 
                     gr.Markdown("<B>You can set a more agressive Memory Profile if you generate only Short Videos or Images<B>")
@@ -9108,7 +9157,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       prompt_column_advanced, prompt_column_wizard_vars, prompt_column_wizard, lset_name, save_lset_prompt_drop, advanced_row, speed_tab, audio_tab, mmaudio_col, quality_tab,
                                       sliding_window_tab, misc_tab, prompt_enhancer_row, inference_steps_row, skip_layer_guidance_row, audio_guide_row, RIFLEx_setting_col,
                                       video_prompt_type_video_guide, video_prompt_type_video_guide_alt, video_prompt_type_video_mask, video_prompt_type_image_refs, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox,
-                                      apg_col, audio_prompt_type_sources,  audio_prompt_type_remux, audio_prompt_type_remux_row,
+                                      apg_col, audio_prompt_type_sources,  audio_prompt_type_remux, audio_prompt_type_remux_row, force_fps_col,
                                       video_guide_outpainting_col,video_guide_outpainting_top, video_guide_outpainting_bottom, video_guide_outpainting_left, video_guide_outpainting_right,
                                       video_guide_outpainting_checkbox, video_guide_outpainting_row, show_advanced, video_info_to_control_video_btn, video_info_to_video_source_btn, sample_solver_row,
                                       video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab, PP_MMAudio_setting, PP_MMAudio_row, PP_custom_audio_row, 
@@ -9249,15 +9298,18 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 outputs= None
             ).then( fn=enhance_prompt, inputs =[state, prompt, prompt_enhancer, multi_images_gen_type, override_profile ] , outputs= [prompt, wizard_prompt])
 
-            save_form_trigger.change(fn=validate_wizard_prompt,
-                inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
-                outputs= [prompt],
-                show_progress="hidden",
-            ).then(fn=save_inputs,
-                inputs =[target_state] + gen_inputs,
-                outputs= None
-            )
+            # save_form_trigger.change(fn=validate_wizard_prompt,
+            def set_save_form_event(trigger):
+                return trigger(fn=validate_wizard_prompt,
+                    inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
+                    outputs= [prompt],
+                    show_progress="hidden",
+                ).then(fn=save_inputs,
+                    inputs =[target_state] + gen_inputs,
+                    outputs= None
+                )
             
+            set_save_form_event(save_form_trigger.change)
             gr.on(triggers=[video_info_eject_video_btn.click, video_info_eject_video2_btn.click, video_info_eject_video3_btn.click, video_info_eject_image_btn.click], fn=eject_video_from_gallery, inputs =[state, output, last_choice], outputs = [output, video_info, video_buttons_row] )
             video_info_to_control_video_btn.click(fn=video_to_control_video, inputs =[state, output, last_choice], outputs = [video_guide] )            
             video_info_to_video_source_btn.click(fn=video_to_source_video, inputs =[state, output, last_choice], outputs = [video_source] )
@@ -9352,7 +9404,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             )                
 
             if tab_id == 'generate':
-                main_tabs.select(fn=detect_auto_save_form, inputs= [state], outputs= save_form_trigger, trigger_mode="multiple")
+                # main_tabs.select(fn=detect_auto_save_form, inputs= [state], outputs= save_form_trigger, trigger_mode="multiple")
                 model_family.input(fn=change_model_family, inputs=[state, model_family], outputs= [model_base_type_choice, model_choice], show_progress="hidden")
                 model_base_type_choice.input(fn=change_model_base_types, inputs=[state, model_family, model_base_type_choice], outputs= [model_base_type_choice, model_choice], show_progress="hidden")
 
@@ -10467,7 +10519,7 @@ def create_ui():
                 outputs=[generator_tab_components['queue_html'], main_tabs, edit_tab],
                 show_progress="hidden"
             )
-            app.setup_ui_tabs(main_tabs, state)
+            app.setup_ui_tabs(main_tabs, state, generator_tab_components["set_save_form_event"])
         if stats_app is not None:
             stats_app.setup_events(main, state)
         return main

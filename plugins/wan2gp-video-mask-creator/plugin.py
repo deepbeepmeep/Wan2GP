@@ -40,6 +40,7 @@ class VideoMaskCreatorPlugin(WAN2GPPlugin):
             server_config=self.server_config,
             get_current_model_settings_fn=self.get_current_model_settings
         )
+        self.matanyone_app.PlugIn = self
 
     def on_tab_select(self, state: dict) -> None:
         # print("[VideoMaskCreatorPlugin] Tab selected. Loading models...")

@@ -220,10 +220,10 @@ def convert_image_to_video(image):
         out.release()
         return temp_video.name
     
-def resize_lanczos(img, h, w):
+def resize_lanczos(img, h, w, method = None):
     img = (img + 1).float().mul_(127.5)
     img = Image.fromarray(np.clip(img.movedim(0, -1).cpu().numpy(), 0, 255).astype(np.uint8))
-    img = img.resize((w,h), resample=Image.Resampling.LANCZOS) 
+    img = img.resize((w,h), resample=Image.Resampling.LANCZOS if method is None else method) 
     img = torch.from_numpy(np.array(img).astype(np.float32)).movedim(-1, 0)
     img = img.div(127.5).sub_(1)
     return img
@@ -325,7 +325,7 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
         image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
     return image, new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0 ):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255] ):
     if rm_background:
         session = new_session() 
 
@@ -358,7 +358,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
             resized_image= img.resize((new_width,new_height), resample=Image.Resampling.LANCZOS) 
         if rm_background  and not (any_background_ref and i==0 or any_background_ref == 2) :
             # resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1,alpha_matting_background_threshold = 70, alpha_foreground_background_threshold = 100, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
-            resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
+            resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True, bgcolor=background_removal_color + [0]).convert('RGB')
         if return_tensor:
             output_list.append(convert_image_to_tensor(resized_image).unsqueeze(1)) 
         else:

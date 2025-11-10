@@ -170,6 +170,9 @@ def get_unique_id():
 def download_ffmpeg():
     if os.name != 'nt': return
     exes = ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']
+    # First, check if the executables are on the system's PATH
+    if all(shutil.which(e) for e in exes): return
+    # If not on PATH, check if they exist in the current working directory
     if all(os.path.exists(e) for e in exes): return
     api_url = 'https://api.github.com/repos/GyanD/codexffmpeg/releases/latest'
     r = requests.get(api_url, headers={'Accept': 'application/vnd.github+json'})

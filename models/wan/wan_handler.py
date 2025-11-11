@@ -160,7 +160,7 @@ class family_handler():
         else:
             profiles_dir = "wan"
 
-        if  (test_class_t2v(base_model_type) or vace_class or not base_model_type in ["chrono_edit"]) and not base_model_type in ["alpha"]:
+        if  (test_class_t2v(base_model_type) or vace_class or base_model_type in ["chrono_edit"]) and not base_model_type in ["alpha"]:
             extra_model_def["vae_upsampler"] = [1,2]
 
         extra_model_def["profiles_dir"] = [profiles_dir]

@@ -78,7 +78,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.7"
-WanGP_version = "9.41"
+WanGP_version = "9.42"
 settings_version = 2.40
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -8683,7 +8683,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         any_embedded_guidance = model_def.get("embedded_guidance", False)
                         with gr.Row(visible =any_embedded_guidance or any_audio_guidance) as embedded_guidance_row:
                             audio_guidance_scale = gr.Slider(1.0, 20.0, value=ui_defaults.get("audio_guidance_scale", 4), step=0.5, label="Audio Guidance", visible= any_audio_guidance )
-                            embedded_guidance_scale = gr.Slider(1.0, 20.0, value=ui_defaults.get("embedded_guidance", 6.0), step=0.5, label="Embedded Guidance Scale", visible=any_embedded_guidance )
+                            embedded_guidance_scale = gr.Slider(1.0, 20.0, value=ui_defaults.get("embedded_guidance_scale", 6.0), step=0.5, label="Embedded Guidance Scale", visible=any_embedded_guidance )
 
                         with gr.Row(visible=audio_only) as temperature_row:
                             temperature = gr.Slider( 0.1, 1.5, value=ui_defaults.get("temperature", 0.8), step=0.01, label="Temperature")

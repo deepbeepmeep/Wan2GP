@@ -36,7 +36,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### November 9 2025: WanGP v9.41, Free Lunch
+### November 11 2025: WanGP v9.42, Free Lunch
 
 **VAE Upsampler** for Wan 2.1/2.2 Text 2 Image and Qwen Image: *spacepxl* has tweaked the VAE Decoder used by *Wan* & *Qwen* so that it can decode and upsample x2 at the same time. The end Result is a Fast High Quality Image Upsampler (much better than Lanczos). Check the *Postprocessing Tab* / *Spatial Upsampling* Dropdown box. Unfortunately this will work only with Image Generation, no support yet for Video Generation. I have also added a VAE Refiner that keeps the existing resolution but slightly improves the details.
 
@@ -44,7 +44,10 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 **Lucy Edit v1.1**: a new version (finetune) has been released. Not sure yet if I like it better than the original one. In theory it should work better with changing the background setting for instance.
 
-*update 9.41*: Added Mocha & Lucy Edit 1.1
+**Ovi 1.1**: This new version exists in two flavors 5s & 10s ! Thanks to WanGP VRAM optimisations only 8 GB will be only needed for a 10s generation. Beware, the Prompt syntax has slightly changed since an audio background is now introduced using *"Audio:"* instead of using tags.
+
+*update 9.41*: Added Mocha & Lucy Edit 1.1\
+*update 9.42*: Added Ovi 1.1
 
 ### November 6 2025: WanGP v9.35, How many bananas are too many bananas ?
 

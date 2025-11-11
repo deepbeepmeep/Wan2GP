@@ -1,0 +1,22 @@
+{
+    "model": {
+        "name": "Wan2.2 Ovi v1.1 10s 10B",
+        "architecture": "ovi",
+        "description": "Ovi will generate an Audio soundtrack with the Video. It is specialized in speaking characters. Use the tags &lt;S&gt; and &lt;E&gt; to delimit the speaker words and use Audio: as a prefix to set the background noise.",
+		"frames_minimum": 241,
+		"frames_steps": 240,		
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_ovi1_1_10s_video_10B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_ovi1_1_10s_video_10B_quanto_bf16_int8.safetensors"
+        ],
+        "URLs2": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_ovi1_1_10s_audio_10B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_ovi1_1_10s_audio_10B_quanto_bf16_int8.safetensors"
+        ]
+    },
+	"num_inference_steps": 30,
+	"video_length": 241,
+	"sliding_window_size": 241,
+	"prompt" : "In a dimly lit bar or diner with a green ambient light, a woman with short, curly brown hair and a white button-up shirt sits thoughtfully, looking down and touching her chin. A man with curly brown hair and a dark shirt with colorful patterns on the shoulder leans towards her from a green booth, holding a drink and smiling gently. He speaks to her, <S>I said I was sorry and I meant it. It just didn't fit in the five second version.<E> He continues, <S>Now Ovi gave me ten and I'm using all of them to be wrong again.<E> The woman looks up, her expression serious, and gestures with her left hand, a ring visible on her finger. She responds, <S>Impressive consistency.<E> The man leans back slightly, still holding his drink, and looks at her expectantly, <S>Would you mind telling me if the director can cut this take?<E> Audio: Upbeat background music, faint murmur of conversation, calm male voice, slightly dismissive female voice, clinking of glasses."
+
+}

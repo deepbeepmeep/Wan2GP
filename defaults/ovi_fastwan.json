@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Wan2.2 Ovi FastWan 10B",
+        "name": "Wan2.2 Ovi v1.0 FastWan 5s 10B",
         "architecture": "ovi",
         "description": "Ovi will generate an Audio soundtrack with the Video. It is specialized in speaking characters. Use the tags &lt;S&gt; and &lt;E&gt; to delimit the speaker words and &lt;AUDCAP&gt; and &lt;ENDAUDCAP&gt; to set the background noise. This version of Ovi is accelerated by FastWan",
         "URLs": "ovi",

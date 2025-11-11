@@ -46,7 +46,8 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 **Ovi 1.1**: This new version exists in two flavors 5s & 10s ! Thanks to WanGP VRAM optimisations only 8 GB will be only needed for a 10s generation. Beware, the Prompt syntax has slightly changed since an audio background is now introduced using *"Audio:"* instead of using tags.
 
-*update 9.41*: Added Mocha & Lucy Edit 1.1
+*update 9.41*: Added Mocha & Lucy Edit 1.1\
+*update 9.42*: Added Ovi 1.1
 
 ### November 6 2025: WanGP v9.35, How many bananas are too many bananas ?
 

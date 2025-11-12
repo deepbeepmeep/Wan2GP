@@ -36,7 +36,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### November 11 2025: WanGP v9.42, Free Lunch
+### November 12 2025: WanGP v9.43, Free Lunch
 
 **VAE Upsampler** for Wan 2.1/2.2 Text 2 Image and Qwen Image: *spacepxl* has tweaked the VAE Decoder used by *Wan* & *Qwen* so that it can decode and upsample x2 at the same time. The end Result is a Fast High Quality Image Upsampler (much better than Lanczos). Check the *Postprocessing Tab* / *Spatial Upsampling* Dropdown box. Unfortunately this will work only with Image Generation, no support yet for Video Generation. I have also added a VAE Refiner that keeps the existing resolution but slightly improves the details.
 
@@ -48,6 +48,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 *update 9.41*: Added Mocha & Lucy Edit 1.1\
 *update 9.42*: Added Ovi 1.1
+*update 9.43*: Improved Linux support: no more visual artifacts with fp8 finetunes, auto install ffmpeg, detect audio device, ...
 
 ### November 6 2025: WanGP v9.35, How many bananas are too many bananas ?
 
@@ -181,7 +182,9 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 ## 🚀 Quick Start
 
 **One-click installation:** 
-- Get started instantly with [Pinokio App](https://pinokio.computer/)
+- Get started instantly with [Pinokio App](https://pinokio.computer/)\
+It is recommended to use in Pinokio the Community Scripts *wan2gp* or *wan2gp-amd* by **Morpheus** rather than the official Pinokio install.
+
 - Use Redtash1 [One Click Install with Sage](https://github.com/Redtash1/Wan2GP-Windows-One-Click-Install-With-Sage)
 
 **Manual installation:**

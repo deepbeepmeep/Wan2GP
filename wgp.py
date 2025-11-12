@@ -10,6 +10,8 @@ if p not in sys.path:
 import asyncio
 if os.name == "nt":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+if sys.platform.startswith("linux") and "NUMBA_THREADING_LAYER" not in os.environ:
+    os.environ["NUMBA_THREADING_LAYER"] = "workqueue"
 from shared.asyncio_utils import silence_proactor_connection_reset
 silence_proactor_connection_reset()
 import time
@@ -17,7 +19,8 @@ import threading
 import argparse
 import warnings
 warnings.filterwarnings('ignore', message='Failed to find.*', module='triton')
-from mmgp import offload, safetensors2, profile_type 
+from mmgp import offload, safetensors2, profile_type , fp8_quanto_bridge
+if not os.name == "nt": fp8_quanto_bridge.enable_fp8_marlin_fallback()
 try:
     import triton
 except ImportError:
@@ -67,6 +70,7 @@ logging.set_verbosity_error
 from tqdm import tqdm
 import requests
 from shared.gradio.gallery import AdvancedMediaGallery
+from shared.ffmpeg_setup import download_ffmpeg
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from collections import defaultdict
 
@@ -77,8 +81,8 @@ from collections import defaultdict
 global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.6.7"
-WanGP_version = "9.42"
+target_mmgp_version = "3.6.8"
+WanGP_version = "9.43"
 settings_version = 2.40
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -166,31 +170,6 @@ def get_unique_id():
     with unique_id_lock:
         unique_id += 1
     return str(time.time()+unique_id)
-
-def download_ffmpeg():
-    if os.name != 'nt': return
-    exes = ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']
-    if all(os.path.exists(e) for e in exes): return
-    api_url = 'https://api.github.com/repos/GyanD/codexffmpeg/releases/latest'
-    r = requests.get(api_url, headers={'Accept': 'application/vnd.github+json'})
-    assets = r.json().get('assets', [])
-    zip_asset = next((a for a in assets if 'essentials_build.zip' in a['name']), None)
-    if not zip_asset: return
-    zip_url = zip_asset['browser_download_url']
-    zip_name = zip_asset['name']
-    with requests.get(zip_url, stream=True) as resp:
-        total = int(resp.headers.get('Content-Length', 0))
-        with open(zip_name, 'wb') as f, tqdm(total=total, unit='B', unit_scale=True) as pbar:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
-                pbar.update(len(chunk))
-    with zipfile.ZipFile(zip_name) as z:
-        for f in z.namelist():
-            if f.endswith(tuple(exes)) and '/bin/' in f:
-                z.extract(f)
-                os.rename(f, os.path.basename(f))
-    os.remove(zip_name)
-
 
 def format_time(seconds):
     hours = int(seconds // 3600)

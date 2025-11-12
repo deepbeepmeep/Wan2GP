@@ -3,6 +3,5 @@
 		"https://huggingface.co/DeepBeepMeep/Flux/resolve/main/loras_accelerators/FLUX.1-Turbo-Alpha.safetensors"
 	],
 	"loras_multipliers": "1",
-	"num_inference_steps": 10,
-    "guidance_scale": 1
+	"num_inference_steps": 10
 }

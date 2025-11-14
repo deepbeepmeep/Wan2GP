@@ -36,7 +36,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### November 12 2025: WanGP v9.43, Free Lunch
+### November 12 2025: WanGP v9.44, Free Lunch
 
 **VAE Upsampler** for Wan 2.1/2.2 Text 2 Image and Qwen Image: *spacepxl* has tweaked the VAE Decoder used by *Wan* & *Qwen* so that it can decode and upsample x2 at the same time. The end Result is a Fast High Quality Image Upsampler (much better than Lanczos). Check the *Postprocessing Tab* / *Spatial Upsampling* Dropdown box. Unfortunately this will work only with Image Generation, no support yet for Video Generation. I have also added a VAE Refiner that keeps the existing resolution but slightly improves the details.
 

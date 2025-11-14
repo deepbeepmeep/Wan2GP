@@ -82,7 +82,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.8"
-WanGP_version = "9.43"
+WanGP_version = "9.44"
 settings_version = 2.40
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -7311,6 +7311,10 @@ def load_settings_from_file(state, file_path):
         set_model_settings(state, model_type, configs)        
         return *generate_dropdown_model_list(model_type), gr.update(), None
 
+def goto_model_type(state, model_type):
+    gen = get_gen_info(state)
+    return *generate_dropdown_model_list(model_type), gr.update()
+
 def reset_settings(state):
     model_type = state["model_type"]
     ui_defaults = get_default_settings(model_type)
@@ -9036,6 +9040,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 fill_wizard_prompt_trigger = gr.Text(interactive= False, visible=False)
                 save_form_trigger = gr.Text(interactive= False, visible=False)
                 gallery_source = gr.Text(interactive= False, visible=False)
+                model_choice_target = gr.Text(interactive= False, visible=False)
+
 
             with gr.Accordion("Video Info and Late Post Processing & Audio Remuxing", open=False) as video_info_accordion:
                 with gr.Tabs() as video_info_tabs:
@@ -9356,6 +9362,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 outputs= None
             ).then(fn=load_settings_from_file, inputs =[state, settings_file] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger, settings_file])
 
+
+            model_choice_target.change(fn=validate_wizard_prompt,
+                inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
+                outputs= [prompt],
+                show_progress="hidden",
+            ).then(fn=save_inputs,
+                inputs =[target_state] + gen_inputs,
+                outputs= None
+            ).then(fn=goto_model_type, inputs =[state, model_choice_target] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger])
 
             reset_settings_btn.click(fn=validate_wizard_prompt,
                 inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
@@ -10247,6 +10262,7 @@ def create_ui():
 
     js = """
     function() {
+        console.log("[WanGP] main JS initialized");
         window.updateAndTrigger = function(action) {
             const hiddenTextbox = document.querySelector('#queue_action_input textarea');
             const hiddenButton = document.querySelector('#queue_action_trigger');
@@ -10367,10 +10383,15 @@ def create_ui():
         }, { capture: true, passive: true });
 """
     js += AudioGallery.get_javascript()
+    app.initialize_plugins(globals())
+    plugin_js = ""
+    if hasattr(app, "plugin_manager"):
+        plugin_js = app.plugin_manager.get_custom_js()
+        if isinstance(plugin_js, str) and plugin_js.strip():
+            js += f"\n{plugin_js}\n"
     js += """
     }
     """
-    app.initialize_plugins(globals())
     if server_config.get("display_stats", 0) == 1:
         from shared.utils.stats import SystemStatsApp
         stats_app = SystemStatsApp() 

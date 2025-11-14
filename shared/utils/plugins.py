@@ -87,6 +87,7 @@ class WAN2GPPlugin:
         self._data_hooks: Dict[str, List[callable]] = {}
         self.tab_ids: List[str] = []
         self._set_wgp_global_func = None
+        self._custom_js_snippets: List[str] = []
         
     def setup_ui(self) -> None:
         pass
@@ -128,6 +129,14 @@ class WAN2GPPlugin:
             self._data_hooks[hook_name] = []
         self._data_hooks[hook_name].append(callback)
 
+    def add_custom_js(self, js_code: str) -> None:
+        if isinstance(js_code, str) and js_code.strip():
+            self._custom_js_snippets.append(js_code)
+
+    @property
+    def custom_js_snippets(self) -> List[str]:
+        return self._custom_js_snippets.copy()
+
     def insert_after(self, target_component_id: str, new_component_constructor: callable) -> None:
         if not hasattr(self, '_insert_after_requests'):
             self._insert_after_requests = []
@@ -147,6 +156,7 @@ class PluginManager:
             sys.path.insert(0, self.plugins_dir)
         self.data_hooks: Dict[str, List[callable]] = {}
         self.restricted_globals: Set[str] = set()
+        self.custom_js_snippets: List[str] = []
 
     def get_plugins_info(self) -> List[Dict[str, str]]:
         plugins_info = []
@@ -340,6 +350,7 @@ class PluginManager:
         return sorted(discovered)
 
     def load_plugins_from_directory(self, enabled_user_plugins: List[str]) -> None:
+        self.custom_js_snippets = []
         plugins_to_load = SYSTEM_PLUGINS + [p for p in enabled_user_plugins if p not in SYSTEM_PLUGINS]
 
         for plugin_dir_name in self.discover_plugins():
@@ -353,6 +364,8 @@ class PluginManager:
                         plugin = obj()
                         plugin.setup_ui()
                         self.plugins[plugin_dir_name] = plugin
+                        if plugin.custom_js_snippets:
+                            self.custom_js_snippets.extend(plugin.custom_js_snippets)
                         for hook_name, callbacks in plugin._data_hooks.items():
                             if hook_name not in self.data_hooks:
                                 self.data_hooks[hook_name] = []
@@ -366,6 +379,11 @@ class PluginManager:
 
     def get_all_plugins(self) -> Dict[str, WAN2GPPlugin]:
         return self.plugins.copy()
+
+    def get_custom_js(self) -> str:
+        if not self.custom_js_snippets:
+            return ""
+        return "\n".join(self.custom_js_snippets)
 
     def inject_globals(self, global_references: Dict[str, Any]) -> None:
         for plugin_id, plugin in self.plugins.items():
@@ -490,10 +508,10 @@ class WAN2GPApplication:
         self.plugin_manager.inject_globals(wgp_globals)
 
     def setup_ui_tabs(self, main_tabs_component: gr.Tabs, state_component: gr.State, set_save_form_event):
-        self._create_plugin_tabs()
+        self._create_plugin_tabs(main_tabs_component, state_component)
         self._setup_tab_events(main_tabs_component, state_component, set_save_form_event)
     
-    def _create_plugin_tabs(self):
+    def _create_plugin_tabs(self, main_tabs, state):
         if not hasattr(self, 'plugin_manager'):
             return
         
@@ -517,11 +535,19 @@ class WAN2GPApplication:
         post_user_tabs = [t for t in system_tabs if t.get('position', -1) >= USER_PLUGIN_INSERT_POSITION]
 
         all_tabs_to_render = pre_user_tabs + sorted_user_tabs + post_user_tabs
+
+        def goto_video_tab(state):
+            self._handle_tab_selection(state, None)
+            return  gr.Tabs(selected="video_gen")
         
+
         for tab_info in all_tabs_to_render:
             with gr.Tab(tab_info['label'], id=f"plugin_{tab_info['id']}") as new_tab:
                 self.all_rendered_tabs.append(new_tab)
+                plugin = self.tab_to_plugin_map[new_tab.label]
+                plugin.goto_video_tab = goto_video_tab 
                 tab_info['component_constructor']()
+
 
     def _setup_tab_events(self, main_tabs_component: gr.Tabs, state_component: gr.State, set_save_form_event):
         if main_tabs_component and state_component:
@@ -532,9 +558,6 @@ class WAN2GPApplication:
                 show_progress="hidden",
             )
 
-            def goto_video_tab(state):
-                self._handle_tab_selection(state, None)
-                return  gr.Tabs(selected="video_gen")
 
             for tab in self.all_rendered_tabs:
                 # def test_tab(state_component, evt: gr.SelectData):
@@ -546,7 +569,6 @@ class WAN2GPApplication:
 
 
                 plugin = self.tab_to_plugin_map[tab.label]
-                plugin.goto_video_tab = goto_video_tab 
                 # event = tab.select(fn=test_tab, inputs=[state_component])
                 # event = set_save_form_event(event.then)
                 event = set_save_form_event(tab.select)

@@ -3817,11 +3817,6 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_model_switch_phase = configs.get("model_switch_phase", 1)
             video_guidance_phases = configs.get("guidance_phases", 0)
             video_embedded_guidance_scale = configs.get("embedded_guidance_scale", None)
-            video_motion_amplitude = configs.get("motion_amplitude", 1.)
-            if  video_motion_amplitude == 1: 
-                values += [video_motion_amplitude]
-                labels += ["Motion Amplitude"]
-
             video_guidance_label = "Guidance"
             if model_def.get("embedded_guidance", False):
                 video_guidance_scale = video_embedded_guidance_scale
@@ -3914,7 +3909,10 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if video_apg_switch is not None and video_apg_switch != 0: 
                 values += ["on"]
                 labels += ["APG"]      
-
+            video_motion_amplitude = configs.get("motion_amplitude", 1.)
+            if  video_motion_amplitude == 1: 
+                values += [video_motion_amplitude]
+                labels += ["Motion Amplitude"]
             control_net_weight = ""
             if test_vace_module(video_model_type):
                 video_control_net_weight = configs.get("control_net_weight", 1)

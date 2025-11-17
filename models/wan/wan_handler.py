@@ -204,7 +204,9 @@ class family_handler():
                             ("lcm + ltx", "lcm"), ]
         })
 
-
+        if i2v:
+            extra_model_def["motion_amplitude"] = True
+            
         if t2v: 
             if not alpha: 
                 extra_model_def["guide_custom_choices"] = {
@@ -492,10 +494,14 @@ class family_handler():
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
         text_encoder_filename = family_handler.get_wan_text_encoder_filename(text_encoder_quantization)
 
+        if test_wan_5B(base_model_type):
+            wan_files = []
+        else:
+            wan_files = ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]
         download_def  = [{
             "repoId" : "DeepBeepMeep/Wan2.1", 
             "sourceFolderList" :  ["xlm-roberta-large", "umt5-xxl", ""  ],
-            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"] +  computeList(model_filename)  ]   
+            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , wan_files +  computeList(model_filename)  ]   
         }]
 
         if test_wan_5B(base_model_type):

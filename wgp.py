@@ -596,6 +596,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     multi_prompts_gen_type = inputs["multi_prompts_gen_type"]
     video_guide_outpainting = inputs["video_guide_outpainting"]
     spatial_upsampling = inputs["spatial_upsampling"]
+    motion_amplitude = inputs["motion_amplitude"]
     medium = "Videos" if image_mode == 0 else "Images"
 
     outpainting_dims = get_outpainting_dims(video_guide_outpainting)
@@ -603,6 +604,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
 
+    if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
     if "vae" in spatial_upsampling:
         if image_mode not in model_def.get("vae_upsampler", []):
             gr.Info(f"VAE Spatial Upsampling is not available for {medium}")
@@ -781,7 +783,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         if image_start == None :
             gr.Info("Start Image should be an Image") 
             return ret()
-        if  multi_prompts_gen_type in (1,2) and len(image_start) > 1:
+        if  multi_prompts_gen_type in [1] and len(image_start) > 1:
             gr.Info("Only one Start Image is supported") 
             return ret()       
     else:
@@ -797,7 +799,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         if image_end == None :
             gr.Info("End Image should be an Image") 
             return ret()
-        if multi_prompts_gen_type == 0:
+        if multi_prompts_gen_type in [0,2]:
             if video_source is not None:
                 if len(image_end)> 1:
                     gr.Info("If a Video is to be continued and the option 'Each Text Prompt Will create a new generated Video' is set, there can be only one End Image")
@@ -833,7 +835,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
             gr.Info("Filtering Frames with this model is not supported")
             return ret()
 
-    if multi_prompts_gen_type != 0:
+    if multi_prompts_gen_type == 1:
         if image_start != None and len(image_start) > 1:
             if multi_prompts_gen_type == 1:
                 gr.Info("Only one Start Image must be provided if multiple prompts are used for different windows") 
@@ -866,9 +868,12 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         "audio_prompt_type": audio_prompt_type,
         "skip_steps_cache_type": skip_steps_cache_type,
         "model_switch_phase": model_switch_phase,
+        "motion_amplitude": motion_amplitude,
     } 
 
-    if multi_prompts_gen_type == 0:
+    if multi_prompts_gen_type in [0,2]:
+        if multi_prompts_gen_type == 2:
+            prompts = ["\n".join(prompts)]
         if image_start != None and len(image_start) > 0:
             if inputs["multi_images_gen_type"] == 0:
                 new_prompts = []
@@ -3637,6 +3642,17 @@ def select_audio(state, audio_files_paths, audio_file_selected):
     else:
         choice = min(len(audio_file_list)-1, gen.get("audio_selected",0)) if len(audio_file_list) > 0 else -1
     set_file_choice(gen,  audio_file_list, choice, audio_files=True )
+
+
+video_guide_processes = "PEDSLCMU"
+all_guide_processes = video_guide_processes + "VBH"
+
+process_map_outside_mask = { "Y" : "depth", "W": "scribble", "X": "inpaint", "Z": "flow"}
+process_map_video_guide = { "P": "pose", "D" : "depth", "S": "scribble", "E": "canny", "L": "flow", "C": "gray", "M": "inpaint", "U": "identity"}
+all_process_map_video_guide =  { "B": "face", "H" : "bbox"}
+all_process_map_video_guide.update(process_map_video_guide)
+processes_names = { "pose": "Open Pose", "depth": "Depth Mask", "scribble" : "Shapes", "flow" : "Flow Map", "gray" : "Gray Levels", "inpaint" : "Inpaint Mask", "identity": "Identity Mask", "raw" : "Raw Format", "canny" : "Canny Edges", "face": "Face Movements", "bbox": "BBox"}
+
 def select_video(state, current_gallery_tab, input_file_list, file_selected, audio_files_paths, audio_file_selected, source, event_data: gr.EventData):
     gen = get_gen_info(state)
     if source=="video":
@@ -3763,6 +3779,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_other_prompts =  [ v for s,v in map_image_prompt.items() if all_letters(video_image_prompt_type,s)] \
                                  + [ v for s,v in map_video_prompt.items() if check(video_video_prompt_type,s)] \
                                  + [ v for s,v in map_audio_prompt.items() if all_letters(video_audio_prompt_type,s)] 
+            any_mask = "A" in video_video_prompt_type and not "U" in video_video_prompt_type            
             video_model_type =  configs.get("model_type", "t2v")
             model_family = get_model_family(video_model_type)
             model_def = get_model_def(video_model_type)
@@ -3800,6 +3817,11 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_model_switch_phase = configs.get("model_switch_phase", 1)
             video_guidance_phases = configs.get("guidance_phases", 0)
             video_embedded_guidance_scale = configs.get("embedded_guidance_scale", None)
+            video_motion_amplitude = configs.get("motion_amplitude", 1.)
+            if  video_motion_amplitude == 1: 
+                values += [video_motion_amplitude]
+                labels += ["Motion Amplitude"]
+
             video_guidance_label = "Guidance"
             if model_def.get("embedded_guidance", False):
                 video_guidance_scale = video_embedded_guidance_scale
@@ -3843,6 +3865,31 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if len(video_other_prompts) >0 :
                 values += [video_other_prompts]
                 labels += ["Other Prompts"]
+            def gen_process_list(map):
+                video_preprocesses = ""
+                for k,v in map.items():
+                    if k in video_video_prompt_type:
+                        process_name = processes_names[v]
+                        video_preprocesses += process_name if len(video_preprocesses) == 0 else ", " + process_name 
+                return video_preprocesses 
+
+            video_preprocesses_in = gen_process_list(all_process_map_video_guide)
+            video_preprocesses_out = gen_process_list(process_map_outside_mask)
+            if "N" in video_video_prompt_type:
+                alt = video_preprocesses_in
+                video_preprocesses_in = video_preprocesses_out
+                video_preprocesses_out = alt
+            if len(video_preprocesses_in) >0 :
+                values += [video_preprocesses_in]
+                labels += [ "Process Inside Mask" if any_mask else "Preprocessing"]
+
+            if len(video_preprocesses_out) >0 :
+                values += [video_preprocesses_out]
+                labels += [ "Process Outside Mask"]
+            video_frames_positions = configs.get("frames_positions", "")
+            if "F" in video_video_prompt_type and len(video_frames_positions):
+                values += [video_frames_positions]
+                labels += [ "Injected Frames"]
             if len(video_outpainting) >0:
                 values += [video_outpainting]
                 labels += ["Outpainting"]
@@ -4872,6 +4919,7 @@ def generate_video(
     control_net_weight,
     control_net_weight2,
     control_net_weight_alt,
+    motion_amplitude,
     mask_expand,
     audio_guide,
     audio_guide2,
@@ -4922,10 +4970,6 @@ def generate_video(
         for temp_filename in temp_filenames_list: 
             if temp_filename!= None and os.path.isfile(temp_filename):
                 os.remove(temp_filename)
-
-    process_map_outside_mask = { "Y" : "depth", "W": "scribble", "X": "inpaint", "Z": "flow"}
-    process_map_video_guide = { "P": "pose", "D" : "depth", "S": "scribble", "E": "canny", "L": "flow", "C": "gray", "M": "inpaint", "U": "identity"}
-    processes_names = { "pose": "Open Pose", "depth": "Depth Mask", "scribble" : "Shapes", "flow" : "Flow Map", "gray" : "Gray Levels", "inpaint" : "Inpaint Mask", "identity": "Identity Mask", "raw" : "Raw Format", "canny" : "Canny Edges"}
 
     global wan_model, offloadobj, reload_needed
     gen = get_gen_info(state)
@@ -5622,6 +5666,7 @@ def generate_video(
                     audio_context_lens= audio_context_lens,
                     context_scale = context_scale,
                     control_scale_alt = control_net_weight_alt,
+                    motion_amplitude = motion_amplitude,
                     model_mode = model_mode,
                     causal_block_size = 5,
                     causal_attention = True,
@@ -6763,7 +6808,10 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
 
     if not len(model_def.get("control_net_weight_alt_name", "")) >0:
         pop += ["control_net_weight_alt"]
-                        
+
+    if not model_def.get("motion_amplitude", False):
+        pop += ["motion_amplitude"]
+
     if model_def.get("video_guide_outpainting", None) is None:
         pop += ["video_guide_outpainting"] 
 
@@ -7373,6 +7421,7 @@ def save_inputs(
             control_net_weight,
             control_net_weight2,
             control_net_weight_alt,
+            motion_amplitude,
             mask_expand,
             audio_guide,
             audio_guide2,
@@ -7685,8 +7734,6 @@ def refresh_video_prompt_type_alignment(state, video_prompt_type, video_prompt_t
     video_prompt_type = add_to_sequence(video_prompt_type, video_prompt_type_video_guide)
     return video_prompt_type
 
-all_guide_processes ="PDESLCMUVBH"
-video_guide_processes = "PEDSLCMU"
 
 def refresh_video_prompt_type_video_guide(state, filter_type, video_prompt_type, video_prompt_type_video_guide,  image_mode, old_image_mask_guide_value, old_image_guide_value, old_image_mask_value ):
     model_type = state["model_type"]
@@ -8835,8 +8882,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_cfg_zero = model_def.get("cfg_zero", False)
                 any_cfg_star = model_def.get("cfg_star", False)
                 any_apg = model_def.get("adaptive_projected_guidance", False)
-
-                with gr.Tab("Quality", visible = (vace and image_outputs or any_skip_layer_guidance or any_cfg_zero or any_cfg_star or any_apg) and not audio_only ) as quality_tab:
+                any_motion_amplitude = model_def.get("motion_amplitude", False) and not image_outputs
+                
+                with gr.Tab("Quality", visible = (vace and image_outputs or any_skip_layer_guidance or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude) and not audio_only ) as quality_tab:
                         with gr.Column(visible = any_skip_layer_guidance ) as skip_layer_guidance_row:
                             gr.Markdown("<B>Skip Layer Guidance (improves video quality, requires guidance > 1)</B>")
                             with gr.Row():
@@ -8910,6 +8958,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 scale = 1,
                                 label="Generate more frames to preserve Reference Image Identity / Control Image Information or improve"
                             )
+
+                        with gr.Column(visible = any_motion_amplitude) as motion_amplitude_col:
+                            gr.Markdown("<B>Experimental: Accelerate Motion (1: disabled, 1.15 recommended)")
+                            motion_amplitude  = gr.Slider(1, 1.4, value=ui_defaults.get("motion_amplitude",1.), step=0.01, label="Motion Amplitude", visible = True, show_reset_button= False) 
 
                 with gr.Tab("Sliding Window", visible= sliding_window_enabled and not image_outputs and not audio_only) as sliding_window_tab:
 
@@ -9149,7 +9201,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_eject_audio_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
-                                      min_frames_if_references_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, number_frames_row, negative_prompt_row, chatter_row] +\
+                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, number_frames_row, negative_prompt_row, chatter_row] +\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

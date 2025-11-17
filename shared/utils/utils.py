@@ -372,7 +372,6 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
     return output_list, output_mask_list
 
 def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, return_mask = False, return_image = False):
-    from shared.utils.utils import save_image
     inpaint_color = canvas_tf_bg / 127.5 - 1
 
     ref_width, ref_height = ref_img.size

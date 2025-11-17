@@ -428,6 +428,7 @@ class WanAny2V:
         original_input_ref_images = [],
         face_arc_embeds = None,
         control_scale_alt = 1.,
+        motion_amplitude = 1.,
         **bbargs
                 ):
         
@@ -611,6 +612,21 @@ class WanAny2V:
             msk = msk.transpose(1, 2)[0]
 
             lat_y = self.vae.encode([enc], VAE_tile_size, any_end_frame= any_end_frame and add_frames_for_end_image)[0]
+
+            if motion_amplitude > 1:
+                base_latent = lat_y[:, :1]
+                gray_latent = lat_y[:, control_pre_frames_count:]               
+                diff = gray_latent - base_latent
+                diff_mean = diff.mean(dim=(0, 2, 3), keepdim=True)
+                diff_centered = diff - diff_mean
+                scaled_latent = base_latent + diff_centered * motion_amplitude + diff_mean
+                scaled_latent = torch.clamp(scaled_latent, -6, 6)
+                if any_end_frame:
+                    lat_y = torch.cat([lat_y[:, :control_pre_frames_count], scaled_latent[:, :-1], lat_y[:, -1:]], dim=1)
+                else:
+                    lat_y = torch.cat([lat_y[:, :control_pre_frames_count], scaled_latent], dim=1)
+                base_latent = scaled_latent = diff_mean = diff = diff_centered = None
+                
             y = torch.concat([msk, lat_y])
             overlapped_latents_frames_num = int(1 + (preframes_count-1) // 4)
             # if overlapped_latents != None:

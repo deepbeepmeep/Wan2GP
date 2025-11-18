@@ -30,7 +30,6 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         )
 
     def _get_js_script_html(self):
-        # ... (JavaScript code remains unchanged) ...
         js_code = """
             () => {
                 function updateGradioInput(elem_id, value) {
@@ -122,26 +121,36 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             }
         """
         return f"{js_code}"
+    
+    def _get_community_plugins_info(self):
+        if hasattr(self, '_community_plugins_cache') and self._community_plugins_cache is not None:
+            return self._community_plugins_cache
+        try:
+            response = requests.get(COMMUNITY_PLUGINS_URL, timeout=10)
+            response.raise_for_status()
+            plugins = response.json()
+            self._community_plugins_cache = {
+                p.get('url', '').split('/')[-1].replace('.git', ''): p
+                for p in plugins if p.get('url')
+            }
+            return self._community_plugins_cache
+        except Exception as e:
+            print(f"[PluginManager] Could not fetch community plugins info: {e}")
+            self._community_plugins_cache = {}
+            return {}
 
     def _build_community_plugins_html(self):
         try:
             installed_plugin_ids = {p['id'] for p in self.app.plugin_manager.get_plugins_info()}
-            
-            response = requests.get(COMMUNITY_PLUGINS_URL, timeout=10)
-            response.raise_for_status()
-            plugins = response.json()
-
+            remote_plugins = self._get_community_plugins_info()
             community_plugins = [
-                p for p in plugins 
-                if p.get('url', '').split('/')[-1].replace('.git', '') not in installed_plugin_ids
+                p for plugin_id, p in remote_plugins.items()
+                if plugin_id not in installed_plugin_ids
             ]
 
-        except requests.exceptions.RequestException as e:
-            gr.Warning(f"Could not fetch community plugins list: {e}")
+        except Exception as e:
+            gr.Warning(f"Could not process community plugins list: {e}")
             return "<p style='text-align:center; color: var(--color-accent-soft);'>Failed to load community plugins.</p>"
-        except json.JSONDecodeError:
-            gr.Warning("Failed to parse the community plugins list. The file may be malformed.")
-            return "<p style='text-align:center; color: var(--color-accent-soft);'>Error reading community plugins list.</p>"
 
         if not community_plugins:
             return "<p style='text-align:center; color: var(--text-color-secondary);'>All available community plugins are already installed.</p>"
@@ -180,6 +189,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         plugins_info = self.app.plugin_manager.get_plugins_info()
         enabled_user_plugins = self.server_config.get("enabled_plugins", [])
         all_user_plugins_info = [p for p in plugins_info if not p.get('system')]
+        remote_plugins_info = self._get_community_plugins_info()
         
         css = """
         <style>
@@ -202,6 +212,19 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             .plugin-enable-checkbox:checked::after { content: '✔'; position: absolute; color: white; font-size: 16px; font-weight: bold; top: 50%; left: 50%; transform: translate(-50%, -50%); }
             .save-buttons-container { justify-content: flex-start; margin-top: 20px !important; gap: 12px; }
             .stylish-save-btn { font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif !important; font-weight: 600 !important; font-size: 1.05em !important; padding: 10px 20px !important; }
+            .update-available-notice {
+                font-size: 0.9em;
+                font-weight: 600;
+                color: var(--color-accent);
+                background-color: var(--color-accent-soft);
+                padding: 2px 8px;
+                border-radius: 4px;
+                margin-left: 8px;
+                white-space: nowrap;
+            }
+            .plugin-item.update-available {
+                border-left: 4px solid var(--color-accent);
+            }
         </style>
         """
 
@@ -219,15 +242,26 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             for plugin in user_plugins:
                 plugin_id = plugin['id']
                 checked = "checked" if plugin_id in enabled_user_plugins else ""
+                
+                update_notice_html = ''
+                item_update_class = ''
+                if plugin_id in remote_plugins_info:
+                    remote_version = remote_plugins_info[plugin_id].get('version', '0.0.0')
+                    local_version = plugin.get('version', '0.0.0')
+                    if remote_version > local_version:
+                        update_notice_html = f'<span class="update-available-notice">v{remote_version} update available</span>'
+                        item_update_class = 'update-available'
+                
                 user_items_html += f"""
-                <div class="plugin-item" data-plugin-id="{plugin_id}" draggable="true">
+                <div class="plugin-item {item_update_class}" data-plugin-id="{plugin_id}" draggable="true">
                     <div class="plugin-info-container">
                         <input type="checkbox" class="plugin-enable-checkbox" {checked}>
                         <div class="plugin-item-info">
                             <div class="plugin-header">
                                 <span class="name">{plugin['name']}</span>
-                                <span class="version">version {plugin['version']} (id: {plugin['id']})</span>
+                                {update_notice_html}
                             </div>
+                            <span class="version">version {plugin['version']} (id: {plugin['id']})</span>
                             <span class="description">{plugin.get('description', 'No description provided.')}</span>
                         </div>
                     </div>
@@ -303,6 +337,9 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
     def _on_tab_select_refresh(self, evt: gr.SelectData):
         if evt.value != "Plugins":
             return gr.update(), gr.update()
+        if hasattr(self, '_community_plugins_cache'):
+            del self._community_plugins_cache
+            
         installed_html = self._build_plugins_html()
         community_html = self._build_community_plugins_html()
         return gr.update(value=installed_html), gr.update(value=community_html)
@@ -405,5 +442,8 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         except (json.JSONDecodeError, ValueError) as e:
             gr.Warning(f"Could not perform plugin action: {e}")
             traceback.print_exc()
+
+        if hasattr(self, '_community_plugins_cache'):
+            del self._community_plugins_cache
 
         return self._build_plugins_html(), self._build_community_plugins_html()

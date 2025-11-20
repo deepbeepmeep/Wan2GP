@@ -45,3 +45,7 @@ loras_i2v/
 settings/
 
 wgp_config.json
+
+ffmpeg_bins/
+
+finetunes/*.json

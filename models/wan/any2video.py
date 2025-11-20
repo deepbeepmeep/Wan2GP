@@ -977,6 +977,25 @@ class WanAny2V:
                 latent_model_input = torch.cat([latents, extended_latents.expand(*expand_shape)], dim=extended_input_dim)
             else:
                 latent_model_input = latents
+            
+            # For I2V architecture models in T2V mode: pad latents to 36 channels if needed
+            # to match patch_embedding's in_dim (model will output 16 channels via out_dim)
+            # This must happen after all concatenations to ensure correct channel count
+            if hasattr(self.model, 'in_dim') and self.model.in_dim == 36:
+                current_channels = latent_model_input.shape[1]
+                if current_channels < 36:
+                    # Pad with zeros to match in_dim (36 = 16 VAE channels + 20 CLIP vision channels)
+                    padding_channels = 36 - current_channels
+                    padding = torch.zeros(
+                        latent_model_input.shape[0], 
+                        padding_channels, 
+                        latent_model_input.shape[2], 
+                        latent_model_input.shape[3], 
+                        latent_model_input.shape[4],
+                        dtype=latent_model_input.dtype,
+                        device=latent_model_input.device
+                    )
+                    latent_model_input = torch.cat([latent_model_input, padding], dim=1)
 
             any_guidance = guide_scale != 1
             if phantom:

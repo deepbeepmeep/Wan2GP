@@ -204,6 +204,26 @@ class family_handler():
                             ("lcm + ltx", "lcm"), ]
         })
 
+        if i2v:
+            extra_model_def["motion_amplitude"] = True
+ 
+            if base_model_type in ["i2v_2_2"] : 
+                extra_model_def["i2v_v2v"] = True
+                extra_model_def["extract_guide_from_window_start"] = True
+                extra_model_def["guide_custom_choices"] = {
+                    "choices":[("Use Text & Image Prompt Only", ""),
+                            ("Video to Video guided by Text Prompt & Image", "GUV"),
+                            ("Video to Video guided by Text/Image Prompt and Restricted to the Area of the Video Mask", "GVA")],
+                    "default": "",
+                    "show_label" : False,
+                    "letters_filter": "GUVA",
+                    "label": "Video to Video"
+                }
+
+                extra_model_def["mask_preprocessing"] = {
+                    "selection":[ "", "A"],
+                    "visible": False
+                }
 
         if t2v: 
             if not alpha: 
@@ -492,10 +512,14 @@ class family_handler():
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
         text_encoder_filename = family_handler.get_wan_text_encoder_filename(text_encoder_quantization)
 
+        if test_wan_5B(base_model_type):
+            wan_files = []
+        else:
+            wan_files = ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]
         download_def  = [{
             "repoId" : "DeepBeepMeep/Wan2.1", 
             "sourceFolderList" :  ["xlm-roberta-large", "umt5-xxl", ""  ],
-            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"] +  computeList(model_filename)  ]   
+            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , wan_files +  computeList(model_filename)  ]   
         }]
 
         if test_wan_5B(base_model_type):
@@ -716,6 +740,10 @@ class family_handler():
 	            "force_fps": "control",
             })
 
+
+        if base_model_type in ["i2v_2_2"]:
+            ui_defaults.update({"masking_strength": 0.1, "denoising_strength": 0.9})
+            
         if base_model_type in ["chrono_edit"]:
             ui_defaults.update({"image_mode": 1, "prompt_enhancer":"TI"})
 

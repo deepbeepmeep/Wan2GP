@@ -202,6 +202,7 @@ class model_factory:
             joint_pass = False,
             image_refs_relative_size = 100,
             denoising_strength = 1.,
+            masking_strength = 1.,
             **bbargs
     ):
             if self._interrupt:
@@ -327,6 +328,7 @@ class model_factory:
                 unpack_latent=unpack_latent,
                 joint_pass=joint_pass,
                 denoising_strength=denoising_strength,
+                masking_strength=masking_strength,
                 radiance_cache=radiance_cache,
             )
             if x==None: return None
@@ -336,7 +338,7 @@ class model_factory:
                 with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     x = self.vae.decode(x)
 
-            if image_mask is not None:
+            if image_mask is not None and masking_strength == 1:
                 img_msk_rebuilt = inp["img_msk_rebuilt"]
                 img= input_frames.squeeze(1).unsqueeze(0) # convert_image_to_tensor(image_guide) 
                 x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt 

@@ -19,7 +19,6 @@ class GuidesPlugin(WAN2GPPlugin):
             tab_id="info",
             label="Guides",
             component_constructor=self.create_guides_ui,
-            position=2
         )
 
     def create_guides_ui(self):

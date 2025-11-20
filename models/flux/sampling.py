@@ -315,6 +315,7 @@ def denoise(
     img_msk_latents = None,
     img_msk_rebuilt = None,
     denoising_strength = 1,
+    masking_strength = 1,
     preview_meta = None,
     radiance_cache = None,
 ):
@@ -338,6 +339,7 @@ def denoise(
         randn = torch.randn_like(original_image_latents)
         if denoising_strength < 1.:
             first_step = int(len(timesteps) * (1. - denoising_strength))
+        masked_steps = math.ceil(len(timesteps) * masking_strength)
         if not morph:
             latent_noise_factor = timesteps[first_step]
             latents  = original_image_latents  * (1.0 - latent_noise_factor) + randn * latent_noise_factor
@@ -413,7 +415,7 @@ def denoise(
 
         img += (t_prev - t_curr) * pred
 
-        if img_msk_latents is not None:
+        if img_msk_latents is not None and i < masked_steps:
             latent_noise_factor = t_prev
             # noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
             noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + randn * latent_noise_factor 

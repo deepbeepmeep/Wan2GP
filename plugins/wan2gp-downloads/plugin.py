@@ -23,7 +23,6 @@ class DownloadsPlugin(WAN2GPPlugin):
             tab_id="downloads",
             label="Downloads",
             component_constructor=self.create_downloads_ui,
-            position=3
         )
 
     def create_downloads_ui(self):

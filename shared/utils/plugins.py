@@ -52,15 +52,16 @@ def auto_install_and_enable_default_plugins(manager: 'PluginManager', wgp_global
 
 
 SYSTEM_PLUGINS = [
-    "wan2gp-about",
-    "wan2gp-configuration",
-    "wan2gp-downloads",
-    "wan2gp-guides",
-    "wan2gp-plugin-manager",
     "wan2gp-video-mask-creator",
+    "wan2gp-motion-designer",
+    "wan2gp-guides",
+    "wan2gp-downloads",
+    "wan2gp-configuration",
+    "wan2gp-plugin-manager",
+    "wan2gp-about",
 ]
 
-USER_PLUGIN_INSERT_POSITION = 4
+USER_PLUGIN_INSERT_POSITION = 3
 
 @dataclass
 class InsertAfterRequest:
@@ -517,22 +518,32 @@ class WAN2GPApplication:
         
         loaded_plugins = self.plugin_manager.get_all_plugins()
         system_tabs, user_tabs = [], []
+        system_order = {pid: idx for idx, pid in enumerate(SYSTEM_PLUGINS)}
 
         for plugin_id, plugin in loaded_plugins.items():
             for tab_id, tab in plugin.tabs.items():
                 self.tab_to_plugin_map[tab.label] = plugin
-                tab_info = {'id': tab_id, 'label': tab.label, 'component_constructor': tab.component_constructor, 'position': tab.position}
+                tab_info = {
+                    'id': tab_id,
+                    'label': tab.label,
+                    'component_constructor': tab.component_constructor,
+                    'position': system_order.get(plugin_id, tab.position),
+                    'plugin_id': plugin_id,
+                }
                 if plugin_id in SYSTEM_PLUGINS:
                     system_tabs.append(tab_info)
                 else:
                     user_tabs.append((plugin_id, tab_info))
 
-        system_tabs.sort(key=lambda t: (t.get('position', -1), t['label']))
+        # Respect the declared system order, then splice user tabs after the configured index.
+        system_tabs_sorted = sorted(
+            system_tabs,
+            key=lambda t: (system_order.get(t['plugin_id'], 1_000_000), t['label']),
+        )
+        pre_user_tabs = system_tabs_sorted[:USER_PLUGIN_INSERT_POSITION]
+        post_user_tabs = system_tabs_sorted[USER_PLUGIN_INSERT_POSITION:]
 
         sorted_user_tabs = [tab_info for plugin_id in self.enabled_plugins for pid, tab_info in user_tabs if pid == plugin_id]
-
-        pre_user_tabs = [t for t in system_tabs if t.get('position', -1) < USER_PLUGIN_INSERT_POSITION]
-        post_user_tabs = [t for t in system_tabs if t.get('position', -1) >= USER_PLUGIN_INSERT_POSITION]
 
         all_tabs_to_render = pre_user_tabs + sorted_user_tabs + post_user_tabs
 
@@ -616,6 +627,7 @@ class WAN2GPApplication:
         except Exception as e:
             print(f"[PluginManager] Error in on_tab_select for plugin {plugin_to_select.name}: {e}")
             traceback.print_exc()
+            ret = None
         return ret
     
     def run_component_insertion(self, components_dict: Dict[str, Any]):

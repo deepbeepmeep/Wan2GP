@@ -20,6 +20,8 @@
 	"switch_threshold" : 900,
 	"guidance_scale" : 3.5,
 	"guidance2_scale" : 3.5,
+	"masking_strength": 0.1,
+	"denoising_strength": 0.9,
 	"flow_shift" : 5
 	
 }

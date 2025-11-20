@@ -134,6 +134,7 @@ class model_factory():
         joint_pass = True,
         sample_solver='default',
         denoising_strength = 1.,
+        masking_strength = 1.,
         model_mode = 0,
         outpainting_dims = None,
         **bbargs
@@ -233,6 +234,7 @@ class model_factory():
             loras_slists=loras_slists,
             joint_pass = joint_pass,
             denoising_strength=denoising_strength,
+            masking_strength=masking_strength,
             generator=torch.Generator(device="cuda").manual_seed(seed),
             lora_inpaint = image_mask is not None and model_mode == 1,
             outpainting_dims = outpainting_dims,

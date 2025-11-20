@@ -6,6 +6,7 @@ import os
 import random
 import sys
 import types
+import math
 from contextlib import contextmanager
 from functools import partial
 from mmgp import offload
@@ -372,6 +373,7 @@ class WanAny2V:
         image_start = None,
         image_end = None,
         denoising_strength = 1.0,
+        masking_strength = 1.0,
         target_camera=None,                  
         context_scale=None,
         width = 1280,
@@ -615,8 +617,7 @@ class WanAny2V:
 
             if motion_amplitude > 1:
                 base_latent = lat_y[:, :1]
-                gray_latent = lat_y[:, control_pre_frames_count:]               
-                diff = gray_latent - base_latent
+                diff = lat_y[:, control_pre_frames_count:] - base_latent
                 diff_mean = diff.mean(dim=(0, 2, 3), keepdim=True)
                 diff_centered = diff - diff_mean
                 scaled_latent = base_latent + diff_centered * motion_amplitude + diff_mean
@@ -739,6 +740,7 @@ class WanAny2V:
                 image_mask_latents = torch.where(image_mask_latents>=0.5, 1., 0. )[:1].to(self.device)
                 # save_video(image_mask_latents.squeeze(0), "mama.mp4", value_range=(0,1) )
                 # image_mask_rebuilt = image_mask_latents.repeat_interleave(8, dim=-1).repeat_interleave(8, dim=-2).unsqueeze(0)
+                masked_steps = math.ceil(sampling_steps * masking_strength)
 
         # Phantom
         if phantom:
@@ -948,7 +950,6 @@ class WanAny2V:
         input_frames = input_frames2 = input_masks =input_masks2 = input_video = input_ref_images = input_ref_masks = pre_video_frame = None
         gc.collect()
         torch.cuda.empty_cache()
-
         # denoising
         trans = self.model
         for i, t in enumerate(tqdm(timesteps)):
@@ -1133,10 +1134,10 @@ class WanAny2V:
                     **scheduler_kwargs)[0]
 
 
-            if image_mask_latents is not None:
+            if image_mask_latents is not None and i< masked_steps:
                 sigma = 0 if i == len(timesteps)-1 else timesteps[i+1]/1000
-                noisy_image = randn * sigma + (1 - sigma) * source_latents
-                latents = noisy_image * (1-image_mask_latents) + image_mask_latents * latents  
+                noisy_image = randn[:, :, :source_latents.shape[2]] * sigma + (1 - sigma) * source_latents
+                latents[:, :, :source_latents.shape[2]] = noisy_image * (1-image_mask_latents) + image_mask_latents * latents[:, :, :source_latents.shape[2]]  
 
 
             if callback is not None:

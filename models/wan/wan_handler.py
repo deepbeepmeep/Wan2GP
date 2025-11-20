@@ -206,7 +206,25 @@ class family_handler():
 
         if i2v:
             extra_model_def["motion_amplitude"] = True
-            
+ 
+            if base_model_type in ["i2v_2_2"] : 
+                extra_model_def["i2v_v2v"] = True
+                extra_model_def["extract_guide_from_window_start"] = True
+                extra_model_def["guide_custom_choices"] = {
+                    "choices":[("Use Text & Image Prompt Only", ""),
+                            ("Video to Video guided by Text Prompt & Image", "GUV"),
+                            ("Video to Video guided by Text/Image Prompt and Restricted to the Area of the Video Mask", "GVA")],
+                    "default": "",
+                    "show_label" : False,
+                    "letters_filter": "GUVA",
+                    "label": "Video to Video"
+                }
+
+                extra_model_def["mask_preprocessing"] = {
+                    "selection":[ "", "A"],
+                    "visible": False
+                }
+
         if t2v: 
             if not alpha: 
                 extra_model_def["guide_custom_choices"] = {

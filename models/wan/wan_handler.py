@@ -740,6 +740,10 @@ class family_handler():
 	            "force_fps": "control",
             })
 
+
+        if base_model_type in ["i2v_2_2"]:
+            ui_defaults.update({"masking_strength": 0.1, "denoising_strength": 0.9})
+            
         if base_model_type in ["chrono_edit"]:
             ui_defaults.update({"image_mode": 1, "prompt_enhancer":"TI"})
 

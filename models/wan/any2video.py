@@ -529,14 +529,10 @@ class WanAny2V:
         start_step_no = 0
         ref_images_count = 0
         trim_frames = 0
-        last_latent_output = False
+        last_latent_preview = False
         extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = None
         no_noise_latents_injection = infinitetalk
         timestep_injection = False
-
-        if chrono_edit:
-            frame_num = 29
-            last_latent_output = True
 
         lat_frames = int((frame_num - 1) // self.vae_stride[0]) + 1
         extended_input_dim = 0
@@ -640,6 +636,14 @@ class WanAny2V:
 
             lat_y = input_video = None
             kwargs.update({ 'y': y})
+
+        # Chrono Edit
+        if chrono_edit:
+            if frame_num == 5:
+                freq0, freq7 = get_nd_rotary_pos_embed( (0, 0, 0), (1, lat_h // 2, lat_w // 2)), get_nd_rotary_pos_embed( (7, 0, 0), (8, lat_h // 2, lat_w // 2))
+                freqs = ( torch.cat([freq0[0], freq7[0]]), torch.cat([freq0[1],freq7[1]]))
+                freq0 = freq7 = None
+            last_latent_preview = image_outputs
 
         # Animate
         if animate:
@@ -938,7 +942,10 @@ class WanAny2V:
             return None
 
         if sample_scheduler != None:
-            scheduler_kwargs = {} if isinstance(sample_scheduler, FlowMatchScheduler) else {"generator": seed_g}
+            if isinstance(sample_scheduler, FlowMatchScheduler) or sample_solver == 'unipc_hf':
+                scheduler_kwargs = {}
+            else:
+                scheduler_kwargs = {"generator": seed_g}
         # b, c, lat_f, lat_h, lat_w
         latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=seed_g)
         if "G" in video_prompt_type: randn = latents
@@ -1144,7 +1151,7 @@ class WanAny2V:
                 latents_preview = latents
                 if ref_images_before and ref_images_count > 0: latents_preview = latents_preview[:, :, ref_images_count: ] 
                 if trim_frames > 0:  latents_preview=  latents_preview[:, :,:-trim_frames]
-                if image_outputs: latents_preview= latents_preview[:, :,-1:] if last_latent_output else latents_preview[:, :,:1]
+                if image_outputs: latents_preview= latents_preview[:, :,-1:] if last_latent_preview else latents_preview[:, :,:1]
                 if len(latents_preview) > 1: latents_preview = latents_preview.transpose(0,2)
                 callback(i, latents_preview[0], False, denoising_extra =denoising_extra )
                 latents_preview = None
@@ -1163,8 +1170,19 @@ class WanAny2V:
         if chipmunk:
             self.model.release_chipmunk() # need to add it at every exit when in prod
 
+        if chrono_edit:
+            if frame_num == 5 :
+                videos = self.vae.decode(x0, VAE_tile_size)
+            else:
+                videos_edit = self.vae.decode([x[:, [0,-1]] for x in x0 ], VAE_tile_size)
+                videos = self.vae.decode([x[:, :-1] for x in x0 ], VAE_tile_size)
+                videos = [ torch.cat([video, video_edit[:, 1:]], dim=1) for video, video_edit in zip(videos, videos_edit)]
+            if image_outputs:
+                return torch.cat([video[:,-1:] for video in videos], dim=1) if len(videos) > 1 else videos[0][:,-1:]
+            else:
+                return videos[0]
         if image_outputs :
-            x0 = [x[:,-1:] if last_latent_output else x[:,:1] for x in x0 ]
+            x0 = [x[:,:1] for x in x0 ]
 
         videos = self.vae.decode(x0, VAE_tile_size)
         any_vae2= self.vae2 is not None
@@ -1185,16 +1203,16 @@ class WanAny2V:
             elif color_reference_frame is not None:
                 videos = match_and_blend_colors(videos.unsqueeze(0), color_reference_frame.unsqueeze(0), color_correction_strength).squeeze(0)
 
-        BGRA_frames = None
+        ret = { "x" : videos, "latent_slice" : latent_slice}
         if alpha_class:
+            BGRA_frames = None
             from .alpha.utils import render_video, from_BRGA_numpy_to_RGBA_torch
             videos, BGRA_frames = render_video(videos[None], videos2[None])            
             if image_outputs: 
                 videos = from_BRGA_numpy_to_RGBA_torch(BGRA_frames) 
                 BGRA_frames = None
-        if return_latent_slice != None or BGRA_frames != None:
-            return { "x" : videos, "latent_slice" : latent_slice, "BGRA_frames" : BGRA_frames }
-        return videos
+            if BGRA_frames is not None: ret["BGRA_frames"] =  BGRA_frames
+        return ret
 
     def get_loras_transformer(self, get_model_recursive_prop, base_model_type, model_type, video_prompt_type, model_mode, **kwargs):
         if base_model_type == "animate":

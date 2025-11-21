@@ -566,6 +566,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         image = None,
         image_mask = None,
         denoising_strength = 0,
+        masking_strength = 1,
         callback=None,
         pipeline=None,
         loras_slists=None,
@@ -817,6 +818,7 @@ class QwenImagePipeline(): #DiffusionPipeline
             randn = torch.randn_like(original_image_latents)
             if denoising_strength < 1.:
                 first_step = int(len(timesteps) * (1. - denoising_strength))
+            masked_steps = math.ceil(len(timesteps) * masking_strength)                
             if not morph:
                 latent_noise_factor = timesteps[first_step]/1000
                 # latents  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
@@ -922,7 +924,7 @@ class QwenImagePipeline(): #DiffusionPipeline
             latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
             noise_pred = None
 
-            if image_mask_latents is not None:
+            if image_mask_latents is not None and i < masked_steps:
                 if lanpaint_proc is not None:
                     latents  =  original_image_latents * (1-image_mask_latents)  + image_mask_latents * latents
                 else:
@@ -964,7 +966,7 @@ class QwenImagePipeline(): #DiffusionPipeline
                 latents = latents / latents_std + latents_mean
                 output_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
 
-            if image_mask is not None and not lora_inpaint and self.vae.upsampling_set is None:  #not (lora_inpaint and outpainting_dims is not None):
+            if image_mask is not None and not lora_inpaint and self.vae.upsampling_set is None and masking_strength == 1:  #not (lora_inpaint and outpainting_dims is not None):
                 output_image = vae_images[0].squeeze(2) * (1 - image_mask_rebuilt) + output_image.to(vae_images[0]  ) * image_mask_rebuilt 
 
 

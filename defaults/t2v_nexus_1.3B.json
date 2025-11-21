@@ -1,0 +1,20 @@
+{
+  "model": {
+    "name": "Wan2.1 Text2video Nexus 1.3B",
+    "architecture": "t2v_1.3B",
+    "description": "The Nexus text2video finetune model is an enhanced small model. The 1.3B Nexus finetune adds a major enhancement to the wan2.1 - 1.3b text2video model. Built on CausVid 1.3b",
+    "URLs": [
+      "https://huggingface.co/MDMNexus/Nexus.v1/resolve/main/wan2.1_t2v_1.3b.nexus.B-SMOOTHED.build.1.safetensors"
+    ],
+    "auto_quantize": false,
+	"profile_dirs": [""]
+  },
+  "prompt": "A medium close-up shot of a samurai and a knight engaged in a fierce duel in front of a traditional Japanese dojo. The samurai, on the left, wears a traditional black kimono with a white sash, his katana raised high, ready to strike. The knight, on the right, dons medieval armor with a silver helmet and a red plume, holding a broadsword in a defensive stance. The background features a wooden dojo floor and shoji screens. The camera angle is slightly low, capturing the intensity of the duel. The lighting is natural, highlighting the sheen on the samurai's katana and the knight's armor. The scene is dynamic, with swift, precise movements as the samurai and knight clash. The dojo's wooden texture and the soft light from the shoji screens add a traditional, serene atmosphere to the intense combat.",
+  "resolution": "832x480",
+  "video_length": 81,
+  "seed": -1,  
+  "num_inference_steps": 6,
+  "guidance_scale": 1,
+  "flow_shift": 5,
+  "repeat_generation": 1
+}

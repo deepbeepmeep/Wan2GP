@@ -4,5 +4,5 @@
 	],
 	"loras_multipliers": "1",
 	"num_inference_steps": 10,
-    "guidance_scale": 1
+    "embedded_guidance_scale": 3.5
 }

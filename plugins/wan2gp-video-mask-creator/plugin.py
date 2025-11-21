@@ -27,7 +27,6 @@ class VideoMaskCreatorPlugin(WAN2GPPlugin):
             tab_id="video_mask_creator",
             label="Video Mask Creator",
             component_constructor=self.create_mask_creator_ui,
-            position=1
         )
 
     def create_mask_creator_ui(self):

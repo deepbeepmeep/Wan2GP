@@ -34,7 +34,23 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False):
               {'codec', 'sample_rate', 'channels', 'duration', 'language'}
               where 'duration' is set to container duration (for consistency).
     """
-    probe = ffmpeg.probe(source_video)
+    if not os.path.exists(source_video):
+        msg = f"ffprobe skipped; file not found: {source_video}"
+        if verbose:
+            print(msg)
+        raise FileNotFoundError(msg)
+
+    try:
+        probe = ffmpeg.probe(source_video)
+    except ffmpeg.Error as err:
+        stderr = getattr(err, 'stderr', b'')
+        if isinstance(stderr, (bytes, bytearray)):
+            stderr = stderr.decode('utf-8', errors='ignore')
+        stderr = (stderr or str(err)).strip()
+        message = f"ffprobe failed for {source_video}: {stderr}"
+        if verbose:
+            print(message)
+        raise RuntimeError(message) from err
     audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
     container_duration = float(probe['format'].get('duration', 0.0))
 

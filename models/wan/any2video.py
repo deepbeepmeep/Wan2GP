@@ -554,6 +554,10 @@ class WanAny2V:
                     input_video = image_ref.unsqueeze(1)
                 else:
                     color_correction_strength = 0 #disable color correction as transition frames between shots may have a complete different color level than the colors of the new shot
+            if input_video is None: 
+                input_video = torch.full((3, 1, height, width), -1)
+                color_correction_strength = 0
+                                                                                                  
             _ , preframes_count, height, width = input_video.shape
             input_video = input_video.to(device=self.device).to(dtype= self.VAE_dtype)
             if infinitetalk:

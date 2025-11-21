@@ -82,7 +82,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.8"
-WanGP_version = "9.5"
+WanGP_version = "9.51"
 settings_version = 2.40
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -5042,10 +5042,11 @@ def generate_video(
     if set_video_prompt_type is not None:
         video_prompt_type = add_to_sequence(video_prompt_type, set_video_prompt_type)
     if is_image:
-        if min_frames_if_references >= 1000:
-            video_length = min_frames_if_references - 1000
-        else:
-            video_length = min_frames_if_references if "I" in video_prompt_type or "V" in video_prompt_type else 1 
+        if not model_def.get("custom_video_length", False):
+            if min_frames_if_references >= 1000:
+                video_length = min_frames_if_references - 1000
+            else:
+                video_length = min_frames_if_references if "I" in video_prompt_type or "V" in video_prompt_type else 1 
     else:
         batch_size = 1
     temp_filenames_list = []
@@ -5972,7 +5973,7 @@ def generate_video(
                 if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0:
                     configs["enhanced_prompt"] = "\n".join(prompts)
                 configs["generation_time"] = round(end_time-start_time)
-                # if is_image: configs["is_image"] = True
+                # if sample_is_image: configs["is_image"] = True
                 metadata_choice = server_config.get("metadata_type","metadata")
                 video_path = [video_path] if not isinstance(video_path, list) else video_path
                 for no, path in enumerate(video_path):

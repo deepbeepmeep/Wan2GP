@@ -36,7 +36,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### November 21 2025: WanGP v9.51, And there was motion
+### November 21 2025: WanGP v9.52, And there was motion
 
 In this release WanGP turns you into a Motion Master:
 - **Motion Designer**: this new preinstalled home made Graphical Plugin will let you design trajectories for *Vace* and for *Wan 2.2 i2v Time to Move*. 
@@ -51,7 +51,10 @@ In this release WanGP turns you into a Motion Master:
 
 - **Nexus 1.3B**: this is an incredible *Wan 2.1 1.3B* finetune made by @Nexus. It is specialized in *Human Motion* (dance, fights, gym, ...). It is fast as it is already *Causvid* accelerated. Try it with the *Prompt Enhancer* at 720p.
 
+- **Black Start Frames** for Wan 2.1/2.2 i2v: some i2v models can be turned into powerful t2v models by providing a **black frame** as a *Start Frame*. From now on if you dont provide any start frame, WanGP will generate automatically a black start frame of the current output resolution or of the correspondig *End frame resolution* (if any). 
+
 *update 9.51*: Fixed Chrono Edit Output, added Temporal Reasoning Video\
+*update 9.52*: Black start frames support for Wan i2v models
 
 ### November 12 2025: WanGP v9.44, Free Lunch
 

@@ -782,7 +782,16 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         image_mask = None
 
 
+
+
     if "S" in image_prompt_type:
+        if model_def.get("black_frame", False):
+            if "E" in image_prompt_type and len(image_end or []):
+                image_end = clean_image_list(image_end)        
+                image_start = [Image.new("RGB", image.size, (0, 0, 0, 255)) for image in image_end] 
+            else:
+                image_start = [Image.new("RGB", (width, height), (0, 0, 0, 255))] 
+
         if image_start == None or isinstance(image_start, list) and len(image_start) == 0:
             gr.Info("You must provide a Start Image")
             return ret()
@@ -8363,7 +8372,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             any_end_image = True
                         else:
                             image_prompt_type_endcheckbox = gr.Checkbox( value =False, show_label= False, visible= False , scale= 1)
-                image_start_row, image_start, image_start_extra = get_image_gallery(label= "Images as starting points for new Videos in the Generation Queue", value = ui_defaults.get("image_start", None), visible= "S" in image_prompt_type_value )
+                image_start_row, image_start, image_start_extra = get_image_gallery(label= "Images as starting points for new Videos in the Generation Queue" + (" (None for Black Frames)" if model_def.get("black_frame", False) else ''), value = ui_defaults.get("image_start", None), visible= "S" in image_prompt_type_value )
                 video_source = gr.Video(label= "Video to Continue", height = gallery_height, visible= "V" in image_prompt_type_value, value= ui_defaults.get("video_source", None), elem_id="video_input")
                 image_end_row, image_end, image_end_extra = get_image_gallery(label= get_image_end_label(ui_defaults.get("multi_prompts_gen_type", 0)), value = ui_defaults.get("image_end", None), visible= any_letters(image_prompt_type_value, "SVL") and ("E" in image_prompt_type_value)     ) 
                 if model_mode_choices is None or image_mode_value not in model_modes_visibility:

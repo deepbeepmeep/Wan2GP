@@ -207,7 +207,7 @@ class family_handler():
         if i2v:
             extra_model_def["motion_amplitude"] = True
  
-            if base_model_type in ["i2v_2_2"] : 
+            if base_model_type in ["i2v_2_2"]: 
                 extra_model_def["i2v_v2v"] = True
                 extra_model_def["extract_guide_from_window_start"] = True
                 extra_model_def["guide_custom_choices"] = {
@@ -224,6 +224,9 @@ class family_handler():
                     "selection":[ "", "A"],
                     "visible": False
                 }
+        if base_model_type in ["i2v_2_2", "i2v", "flf2v_720p"]:
+            extra_model_def["black_frame"] = True
+            
 
         if t2v: 
             if not alpha: 

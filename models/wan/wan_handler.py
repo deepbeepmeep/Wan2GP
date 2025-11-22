@@ -207,7 +207,7 @@ class family_handler():
         if i2v:
             extra_model_def["motion_amplitude"] = True
  
-            if base_model_type in ["i2v_2_2"] : 
+            if base_model_type in ["i2v_2_2"]: 
                 extra_model_def["i2v_v2v"] = True
                 extra_model_def["extract_guide_from_window_start"] = True
                 extra_model_def["guide_custom_choices"] = {
@@ -224,6 +224,9 @@ class family_handler():
                     "selection":[ "", "A"],
                     "visible": False
                 }
+        if base_model_type in ["i2v_2_2", "i2v", "flf2v_720p"]:
+            extra_model_def["black_frame"] = True
+            
 
         if t2v: 
             if not alpha: 
@@ -372,7 +375,18 @@ class family_handler():
                             "default": 0,
                             "label" : "Ditto Process"
                 }
-            
+
+        if base_model_type in ["chrono_edit"]:
+            extra_model_def["model_modes"] = {
+                        "choices": [
+                            ("Fast Image Transformation", 0),
+                            ("Long Image Transformation", 1),
+                            ("Temporal Reasoning Video", 2),],
+                        "default": 0,
+                        "label" : "Chrono Edit Process"
+            }
+            extra_model_def["custom_video_length"] = True
+
 
         if (not vace_class) and standin: 
             extra_model_def["v2i_switch_supported"] = True
@@ -769,9 +783,14 @@ class family_handler():
                 inputs["video_prompt_type"] = video_prompt_type 
 
 
-        if base_model_type in ["vace_standin_14B", "vace_lynx_14B"]:
+        elif base_model_type in ["vace_standin_14B", "vace_lynx_14B"]:
             image_refs = inputs["image_refs"]
             video_prompt_type = inputs["video_prompt_type"]
             if image_refs is not None and len(image_refs) == 1 and "K" in video_prompt_type:
                 gr.Info("Warning, Ref Image that contains the Face to transfer is Missing: if 'Landscape and then People or Objects' is selected beside the Landscape Image Ref there should be another Image Ref that contains a Face.")
                     
+
+        elif base_model_type in ["chrono_edit"]:
+            model_mode = inputs["model_mode"]
+            inputs["video_length"] = 5 if model_mode==0 else 29
+            inputs["image_mode"] = 0 if model_mode==2 else 1

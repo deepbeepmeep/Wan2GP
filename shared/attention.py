@@ -68,10 +68,15 @@ def sageattn2_wrapper(
     return o
 
 try:
-    # from sageattn3 import sageattn3_blackwell as sageattn3 #word0 windows version
     from sageattn import sageattn_blackwell as sageattn3
 except ImportError:
     sageattn3 = None
+
+if sageattn3 is None:
+    try:
+        from sageattn3 import sageattn3_blackwell as sageattn3 #word0 windows version
+    except ImportError:
+        sageattn3 = None
 
 @torch.compiler.disable()
 def sageattn3_wrapper(

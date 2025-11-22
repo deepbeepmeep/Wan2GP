@@ -9,5 +9,5 @@
             "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_chrono_edit_14B_quanto_mfp16_int8.safetensors"
         ]
     },
-	"prompt": "Rotate the pose of the woman so she that is facing the right"
+	"prompt": "Rotate the pose of the woman so that she is facing the right"
 }

@@ -70,6 +70,8 @@ be able to reduce the number of generation steps to 10
 - *auto_quantize*: if set to True and no quantized model URL is provided, WanGP will perform on the fly quantization if the user expects a quantized model
 -*visible* : by default assumed to be true. If set to false the model will no longer be visible. This can be useful if you create a finetune to override a default model and hide it.
 -*image_outputs* : turn any model that generates a video into a model that generates images. In fact it will adapt the user interface for image generation and ask the model to generate a video with a single frame.
+-*video_prompt_enhancer_instructions* : this allows you override the system prompt used by the Prompt Enhancer when generating a Video with this finetune
+-*image_prompt_enhancer_instructions* : this allows you override the system prompt used by the Prompt Enhancer when generating an Image with this finetune
 
 In order to favor reusability the properties of *URLs*, *modules*, *loras* and  *preload_URLs* can contain instead of a list of URLs a single text which corresponds to the id of a finetune or default model to reuse. Instead of:
 ```

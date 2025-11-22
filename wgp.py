@@ -82,7 +82,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.8"
-WanGP_version = "9.5"
+WanGP_version = "9.52"
 settings_version = 2.40
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -782,7 +782,16 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         image_mask = None
 
 
+
+
     if "S" in image_prompt_type:
+        if model_def.get("black_frame", False) and len(image_start or [])==0:
+            if "E" in image_prompt_type and len(image_end or []):
+                image_end = clean_image_list(image_end)        
+                image_start = [Image.new("RGB", image.size, (0, 0, 0, 255)) for image in image_end] 
+            else:
+                image_start = [Image.new("RGB", (width, height), (0, 0, 0, 255))] 
+
         if image_start == None or isinstance(image_start, list) and len(image_start) == 0:
             gr.Info("You must provide a Start Image")
             return ret()
@@ -5048,10 +5057,11 @@ def generate_video(
     if set_video_prompt_type is not None:
         video_prompt_type = add_to_sequence(video_prompt_type, set_video_prompt_type)
     if is_image:
-        if min_frames_if_references >= 1000:
-            video_length = min_frames_if_references - 1000
-        else:
-            video_length = min_frames_if_references if "I" in video_prompt_type or "V" in video_prompt_type else 1 
+        if not model_def.get("custom_video_length", False):
+            if min_frames_if_references >= 1000:
+                video_length = min_frames_if_references - 1000
+            else:
+                video_length = min_frames_if_references if "I" in video_prompt_type or "V" in video_prompt_type else 1 
     else:
         batch_size = 1
     temp_filenames_list = []
@@ -5984,7 +5994,7 @@ def generate_video(
                 if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0:
                     configs["enhanced_prompt"] = "\n".join(prompts)
                 configs["generation_time"] = round(end_time-start_time)
-                # if is_image: configs["is_image"] = True
+                # if sample_is_image: configs["is_image"] = True
                 metadata_choice = server_config.get("metadata_type","metadata")
                 video_path = [video_path] if not isinstance(video_path, list) else video_path
                 for no, path in enumerate(video_path):
@@ -8375,7 +8385,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             any_end_image = True
                         else:
                             image_prompt_type_endcheckbox = gr.Checkbox( value =False, show_label= False, visible= False , scale= 1)
-                image_start_row, image_start, image_start_extra = get_image_gallery(label= "Images as starting points for new Videos in the Generation Queue", value = ui_defaults.get("image_start", None), visible= "S" in image_prompt_type_value )
+                image_start_row, image_start, image_start_extra = get_image_gallery(label= "Images as starting points for new Videos in the Generation Queue" + (" (None for Black Frames)" if model_def.get("black_frame", False) else ''), value = ui_defaults.get("image_start", None), visible= "S" in image_prompt_type_value )
                 video_source = gr.Video(label= "Video to Continue", height = gallery_height, visible= "V" in image_prompt_type_value, value= ui_defaults.get("video_source", None), elem_id="video_input")
                 image_end_row, image_end, image_end_extra = get_image_gallery(label= get_image_end_label(ui_defaults.get("multi_prompts_gen_type", 0)), value = ui_defaults.get("image_end", None), visible= any_letters(image_prompt_type_value, "SVL") and ("E" in image_prompt_type_value)     ) 
                 if model_mode_choices is None or image_mode_value not in model_modes_visibility:

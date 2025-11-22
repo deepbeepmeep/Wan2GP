@@ -785,7 +785,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
 
 
     if "S" in image_prompt_type:
-        if model_def.get("black_frame", False):
+        if model_def.get("black_frame", False) and len(start_end or [])==0:
             if "E" in image_prompt_type and len(image_end or []):
                 image_end = clean_image_list(image_end)        
                 image_start = [Image.new("RGB", image.size, (0, 0, 0, 255)) for image in image_end] 

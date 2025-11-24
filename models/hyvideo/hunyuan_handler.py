@@ -50,7 +50,11 @@ class family_handler():
 
         if test_hunyuan_1_5(base_model_type):
             extra_model_def["group"] = "hunyuan_1_5"
-                                   
+            if base_model_type in ["hunyuan_1_5_upsampler"]:
+                extra_model_def["profiles_dir"] = [""]
+            else:
+                extra_model_def["profiles_dir"] = ["hunyuan_1_5"]
+
 
         extra_model_def["fps"] = fps
         extra_model_def["frames_minimum"] = 5

@@ -1,0 +1,9 @@
+# No external dependencies required
+# This plugin uses only Python standard library modules:
+# - json
+# - os
+# - pathlib
+# - datetime
+# - uuid
+# - re
+# - typing

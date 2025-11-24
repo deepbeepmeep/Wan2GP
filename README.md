@@ -36,6 +36,24 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
+### November 24 2025: WanGP v9.6, The Return of the King
+
+So here is *Tencet* who is back in the race: let's welcome **Hunyuan Video 1.5**
+
+Despite only 8B parameters it offers quite a high level of quality. It is not just one model but a family of models:
+- Text 2 Video
+- Image 2 Video
+- Upsamplers (720p & 1080p)
+
+Each model comes on day one with several finetunes specialized for a specific resolution.
+The downside right now is that to get the best quality you need to use guidance > 1 and a high number of Steps (20+). 
+
+But dont go away yet ! *LightX2V* (https://huggingface.co/lightx2v/Hy1.5-Distill-Models/) is on deck and has already delivered an *Accelerated 4 steps Finetune* for the *t2v 480p* model. It is part of today's delivery.
+
+WanGP implementation of Hunyuan 1.5 is quite complete as you will get straight away *Video Gen Preview* (WanGP exclusivity!) and *Sliding Window* support. It is also ready for *Tea Cache* or *Mag Cache* (just waiting for the official parameters) 
+
+Please note Hunyuan v1 Loras are not compatible since the latent space is different. You can add loras for Hunyuan Video 1.5 in the *loras_hunyuan/1.5* folder. 
+
 ### November 21 2025: WanGP v9.52, And there was motion
 
 In this release WanGP turns you into a Motion Master:

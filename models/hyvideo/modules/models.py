@@ -10,7 +10,7 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 
 from .activation_layers import get_activation_layer
 from .norm_layers import get_norm_layer
-from .embed_layers import TimestepEmbedder, PatchEmbed, TextProjection
+from .embed_layers import TimestepEmbedder, PatchEmbed, TextProjection, VisionProjection
 from .attenion import attention, parallel_attention, get_cu_seqlens
 from .posemb_layers import apply_rotary_emb
 from .mlp_layers import MLP, MLPEmbedder, FinalLayer
@@ -18,6 +18,7 @@ from .modulate_layers import ModulateDiT, modulate, modulate_ , apply_gate, appl
 from .token_refiner import SingleTokenRefiner
 import numpy as np
 from mmgp import offload
+from ..text_encoder.byT5 import ByT5Mapper
 from shared.attention import pay_attention
 from .audio_adapters import AudioProjNet2, PerceiverAttentionCA
 
@@ -48,7 +49,8 @@ class MMDoubleStreamBlock(nn.Module):
         qkv_bias: bool = False,
         dtype: Optional[torch.dtype] = None,
         device: Optional[torch.device] = None,
-        attention_mode: str = "sdpa",        
+        attention_mode: str = "sdpa",
+        pre_split_qkv = False,        
     ):  
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -68,10 +70,15 @@ class MMDoubleStreamBlock(nn.Module):
         self.img_norm1 = nn.LayerNorm(
             hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs
         )
-
-        self.img_attn_qkv = nn.Linear(
-            hidden_size, hidden_size * 3, bias=qkv_bias, **factory_kwargs
-        )
+        self.pre_split_qkv = pre_split_qkv
+        if pre_split_qkv:
+            self.img_attn_q  = nn.Linear( hidden_size, hidden_size, bias=qkv_bias, **factory_kwargs )
+            self.img_attn_k  = nn.Linear( hidden_size, hidden_size, bias=qkv_bias, **factory_kwargs )
+            self.img_attn_v  = nn.Linear( hidden_size, hidden_size, bias=qkv_bias, **factory_kwargs )
+        else: 
+            self.img_attn_qkv = nn.Linear(
+                hidden_size, hidden_size * 3, bias=qkv_bias, **factory_kwargs
+            )
         qk_norm_layer = get_norm_layer(qk_norm_type)
         self.img_attn_q_norm = (
             qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
@@ -108,9 +115,14 @@ class MMDoubleStreamBlock(nn.Module):
             hidden_size, elementwise_affine=False, eps=1e-6, **factory_kwargs
         )
 
-        self.txt_attn_qkv = nn.Linear(
-            hidden_size, hidden_size * 3, bias=qkv_bias, **factory_kwargs
-        )
+        if pre_split_qkv:
+            self.txt_attn_q = nn.Linear( hidden_size, hidden_size , bias=qkv_bias, **factory_kwargs )
+            self.txt_attn_k = nn.Linear( hidden_size, hidden_size , bias=qkv_bias, **factory_kwargs )
+            self.txt_attn_v = nn.Linear( hidden_size, hidden_size , bias=qkv_bias, **factory_kwargs )
+        else:
+            self.txt_attn_qkv = nn.Linear(
+                hidden_size, hidden_size * 3, bias=qkv_bias, **factory_kwargs
+            )
         self.txt_attn_q_norm = (
             qk_norm_layer(head_dim, elementwise_affine=True, eps=1e-6, **factory_kwargs)
             if qk_norm
@@ -224,12 +236,19 @@ class MMDoubleStreamBlock(nn.Module):
         txt_modulated = self.txt_norm1(txt)
         modulate_(txt_modulated, shift=txt_mod1_shift, scale=txt_mod1_scale )
 
-        txt_qkv = self.txt_attn_qkv(txt_modulated)
-        del txt_modulated
-        txt_q, txt_k, txt_v = rearrange(
-            txt_qkv, "B L (K H D) -> K B L H D", K=3, H=self.heads_num
-        )
-        del txt_qkv
+        if self.pre_split_qkv:
+            new_shape = (*txt_modulated.shape[:-1], self.heads_num, -1)
+            txt_q = self.txt_attn_q(txt_modulated).reshape(*new_shape)
+            txt_k = self.txt_attn_k(txt_modulated).reshape(*new_shape)
+            txt_v = self.txt_attn_v(txt_modulated).reshape(*new_shape)
+            del txt_modulated
+        else:
+            txt_qkv = self.txt_attn_qkv(txt_modulated)
+            del txt_modulated
+            txt_q, txt_k, txt_v = rearrange(
+                txt_qkv, "B L (K H D) -> K B L H D", K=3, H=self.heads_num
+            )
+            del txt_qkv
         # Apply QK-Norm if needed.
         self.txt_attn_q_norm.apply_(txt_q).to(txt_v)
         self.txt_attn_k_norm.apply_(txt_k).to(txt_v)
@@ -591,6 +610,15 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         audio_condition: bool = False,
         avatar = False,
         custom = False,
+        vision_projection = False,
+        glyph_byT5_v2 = False,
+        use_meanflow = False,
+        use_cond_type_embedding = False,
+        text_pool_type = True,
+        vision_states_dim: int = 1280,
+        text_states_dim: int = 4096,
+        text_states_dim_2: int = 768,
+        pre_split_qkv = False,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -615,9 +643,20 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         self.use_attention_mask = use_attention_mask
         self.text_projection = text_projection
 
-        self.text_states_dim = 4096
-        self.text_states_dim_2 = 768
+        self.text_states_dim = text_states_dim
+        self.text_states_dim_2 = text_states_dim_2
+        self.vision_states_dim = vision_states_dim
+        self.text_pool_type = text_pool_type
 
+        self.glyph_byT5_v2 = glyph_byT5_v2
+        if self.glyph_byT5_v2:
+            self.byt5_in = ByT5Mapper(
+                in_dim=1472,
+                out_dim=2048,
+                hidden_dim=2048,
+                out_dim1=hidden_size,
+                use_residual=False
+            )
         if hidden_size % heads_num != 0:
             raise ValueError(
                 f"Hidden size {hidden_size} must be divisible by heads_num {heads_num}"
@@ -634,6 +673,14 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         self.img_in = PatchEmbed(
             self.patch_size, self.in_channels, self.hidden_size, **factory_kwargs
         )
+
+        # Vision projection
+        if vision_projection == "linear":
+            self.vision_in = VisionProjection(
+                input_dim=self.vision_states_dim, output_dim=self.hidden_size
+            )
+        else:
+            self.vision_in = None
 
         # text projection
         if self.text_projection == "linear":
@@ -658,8 +705,10 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         )
 
         # text modulation
-        self.vector_in = MLPEmbedder(
-            self.text_states_dim_2, self.hidden_size, **factory_kwargs
+        self.vector_in = (
+            MLPEmbedder(
+                self.config.text_states_dim_2, self.hidden_size, **factory_kwargs
+            ) if self.text_pool_type is not None else None
         )
 
         # guidance modulation
@@ -670,6 +719,12 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
             if guidance_embed
             else None
         )
+
+        self.time_r_in = (
+            TimestepEmbedder(self.hidden_size, get_activation_layer("silu"), **factory_kwargs)
+            if use_meanflow
+            else None
+        )        
 
         # double blocks
         self.double_blocks = nn.ModuleList(
@@ -683,6 +738,7 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
                     qk_norm_type=qk_norm_type,
                     qkv_bias=qkv_bias,
                     attention_mode = attention_mode,
+                    pre_split_qkv = pre_split_qkv,
                     **factory_kwargs,
                 )
                 for _ in range(mm_double_blocks_depth)
@@ -763,6 +819,17 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
             setattr(self, audio_block_name,  nn.ModuleList([
                 PerceiverAttentionCA(dim=3072, dim_head=1024, heads=33) for _ in range(len(self.double_stream_list) + len(self.single_stream_list))
             ]))
+
+        if use_cond_type_embedding:
+            self.cond_type_embedding = nn.Embedding(3, self.hidden_size) 
+            self.cond_type_embedding.weight.data.fill_(0)
+            assert self.glyph_byT5_v2, "text type embedding is only used when glyph_byT5_v2 is True"
+            assert vision_projection is not None, "text type embedding is only used when vision_projection is not None"
+            # 0: text_encoder feature
+            # 1: byt5 feature
+            # 2: vision_encoder feature
+        else:
+            self.cond_type_embedding = None
 
 
 
@@ -848,6 +915,42 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         print(f"Mag Cache, best threshold found:{best_threshold:0.2f} with gain x{num_inference_steps/(target_nb_steps - best_signed_diff):0.2f} for a target of x{speed_factor}")
         return best_threshold
 
+    def reorder_txt_token(self, byt5_txt, txt, byt5_text_mask, text_mask, zero_feat=False, is_reorder=True):
+        if is_reorder:
+            reorder_txt = []
+            reorder_mask = []
+            for i in range(text_mask.shape[0]):
+                byt5_text_mask_i = byt5_text_mask[i].bool()
+                text_mask_i = text_mask[i].bool()
+
+                byt5_txt_i = byt5_txt[i]
+                txt_i = txt[i]
+                if zero_feat:
+                    # When using block mask with approximate computation, set pad to zero to reduce error
+                    pad_byt5 = torch.zeros_like(byt5_txt_i[~byt5_text_mask_i])
+                    pad_text = torch.zeros_like(txt_i[~text_mask_i])
+                    reorder_txt_i = torch.cat(
+                        [byt5_txt_i[byt5_text_mask_i], txt_i[text_mask_i], pad_byt5, pad_text], dim=0
+                    )
+                else:
+                    reorder_txt_i = torch.cat(
+                        [byt5_txt_i[byt5_text_mask_i], txt_i[text_mask_i], byt5_txt_i[~byt5_text_mask_i], txt_i[~text_mask_i]], dim=0
+                    )
+                reorder_mask_i = torch.cat(
+                    [byt5_text_mask_i[byt5_text_mask_i], text_mask_i[text_mask_i], byt5_text_mask_i[~byt5_text_mask_i], text_mask_i[~text_mask_i]], dim=0
+                )
+
+                reorder_txt.append(reorder_txt_i)
+                reorder_mask.append(reorder_mask_i)
+
+            reorder_txt = torch.stack(reorder_txt)
+            reorder_mask = torch.stack(reorder_mask).to(dtype=torch.int64)
+        else:
+            reorder_txt = torch.concat([byt5_txt, txt], dim=1)
+            reorder_mask = torch.concat([byt5_text_mask, text_mask], dim=1).to(dtype=torch.int64)
+
+        return reorder_txt, reorder_mask
+    
     def forward(
         self,
         x: torch.Tensor,
@@ -870,6 +973,10 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
         face_mask = None,
         audio_strength = None,
         bg_latents = None,
+        vision_states: torch.Tensor = None,
+        byt5_text_states=None,
+        byt5_text_mask=None,
+        timesteps_r=None,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
     
         img = x
@@ -907,12 +1014,13 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
             # token_replace_mask_txt = None
 
         # text modulation
-        vec_2 = self.vector_in(text_states_2)
-        del text_states_2
-        vec += vec_2
-        if self.i2v_condition_type == "token_replace":
-            token_replace_vec += vec_2
-        del vec_2
+        if text_states_2 is not None:
+            vec_2 = self.vector_in(text_states_2)
+            del text_states_2
+            vec += vec_2
+            if self.i2v_condition_type == "token_replace":
+                token_replace_vec += vec_2
+            del vec_2
         
         # guidance modulation
         if self.guidance_embed:
@@ -923,6 +1031,9 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
 
             # our timestep_embedding is merged into guidance_in(TimestepEmbedder)
             vec += self.guidance_in(guidance)
+
+        if timesteps_r is not None:
+            vec += self.time_r_in(timesteps_r)
 
         # Embed image and text.
         img, shape_mask = self.img_in(img)
@@ -945,6 +1056,27 @@ class HYVideoDiffusionTransformer(ModelMixin, ConfigMixin):
             raise NotImplementedError(
                 f"Unsupported text_projection: {self.text_projection}"
             )
+
+        if self.cond_type_embedding is not None:
+            cond_emb = self.cond_type_embedding( torch.zeros_like(txt[:, :, 0], device=text_mask.device, dtype=torch.long) )
+            txt += cond_emb
+
+        if self.glyph_byT5_v2:
+            byt5_txt = self.byt5_in(byt5_text_states)
+            if self.cond_type_embedding is not None:
+                cond_emb = self.cond_type_embedding( torch.ones_like(byt5_txt[:, :, 0], device=byt5_txt.device, dtype=torch.long) )
+                byt5_txt += cond_emb
+            txt, text_mask = self.reorder_txt_token( byt5_txt, txt, byt5_text_mask, text_mask, zero_feat=True )
+
+        if self.vision_in is not None and vision_states is not None:
+            extra_encoder_hidden_states = self.vision_in(vision_states).repeat(bsz,1, 1)
+            extra_attention_mask = torch.ones( (bsz, extra_encoder_hidden_states.shape[1]), dtype=text_mask.dtype, device=text_mask.device, )
+            if self.cond_type_embedding is not None:
+                cond_emb = self.cond_type_embedding(
+                    2 * torch.ones_like( extra_encoder_hidden_states[:, :, 0], dtype=torch.long, device=extra_encoder_hidden_states.device, )
+                )
+                extra_encoder_hidden_states += cond_emb
+            txt, text_mask = self.reorder_txt_token( extra_encoder_hidden_states, txt, extra_attention_mask, text_mask )
 
         if self.avatar:
             img += self.before_proj(ref_latents)
@@ -1218,5 +1350,42 @@ HUNYUAN_VIDEO_CONFIG = {
         'avatar': True,
         'audio_condition' : True,
     },
-    
+    'HYVideo-1_5': {
+        "mm_double_blocks_depth": 54,
+        "mm_single_blocks_depth": 0,
+        "heads_num": 16,
+        "hidden_size": 2048,
+        'rope_dim_list': [16, 56, 56],
+        'mlp_width_ratio': 4,
+        "text_pool_type": None,
+        "text_states_dim": 3584,
+        "text_states_dim_2": None,
+        "use_attention_mask": True,
+        "use_cond_type_embedding": True,
+        "use_meanflow": False,
+        "vision_projection": "linear",
+        "vision_states_dim": 1152,
+        "glyph_byT5_v2": True,
+        "patch_size": [1, 1, 1],
+        "pre_split_qkv": True,
+    },    
+    'HYVideo-1_5-upsampler': {
+        "mm_double_blocks_depth": 54,
+        "mm_single_blocks_depth": 0,
+        "heads_num": 16,
+        "hidden_size": 2048,
+        'rope_dim_list': [16, 56, 56],
+        'mlp_width_ratio': 4,
+        "text_pool_type": None,
+        "text_states_dim": 3584,
+        "text_states_dim_2": None,
+        "use_attention_mask": True,
+        "use_cond_type_embedding": True,
+        "use_meanflow": True,
+        "vision_projection": "linear",
+        "vision_states_dim": 1152,
+        "glyph_byT5_v2": True,
+        "patch_size": [1, 1, 1],
+        "pre_split_qkv": True,
+    },    
 }

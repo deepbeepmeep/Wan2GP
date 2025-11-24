@@ -82,8 +82,8 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.8"
-WanGP_version = "9.52"
-settings_version = 2.40
+WanGP_version = "9.6"
+settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -2090,7 +2090,12 @@ def get_lora_dir(model_type):
         if i2v:
             return args.lora_dir_hunyuan_i2v
         else:
-            return args.lora_dir_hunyuan
+            root_lora_dir=args.lora_dir_hunyuan
+            if "1_5" in base_model_type:
+                lora_dir_1_5 = os.path.join(root_lora_dir, "1.5")
+                if os.path.isdir(lora_dir_1_5 ):
+                    return lora_dir_1_5
+            return root_lora_dir
     elif model_family =="qwen":
             return args.lora_dir_qwen
     elif model_family =="tts":
@@ -5594,10 +5599,11 @@ def generate_video(
             if video_guide is not None or len(frames_to_inject_parsed) > 0 or model_def.get("forced_guide_mask_inputs", False): 
                 any_mask = video_mask is not None or model_def.get("forced_guide_mask_inputs", False)
                 any_guide_padding = model_def.get("pad_guide_video", False)
+                dont_cat_preguide = extract_guide_from_window_start or model_def.get("dont_cat_preguide", False) or sparse_video_image is not None 
                 from shared.utils.utils import prepare_video_guide_and_mask
                 src_videos, src_masks = prepare_video_guide_and_mask(   [video_guide_processed] + ([] if video_guide_processed2 is None else [video_guide_processed2]), 
                                                                         [video_mask_processed] + ([] if video_guide_processed2 is None else [video_mask_processed2]),
-                                                                        None if extract_guide_from_window_start or model_def.get("dont_cat_preguide", False) or sparse_video_image is not None else pre_video_guide, 
+                                                                        None if dont_cat_preguide else pre_video_guide, 
                                                                         image_size, current_video_length, latent_size,
                                                                         any_mask, any_guide_padding, guide_inpaint_color, 
                                                                         keep_frames_parsed, frames_to_inject_parsed , outpainting_dims)
@@ -5608,7 +5614,7 @@ def generate_video(
                     src_video, src_video2 = src_videos 
                     src_mask, src_mask2 = src_masks 
                 src_videos = src_masks = None
-                if src_video is None:
+                if src_video is None or window_no >1 and src_video.shape[1] <= sliding_window_overlap and not dont_cat_preguide:
                     abort = True 
                     break
                 if src_faces is not None:
@@ -9052,7 +9058,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             sliding_window_defaults = model_def.get("sliding_window_defaults", {})                            
                             sliding_window_size = gr.Slider(5, get_max_frames(257), value=ui_defaults.get("sliding_window_size", 129), step=4, label="Sliding Window Size", interactive=not model_def.get("sliding_window_size_locked"), show_reset_button= False)
                             sliding_window_overlap = gr.Slider(sliding_window_defaults.get("overlap_min", 1), sliding_window_defaults.get("overlap_max", 97), value=ui_defaults.get("sliding_window_overlap",sliding_window_defaults.get("overlap_default", 5)), step=sliding_window_defaults.get("overlap_step", 4), label="Windows Frames Overlap (needed to maintain continuity between windows, a higher value will require more windows)", show_reset_button= False)
-                            sliding_window_color_correction_strength = gr.Slider(0, 1, value=ui_defaults.get("sliding_window_color_correction_strength",0), step=0.01, label="Color Correction Strength (match colors of new window with previous one, 0 = disabled)", visible = True, show_reset_button= False)
+                            sliding_window_color_correction_strength = gr.Slider(0, 1, value=ui_defaults.get("sliding_window_color_correction_strength",0), step=0.01, label="Color Correction Strength (match colors of new window with previous one, 0 = disabled)", visible = model_def.get("color_correction", False), show_reset_button= False)
                             sliding_window_overlap_noise = gr.Slider(0, 150, value=ui_defaults.get("sliding_window_overlap_noise",20 if vace else 0), step=1, label="Noise to be added to overlapped frames to reduce blur effect" , visible = vace, show_reset_button= False)
                             sliding_window_discard_last_frames = gr.Slider(0, 20, value=ui_defaults.get("sliding_window_discard_last_frames", 0), step=4, label="Discard Last Frames of a Window (that may have bad quality)", visible = True, show_reset_button= False)
 
@@ -9745,18 +9751,53 @@ def create_models_hierarchy(rows):
                 if lt[i]!=prefix_low[i]: return False
             return True
 
-        def disp(name,mid,ot,lt):
-            if mid in outliers: return name
-            rem=ot[L:] if startswith_prefix(lt) else ot[:]
-            if header_has_last and lt and lt[-1]==p_last and rem and rem[-1].casefold()==p_last:
-                rem=rem[:-1]
-            s=' '.join(rem).strip()
+        def base_rem(ot, lt):
+            return ot[L:] if startswith_prefix(lt) else ot[:]
+
+        def trim_rem(rem, lt):
+            out = rem[:]
+            if header_has_last and lt and lt[-1] == p_last and out and out[-1].casefold() == p_last:
+                out = out[:-1]
+            return out
+
+        kid_infos = []
+        for name, mid, ot, lt, _ in kids:
+            rem_core = base_rem(ot, lt) if mid not in outliers else ot[:]
+            kid_infos.append({
+                "name": name,
+                "mid": mid,
+                "ot": ot,
+                "lt": lt,
+                "outlier": mid in outliers,
+                "rem_core": rem_core,
+                "rem_trim": trim_rem(rem_core, lt) if mid not in outliers else ot[:],
+                "rem_set": {w.casefold() for w in rem_core} if mid not in outliers else set(),
+                "rem_trim_set": {w.casefold() for w in (trim_rem(rem_core, lt) if mid not in outliers else ot[:])} if mid not in outliers else set(),
+            })
+
+        default_info = next(info for info in kid_infos if info["mid"] == pid)
+        other_words = set()
+        for info in kid_infos:
+            if info["mid"] != pid:
+                other_words |= info["rem_set"]
+        default_shares = bool(default_info["rem_set"] & other_words)
+
+        def disp(info):
+            if info["outlier"]:
+                return info["name"]
+            if info["mid"] == pid:
+                if not default_shares:
+                    return 'Default'
+                rem = info["rem_trim"]
+            else:
+                rem = info["rem_trim"]
+            s = ' '.join(rem).strip()
             return s if s else 'Default'
 
-        entries=[(disp(p_name,pid,p_tok,p_low),pid)]
-        for name,mid,ot,lt,_ in kids:
-            if mid==pid: continue
-            entries.append((disp(name,mid,ot,lt),mid))
+        entries=[(disp(default_info),pid)]
+        for info in kid_infos:
+            if info["mid"]==pid: continue
+            entries.append((disp(info), info["mid"]))
 
         # Number "Default" for children whose full name == parent's full name
         p_full=norm(p_name); full_by_mid={mid:name for name,mid,*_ in kids}

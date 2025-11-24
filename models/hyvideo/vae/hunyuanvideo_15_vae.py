@@ -579,13 +579,19 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
 
         self._tile_parallelism_enabled = False
 
-    def set_tile_sample_min_size(self, sample_size: int, tile_overlap_factor: float = 0.2):
+    def set_tile_sample_min_size(self, sample_size: int, tile_overlap_factor: float = 0.25, sample_tsize: Optional[int] = None):
         self.tile_sample_min_size = sample_size
         self.tile_latent_min_size = sample_size // self.ffactor_spatial
         self.tile_overlap_factor = tile_overlap_factor
 
+        if sample_tsize is not None:
+            self.tile_sample_min_tsize = sample_tsize
+            self.tile_latent_min_tsize = sample_tsize // self.ffactor_temporal
+
         assert (self.tile_latent_min_size * self.tile_overlap_factor).is_integer(), \
             "self.tile_latent_min_size multiplied by tile_overlap_factor must be an integer"
+        assert (self.tile_latent_min_tsize * self.tile_overlap_factor).is_integer(), \
+            "self.tile_latent_min_tsize multiplied by tile_overlap_factor must be an integer"
 
 
     def _set_gradient_checkpointing(self, module, value=False):
@@ -595,7 +601,6 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
 
 
     def enable_temporal_tiling(self, use_tiling: bool = True):
-        raise RuntimeError('Temporal tiling is not supported for this VAE.')
         self.use_temporal_tiling = use_tiling
 
     def disable_temporal_tiling(self):
@@ -609,9 +614,11 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
 
     def enable_tiling(self, use_tiling: bool = True):
         self.enable_spatial_tiling(use_tiling)
+        self.enable_temporal_tiling(use_tiling)
 
     def disable_tiling(self):
         self.disable_spatial_tiling()
+        self.disable_temporal_tiling()
 
     def enable_slicing(self):
         self.use_slicing = True
@@ -670,7 +677,6 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
 
     def temporal_tiled_encode(self, x: torch.Tensor):
         """Tiled temporal encoding for large video sequences."""
-        raise RuntimeError('Temporal tiling is not supported for this VAE.')
         B, C, T, H, W = x.shape
         overlap_size = int(self.tile_sample_min_tsize * (1 - self.tile_overlap_factor))
         blend_extent = int(self.tile_latent_min_tsize * self.tile_overlap_factor)
@@ -830,7 +836,6 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
 
     def temporal_tiled_decode(self, z: torch.Tensor):
         """Tiled temporal decoding for long sequence latents."""
-        raise RuntimeError('Temporal tiling is not supported for this VAE.')
         B, C, T, H, W = z.shape
         overlap_size = int(self.tile_latent_min_tsize * (1 - self.tile_overlap_factor))
         blend_extent = int(self.tile_sample_min_tsize * self.tile_overlap_factor)
@@ -932,18 +937,23 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
             use_vae_config = vae_config
 
         if use_vae_config == 1:
-            sample_size = 256  
+            sample_size = 256
+            sample_tsize = 64
             tile_overlap_factor = 0.25
         elif use_vae_config == 2:
-            sample_size = 160  
-            tile_overlap_factor = 0.2
+            sample_size = 192
+            sample_tsize = 48
+            tile_overlap_factor = 0.25
         else:
-            sample_size = 128  
+            sample_size = 128
+            sample_tsize = 32
             tile_overlap_factor = 0.25
 
         VAE_tiling = {
             "tile_sample_min_size" : sample_size,
-            "tile_latent_min_size" : int(sample_size / (2 ** (len(self.config.block_out_channels) - 1))),
+            "tile_sample_min_tsize" : sample_tsize,
+            "tile_latent_min_size" : sample_size // self.ffactor_spatial,
+            "tile_latent_min_tsize" : sample_tsize // self.ffactor_temporal,
             "tile_overlap_factor" : tile_overlap_factor
         }
         return VAE_tiling

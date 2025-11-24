@@ -753,13 +753,17 @@ class HunyuanVideoSampler(Inference):
 
         if VAE_tile_size != None:
             if self.hunyuan_1_5:
-                self.vae.set_tile_sample_min_size(VAE_tile_size["tile_sample_min_size"], VAE_tile_size["tile_overlap_factor"])
+                self.vae.set_tile_sample_min_size(
+                    VAE_tile_size["tile_sample_min_size"],
+                    VAE_tile_size.get("tile_overlap_factor", self.vae.tile_overlap_factor),
+                    VAE_tile_size.get("tile_sample_min_tsize", self.vae.tile_sample_min_tsize),
+                )
             else:
-                self.vae.tile_sample_min_tsize = VAE_tile_size["tile_sample_min_tsize"]
-                self.vae.tile_latent_min_tsize = VAE_tile_size["tile_latent_min_tsize"]
-                self.vae.tile_sample_min_size = VAE_tile_size["tile_sample_min_size"]
-                self.vae.tile_latent_min_size = VAE_tile_size["tile_latent_min_size"]
-                self.vae.tile_overlap_factor = VAE_tile_size["tile_overlap_factor"]
+                self.vae.tile_sample_min_tsize = VAE_tile_size.get("tile_sample_min_tsize", self.vae.tile_sample_min_tsize)
+                self.vae.tile_latent_min_tsize = VAE_tile_size.get("tile_latent_min_tsize", self.vae.tile_latent_min_tsize)
+                self.vae.tile_sample_min_size = VAE_tile_size.get("tile_sample_min_size", self.vae.tile_sample_min_size)
+                self.vae.tile_latent_min_size = VAE_tile_size.get("tile_latent_min_size", self.vae.tile_latent_min_size)
+                self.vae.tile_overlap_factor = VAE_tile_size.get("tile_overlap_factor", self.vae.tile_overlap_factor)
             self.vae.enable_tiling()
 
         i2v_mode= self.i2v_mode

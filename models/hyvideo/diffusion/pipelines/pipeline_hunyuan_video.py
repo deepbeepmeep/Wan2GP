@@ -1636,7 +1636,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                                 t_expand[j].unsqueeze(0),  # [2]
                                 text_states=prompt_embeds[j].unsqueeze(0),  # [2, 256, 4096]
                                 text_mask=prompt_mask[j].unsqueeze(0),  # [2, 256]
-                                text_states_2=prompt_embeds_2[j].unsqueeze(0),  # [2, 768]
+                                text_states_2=None if prompt_embeds_2 is None else prompt_embeds_2[j].unsqueeze(0) ,  # [2, 768]
                                 ref_latents=ref_latents[j].unsqueeze(0),
                                 freqs_cos=freqs_cis[0],  # [seqlen, head_dim]
                                 freqs_sin=freqs_cis[1],  # [seqlen, head_dim]

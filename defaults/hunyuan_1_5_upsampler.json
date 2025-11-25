@@ -8,7 +8,7 @@
             "https://huggingface.co/DeepBeepMeep/HunyuanVideo1.5/resolve/main/hunyuan_video_1.5_upsampler_720_quanto_bf16_int8.safetensors"
         ],
 		"upsampler": "720",
-		"preloadURLs": [
+		"preload_URLs": [
 			"https://huggingface.co/DeepBeepMeep/HunyuanVideo1.5/resolve/main/hunyuan_video_1.5_upsampler_720p_sr_distilled.safetensors",
 			"https://huggingface.co/DeepBeepMeep/HunyuanVideo1.5/resolve/main/hunyuan_video_1.5_upsampler_720p_sr_distilled_config.json"
 			]

@@ -5,7 +5,7 @@
 		"description": "HunyuanVideo-1.5 is a video generation model that delivers top-tier quality with only 8.3B parameters, significantly lowering the barrier to usage. This version is a specialized 720p upsampler.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/HunyuanVideo1.5/resolve/main/hunyuan_video_1.5_upsampler_720_bf16.safetensors",
-            "https://huggingface.co/DeepBeepMeep/HunyuanVideo1.5/resolve/main/hunyuan_video_1.5_upsampler_720_quanto_int8_bf16.safetensors"
+            "https://huggingface.co/DeepBeepMeep/HunyuanVideo1.5/resolve/main/hunyuan_video_1.5_upsampler_720_quanto_bf16_int8.safetensors"
         ],
 		"upsampler": "720",
 		"preloadURLs": [

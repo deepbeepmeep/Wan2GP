@@ -59,6 +59,22 @@ class PatchEmbed(nn.Module):
         x = self.norm(x)
         return x, shape
 
+class VisionProjection(torch.nn.Module):
+
+    def __init__(self, input_dim, output_dim):
+        super().__init__()
+
+        self.proj = torch.nn.Sequential(
+            torch.nn.LayerNorm(input_dim), 
+            torch.nn.Linear(input_dim, input_dim),
+            torch.nn.GELU(), 
+            torch.nn.Linear(input_dim, output_dim),
+            torch.nn.LayerNorm(output_dim)
+        )
+        
+
+    def forward(self, vision_embeds):
+        return self.proj(vision_embeds)
 
 class TextProjection(nn.Module):
     """

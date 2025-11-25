@@ -18,9 +18,9 @@ class AboutPlugin(WAN2GPPlugin):
     def create_about_ui(self):
         gr.Markdown("<H2>WanGP - AI Generative Models for the GPU Poor by <B>DeepBeepMeep</B> (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>GitHub</A>)</H2>")
         gr.Markdown("Many thanks to:")
-        gr.Markdown("- <B>Alibaba Wan Team</B> for the best open source video generators (https://github.com/Wan-Video/Wan2.1)")
+        gr.Markdown("- <B>Alibaba Wan Team</B> for the best open source video generators (https://github.com/Wan-Video/Wan2.1, https://github.com/Wan-Video/Wan2.2)")
         gr.Markdown("- <B>Alibaba Vace, Multitalk and Fun Teams</B> for their incredible control net models (https://github.com/ali-vilab/VACE), (https://github.com/MeiGen-AI/MultiTalk) and  (https://huggingface.co/alibaba-pai/Wan2.2-Fun-A14B-InP) ")
-        gr.Markdown("- <B>Tencent</B> for the impressive Hunyuan Video models (https://github.com/Tencent-Hunyuan/HunyuanVideo)")
+        gr.Markdown("- <B>Tencent</B> for the impressive Hunyuan Video models (https://github.com/Tencent-Hunyuan/HunyuanVideo, https://github.com/Tencent-Hunyuan/HunyuanVideo-1.5)")
         gr.Markdown("- <B>Blackforest Labs</B> for the innovative Flux image generators (https://github.com/black-forest-labs/flux)")
         gr.Markdown("- <B>Alibaba Qwen Team</B> for their state of the art Qwen Image generators (https://github.com/QwenLM/Qwen-Image)")
         gr.Markdown("- <B>Lightricks</B> for their super fast LTX Video models (https://github.com/Lightricks/LTX-Video)")
@@ -35,6 +35,7 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>DepthAnything</B> & <B>Midas</B>: Depth extractors (https://github.com/DepthAnything/Depth-Anything-V2) and (https://github.com/isl-org/MiDaS")
         gr.Markdown("- <B>Matanyone</B> and <B>SAM2</B>: Mask Generation (https://github.com/pq-yang/MatAnyone) and (https://github.com/facebookresearch/sam2)")
         gr.Markdown("- <B>Pyannote</B>: speaker diarization (https://github.com/pyannote/pyannote-audio)")
+        gr.Markdown("- <B>MMAudio</B>: sound generator (https://github.com/hkchengrex/MMAudio). Due to licensing restriction can be used only for Research work.")
 
         gr.Markdown("<BR>Special thanks to the following people for their Contributions & Support:")
         gr.Markdown("- <B>Tophness</B> : Designed & developped the Queuing Framework, Edit Mode and WanGP PlugIns System")

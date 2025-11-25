@@ -139,6 +139,8 @@ class family_handler():
         extra_model_def["alpha_class"] = alpha = test_alpha(base_model_type)
         extra_model_def["wan_5B_class"] = wan_5B = test_wan_5B(base_model_type)        
         extra_model_def["vace_class"] = vace_class = test_vace(base_model_type)
+        extra_model_def["color_correction"] = True
+        
         if base_model_type in ["vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"]:
             extra_model_def["parent_model_type"] = "vace_14B"
 

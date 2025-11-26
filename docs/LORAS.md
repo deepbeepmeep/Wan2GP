@@ -18,6 +18,7 @@ Optional sub folders:
 
 ### Other Models
 - `loras_hunyuan/` - Hunyuan Video t2v loras
+- `loras_hunyuan/1.5/` - Loras specifically for Hunyuan 1.5 models
 - `loras_hunyuan_i2v/` - Hunyuan Video i2v loras
 - `loras_ltxv/` - LTX Video loras
 - `loras_flux/` - Flux loras

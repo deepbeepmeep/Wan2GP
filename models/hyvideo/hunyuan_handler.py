@@ -1,11 +1,19 @@
 import torch
 from shared.utils import files_locator as fl 
 
-def get_hunyuan_text_encoder_filename(text_encoder_quantization):
-    if text_encoder_quantization =="int8":
-        text_encoder_filename = "llava-llama-3-8b/llava-llama-3-8b-v1_1_vlm_quanto_int8.safetensors"
+def test_hunyuan_1_5(base_model_type):
+    return base_model_type in ["hunyuan_1_5_t2v", "hunyuan_1_5_i2v", "hunyuan_1_5_upsampler"]
+
+def get_hunyuan_text_encoder_filename(base_model_type, text_encoder_quantization):
+    if test_hunyuan_1_5(base_model_type):
+        text_encoder_filename = "Qwen2.5-VL-7B-Instruct/Qwen2.5-VL-7B-Instruct_bf16.safetensors"
+        if text_encoder_quantization =="int8":
+            text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8") 
     else:
-        text_encoder_filename = "llava-llama-3-8b/llava-llama-3-8b-v1_1_vlm_fp16.safetensors"
+        if text_encoder_quantization =="int8":
+            text_encoder_filename = "llava-llama-3-8b/llava-llama-3-8b-v1_1_vlm_quanto_int8.safetensors"
+        else:
+            text_encoder_filename = "llava-llama-3-8b/llava-llama-3-8b-v1_1_vlm_fp16.safetensors"
 
     return fl.locate_file(text_encoder_filename, True)
 
@@ -35,10 +43,19 @@ class family_handler():
 
         if base_model_type in ["hunyuan_avatar", "hunyuan_custom_audio"]:
             fps = 25
-        elif base_model_type in ["hunyuan", "hunyuan_i2v", "hunyuan_custom_edit", "hunyuan_custom"]:
+        elif base_model_type in ["hunyuan", "hunyuan_i2v", "hunyuan_custom_edit", "hunyuan_custom"] or test_hunyuan_1_5(base_model_type):
             fps = 24
         else:
             fps = 16
+
+        if test_hunyuan_1_5(base_model_type):
+            extra_model_def["group"] = "hunyuan_1_5"
+            if base_model_type in ["hunyuan_1_5_upsampler"]:
+                extra_model_def["profiles_dir"] = [""]
+            else:
+                extra_model_def["profiles_dir"] = ["hunyuan_1_5"]
+
+
         extra_model_def["fps"] = fps
         extra_model_def["frames_minimum"] = 5
         extra_model_def["frames_steps"] = 4
@@ -50,9 +67,9 @@ class family_handler():
         else:
             extra_model_def["guidance_max_phases"] = 1
 
-        extra_model_def["cfg_star"] =  base_model_type in [ "hunyuan_avatar", "hunyuan_custom_audio", "hunyuan_custom_edit", "hunyuan_custom"]
-        extra_model_def["tea_cache"] = True
-        extra_model_def["mag_cache"] = True
+        extra_model_def["cfg_star"] =  base_model_type in [ "hunyuan_avatar", "hunyuan_custom_audio", "hunyuan_custom_edit", "hunyuan_custom"] or test_hunyuan_1_5(base_model_type)
+        extra_model_def["tea_cache"] = not test_hunyuan_1_5(base_model_type)
+        extra_model_def["mag_cache"] = not test_hunyuan_1_5(base_model_type)
 
         if base_model_type in ["hunyuan_custom_edit"]:
             extra_model_def["guide_preprocessing"] = {
@@ -83,22 +100,44 @@ class family_handler():
             extra_model_def["one_image_ref_needed"] = True
 
 
-        if base_model_type in ["hunyuan_i2v"]:
-            extra_model_def["image_prompt_types_allowed"] = "S"
+        if base_model_type in ["hunyuan_i2v", "hunyuan_1_5_i2v"]:
+            extra_model_def["image_prompt_types_allowed"] = "SVL"
+
+        if base_model_type in ["hunyuan_1_5_upsampler"]:
+            extra_model_def["image_prompt_types_allowed"] = "TVL"
+            extra_model_def["guide_custom_choices"] = {
+            "choices":[
+                ("Upsample", "V"),
+            ],
+            "default": "V",
+            "letters_filter": "V",
+            "label": "Type of Process",
+            "scale": 3,
+            "show_label" : False,
+            "visible": False,
+            }
+        if test_hunyuan_1_5(base_model_type) and base_model_type not in ["hunyuan_1_5_t2v"]:
+            extra_model_def["sliding_window"] = True
+            extra_model_def["sliding_window_defaults"] = { "overlap_min" : 1, "overlap_max" : 1, "overlap_step": 0, "overlap_default": 1}
+
 
         return extra_model_def
 
     @staticmethod
     def query_supported_types():
-        return ["hunyuan", "hunyuan_i2v", "hunyuan_custom", "hunyuan_custom_audio", "hunyuan_custom_edit", "hunyuan_avatar"]
+        return ["hunyuan", "hunyuan_i2v", "hunyuan_custom", "hunyuan_custom_audio", "hunyuan_custom_edit", "hunyuan_avatar", "hunyuan_1_5_t2v", "hunyuan_1_5_i2v", "hunyuan_1_5_upsampler"]
 
     @staticmethod
     def query_family_maps():
         models_eqv_map = {
+                    "hunyuan_1_5_t2v": "hunyuan",
+                    "hunyuan_1_5_i2v": "hunyuan_i2v",
         }
 
         models_comp_map = { 
                     "hunyuan_custom":  ["hunyuan_custom_edit", "hunyuan_custom_audio"],
+                    "hunyuan": ["hunyuan_1_5_t2v"],
+                    "hunyuan_i2v": ["hunyuan_1_5_i2v"],
                     }
 
         return models_eqv_map, models_comp_map
@@ -109,18 +148,36 @@ class family_handler():
 
     @staticmethod
     def query_family_infos():
-        return {"hunyuan":(20, "Hunyuan Video")}
+        return {"hunyuan":(20, "Hunyuan Video"), "hunyuan_1_5":(21, "Hunyuan Video 1.5")}
 
     @staticmethod
     def get_rgb_factors(base_model_type ):
         from shared.RGB_factors import get_rgb_factors
-        latent_rgb_factors, latent_rgb_factors_bias = get_rgb_factors("hunyuan")
+        latent_rgb_factors, latent_rgb_factors_bias = get_rgb_factors("hunyuan", sub_family = "hunyuan1.5" if test_hunyuan_1_5(base_model_type) else "")
         return latent_rgb_factors, latent_rgb_factors_bias
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = get_hunyuan_text_encoder_filename(text_encoder_quantization)    
-        return {  
+        text_encoder_filename = get_hunyuan_text_encoder_filename(base_model_type,text_encoder_quantization)    
+
+        if test_hunyuan_1_5(base_model_type):
+            download_def = [{  
+            "repoId" : "DeepBeepMeep/Qwen_image", 
+            "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
+            "fileList" : [ ["qwen_vae.safetensors", "qwen_vae_config.json"], ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"] + computeList(text_encoder_filename)  ]
+            },
+            {  
+            "repoId" : "DeepBeepMeep/HunyuanVideo1.5", 
+            "sourceFolderList" :  [ "Glyph-SDXL-v2", "Glyph-SDXL-v2/byt5-small",  "siglip_vision_model", ""  ],
+            "fileList" :[ ["color_idx.json", "multilingual_10-lang_idx.json"] ,
+                        [ "config.json", "model.safetensors", "byt5_model.safetensors"], # "byt5_model.pt", "pytorch_model.bin"],
+                        [ "model.safetensors", "config.json", "preprocessor_config.json"],
+                        [  "hunyuan_video_1_5_VAE_fp32.safetensors", "hunyuan_video_1_5_VAE.json"] + computeList(model_filename)  ,
+                        ]
+            } ]
+
+        else:   
+            download_def= {  
             "repoId" : "DeepBeepMeep/HunyuanVideo", 
             "sourceFolderList" :  [ "llava-llama-3-8b", "clip_vit_large_patch14",  "whisper-tiny" , "det_align", ""  ],
             "fileList" :[ ["config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "preprocessor_config.json"] + computeList(text_encoder_filename) ,
@@ -129,7 +186,8 @@ class family_handler():
                             ["detface.pt"],
                             [ "hunyuan_video_720_quanto_int8_map.json", "hunyuan_video_custom_VAE_fp32.safetensors", "hunyuan_video_custom_VAE_config.json", "hunyuan_video_VAE_fp32.safetensors", "hunyuan_video_VAE_config.json" , "hunyuan_video_720_quanto_int8_map.json"   ] + computeList(model_filename)  
                             ]
-        } 
+            }
+        return download_def 
 
     @staticmethod
     def load_model(model_filename, model_type = None,  base_model_type = None, model_def = None, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None):
@@ -140,7 +198,8 @@ class family_handler():
             model_filepath = model_filename,
             model_type = model_type, 
             base_model_type = base_model_type,
-            text_encoder_filepath = get_hunyuan_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            model_def = model_def,
+            text_encoder_filepath = get_hunyuan_text_encoder_filename(base_model_type, text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
             dtype = dtype,
             quantizeTransformer = quantizeTransformer,
             VAE_dtype = VAE_dtype, 
@@ -149,8 +208,16 @@ class family_handler():
         )
 
         pipe = { "transformer" : hunyuan_model.model, "text_encoder" : hunyuan_model.text_encoder, "text_encoder_2" : hunyuan_model.text_encoder_2, "vae" : hunyuan_model.vae  }
+        if hunyuan_model.byt5_model is not None:
+            pipe["byt5_model"] = hunyuan_model.byt5_model
 
-        if hunyuan_model.wav2vec != None:
+        if hunyuan_model.vision_encoder is not None:
+            pipe["vision_encoder"] = hunyuan_model.vision_encoder
+
+        if hunyuan_model.upsampler is not None:
+            pipe["upsampler"] = hunyuan_model.upsampler
+
+        if hunyuan_model.wav2vec is not None:
             pipe["wav2vec"] = hunyuan_model.wav2vec
 
 
@@ -182,6 +249,11 @@ class family_handler():
                 if "A" not in audio_prompt_type:
                     audio_prompt_type += "A"
                     ui_defaults["audio_prompt_type"] = audio_prompt_type  
+
+
+        if settings_version < 2.41:
+            if base_model_type in ["hunyuan_i2v"]:
+                ui_defaults["sliding_window_overlap"] = 1
 
         
     
@@ -224,4 +296,16 @@ class family_handler():
                 "video_length": 129,
                 "video_prompt_type": "KI",
                 "audio_prompt_type": "A",
+            })
+
+        if base_model_type in ["hunyuan_1_5_i2v","hunyuan_i2v"]:
+            ui_defaults.update({
+                "image_prompt_type": "S",
+                "sliding_window_overlap" : 1,
+            })
+
+        if base_model_type in ["hunyuan_1_5_upsampler"]:
+            ui_defaults.update({
+                "video_prompt_type": "V",
+                "sliding_window_overlap" : 1,
             })

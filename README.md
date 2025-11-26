@@ -36,7 +36,32 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### November 12 2025: WanGP v9.5, And there was motion
+### November 24 2025: WanGP v9.62, The Return of the King
+
+So here is *Tencet* who is back in the race: let's welcome **Hunyuan Video 1.5**
+
+Despite only 8B parameters it offers quite a high level of quality. It is not just one model but a family of models:
+- Text 2 Video
+- Image 2 Video
+- Upsamplers (720p & 1080p)
+
+Each model comes on day one with several finetunes specialized for a specific resolution.
+The downside right now is that to get the best quality you need to use guidance > 1 and a high number of Steps (20+). 
+
+But dont go away yet ! **LightX2V** (https://huggingface.co/lightx2v/Hy1.5-Distill-Models/) is on deck and has already delivered an *Accelerated 4 steps Finetune* for the *t2v 480p* model. It is part of today's delivery.
+
+I have extracted *LighX2V Magic* into an *8 steps Accelerator Lora* that seems to work for i2v and the other resolutions. This should be good enough while waiting for other the official LighX2V releases (just select this lora in the *Settings* Dropdown Box).
+
+WanGP implementation of Hunyuan 1.5 is quite complete as you will get straight away *Video Gen Preview* (WanGP exclusivity!) and *Sliding Window* support. It is also ready for *Tea Cache* or *Mag Cache* (just waiting for the official parameters) 
+
+*WanGP Hunyuan 1.5 is super VRAM optimized, you will need less than 20 GB of VRAM to generate 12s (289 frames) at 720p.*
+
+Please note Hunyuan v1 Loras are not compatible since the latent space is different. You can add loras for Hunyuan Video 1.5 in the *loras_hunyuan/1.5* folder. 
+
+*Update 9.62* : Added Lora Accelerator\
+*Update 9.61* : Added VAE Temporal Tiling
+
+### November 21 2025: WanGP v9.52, And there was motion
 
 In this release WanGP turns you into a Motion Master:
 - **Motion Designer**: this new preinstalled home made Graphical Plugin will let you design trajectories for *Vace* and for *Wan 2.2 i2v Time to Move*. 
@@ -50,6 +75,11 @@ In this release WanGP turns you into a Motion Master:
 - **PainterI2V**: (https://github.com/princepainter/). You found that the i2v loras accelerators kill the motion ? This is an alternative to 3 phases guidance to restore motion, it is free as it doesnt require any extra processing or changing the weights. It works best in a scene where the background remains the same. In order to control the acceleration in i2v models, you will find a new *Motion Amplitude* slider in the *Quality* tab.
 
 - **Nexus 1.3B**: this is an incredible *Wan 2.1 1.3B* finetune made by @Nexus. It is specialized in *Human Motion* (dance, fights, gym, ...). It is fast as it is already *Causvid* accelerated. Try it with the *Prompt Enhancer* at 720p.
+
+- **Black Start Frames** for Wan 2.1/2.2 i2v: some i2v models can be turned into powerful t2v models by providing a **black frame** as a *Start Frame*. From now on if you dont provide any start frame, WanGP will generate automatically a black start frame of the current output resolution or of the correspondig *End frame resolution* (if any). 
+
+*update 9.51*: Fixed Chrono Edit Output, added Temporal Reasoning Video\
+*update 9.52*: Black start frames support for Wan i2v models
 
 ### November 12 2025: WanGP v9.44, Free Lunch
 

@@ -23,7 +23,7 @@ import torch.distributed as dist
 import numpy as np
 from dataclasses import dataclass
 from packaging import version
-
+import re
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.configuration_utils import FrozenDict
 from diffusers.image_processor import VaeImageProcessor
@@ -175,6 +175,13 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         transformer: HYVideoDiffusionTransformer,
         scheduler: KarrasDiffusionSchedulers,
         text_encoder_2: Optional[TextEncoder] = None,
+        byt5_model= None,
+        byt5_tokenizer= None,
+        byt5_max_length= 256,
+        vision_encoder=None,
+        upsampler=None,
+        prompt_format=None,
+        hunyuan_1_5 = None,
         progress_bar_config: Dict[str, Any] = None,
         args=None,
     ):
@@ -233,10 +240,194 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             transformer=transformer,
             scheduler=scheduler,
             text_encoder_2=text_encoder_2,
+            byt5_model= byt5_model,
+            byt5_tokenizer= byt5_tokenizer,
+            vision_encoder=vision_encoder,
+            upsampler=upsampler,
         )
+        self.byt5_max_length = byt5_max_length
+        self.prompt_format= prompt_format
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
         self.noise_pertub = 0
+        self.hunyuan_1_5 = hunyuan_1_5
+        self.target_dtype = torch.bfloat16 
+
+    def encode_prompt_1_5(
+        self,
+        prompt,
+        name,
+        device,
+        num_videos_per_prompt,
+        do_classifier_free_guidance,
+        negative_prompt=None,
+        prompt_embeds: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        negative_prompt_embeds: Optional[torch.Tensor] = None,
+        negative_attention_mask: Optional[torch.Tensor] = None,
+        clip_skip: Optional[int] = None,
+        text_encoder: Optional[TextEncoder] = None,
+        data_type: Optional[str] = "image",
+        pixel_value_llava: Optional[torch.Tensor] = None,
+        uncond_pixel_value_llava: Optional[torch.Tensor] = None,                
+        lora_scale: Optional[float] = None,
+        semantic_images=None
+    ):
+        r"""
+        Encodes the prompt into text encoder hidden states.
+
+        Args:
+            prompt (`str` or `List[str]`, *optional*):
+                prompt to be encoded
+            device: (`torch.device`):
+                torch device
+            num_videos_per_prompt (`int`):
+                number of videos that should be generated per prompt
+            do_classifier_free_guidance (`bool`):
+                whether to use classifier free guidance or not
+            negative_prompt (`str` or `List[str]`, *optional*):
+                The prompt or prompts not to guide the video generation. If not defined, one has to pass
+                `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is
+                less than `1`).
+            prompt_embeds (`torch.Tensor`, *optional*):
+                Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
+                provided, text embeddings will be generated from `prompt` input argument.
+            attention_mask (`torch.Tensor`, *optional*):
+            negative_prompt_embeds (`torch.Tensor`, *optional*):
+                Pre-generated negative text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt
+                weighting. If not provided, negative_prompt_embeds will be generated from `negative_prompt` input
+                argument.
+            negative_attention_mask (`torch.Tensor`, *optional*):
+                Attention mask for negative prompt embeddings.
+            clip_skip (`int`, *optional*):
+                Number of layers to be skipped from CLIP while computing the prompt embeddings. A value of 1 means that
+                the output of the pre-final layer will be used for computing the prompt embeddings.
+            text_encoder (TextEncoder, *optional*):
+                Text encoder to use. If None, uses the pipeline's default text encoder.
+            data_type (`str`, *optional*):
+                Type of data being encoded. Defaults to "image".
+        """
+        if text_encoder is None:
+            text_encoder = self.text_encoder
+
+        if prompt is not None and isinstance(prompt, str):
+            batch_size = 1
+        elif prompt is not None and isinstance(prompt, list):
+            batch_size = len(prompt)
+        else:
+            batch_size = prompt_embeds.shape[0]
+
+        if prompt_embeds is None:
+
+            text_inputs = text_encoder.text2tokens(prompt, data_type=data_type, max_length=text_encoder.max_length)
+            if clip_skip is None:
+                prompt_outputs = text_encoder.encode(
+                    text_inputs, data_type=data_type, device=device
+                )
+                prompt_embeds = prompt_outputs.hidden_state
+            else:
+                prompt_outputs = text_encoder.encode(
+                    text_inputs,
+                    output_hidden_states=True,
+                    data_type=data_type,
+                    device=device,
+                )
+                # Access the `hidden_states` first, that contains a tuple of
+                # all the hidden states from the encoder layers. Then index into
+                # the tuple to access the hidden states from the desired layer.
+                prompt_embeds = prompt_outputs.hidden_states_list[-(clip_skip + 1)]
+                # We also need to apply the final LayerNorm here to not mess with the
+                # representations. The `last_hidden_states` that we typically use for
+                # obtaining the final prompt representations passes through the LayerNorm
+                # layer.
+                prompt_embeds = text_encoder.model.text_model.final_layer_norm(
+                    prompt_embeds
+                )
+
+            attention_mask = prompt_outputs.attention_mask
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device)
+                bs_embed, seq_len = attention_mask.shape
+                attention_mask = attention_mask.repeat(1, num_videos_per_prompt)
+                attention_mask = attention_mask.view(
+                    bs_embed * num_videos_per_prompt, seq_len
+                )
+
+        if text_encoder is not None:
+            prompt_embeds_dtype = text_encoder.dtype
+        elif self.transformer is not None:
+            prompt_embeds_dtype = self.transformer.dtype
+        else:
+            prompt_embeds_dtype = prompt_embeds.dtype
+
+        prompt_embeds = prompt_embeds.to(dtype=prompt_embeds_dtype, device=device)
+
+        if prompt_embeds.ndim == 2:
+            bs_embed, _ = prompt_embeds.shape
+            # duplicate text embeddings for each generation per prompt, using mps friendly method
+            prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt)
+            prompt_embeds = prompt_embeds.view(bs_embed * num_videos_per_prompt, -1)
+        else:
+            bs_embed, seq_len, _ = prompt_embeds.shape
+            # duplicate text embeddings for each generation per prompt, using mps friendly method
+            prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
+            prompt_embeds = prompt_embeds.view(
+                bs_embed * num_videos_per_prompt, seq_len, -1
+            )
+
+        # get unconditional embeddings for classifier free guidance
+        if do_classifier_free_guidance and negative_prompt_embeds is None:
+            uncond_tokens: List[str]
+            if negative_prompt is None:
+                uncond_tokens = [""] * batch_size
+            elif prompt is not None and type(prompt) is not type(negative_prompt):
+                raise TypeError(
+                    f"`negative_prompt` should be the same type to `prompt`, but got {type(negative_prompt)} !="
+                    f" {type(prompt)}."
+                )
+            elif isinstance(negative_prompt, str):
+                uncond_tokens = [negative_prompt]
+            elif batch_size != len(negative_prompt):
+                raise ValueError(
+                    f"`negative_prompt`: {negative_prompt} has batch size {len(negative_prompt)}, but `prompt`:"
+                    f" {prompt} has batch size {batch_size}. Please make sure that passed `negative_prompt` matches"
+                    " the batch size of `prompt`."
+                )
+            else:
+                uncond_tokens = negative_prompt
+
+            uncond_input = text_encoder.text2tokens(uncond_tokens, data_type=data_type, max_length=text_encoder.max_length)
+
+            negative_prompt_outputs = text_encoder.encode(uncond_input, data_type=data_type, is_uncond=True)
+            negative_prompt_embeds = negative_prompt_outputs.hidden_state
+
+            negative_attention_mask = negative_prompt_outputs.attention_mask
+            if negative_attention_mask is not None:
+                negative_attention_mask = negative_attention_mask.to(device)
+                _, seq_len = negative_attention_mask.shape
+                negative_attention_mask = negative_attention_mask.repeat(1, num_videos_per_prompt)
+                negative_attention_mask = negative_attention_mask.view(batch_size * num_videos_per_prompt, seq_len)
+
+        if do_classifier_free_guidance:
+            # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
+            seq_len = negative_prompt_embeds.shape[1]
+
+            negative_prompt_embeds = negative_prompt_embeds.to(dtype=prompt_embeds_dtype, device=device)
+
+            if negative_prompt_embeds.ndim == 2:
+                negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_videos_per_prompt)
+                negative_prompt_embeds = negative_prompt_embeds.view(batch_size * num_videos_per_prompt, -1)
+            else:
+                negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_videos_per_prompt, 1)
+                negative_prompt_embeds = negative_prompt_embeds.view(batch_size * num_videos_per_prompt, seq_len, -1)
+
+        return (
+            prompt_embeds,
+            negative_prompt_embeds,
+            attention_mask,
+            negative_attention_mask,
+        )
+
 
     def encode_prompt(
         self,
@@ -622,8 +813,6 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         i2v_condition_type=None,
         i2v_stability=True,
     ):
-        if i2v_mode and i2v_condition_type == "latent_concat":
-            num_channels_latents = (num_channels_latents - 1) // 2
         shape = (
             batch_size,
             num_channels_latents,
@@ -753,6 +942,137 @@ class HunyuanVideoPipeline(DiffusionPipeline):
     @property
     def interrupt(self):
         return self._interrupt
+
+    @staticmethod
+    def get_byt5_text_tokens(byt5_tokenizer, byt5_max_length, text_prompt):
+        """
+        Tokenize text prompt for byT5 model.
+
+        Args:
+            byt5_tokenizer: The byT5 tokenizer.
+            byt5_max_length: Maximum sequence length for tokenization.
+            text_prompt: Text prompt string to tokenize.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]:
+                - input_ids: Tokenized input IDs.
+                - attention_mask: Attention mask tensor.
+        """
+        byt5_text_inputs = byt5_tokenizer(
+            text_prompt,
+            padding="max_length",
+            max_length=byt5_max_length,
+            truncation=True,
+            add_special_tokens=True,
+            return_tensors="pt",
+        )
+
+        return byt5_text_inputs.input_ids, byt5_text_inputs.attention_mask
+
+    def _extract_glyph_texts(self, prompt):
+        """
+        Extract glyph texts from prompt using regex pattern.
+
+        Args:
+            prompt: Input prompt string containing quoted text.
+
+        Returns:
+            List[str]: List of extracted glyph texts (deduplicated if multiple).
+        """
+        pattern = r'\"(.*?)\"|“(.*?)”'
+        matches = re.findall(pattern, prompt)
+        result = [match[0] or match[1] for match in matches]
+        result = list(dict.fromkeys(result)) if len(result) > 1 else result
+        return result
+
+    def _process_single_byt5_prompt(self, prompt_text, device):
+        """
+        Process a single prompt for byT5 encoding.
+
+        Args:
+            prompt_text: The prompt text to process.
+            device: Target device for tensors.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]:
+                - byt5_embeddings: Encoded embeddings tensor.
+                - byt5_mask: Attention mask tensor.
+        """
+        byt5_embeddings = torch.zeros((1, self.byt5_max_length, 1472), device=device)
+        byt5_mask = torch.zeros((1, self.byt5_max_length), device=device, dtype=torch.int64)
+        
+        glyph_texts = self._extract_glyph_texts(prompt_text)
+        
+        if len(glyph_texts) > 0:
+            text_styles = [{'color': None, 'font-family': None} for _ in range(len(glyph_texts))]
+            formatted_text = self.prompt_format.format_prompt(glyph_texts, text_styles)
+            
+            text_ids, text_mask = self.get_byt5_text_tokens(
+                self.byt5_tokenizer, self.byt5_max_length, formatted_text
+            )
+            text_ids = text_ids.to(device=device)
+            text_mask = text_mask.to(device=device)
+            
+            byt5_outputs = self.byt5_model(text_ids, attention_mask=text_mask.float())
+            byt5_embeddings = byt5_outputs[0]
+            byt5_mask = text_mask
+            
+        return byt5_embeddings, byt5_mask
+
+    def _prepare_byt5_embeddings(self, prompts, device):
+        """
+        Prepare byT5 embeddings for both positive and negative prompts.
+
+        Args:
+            prompts: List of prompt strings or single prompt string.
+            device: Target device for tensors.
+
+        Returns:
+            dict: Dictionary containing:
+                - "byt5_text_states": Combined embeddings tensor.
+                - "byt5_text_mask": Combined attention mask tensor.
+                Returns empty dict if glyph_byT5_v2 is disabled.
+        """
+        # if not self.config.glyph_byT5_v2:
+        #     return {}
+            
+        if isinstance(prompts, str):
+            prompt_list = [prompts]
+        elif isinstance(prompts, list):
+            prompt_list = prompts
+        else:
+            raise ValueError("prompts must be str or list of str")
+
+        positive_embeddings = []
+        positive_masks = []
+        negative_embeddings = []
+        negative_masks = []
+
+        for prompt in prompt_list:
+            pos_emb, pos_mask = self._process_single_byt5_prompt(prompt, device)
+            positive_embeddings.append(pos_emb)
+            positive_masks.append(pos_mask)
+
+            if self.do_classifier_free_guidance:
+                neg_emb, neg_mask = self._process_single_byt5_prompt("", device)
+                negative_embeddings.append(neg_emb)
+                negative_masks.append(neg_mask)
+
+        byt5_positive = torch.cat(positive_embeddings, dim=0)
+        byt5_positive_mask = torch.cat(positive_masks, dim=0)
+        
+        if self.do_classifier_free_guidance:
+            byt5_negative = torch.cat(negative_embeddings, dim=0)
+            byt5_negative_mask = torch.cat(negative_masks, dim=0)
+            
+            byt5_embeddings = torch.cat([byt5_negative, byt5_positive], dim=0)
+            byt5_masks = torch.cat([byt5_negative_mask, byt5_positive_mask], dim=0)
+        else:
+            byt5_embeddings = byt5_positive
+            byt5_masks = byt5_positive_mask
+
+        return byt5_embeddings, byt5_masks 
+
 
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
@@ -944,6 +1264,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             uncond_ref_latents = None
 
 
+
         # 0. Default height and width to unet
         # height = height or self.transformer.config.sample_size * self.vae_scale_factor
         # width = width or self.transformer.config.sample_size * self.vae_scale_factor
@@ -982,6 +1303,16 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         self._clip_skip = clip_skip
         self._cross_attention_kwargs = cross_attention_kwargs
 
+
+        vae_precision = "fp16" # torch.float16
+        precision = "bf16" # torch.bfloat16
+
+        disable_autocast =  True
+        target_dtype = PRECISION_TO_TYPE[precision]
+        autocast_enabled = target_dtype != torch.float32 and not disable_autocast
+        vae_dtype = self.vae._model_dtype # PRECISION_TO_TYPE[vae_precision]
+        vae_autocast_enabled = vae_dtype != torch.float32 and False
+
         # 2. Define call parameters
         if prompt is not None and isinstance(prompt, str):
             batch_size = 1
@@ -998,13 +1329,14 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             if self.cross_attention_kwargs is not None
             else None
         )
-
+        hunyuan_1_5= self.hunyuan_1_5
+        encode_prompt = self.encode_prompt_1_5 if hunyuan_1_5 else self.encode_prompt
         (
             prompt_embeds,
             negative_prompt_embeds,
             prompt_mask,
             negative_prompt_mask,
-        ) = self.encode_prompt(
+        ) = encode_prompt(
             prompt,
             name,            
             device,
@@ -1028,7 +1360,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                 negative_prompt_embeds_2,
                 prompt_mask_2,
                 negative_prompt_mask_2,
-            ) = self.encode_prompt(
+            ) = encode_prompt(
                 prompt,
                 name,
                 device,
@@ -1050,6 +1382,12 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             prompt_mask_2 = None
             negative_prompt_mask_2 = None
 
+        if self.byt5_model is not None:
+            byt5_embeddings, byt5_masks = self._prepare_byt5_embeddings(prompt, device)
+        else:
+            byt5_embeddings = byt5_masks = None
+
+
         # For classifier free guidance, we need to do two forward passes.
         # Here we concatenate the unconditional and text embeddings into a single batch
         # to avoid doing two forward passes
@@ -1069,7 +1407,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                     prompt_mask[0] = torch.cat([torch.ones((1, prompt_mask[0].sum() - 575)).to(prompt_mask), 
                                                 torch.zeros((1, prompt_mask.shape[1] - prompt_mask[0].sum() + 575)).to(prompt_mask)], dim=1)
 
-            if bg_latents is not None:
+            if bg_latents is not None and self.transformer.custom:
                 bg_latents = torch.cat([bg_latents, bg_latents], dim=0)
 
             if audio_prompts is not None:
@@ -1110,10 +1448,27 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             prompt_embeds = prompt_embeds.to(torch.bfloat16)
         if prompt_embeds_2 != None:
             prompt_embeds_2 = prompt_embeds_2.to(torch.bfloat16)
-        # if prompt_mask != None:
-        #     prompt_mask = prompt_mask.to(torch.bfloat16)
+
+        if self.upsampler is not None:
+            # lq_latents = rearrange(bg_latents, "b c f h w -> (b f) c h w")
+            # bg_latents = None
+            # lq_latents = torch.nn.functional.interpolate(lq_latents, size=[height // 16, width // 16], mode="bilinear", align_corners=False)
+            # lq_latents = rearrange(lq_latents, "(b f) c h w -> b c f h w", b=1)            
+            # lq_latents = self.upsampler(lq_latents.to(target_dtype))
+            lq_mask_latents = torch.ones_like(bg_latents[:, :1])
+            extra_latent_frames = video_length  - bg_latents.shape[2]
+            if extra_latent_frames:
+                bg_latents = torch.cat([bg_latents, torch.zeros_like(bg_latents[:, :, :extra_latent_frames])], dim=2)
+                lq_mask_latents = torch.cat([lq_mask_latents, torch.zeros_like(bg_latents[:, :1, :extra_latent_frames])], dim=2)
+            lq_latents = self.upsampler(bg_latents.to(target_dtype))
+            noise_scale = 0.7
+            lq_latents = (1-noise_scale) * lq_latents + noise_scale * torch.randn_like(lq_latents)
+            lq_latents =  torch.cat( [lq_latents, lq_mask_latents ], dim=1 )
+            zero_lq_latents =  torch.zeros_like(lq_latents)
+                
         # 5. Prepare latent variables
-        num_channels_latents  = self.transformer.config.in_channels
+
+        num_channels_latents  = self.transformer.config.out_channels
         latents, original_latents, noise, timesteps = self.prepare_latents(
             batch_size * num_videos_per_prompt,
             num_channels_latents,
@@ -1133,19 +1488,25 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             i2v_stability=i2v_stability
         )
 
-        if i2v_mode and i2v_condition_type == "latent_concat":
-            if img_latents.shape[2] == 1:
-                img_latents_concat = img_latents.repeat(1, 1, video_length, 1, 1)
+        if i2v_condition_type == "latent_concat" :
+            if i2v_mode:
+                if img_latents.shape[2] == 1:
+                    img_latents_concat = img_latents.repeat(1, 1, video_length, 1, 1)
+                else:
+                    img_latents_concat = img_latents
+                img_latents_concat[:, :, 1:] = 0
+                mask_concat = torch.ones(img_latents_concat.shape[0], 1, *img_latents_concat.shape[2:]).to(device=img_latents.device)
+                mask_concat[:, :, 1:] = 0
             else:
-                img_latents_concat = img_latents
-            img_latents_concat[:, :, 1:, ...] = 0
+                img_latents_concat = torch.zeros(latents.shape[0], latents.shape[1], *latents.shape[2:]).to(latents.device)
+                mask_concat = torch.zeros(img_latents_concat.shape[0], 1, *latents.shape[2:]).to(device=latents.device)
 
-            i2v_mask = torch.zeros(video_length)
-            i2v_mask[0] = 1
 
-            mask_concat = torch.ones(img_latents_concat.shape[0], 1, img_latents_concat.shape[2], img_latents_concat.shape[3],
-                                     img_latents_concat.shape[4]).to(device=img_latents.device)
-            mask_concat[:, :, 1:, ...] = 0
+        vision_states = None
+        if semantic_images is not None and self.vision_encoder is not None:
+            vision_states = self.vision_encoder.encode_images(np.array(semantic_images))
+            vision_states = vision_states.last_hidden_state.to(device=device, dtype=target_dtype)
+
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_func_kwargs(
@@ -1153,15 +1514,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             {"generator": generator, "eta": eta},
         )
 
-        vae_precision = "fp16" # torch.float16
-        precision = "bf16" # torch.bfloat16
             
-        disable_autocast =  True
-
-        target_dtype = PRECISION_TO_TYPE[precision]
-        autocast_enabled = target_dtype != torch.float32 and not disable_autocast
-        vae_dtype = self.vae._model_dtype # PRECISION_TO_TYPE[vae_precision]
-        vae_autocast_enabled = vae_dtype != torch.float32 and not disable_autocast
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
@@ -1224,12 +1577,22 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                 offload.set_step_no_for_lora(self.transformer, i)
                 if self.interrupt:
                     continue
-                if i2v_mode and i2v_condition_type == "token_replace":
-                    latents = torch.concat([img_latents, latents[:, :, 1:, :, :]], dim=2)
 
-                # expand the latents if we are doing classifier free guidance
-                if i2v_mode and i2v_condition_type == "latent_concat":
-                    latent_model_input = torch.concat([latents, img_latents_concat, mask_concat], dim=1)
+                timesteps_r = None
+                if self.upsampler is not None:
+                    if i == len(timesteps) - 1:
+                        timesteps_r = torch.tensor([0.0], device=self.device)
+                    else:
+                        timesteps_r = timesteps[i + 1]
+                    timesteps_r = timesteps_r.repeat(latents.shape[0])
+
+                if i2v_condition_type == "latent_concat":
+                    if self.upsampler is not None:
+                        latent_model_input = torch.concat([latents, img_latents_concat, mask_concat, zero_lq_latents if t < 1000 * noise_scale else lq_latents], dim=1)
+                    else:
+                        latent_model_input = torch.concat([latents, img_latents_concat, mask_concat], dim=1)
+                elif i2v_condition_type == "token_replace":
+                    latent_model_input = torch.concat([img_latents, latents[:, :, 1:, :, :]], dim=2)
                 else:
                     latent_model_input = latents
 
@@ -1273,7 +1636,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                                 t_expand[j].unsqueeze(0),  # [2]
                                 text_states=prompt_embeds[j].unsqueeze(0),  # [2, 256, 4096]
                                 text_mask=prompt_mask[j].unsqueeze(0),  # [2, 256]
-                                text_states_2=prompt_embeds_2[j].unsqueeze(0),  # [2, 768]
+                                text_states_2=None if prompt_embeds_2 is None else prompt_embeds_2[j].unsqueeze(0) ,  # [2, 768]
                                 ref_latents=ref_latents[j].unsqueeze(0),
                                 freqs_cos=freqs_cis[0],  # [seqlen, head_dim]
                                 freqs_sin=freqs_cis[1],  # [seqlen, head_dim]
@@ -1284,6 +1647,10 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                                 bg_latents=bg_latents[j].unsqueeze(0) if bg_latents!=None else None,
                                 audio_prompts=audio_prompts[j].unsqueeze(0) if audio_prompts!=None else None,
                                 audio_strength=audio_strength,
+                                vision_states= vision_states,
+                                byt5_text_states=byt5_embeddings[j].unsqueeze(0),
+                                byt5_text_mask=byt5_masks[j].unsqueeze(0),
+                                timesteps_r=timesteps_r,
                                 callback = callback,
                             )
                             if self._interrupt:
@@ -1296,11 +1663,6 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                                 noise_pred_ip = ret[0]
                             ret = None
                     else:
-                        # if self.do_classifier_free_guidance:
-                        #     noise_pred_uncond = self.transformer(latent_model_input[:1], t_expand[:1], ref_latents=ref_latents[:1], text_states=prompt_embeds[:1],  text_mask=prompt_mask[:1],  text_states_2=prompt_embeds_2[:1], freqs_cos=freqs_cis[0],freqs_sin=freqs_cis[1], guidance=guidance_expand,return_dict=True)['x']
-                        #     noise_pred_text = self.transformer(latent_model_input[1:], t_expand[1:], ref_latents=ref_latents[1:], text_states=prompt_embeds[1:],  text_mask=prompt_mask[1:],  text_states_2=prompt_embeds_2[1:], freqs_cos=freqs_cis[0],freqs_sin=freqs_cis[1], guidance=guidance_expand,return_dict=True)['x']
-                        #     noise_pred = torch.cat([noise_pred_uncond, noise_pred_text], dim=0)
-                        # else:
                         ret = self.transformer(  # For an input image (129, 192, 336) (1, 256, 256)
                             latent_model_input,  # [2, 16, 33, 24, 42]
                             t_expand,  # [2]
@@ -1316,6 +1678,10 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                             bg_latents=bg_latents,
                             audio_prompts=audio_prompts,
                             audio_strength=audio_strength,
+                            vision_states= vision_states,
+                            byt5_text_states=byt5_embeddings,
+                            byt5_text_mask=byt5_masks,
+                            timesteps_r=timesteps_r,
                             callback = callback,
                         )
                         if self._interrupt:
@@ -1378,10 +1744,10 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         if self.interrupt:
             return [None]
         
-        # if load_latent:
-        #     latents = torch.load("latent.pt")
-        # else:
-        #     torch.save(latents, "latent.pt")
+        if load_latent:
+            latents = torch.load("latent.pt")
+        else:
+            torch.save(latents, "latent.pt")
 
 
         if mask_latents is not None:
@@ -1433,11 +1799,9 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
         image = image.cpu().float()
 
-        if i2v_mode and i2v_condition_type == "latent_concat":
-            image = image[:, :, 4:, :, :]
+        # if i2v_mode and i2v_condition_type == "latent_concat":
+        #     image = image[:, :, 4:, :, :]
 
-        # Offload all models
-        self.maybe_free_model_hooks()
 
         if not return_dict:
             return image

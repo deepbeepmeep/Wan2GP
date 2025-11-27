@@ -6,23 +6,29 @@ from glob import iglob
 from mmgp import offload as offload
 import torch
 from shared.utils.utils import calculate_new_dimensions
-from .sampling import denoise, get_schedule, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack, resizeinput, patches_to_image
+from .sampling import denoise, get_schedule, get_schedule_flux2, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack, resizeinput, patches_to_image
 from .modules.layers import get_linear_split_map
 from transformers import SiglipVisionModel, SiglipImageProcessor
 import torchvision.transforms.functional as TVF
 import math
 from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image
 from shared.utils import files_locator as fl 
-from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, AutoTokenizer, Qwen2VLProcessor
+from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2VLProcessor
+from .modules.autoencoder_flux2 import AutoencoderKLFlux2, AutoEncoderParamsFlux2
 
 from .util import (
-    aspect_ratio_to_height_width,
     load_ae,
     load_clip,
     load_flow_model,
     load_t5,
-    save_image,
 )
+from .flux2_adapter import (
+    scatter_ids ,
+    batched_prc_img, 
+    batched_prc_txt,
+    encode_image_refs,
+    )
+from .modules.autoencoder_flux2 import AutoencoderKLFlux2
 
 from PIL import Image
 def preprocess_ref(raw_image: Image.Image, long_size: int = 512):
@@ -83,23 +89,40 @@ class model_factory:
         mixed_precision_transformer = False
     ):
         self.device = torch.device(f"cuda")
+        self._interrupt = False
         self.VAE_dtype = VAE_dtype
         self.dtype = dtype
         torch_device = "cpu"
+        self.model_def = model_def 
+        self.name = model_def.get("flux-model", "flux-dev")
         self.guidance_max_phases = model_def.get("guidance_max_phases", 0) 
+        self.is_flux2 = self.name.startswith("flux2")
 
         # model_filename = ["c:/temp/flux1-schnell.safetensors"] 
-        
-        self.t5 = load_t5(torch_device, text_encoder_filename, max_length=512)
-        self.clip = load_clip(torch_device)
-        self.name = model_def.get("flux-model", "flux-dev")
-        # self.name= "flux-dev-kontext"
-        # self.name= "flux-dev"
-        # self.name= "flux-schnell"
-        source =  model_def.get("source", None)
-        self.model = load_flow_model(self.name, model_filename[0] if source is None else source, torch_device)
-        self.model_def = model_def 
-        self.vae = None if getattr(self.model, "radiance", False) else load_ae(self.name, device=torch_device)
+        source = model_def.get("source", None)
+        self.clip = self.t5 = self.vision_encoder = self.mistal = None
+        if self.is_flux2:
+            self.model = load_flow_model(self.name, model_filename[0] if source is None else source, torch_device)
+
+            from .modules.text_encoder_mistral import Mistral3SmallEmbedder
+            self.mistral = Mistral3SmallEmbedder( model_spec = text_encoder_filename)
+    
+            with torch.device("meta"):
+                self.vae  = AutoencoderKLFlux2(AutoEncoderParamsFlux2())
+
+            offload.load_model_data(self.vae, fl.locate_file("flux2_vae.safetensors"), writable_tensors= False, )
+            self.vae_scale_factor = 8
+        else:
+            self.t5 = load_t5(torch_device, text_encoder_filename, max_length=512)
+            self.clip = load_clip(torch_device)
+            self.name = model_def.get("flux-model", "flux-dev")
+            # self.name= "flux-dev-kontext"
+            # self.name= "flux-dev"
+            # self.name= "flux-schnell"
+            source =  model_def.get("source", None)
+            self.model = load_flow_model(self.name, model_filename[0] if source is None else source, torch_device)
+            self.model_def = model_def 
+            self.vae = None if getattr(self.model, "radiance", False) else load_ae(self.name, device=torch_device)
 
         siglip_processor = siglip_model = feature_embedder = None
         if self.name == 'flux-dev-uso':
@@ -138,7 +161,12 @@ class model_factory:
             from wgp import save_quantized_model
             save_quantized_model(self.model, model_type, model_filename[0], dtype, None)
 
-        split_linear_modules_map = get_linear_split_map()
+        split_linear_modules_map = get_linear_split_map(
+            self.model.hidden_size,
+            getattr(self.model.params, "mlp_ratio", 4.0),
+            getattr(self.model.params, "single_linear1_mlp_ratio", None),
+            getattr(self.model.params, "double_linear1_mlp_ratio", None),
+        )
         self.model.split_linear_modules_map = split_linear_modules_map
         offload.split_linear_modules(self.model, split_linear_modules_map )
 
@@ -202,118 +230,146 @@ class model_factory:
             joint_pass = False,
             image_refs_relative_size = 100,
             denoising_strength = 1.,
-            masking_strength = 1.,
-            **bbargs
+        masking_strength = 1.,
+        **bbargs
     ):
             if self._interrupt:
                 return None
+            device="cuda"
+            flux2 = self.is_flux2
+            if flux2:
+                guide_scale = 1.0
             if self.guidance_max_phases < 1: guide_scale = 1
             if n_prompt is None or len(n_prompt) == 0: n_prompt = "low quality, ugly, unfinished, out of focus, deformed, disfigure, blurry, smudged, restricted palette, flat colors"
-            device="cuda"
             flux_dev_uso = self.name in ['flux-dev-uso']
             flux_dev_umo = self.name in ['flux-dev-umo']
             radiance = self.name in ['flux-chroma-radiance']
             flux_kontext_dreamomni2 = self.name in ['flux-dev-kontext-dreamomni2']
-            latent_stiching = flux_dev_uso or  flux_dev_umo or flux_kontext_dreamomni2
-            lock_dimensions=  False
 
-            input_ref_images = [] if input_ref_images is None else input_ref_images[:]
-            if flux_dev_umo:
-                ref_long_side = 512 if len(input_ref_images) <= 1 else 320
-                input_ref_images = [preprocess_ref(img, ref_long_side) for img in input_ref_images]
-                lock_dimensions = True
+            if flux2:
+                shape = (batch_size, 128, height // 16, width // 16)
+                generator = torch.Generator(device="cuda").manual_seed(seed)
+                randn = torch.randn(shape, generator=generator, dtype=torch.bfloat16, device="cuda")
+                img, img_ids = batched_prc_img(randn)                
+                ctx = self.mistral([input_prompt]).to(torch.bfloat16)
+                txt_embeds, txt_ids = batched_prc_txt(ctx)
+                txt_embeds, txt_ids = txt_embeds.expand(batch_size, -1, -1), txt_ids.expand(batch_size, -1, -1)
+                vec = torch.zeros(batch_size, 1, device=device, dtype=self.dtype)
+                inp = { "img": img, "img_ids": img_ids, "txt": txt_embeds.to(device), "txt_ids": txt_ids.to(device), "vec": vec }
+                if guide_scale != 1:
+                    ctx = self.mistral([n_prompt]).to(torch.bfloat16)
+                    txt_embeds, txt_ids = batched_prc_txt(ctx)
+                    txt_embeds, txt_ids = txt_embeds.expand(batch_size, -1, -1), txt_ids.expand(batch_size, -1, -1)
+                    inp.update({ "neg_txt": txt_embeds.to(device), "neg_txt_ids": txt_ids.to(device), "neg_vec": vec })
 
-            elif flux_kontext_dreamomni2:
-                for i, img in enumerate(input_ref_images):
-                    input_ref_images[i] = resizeinput(img)
-                input_prompt= self.infer_vlm(input_ref_images,input_prompt, " It is editing task." if "K"  in video_prompt_type else " It is generation task." )
-                input_prompt = input_prompt[6:-7]
-                print(input_prompt)
-                lock_dimensions = True
+                if input_ref_images is not None and len(input_ref_images):
+                    cond_latents, cond_ids = encode_image_refs(self.vae, input_ref_images)
+                    inp.update({"img_cond_seq": cond_latents, "img_cond_seq_ids": cond_ids})
 
-            ref_style_imgs = []
-            if "I" in video_prompt_type and len(input_ref_images) > 0: 
-                if flux_dev_uso :
-                    if "J" in video_prompt_type:
-                        ref_style_imgs = input_ref_images
-                        input_ref_images = []
-                    elif len(input_ref_images) > 1 :
-                        ref_style_imgs = input_ref_images[-1:]
-                        input_ref_images = input_ref_images[:-1]
+                noise_patch_size = 2
+                timesteps = get_schedule_flux2(sampling_steps, inp["img"].shape[1])
+                unpack_latent = lambda x : self.vae.pre_decode(torch.cat(scatter_ids(x, inp["img_ids"])).squeeze(2))
+                ref_style_imgs = []
+                image_mask = None
 
-                if latent_stiching:
-                    # latents stiching with resize 
-                    if not lock_dimensions :
-                        for i in range(len(input_ref_images)):
-                            w, h = input_ref_images[i].size
-                            image_height, image_width = calculate_new_dimensions(int(height*image_refs_relative_size/100), int(width*image_refs_relative_size/100), h, w, 0)
-                            input_ref_images[i] = input_ref_images[i].resize((image_width, image_height), resample=Image.Resampling.LANCZOS) 
+            else:
+                latent_stiching = flux_dev_uso or  flux_dev_umo or flux_kontext_dreamomni2
+                lock_dimensions=  False
+                input_ref_images = [] if input_ref_images is None else input_ref_images[:]
+                if flux_dev_umo:
+                    ref_long_side = 512 if len(input_ref_images) <= 1 else 320
+                    input_ref_images = [preprocess_ref(img, ref_long_side) for img in input_ref_images]
+                    lock_dimensions = True
+
+                elif flux_kontext_dreamomni2:
+                    for i, img in enumerate(input_ref_images):
+                        input_ref_images[i] = resizeinput(img)
+                    input_prompt= self.infer_vlm(input_ref_images,input_prompt, " It is editing task." if "K"  in video_prompt_type else " It is generation task." )
+                    input_prompt = input_prompt[6:-7]
+                    print(input_prompt)
+                    lock_dimensions = True
+
+                ref_style_imgs = []
+                if "I" in video_prompt_type and len(input_ref_images) > 0: 
+                    if flux_dev_uso :
+                        if "J" in video_prompt_type:
+                            ref_style_imgs = input_ref_images
+                            input_ref_images = []
+                        elif len(input_ref_images) > 1 :
+                            ref_style_imgs = input_ref_images[-1:]
+                            input_ref_images = input_ref_images[:-1]
+
+                    if latent_stiching:
+                        # latents stiching with resize 
+                        if not lock_dimensions :
+                            for i in range(len(input_ref_images)):
+                                w, h = input_ref_images[i].size
+                                image_height, image_width = calculate_new_dimensions(int(height*image_refs_relative_size/100), int(width*image_refs_relative_size/100), h, w, 0)
+                                input_ref_images[i] = input_ref_images[i].resize((image_width, image_height), resample=Image.Resampling.LANCZOS) 
+                    else:
+                        # image stiching method
+                        stiched = input_ref_images[0]
+                        for new_img in input_ref_images[1:]:
+                            stiched = stitch_images(stiched, new_img)
+                        input_ref_images  = [stiched]
+                elif input_frames is not None:
+                    input_ref_images = [convert_tensor_to_image(input_frames) ] 
                 else:
-                    # image stiching method
-                    stiched = input_ref_images[0]
-                    for new_img in input_ref_images[1:]:
-                        stiched = stitch_images(stiched, new_img)
-                    input_ref_images  = [stiched]
-            elif input_frames is not None:
-                input_ref_images = [convert_tensor_to_image(input_frames) ] 
-            else:
-                input_ref_images = None
-            image_mask = None if input_masks is None else convert_tensor_to_image(input_masks, mask_levels= True) 
-        
-            noise_patch_size = self.model.patch_size if radiance else 2
-            noise_channels = self.model.out_channels if radiance else 16
+                    input_ref_images = None
+                image_mask = None if input_masks is None else convert_tensor_to_image(input_masks, mask_levels= True) 
 
-            if latent_stiching  :
-                inp, height, width = prepare_multi_ip(
-                    ae=self.vae,
-                    img_cond_list=input_ref_images,
-                    target_width=width,
-                    target_height=height,
-                    bs=batch_size,
-                    seed=seed,
-                    device=device,
-                    res_match_output= flux_dev_uso or flux_dev_umo,
-                    pe = 'w' if flux_kontext_dreamomni2 else 'd',
-                    set_cond_index = flux_kontext_dreamomni2,
-                    conditions_zero_start= flux_kontext_dreamomni2
-                )
-            else:
-                inp, height, width = prepare_kontext(
-                    ae=self.vae,
-                    img_cond_list=input_ref_images,
-                    target_width=width,
-                    target_height=height,
-                    bs=batch_size,
-                    seed=seed,
-                    device=device,
-                    img_mask=image_mask,
-                    patch_size=noise_patch_size,
-                    noise_channels=noise_channels,
-                )
+                noise_patch_size = self.model.patch_size if radiance else 2
+                noise_channels = self.model.out_channels if radiance else 16
 
-            radiance_cache = None
+                if latent_stiching  :
+                    inp, height, width = prepare_multi_ip(
+                        ae=self.vae,
+                        img_cond_list=input_ref_images,
+                        target_width=width,
+                        target_height=height,
+                        bs=batch_size,
+                        seed=seed,
+                        device=device,
+                        res_match_output= flux_dev_uso or flux_dev_umo,
+                        pe = 'w' if flux_kontext_dreamomni2 else 'd',
+                        set_cond_index = flux_kontext_dreamomni2,
+                        conditions_zero_start= flux_kontext_dreamomni2
+                    )
+                else:
+                    inp, height, width = prepare_kontext(
+                        ae=self.vae,
+                        img_cond_list=input_ref_images,
+                        target_width=width,
+                        target_height=height,
+                        bs=batch_size,
+                        seed=seed,
+                        device=device,
+                        img_mask=image_mask,
+                        patch_size=noise_patch_size,
+                        noise_channels=noise_channels,
+                    )
 
-            inp.update(prepare_prompt(self.t5, self.clip, batch_size, input_prompt))
-            if guide_scale != 1:
-                inp.update(prepare_prompt(self.t5, self.clip, batch_size, n_prompt, neg = True, device=device))
+                inp.update(prepare_prompt(self.t5, self.clip, batch_size, input_prompt))
+                if guide_scale != 1:
+                    inp.update(prepare_prompt(self.t5, self.clip, batch_size, n_prompt, neg = True, device=device))
 
-            timesteps = get_schedule(sampling_steps, inp["img"].shape[1], shift=(self.name != "flux-schnell"))
+                timesteps = get_schedule(sampling_steps, inp["img"].shape[1], shift=(self.name != "flux-schnell"))
 
-            ref_style_imgs = [self.vision_encoder_processor(img, return_tensors="pt").to(self.device) for img in ref_style_imgs]
-            if self.feature_embedder is not None and ref_style_imgs is not None and len(ref_style_imgs) > 0 and self.vision_encoder is not None:
-                # processing style feat into textural hidden space
-                siglip_embedding = [self.vision_encoder(**emb, output_hidden_states=True) for emb in ref_style_imgs]
-                siglip_embedding = torch.cat([self.feature_embedder(emb) for emb in siglip_embedding], dim=1)
-                siglip_embedding_ids = torch.zeros( siglip_embedding.shape[0], siglip_embedding.shape[1], 3 ).to(device)
-                inp["siglip_embedding"] = siglip_embedding
-                inp["siglip_embedding_ids"] = siglip_embedding_ids
+                ref_style_imgs = [self.vision_encoder_processor(img, return_tensors="pt").to(self.device) for img in ref_style_imgs]
+                if self.feature_embedder is not None and ref_style_imgs is not None and len(ref_style_imgs) > 0 and self.vision_encoder is not None:
+                    # processing style feat into textural hidden space
+                    siglip_embedding = [self.vision_encoder(**emb, output_hidden_states=True) for emb in ref_style_imgs]
+                    siglip_embedding = torch.cat([self.feature_embedder(emb) for emb in siglip_embedding], dim=1)
+                    siglip_embedding_ids = torch.zeros( siglip_embedding.shape[0], siglip_embedding.shape[1], 3 ).to(device)
+                    inp["siglip_embedding"] = siglip_embedding
+                    inp["siglip_embedding_ids"] = siglip_embedding_ids
 
-            if radiance:
-                def unpack_latent(x):
-                    return patches_to_image(x.float(), height, width, noise_patch_size)
-            else:
-                def unpack_latent(x):
-                    return unpack(x.float(), height, width) 
+                if radiance:
+                    def unpack_latent(x):
+                        return patches_to_image(x.float(), height, width, noise_patch_size)
+                else:
+                    def unpack_latent(x):
+                        return unpack(x.float(), height, width) 
 
             # denoise initial noise
             x = denoise(
@@ -329,7 +385,6 @@ class model_factory:
                 joint_pass=joint_pass,
                 denoising_strength=denoising_strength,
                 masking_strength=masking_strength,
-                radiance_cache=radiance_cache,
             )
             if x==None: return None
             # decode latents to pixel space
@@ -338,7 +393,7 @@ class model_factory:
                 with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     x = self.vae.decode(x)
 
-            if image_mask is not None and masking_strength == 1:
+            if image_mask is not None and masking_strength == 1 and not flux2:
                 img_msk_rebuilt = inp["img_msk_rebuilt"]
                 img= input_frames.squeeze(1).unsqueeze(0) # convert_image_to_tensor(image_guide) 
                 x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt 

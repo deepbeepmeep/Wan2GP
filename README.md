@@ -37,7 +37,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 ## 🔥 Latest Updates : 
 
-### November 27 2025: WanGP v9.7, Flux Strikes Back
+### November 27 2025: WanGP v9.71, Flux Strikes Back
 
 **Flux 2**, the best ever open source *Image Generator* has just landed. It does everything very well: generate an *Image* based a *Text Prompt* or combine up to 10 *Images References* 
 
@@ -46,6 +46,8 @@ The only snag is that it is a 60B parameters for the *Transformer* part and 40B 
 Behold the *WanGP Miracle* ! Flux 2 wil work with only 10 GB of VRAM (maybe less!) if you are happy with 8 bits quantization (no need for 4bits). With 12GB of VRAM you can run the model at full power. You will need at least 64 GB of RAM. If not maybe *Memory Profile 5* will be your friend.
 
 I have added a new Memory Profile *Profile 4+* that is sligthly slower than *Profile 4* but can save you up to 1GB of VRAM.
+
+*update 9.71* : added missing source file, have fun !
 
 ### November 24 2025: WanGP v9.62, The Return of the King
 

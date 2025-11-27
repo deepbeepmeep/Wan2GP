@@ -81,8 +81,8 @@ from collections import defaultdict
 global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.6.8"
-WanGP_version = "9.62"
+target_mmgp_version = "3.6.9"
+WanGP_version = "9.7"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1828,6 +1828,13 @@ def _parse_args():
     )
 
     parser.add_argument(
+        "--lora-dir-flux2",
+        type=str,
+        default="loras_flux2", 
+        help="Path to a directory that contains flux2 images Loras"
+    )
+
+    parser.add_argument(
         "--lora-dir-qwen",
         type=str,
         default="loras_qwen", 
@@ -2085,6 +2092,9 @@ def get_lora_dir(model_type):
     elif model_family == "ltxv":
             return args.lora_dir_ltxv
     elif model_family == "flux":
+        if base_model_type in ["flux2_dev"]:
+            return args.lora_dir_flux2
+        else: 
             return args.lora_dir_flux
     elif model_family =="hunyuan":
         if i2v:
@@ -2123,7 +2133,7 @@ lock_ui_attention = False
 lock_ui_transformer = False
 lock_ui_compile = False
 
-force_profile_no = int(args.profile)
+force_profile_no = float(args.profile)
 verbose_level = int(args.verbose)
 check_loras = args.check_loras ==1
 
@@ -3173,6 +3183,10 @@ def init_pipe(pipe, kwargs, override_profile):
     if "transformer2" in pipe:
         if profile in [3,4]:
             kwargs["pinnedMemory"] = ["transformer", "transformer2"]
+    
+    if profile == 4.5:
+        profile = 4
+        kwargs["asyncTransfers"] = False
 
     return profile
 
@@ -8145,6 +8159,7 @@ memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: at least 64 GB of RAM
                             ("Profile 2, HighRAM_LowVRAM: at least 64 GB of RAM and 12 GB of VRAM, the most versatile profile with high RAM, better suited for RTX 3070/3080/4070/4080 or for RTX 3090 / RTX 4090 with large pictures batches or long videos", 2),
                             ("Profile 3, LowRAM_HighVRAM: at least 32 GB of RAM and 24 GB of VRAM, adapted for RTX 3090 / RTX 4090 with limited RAM for good speed short video",3),
                             ("Profile 4, LowRAM_LowVRAM (Recommended): at least 32 GB of RAM and 12 GB of VRAM, if you have little VRAM or want to generate longer videos",4),
+                            ("Profile 4+, LowRAM_LowVRAM+: at least 32 GB of RAM and 12 GB of VRAM, variant of Profile 4, slightly slower but needs less VRAM",4.5),
                             ("Profile 5, VerylowRAM_LowVRAM (Fail safe): at least 24 GB of RAM and 10 GB of VRAM, if you don't have much it won't be fast but maybe it will work",5)]
 
 def detect_auto_save_form(state, evt:gr.SelectData):
@@ -8815,7 +8830,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 choices=[
                                     ("Generate every combination of images and texts", 0),
                                     ("Match images and text prompts", 1),
-                                ], visible= test_class_i2v(model_type), label= "Multiple Images as Texts Prompts"
+                                ], visible= test_class_i2v(model_type) or ltxv, label= "Multiple Images as Texts Prompts"
                             )
 
                         with gr.Row():

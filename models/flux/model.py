@@ -7,8 +7,10 @@ import torch.nn.functional as F
 from .modules.layers import (
     DoubleStreamBlock,
     EmbedND,
+    EmbedNDFlux2,
     LastLayer,
     MLPEmbedder,
+    Modulation,
     SingleStreamBlock,
     timestep_embedding,
     DistilledGuidance,
@@ -44,6 +46,11 @@ class FluxParams:
     radiance_max_freqs: int = 8
     radiance_tile_size: int = 0
     radiance_final_head_type: str = "conv"
+    single_linear1_mlp_ratio: float | None = None
+    single_mlp_hidden_ratio: float | None = None
+    double_mlp_ratio: float | None = None
+    double_linear1_mlp_ratio: float | None = None
+    flux2: bool = False
 
 class Flux(nn.Module):
     """
@@ -83,6 +90,7 @@ class Flux(nn.Module):
         self.in_channels = params.in_channels
         self.out_channels = params.out_channels
         self.chroma = params.chroma
+        self.is_flux2 = getattr(params, "flux2", False)
         self.radiance = getattr(params, "radiance", False)
         if params.hidden_size % params.num_heads != 0:
             raise ValueError(
@@ -93,17 +101,28 @@ class Flux(nn.Module):
             raise ValueError(f"Got {params.axes_dim} but expected positional dim {pe_dim}")
         self.hidden_size = params.hidden_size
         self.num_heads = params.num_heads
-        self.pe_embedder = EmbedND(dim=pe_dim, theta=params.theta, axes_dim=params.axes_dim)
+
+        if self.is_flux2:
+            self.pe_embedder = EmbedNDFlux2(dim=pe_dim, theta=params.theta, axes_dim=params.axes_dim)
+        else:
+            self.pe_embedder = EmbedND(dim=pe_dim, theta=params.theta, axes_dim=params.axes_dim)
+
         self.img_in = (
             nn.Identity()
             if self.radiance
-            else nn.Linear(self.in_channels, self.hidden_size, bias=True)
+            else nn.Linear(self.in_channels, self.hidden_size, bias=not self.is_flux2)
         )
 
         self.guidance_in = (
-            MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size) if params.guidance_embed else nn.Identity()
+            MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size, bias=not self.is_flux2)
+            if params.guidance_embed
+            else None
         )
-        self.txt_in = nn.Linear(params.context_in_dim, self.hidden_size)
+        self.txt_in = nn.Linear(params.context_in_dim, self.hidden_size, bias=not self.is_flux2)
+        if self.is_flux2:
+            self.double_stream_modulation_img = Modulation(self.hidden_size, double=True, bias=False)
+            self.double_stream_modulation_txt = Modulation(self.hidden_size, double=True, bias=False)
+            self.single_stream_modulation = Modulation(self.hidden_size, double=False, bias=False)
         if self.chroma:
             self.distilled_guidance_layer = DistilledGuidance(
                         in_dim=64,
@@ -112,8 +131,8 @@ class Flux(nn.Module):
                         n_layers=5,
                 )
         else:
-            self.time_in = MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size)
-            self.vector_in = MLPEmbedder(params.vec_in_dim, self.hidden_size)
+            self.time_in = MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size, bias=not self.is_flux2)
+            self.vector_in = MLPEmbedder(params.vec_in_dim, self.hidden_size, bias=not self.is_flux2) if not self.is_flux2 else nn.Identity()
 
         self.double_blocks = nn.ModuleList(
             [
@@ -121,8 +140,13 @@ class Flux(nn.Module):
                     self.hidden_size,
                     self.num_heads,
                     mlp_ratio=params.mlp_ratio,
+                    double_mlp_ratio=getattr(params, "double_mlp_ratio", None),
+                    double_linear1_mlp_ratio=getattr(params, "double_linear1_mlp_ratio", None),
+                    mod_bias=not self.is_flux2,
+                    mlp_bias=not self.is_flux2,
+                    proj_bias=not self.is_flux2,
                     qkv_bias=params.qkv_bias,
-                    chroma_modulation = self.chroma,
+                    shared_modulation = self.chroma or self.is_flux2,
                 )
                 for _ in range(params.depth)
             ]
@@ -130,7 +154,17 @@ class Flux(nn.Module):
 
         self.single_blocks = nn.ModuleList(
             [
-                SingleStreamBlock(self.hidden_size, self.num_heads, mlp_ratio=params.mlp_ratio, chroma_modulation = self.chroma)
+                SingleStreamBlock(
+                    self.hidden_size,
+                    self.num_heads,
+                    mlp_ratio=params.mlp_ratio,
+                    shared_modulation=self.chroma or self.is_flux2,
+                    single_linear1_mlp_ratio=getattr(params, "single_linear1_mlp_ratio", None),
+                    single_mlp_hidden_ratio=getattr(params, "single_mlp_hidden_ratio", None),
+                    qk_scale=None,
+                    linear_bias=not self.is_flux2,
+                    modulation_bias=not self.is_flux2,
+                )
                 for _ in range(params.depth_single_blocks)
             ]
         )
@@ -145,6 +179,8 @@ class Flux(nn.Module):
                 self.out_channels,
                 chroma_modulation=self.chroma,
                 use_linear=True,
+                linear_bias=not self.is_flux2,
+                modulation_bias=not self.is_flux2,
             )
 
     def _apply_final_layer(self, tokens: Tensor, vec):
@@ -263,7 +299,6 @@ class Flux(nn.Module):
         pipeline =None,
         siglip_embedding = None,
         siglip_embedding_ids = None,
-        radiance_cache: dict | None = None,
     ) -> Tensor:
 
         sz = len(txt_list)
@@ -303,11 +338,12 @@ class Flux(nn.Module):
             mod_vectors = self.distilled_guidance_layer(input_vec)
         else:
             vec = self.time_in(timestep_embedding(timesteps, 256))
-            if self.params.guidance_embed:
+            if self.params.guidance_embed and self.guidance_in is not None:
                 if guidance is None:
                     raise ValueError("Didn't get guidance strength for guidance distilled model.")
                 vec +=  self.guidance_in(timestep_embedding(guidance, 256))
-            vec_list = [ vec + self.vector_in(y) for y in y_list]
+            base_vec_list = [vec + self.vector_in(y) for y in y_list]
+            vec_list = base_vec_list
 
         img = None
         txt_list = [self.txt_in(txt) for txt in txt_list ]
@@ -317,8 +353,14 @@ class Flux(nn.Module):
 
         pe_list = [self.pe_embedder(torch.cat((txt_ids, img_ids), dim=1)) for txt_ids in txt_ids_list] 
 
+        if self.is_flux2:
+            double_vec_list = [ ( self.double_stream_modulation_img(base_vec_list[i]), self.double_stream_modulation_txt(base_vec_list[i]), ) for i in range(sz) ]
+
         for i, block in enumerate(self.double_blocks):
-            if self.chroma: vec_list = [( self.get_modulations(mod_vectors, "double_img", idx=i), self.get_modulations(mod_vectors, "double_txt", idx=i))] * sz
+            if self.chroma:
+                vec_list = [( self.get_modulations(mod_vectors, "double_img", idx=i), self.get_modulations(mod_vectors, "double_txt", idx=i))] * sz
+            elif self.is_flux2:
+                vec_list = double_vec_list
             if callback != None:
                 callback(-1, None, False, True)
             if pipeline._interrupt:
@@ -329,8 +371,15 @@ class Flux(nn.Module):
 
         img_list = [torch.cat((txt, img), 1) for txt, img in zip(txt_list, img_list)]
 
+        if self.is_flux2:
+            single_vec_list = [self.single_stream_modulation(base_vec_list[i])[0] for i in range(sz)]
+
         for i, block in enumerate(self.single_blocks):
-            if self.chroma: vec_list= [self.get_modulations(mod_vectors, "single", idx=i)] * sz
+            if self.chroma:
+                vec_list= [self.get_modulations(mod_vectors, "single", idx=i)] * sz
+            elif self.is_flux2:
+                vec_list = single_vec_list
+                
             if callback != None:
                 callback(-1, None, False, True)
             if pipeline._interrupt:
@@ -345,7 +394,7 @@ class Flux(nn.Module):
         elif self.chroma:
             final_vecs = [self.get_modulations(mod_vectors, "final")] * sz
         else:
-            final_vecs = vec_list
+            final_vecs = base_vec_list
         out_list = []
         for i in range(sz):
             hidden_seq = img_list[i]

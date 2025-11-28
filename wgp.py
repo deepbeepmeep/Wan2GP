@@ -45,6 +45,7 @@ from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
 from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, gen_lock
+from shared.loras_migration import migrate_loras_layout
 from huggingface_hub import hf_hub_download, snapshot_download
 from shared.utils import files_locator as fl 
 from shared.gradio.audio_gallery import AudioGallery  
@@ -82,7 +83,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
-WanGP_version = "9.7"
+WanGP_version = "9.72"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1709,6 +1710,20 @@ def update_generation_status(html_content):
     if(html_content):
         return gr.update(value=html_content)
 
+family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.z_image.z_image_handler", "models.chatterbox.chatterbox_handler"]
+
+def register_family_lora_args(parser):
+    registered_families = set()
+    for path in family_handlers:
+        handler = importlib.import_module(path).family_handler
+        family_name = handler.query_model_family()
+        family_key = family_name or path
+        if family_key in registered_families:
+            continue
+        if hasattr(handler, "register_lora_cli_args"):
+            handler.register_lora_cli_args(parser)
+        registered_families.add(family_key)
+
 def _parse_args():
     parser = argparse.ArgumentParser(
         description="Generate a video from a text prompt or image using Gradio")
@@ -1783,70 +1798,7 @@ def _parse_args():
     )
 
 
-    parser.add_argument(
-        "--lora-dir-i2v",
-        type=str,
-        default="",
-        help="Path to a directory that contains Wan i2v Loras "
-    )
-
-
-    parser.add_argument(
-        "--lora-dir",
-        type=str,
-        default="", 
-        help="Path to a directory that contains Wan t2v Loras"
-    )
-
-    parser.add_argument(
-        "--lora-dir-hunyuan",
-        type=str,
-        default="loras_hunyuan", 
-        help="Path to a directory that contains Hunyuan Video t2v Loras"
-    )
-
-    parser.add_argument(
-        "--lora-dir-hunyuan-i2v",
-        type=str,
-        default="loras_hunyuan_i2v", 
-        help="Path to a directory that contains Hunyuan Video i2v Loras"
-    )
-
-
-    parser.add_argument(
-        "--lora-dir-ltxv",
-        type=str,
-        default="loras_ltxv", 
-        help="Path to a directory that contains LTX Videos Loras"
-    )
-
-    parser.add_argument(
-        "--lora-dir-flux",
-        type=str,
-        default="loras_flux", 
-        help="Path to a directory that contains flux images Loras"
-    )
-
-    parser.add_argument(
-        "--lora-dir-flux2",
-        type=str,
-        default="loras_flux2", 
-        help="Path to a directory that contains flux2 images Loras"
-    )
-
-    parser.add_argument(
-        "--lora-dir-qwen",
-        type=str,
-        default="loras_qwen", 
-        help="Path to a directory that contains qwen images Loras"
-    )
-
-    parser.add_argument(
-        "--lora-dir-tts",
-        type=str,
-        default="loras_tts", 
-        help="Path to a directory that contains TTS settings"
-    )
+    register_family_lora_args(parser)
 
     parser.add_argument(
         "--check-loras",
@@ -2065,57 +2017,28 @@ def _parse_args():
     return args
 
 def get_lora_dir(model_type):
-    model_family = get_model_family(model_type)
     base_model_type = get_base_model_type(model_type)
-    i2v = test_class_i2v(model_type) and not  base_model_type in ["i2v_2_2", "i2v_2_2_multitalk"]
-    if model_family == "wan":
-        lora_dir =args.lora_dir
-        if i2v and len(lora_dir)==0:
-            lora_dir =args.lora_dir_i2v
-        if len(lora_dir) > 0:
-            return lora_dir
-        root_lora_dir = "loras_i2v" if i2v else "loras"
-
-        if  "1.3B" in model_type :
-            lora_dir_1_3B = os.path.join(root_lora_dir, "1.3B")
-            if os.path.isdir(lora_dir_1_3B ):
-                return lora_dir_1_3B
-        elif base_model_type in ["ti2v_2_2", "ovi"]:
-            lora_dir_5B = os.path.join(root_lora_dir, "5B")
-            if os.path.isdir(lora_dir_5B ):
-                return lora_dir_5B
-        else:
-            lora_dir_14B = os.path.join(root_lora_dir, "14B")
-            if os.path.isdir(lora_dir_14B ):
-                return lora_dir_14B
-        return root_lora_dir    
-    elif model_family == "ltxv":
-            return args.lora_dir_ltxv
-    elif model_family == "flux":
-        if base_model_type in ["flux2_dev"]:
-            return args.lora_dir_flux2
-        else: 
-            return args.lora_dir_flux
-    elif model_family =="hunyuan":
-        if i2v:
-            return args.lora_dir_hunyuan_i2v
-        else:
-            root_lora_dir=args.lora_dir_hunyuan
-            if "1_5" in base_model_type:
-                lora_dir_1_5 = os.path.join(root_lora_dir, "1.5")
-                if os.path.isdir(lora_dir_1_5 ):
-                    return lora_dir_1_5
-            return root_lora_dir
-    elif model_family =="qwen":
-            return args.lora_dir_qwen
-    elif model_family =="tts":
-            return args.lora_dir_tts
-    else:
+    if base_model_type is None:
         raise Exception("loras unknown")
+
+    handler = get_model_handler(model_type)
+    get_dir = getattr(handler, "get_lora_dir", None)
+    if get_dir is None:
+        raise Exception("loras unknown")
+
+    lora_dir = get_dir(base_model_type, args)
+    if lora_dir is None:
+        raise Exception("loras unknown")
+    if os.path.isfile(lora_dir):
+        raise Exception(f"loras path '{lora_dir}' exists and is not a directory")
+    if not os.path.isdir(lora_dir):
+        os.makedirs(lora_dir, exist_ok=True)
+    return lora_dir
 
 attention_modes_installed = get_attention_modes()
 attention_modes_supported = get_supported_attention_modes()
 args = _parse_args()
+migrate_loras_layout()
 
 gpu_major, gpu_minor = torch.cuda.get_device_capability(args.gpu if len(args.gpu) > 0 else None)
 if  gpu_major < 8:
@@ -2217,7 +2140,6 @@ for f, s in [(fl.locate_file("Florence2/modeling_florence2.py", error_if_none= F
     except: pass
 
 models_def = {}
-family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.chatterbox.chatterbox_handler"]
 
 
 # only needed for imported old settings files
@@ -2849,7 +2771,7 @@ def save_quantized_model(model, model_type, model_filename, dtype,  config_file,
             break
     if not "quanto" in model_filename:
         pos = model_filename.rfind(".")
-        model_filename =  model_filename[:pos] + "_quanto_int8" + model_filename[pos+1:] 
+        model_filename =  model_filename[:pos] + "_quanto_int8" + model_filename[pos:] 
 
     model_filename = os.path.basename(model_filename)
     if fl.locate_file(model_filename, error_if_none= False) is not None:
@@ -3185,10 +3107,12 @@ def init_pipe(pipe, kwargs, override_profile):
             kwargs["pinnedMemory"] = ["transformer", "transformer2"]
     
     if profile == 4.5:
-        profile = 4
+        mmgp_profile = 4
         kwargs["asyncTransfers"] = False
+    else:
+        mmgp_profile = profile
 
-    return profile
+    return profile,  mmgp_profile
 
 def reset_prompt_enhancer():
     global prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer, enhancer_offloadobj
@@ -3328,7 +3252,7 @@ def load_models(model_type, override_profile = -1, **model_kwargs):
         pipe = kwargs.pop("pipe")
     if "coTenantsMap" not in kwargs: kwargs["coTenantsMap"] = {}
 
-    profile = init_pipe(pipe, kwargs, override_profile)
+    profile, mmgp_profile = init_pipe(pipe, kwargs, override_profile)
     if server_config.get("enhancer_mode", 0) == 0:
         setup_prompt_enhancer(pipe, kwargs)
     loras_transformer = []
@@ -3339,7 +3263,7 @@ def load_models(model_type, override_profile = -1, **model_kwargs):
     if len(compile) > 0 and hasattr(wan_model, "custom_compile"):
         wan_model.custom_compile(backend= "inductor", mode ="default")
     compile_modules = model_def.get("compile", compile) if len(compile) > 0 else ""
-    offloadobj = offload.profile(pipe, profile_no= profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)  
+    offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)  
     if len(args.gpu) > 0:
         torch.set_default_device(args.gpu)
     transformer_type = model_type

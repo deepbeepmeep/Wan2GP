@@ -25,6 +25,12 @@ class family_handler:
         return {}
 
     @staticmethod
+    def register_lora_cli_args(parser):
+        from .wan_handler import family_handler as wan_family_handler
+
+        return wan_family_handler.register_lora_cli_args(parser)
+
+    @staticmethod
     def get_wan_text_encoder_filename(text_encoder_quantization):
         text_encoder_filename =  "umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors"
         if text_encoder_quantization =="int8":
@@ -75,6 +81,12 @@ class family_handler:
         }]
 
         return download_def
+
+    @staticmethod
+    def get_lora_dir(base_model_type, args):
+        from .wan_handler import family_handler as wan_family_handler
+
+        return wan_family_handler.get_lora_dir(base_model_type, args)
 
     @staticmethod
     def load_model(

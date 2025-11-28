@@ -37,7 +37,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 ## 🔥 Latest Updates : 
 
-### November 28 2025: WanGP v9.71, The Alpha & the Omega
+### November 28 2025: WanGP v9.72, The Alpha & the Omega
 
 - **Flux 2**: the best ever open source *Image Generator* has just landed. It does everything very well: generate an *Image* based a *Text Prompt* or combine up to 10 *Images References* 
 

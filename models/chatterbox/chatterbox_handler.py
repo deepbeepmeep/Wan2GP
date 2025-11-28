@@ -1,3 +1,4 @@
+import os
 from shared.utils import files_locator as fl
 import gradio as gr
 try:
@@ -51,6 +52,19 @@ class family_handler:
     def query_family_infos():
         # The numeric weight controls ordering in the family dropdown.
         return {"tts": (70, "TTS")}
+
+    @staticmethod
+    def register_lora_cli_args(parser):
+        parser.add_argument(
+            "--lora-dir-tts",
+            type=str,
+            default=os.path.join("loras", "tts"),
+            help="Path to a directory that contains TTS settings"
+        )
+
+    @staticmethod
+    def get_lora_dir(base_model_type, args):
+        return args.lora_dir_tts
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

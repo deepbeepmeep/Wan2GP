@@ -1,3 +1,4 @@
+import os
 import torch
 from PIL import Image
 from shared.utils import files_locator as fl 
@@ -157,6 +158,27 @@ class family_handler():
     @staticmethod
     def query_family_infos():
         return {"flux":(30, "Flux 1"), "flux2":(31, "Flux 2")}
+
+    @staticmethod
+    def register_lora_cli_args(parser):
+        parser.add_argument(
+            "--lora-dir-flux",
+            type=str,
+            default=os.path.join("loras", "flux"),
+            help="Path to a directory that contains flux images Loras"
+        )
+        parser.add_argument(
+            "--lora-dir-flux2",
+            type=str,
+            default=os.path.join("loras", "flux2"),
+            help="Path to a directory that contains flux2 images Loras"
+        )
+
+    @staticmethod
+    def get_lora_dir(base_model_type, args):
+        if test_flux2(base_model_type):
+            return args.lora_dir_flux2
+        return args.lora_dir_flux
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):

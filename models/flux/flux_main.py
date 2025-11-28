@@ -264,6 +264,7 @@ class model_factory:
 
                 if input_ref_images is not None and len(input_ref_images):
                     cond_latents, cond_ids = encode_image_refs(self.vae, input_ref_images)
+                    cond_latents, cond_ids = cond_latents.expand(batch_size, -1, -1), cond_ids.expand(batch_size, -1, -1)
                     inp.update({"img_cond_seq": cond_latents, "img_cond_seq_ids": cond_ids})
 
                 noise_patch_size = 2

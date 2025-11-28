@@ -1,3 +1,4 @@
+import os
 import torch
 import gradio as gr
 from shared.utils import files_locator as fl 
@@ -72,6 +73,19 @@ class family_handler():
     @staticmethod
     def query_family_infos():
         return {"qwen":(40, "Qwen")}
+
+    @staticmethod
+    def register_lora_cli_args(parser):
+        parser.add_argument(
+            "--lora-dir-qwen",
+            type=str,
+            default=os.path.join("loras", "qwen"),
+            help="Path to a directory that contains qwen images Loras"
+        )
+
+    @staticmethod
+    def get_lora_dir(base_model_type, args):
+        return args.lora_dir_qwen
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):

@@ -4821,9 +4821,9 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, overri
     acquire_GPU_ressources(state, "prompt_enhancer", "Prompt Enhancer")
 
     if enhancer_offloadobj is None:
-        profile = init_pipe(pipe, kwargs, override_profile)
+        profile, _ = init_pipe(pipe, kwargs, override_profile)
         setup_prompt_enhancer(pipe, kwargs)
-        enhancer_offloadobj = offload.profile(pipe, profile_no= profile, **kwargs)  
+        enhancer_offloadobj = offload.profile(pipe, profile_no= int(profile), **kwargs)  
 
     original_image_refs = inputs["image_refs"]
     if original_image_refs is not None:

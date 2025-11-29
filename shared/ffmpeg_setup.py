@@ -63,6 +63,10 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
     def _libs_present() -> bool:
         if os.name == "nt":
             return True
+        ffmpeg_path = _resolve_path("ffmpeg")
+        if ffmpeg_path and ffmpeg_path.parent != bin_dir:
+            # System-installed FFmpeg should already have its shared libs available.
+            return True
         return any(bin_dir.glob("libavdevice.so*"))
 
     def _set_env_vars():

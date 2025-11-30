@@ -168,6 +168,18 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.w2(self._forward_silu_gating(self.w1(x), self.w3(x)))
 
+    def forward_into(self, x, out):
+        assert out.shape == x.shape
+        x1 = self.w1(x)                 # (..., hidden_dim)
+        x3 = self.w3(x)                 # (..., hidden_dim)
+        F.silu(x1, inplace=True)        # x1 = silu(x1)
+        x1.mul_(x3)                     # x1 = x1 * x3
+        torch.matmul(
+            x1.view(-1, self.hidden_dim),
+            self.w2.weight.t(),
+            out=out.view(-1, self.dim),
+        )
+        return out
 
 @maybe_allow_in_graph
 class ZImageTransformerBlock(nn.Module):
@@ -198,8 +210,8 @@ class ZImageTransformerBlock(nn.Module):
             out_bias=False,
             processor=ZSingleStreamAttnProcessor(),
         )
-
-        self.feed_forward = FeedForward(dim=dim, hidden_dim=int(dim / 3 * 8))
+        self.ffn_mult =  8 / 3  
+        self.feed_forward = FeedForward(dim=dim, hidden_dim=int(dim * self.ffn_mult))
         self.layer_id = layer_id
 
         self.attention_norm1 = RMSNorm(dim, eps=norm_eps)
@@ -220,9 +232,10 @@ class ZImageTransformerBlock(nn.Module):
         if scale is not None:
             ffn_in.mul_(scale)
         ffn_in = ffn_in.reshape(-1, dim)
-        chunk_size = max(int(seq_len // 6), 1)
+        chunk_size = max(int(seq_len // self.ffn_mult), 1)
         for ffn_chunk in torch.split(ffn_in, chunk_size):
-            ffn_chunk.copy_(self.feed_forward(ffn_chunk))
+            ffn_chunk[...]= self.feed_forward(ffn_chunk)
+
         return self.ffn_norm2(ffn_in.view(batch, seq_len, dim))
 
     def forward(

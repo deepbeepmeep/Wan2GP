@@ -244,8 +244,8 @@ class model_factory():
         if image is None: return None
         return image.transpose(0, 1)
 
-    def get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, **kwargs):
-        if model_mode == 0: return [], []
+    def get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, image_mode, **kwargs):
+        if image_mode !=2 or model_mode != 1: return [], []
         preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
         if len(preloadURLs) == 0: return [], []
         return [ fl.locate_file(os.path.basename(preloadURLs[0]))] , [1]

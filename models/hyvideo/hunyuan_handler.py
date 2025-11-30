@@ -1,3 +1,4 @@
+import os
 import torch
 from shared.utils import files_locator as fl 
 
@@ -149,6 +150,34 @@ class family_handler():
     @staticmethod
     def query_family_infos():
         return {"hunyuan":(20, "Hunyuan Video"), "hunyuan_1_5":(21, "Hunyuan Video 1.5")}
+
+    @staticmethod
+    def register_lora_cli_args(parser):
+        parser.add_argument(
+            "--lora-dir-hunyuan",
+            type=str,
+            default=os.path.join("loras", "hunyuan"),
+            help="Path to a directory that contains Hunyuan Video t2v Loras"
+        )
+        parser.add_argument(
+            "--lora-dir-hunyuan-i2v",
+            type=str,
+            default=os.path.join("loras", "hunyuan_i2v"),
+            help="Path to a directory that contains Hunyuan Video i2v Loras"
+        )
+
+    @staticmethod
+    def get_lora_dir(base_model_type, args):
+        i2v = "i2v" in base_model_type
+        if i2v:
+            return args.lora_dir_hunyuan_i2v
+
+        root_lora_dir = args.lora_dir_hunyuan
+        if "1_5" in base_model_type:
+            lora_dir_1_5 = os.path.join(root_lora_dir, "1.5")
+            if os.path.isdir(lora_dir_1_5):
+                return lora_dir_1_5
+        return root_lora_dir
 
     @staticmethod
     def get_rgb_factors(base_model_type ):

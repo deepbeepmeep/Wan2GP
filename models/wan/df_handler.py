@@ -68,6 +68,18 @@ class family_handler():
         return {}
 
     @staticmethod
+    def register_lora_cli_args(parser):
+        from .wan_handler import family_handler as wan_family_handler
+
+        return wan_family_handler.register_lora_cli_args(parser)
+
+    @staticmethod
+    def get_lora_dir(base_model_type, args):
+        from .wan_handler import family_handler as wan_family_handler
+
+        return wan_family_handler.get_lora_dir(base_model_type, args)
+
+    @staticmethod
     def get_rgb_factors(base_model_type ):
         from shared.RGB_factors import get_rgb_factors
         latent_rgb_factors, latent_rgb_factors_bias = get_rgb_factors("wan", base_model_type)

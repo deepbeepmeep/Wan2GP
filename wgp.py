@@ -4521,7 +4521,7 @@ def get_available_filename(target_path, video_source, suffix = "", force_extensi
 
 def set_seed(seed):
     import random
-    seed = random.randint(0, 99999999) if seed == None or seed < 0 else seed
+    seed = random.randint(0, 999999999) if seed == None or seed < 0 else seed
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)

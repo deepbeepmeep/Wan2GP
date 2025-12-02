@@ -1,0 +1,12 @@
+{
+    "model": {
+        "name": "Wan2.1 Steady Dancer 14B",
+        "architecture": "steadydancer",
+        "description": "Steady Dancer is a strong animation framework based on Image-to-Video paradigm, ensuring robust first-frame preservation. For a faster processing you may set Condition Guidance to 1.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_steadydancer_14B_mbf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_steadydancer_14B_quanto_mbf16_int8.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_steadydancer_14B_quanto_mbf16_int8.safetensors"
+        ]
+    }
+}

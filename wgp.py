@@ -5357,6 +5357,7 @@ def generate_video(
         context_scale = None
         window_no = 0
         extra_windows = 0
+        abort_scheduled = False
         guide_start_frame = 0 # pos of of first control video frame of current window  (reuse_frames later than the first processed frame)
         keep_frames_parsed = [] # aligned to the first control frame of current window (therefore ignore previous reuse_frames)
         pre_video_guide = None # reuse_frames of previous window
@@ -5601,6 +5602,10 @@ def generate_video(
                 if src_video is None or window_no >1 and src_video.shape[1] <= sliding_window_overlap and not dont_cat_preguide:
                     abort = True 
                     break
+                if model_def.get("control_video_trim", False) and src_video is not None:
+                    if src_video.shape[1] < current_video_length:
+                        current_video_length = src_video.shape[1]
+                        abort_scheduled = True 
                 if src_faces is not None:
                     if src_faces.shape[1] < src_video.shape[1]:
                         src_faces = torch.concat( [src_faces,  src_faces[:, -1:].repeat(1, src_video.shape[1] - src_faces.shape[1], 1,1)], dim =1)
@@ -5823,7 +5828,7 @@ def generate_video(
                 send_cmd("output")  
             else:
                 sample = samples.cpu()
-                abort = not (is_image or audio_only) and sample.shape[1] < current_video_length    
+                abort = abort_scheduled or not (is_image or audio_only) and sample.shape[1] < current_video_length    
                 # if True: # for testing
                 #     torch.save(sample, "output.pt")
                 # else:

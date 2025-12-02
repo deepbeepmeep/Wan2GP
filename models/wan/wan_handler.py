@@ -318,6 +318,7 @@ class family_handler():
             extra_model_def["alt_guidance"] = "Condition Guidance"
             extra_model_def["no_guide2_refresh"] = True
             extra_model_def["no_mask_refresh"] = True
+            extra_model_def["control_video_trim"] = True
             
 
         if base_model_type in ["infinitetalk"]: 

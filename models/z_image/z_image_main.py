@@ -16,22 +16,55 @@ from .transformer_z_image import ZImageTransformer2DModel
 logger = logging.get_logger(__name__)
 
 
-def _first_existing(paths):
-    for path in paths:
-        if path is not None and os.path.isfile(path):
-            return path
-    return None
+def conv_state_dict(sd: dict) -> dict:
+    if "x_embedder.weight" not in sd and "model.diffusion_model.x_embedder.weight" not in sd:
+        return sd
 
+    inverse_replace = {
+        "final_layer.": "all_final_layer.2-1.",
+        "x_embedder.": "all_x_embedder.2-1.",
+        ".attention.out.bias": ".attention.to_out.0.bias",
+        ".attention.k_norm.weight": ".attention.norm_k.weight",
+        ".attention.q_norm.weight": ".attention.norm_q.weight",
+        ".attention.out.weight": ".attention.to_out.0.weight",
+    }
 
-def _load_json_config(path, component):
-    if path is None:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as exc:
-        logger.warning(f"Could not load {component} config from {path}: {exc}")
-        return None
+    out_sd: dict[str, torch.Tensor] = {}
+
+    for key, tensor in sd.items():
+        key = key.replace("model.diffusion_model.", "")
+        
+        if key.endswith(".attention.qkv.weight"):
+            base = key[: -len(".attention.qkv.weight")]
+
+            total_dim = tensor.shape[0]
+            if total_dim % 3 != 0:
+                raise ValueError(
+                    f"{key}: qkv first dimension ({total_dim}) not divisible by 3"
+                )
+            d = total_dim // 3
+            q, k_w, v = torch.split(tensor, d, dim=0)
+
+            out_sd[base + ".attention.to_q.weight"] = q
+            out_sd[base + ".attention.to_k.weight"] = k_w
+            out_sd[base + ".attention.to_v.weight"] = v
+            continue
+
+        new_key = key
+        for comfy_sub, orig_sub in inverse_replace.items():
+            new_key = new_key.replace(comfy_sub, orig_sub)
+        out_sd[new_key] = tensor
+
+    to_add = {}
+    for key, tensor in out_sd.items():
+        if key.endswith(".attention.to_out.0.weight"):
+            prefix = key[: -len(".attention.to_out.0.weight")]
+            bias_key = prefix + ".attention.to_out.0.bias"
+            if bias_key not in out_sd:
+                to_add[bias_key] = torch.zeros(tensor.shape[0], dtype=tensor.dtype)
+
+    out_sd.update(to_add)
+    return out_sd
 
 
 class model_factory:
@@ -59,7 +92,9 @@ class model_factory:
         # Transformer
         default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json") 
 
-        transformer = offload.fast_load_transformers_model(transformer_filename, writable_tensors= False, modelClass=ZImageTransformer2DModel, defaultConfigPath= default_transformer_config)
+        preprocess_sd = conv_state_dict
+
+        transformer = offload.fast_load_transformers_model(transformer_filename, writable_tensors= False, modelClass=ZImageTransformer2DModel, defaultConfigPath= default_transformer_config, preprocess_sd=preprocess_sd)
         transformer.to(dtype)
         if save_quantized:
             from wgp import save_quantized_model

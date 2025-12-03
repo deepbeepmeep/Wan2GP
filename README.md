@@ -37,7 +37,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 ## 🔥 Latest Updates : 
 
-### November 28 2025: WanGP v9.72, The Alpha & the Omega
+### December 2 2025: WanGP v9.72, The Alpha & the Omega ... and the Dancer
 
 - **Flux 2**: the best ever open source *Image Generator* has just landed. It does everything very well: generate an *Image* based a *Text Prompt* or combine up to 10 *Images References* 
 
@@ -47,12 +47,15 @@ Behold the WanGP Miracle ! Flux 2 wil work with only 8 GB of VRAM if you are hap
 
 - **Z-Image**: a small model, very fast (8 steps), very low VRAM (optimized even more in WanGP for fun, just in case you want to generate 16 images at a time) that produces outstanding Image quality. Not yet the Flux 2 level, and no Image editing yet but a very good trade-off.
 
+- **Steady Dancer**: here is *Wan Steady Dancer* a very nice alternative to *Wan Animate*. You can transfer the motion of a Control video in a very smooth way. It will work best with Videos where the action happens center stage (hint: *dancing*). Use the *Lora accelerator* *Fusionix i2v 10 steps* for a fast generation. For higher quality you can set *Condition Guidance* to 2 or if you are very patient keep *Guidance* to a value greater than 1.   
+
 I have added a new Memory Profile *Profile 4+* that is sligthly slower than *Profile 4* but can save you up to 1GB of VRAM with Flux 2.
 
 Also as we have now quite few models and Loras folders. *I have moved all the loras folder in the 'loras' folder*. There are also now unique subfolders for *Wan 5B* and *Wan 1.3B* models. A conversion script should have moved the loras in the right locations, but I advise that you check just in case.
 
 *update 9.71* : added missing source file, have fun !
 *update 9.72* : added Z-Image & Loras reorg
+*update 9.73* : added Steady Dancer
 
 ### November 24 2025: WanGP v9.62, The Return of the King
 

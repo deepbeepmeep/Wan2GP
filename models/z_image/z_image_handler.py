@@ -20,11 +20,26 @@ class family_handler:
             "profiles_dir": [],
             "no_negative_prompt": True,
         }
+
+        if base_model_type == "z_image_control":
+            extra_model_def["mask_preprocessing"] = {
+                "selection":[ ""],
+                "visible": False
+            }
+
+            extra_model_def["control_net_weight_name"] = "Control"
+            extra_model_def["control_net_weight_size"] = 1
+
+            extra_model_def["guide_preprocessing"] = {
+                "selection": ["", "PV", "DV", "EV", "V"],
+                "labels" : { "V": "Use Z-Image Raw Format"},
+            }
+
         return extra_model_def
 
     @staticmethod
     def query_supported_types():
-        return ["z_image"]
+        return ["z_image", "z_image_control"]
 
     @staticmethod
     def query_family_maps():
@@ -36,7 +51,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"z_image": (50, "Z-Image")}
+        return {"z_image": (50, "Z-Image"), "z_image_control": (51, "Z-Image ControlNet")}
 
     @staticmethod
     def register_lora_cli_args(parser):
@@ -88,6 +103,9 @@ class family_handler:
             override_text_encoder if override_text_encoder is not None else get_z_image_text_encoder_filename(text_encoder_quantization)
         )
 
+        # Detect if this is the control variant
+        is_control = base_model_type == "z_image_control"
+
         pipe_processor = model_factory(
             checkpoint_dir="ckpts",
             model_filename=model_filename,
@@ -100,6 +118,7 @@ class family_handler:
             VAE_dtype=VAE_dtype,
             mixed_precision_transformer=mixed_precision_transformer,
             save_quantized=save_quantized,
+            is_control=is_control,
         )
 
         pipe = {
@@ -122,3 +141,11 @@ class family_handler:
                 "num_inference_steps": ui_defaults.get("num_inference_steps", 9),
             }
         )
+
+        # Add control defaults for z_image_control
+        if base_model_type == "z_image_control":
+            ui_defaults.update(
+                {
+                    "control_net_weight":  0.75,
+                }
+            )

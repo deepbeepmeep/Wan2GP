@@ -81,24 +81,66 @@ class model_factory:
         VAE_dtype=torch.float32,
         mixed_precision_transformer=False,
         save_quantized=False,
+        is_control=False,
         **kwargs,
     ):
+        
+
+        source =  model_def.get("source", None)
+        module_source =  model_def.get("module_source", None)
+
+
+        # model_filename can be a string or list of files (transformer + modules)
         transformer_filename = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
         if transformer_filename is None:
             raise ValueError("No transformer filename provided for Z-Image.")
 
         self.base_model_type = base_model_type
+        self.is_control = is_control
 
-        # Transformer
-        default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json") 
+        # Transformer - use control config if in control mode
+        if is_control:
+            default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_control.json")
+        else:
+            default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
 
         preprocess_sd = conv_state_dict
 
-        transformer = offload.fast_load_transformers_model(transformer_filename, writable_tensors= False, modelClass=ZImageTransformer2DModel, defaultConfigPath= default_transformer_config, preprocess_sd=preprocess_sd)
+        kwargs_light= { "modelClass": ZImageTransformer2DModel, "writable_tensors": False, "preprocess_sd": preprocess_sd , "forcedConfigPath" : default_transformer_config}
+
+        if source is not None:
+            transformer = offload.fast_load_transformers_model(fl.locate_file(source),  **kwargs_light)
+        elif module_source is not None:
+            transformer = offload.fast_load_transformers_model(model_filename[:1] + [fl.locate_file(module_source)], **kwargs_light)
+        else:
+            transformer= None
+
+        if transformer is not None:
+            from wgp import save_model
+            from mmgp.safetensors2 import torch_load_file
+        else:
+            # model_filename contains all files to load (transformer + modules merged by loader)
+            transformer = offload.fast_load_transformers_model( model_filename, **kwargs_light )
+
+
+
         transformer.to(dtype)
+
+        if module_source is not None:
+            save_model(transformer, model_type, dtype, None, is_module=True, filter=list(torch_load_file(module_source)), module_source_no=1)
+
+        if not source is None:
+            save_model(transformer, model_type, dtype, None, submodel_no= 1)
+
         if save_quantized:
             from wgp import save_quantized_model
             save_quantized_model(transformer, model_type, transformer_filename, dtype, default_transformer_config)
+
+
+        if is_control:
+            transformer.adapt_control_model()
+
 
         # Text encoder
 
@@ -154,6 +196,8 @@ class model_factory:
         VAE_tile_size=None,
         cfg_normalization: bool = False,
         cfg_truncation: float = 1.0,
+        input_frames=None,
+        context_scale: float = [0],
         **kwargs,
     ):
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -192,6 +236,8 @@ class model_factory:
             cfg_truncation=cfg_truncation,
             callback=callback,
             pipeline=self.pipeline,
+            control_image=input_frames,
+            control_context_scale=None if context_scale is None else context_scale[0],
         )
 
         if images is None:

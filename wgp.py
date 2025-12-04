@@ -83,7 +83,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
-WanGP_version = "9.73"
+WanGP_version = "9.74"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -820,10 +820,10 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         if multi_prompts_gen_type in [0,2]:
             if video_source is not None:
                 if len(image_end)> 1:
-                    gr.Info("If a Video is to be continued and the option 'Each Text Prompt Will create a new generated Video' is set, there can be only one End Image")
+                    gr.Info("If a Video is to be continued and the option 'Each New Line Will create a new generated Video' is set, there can be only one End Image")
                     return ret()        
             elif len(image_start or []) != len(image_end or []):
-                gr.Info("The number of Start and End Images should be the same when the option 'Each Text Prompt Will create a new generated Video'")
+                gr.Info("The number of Start and End Images should be the same when the option 'Each New Line Will create a new generated Video'")
                 return ret()    
     else:        
         image_end = None
@@ -2733,7 +2733,7 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
 
     if is_module:
         quanto_filename = model_filename.replace(dtypestr, "quanto_" + quanto_dtypestr + "_int8" )
-        quanto_filename_path = os.path.join(fl.get_download_folder() , quanto_filename)
+        quanto_filename_path = os.path.join(fl.get_download_location() , quanto_filename)
         if hasattr(model, "_quanto_map"):
             print("unable to generate quantized module, the main model should at full 16 bits before quantization can be done")
         elif fl.locate_file(quanto_filename, error_if_none= False) is None:
@@ -3924,14 +3924,15 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if  video_motion_amplitude != 1: 
                 values += [video_motion_amplitude]
                 labels += ["Motion Amplitude"]
+            control_net_weight_name = model_def.get("control_net_weight_name", "")
             control_net_weight = ""
-            if test_vace_module(video_model_type):
+            if len(control_net_weight_name):
                 video_control_net_weight = configs.get("control_net_weight", 1)
                 if len(filter_letters(video_video_prompt_type, video_guide_processes))> 1:
                     video_control_net_weight2 = configs.get("control_net_weight2", 1)
-                    control_net_weight = f"Vace #1={video_control_net_weight}, Vace #2={video_control_net_weight2}"
+                    control_net_weight = f"{control_net_weight_name} #1={video_control_net_weight}, {control_net_weight_name} #2={video_control_net_weight2}"
                 else:
-                    control_net_weight = f"Vace={video_control_net_weight}"
+                    control_net_weight = f"{control_net_weight_name}={video_control_net_weight}"
             control_net_weight_alt_name = model_def.get("control_net_weight_alt_name", "")
             if len(control_net_weight_alt_name) >0:
                 if len(control_net_weight): control_net_weight += ", "
@@ -6861,7 +6862,10 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
             pop += ["image_refs_relative_size"]
 
     if not vace:
-        pop += ["frames_positions", "control_net_weight", "control_net_weight2"] 
+        pop += ["frames_positions"]
+    
+    if model_def.get("control_net_weight_name", None) is None:
+        pop += ["control_net_weight", "control_net_weight2"] 
 
     if not len(model_def.get("control_net_weight_alt_name", "")) >0:
         pop += ["control_net_weight_alt"]
@@ -8796,10 +8800,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 )
                             flow_shift = gr.Slider(1.0, 25.0, value=ui_defaults.get("flow_shift",3), step=0.1, label="Shift Scale", visible = any_flow_shift, show_reset_button= False) 
                         control_net_weight_alt_name = model_def.get("control_net_weight_alt_name", "")
-                        with gr.Row(visible = vace or len(control_net_weight_alt_name) >0 ) as control_net_weights_row:
-                            control_net_weight = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight",1), step=0.1, label="Vace Weight #1", visible=vace, show_reset_button= False)
-                            control_net_weight2 = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.1, label="Vace Weight #2", visible=vace, show_reset_button= False)
-                            control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight_alt",1), step=0.1, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0, show_reset_button= False)
+                        control_net_weight_name = model_def.get("control_net_weight_name", "")
+                        control_net_weight_size = model_def.get("control_net_weight_size", 0)
+
+                        with gr.Row(len(control_net_weight_name) or len(control_net_weight_alt_name)    ) as control_net_weights_row:
+                            control_net_weight = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight",1), step=0.01, label=f"{control_net_weight_name} Weight" + ("" if control_net_weight_size<=1 else " #1"), visible=control_net_weight_size >= 1, show_reset_button= False)
+                            control_net_weight2 = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.01, label=f"{control_net_weight_name} Weight" + ("" if control_net_weight_size<=1 else " #2"), visible=control_net_weight_size >=2, show_reset_button= False)
+                            control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight_alt",1), step=0.01, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0, show_reset_button= False)
                         with gr.Row(visible = not (hunyuan_t2v or hunyuan_i2v or no_negative_prompt)) as negative_prompt_row:
                             negative_prompt = gr.Textbox(label="Negative Prompt (ignored if no Guidance that is if CFG = 1)", value=ui_defaults.get("negative_prompt", "")  )
                         with gr.Column(visible = vace or t2v or test_class_i2v(model_type)) as NAG_col:

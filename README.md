@@ -37,7 +37,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 ## 🔥 Latest Updates : 
 
-### December 2 2025: WanGP v9.72, The Alpha & the Omega ... and the Dancer
+### December 4 2025: WanGP v9.74, The Alpha & the Omega ... and the Dancer
 
 - **Flux 2**: the best ever open source *Image Generator* has just landed. It does everything very well: generate an *Image* based a *Text Prompt* or combine up to 10 *Images References* 
 
@@ -45,7 +45,11 @@ The only snag is that it is a 60B parameters for the *Transformer* part and 40B 
 
 Behold the WanGP Miracle ! Flux 2 wil work with only 8 GB of VRAM if you are happy with 8 bits quantization (no need for lower quality 4bits). With 9GB of VRAM you can run the model at full power. You will need at least 64 GB of RAM. If not maybe Memory Profile 5 will be your friend.
 
+*With WanGP v9.74*, **Flux 2 Control Net** hidden power has also been unleashed from the vanilla model. You can now enjoy Flux 2 *Inpainting* and *Pose transfer*. This can be combined with *Image Refs* to do *Face Swapping* as it is targetted only to specific areas using *Masking*.
+
 - **Z-Image**: a small model, very fast (8 steps), very low VRAM (optimized even more in WanGP for fun, just in case you want to generate 16 images at a time) that produces outstanding Image quality. Not yet the Flux 2 level, and no Image editing yet but a very good trade-off.
+
+While waiting for Z-Image edit, *WanGP 9.74* offers now support for **Z-Image Fun Control Net**. You can use it for *Pose transfer*, *Canny Edge* tranfer. Don't be surprise if it is a bit slower. Please note it will work best at 1080p and will require a minimum of 9 steps.
 
 - **Steady Dancer**: here is *Wan Steady Dancer* a very nice alternative to *Wan Animate*. You can transfer the motion of a Control video in a very smooth way. It will work best with Videos where the action happens center stage (hint: *dancing*). Use the *Lora accelerator* *Fusionix i2v 10 steps* for a fast generation. For higher quality you can set *Condition Guidance* to 2 or if you are very patient keep *Guidance* to a value greater than 1.   
 
@@ -56,6 +60,7 @@ Also as we have now quite few models and Loras folders. *I have moved all the lo
 *update 9.71* : added missing source file, have fun !
 *update 9.72* : added Z-Image & Loras reorg
 *update 9.73* : added Steady Dancer
+*update 9.74* : added Z-Image Fun Control Net & Flux 2 Control Net + Masking
 
 ### November 24 2025: WanGP v9.62, The Return of the King
 

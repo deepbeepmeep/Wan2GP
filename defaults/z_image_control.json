@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Z-Image Turbo Fun ControlNet 6B",
+        "architecture": "z_image_control",
+        "modules": [
+            [
+                "https://huggingface.co/DeepBeepMeep/Z-Image/resolve/main/Z-Image-Turbo-Fun-Controlnet-Union_bf16.safetensors",
+                "https://huggingface.co/DeepBeepMeep/Z-Image/resolve/main/Z-Image-Turbo-Fun-Controlnet-Union_quanto_bf16_int8.safetensors"
+            ]
+        ],
+        "description": "Z-Image Turbo with ControlNet Union supporting Pose, Canny, Depth, and Scribble control types.",
+        "URLs": "z_image"
+    },
+    "batch_size": 1,
+    "num_inference_steps": 9,
+    "guidance_scale": 0,
+    "control_net_weight_alt": 0.75
+}

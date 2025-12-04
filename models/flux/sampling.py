@@ -157,6 +157,20 @@ def resizeinput(img):
     return img
 
 
+def build_mask(target_width, target_height, img_mask, device):
+    from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image
+    # image_height, image_width = calculate_new_dimensions(ref_height, ref_width, image_height, image_width, False, block_size=multiple_of)
+    image_mask_latents = convert_image_to_tensor(img_mask.resize((target_width // 16, target_height // 16), resample=Image.Resampling.LANCZOS))
+    image_mask_latents = torch.where(image_mask_latents>-0.5, 1., 0. )[0:1]
+    image_mask_rebuilt = image_mask_latents.repeat_interleave(16, dim=-1).repeat_interleave(16, dim=-2).unsqueeze(0)
+    # convert_tensor_to_image( image_mask_rebuilt.squeeze(0).repeat(3,1,1)).save("mmm.png")
+    image_mask_latents = image_mask_latents.reshape(1, -1, 1).to(device)        
+    return {
+        "img_msk_latents": image_mask_latents,
+        "img_msk_rebuilt": image_mask_rebuilt,
+    }
+
+
 def prepare_kontext(
     ae: AutoEncoder | None,
     img_cond_list: list,
@@ -227,17 +241,7 @@ def prepare_kontext(
         "img_cond_seq_ids": img_cond_seq_ids,
     }
     if img_mask is not None:
-        from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image
-        # image_height, image_width = calculate_new_dimensions(ref_height, ref_width, image_height, image_width, False, block_size=multiple_of)
-        image_mask_latents = convert_image_to_tensor(img_mask.resize((target_width // 16, target_height // 16), resample=Image.Resampling.LANCZOS))
-        image_mask_latents = torch.where(image_mask_latents>-0.5, 1., 0. )[0:1]
-        image_mask_rebuilt = image_mask_latents.repeat_interleave(16, dim=-1).repeat_interleave(16, dim=-2).unsqueeze(0)
-        # convert_tensor_to_image( image_mask_rebuilt.squeeze(0).repeat(3,1,1)).save("mmm.png")
-        image_mask_latents = image_mask_latents.reshape(1, -1, 1).to(device)        
-        return_dict.update({
-            "img_msk_latents": image_mask_latents,
-            "img_msk_rebuilt": image_mask_rebuilt,
-        })
+        return_dict.update(build_mask(target_width, target_height, img_mask), device)
 
     img = get_noise(
         bs,
@@ -346,6 +350,7 @@ def denoise(
     denoising_strength = 1,
     masking_strength = 1,
     preview_meta = None,
+    original_image_latents = None,
 ):
 
     kwargs = {
@@ -359,10 +364,11 @@ def denoise(
     if callback != None:
         callback(-1, None, True)
 
-    original_image_latents = None if img_cond_seq is None else img_cond_seq.clone() 
     original_timesteps = timesteps
+    
     morph, first_step = False, 0
     if img_msk_latents is not None:
+        if original_image_latents is None: original_image_latents= img_cond_seq.clone() 
         randn = torch.randn_like(original_image_latents)
         if denoising_strength < 1.:
             first_step = int(len(timesteps) * (1. - denoising_strength))

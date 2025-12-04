@@ -767,7 +767,6 @@ class QwenImagePipeline(): #DiffusionPipeline
             latents,
             tile_size=VAE_tile_size
         )
-        original_image_latents = None if image_latents is None else image_latents.clone() 
 
         if image is not None:
             img_shapes = [
@@ -813,8 +812,10 @@ class QwenImagePipeline(): #DiffusionPipeline
             negative_prompt_embeds_mask.sum(dim=1).tolist() if negative_prompt_embeds_mask is not None else None
         )
         morph, first_step = False, 0
-        lanpaint_proc = None
+        lanpaint_proc = original_image_latents = None
         if image_mask_latents is not None:
+            original_image_latents =  image_latents[:, :latents.shape[1]].clone() 
+
             randn = torch.randn_like(original_image_latents)
             if denoising_strength < 1.:
                 first_step = int(len(timesteps) * (1. - denoising_strength))

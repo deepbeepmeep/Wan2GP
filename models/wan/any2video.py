@@ -432,6 +432,7 @@ class WanAny2V:
         face_arc_embeds = None,
         control_scale_alt = 1.,
         motion_amplitude = 1.,
+        full_prefix_video = None,
         **bbargs
                 ):
         
@@ -1059,19 +1060,15 @@ class WanAny2V:
                     gen_args["lynx_ref_buffer"] = [lynx_ref_buffer, lynx_ref_buffer_uncond]
                     
             elif steadydancer:
-                if guide_scale == 1:
-                    gen_args = {
-                        "x" : [latent_model_input, latent_model_input],
-                        "context" : [context, context],
-                        "steadydancer_condition": [conditions, conditions_null],
-                    }
-                    any_guidance = condition_guide_scale != 1
-                else:
-                    gen_args = {
-                        "x" : [latent_model_input, latent_model_input, latent_model_input],
-                        "context" : [context, context_null, context],
-                        "steadydancer_condition": [conditions, conditions, conditions_null],
-                    }
+                # DC-CFG: pose guidance only in [10%, 50%] of denoising steps
+                apply_cond_cfg = 0.1 <= i / sampling_steps < 0.5 and condition_guide_scale != 1
+                x_list, ctx_list, cond_list = [latent_model_input], [context], [conditions]
+                if guide_scale != 1:
+                    x_list.append(latent_model_input); ctx_list.append(context_null); cond_list.append(conditions)
+                if apply_cond_cfg:
+                    x_list.append(latent_model_input); ctx_list.append(context); cond_list.append(conditions_null)
+                gen_args = {"x": x_list, "context": ctx_list, "steadydancer_condition": cond_list}
+                any_guidance = len(x_list) > 1
             elif multitalk and audio_proj != None:
                 if guide_scale == 1:
                     gen_args = {
@@ -1120,32 +1117,14 @@ class WanAny2V:
                 noise_pred = noise_pred_uncond + guide_scale * (noise_pred_noaudio - noise_pred_uncond) + audio_cfg_scale * (noise_pred_cond  - noise_pred_noaudio) 
                 noise_pred_noaudio = None
             elif steadydancer:
-                if apg_switch != 0 and False:
-                    if guide_scale == 1:
-                        noise_pred_cond, noise_pred_drop_audio  = ret_values
-                        noise_pred = noise_pred_cond + (audio_cfg_scale - 1)* adaptive_projected_guidance(noise_pred_cond - noise_pred_drop_audio, 
-                                                                                        noise_pred_cond, 
-                                                                                        momentum_buffer=audio_momentumbuffer, 
-                                                                                        norm_threshold=apg_norm_threshold)
-
-                    else:
-                        noise_pred_cond, noise_pred_drop_text, noise_pred_uncond = ret_values
-                        noise_pred = noise_pred_cond + (guide_scale - 1) * adaptive_projected_guidance(noise_pred_cond - noise_pred_drop_text, 
-                                                                                                            noise_pred_cond, 
-                                                                                                            momentum_buffer=text_momentumbuffer, 
-                                                                                                            norm_threshold=apg_norm_threshold) \
-                                + (audio_cfg_scale - 1) * adaptive_projected_guidance(noise_pred_drop_text - noise_pred_uncond, 
-                                                                                        noise_pred_cond, 
-                                                                                        momentum_buffer=audio_momentumbuffer, 
-                                                                                        norm_threshold=apg_norm_threshold)
-                else:
-                    if guide_scale == 1:
-                        noise_pred_cond, noise_pred_uncond_condition  = ret_values
-                        noise_pred = noise_pred_uncond_condition + condition_guide_scale * (noise_pred_cond - noise_pred_uncond_condition)  
-                    else:
-                        noise_pred_cond, noise_pred_uncond_context, noise_pred_uncond_condition = ret_values
-                        noise_pred = noise_pred_uncond_context + guide_scale * (noise_pred_cond - noise_pred_uncond_context) + condition_guide_scale * (noise_pred_cond - noise_pred_uncond_condition)  
-                    noise_pred_uncond_context = noise_pred_cond = noise_pred_uncond_condition = None
+                noise_pred_cond = ret_values[0]
+                if guide_scale == 1:  # only condition CFG (ret_values[1] = uncond_condition)
+                    noise_pred = ret_values[1] + condition_guide_scale * (noise_pred_cond - ret_values[1])
+                else:  # text CFG + optionally condition CFG (ret_values[1] = uncond_context)
+                    noise_pred = ret_values[1] + guide_scale * (noise_pred_cond - ret_values[1])
+                    if apply_cond_cfg:
+                        noise_pred = noise_pred + condition_guide_scale * (noise_pred_cond - ret_values[2])
+                noise_pred_cond = None
 
             elif multitalk and audio_proj != None:
                 if apg_switch != 0:
@@ -1264,7 +1243,7 @@ class WanAny2V:
         else:
             videos = videos[0] # return only first video
             if any_vae2: videos2 = videos2[0] # return only first video
-        if color_correction_strength > 0 and (prefix_frames_count > 0 and window_no > 1 or prefix_frames_count > 1 and window_no == 1):
+        if color_correction_strength > 0 and not ( window_no == 1 and (full_prefix_video is None or full_prefix_video.shape[1]<= 1) ):
             if vace and False:
                 # videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), input_frames[0].unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "progressive_blend").squeeze(0)
                 videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), input_frames[0].unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "reference").squeeze(0)

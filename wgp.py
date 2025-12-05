@@ -44,7 +44,7 @@ from shared.utils.video_metadata import save_video_metadata
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
-from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, gen_lock
+from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, any_GPU_process_running, gen_lock
 from shared.loras_migration import migrate_loras_layout
 from huggingface_hub import hf_hub_download, snapshot_download
 from shared.utils import files_locator as fl 
@@ -1213,6 +1213,9 @@ def load_queue_action(filepath, state, evt:gr.EventData):
 
     gen = get_gen_info(state)
     original_queue = gen.get("queue", [])
+    if len(original_queue):
+        gr.Info("Queue must be empty before loading a new queue")
+        return update_queue_data(original_queue)
     delete_autoqueue_file  = False 
     if evt.target == None:
 
@@ -1399,6 +1402,7 @@ def load_queue_action(filepath, state, evt:gr.EventData):
 
 def clear_queue_action(state):
     gen = get_gen_info(state)
+    gen["resume"] = True
     queue = gen.get("queue", [])
     aborted_current = False
     cleared_pending = False
@@ -3431,8 +3435,35 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
         # gen["progress_args"] = progress_args
             
     return callback
+
+def pause_generation(state):
+    gen = get_gen_info(state)
+    process_id = "pause"
+    GPU_process_running = any_GPU_process_running(state, process_id, ignore_main= True )
+    if GPU_process_running:
+        gr.Info("Unable to pause, a PlugIn is using the GPU")
+        yield gr.update(), gr.update()
+        return
+    gen["resume"] = False
+    yield gr.Button(interactive= False), gr.update()
+    pause_msg = "Generation on Pause, click Resume to Restart Generation"
+    acquire_GPU_ressources(state, process_id , "Pause", gr= gr, custom_pause_msg= pause_msg, custom_wait_msg= "Please wait while the Pause Request is being Processed...")      
+    gr.Info(pause_msg)
+    yield gr.Button(visible= False, interactive= True), gr.Button(visible= True)
+    while not gen.get("resume", False):
+        time.sleep(0.5)
+
+    release_GPU_ressources(state, process_id )
+    gen["resume"] = False
+    yield gr.Button(visible= True, interactive= True), gr.Button(visible= False)
+
+def resume_generation(state):
+    gen = get_gen_info(state)
+    gen["resume"] = True
+
 def abort_generation(state):
     gen = get_gen_info(state)
+    gen["resume"] = True
     if "in_progress" in gen: # and wan_model != None:
         if wan_model != None:
             wan_model._interrupt= True
@@ -4893,7 +4924,7 @@ def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_
     max_workers = get_default_workers()
 
     if not video_guide or max_frames <= 0:
-        return None, None
+        return None, None, None, None
     video_guide = get_resampled_video(video_guide, start_frame, max_frames, target_fps).permute(-1, 0, 1, 2)
     video_guide = video_guide / 127.5 - 1.
     any_mask = video_mask is not None
@@ -4901,8 +4932,8 @@ def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_
         video_mask = get_resampled_video(video_mask, start_frame, max_frames, target_fps).permute(-1, 0, 1, 2)
         video_mask = video_mask[:1] / 255.
 
-    if len(video_guide) == 0 or any_mask and len(video_mask) == 0:
-        return None, None
+    if video_guide.shape[1] == 0 or any_mask and video_mask.shape[1] == 0:
+        return None, None, None, None
     
     video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2  = model_handler.custom_preprocess(base_model_type = base_model_type, pre_video_guide = pre_video_guide, video_guide = video_guide, video_mask = video_mask, height = height, width = width, fit_canvas = fit_canvas , fit_crop = fit_crop, target_fps = target_fps,  block_size = block_size, max_workers = max_workers, expand_scale = expand_scale)
 
@@ -5606,8 +5637,11 @@ def generate_video(
                 if src_video is None or window_no >1 and src_video.shape[1] <= sliding_window_overlap and not dont_cat_preguide:
                     abort = True 
                     break
-                if model_def.get("control_video_trim", False) and src_video is not None:
-                    if src_video.shape[1] < current_video_length:
+                if model_def.get("control_video_trim", False) :
+                    if src_video is None:
+                        abort = True 
+                        break
+                    elif src_video.shape[1] < current_video_length:
                         current_video_length = src_video.shape[1]
                         abort_scheduled = True 
                 if src_faces is not None:
@@ -5759,6 +5793,7 @@ def generate_video(
                     exaggeration=exaggeration,
                     pace=pace,
                     temperature=temperature,
+                    full_prefix_video = prefix_video,
                 )
             except Exception as e:
                 if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:
@@ -9249,9 +9284,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         preview_trigger = gr.Text(visible= False)
                     gen_info = gr.HTML(visible=False, min_height=1) 
                     with gr.Row() as current_gen_buttons_row:
-                        onemoresample_btn = gr.Button("One More Sample Please !", visible = True)
-                        onemorewindow_btn = gr.Button("Extend this Sample Please !", visible = False)
-                        abort_btn = gr.Button("Abort", visible = True)
+                        onemoresample_btn = gr.Button("One More Sample", visible = True, size='md', min_width=1)
+                        onemorewindow_btn = gr.Button("Extend this Sample", visible = False, size='md', min_width=1)
+                        pause_btn = gr.Button("Pause", visible = True, size='md', min_width=1)
+                        resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1)
+                        abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1)
                 with gr.Accordion("Queue Management", open=False) as queue_accordion:
                     with gr.Row():
                         queue_html = gr.HTML(
@@ -9380,6 +9417,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 outputs=[modal_container],
                 show_progress="hidden"
             )
+            pause_btn.click(pause_generation, [state], [ pause_btn, resume_btn] )
+            resume_btn.click(resume_generation, [state] )
             abort_btn.click(abort_generation, [state], [ abort_btn] ) #.then(refresh_gallery, inputs = [state, gen_info], outputs = [output, gen_info, queue_html] )
             onemoresample_btn.click(fn=one_more_sample,inputs=[state], outputs= [state])
             onemorewindow_btn.click(fn=one_more_window,inputs=[state], outputs= [state])

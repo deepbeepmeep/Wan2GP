@@ -117,6 +117,8 @@ class family_handler():
                 "visible": False
             }
 
+            extra_model_def["mask_strength_always_enabled"] = True
+
             extra_model_def["guide_preprocessing"] = {
                 "selection": ["", "PV", "MV"],
             }
@@ -318,6 +320,7 @@ class family_handler():
             ui_defaults.update({
                 "embedded_guidance_scale": 4.0,
                 "remove_background_images_ref" : 0,
+                "mask_strength": 0.3,
 
             })
 

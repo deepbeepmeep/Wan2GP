@@ -357,7 +357,7 @@ def denoise(
         'pipeline': pipeline,
         'callback': callback,
         "img_len": img.shape[1],
-        "siglip_embedding": siglip_embedding,
+        "siglip_embedding": siglip_embedding,   
         "siglip_embedding_ids": siglip_embedding_ids,
     }
 
@@ -371,8 +371,8 @@ def denoise(
         if original_image_latents is None: original_image_latents= img_cond_seq.clone() 
         randn = torch.randn_like(original_image_latents)
         if denoising_strength < 1.:
-            first_step = int(len(timesteps) * (1. - denoising_strength))
-        masked_steps = math.ceil(len(timesteps) * masking_strength)
+            first_step = int(len(timesteps[:-1]) * (1. - denoising_strength))
+        masked_steps = math.ceil(len(timesteps[:-1]) * masking_strength)
         if not morph:
             latent_noise_factor = timesteps[first_step]
             latents  = original_image_latents  * (1.0 - latent_noise_factor) + randn * latent_noise_factor

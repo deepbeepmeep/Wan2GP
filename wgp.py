@@ -754,11 +754,14 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         if "G" in video_prompt_type:
                 if denoising_strength < 1.:
                     gr.Info(f"With Denoising Strength {denoising_strength:.1f}, Denoising will start at Step no {int(round(num_inference_steps * (1. - denoising_strength),4))} ")
-                    masking_duration = math.ceil(num_inference_steps * masking_strength)
-                if "A" in video_prompt_type and "U" not in video_prompt_type and masking_strength < 1.:
-                    gr.Info(f"With Masking Strength {masking_strength:.1f}, Masking will last {masking_duration}{' Step' if masking_duration==1 else ' Steps'}")
         else: 
             denoising_strength = 1.0
+                    
+        if "G" in video_prompt_type or model_def.get("mask_strength_always_enabled", False):
+                if "A" in video_prompt_type and "U" not in video_prompt_type and masking_strength < 1.:
+                    masking_duration = math.ceil(num_inference_steps * masking_strength)
+                    gr.Info(f"With Masking Strength {masking_strength:.1f}, Masking will last {masking_duration}{' Step' if masking_duration==1 else ' Steps'}")
+        else: 
             masking_strength = 1.0
         if len(keep_frames_video_guide) > 0 and model_type in ["ltxv_13B"]:
             gr.Info("Keep Frames for Control Video is not supported with LTX Video")
@@ -3606,7 +3609,7 @@ def select_audio(state, audio_files_paths, audio_file_selected):
 
 
 video_guide_processes = "PEDSLCMU"
-all_guide_processes = video_guide_processes + "VBH"
+all_guide_processes = video_guide_processes + "VGBH"
 
 process_map_outside_mask = { "Y" : "depth", "W": "scribble", "X": "inpaint", "Z": "flow"}
 process_map_video_guide = { "P": "pose", "D" : "depth", "S": "scribble", "E": "canny", "L": "flow", "C": "gray", "M": "inpaint", "U": "identity"}
@@ -3892,7 +3895,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if "G" in video_video_prompt_type and "V" in video_video_prompt_type:
                 values += [configs.get("denoising_strength",1)]
                 labels += ["Denoising Strength"]
-            if "G" in video_video_prompt_type and "A" in video_video_prompt_type and "U" not in video_video_prompt_type:
+            if ("G" in video_video_prompt_type or model_def.get("mask_strength_always_enabled", False)) and "A" in video_video_prompt_type and "U" not in video_video_prompt_type:
                 values += [configs.get("masking_strength",1)]
                 labels += ["Masking Strength"]
 
@@ -6844,8 +6847,12 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["MMAudio_setting", "MMAudio_prompt", "MMAudio_neg_prompt"]
 
     video_prompt_type = inputs["video_prompt_type"]
-    if not "G" in video_prompt_type:
-        pop += ["denoising_strength", "masking_strength"]
+    if "G" not in video_prompt_type:
+        pop += ["denoising_strength"]
+
+    if  "G" not in video_prompt_type and not model_def.get("mask_strength_always_enabled", False):
+        pop += ["masking_strength"]
+
 
     if not (server_config.get("enhancer_enabled", 0) > 0 and server_config.get("enhancer_mode", 0) == 0):
         pop += ["prompt_enhancer"]
@@ -7833,8 +7840,8 @@ def refresh_video_prompt_type_video_guide(state, filter_type, video_prompt_type,
         if len(custom_trigger) == 0 or custom_trigger in video_prompt_type:
             custom_options = True
             custom_checkbox = custom_video_selection.get("type","") == "checkbox"
-            
-    return video_prompt_type,  gr.update(visible = visible and not image_outputs), image_guide, gr.update(visible = keep_frames_video_guide_visible), gr.update(visible = visible and "G" in video_prompt_type),  gr.update(visible = mask_visible and "G" in video_prompt_type), gr.update(visible= (visible or "F" in video_prompt_type or "K" in video_prompt_type) and any_outpainting), gr.update(visible= visible and mask_selector_visible and  not "U" in video_prompt_type ) ,  gr.update(visible= mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible= mask_visible),  gr.update(visible = ref_images_visible ), gr.update(visible= custom_options and not custom_checkbox ), gr.update(visible= custom_options and custom_checkbox ) 
+    mask_strength_always_enabled = model_def.get("mask_strength_always_enabled", False)  
+    return video_prompt_type,  gr.update(visible = visible and not image_outputs), image_guide, gr.update(visible = keep_frames_video_guide_visible), gr.update(visible = visible and "G" in video_prompt_type),  gr.update(visible = mask_visible and( mask_strength_always_enabled or "G" in video_prompt_type)), gr.update(visible= (visible or "F" in video_prompt_type or "K" in video_prompt_type) and any_outpainting), gr.update(visible= visible and mask_selector_visible and  not "U" in video_prompt_type ) ,  gr.update(visible= mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible= mask_visible),  gr.update(visible = ref_images_visible ), gr.update(visible= custom_options and not custom_checkbox ), gr.update(visible= custom_options and custom_checkbox ) 
 
 def refresh_video_prompt_type_video_custom_dropbox(state, video_prompt_type, video_prompt_type_video_custom_dropbox):
     model_type = state["model_type"]
@@ -8590,7 +8597,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 # image_mask = gr.Image(label= "Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)", type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , height = gallery_height, value= ui_defaults.get("image_mask", None)) 
                 image_mask = gr.Image(label= "Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)", type ="pil", visible= False, height = gallery_height, value= ui_defaults.get("image_mask", None)) 
                 video_mask = gr.Video(label= "Video Mask Area (for Inpainting, white = Control Area, black = Unchanged)", visible= (not image_outputs) and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , height = gallery_height, value= ui_defaults.get("video_mask", None)) 
-                masking_strength = gr.Slider(0, 1, value= ui_defaults.get("masking_strength", 1), step=0.01, label=f"Masking Strength (the Lower the More Freedom for Unmasked Area", visible = "G" in video_prompt_type_value and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , show_reset_button= False)
+                mask_strength_always_enabled = model_def.get("mask_strength_always_enabled", False)  
+                masking_strength = gr.Slider(0, 1, value= ui_defaults.get("masking_strength", 1), step=0.01, label=f"Masking Strength (the Lower the More Freedom for Unmasked Area", visible = (mask_strength_always_enabled or "G" in video_prompt_type_value) and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , show_reset_button= False)
                 mask_expand = gr.Slider(-10, 50, value=ui_defaults.get("mask_expand", 0), step=1, label="Expand / Shrink Mask Area", visible= "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value, show_reset_button= False )
 
                 image_refs_single_image_mode = model_def.get("one_image_ref_needed", False)

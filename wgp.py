@@ -805,7 +805,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
             gr.Info("Start Image should be an Image") 
             return ret()
         if  multi_prompts_gen_type in [1] and len(image_start) > 1:
-            gr.Info("Only one Start Image is supported") 
+            gr.Info("Only one Start Image is supported if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is set") 
             return ret()       
     else:
         image_start = None
@@ -820,13 +820,13 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         if image_end == None :
             gr.Info("End Image should be an Image") 
             return ret()
-        if multi_prompts_gen_type in [0,2]:
-            if video_source is not None:
-                if len(image_end)> 1:
-                    gr.Info("If a Video is to be continued and the option 'Each New Line Will create a new generated Video' is set, there can be only one End Image")
-                    return ret()        
-            elif len(image_start or []) != len(image_end or []):
-                gr.Info("The number of Start and End Images should be the same when the option 'Each New Line Will create a new generated Video'")
+        if (video_source is not None or "L" in image_prompt_type):
+            if multi_prompts_gen_type in [0,2] and len(image_end)> 1:
+                gr.Info("If you want to Continue a Video, you can use Multiple End Images only if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is set")
+                return ret()        
+        elif multi_prompts_gen_type in [0, 2]:
+            if len(image_start or []) != len(image_end or []):
+                gr.Info("The number of Start and End Images should be the same if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is not set")
                 return ret()    
     else:        
         image_end = None

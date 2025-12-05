@@ -49,7 +49,7 @@ Behold the WanGP Miracle ! Flux 2 wil work with only 8 GB of VRAM if you are hap
 
 - **Z-Image**: a small model, very fast (8 steps), very low VRAM (optimized even more in WanGP for fun, just in case you want to generate 16 images at a time) that produces outstanding Image quality. Not yet the Flux 2 level, and no Image editing yet but a very good trade-off.
 
-While waiting for Z-Image edit, *WanGP 9.74* offers now support for **Z-Image Fun Control Net**. You can use it for *Pose transfer*, *Canny Edge* tranfer. Don't be surprise if it is a bit slower. Please note it will work best at 1080p and will require a minimum of 9 steps.
+While waiting for Z-Image edit, *WanGP 9.74* offers now support for **Z-Image Fun Control Net**. You can use it for *Pose transfer*, *Canny Edge* transfer. Don't be surprised if it is a bit slower. Please note it will work best at 1080p and will require a minimum of 9 steps.
 
 - **Steady Dancer**: here is *Wan Steady Dancer* a very nice alternative to *Wan Animate*. You can transfer the motion of a Control video in a very smooth way. It will work best with Videos where the action happens center stage (hint: *dancing*). Use the *Lora accelerator* *Fusionix i2v 10 steps* for a fast generation. For higher quality you can set *Condition Guidance* to 2 or if you are very patient keep *Guidance* to a value greater than 1.   
 

@@ -174,18 +174,22 @@ class family_handler():
             default=os.path.join("loras", "hunyuan_i2v"),
             help="Path to a directory that contains Hunyuan Video i2v Loras"
         )
+        parser.add_argument(
+            "--lora-dir-hunyuan-1-5",
+            type=str,
+            default=os.path.join("loras", "hunyuan_1_5"),
+            help="Path to a directory that contains Hunyuan Video 1.5 Loras"
+        )
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
-        i2v = "i2v" in base_model_type
-        if i2v:
+        if test_hunyuan_1_5(base_model_type):
+            return args.lora_dir_hunyuan_1_5
+            
+        elif "i2v" in base_model_type:
             return args.lora_dir_hunyuan_i2v
 
         root_lora_dir = args.lora_dir_hunyuan
-        if "1_5" in base_model_type:
-            lora_dir_1_5 = os.path.join(root_lora_dir, "1.5")
-            if os.path.isdir(lora_dir_1_5):
-                return lora_dir_1_5
         return root_lora_dir
 
     @staticmethod

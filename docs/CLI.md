@@ -119,6 +119,7 @@ python wgp.py --process queue.zip --output-dir ./out --attention sage2
 --lora-dir-i2v PATH          # Path to Wan i2v loras directory
 --lora-dir-hunyuan PATH      # Path to Hunyuan t2v loras directory
 --lora-dir-hunyuan-i2v PATH  # Path to Hunyuan i2v loras directory
+--lora-dir-hunyuan-1-5 PATH  # Path to Hunyuan 1.5 loras directory
 --lora-dir-ltxv PATH         # Path to LTX Video loras directory
 --lora-preset PRESET         # Load lora preset file (.lset) on startup
 --check-loras                # Filter incompatible loras (slower startup)

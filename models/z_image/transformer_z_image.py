@@ -192,10 +192,12 @@ class ZImageTransformerBlock(nn.Module):
         norm_eps: float,
         qk_norm: bool,
         modulation=True,
+        block_id=None,  # For control hint injection
     ):
         super().__init__()
         self.dim = dim
         self.head_dim = dim // n_heads
+        self.block_id = block_id  # For control hint injection
 
         # Refactored to use diffusers Attention with custom processor
         # Original Z-Image params: dim, n_heads, n_kv_heads, qk_norm
@@ -244,7 +246,19 @@ class ZImageTransformerBlock(nn.Module):
         attn_mask: torch.Tensor,
         freqs_cis: torch.Tensor,
         adaln_input: Optional[torch.Tensor] = None,
+        hints: Optional[List[torch.Tensor]] = None,
+        context_scale: float = 1.0,
     ):
+        # Process control hint just-in-time if this layer has control attached
+        hint_skip = None
+        if self.block_id is not None and hints is not None and hasattr(self, 'control'):
+            kwargs = {
+                "attn_mask": attn_mask,
+                "freqs_cis": freqs_cis,
+                "adaln_input": adaln_input,
+            }
+            hint_skip = self.control(hints, x if self.block_id == 0 else None, **kwargs)
+
         if self.modulation:
             assert adaln_input is not None
             scale_msa, gate_msa, scale_mlp, gate_mlp = self.adaLN_modulation(adaln_input).unsqueeze(1).chunk(4, dim=2)
@@ -273,7 +287,57 @@ class ZImageTransformerBlock(nn.Module):
 
             x.add_(self._apply_ffn(x))
 
+        # Apply control hint skip connection
+        if hint_skip is not None:
+            if context_scale == 1.0:
+                x.add_(hint_skip)
+            else:
+                x.add_(hint_skip, alpha=context_scale)
+
         return x
+
+
+@maybe_allow_in_graph
+class ZImageControlTransformerBlock(ZImageTransformerBlock):
+    """Control block that processes control context and generates skip connection hints."""
+
+    def __init__(
+        self,
+        layer_id: int,
+        dim: int,
+        n_heads: int,
+        n_kv_heads: int,
+        norm_eps: float,
+        qk_norm: bool,
+        modulation=True,
+        block_id=0,
+    ):
+        super().__init__(layer_id, dim, n_heads, n_kv_heads, norm_eps, qk_norm, modulation, block_id=None)
+        self.control_block_id = block_id
+        if block_id == 0:
+            self.before_proj = nn.Linear(self.dim, self.dim)
+            nn.init.zeros_(self.before_proj.weight)
+            nn.init.zeros_(self.before_proj.bias)
+        self.after_proj = nn.Linear(self.dim, self.dim)
+        nn.init.zeros_(self.after_proj.weight)
+        nn.init.zeros_(self.after_proj.bias)
+
+    def forward(self, hints, x, **kwargs):
+        # Get current control state from mutable list
+        c = hints[0]
+        hints[0] = None  # Free memory immediately
+
+        # First block: project control and add to main signal
+        if self.control_block_id == 0:
+            c = self.before_proj(c) + x
+
+        # Run through parent transformer block (without hint application)
+        c = super().forward(c, **kwargs)
+
+        # Create skip connection output
+        c_skip = self.after_proj(c)
+        hints[0] = c  # Put processed state back for next control layer
+        return c_skip  # Return skip connection (used immediately)
 
 
 class FinalLayer(nn.Module):
@@ -338,7 +402,7 @@ class RopeEmbedder:
 
 class ZImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin):
     _supports_gradient_checkpointing = True
-    _no_split_modules = ["ZImageTransformerBlock"]
+    _no_split_modules = ["ZImageTransformerBlock", "ZImageControlTransformerBlock"]
 
     @register_to_config
     def __init__(
@@ -358,6 +422,8 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOr
         t_scale=1000.0,
         axes_dims=[32, 48, 48],
         axes_lens=[1024, 512, 512],
+        enable_control=False,  # Whether to create control layers
+        control_layers_places=None,  # Explicit layer positions for control injection, e.g. [0, 5, 10, 15, 20, 25]
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -421,18 +487,110 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOr
         self.x_pad_token = nn.Parameter(torch.empty((1, dim)))
         self.cap_pad_token = nn.Parameter(torch.empty((1, dim)))
 
-        self.layers = nn.ModuleList(
-            [
-                ZImageTransformerBlock(layer_id, dim, n_heads, n_kv_heads, norm_eps, qk_norm)
-                for layer_id in range(n_layers)
-            ]
-        )
+        # Control layers - created if enable_control is True
+        self.enable_control = enable_control
+
+        if enable_control:
+            # Use explicit control_layers_places from config (e.g. [0, 5, 10, 15, 20, 25])
+            if control_layers_places is None:
+                raise ValueError("control_layers_places must be specified when enable_control=True")
+            self.control_layers_places = list(control_layers_places)
+            assert 0 in self.control_layers_places, "Layer 0 must be in control_layers_places"
+            self.control_layers_mapping = {i: n for n, i in enumerate(self.control_layers_places)}
+
+            # Main layers with block_id set for control injection
+            self.layers = nn.ModuleList(
+                [
+                    ZImageTransformerBlock(
+                        layer_id, dim, n_heads, n_kv_heads, norm_eps, qk_norm,
+                        block_id=self.control_layers_mapping[layer_id] if layer_id in self.control_layers_places else None
+                    )
+                    for layer_id in range(n_layers)
+                ]
+            )
+
+            # Control blocks that generate hints
+            self.control_layers = nn.ModuleList(
+                [
+                    ZImageControlTransformerBlock(
+                        layer_pos, dim, n_heads, n_kv_heads, norm_eps, qk_norm,
+                        modulation=True, block_id=idx
+                    )
+                    for idx, layer_pos in enumerate(self.control_layers_places)
+                ]
+            )
+
+            # Control input embedders (same structure as main embedders)
+            control_all_x_embedder = {}
+            for patch_size, f_patch_size in zip(all_patch_size, all_f_patch_size):
+                control_x_embedder = nn.Linear(f_patch_size * patch_size * patch_size * in_channels, dim, bias=True)
+                control_all_x_embedder[f"{patch_size}-{f_patch_size}"] = control_x_embedder
+            self.control_all_x_embedder = nn.ModuleDict(control_all_x_embedder)
+
+            # Control noise refiner
+            self.control_noise_refiner = nn.ModuleList(
+                [
+                    ZImageTransformerBlock(
+                        1000 + layer_id, dim, n_heads, n_kv_heads, norm_eps, qk_norm,
+                        modulation=True,
+                    )
+                    for layer_id in range(n_refiner_layers)
+                ]
+            )
+        else:
+            # Non-control mode: standard layers without block_id
+            self.layers = nn.ModuleList(
+                [
+                    ZImageTransformerBlock(layer_id, dim, n_heads, n_kv_heads, norm_eps, qk_norm)
+                    for layer_id in range(n_layers)
+                ]
+            )
+
         head_dim = dim // n_heads
         assert head_dim == sum(axes_dims)
         self.axes_dims = axes_dims
         self.axes_lens = axes_lens
 
         self.rope_embedder = RopeEmbedder(theta=rope_theta, axes_dims=axes_dims, axes_lens=axes_lens)
+
+    @property
+    def has_control(self) -> bool:
+        """Returns True if the model has control layers enabled."""
+        return self.enable_control
+
+    def remap_state_dict(self, sd):
+        """Remap state dict keys for control layers to be attached to main layers."""
+        if not sd:
+            return sd
+        first = next(iter(sd.keys()))
+
+        # Remap control_layers.X.* to layers.Y.control.* where Y is the target layer
+        if first.startswith("control_layers."):
+            new_sd = {}
+            for k, v in sd.items():
+                if k.startswith("control_layers."):
+                    parts = k.split(".")
+                    control_idx = int(parts[1])
+                    target_layer = self.control_layers_places[control_idx]
+                    parts[0] = f"layers.{target_layer}"
+                    parts[1] = "control"
+                    k = ".".join(parts)
+                new_sd[k] = v
+            sd = new_sd
+
+        return sd
+
+    def adapt_control_model(self):
+        """Move control blocks to be submodules of their corresponding main layers."""
+        if not self.enable_control or not hasattr(self, 'control_layers'):
+            return
+
+        modules_dict = {k: m for k, m in self.named_modules()}
+        for model_layer, control_idx in self.control_layers_mapping.items():
+            control_module = modules_dict[f"control_layers.{control_idx}"]
+            target = modules_dict[f"layers.{model_layer}"]
+            setattr(target, "control", control_module)
+        delattr(self, "control_layers")
 
     def unpatchify(self, x: List[torch.Tensor], size: List[Tuple], patch_size, f_patch_size) -> List[torch.Tensor]:
         pH = pW = patch_size
@@ -559,6 +717,66 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOr
             all_cap_pad_mask,
         )
 
+    def patchify(
+        self,
+        all_image: List[torch.Tensor],
+        patch_size: int,
+        f_patch_size: int,
+        cap_len: int,
+    ):
+        """Patchify control images without caption processing (for control context)."""
+        pH = pW = patch_size
+        pF = f_patch_size
+        device = all_image[0].device
+
+        all_image_out = []
+        all_image_size = []
+        all_image_pos_ids = []
+        all_image_pad_mask = []
+
+        for image in all_image:
+            C, F, H, W = image.size()
+            all_image_size.append((F, H, W))
+            F_tokens, H_tokens, W_tokens = F // pF, H // pH, W // pW
+
+            image = image.view(C, F_tokens, pF, H_tokens, pH, W_tokens, pW)
+            image = image.permute(1, 3, 5, 2, 4, 6, 0).reshape(F_tokens * H_tokens * W_tokens, pF * pH * pW * C)
+
+            image_ori_len = len(image)
+            image_padding_len = (-image_ori_len) % SEQ_MULTI_OF
+
+            image_ori_pos_ids = self.create_coordinate_grid(
+                size=(F_tokens, H_tokens, W_tokens),
+                start=(cap_len + 1, 0, 0),
+                device=device,
+            ).flatten(0, 2)
+            image_padding_pos_ids = (
+                self.create_coordinate_grid(
+                    size=(1, 1, 1),
+                    start=(0, 0, 0),
+                    device=device,
+                )
+                .flatten(0, 2)
+                .repeat(image_padding_len, 1)
+            )
+            image_padded_pos_ids = torch.cat([image_ori_pos_ids, image_padding_pos_ids], dim=0)
+            all_image_pos_ids.append(image_padded_pos_ids)
+
+            all_image_pad_mask.append(
+                torch.cat(
+                    [
+                        torch.zeros((image_ori_len,), dtype=torch.bool, device=device),
+                        torch.ones((image_padding_len,), dtype=torch.bool, device=device),
+                    ],
+                    dim=0,
+                )
+            )
+
+            image_padded_feat = torch.cat([image, image[-1:].repeat(image_padding_len, 1)], dim=0)
+            all_image_out.append(image_padded_feat)
+
+        return all_image_out, all_image_size, all_image_pos_ids, all_image_pad_mask
+
     def forward(
         self,
         x: List[torch.Tensor],
@@ -568,6 +786,8 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOr
         f_patch_size=1,
         callback=None,
         pipeline=None,
+        control_latent: Optional[List[torch.Tensor]] = None,
+        control_context_scale: float = 1.0,
     ):
         assert patch_size in self.all_patch_size
         assert f_patch_size in self.all_f_patch_size
@@ -648,12 +868,55 @@ class ZImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOr
         for i, seq_len in enumerate(unified_item_seqlens):
             unified_attn_mask[i, :seq_len] = 1
 
+        # Prepare control hints if control is enabled and control_latent is provided
+        hints = None
+        if self.enable_control and control_latent is not None:
+            # Patchify control context
+            control_context, _, ctrl_pos_ids, ctrl_inner_pad_mask = self.patchify(
+                control_latent, patch_size, f_patch_size, cap_item_seqlens[0]
+            )
+
+            # Embed control context
+            ctrl_item_seqlens = [len(_) for _ in control_context]
+            ctrl_max_item_seqlen = max(ctrl_item_seqlens)
+
+            control_context = torch.cat(control_context, dim=0)
+            control_context = self.control_all_x_embedder[f"{patch_size}-{f_patch_size}"](control_context)
+
+            # Match adaln_input dtype to control_context
+            adaln_input_ctrl = adaln_input[:1].type_as(control_context)
+            control_context[torch.cat(ctrl_inner_pad_mask)] = self.x_pad_token
+            control_context = list(control_context.split(ctrl_item_seqlens, dim=0))
+            ctrl_freqs_cis = list(self.rope_embedder(torch.cat(ctrl_pos_ids, dim=0)).split(ctrl_item_seqlens, dim=0))
+
+            control_context = pad_sequence(control_context, batch_first=True, padding_value=0.0)
+            ctrl_freqs_cis = pad_sequence(ctrl_freqs_cis, batch_first=True, padding_value=0.0)
+            ctrl_attn_mask = torch.zeros((1, ctrl_max_item_seqlen), dtype=torch.bool, device=device)
+            for i, seq_len in enumerate(ctrl_item_seqlens):
+                ctrl_attn_mask[i, :seq_len] = 1
+
+            # Refine control context through control noise refiner
+            for layer in self.control_noise_refiner:
+                control_context = layer(control_context, ctrl_attn_mask, ctrl_freqs_cis, adaln_input_ctrl)
+
+            # Unify control context with caption features
+            control_context_unified = []
+            for i in range(1):
+                ctrl_len = ctrl_item_seqlens[i]
+                cap_len = cap_item_seqlens[i]
+                control_context_unified.append(torch.cat([control_context[i][:ctrl_len], cap_feats[i][:cap_len]]))
+            control_context_unified = pad_sequence(control_context_unified, batch_first=True, padding_value=0.0)
+
+            # Create hints as mutable list (just-in-time pattern)
+            hints = [control_context_unified]
+
         for layer in self.layers:
             if callback is not None:
                 callback(-1, None, False, True)
             if pipeline is not None and getattr(pipeline, "_interrupt", False):
                 return [None] * bsz, {}
-            unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input)
+            unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input,
+                           hints=hints, context_scale=control_context_scale)
 
         unified = self.all_final_layer[f"{patch_size}-{f_patch_size}"](unified, adaln_input)
         unified = list(unified.unbind(dim=0))

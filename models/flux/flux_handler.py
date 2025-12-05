@@ -111,6 +111,25 @@ class family_handler():
         if flux2:
             extra_model_def["group"] ="flux2"             
             extra_model_def["no_background_removal"] = True
+            # extra_model_def["inpaint_support"] = True
+            extra_model_def["mask_preprocessing"] = {
+                "selection":[ ""],
+                "visible": False
+            }
+
+            extra_model_def["mask_strength_always_enabled"] = True
+
+            extra_model_def["guide_preprocessing"] = {
+                "selection": ["", "PV", "MV"],
+            }
+
+            extra_model_def["mask_preprocessing"] = {
+                    "selection": ["", "A", "NA"],
+                    "visible": True,
+                }
+
+            # extra_model_def["guide_inpaint_color"] = 0
+            # extra_model_def["video_guide_outpainting"] = [1,2]
 
         extra_model_def["fit_into_canvas_image_refs"] = 0
 
@@ -301,6 +320,7 @@ class family_handler():
             ui_defaults.update({
                 "embedded_guidance_scale": 4.0,
                 "remove_background_images_ref" : 0,
+                "mask_strength": 0.3,
 
             })
 

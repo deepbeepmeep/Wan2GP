@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Hunyuan Video 1.5  Image2video 720p 8B",
+        "name": "Hunyuan Video 1.5 Image2video 720p 8B",
         "architecture": "hunyuan_1_5_i2v",
         "description": "HunyuanVideo-1.5 is a video generation model that delivers top-tier quality with only 8.3B parameters, significantly lowering the barrier to usage. This is the Image2video 720p version.",
         "URLs": [

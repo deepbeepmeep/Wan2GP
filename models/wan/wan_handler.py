@@ -405,6 +405,8 @@ class family_handler():
 
 
         if vace_class:
+            extra_model_def["control_net_weight_name"] = "Vace"
+            extra_model_def["control_net_weight_size"] = 2
             extra_model_def["guide_preprocessing"] = {
                     "selection": ["", "UV", "PV", "DV", "SV", "LV", "CV", "MV", "V", "PDV", "PSV", "PLV" , "DSV", "DLV", "SLV"],
                     "labels" : { "V": "Use Vace raw format"}
@@ -626,8 +628,8 @@ class family_handler():
 
         ref_image = convert_tensor_to_image(pre_video_guide[:, 0])
         frames = video_guide
-        mask_frames = None
         mask_frames = None if video_mask is None else video_mask
+
         aligner = PoseAligner()
         outputs = aligner.align( frames, ref_image, ref_video_mask=mask_frames, align_frame=0, max_frames=None, augment=True, include_composite= True, cpu_resize_workers= max_workers, expand_scale = expand_scale )
 

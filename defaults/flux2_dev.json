@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Flux 2 Dev",
+        "name": "Flux 2 Dev 32B",
         "architecture": "flux2_dev",
         "description": "FLUX.2 Dev is the latest rectified flow transformer from Black Forest Labs for image generation and editing.",
         "URLs": [

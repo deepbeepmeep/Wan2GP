@@ -44,7 +44,7 @@ from shared.utils.video_metadata import save_video_metadata
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
-from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, gen_lock
+from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, any_GPU_process_running, gen_lock
 from shared.loras_migration import migrate_loras_layout
 from huggingface_hub import hf_hub_download, snapshot_download
 from shared.utils import files_locator as fl 
@@ -83,7 +83,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
-WanGP_version = "9.73"
+WanGP_version = "9.8"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -754,11 +754,14 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         if "G" in video_prompt_type:
                 if denoising_strength < 1.:
                     gr.Info(f"With Denoising Strength {denoising_strength:.1f}, Denoising will start at Step no {int(round(num_inference_steps * (1. - denoising_strength),4))} ")
-                    masking_duration = math.ceil(num_inference_steps * masking_strength)
-                if "A" in video_prompt_type and "U" not in video_prompt_type and masking_strength < 1.:
-                    gr.Info(f"With Masking Strength {masking_strength:.1f}, Masking will last {masking_duration}{' Step' if masking_duration==1 else ' Steps'}")
         else: 
             denoising_strength = 1.0
+                    
+        if "G" in video_prompt_type or model_def.get("mask_strength_always_enabled", False):
+                if "A" in video_prompt_type and "U" not in video_prompt_type and masking_strength < 1.:
+                    masking_duration = math.ceil(num_inference_steps * masking_strength)
+                    gr.Info(f"With Masking Strength {masking_strength:.1f}, Masking will last {masking_duration}{' Step' if masking_duration==1 else ' Steps'}")
+        else: 
             masking_strength = 1.0
         if len(keep_frames_video_guide) > 0 and model_type in ["ltxv_13B"]:
             gr.Info("Keep Frames for Control Video is not supported with LTX Video")
@@ -802,7 +805,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
             gr.Info("Start Image should be an Image") 
             return ret()
         if  multi_prompts_gen_type in [1] and len(image_start) > 1:
-            gr.Info("Only one Start Image is supported") 
+            gr.Info("Only one Start Image is supported if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is set") 
             return ret()       
     else:
         image_start = None
@@ -817,13 +820,13 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         if image_end == None :
             gr.Info("End Image should be an Image") 
             return ret()
-        if multi_prompts_gen_type in [0,2]:
-            if video_source is not None:
-                if len(image_end)> 1:
-                    gr.Info("If a Video is to be continued and the option 'Each Text Prompt Will create a new generated Video' is set, there can be only one End Image")
-                    return ret()        
-            elif len(image_start or []) != len(image_end or []):
-                gr.Info("The number of Start and End Images should be the same when the option 'Each Text Prompt Will create a new generated Video'")
+        if (video_source is not None or "L" in image_prompt_type):
+            if multi_prompts_gen_type in [0,2] and len(image_end)> 1:
+                gr.Info("If you want to Continue a Video, you can use Multiple End Images only if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is set")
+                return ret()        
+        elif multi_prompts_gen_type in [0, 2]:
+            if len(image_start or []) != len(image_end or []):
+                gr.Info("The number of Start and End Images should be the same if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is not set")
                 return ret()    
     else:        
         image_end = None
@@ -1205,97 +1208,75 @@ def save_queue_action(state):
         finally:
             zip_buffer.close()
 
-def load_queue_action(filepath, state, evt:gr.EventData):
+def _parse_queue_zip(filename, state):
+    """Parse queue ZIP file. Returns (queue_list, error_msg or None).
+    Core parsing logic used by both load_queue_action() and CLI mode.
+    """
     global task_id
-
-    gen = get_gen_info(state)
-    original_queue = gen.get("queue", [])
-    delete_autoqueue_file  = False 
-    if evt.target == None:
-
-        if original_queue or not Path(AUTOSAVE_FILENAME).is_file():
-            return
-        print(f"Autoloading queue from {AUTOSAVE_FILENAME}...")
-        filename = AUTOSAVE_FILENAME
-        delete_autoqueue_file = True
-    else:
-        if not filepath or not hasattr(filepath, 'name') or not Path(filepath.name).is_file():
-            print("[load_queue_action] Warning: No valid file selected or file not found.")
-            return update_queue_data(original_queue)
-        filename = filepath.name
-
-
     save_path_base = server_config.get("save_path", "outputs")
     loaded_cache_dir = os.path.join(save_path_base, "_loaded_queue_cache")
-
-
     newly_loaded_queue = []
-    max_id_in_file = 0
-    error_message = ""
-    local_queue_copy_for_global_ref = None
 
     try:
-        print(f"[load_queue_action] Attempting to load queue from: {filename}")
+        print(f"[load_queue] Attempting to load queue from: {filename}")
         os.makedirs(loaded_cache_dir, exist_ok=True)
-        print(f"[load_queue_action] Using cache directory: {loaded_cache_dir}")
+        print(f"[load_queue] Using cache directory: {loaded_cache_dir}")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with zipfile.ZipFile(filename, 'r') as zf:
-                if "queue.json" not in zf.namelist(): raise ValueError("queue.json not found in zip file")
-                print(f"[load_queue_action] Extracting {filename} to {tmpdir}")
+                if "queue.json" not in zf.namelist():
+                    return None, "queue.json not found in zip file"
+                print(f"[load_queue] Extracting {filename} to {tmpdir}")
                 zf.extractall(tmpdir)
-                print(f"[load_queue_action] Extraction complete.")
+                print(f"[load_queue] Extraction complete.")
 
             manifest_path = os.path.join(tmpdir, "queue.json")
-            print(f"[load_queue_action] Reading manifest: {manifest_path}")
+            print(f"[load_queue] Reading manifest: {manifest_path}")
             with open(manifest_path, 'r', encoding='utf-8') as f:
                 loaded_manifest = json.load(f)
-            print(f"[load_queue_action] Manifest loaded. Processing {len(loaded_manifest)} tasks.")
+            print(f"[load_queue] Manifest loaded. Processing {len(loaded_manifest)} tasks.")
 
             for task_index, task_data in enumerate(loaded_manifest):
                 if task_data is None or not isinstance(task_data, dict):
-                    print(f"[load_queue_action] Skipping invalid task data at index {task_index}")
+                    print(f"[load_queue] Skipping invalid task data at index {task_index}")
                     continue
 
                 params = task_data.get('params', {})
                 task_id_loaded = task_data.get('id', 0)
-                max_id_in_file = max(max_id_in_file, task_id_loaded)
                 params['state'] = state
 
                 image_keys = ["image_start", "image_end", "image_refs", "image_guide", "image_mask"]
                 video_keys = ["video_guide", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source"]
 
-                loaded_pil_images = {}
-                loaded_video_paths = {}
-
                 for key in image_keys:
                     image_filenames = params.get(key)
-                    if image_filenames is None: continue
+                    if image_filenames is None:
+                        continue
 
                     is_list = isinstance(image_filenames, list)
-                    if not is_list: image_filenames = [image_filenames]
+                    if not is_list:
+                        image_filenames = [image_filenames]
 
                     loaded_pils = []
                     for img_filename_in_zip in image_filenames:
-                         if not isinstance(img_filename_in_zip, str):
-                             print(f"[load_queue_action] Warning: Non-string filename found for image key '{key}'. Skipping.")
-                             continue
-                         img_load_path = os.path.join(tmpdir, img_filename_in_zip)
-                         if not os.path.exists(img_load_path):
-                             print(f"[load_queue_action] Image file not found in extracted data: {img_load_path}. Skipping.")
-                             continue
-                         try:
-                             pil_image = Image.open(img_load_path)
-                             pil_image.load()
-                             converted_image = convert_image(pil_image)
-                             loaded_pils.append(converted_image)
-                             pil_image.close()
-                             print(f"Loaded image: {img_filename_in_zip} for key {key}")
-                         except Exception as img_e:
-                             print(f"[load_queue_action] Error loading image {img_filename_in_zip}: {img_e}")
+                        if not isinstance(img_filename_in_zip, str):
+                            print(f"[load_queue] Warning: Non-string filename found for image key '{key}'. Skipping.")
+                            continue
+                        img_load_path = os.path.join(tmpdir, img_filename_in_zip)
+                        if not os.path.exists(img_load_path):
+                            print(f"[load_queue] Image file not found in extracted data: {img_load_path}. Skipping.")
+                            continue
+                        try:
+                            pil_image = Image.open(img_load_path)
+                            pil_image.load()
+                            converted_image = convert_image(pil_image)
+                            loaded_pils.append(converted_image)
+                            pil_image.close()
+                            print(f"Loaded image: {img_filename_in_zip} for key {key}")
+                        except Exception as img_e:
+                            print(f"[load_queue] Error loading image {img_filename_in_zip}: {img_e}")
                     if loaded_pils:
                         params[key] = loaded_pils if is_list else loaded_pils[0]
-                        loaded_pil_images[key] = params[key]
                     else:
                         params.pop(key, None)
 
@@ -1306,7 +1287,7 @@ def load_queue_action(filepath, state, evt:gr.EventData):
 
                     video_load_path = os.path.join(tmpdir, video_filename_in_zip)
                     if not os.path.exists(video_load_path):
-                        print(f"[load_queue_action] Video file not found in extracted data: {video_load_path}. Skipping.")
+                        print(f"[load_queue] Video file not found in extracted data: {video_load_path}. Skipping.")
                         params.pop(key, None)
                         continue
 
@@ -1314,13 +1295,12 @@ def load_queue_action(filepath, state, evt:gr.EventData):
                     try:
                         shutil.copy2(video_load_path, persistent_video_path)
                         params[key] = persistent_video_path
-                        loaded_video_paths[key] = persistent_video_path
                         print(f"Loaded video: {video_filename_in_zip} -> {persistent_video_path}")
                     except Exception as vid_e:
-                        print(f"[load_queue_action] Error copying video {video_filename_in_zip} to cache: {vid_e}")
+                        print(f"[load_queue] Error copying video {video_filename_in_zip} to cache: {vid_e}")
                         params.pop(key, None)
 
-                primary_preview_pil_list, secondary_preview_pil_list, primary_preview_pil_labels, secondary_preview_pil_labels  = get_preview_images(params)
+                primary_preview_pil_list, secondary_preview_pil_list, primary_preview_pil_labels, secondary_preview_pil_labels = get_preview_images(params)
 
                 start_b64 = [pil_to_base64_uri(primary_preview_pil_list[0], format="jpeg", quality=70)] if isinstance(primary_preview_pil_list, list) and primary_preview_pil_list else None
                 end_b64 = [pil_to_base64_uri(secondary_preview_pil_list[0], format="jpeg", quality=70)] if isinstance(secondary_preview_pil_list, list) and secondary_preview_pil_list else None
@@ -1331,6 +1311,7 @@ def load_queue_action(filepath, state, evt:gr.EventData):
                 runtime_task = {
                     "id": task_id_loaded,
                     "params": params.copy(),
+                    "plugin_data": task_data.get('plugin_data', {}),
                     "repeats": params.get('repeat_generation', 1),
                     "length": params.get('video_length'),
                     "steps": params.get('num_inference_steps'),
@@ -1343,41 +1324,66 @@ def load_queue_action(filepath, state, evt:gr.EventData):
                     "end_image_data_base64": end_b64,
                 }
                 newly_loaded_queue.append(runtime_task)
-                print(f"[load_queue_action] Reconstructed task {task_index+1}/{len(loaded_manifest)}, ID: {task_id_loaded}")
+                print(f"[load_queue] Reconstructed task {task_index+1}/{len(loaded_manifest)}, ID: {task_id_loaded}")
 
+        # Update global task_id
+        current_max_id = max([t['id'] for t in newly_loaded_queue if 'id' in t] + [0])
+        if current_max_id >= task_id:
+            new_task_id = current_max_id + 1
+            print(f"[load_queue] Updating global task_id from {task_id} to {new_task_id}")
+            task_id = new_task_id
+
+        return newly_loaded_queue, None
+
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+
+def load_queue_action(filepath, state, evt:gr.EventData):
+    """Load queue from ZIP file (Gradio UI wrapper for _parse_queue_zip)."""
+    gen = get_gen_info(state)
+    original_queue = gen.get("queue", [])
+    if len(original_queue):
+        gr.Info("Queue must be empty before loading a new queue")
+        return update_queue_data(original_queue)
+
+    # Determine filename (autoload vs user upload)
+    delete_autoqueue_file = False
+    if evt.target == None:
+        if original_queue or not Path(AUTOSAVE_FILENAME).is_file():
+            return
+        print(f"Autoloading queue from {AUTOSAVE_FILENAME}...")
+        filename = AUTOSAVE_FILENAME
+        delete_autoqueue_file = True
+    else:
+        if not filepath or not hasattr(filepath, 'name') or not Path(filepath.name).is_file():
+            print("[load_queue_action] Warning: No valid file selected or file not found.")
+            return update_queue_data(original_queue)
+        filename = filepath.name
+
+    try:
+        # Use shared parser
+        newly_loaded_queue, error = _parse_queue_zip(filename, state)
+        if error:
+            gr.Warning(f"Failed to load queue: {error[:200]}")
+            return update_queue_data(original_queue)
+
+        # Update state (Gradio-specific)
         with lock:
-            print("[load_queue_action] Acquiring lock to update state...")
             gen["queue"] = newly_loaded_queue[:]
-            local_queue_copy_for_global_ref = gen["queue"][:]
-
-            current_max_id_in_new_queue = max([t['id'] for t in newly_loaded_queue if 'id' in t] + [0])
-            if current_max_id_in_new_queue >= task_id:
-                 new_task_id = current_max_id_in_new_queue + 1
-                 print(f"[load_queue_action] Updating global task_id from {task_id} to {new_task_id}")
-                 task_id = new_task_id
-            else:
-                 print(f"[load_queue_action] Global task_id ({task_id}) is > max in file ({current_max_id_in_new_queue}). Not changing task_id.")
-
             gen["prompts_max"] = len(newly_loaded_queue)
-            print("[load_queue_action] State update complete. Releasing lock.")
+        update_global_queue_ref(newly_loaded_queue)
 
-        if local_queue_copy_for_global_ref is not None:
-             print("[load_queue_action] Updating global queue reference...")
-             update_global_queue_ref(local_queue_copy_for_global_ref)
-        else:
-             print("[load_queue_action] Warning: Skipping global ref update as local copy is None.")
-
-        print(f"[load_queue_action] Queue load successful. Returning DataFrame update for {len(newly_loaded_queue)} tasks.")
+        print(f"[load_queue_action] Queue load successful. {len(newly_loaded_queue)} tasks.")
         return update_queue_data(newly_loaded_queue)
 
-    except (ValueError, zipfile.BadZipFile, FileNotFoundError, Exception) as e:
+    except Exception as e:
         error_message = f"Error during queue load: {e}"
         print(f"[load_queue_action] Caught error: {error_message}")
         traceback.print_exc()
         gr.Warning(f"Failed to load queue: {error_message[:200]}")
-
-        print("[load_queue_action] Load failed. Returning DataFrame update for original queue.")
         return update_queue_data(original_queue)
+
     finally:
         if delete_autoqueue_file:
             if os.path.isfile(filename):
@@ -1385,17 +1391,18 @@ def load_queue_action(filepath, state, evt:gr.EventData):
                 print(f"Clear Queue: Deleted autosave file '{filename}'.")
 
         if filepath and hasattr(filepath, 'name') and filepath.name and os.path.exists(filepath.name):
-             if tempfile.gettempdir() in os.path.abspath(filepath.name):
-                 try:
-                     os.remove(filepath.name)
-                     print(f"[load_queue_action] Removed temporary upload file: {filepath.name}")
-                 except OSError as e:
-                     print(f"[load_queue_action] Info: Could not remove temp file {filepath.name}: {e}")
-             else:
-                  print(f"[load_queue_action] Info: Did not remove non-temporary file: {filepath.name}")
+            if tempfile.gettempdir() in os.path.abspath(filepath.name):
+                try:
+                    os.remove(filepath.name)
+                    print(f"[load_queue_action] Removed temporary upload file: {filepath.name}")
+                except OSError as e:
+                    print(f"[load_queue_action] Info: Could not remove temp file {filepath.name}: {e}")
+            else:
+                print(f"[load_queue_action] Info: Did not remove non-temporary file: {filepath.name}")
 
 def clear_queue_action(state):
     gen = get_gen_info(state)
+    gen["resume"] = True
     queue = gen.get("queue", [])
     aborted_current = False
     cleared_pending = False
@@ -2011,7 +2018,25 @@ def _parse_args():
     type=str,
     default="",
     help="vae config mode"
-    )    
+    )
+
+    parser.add_argument(
+        "--process",
+        type=str,
+        default="",
+        help="Process a saved queue file without launching the web UI"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate queue file without generating (use with --process)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="",
+        help="Override output directory for CLI processing (use with --process)"
+    )
 
     args = parser.parse_args()
 
@@ -2733,7 +2758,7 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
 
     if is_module:
         quanto_filename = model_filename.replace(dtypestr, "quanto_" + quanto_dtypestr + "_int8" )
-        quanto_filename_path = os.path.join(fl.get_download_folder() , quanto_filename)
+        quanto_filename_path = os.path.join(fl.get_download_location() , quanto_filename)
         if hasattr(model, "_quanto_map"):
             print("unable to generate quantized module, the main model should at full 16 bits before quantization can be done")
         elif fl.locate_file(quanto_filename, error_if_none= False) is None:
@@ -3428,8 +3453,35 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
         # gen["progress_args"] = progress_args
             
     return callback
+
+def pause_generation(state):
+    gen = get_gen_info(state)
+    process_id = "pause"
+    GPU_process_running = any_GPU_process_running(state, process_id, ignore_main= True )
+    if GPU_process_running:
+        gr.Info("Unable to pause, a PlugIn is using the GPU")
+        yield gr.update(), gr.update()
+        return
+    gen["resume"] = False
+    yield gr.Button(interactive= False), gr.update()
+    pause_msg = "Generation on Pause, click Resume to Restart Generation"
+    acquire_GPU_ressources(state, process_id , "Pause", gr= gr, custom_pause_msg= pause_msg, custom_wait_msg= "Please wait while the Pause Request is being Processed...")      
+    gr.Info(pause_msg)
+    yield gr.Button(visible= False, interactive= True), gr.Button(visible= True)
+    while not gen.get("resume", False):
+        time.sleep(0.5)
+
+    release_GPU_ressources(state, process_id )
+    gen["resume"] = False
+    yield gr.Button(visible= True, interactive= True), gr.Button(visible= False)
+
+def resume_generation(state):
+    gen = get_gen_info(state)
+    gen["resume"] = True
+
 def abort_generation(state):
     gen = get_gen_info(state)
+    gen["resume"] = True
     if "in_progress" in gen: # and wan_model != None:
         if wan_model != None:
             wan_model._interrupt= True
@@ -3606,7 +3658,7 @@ def select_audio(state, audio_files_paths, audio_file_selected):
 
 
 video_guide_processes = "PEDSLCMU"
-all_guide_processes = video_guide_processes + "VBH"
+all_guide_processes = video_guide_processes + "VGBH"
 
 process_map_outside_mask = { "Y" : "depth", "W": "scribble", "X": "inpaint", "Z": "flow"}
 process_map_video_guide = { "P": "pose", "D" : "depth", "S": "scribble", "E": "canny", "L": "flow", "C": "gray", "M": "inpaint", "U": "identity"}
@@ -3892,7 +3944,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if "G" in video_video_prompt_type and "V" in video_video_prompt_type:
                 values += [configs.get("denoising_strength",1)]
                 labels += ["Denoising Strength"]
-            if "G" in video_video_prompt_type and "A" in video_video_prompt_type and "U" not in video_video_prompt_type:
+            if ("G" in video_video_prompt_type or model_def.get("mask_strength_always_enabled", False)) and "A" in video_video_prompt_type and "U" not in video_video_prompt_type:
                 values += [configs.get("masking_strength",1)]
                 labels += ["Masking Strength"]
 
@@ -3924,14 +3976,15 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if  video_motion_amplitude != 1: 
                 values += [video_motion_amplitude]
                 labels += ["Motion Amplitude"]
+            control_net_weight_name = model_def.get("control_net_weight_name", "")
             control_net_weight = ""
-            if test_vace_module(video_model_type):
+            if len(control_net_weight_name):
                 video_control_net_weight = configs.get("control_net_weight", 1)
                 if len(filter_letters(video_video_prompt_type, video_guide_processes))> 1:
                     video_control_net_weight2 = configs.get("control_net_weight2", 1)
-                    control_net_weight = f"Vace #1={video_control_net_weight}, Vace #2={video_control_net_weight2}"
+                    control_net_weight = f"{control_net_weight_name} #1={video_control_net_weight}, {control_net_weight_name} #2={video_control_net_weight2}"
                 else:
-                    control_net_weight = f"Vace={video_control_net_weight}"
+                    control_net_weight = f"{control_net_weight_name}={video_control_net_weight}"
             control_net_weight_alt_name = model_def.get("control_net_weight_alt_name", "")
             if len(control_net_weight_alt_name) >0:
                 if len(control_net_weight): control_net_weight += ", "
@@ -4894,7 +4947,7 @@ def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_
     max_workers = get_default_workers()
 
     if not video_guide or max_frames <= 0:
-        return None, None
+        return None, None, None, None
     video_guide = get_resampled_video(video_guide, start_frame, max_frames, target_fps).permute(-1, 0, 1, 2)
     video_guide = video_guide / 127.5 - 1.
     any_mask = video_mask is not None
@@ -4902,8 +4955,8 @@ def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_
         video_mask = get_resampled_video(video_mask, start_frame, max_frames, target_fps).permute(-1, 0, 1, 2)
         video_mask = video_mask[:1] / 255.
 
-    if len(video_guide) == 0 or any_mask and len(video_mask) == 0:
-        return None, None
+    if video_guide.shape[1] == 0 or any_mask and video_mask.shape[1] == 0:
+        return None, None, None, None
     
     video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2  = model_handler.custom_preprocess(base_model_type = base_model_type, pre_video_guide = pre_video_guide, video_guide = video_guide, video_mask = video_mask, height = height, width = width, fit_canvas = fit_canvas , fit_crop = fit_crop, target_fps = target_fps,  block_size = block_size, max_workers = max_workers, expand_scale = expand_scale)
 
@@ -5608,8 +5661,11 @@ def generate_video(
                 if src_video is None or window_no >1 and src_video.shape[1] <= sliding_window_overlap and not dont_cat_preguide:
                     abort = True 
                     break
-                if model_def.get("control_video_trim", False) and src_video is not None:
-                    if src_video.shape[1] < current_video_length:
+                if model_def.get("control_video_trim", False) :
+                    if src_video is None:
+                        abort = True 
+                        break
+                    elif src_video.shape[1] < current_video_length:
                         current_video_length = src_video.shape[1]
                         abort_scheduled = True 
                 if src_faces is not None:
@@ -5761,6 +5817,7 @@ def generate_video(
                     exaggeration=exaggeration,
                     pace=pace,
                     temperature=temperature,
+                    full_prefix_video = prefix_video,
                 )
             except Exception as e:
                 if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:
@@ -6290,6 +6347,100 @@ def process_tasks(state):
     gen["status_display"] =  False
     release_gen()
 
+
+def process_tasks_cli(queue, state):
+    """Process queue tasks with console output for CLI mode. Returns True on success."""
+    from shared.utils.thread_utils import AsyncStream, async_run
+    import inspect
+
+    gen = get_gen_info(state)
+    total_tasks = len(queue)
+    completed = 0
+    start_time = time.time()
+
+    for task_idx, task in enumerate(queue):
+        task_no = task_idx + 1
+        prompt_preview = (task.get('prompt', '') or '')[:60]
+        print(f"\n[Task {task_no}/{total_tasks}] {prompt_preview}...")
+
+        # Update gen state for this task
+        gen["prompt_no"] = task_no
+        gen["prompts_max"] = total_tasks
+
+        params = task['params'].copy()
+        params['state'] = state
+
+        com_stream = AsyncStream()
+        send_cmd = com_stream.output_queue.push
+
+        def make_error_handler(task, params, send_cmd):
+            def error_handler():
+                try:
+                    model_type = params.get('model_type')
+                    known_defaults = {'image_refs_relative_size': 50}
+
+                    for arg_name, default_value in known_defaults.items():
+                        if arg_name not in params:
+                            params[arg_name] = default_value
+
+                    if model_type:
+                        default_settings = get_default_settings(model_type)
+                        expected_args = inspect.signature(generate_video).parameters.keys()
+                        for arg_name in expected_args:
+                            if arg_name not in params and arg_name in default_settings:
+                                params[arg_name] = default_settings[arg_name]
+
+                    plugin_data = task.get('plugin_data', {})
+                    generate_video(task, send_cmd, plugin_data=plugin_data, **params)
+                except Exception as e:
+                    print(f"\n  [ERROR] {e}")
+                    traceback.print_exc()
+                    send_cmd("error", str(e))
+                finally:
+                    send_cmd("exit", None)
+            return error_handler
+
+        async_run(make_error_handler(task, params, send_cmd))
+
+        # Process output stream
+        task_error = False
+        last_msg_len = 0
+        while True:
+            cmd, data = com_stream.output_queue.next()
+            if cmd == "exit":
+                break
+            elif cmd == "error":
+                print(f"\n  [ERROR] {data}")
+                task_error = True
+            elif cmd == "progress":
+                if isinstance(data, list) and len(data) >= 2:
+                    if isinstance(data[0], tuple):
+                        step, total = data[0]
+                        msg = data[1] if len(data) > 1 else ""
+                    else:
+                        step, msg = 0, data[1] if len(data) > 1 else str(data[0])
+                        total = 1
+                    status_line = f"\r  [{step}/{total}] {msg}"
+                    # Pad to clear previous longer messages
+                    print(status_line.ljust(max(last_msg_len, len(status_line))), end="", flush=True)
+                    last_msg_len = len(status_line)
+            elif cmd == "status":
+                status_line = f"\r  {data}"
+                print(status_line.ljust(max(last_msg_len, len(status_line))), end="", flush=True)
+                last_msg_len = len(status_line)
+            elif cmd == "output":
+                print(f"\n  Video saved")
+            elif cmd == "info":
+                print(f"\n  [INFO] {data}")
+
+        if not task_error:
+            completed += 1
+            print(f"\n  Task {task_no} completed")
+
+    elapsed = time.time() - start_time
+    print(f"\n{'='*50}")
+    print(f"Queue completed: {completed}/{total_tasks} tasks in {format_time(elapsed)}")
+    return completed == total_tasks
 
 
 def get_generation_status(prompt_no, prompts_max, repeat_no, repeat_max, window_no, total_windows):
@@ -6855,8 +7006,12 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["MMAudio_setting", "MMAudio_prompt", "MMAudio_neg_prompt"]
 
     video_prompt_type = inputs["video_prompt_type"]
-    if not "G" in video_prompt_type:
-        pop += ["denoising_strength", "masking_strength"]
+    if "G" not in video_prompt_type:
+        pop += ["denoising_strength"]
+
+    if  "G" not in video_prompt_type and not model_def.get("mask_strength_always_enabled", False):
+        pop += ["masking_strength"]
+
 
     if not (server_config.get("enhancer_enabled", 0) > 0 and server_config.get("enhancer_mode", 0) == 0):
         pop += ["prompt_enhancer"]
@@ -6873,7 +7028,10 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
             pop += ["image_refs_relative_size"]
 
     if not vace:
-        pop += ["frames_positions", "control_net_weight", "control_net_weight2"] 
+        pop += ["frames_positions"]
+    
+    if model_def.get("control_net_weight_name", None) is None:
+        pop += ["control_net_weight", "control_net_weight2"] 
 
     if not len(model_def.get("control_net_weight_alt_name", "")) >0:
         pop += ["control_net_weight_alt"]
@@ -7802,8 +7960,9 @@ def refresh_video_prompt_type_video_mask(state, video_prompt_type, video_prompt_
     model_type = state["model_type"]
     model_def = get_model_def(model_type)
     image_outputs =  image_mode > 0
+    mask_strength_always_enabled = model_def.get("mask_strength_always_enabled", False)  
     image_mask_guide, image_guide, image_mask = switch_image_guide_editor(image_mode, old_video_prompt_type , video_prompt_type, old_image_mask_guide_value, old_image_guide_value, old_image_mask_value )
-    return video_prompt_type, gr.update(visible= visible and not image_outputs), image_mask_guide, image_guide, image_mask, gr.update(visible= visible )
+    return video_prompt_type, gr.update(visible= visible and not image_outputs), image_mask_guide, image_guide, image_mask, gr.update(visible= visible ) , gr.update(visible= visible and (mask_strength_always_enabled or "G" in video_prompt_type )  )
 
 def refresh_video_prompt_type_alignment(state, video_prompt_type, video_prompt_type_video_guide):
     video_prompt_type = del_in_sequence(video_prompt_type, "T")
@@ -7842,8 +8001,8 @@ def refresh_video_prompt_type_video_guide(state, filter_type, video_prompt_type,
         if len(custom_trigger) == 0 or custom_trigger in video_prompt_type:
             custom_options = True
             custom_checkbox = custom_video_selection.get("type","") == "checkbox"
-            
-    return video_prompt_type,  gr.update(visible = visible and not image_outputs), image_guide, gr.update(visible = keep_frames_video_guide_visible), gr.update(visible = visible and "G" in video_prompt_type),  gr.update(visible = mask_visible and "G" in video_prompt_type), gr.update(visible= (visible or "F" in video_prompt_type or "K" in video_prompt_type) and any_outpainting), gr.update(visible= visible and mask_selector_visible and  not "U" in video_prompt_type ) ,  gr.update(visible= mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible= mask_visible),  gr.update(visible = ref_images_visible ), gr.update(visible= custom_options and not custom_checkbox ), gr.update(visible= custom_options and custom_checkbox ) 
+    mask_strength_always_enabled = model_def.get("mask_strength_always_enabled", False)  
+    return video_prompt_type,  gr.update(visible = visible and not image_outputs), image_guide, gr.update(visible = keep_frames_video_guide_visible), gr.update(visible = visible and "G" in video_prompt_type),  gr.update(visible = mask_visible and( mask_strength_always_enabled or "G" in video_prompt_type)), gr.update(visible= (visible or "F" in video_prompt_type or "K" in video_prompt_type) and any_outpainting), gr.update(visible= visible and mask_selector_visible and  not "U" in video_prompt_type ) ,  gr.update(visible= mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible= mask_visible),  gr.update(visible = ref_images_visible ), gr.update(visible= custom_options and not custom_checkbox ), gr.update(visible= custom_options and custom_checkbox ) 
 
 def refresh_video_prompt_type_video_custom_dropbox(state, video_prompt_type, video_prompt_type_video_custom_dropbox):
     model_type = state["model_type"]
@@ -8599,7 +8758,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 # image_mask = gr.Image(label= "Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)", type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , height = gallery_height, value= ui_defaults.get("image_mask", None)) 
                 image_mask = gr.Image(label= "Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)", type ="pil", visible= False, height = gallery_height, value= ui_defaults.get("image_mask", None)) 
                 video_mask = gr.Video(label= "Video Mask Area (for Inpainting, white = Control Area, black = Unchanged)", visible= (not image_outputs) and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , height = gallery_height, value= ui_defaults.get("video_mask", None)) 
-                masking_strength = gr.Slider(0, 1, value= ui_defaults.get("masking_strength", 1), step=0.01, label=f"Masking Strength (the Lower the More Freedom for Unmasked Area", visible = "G" in video_prompt_type_value and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , show_reset_button= False)
+                mask_strength_always_enabled = model_def.get("mask_strength_always_enabled", False)  
+                masking_strength = gr.Slider(0, 1, value= ui_defaults.get("masking_strength", 1), step=0.01, label=f"Masking Strength (the Lower the More Freedom for Unmasked Area", visible = (mask_strength_always_enabled or "G" in video_prompt_type_value) and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , show_reset_button= False)
                 mask_expand = gr.Slider(-10, 50, value=ui_defaults.get("mask_expand", 0), step=1, label="Expand / Shrink Mask Area", visible= "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value, show_reset_button= False )
 
                 image_refs_single_image_mode = model_def.get("one_image_ref_needed", False)
@@ -8809,10 +8969,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 )
                             flow_shift = gr.Slider(1.0, 25.0, value=ui_defaults.get("flow_shift",3), step=0.1, label="Shift Scale", visible = any_flow_shift, show_reset_button= False) 
                         control_net_weight_alt_name = model_def.get("control_net_weight_alt_name", "")
-                        with gr.Row(visible = vace or len(control_net_weight_alt_name) >0 ) as control_net_weights_row:
-                            control_net_weight = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight",1), step=0.1, label="Vace Weight #1", visible=vace, show_reset_button= False)
-                            control_net_weight2 = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.1, label="Vace Weight #2", visible=vace, show_reset_button= False)
-                            control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight_alt",1), step=0.1, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0, show_reset_button= False)
+                        control_net_weight_name = model_def.get("control_net_weight_name", "")
+                        control_net_weight_size = model_def.get("control_net_weight_size", 0)
+
+                        with gr.Row(len(control_net_weight_name) or len(control_net_weight_alt_name)    ) as control_net_weights_row:
+                            control_net_weight = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight",1), step=0.01, label=f"{control_net_weight_name} Weight" + ("" if control_net_weight_size<=1 else " #1"), visible=control_net_weight_size >= 1, show_reset_button= False)
+                            control_net_weight2 = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight2",1), step=0.01, label=f"{control_net_weight_name} Weight" + ("" if control_net_weight_size<=1 else " #2"), visible=control_net_weight_size >=2, show_reset_button= False)
+                            control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_defaults.get("control_net_weight_alt",1), step=0.01, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0, show_reset_button= False)
                         with gr.Row(visible = not (hunyuan_t2v or hunyuan_i2v or no_negative_prompt)) as negative_prompt_row:
                             negative_prompt = gr.Textbox(label="Negative Prompt (ignored if no Guidance that is if CFG = 1)", value=ui_defaults.get("negative_prompt", "")  )
                         filename = gr.Textbox(label="Output File Name", value=ui_defaults.get("filename", ""))    
@@ -9247,9 +9410,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         preview_trigger = gr.Text(visible= False)
                     gen_info = gr.HTML(visible=False, min_height=1) 
                     with gr.Row() as current_gen_buttons_row:
-                        onemoresample_btn = gr.Button("One More Sample Please !", visible = True)
-                        onemorewindow_btn = gr.Button("Extend this Sample Please !", visible = False)
-                        abort_btn = gr.Button("Abort", visible = True)
+                        onemoresample_btn = gr.Button("One More Sample", visible = True, size='md', min_width=1)
+                        onemorewindow_btn = gr.Button("Extend this Sample", visible = False, size='md', min_width=1)
+                        pause_btn = gr.Button("Pause", visible = True, size='md', min_width=1)
+                        resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1)
+                        abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1)
                 with gr.Accordion("Queue Management", open=False) as queue_accordion:
                     with gr.Row():
                         queue_html = gr.HTML(
@@ -9314,7 +9479,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             video_prompt_type_video_custom_dropbox.input(fn= refresh_video_prompt_type_video_custom_dropbox, inputs=[state, video_prompt_type, video_prompt_type_video_custom_dropbox], outputs = video_prompt_type)
             video_prompt_type_video_custom_checkbox.input(fn= refresh_video_prompt_type_video_custom_checkbox, inputs=[state, video_prompt_type, video_prompt_type_video_custom_checkbox], outputs = video_prompt_type)
             # image_mask_guide.upload(fn=update_image_mask_guide, inputs=[state, image_mask_guide], outputs=[image_mask_guide], show_progress="hidden")
-            video_prompt_type_video_mask.input(fn=refresh_video_prompt_type_video_mask, inputs = [state, video_prompt_type, video_prompt_type_video_mask, image_mode, image_mask_guide, image_guide, image_mask], outputs = [video_prompt_type, video_mask, image_mask_guide, image_guide, image_mask, mask_expand], show_progress="hidden") 
+            video_prompt_type_video_mask.input(fn=refresh_video_prompt_type_video_mask, inputs = [state, video_prompt_type, video_prompt_type_video_mask, image_mode, image_mask_guide, image_guide, image_mask], outputs = [video_prompt_type, video_mask, image_mask_guide, image_guide, image_mask, mask_expand, masking_strength], show_progress="hidden") 
             video_prompt_type_alignment.input(fn=refresh_video_prompt_type_alignment, inputs = [state, video_prompt_type, video_prompt_type_alignment], outputs = [video_prompt_type])
             multi_prompts_gen_type.select(fn=refresh_prompt_labels, inputs=[state, multi_prompts_gen_type, image_mode], outputs=[prompt, wizard_prompt, image_end], show_progress="hidden")
             video_guide_outpainting_top.input(fn=update_video_guide_outpainting, inputs=[video_guide_outpainting, video_guide_outpainting_top, gr.State(0)], outputs = [video_guide_outpainting], trigger_mode="multiple" )
@@ -9378,6 +9543,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 outputs=[modal_container],
                 show_progress="hidden"
             )
+            pause_btn.click(pause_generation, [state], [ pause_btn, resume_btn] )
+            resume_btn.click(resume_generation, [state] )
             abort_btn.click(abort_generation, [state], [ abort_btn] ) #.then(refresh_gallery, inputs = [state, gen_info], outputs = [output, gen_info, queue_html] )
             onemoresample_btn.click(fn=one_more_sample,inputs=[state], outputs= [state])
             onemorewindow_btn.click(fn=one_more_window,inputs=[state], outputs= [state])
@@ -10694,6 +10861,98 @@ def create_ui():
 
 if __name__ == "__main__":
     app = WAN2GPApplication()
+
+    # CLI Queue Processing Mode
+    if len(args.process) > 0:
+        download_ffmpeg()  # Still needed for video encoding
+        print(f"WanGP CLI Mode - Processing queue: {args.process}")
+
+        if not os.path.isfile(args.process):
+            print(f"[ERROR] File not found: {args.process}")
+            sys.exit(1)
+
+        # Override output directory if specified
+        if len(args.output_dir) > 0:
+            if not os.path.isdir(args.output_dir):
+                os.makedirs(args.output_dir, exist_ok=True)
+            server_config["save_path"] = args.output_dir
+            server_config["image_save_path"] = args.output_dir
+            # Update the module-level variables that generate_video() uses
+            globals()["save_path"] = args.output_dir
+            globals()["image_save_path"] = args.output_dir
+            print(f"Output directory: {args.output_dir}")
+
+        # Create minimal state with all required fields
+        state = {
+            "gen": {
+                "queue": [],
+                "in_progress": False,
+                "file_list": [],
+                "file_settings_list": [],
+                "audio_file_list": [],
+                "audio_file_settings_list": [],
+                "selected": 0,
+                "audio_selected": 0,
+                "prompt_no": 0,
+                "prompts_max": 0,
+                "repeat_no": 0,
+                "total_generation": 1,
+                "window_no": 0,
+                "total_windows": 0,
+                "progress_status": "",
+                "process_status": "process:main",
+            },
+            "loras": [],
+        }
+
+        # Use shared queue parser
+        queue, error = _parse_queue_zip(args.process, state)
+        if error:
+            print(f"[ERROR] {error}")
+            sys.exit(1)
+
+        if len(queue) == 0:
+            print("Queue is empty, nothing to process")
+            sys.exit(0)
+
+        print(f"Loaded {len(queue)} task(s)")
+
+        # Dry-run mode: validate and exit
+        if args.dry_run:
+            print("\n[DRY-RUN] Queue validation:")
+            for i, task in enumerate(queue, 1):
+                prompt = (task.get('prompt', '') or '')[:50]
+                model = task.get('params', {}).get('model_type', 'unknown')
+                steps = task.get('steps', '?')
+                length = task.get('length', '?')
+                print(f"  Task {i}: model={model}, steps={steps}, frames={length}")
+                print(f"          prompt: {prompt}...")
+            print(f"\n[DRY-RUN] Validation complete. {len(queue)} task(s) ready.")
+            # Clean up cache folder created during parsing
+            dry_run_cache = os.path.join(server_config.get("save_path", "outputs"), "_loaded_queue_cache")
+            if os.path.isdir(dry_run_cache):
+                shutil.rmtree(dry_run_cache, ignore_errors=True)
+            sys.exit(0)
+
+        state["gen"]["queue"] = queue
+
+        # Determine cache dir location for cleanup
+        cli_save_path = args.output_dir if len(args.output_dir) > 0 else server_config.get("save_path", "outputs")
+        cli_cache_dir = os.path.join(cli_save_path, "_loaded_queue_cache")
+
+        try:
+            success = process_tasks_cli(queue, state)
+            # Clean up cache folder
+            if os.path.isdir(cli_cache_dir):
+                shutil.rmtree(cli_cache_dir, ignore_errors=True)
+            sys.exit(0 if success else 1)
+        except KeyboardInterrupt:
+            print("\n\nAborted by user")
+            if os.path.isdir(cli_cache_dir):
+                shutil.rmtree(cli_cache_dir, ignore_errors=True)
+            sys.exit(130)
+
+    # Normal Gradio mode continues below...
     atexit.register(autosave_queue)
     download_ffmpeg()
     # threading.Thread(target=runner, daemon=True).start()
@@ -10705,13 +10964,13 @@ if __name__ == "__main__":
     if args.listen:
         server_name = "0.0.0.0"
     if len(server_name) == 0:
-        server_name = os.getenv("SERVER_NAME", "localhost")      
+        server_name = os.getenv("SERVER_NAME", "localhost")
     demo = create_ui()
     if args.open_browser:
-        import webbrowser 
+        import webbrowser
         if server_name.startswith("http"):
-            url = server_name 
+            url = server_name
         else:
-            url = "http://" + server_name 
+            url = "http://" + server_name
         webbrowser.open(url + ":" + str(server_port), new = 0, autoraise = True)
     demo.launch(favicon_path="favicon.png", server_name=server_name, server_port=server_port, share=args.share, allowed_paths=list({save_path, image_save_path, "icons"}))

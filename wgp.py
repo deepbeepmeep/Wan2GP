@@ -83,7 +83,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
-WanGP_version = "9.8"
+WanGP_version = "9.81"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -10862,10 +10862,6 @@ if __name__ == "__main__":
             if not os.path.isdir(args.output_dir):
                 os.makedirs(args.output_dir, exist_ok=True)
             server_config["save_path"] = args.output_dir
-            server_config["image_save_path"] = args.output_dir
-            # Update the module-level variables that generate_video() uses
-            globals()["save_path"] = args.output_dir
-            globals()["image_save_path"] = args.output_dir
             print(f"Output directory: {args.output_dir}")
 
         # Create minimal state with all required fields
@@ -10914,28 +10910,15 @@ if __name__ == "__main__":
                 print(f"  Task {i}: model={model}, steps={steps}, frames={length}")
                 print(f"          prompt: {prompt}...")
             print(f"\n[DRY-RUN] Validation complete. {len(queue)} task(s) ready.")
-            # Clean up cache folder created during parsing
-            dry_run_cache = os.path.join(server_config.get("save_path", "outputs"), "_loaded_queue_cache")
-            if os.path.isdir(dry_run_cache):
-                shutil.rmtree(dry_run_cache, ignore_errors=True)
             sys.exit(0)
 
         state["gen"]["queue"] = queue
 
-        # Determine cache dir location for cleanup
-        cli_save_path = args.output_dir if len(args.output_dir) > 0 else server_config.get("save_path", "outputs")
-        cli_cache_dir = os.path.join(cli_save_path, "_loaded_queue_cache")
-
         try:
             success = process_tasks_cli(queue, state)
-            # Clean up cache folder
-            if os.path.isdir(cli_cache_dir):
-                shutil.rmtree(cli_cache_dir, ignore_errors=True)
             sys.exit(0 if success else 1)
         except KeyboardInterrupt:
             print("\n\nAborted by user")
-            if os.path.isdir(cli_cache_dir):
-                shutil.rmtree(cli_cache_dir, ignore_errors=True)
             sys.exit(130)
 
     # Normal Gradio mode continues below...

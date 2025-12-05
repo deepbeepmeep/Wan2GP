@@ -51,7 +51,7 @@ Then in your terminal window just write this:
 python wgp.py --process my_queue.zip
 ```
 
-*update 9.81*: Hunyuan Video 1.5
+*update 9.81*: added Hunyuan Video 1.5 i2v distilled + magcache
 
 ### December 4 2025: WanGP v9.74, The Alpha & the Omega ... and the Dancer
 

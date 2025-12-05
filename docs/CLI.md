@@ -1,21 +1,89 @@
---vace-1-3B--vace-1-3B# Command Line Reference
+# Command Line Reference
 
 This document covers all available command line options for WanGP.
 
 ## Basic Usage
 
 ```bash
-# Default launch 
+# Default launch
 python wgp.py
 
-# Specific model modes
-python wgp.py --i2v           # Image-to-video
-python wgp.py --t2v           # Text-to-video (default)
-python wgp.py --t2v-14B       # 14B text-to-video model
-python wgp.py --t2v-1-3B      # 1.3B text-to-video model
-python wgp.py --i2v-14B       # 14B image-to-video model
-python wgp.py --i2v-1-3B      # Fun InP 1.3B image-to-video model
-python wgp.py --vace-1-3B     # VACE ControlNet 1.3B model
+```
+
+## CLI Queue Processing (Headless Mode)
+
+Process saved queues without launching the web UI. Useful for batch processing or automated workflows.
+
+### Quick Start
+```bash
+# Process a saved queue
+python wgp.py --process my_queue.zip
+
+# Validate queue without generating (dry-run)
+python wgp.py --process my_queue.zip --dry-run
+
+# Process with custom output directory
+python wgp.py --process my_queue.zip --output-dir ./batch_outputs
+```
+
+### Workflow
+1. **Create your queue** in the web UI using the normal interface
+2. **Save the queue** using the "Save Queue" button (creates a .zip file)
+3. **Close the web UI** if desired
+4. **Process the queue** via command line:
+   ```bash
+   python wgp.py --process saved_queue.zip --output-dir ./my_outputs
+   ```
+
+### CLI Queue Options
+```bash
+--process PATH          # Path to saved queue .zip file (enables headless mode)
+--dry-run               # Validate queue without generating (use with --process)
+--output-dir PATH       # Override output directory (use with --process)
+--verbose LEVEL         # Verbosity level 0-2 for detailed logging
+```
+
+### Console Output
+The CLI mode provides real-time feedback:
+```
+WanGP CLI Mode - Processing queue: my_queue.zip
+Output directory: ./batch_outputs
+Loaded 3 task(s)
+
+[Task 1/3] A beautiful sunset over the ocean...
+  [12/30] Prompt 1/3 - Denoising | Phase 2/2 Low Noise
+  Video saved
+  Task 1 completed
+
+[Task 2/3] A cat playing with yarn...
+  [30/30] Prompt 2/3 - VAE Decoding
+  Video saved
+  Task 2 completed
+
+==================================================
+Queue completed: 3/3 tasks in 5m 23s
+```
+
+### Exit Codes
+| Code | Meaning |
+|------|---------|
+| 0 | Success (all tasks completed) |
+| 1 | Error (file not found, invalid queue, or task failures) |
+| 130 | Interrupted by user (Ctrl+C) |
+
+### Examples
+```bash
+# Overnight batch processing
+python wgp.py --process overnight_jobs.zip --output-dir ./renders
+
+# Quick validation before long run
+python wgp.py --process big_queue.zip --dry-run
+
+# Verbose mode for debugging
+python wgp.py --process my_queue.zip --verbose 2
+
+# Combined with other options
+python wgp.py --process queue.zip --output-dir ./out --attention sage2
 ```
 
 ## Model and Performance Options
@@ -36,6 +104,7 @@ python wgp.py --vace-1-3B     # VACE ControlNet 1.3B model
 - **Profile 2**: Load model parts as needed, keep all unused models in reserved RAM for fast VRAM tranfers
 - **Profile 3**: Load entire current model in VRAM (requires 24GB for 14B model)
 - **Profile 4**: Default and recommended, load model parts as needed, most flexible option
+- **Profile 4+** (4.5): Profile 4 variation, can save up to 1 GB of VRAM, but will be slighlty slower on some configs
 - **Profile 5**: Minimum RAM usage
 
 ### Memory Management
@@ -99,16 +168,13 @@ python wgp.py --vace-1-3B     # VACE ControlNet 1.3B model
 ### Basic Usage Examples
 ```bash
 # Launch with specific model and loras
-python wgp.py --t2v-14B --lora-preset mystyle.lset
+python wgp.py ----lora-preset mystyle.lset
 
 # High-performance setup with compilation
 python wgp.py --compile --attention sage2 --profile 3
 
 # Low VRAM setup
-python wgp.py --t2v-1-3B --profile 4 --attention sdpa
-
-# Multiple images with custom lora directory
-python wgp.py --i2v --multiple-images --lora-dir /path/to/shared/loras
+python wgp.py --profile 4 --attention sdpa
 ```
 
 ### Server Configuration Examples

@@ -631,7 +631,7 @@ class family_handler():
         mask_frames = None if video_mask is None else video_mask
 
         aligner = PoseAligner()
-        outputs = aligner.align( frames, ref_image, ref_video_mask=mask_frames, align_frame=0, max_frames=None, augment=True, include_composite= True, cpu_resize_workers= max_workers, expand_scale = expand_scale )
+        outputs = aligner.align( frames, ref_image, ref_video_mask=mask_frames, align_frame=0, max_frames=None, augment=True, include_composite= False, cpu_resize_workers= max_workers, expand_scale = expand_scale )
 
         video_guide_processed, video_guide_processed2 = outputs["pose_only"], outputs["pose_aug"]
         if video_guide_processed.numel() == 0: return None, None, None

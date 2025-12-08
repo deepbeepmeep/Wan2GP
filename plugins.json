@@ -2,7 +2,7 @@
   {
     "name": "File Gallery",
     "author": "Tophness",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "Adds a Gallery tab that allows you to view metadata of all files in your output folders, join video frames, and more.",
     "url": "https://github.com/Tophness/wan2gp-gallery.git"
   },

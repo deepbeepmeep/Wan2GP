@@ -88,6 +88,9 @@ settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
+# All media attachment keys for queue save/load
+ATTACHMENT_KEYS = ["image_start", "image_end", "image_refs", "image_guide", "image_mask",
+                   "video_guide", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source"]
 
 from importlib.metadata import version
 mmgp_version = version("mmgp")
@@ -207,8 +210,15 @@ def pil_to_base64_uri(pil_image, format="png", quality=75):
         return None
 
     if isinstance(pil_image, str):
-        from shared.utils.utils import get_video_frame
-        pil_image = get_video_frame(pil_image, 0)
+        # Check file type and load appropriately
+        if has_video_file_extension(pil_image):
+            from shared.utils.utils import get_video_frame
+            pil_image = get_video_frame(pil_image, 0)
+        elif has_image_file_extension(pil_image):
+            pil_image = Image.open(pil_image)
+        else:
+            # Audio or unknown file type - can't convert to image
+            return None
 
     buffer = io.BytesIO()
     try:
@@ -1069,108 +1079,76 @@ def update_global_queue_ref(queue):
     with lock:
         global_queue_ref = queue[:]
 
-def save_queue_action(state):
-    gen = get_gen_info(state)
-    queue = gen.get("queue", [])
-
-    if not queue or len(queue) <=1 :
-        gr.Info("Queue is empty. Nothing to save.")
-        return ""
-
-    zip_buffer = io.BytesIO()
+def _save_queue_to_zip(queue, output):
+    """Save queue to ZIP. output can be a filename (str) or BytesIO buffer.
+    Returns True on success, False on failure.
+    """
+    if not queue:
+        return False
 
     with tempfile.TemporaryDirectory() as tmpdir:
         queue_manifest = []
         file_paths_in_zip = {}
 
         for task_index, task in enumerate(queue):
-            if task is None or not isinstance(task, dict) or task.get('id') is None: continue
+            if task is None or not isinstance(task, dict) or task.get('id') is None:
+                continue
 
             params_copy = task.get('params', {}).copy()
             task_id_s = task.get('id', f"task_{task_index}")
 
-            image_keys = ["image_start", "image_end", "image_refs", "image_guide", "image_mask"]
-            video_keys = ["video_guide", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source"]
-
-            for key in image_keys:
-                images_pil = params_copy.get(key)
-                if images_pil is None:
+            for key in ATTACHMENT_KEYS:
+                value = params_copy.get(key)
+                if value is None:
                     continue
 
-                is_originally_list = isinstance(images_pil, list)
-                if not is_originally_list:
-                    images_pil = [images_pil]
+                is_originally_list = isinstance(value, list)
+                items = value if is_originally_list else [value]
 
-                image_filenames_for_json = []
-                for img_index, pil_image in enumerate(images_pil):
-                    if not isinstance(pil_image, Image.Image):
-                         print(f"Warning: Expected PIL Image for key '{key}' in task {task_id_s}, got {type(pil_image)}. Skipping image.")
-                         continue
+                processed_filenames = []
+                for item_index, item in enumerate(items):
+                    if isinstance(item, Image.Image):
+                        item_id = id(item)
+                        if item_id in file_paths_in_zip:
+                            processed_filenames.append(file_paths_in_zip[item_id])
+                            continue
+                        filename_in_zip = f"task{task_id_s}_{key}_{item_index}.png"
+                        save_path = os.path.join(tmpdir, filename_in_zip)
+                        try:
+                            item.save(save_path, "PNG")
+                            processed_filenames.append(filename_in_zip)
+                            file_paths_in_zip[item_id] = filename_in_zip
+                        except Exception as e:
+                            print(f"Error saving attachment {filename_in_zip}: {e}")
+                    elif isinstance(item, str):
+                        if item in file_paths_in_zip:
+                            processed_filenames.append(file_paths_in_zip[item])
+                            continue
+                        if not os.path.isfile(item):
+                            continue
+                        _, extension = os.path.splitext(item)
+                        filename_in_zip = f"task{task_id_s}_{key}_{item_index}{extension if extension else ''}"
+                        save_path = os.path.join(tmpdir, filename_in_zip)
+                        try:
+                            shutil.copy2(item, save_path)
+                            processed_filenames.append(filename_in_zip)
+                            file_paths_in_zip[item] = filename_in_zip
+                        except Exception as e:
+                            print(f"Error copying attachment {item}: {e}")
 
-                    img_id = id(pil_image)
-                    if img_id in file_paths_in_zip:
-                         image_filenames_for_json.append(file_paths_in_zip[img_id])
-                         continue
+                if processed_filenames:
+                    params_copy[key] = processed_filenames if is_originally_list else processed_filenames[0]
 
-                    img_filename_in_zip = f"task{task_id_s}_{key}_{img_index}.png"
-                    img_save_path = os.path.join(tmpdir, img_filename_in_zip)
+            # Remove runtime-only keys
+            for runtime_key in ['state', 'start_image_labels', 'end_image_labels',
+                                'start_image_data_base64', 'end_image_data_base64',
+                                'start_image_data', 'end_image_data']:
+                params_copy.pop(runtime_key, None)
 
-                    try:
-                        pil_image.save(img_save_path, "PNG")
-                        image_filenames_for_json.append(img_filename_in_zip)
-                        file_paths_in_zip[img_id] = img_filename_in_zip
-                        print(f"Saved image: {img_filename_in_zip}")
-                    except Exception as e:
-                        print(f"Error saving image {img_filename_in_zip} for task {task_id_s}: {e}")
+            params_copy['settings_version'] = settings_version
+            params_copy['base_model_type'] = get_base_model_type(model_type)
 
-                if image_filenames_for_json:
-                     params_copy[key] = image_filenames_for_json if is_originally_list else image_filenames_for_json[0]
-                else:
-                     pass
-                    #  params_copy.pop(key, None) #cant pop otherwise crash during reload
-
-            for key in video_keys:
-                video_path_orig = params_copy.get(key)
-                if video_path_orig is None or not isinstance(video_path_orig, str):
-                    continue
-
-                if video_path_orig in file_paths_in_zip:
-                    params_copy[key] = file_paths_in_zip[video_path_orig]
-                    continue
-
-                if not os.path.isfile(video_path_orig):
-                    print(f"Warning: Video file not found for key '{key}' in task {task_id_s}: {video_path_orig}. Skipping video.")
-                    params_copy.pop(key, None)
-                    continue
-
-                _, extension = os.path.splitext(video_path_orig)
-                vid_filename_in_zip = f"task{task_id_s}_{key}{extension if extension else '.mp4'}"
-                vid_save_path = os.path.join(tmpdir, vid_filename_in_zip)
-
-                try:
-                    shutil.copy2(video_path_orig, vid_save_path)
-                    params_copy[key] = vid_filename_in_zip
-                    file_paths_in_zip[video_path_orig] = vid_filename_in_zip
-                    print(f"Copied video: {video_path_orig} -> {vid_filename_in_zip}")
-                except Exception as e:
-                    print(f"Error copying video {video_path_orig} to {vid_filename_in_zip} for task {task_id_s}: {e}")
-                    params_copy.pop(key, None)
-
-
-            params_copy.pop('state', None)
-            params_copy.pop('start_image_labels', None)
-            params_copy.pop('end_image_labels', None)
-            params_copy.pop('start_image_data_base64', None)
-            params_copy.pop('end_image_data_base64', None)
-            params_copy.pop('start_image_data', None)
-            params_copy.pop('end_image_data', None)
-            task.pop('start_image_data', None)
-            task.pop('end_image_data', None)
-
-            manifest_entry = {
-                "id": task.get('id'),
-                "params": params_copy,
-            }
+            manifest_entry = {"id": task.get('id'), "params": params_copy}
             manifest_entry = {k: v for k, v in manifest_entry.items() if v is not None}
             queue_manifest.append(manifest_entry)
 
@@ -1180,33 +1158,40 @@ def save_queue_action(state):
                 json.dump(queue_manifest, f, indent=4)
         except Exception as e:
             print(f"Error writing queue.json: {e}")
-            gr.Warning("Failed to create queue manifest.")
-            return None
+            return False
 
         try:
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
                 zf.write(manifest_path, arcname="queue.json")
-
-                for file_id, saved_file_rel_path in file_paths_in_zip.items():
+                for saved_file_rel_path in file_paths_in_zip.values():
                     saved_file_abs_path = os.path.join(tmpdir, saved_file_rel_path)
                     if os.path.exists(saved_file_abs_path):
                         zf.write(saved_file_abs_path, arcname=saved_file_rel_path)
-                        print(f"Adding to zip: {saved_file_rel_path}")
-                    else:
-                        print(f"Warning: File {saved_file_rel_path} (ID: {file_id}) not found during zipping.")
-
-            zip_buffer.seek(0)
-            zip_binary_content = zip_buffer.getvalue()
-            zip_base64 = base64.b64encode(zip_binary_content).decode('utf-8')
-            print(f"Queue successfully prepared as base64 string ({len(zip_base64)} chars).")
-            return zip_base64
-
+            return True
         except Exception as e:
-            print(f"Error creating zip file in memory: {e}")
-            gr.Warning("Failed to create zip data for download.")
+            print(f"Error creating zip: {e}")
+            return False
+
+def save_queue_action(state):
+    gen = get_gen_info(state)
+    queue = gen.get("queue", [])
+
+    if not queue or len(queue) == 0:
+        gr.Info("Queue is empty. Nothing to save.")
+        return ""
+
+    zip_buffer = io.BytesIO()
+    try:
+        if _save_queue_to_zip(queue, zip_buffer):
+            zip_buffer.seek(0)
+            zip_base64 = base64.b64encode(zip_buffer.getvalue()).decode('utf-8')
+            print(f"Queue saved ({len(zip_base64)} chars)")
+            return zip_base64
+        else:
+            gr.Warning("Failed to save queue.")
             return None
-        finally:
-            zip_buffer.close()
+    finally:
+        zip_buffer.close()
 
 def _parse_queue_zip(filename, state):
     """Parse queue ZIP file. Returns (queue_list, error_msg or None).
@@ -1243,61 +1228,63 @@ def _parse_queue_zip(filename, state):
 
                 params = task_data.get('params', {})
                 task_id_loaded = task_data.get('id', 0)
+
+                base_model_type = params.get('base_model_type', None)
+                model_type = original_model_type = params.get('model_type', base_model_type)
+                if model_type is not None and get_model_def(model_type) is None:
+                    model_type = base_model_type
+
+                if model_type is not None:
+                    if get_model_def(model_type) is None:
+                        print(f"Unknown model type {original_model_type} for task #{task_id_loaded}. Skipping Task")
+                        continue
+                    defaults = get_default_settings(model_type)
+                    if defaults:
+                        saved_settings_version = params.get('settings_version', 0)
+                        merged = defaults.copy()
+                        merged.update(params)
+                        params = merged
+                        fix_settings(model_type, params, saved_settings_version)
+                        for meta_key in ['type', 'base_model_type', 'settings_version']:
+                            params.pop(meta_key, None)
+
                 params['state'] = state
 
-                image_keys = ["image_start", "image_end", "image_refs", "image_guide", "image_mask"]
-                video_keys = ["video_guide", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source"]
-
-                for key in image_keys:
-                    image_filenames = params.get(key)
-                    if image_filenames is None:
+                # Load all attachments - images as PIL, videos/audio as paths
+                for key in ATTACHMENT_KEYS:
+                    value = params.get(key)
+                    if value is None:
                         continue
 
-                    is_list = isinstance(image_filenames, list)
-                    if not is_list:
-                        image_filenames = [image_filenames]
+                    is_originally_list = isinstance(value, list)
+                    filenames = value if is_originally_list else [value]
 
-                    loaded_pils = []
-                    for img_filename_in_zip in image_filenames:
-                        if not isinstance(img_filename_in_zip, str):
-                            print(f"[load_queue] Warning: Non-string filename found for image key '{key}'. Skipping.")
+                    loaded_items = []
+                    for filename_in_zip in filenames:
+                        if not isinstance(filename_in_zip, str):
+                            print(f"[load_queue] Warning: Non-string filename for key '{key}'. Skipping.")
                             continue
-                        img_load_path = os.path.join(tmpdir, img_filename_in_zip)
-                        if not os.path.exists(img_load_path):
-                            print(f"[load_queue] Image file not found in extracted data: {img_load_path}. Skipping.")
+
+                        file_path = os.path.join(tmpdir, filename_in_zip)
+                        if not os.path.exists(file_path):
+                            print(f"[load_queue] File not found: {file_path}. Skipping.")
                             continue
+
+                        persistent_path = os.path.join(loaded_cache_dir, filename_in_zip)
                         try:
-                            pil_image = Image.open(img_load_path)
-                            pil_image.load()
-                            converted_image = convert_image(pil_image)
-                            loaded_pils.append(converted_image)
-                            pil_image.close()
-                            print(f"Loaded image: {img_filename_in_zip} for key {key}")
-                        except Exception as img_e:
-                            print(f"[load_queue] Error loading image {img_filename_in_zip}: {img_e}")
-                    if loaded_pils:
-                        params[key] = loaded_pils if is_list else loaded_pils[0]
+                            shutil.copy2(file_path, persistent_path)
+                            # Load images as PIL, keep videos/audio as paths
+                            if has_image_file_extension(persistent_path):
+                                loaded_items.append(Image.open(persistent_path))
+                            else:
+                                loaded_items.append(persistent_path)
+                            print(f"Loaded: {filename_in_zip} -> {persistent_path}")
+                        except Exception as e:
+                            print(f"[load_queue] Error copying {filename_in_zip}: {e}")
+
+                    if loaded_items:
+                        params[key] = loaded_items if is_originally_list else loaded_items[0]
                     else:
-                        params.pop(key, None)
-
-                for key in video_keys:
-                    video_filename_in_zip = params.get(key)
-                    if video_filename_in_zip is None or not isinstance(video_filename_in_zip, str):
-                        continue
-
-                    video_load_path = os.path.join(tmpdir, video_filename_in_zip)
-                    if not os.path.exists(video_load_path):
-                        print(f"[load_queue] Video file not found in extracted data: {video_load_path}. Skipping.")
-                        params.pop(key, None)
-                        continue
-
-                    persistent_video_path = os.path.join(loaded_cache_dir, video_filename_in_zip)
-                    try:
-                        shutil.copy2(video_load_path, persistent_video_path)
-                        params[key] = persistent_video_path
-                        print(f"Loaded video: {video_filename_in_zip} -> {persistent_video_path}")
-                    except Exception as vid_e:
-                        print(f"[load_queue] Error copying video {video_filename_in_zip} to cache: {vid_e}")
                         params.pop(key, None)
 
                 primary_preview_pil_list, secondary_preview_pil_list, primary_preview_pil_labels, secondary_preview_pil_labels = get_preview_images(params)
@@ -1474,106 +1461,9 @@ def autosave_queue():
         return
 
     print(f"Autosaving queue ({len(global_queue_ref)} items) to {AUTOSAVE_FILENAME}...")
-    temp_state_for_save = {"gen": {"queue": global_queue_ref}}
-    zip_file_path = None
     try:
-
-        def _save_queue_to_file(queue_to_save, output_filename):
-             if not queue_to_save: return None
-
-             with tempfile.TemporaryDirectory() as tmpdir:
-                queue_manifest = []
-                file_paths_in_zip = {}
-
-                for task_index, task in enumerate(queue_to_save):
-                    if task is None or not isinstance(task, dict) or task.get('id') is None: continue
-
-                    params_copy = task.get('params', {}).copy()
-                    task_id_s = task.get('id', f"task_{task_index}")
-
-                    image_keys = ["image_start", "image_end", "image_refs", "image_guide", "image_mask"]
-                    video_keys = ["video_guide", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source" ]
-
-                    for key in image_keys:
-                        images_pil = params_copy.get(key)
-                        if images_pil is None: continue
-                        is_list = isinstance(images_pil, list)
-                        if not is_list: images_pil = [images_pil]
-                        image_filenames_for_json = []
-                        for img_index, pil_image in enumerate(images_pil):
-                            if not isinstance(pil_image, Image.Image): continue
-                            img_id = id(pil_image)
-                            if img_id in file_paths_in_zip:
-                                image_filenames_for_json.append(file_paths_in_zip[img_id])
-                                continue
-                            img_filename_in_zip = f"task{task_id_s}_{key}_{img_index}.png"
-                            img_save_path = os.path.join(tmpdir, img_filename_in_zip)
-                            try:
-                                pil_image.save(img_save_path, "PNG")
-                                image_filenames_for_json.append(img_filename_in_zip)
-                                file_paths_in_zip[img_id] = img_filename_in_zip
-                            except Exception as e:
-                                print(f"Autosave error saving image {img_filename_in_zip}: {e}")
-                        if image_filenames_for_json:
-                            params_copy[key] = image_filenames_for_json if is_list else image_filenames_for_json[0]
-                        else:
-                            params_copy.pop(key, None)
-
-                    for key in video_keys:
-                        video_path_orig = params_copy.get(key)
-                        if video_path_orig is None or not isinstance(video_path_orig, str):
-                            continue
-
-                        if video_path_orig in file_paths_in_zip:
-                            params_copy[key] = file_paths_in_zip[video_path_orig]
-                            continue
-
-                        if not os.path.isfile(video_path_orig):
-                            print(f"Warning (Autosave): Video file not found for key '{key}' in task {task_id_s}: {video_path_orig}. Skipping.")
-                            params_copy.pop(key, None)
-                            continue
-
-                        _, extension = os.path.splitext(video_path_orig)
-                        vid_filename_in_zip = f"task{task_id_s}_{key}{extension if extension else '.mp4'}"
-                        vid_save_path = os.path.join(tmpdir, vid_filename_in_zip)
-
-                        try:
-                            shutil.copy2(video_path_orig, vid_save_path)
-                            params_copy[key] = vid_filename_in_zip
-                            file_paths_in_zip[video_path_orig] = vid_filename_in_zip
-                        except Exception as e:
-                            print(f"Error (Autosave) copying video {video_path_orig} to {vid_filename_in_zip} for task {task_id_s}: {e}")
-                            params_copy.pop(key, None)
-                    params_copy.pop('state', None)
-                    params_copy.pop('start_image_data_base64', None)
-                    params_copy.pop('end_image_data_base64', None)
-                    params_copy.pop('start_image_data', None)
-                    params_copy.pop('end_image_data', None)
-
-                    manifest_entry = {
-                        "id": task.get('id'),
-                        "params": params_copy,
-                    }
-                    manifest_entry = {k: v for k, v in manifest_entry.items() if v is not None}
-                    queue_manifest.append(manifest_entry)
-
-                manifest_path = os.path.join(tmpdir, "queue.json")
-                with open(manifest_path, 'w', encoding='utf-8') as f: json.dump(queue_manifest, f, indent=4)
-                with zipfile.ZipFile(output_filename, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    zf.write(manifest_path, arcname="queue.json")
-                    for saved_file_rel_path in file_paths_in_zip.values():
-                        saved_file_abs_path = os.path.join(tmpdir, saved_file_rel_path)
-                        if os.path.exists(saved_file_abs_path):
-                             zf.write(saved_file_abs_path, arcname=saved_file_rel_path)
-                        else:
-                             print(f"Warning (Autosave): File {saved_file_rel_path} not found during zipping.")
-                return output_filename
-             return None
-
-        saved_path = _save_queue_to_file(global_queue_ref, AUTOSAVE_FILENAME)
-
-        if saved_path:
-            print(f"Queue autosaved successfully to {saved_path}")
+        if _save_queue_to_zip(global_queue_ref, AUTOSAVE_FILENAME):
+            print(f"Queue autosaved successfully to {AUTOSAVE_FILENAME}")
         else:
             print("Autosave failed.")
     except Exception as e:

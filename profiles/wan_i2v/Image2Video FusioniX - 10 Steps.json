@@ -6,5 +6,7 @@
 	"loras_multipliers": "1",
 	"num_inference_steps": 10,
     "guidance_phases": 1,
-    "guidance_scale": 1	
+    "guidance_scale": 1,	
+    "alt_guidance_scale": 1,
+	"audio_guidance_scale": 1	
 }

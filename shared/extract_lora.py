@@ -540,8 +540,8 @@ if __name__ == "__main__":
     
     # Load original and fine-tuned models from safetensors files
     
-    original_state_dict = load_safetensors("ckpts/hunyuan_video_1.5_480_bf16.safetensors")
-    finetuned_state_dict = load_safetensors("c:/temp/hy1.5_t2v_480p_lightx2v_4step_bf16.safetensors")
+    original_state_dict = load_safetensors("ckpts/hunyuan_video_1.5_i2v_480_bf16.safetensors")
+    finetuned_state_dict = load_safetensors("ckpts/hunyuan_video_1.5_i2v_480_step_distilled_bf16.safetensors")
 
     # original_state_dict = load_safetensors("ckpts/flux1-dev_bf16.safetensors")
     # finetuned_state_dict = load_safetensors("ckpts/flux1-schnell_bf16.safetensors")

@@ -406,6 +406,7 @@ class WanAny2V:
         audio_cfg_scale=None,
         audio_proj=None,
         audio_context_lens=None,
+        alt_guide_scale = 1.0,
         overlapped_latents  = None,
         return_latent_slice = None,
         overlap_noise = 0,
@@ -431,6 +432,7 @@ class WanAny2V:
         face_arc_embeds = None,
         control_scale_alt = 1.,
         motion_amplitude = 1.,
+        full_prefix_video = None,
         **bbargs
                 ):
         
@@ -525,9 +527,10 @@ class WanAny2V:
         lucy_edit=  model_type in ["lucy_edit"]
         animate=  model_type in ["animate"]
         chrono_edit = model_type in ["chrono_edit"]
-        mocha = model_type in ["mocha"]
+        mocha = model_type in ["mocha"] 
+        steadydancer = model_type in ["steadydancer"] 
         start_step_no = 0
-        ref_images_count = 0
+        ref_images_count = inner_latent_frames = 0
         trim_frames = 0
         last_latent_preview = False
         extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = None
@@ -638,8 +641,27 @@ class WanAny2V:
                     lat_y = self.vae.encode([input_video], VAE_tile_size)[0]
                 extended_overlapped_latents = lat_y[:, :overlapped_latents_frames_num].clone().unsqueeze(0)
 
-            lat_y = input_video = None
+            lat_y = None
             kwargs.update({ 'y': y})
+
+
+        # Steady Dancer
+        if steadydancer:
+            condition_guide_scale = alt_guide_scale # 2.0
+            # ref img_x
+            ref_x = self.vae.encode([input_video[:, :1]], VAE_tile_size)[0]
+            msk_ref = torch.ones(4, 1, lat_h, lat_w, device=self.device)
+            ref_x = torch.concat([ref_x, msk_ref, ref_x])
+            # ref img_c
+            ref_c = self.vae.encode([input_frames[:, :1]], VAE_tile_size)[0]
+            msk_c = torch.zeros(4, 1, lat_h, lat_w, device=self.device)
+            ref_c = torch.concat([ref_c, msk_c, ref_c])
+            kwargs.update({ 'steadydancer_ref_x': ref_x, 'steadydancer_ref_c': ref_c})
+            # conditions, w/o msk
+            conditions = self.vae.encode([input_frames])[0].unsqueeze(0)
+            # conditions_null, w/o msk
+            conditions_null = self.vae.encode([input_frames2])[0].unsqueeze(0)
+            inner_latent_frames = 2
 
         # Chrono Edit
         if chrono_edit:
@@ -690,6 +712,8 @@ class WanAny2V:
                 clip_context = self.clip.visual([clip_image_start[:, None, :, :]])
             clip_image_start = clip_image_end = None
             kwargs.update({'clip_fea': clip_context})
+            if steadydancer:
+                kwargs['steadydancer_clip_fea_c'] = self.clip.visual([input_frames[:, :1]])
 
         # Recam Master & Lucy Edit
         if recam or lucy_edit:
@@ -883,7 +907,7 @@ class WanAny2V:
             shape[extended_input_dim-2] *= 2
             freqs = get_rotary_pos_embed(shape, enable_RIFLEx= False) 
         else:
-            freqs = get_rotary_pos_embed(target_shape[1:], enable_RIFLEx= enable_RIFLEx) 
+            freqs = get_rotary_pos_embed( (target_shape[1]+ inner_latent_frames ,) + target_shape[2:] , enable_RIFLEx= enable_RIFLEx) 
 
         kwargs["freqs"] = freqs
 
@@ -1035,6 +1059,16 @@ class WanAny2V:
                 if model_type in ["lynx", "vace_lynx_14B"]:
                     gen_args["lynx_ref_buffer"] = [lynx_ref_buffer, lynx_ref_buffer_uncond]
                     
+            elif steadydancer:
+                # DC-CFG: pose guidance only in [10%, 50%] of denoising steps
+                apply_cond_cfg = 0.1 <= i / sampling_steps < 0.5 and condition_guide_scale != 1
+                x_list, ctx_list, cond_list = [latent_model_input], [context], [conditions]
+                if guide_scale != 1:
+                    x_list.append(latent_model_input); ctx_list.append(context_null); cond_list.append(conditions)
+                if apply_cond_cfg:
+                    x_list.append(latent_model_input); ctx_list.append(context); cond_list.append(conditions_null)
+                gen_args = {"x": x_list, "context": ctx_list, "steadydancer_condition": cond_list}
+                any_guidance = len(x_list) > 1
             elif multitalk and audio_proj != None:
                 if guide_scale == 1:
                     gen_args = {
@@ -1082,6 +1116,16 @@ class WanAny2V:
                 noise_pred_cond, noise_pred_noaudio, noise_pred_uncond = ret_values
                 noise_pred = noise_pred_uncond + guide_scale * (noise_pred_noaudio - noise_pred_uncond) + audio_cfg_scale * (noise_pred_cond  - noise_pred_noaudio) 
                 noise_pred_noaudio = None
+            elif steadydancer:
+                noise_pred_cond = ret_values[0]
+                if guide_scale == 1:  # only condition CFG (ret_values[1] = uncond_condition)
+                    noise_pred = ret_values[1] + condition_guide_scale * (noise_pred_cond - ret_values[1])
+                else:  # text CFG + optionally condition CFG (ret_values[1] = uncond_context)
+                    noise_pred = ret_values[1] + guide_scale * (noise_pred_cond - ret_values[1])
+                    if apply_cond_cfg:
+                        noise_pred = noise_pred + condition_guide_scale * (noise_pred_cond - ret_values[2])
+                noise_pred_cond = None
+
             elif multitalk and audio_proj != None:
                 if apg_switch != 0:
                     if guide_scale == 1:
@@ -1199,7 +1243,7 @@ class WanAny2V:
         else:
             videos = videos[0] # return only first video
             if any_vae2: videos2 = videos2[0] # return only first video
-        if color_correction_strength > 0 and (prefix_frames_count > 0 and window_no > 1 or prefix_frames_count > 1 and window_no == 1):
+        if color_correction_strength > 0 and not ( window_no == 1 and (full_prefix_video is None or full_prefix_video.shape[1]<= 1) ):
             if vace and False:
                 # videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), input_frames[0].unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "progressive_blend").squeeze(0)
                 videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), input_frames[0].unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "reference").squeeze(0)

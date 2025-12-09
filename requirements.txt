@@ -23,6 +23,7 @@ pyloudnorm
 librosa==0.11.0
 speechbrain==1.0.3
 audio-separator==0.36.1
+pyannote.audio==3.3.2
 
 # UI & interaction
 gradio==5.29.0
@@ -63,6 +64,7 @@ nvidia-ml-py
 misaki
 gitdb==4.0.12 
 gitpython==3.1.45
+stringzilla==4.0.14
 
 # Optional / commented out
 # transformers==4.46.3  # for llamallava pre-patch

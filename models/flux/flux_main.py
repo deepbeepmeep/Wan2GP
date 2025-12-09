@@ -6,7 +6,7 @@ from glob import iglob
 from mmgp import offload as offload
 import torch
 from shared.utils.utils import calculate_new_dimensions
-from .sampling import denoise, get_schedule, get_schedule_flux2, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack, resizeinput, patches_to_image
+from .sampling import denoise, get_schedule, get_schedule_flux2, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack, resizeinput, patches_to_image, build_mask
 from .modules.layers import get_linear_split_map
 from transformers import SiglipVisionModel, SiglipImageProcessor
 import torchvision.transforms.functional as TVF
@@ -230,8 +230,8 @@ class model_factory:
             joint_pass = False,
             image_refs_relative_size = 100,
             denoising_strength = 1.,
-        masking_strength = 1.,
-        **bbargs
+            masking_strength = 1.,
+            **bbargs
     ):
             if self._interrupt:
                 return None
@@ -247,6 +247,9 @@ class model_factory:
             flux_kontext_dreamomni2 = self.name in ['flux-dev-kontext-dreamomni2']
 
             if flux2:
+                if input_frames is not None:
+                    input_ref_images = [convert_tensor_to_image(input_frames) ] + (input_ref_images or [])
+                
                 shape = (batch_size, 128, height // 16, width // 16)
                 generator = torch.Generator(device="cuda").manual_seed(seed)
                 randn = torch.randn(shape, generator=generator, dtype=torch.bfloat16, device="cuda")
@@ -261,6 +264,10 @@ class model_factory:
                     txt_embeds, txt_ids = batched_prc_txt(ctx)
                     txt_embeds, txt_ids = txt_embeds.expand(batch_size, -1, -1), txt_ids.expand(batch_size, -1, -1)
                     inp.update({ "neg_txt": txt_embeds.to(device), "neg_txt_ids": txt_ids.to(device), "neg_vec": vec })
+
+                if input_masks is not None:
+                    inp.update( build_mask(width, height, convert_tensor_to_image(input_masks, mask_levels= True), device))
+                    inp["original_image_latents"], _ = encode_image_refs(self.vae, [input_ref_images[0].resize((width, height), resample=Image.Resampling.LANCZOS)]) 
 
                 if input_ref_images is not None and len(input_ref_images):
                     cond_latents, cond_ids = encode_image_refs(self.vae, input_ref_images)

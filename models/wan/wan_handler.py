@@ -3,13 +3,15 @@ import os
 import torch
 import numpy as np
 import gradio as gr
+import cv2
+from PIL import Image
 from shared.utils import files_locator as fl 
 
 def test_vace(base_model_type):
     return base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B", "vace_ditto_14B"]     
 
 def test_class_i2v(base_model_type):    
-    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit" ]
+    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer" ]
 
 def test_class_t2v(base_model_type):    
     return base_model_type in ["t2v", "t2v_2_2", "alpha", "lynx"]
@@ -41,7 +43,7 @@ class family_handler():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B", 
                     "recam_1.3B", "animate", "alpha", "alpha_lynx", "chrono_edit",
-                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha"]
+                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer"]
 
 
     @staticmethod
@@ -299,6 +301,25 @@ class family_handler():
                 }
             extra_model_def["v2i_switch_supported"] = True
 
+        
+        if base_model_type in ["steadydancer"]:
+            extra_model_def["guide_custom_choices"] = {
+            "choices":[
+                ("Use Control Video Poses to Animate Person in Start Image", "V"),
+                ("Use Control Video Poses filterd with Mask Video to Animate Person in Start Image", "VA"),
+            ],
+            "default": "PVB",
+            "letters_filter": "PVBA",
+            "label": "Type of Process",
+            "scale": 3,
+            "show_label" : False,
+            }
+            extra_model_def["custom_preprocessor"] = "Extracting Pose Information"        
+            extra_model_def["alt_guidance"] = "Condition Guidance"
+            extra_model_def["no_guide2_refresh"] = True
+            extra_model_def["no_mask_refresh"] = True
+            extra_model_def["control_video_trim"] = True
+            
 
         if base_model_type in ["infinitetalk"]: 
             extra_model_def["no_background_removal"] = True
@@ -384,6 +405,8 @@ class family_handler():
 
 
         if vace_class:
+            extra_model_def["control_net_weight_name"] = "Vace"
+            extra_model_def["control_net_weight_size"] = 2
             extra_model_def["guide_preprocessing"] = {
                     "selection": ["", "UV", "PV", "DV", "SV", "LV", "CV", "MV", "V", "PDV", "PSV", "PLV" , "DSV", "DLV", "SLV"],
                     "labels" : { "V": "Use Vace raw format"}
@@ -531,7 +554,7 @@ class family_handler():
             image_prompt_types_allowed = "TSVL"
         elif base_model_type in ["lucy_edit"]:
             image_prompt_types_allowed = "TVL"
-        elif multitalk or base_model_type in ["fantasy"]:
+        elif multitalk or base_model_type in ["fantasy", "steadydancer"]:
             image_prompt_types_allowed = "SVL"
         elif i2v:
             image_prompt_types_allowed = "SEVL"
@@ -597,6 +620,25 @@ class family_handler():
             }]
 
         return download_def
+
+    @staticmethod
+    def custom_preprocess(base_model_type, video_guide, video_mask, pre_video_guide=None,  max_workers = 1, expand_scale = 0, **kwargs):
+        from .steadydancer.pose_align import PoseAligner
+        from shared.utils.utils import convert_tensor_to_image
+
+        ref_image = convert_tensor_to_image(pre_video_guide[:, 0])
+        frames = video_guide
+        mask_frames = None if video_mask is None else video_mask
+
+        aligner = PoseAligner()
+        outputs = aligner.align( frames, ref_image, ref_video_mask=mask_frames, align_frame=0, max_frames=None, augment=True, include_composite= False, cpu_resize_workers= max_workers, expand_scale = expand_scale )
+
+        video_guide_processed, video_guide_processed2 = outputs["pose_only"], outputs["pose_aug"]
+        if video_guide_processed.numel() == 0: return None, None, None
+
+        video_mask_processed = video_mask_processed2 = None
+
+        return video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2 
 
 
     @staticmethod
@@ -805,6 +847,14 @@ class family_handler():
                 "video_prompt_type": "VAI", 
                 "audio_prompt_type": "R",
 	            "force_fps": "control",
+            })
+        elif base_model_type in ["steadydancer"]:
+            ui_defaults.update({ 
+                "video_prompt_type": "VA", 
+                "image_prompt_type": "S", 
+                "audio_prompt_type": "R",
+	            "force_fps": "control",
+                "alt_guidance_scale" : 2.0,
             })
 
 

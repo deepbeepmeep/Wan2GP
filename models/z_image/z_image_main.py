@@ -16,22 +16,55 @@ from .transformer_z_image import ZImageTransformer2DModel
 logger = logging.get_logger(__name__)
 
 
-def _first_existing(paths):
-    for path in paths:
-        if path is not None and os.path.isfile(path):
-            return path
-    return None
+def conv_state_dict(sd: dict) -> dict:
+    if "x_embedder.weight" not in sd and "model.diffusion_model.x_embedder.weight" not in sd:
+        return sd
 
+    inverse_replace = {
+        "final_layer.": "all_final_layer.2-1.",
+        "x_embedder.": "all_x_embedder.2-1.",
+        ".attention.out.bias": ".attention.to_out.0.bias",
+        ".attention.k_norm.weight": ".attention.norm_k.weight",
+        ".attention.q_norm.weight": ".attention.norm_q.weight",
+        ".attention.out.weight": ".attention.to_out.0.weight",
+    }
 
-def _load_json_config(path, component):
-    if path is None:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as exc:
-        logger.warning(f"Could not load {component} config from {path}: {exc}")
-        return None
+    out_sd: dict[str, torch.Tensor] = {}
+
+    for key, tensor in sd.items():
+        key = key.replace("model.diffusion_model.", "")
+        
+        if key.endswith(".attention.qkv.weight"):
+            base = key[: -len(".attention.qkv.weight")]
+
+            total_dim = tensor.shape[0]
+            if total_dim % 3 != 0:
+                raise ValueError(
+                    f"{key}: qkv first dimension ({total_dim}) not divisible by 3"
+                )
+            d = total_dim // 3
+            q, k_w, v = torch.split(tensor, d, dim=0)
+
+            out_sd[base + ".attention.to_q.weight"] = q
+            out_sd[base + ".attention.to_k.weight"] = k_w
+            out_sd[base + ".attention.to_v.weight"] = v
+            continue
+
+        new_key = key
+        for comfy_sub, orig_sub in inverse_replace.items():
+            new_key = new_key.replace(comfy_sub, orig_sub)
+        out_sd[new_key] = tensor
+
+    to_add = {}
+    for key, tensor in out_sd.items():
+        if key.endswith(".attention.to_out.0.weight"):
+            prefix = key[: -len(".attention.to_out.0.weight")]
+            bias_key = prefix + ".attention.to_out.0.bias"
+            if bias_key not in out_sd:
+                to_add[bias_key] = torch.zeros(tensor.shape[0], dtype=tensor.dtype)
+
+    out_sd.update(to_add)
+    return out_sd
 
 
 class model_factory:
@@ -48,22 +81,66 @@ class model_factory:
         VAE_dtype=torch.float32,
         mixed_precision_transformer=False,
         save_quantized=False,
+        is_control=False,
         **kwargs,
     ):
+        
+
+        source =  model_def.get("source", None)
+        module_source =  model_def.get("module_source", None)
+
+
+        # model_filename can be a string or list of files (transformer + modules)
         transformer_filename = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
         if transformer_filename is None:
             raise ValueError("No transformer filename provided for Z-Image.")
 
         self.base_model_type = base_model_type
+        self.is_control = is_control
 
-        # Transformer
-        default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json") 
+        # Transformer - use control config if in control mode
+        if is_control:
+            default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_control.json")
+        else:
+            default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
-        transformer = offload.fast_load_transformers_model(transformer_filename, writable_tensors= False, modelClass=ZImageTransformer2DModel, defaultConfigPath= default_transformer_config)
+
+        preprocess_sd = conv_state_dict
+
+        kwargs_light= { "modelClass": ZImageTransformer2DModel, "writable_tensors": False, "preprocess_sd": preprocess_sd , "forcedConfigPath" : default_transformer_config}
+
+        if source is not None:
+            transformer = offload.fast_load_transformers_model(fl.locate_file(source),  **kwargs_light)
+        elif module_source is not None:
+            transformer = offload.fast_load_transformers_model(model_filename[:1] + [fl.locate_file(module_source)], **kwargs_light)
+        else:
+            transformer= None
+
+        if transformer is not None:
+            from wgp import save_model
+            from mmgp.safetensors2 import torch_load_file
+        else:
+            # model_filename contains all files to load (transformer + modules merged by loader)
+            transformer = offload.fast_load_transformers_model( model_filename, **kwargs_light )
+
+
+
         transformer.to(dtype)
+
+        if module_source is not None:
+            save_model(transformer, model_type, dtype, None, is_module=True, filter=list(torch_load_file(module_source)), module_source_no=1)
+
+        if not source is None:
+            save_model(transformer, model_type, dtype, None, submodel_no= 1)
+
         if save_quantized:
             from wgp import save_quantized_model
             save_quantized_model(transformer, model_type, transformer_filename, dtype, default_transformer_config)
+
+
+        if is_control:
+            transformer.adapt_control_model()
+
 
         # Text encoder
 
@@ -119,6 +196,8 @@ class model_factory:
         VAE_tile_size=None,
         cfg_normalization: bool = False,
         cfg_truncation: float = 1.0,
+        input_frames=None,
+        context_scale: float = [0],
         **kwargs,
     ):
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -157,6 +236,8 @@ class model_factory:
             cfg_truncation=cfg_truncation,
             callback=callback,
             pipeline=self.pipeline,
+            control_image=input_frames,
+            control_context_scale=None if context_scale is None else context_scale[0],
         )
 
         if images is None:

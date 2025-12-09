@@ -11,14 +11,14 @@ def get_gen_info(state):
         state["gen"] = cache
     return cache
 
-def any_GPU_process_running(state, process_id):
+def any_GPU_process_running(state, process_id, ignore_main = False):
     gen = get_gen_info(state)
 #"process:" + process_id
     with gen_lock:
         process_status = gen.get("process_status", None)
-        return process_status is not None
+        return process_status is not None and not (process_status =="process:main" and ignore_main)
     
-def acquire_GPU_ressources(state, process_id, process_name, gr = None):
+def acquire_GPU_ressources(state, process_id, process_name, gr = None, custom_pause_msg = None, custom_wait_msg = None):
     gen = get_gen_info(state)
     original_process_status = None
     while True:
@@ -36,7 +36,8 @@ def acquire_GPU_ressources(state, process_id, process_name, gr = None):
             elif process_status == "process:main":
                 original_process_status = process_status 
                 gen["process_status"] = "request:" + process_id
-                gen["pause_msg"] = f"Generation Suspended while using {process_name}"
+
+                gen["pause_msg"] = custom_pause_msg if custom_pause_msg is not None else f"Generation Suspended while using {process_name}" 
                 break
             elif process_status == "process:" + process_id:
                 break
@@ -58,7 +59,10 @@ def acquire_GPU_ressources(state, process_id, process_name, gr = None):
             total_wait += wait_time
             if round(total_wait,2) >= 5 and gr is not None and not wait_msg_displayed:
                 wait_msg_displayed = True
-                gr.Info(f"Process {process_name} is Suspended while waiting that GPU Ressources become available")
+                if custom_wait_msg is None:
+                    gr.Info(f"Process {process_name} is Suspended while waiting that GPU Ressources become available")
+                else:
+                    gr.Info(custom_wait_msg)
 
             time.sleep(wait_time)
     

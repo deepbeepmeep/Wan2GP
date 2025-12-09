@@ -27,11 +27,20 @@ class family_handler():
         pixels = int(width) * int(height)
 
         if cache_type == "mag":
-            skip_steps_cache.update({     
+            skip_steps_cache.update({
             "magcache_thresh" : 0,
             "magcache_K" : 2,
             })
-            if pixels >= 1280* 720:
+            if test_hunyuan_1_5(base_model_type):
+                # Hunyuan 1.5 MagCache ratios (from ComfyUI-MagCache project)
+                num_steps = inputs.get("num_inference_steps", 20)
+                if num_steps > 20:
+                    # 40 steps version for longer inference
+                    skip_steps_cache.def_mag_ratios = [1.04199, 1.01953, 1.01172, 1.01855, 1.00293, 1.00586, 1.00098, 1.00195, 1.0, 1.00098, 0.99805, 0.99902, 0.99854, 0.99805, 0.99658, 0.99756, 0.99707, 0.99512, 0.99609, 0.99609, 0.99658, 0.99658, 0.99658, 0.99805, 0.99658, 0.99707, 0.99561, 0.99561, 0.99561, 0.99658, 0.99658, 0.99658, 0.99609, 0.99658, 0.99512, 0.99561, 0.99463, 0.99512, 0.99463, 0.99512, 0.99365, 0.99414, 0.99365, 0.99365, 0.99219, 0.99219, 0.99219, 0.99268, 0.99072, 0.99121, 0.99072, 0.99072, 0.98926, 0.98975, 0.9873, 0.98779, 0.98535, 0.98584, 0.9834, 0.9834, 0.97998, 0.97998, 0.97607, 0.97607, 0.96973, 0.96973, 0.96338, 0.96338, 0.9502, 0.9502, 0.93066, 0.93066, 0.896, 0.896, 0.81787, 0.81836]
+                else:
+                    # 20 steps version (default)
+                    skip_steps_cache.def_mag_ratios = [1.01172, 1.00293, 0.9873, 1.0127, 1.01465, 0.98926, 0.99805, 1.00098, 0.99512, 0.99365, 0.99512, 0.99561, 0.99316, 0.99365, 0.99365, 0.99365, 0.99316, 0.99316, 0.99268, 0.99268, 0.9917, 0.9917, 0.99023, 0.99023, 0.98828, 0.98877, 0.98633, 0.98633, 0.9834, 0.9834, 0.97949, 0.97998, 0.97363, 0.97363, 0.96436, 0.96436, 0.94824, 0.94873]
+            elif pixels >= 1280* 720:
                 skip_steps_cache.def_mag_ratios = [1.0754, 1.27807, 1.11596, 1.09504, 1.05188, 1.00844, 1.05779, 1.00657, 1.04142, 1.03101, 1.00679, 1.02556, 1.00908, 1.06949, 1.05438, 1.02214, 1.02321, 1.03019, 1.00779, 1.03381, 1.01886, 1.01161, 1.02968, 1.00544, 1.02822, 1.00689, 1.02119, 1.0105, 1.01044, 1.01572, 1.02972, 1.0094, 1.02368, 1.0226, 0.98965, 1.01588, 1.02146, 1.0018, 1.01687, 0.99436, 1.00283, 1.01139, 0.97122, 0.98251, 0.94513, 0.97656, 0.90943, 0.85703, 0.75456]
             else:
                 skip_steps_cache.def_mag_ratios = [1.06971, 1.29073, 1.11245, 1.09596, 1.05233, 1.01415, 1.05672, 1.00848, 1.03632, 1.02974, 1.00984, 1.03028, 1.00681, 1.06614, 1.05022, 1.02592, 1.01776, 1.02985, 1.00726, 1.03727, 1.01502, 1.00992, 1.03371, 0.9976, 1.02742, 1.0093, 1.01869, 1.00815, 1.01461, 1.01152, 1.03082, 1.0061, 1.02162, 1.01999, 0.99063, 1.01186, 1.0217, 0.99947, 1.01711, 0.9904, 1.00258, 1.00878, 0.97039, 0.97686, 0.94315, 0.97728, 0.91154, 0.86139, 0.76592]
@@ -70,7 +79,7 @@ class family_handler():
 
         extra_model_def["cfg_star"] =  base_model_type in [ "hunyuan_avatar", "hunyuan_custom_audio", "hunyuan_custom_edit", "hunyuan_custom"] or test_hunyuan_1_5(base_model_type)
         extra_model_def["tea_cache"] = not test_hunyuan_1_5(base_model_type)
-        extra_model_def["mag_cache"] = not test_hunyuan_1_5(base_model_type)
+        extra_model_def["mag_cache"] = True  # Enabled for all Hunyuan models including 1.5
 
         if base_model_type in ["hunyuan_custom_edit"]:
             extra_model_def["guide_preprocessing"] = {
@@ -165,18 +174,22 @@ class family_handler():
             default=os.path.join("loras", "hunyuan_i2v"),
             help="Path to a directory that contains Hunyuan Video i2v Loras"
         )
+        parser.add_argument(
+            "--lora-dir-hunyuan-1-5",
+            type=str,
+            default=os.path.join("loras", "hunyuan_1_5"),
+            help="Path to a directory that contains Hunyuan Video 1.5 Loras"
+        )
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
-        i2v = "i2v" in base_model_type
-        if i2v:
+        if test_hunyuan_1_5(base_model_type):
+            return args.lora_dir_hunyuan_1_5
+            
+        elif "i2v" in base_model_type:
             return args.lora_dir_hunyuan_i2v
 
         root_lora_dir = args.lora_dir_hunyuan
-        if "1_5" in base_model_type:
-            lora_dir_1_5 = os.path.join(root_lora_dir, "1.5")
-            if os.path.isdir(lora_dir_1_5):
-                return lora_dir_1_5
         return root_lora_dir
 
     @staticmethod

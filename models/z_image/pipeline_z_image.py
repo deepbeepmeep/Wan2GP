@@ -326,6 +326,8 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         max_sequence_length: int = 512,
         callback=None,
         pipeline=None,
+        control_image: Optional[torch.Tensor] = None,
+        control_context_scale: float = 0.75,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -512,6 +514,21 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         self._num_timesteps = len(timesteps)
 
+        # Encode control image if provided and transformer supports it
+        control_latent = None
+        if control_image is not None and hasattr(self.transformer, 'has_control') and self.transformer.has_control:
+            # input_frames comes in video format [C, F, H, W] - convert to image format [B, C, H, W]
+            control_image_tensor = control_image
+            if control_image_tensor.dim() == 4 and control_image_tensor.shape[1] == 1:
+                # Shape is [C, F=1, H, W] - squeeze frame dim and add batch dim
+                control_image_tensor = control_image_tensor.squeeze(1).unsqueeze(0)  # [C, H, W] -> [1, C, H, W]
+            elif control_image_tensor.dim() == 3:
+                # Shape is [C, H, W] - just add batch dim
+                control_image_tensor = control_image_tensor.unsqueeze(0)  # [1, C, H, W]
+            control_image_tensor = control_image_tensor.to(device=device, dtype=self.vae.dtype)
+            control_latent = self.vae.encode(control_image_tensor).latent_dist.sample()
+            control_latent = (control_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+
         callback(-1, None, True, len(timesteps))
 
         # 6. Denoising loop
@@ -552,10 +569,21 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 latent_model_input = latent_model_input.unsqueeze(2)
                 latent_model_input_list = list(latent_model_input.unbind(dim=0))
 
+                # Prepare control latent list if available
+                control_latent_list = None
+                if control_latent is not None:
+                    control_latent_input = control_latent.unsqueeze(2)
+                    if apply_cfg:
+                        # Duplicate control latent for CFG (both positive and negative)
+                        control_latent_input = control_latent_input.repeat(2, 1, 1, 1, 1)
+                    control_latent_list = list(control_latent_input.unbind(dim=0))
+
                 model_out_list = self.transformer(
                     latent_model_input_list,
                     timestep_model_input,
                     prompt_embeds_model_input,
+                    control_latent=control_latent_list,
+                    control_context_scale=control_context_scale,
                     callback=callback,
                     pipeline=self,
                 )[0]

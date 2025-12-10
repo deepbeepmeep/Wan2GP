@@ -695,7 +695,7 @@ class QwenImagePipeline(): #DiffusionPipeline
             for ref_no, img in enumerate(image):
                 image_width, image_height = img.size
                 any_mask = ref_no == 0 and image_mask is not None
-                if (image_height * image_width > ref_size * ref_size) and not any_mask:
+                if (not qwen_edit_plus) and (image_height * image_width > ref_size * ref_size) and not any_mask:
                     vae_height, vae_width =calculate_new_dimensions(ref_size, ref_size, image_height, image_width, False, block_size=multiple_of)
                 else:
                     vae_height, vae_width = image_height, image_width 

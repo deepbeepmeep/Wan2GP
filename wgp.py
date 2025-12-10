@@ -83,7 +83,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
-WanGP_version = "9.82"
+WanGP_version = "9.83"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -7478,13 +7478,30 @@ def switch_image_mode(state):
     video_prompt_type = ui_defaults.get("video_prompt_type", "") 
     model_def = get_model_def( model_type)
     inpaint_support = model_def.get("inpaint_support", False)
+
     if inpaint_support:
+        model_type = get_state_model_type(state)
+        inpaint_cache= state.get("inpaint_cache", None)
+        if inpaint_cache is None:
+            state["inpaint_cache"] = inpaint_cache = {}
+        model_cache = inpaint_cache.get(model_type, None)
+        if model_cache is None:
+            inpaint_cache[model_type] = model_cache ={}
+        video_prompt_inpaint_mode = "VAGI" if model_def.get("image_ref_inpaint", False) else "VAG"
+        video_prompt_image_mode = "KI"
+        old_video_prompt_type = video_prompt_type
         if image_mode == 1:
-            video_prompt_type = del_in_sequence(video_prompt_type, "VAG" + all_guide_processes)  
-            video_prompt_type = add_to_sequence(video_prompt_type, "KI")
+            model_cache[2] = video_prompt_type
+            video_prompt_type = model_cache.get(1, None)
+            if video_prompt_type is None:
+                video_prompt_type = del_in_sequence(old_video_prompt_type, video_prompt_inpaint_mode + all_guide_processes)  
+                video_prompt_type = add_to_sequence(video_prompt_type, video_prompt_image_mode)
         elif image_mode == 2:
-            video_prompt_type = del_in_sequence(video_prompt_type, "KI" + all_guide_processes)
-            video_prompt_type = add_to_sequence(video_prompt_type, "VAG")  
+            model_cache[1] = video_prompt_type
+            video_prompt_type = model_cache.get(2, None)
+            if video_prompt_type is None:
+                video_prompt_type = del_in_sequence(old_video_prompt_type, video_prompt_image_mode + all_guide_processes)
+                video_prompt_type = add_to_sequence(video_prompt_type, video_prompt_inpaint_mode)  
         ui_defaults["video_prompt_type"] = video_prompt_type 
         
     return  str(time.time())
@@ -8511,7 +8528,14 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             with gr.Column(visible= guide_preprocessing is not None or mask_preprocessing is not None or guide_custom_choices is not None or image_ref_choices is not None) as video_prompt_column: 
                 video_prompt_type_value= ui_get("video_prompt_type")
                 video_prompt_type = gr.Text(value= video_prompt_type_value, visible= False)
-                with gr.Row(visible = image_mode_value!=2) as guide_selection_row:
+                dropdown_selectable = True
+                image_ref_inpaint = False
+                if image_mode_value==2:
+                    dropdown_selectable = False
+                    image_ref_inpaint = model_def.get("image_ref_inpaint", False)
+
+
+                with gr.Row(visible = dropdown_selectable or image_ref_inpaint) as guide_selection_row:
                     # Control Video Preprocessing
                     if guide_preprocessing is None:
                         video_prompt_type_video_guide = gr.Dropdown(choices=[("","")], value="", label="Control Video", scale = 2, visible= False, show_label= True, )
@@ -8548,7 +8572,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         video_prompt_type_video_guide = gr.Dropdown(
                             guide_preprocessing_choices,
                             value=filter_letters(video_prompt_type_value,  all_guide_processes, guide_preprocessing.get("default", "") ),
-                            label= video_prompt_type_video_guide_label , scale = 1, visible= guide_preprocessing.get("visible", True) , show_label= True,
+                            label= video_prompt_type_video_guide_label , scale = 1, visible= dropdown_selectable and guide_preprocessing.get("visible", True) , show_label= True,
                         )
                         any_control_video = True
                         any_control_image = image_outputs 
@@ -8565,7 +8589,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             choices= video_prompt_type_video_guide_alt_choices,
                             # value=filter_letters(video_prompt_type_value, guide_custom_choices["letters_filter"], guide_custom_choices.get("default", "") ),
                             value=guide_custom_choices_value,
-                            visible = guide_custom_choices.get("visible", True),
+                            visible = dropdown_selectable and guide_custom_choices.get("visible", True),
                             label= video_prompt_type_video_guide_alt_label, show_label= guide_custom_choices.get("show_label", True), scale = guide_custom_choices.get("scale", 1),
                         )
                         any_control_video = True
@@ -8590,10 +8614,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             custom_video_choices,
                             value=filter_letters(video_prompt_type_value, custom_video_selection.get("letters_filter", ""), custom_video_selection.get("default", "")),
                             scale = custom_video_selection.get("scale", 1),
-                            label= video_prompt_type_video_custom_label , visible= not custom_checkbox and custom_choices, 
+                            label= video_prompt_type_video_custom_label , visible= dropdown_selectable and not custom_checkbox and custom_choices, 
                             show_label= custom_video_selection.get("show_label", True),
                         )
-                        video_prompt_type_video_custom_checkbox = gr.Checkbox(value= custom_video_choices[1][1] in video_prompt_type_value , label=custom_video_choices[1][0] , scale = custom_video_selection.get("scale", 1), visible=custom_checkbox and custom_choices, show_label= True, elem_classes="cbx_centered" )
+                        video_prompt_type_video_custom_checkbox = gr.Checkbox(value= custom_video_choices[1][1] in video_prompt_type_value , label=custom_video_choices[1][0] , scale = custom_video_selection.get("scale", 1), visible=dropdown_selectable and custom_checkbox and custom_choices, show_label= True, elem_classes="cbx_centered" )
 
                     # Control Mask Preprocessing
                     if mask_preprocessing is None:
@@ -8625,13 +8649,16 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         video_prompt_type_video_mask = gr.Dropdown(
                             mask_preprocessing_choices,
                             value=filter_letters(video_prompt_type_value, "XYZWNA", mask_preprocessing.get("default", "")),
-                            label= video_prompt_type_video_mask_label , scale = 1, visible= "V" in video_prompt_type_value and not "U" in video_prompt_type_value and mask_preprocessing.get("visible", True), 
+                            label= video_prompt_type_video_mask_label , scale = 1, visible= dropdown_selectable and "V" in video_prompt_type_value and  "U" not in video_prompt_type_value and mask_preprocessing.get("visible", True), 
                             show_label= True,
                         )
                         any_control_video = True
                         any_control_image = image_outputs 
 
                     # Image Refs Selection
+                    if image_ref_inpaint:
+                       image_ref_choices = { "choices": [("None", ""), ("People / Objects", "I"), ], "letters_filter":  "I", }
+
                     if image_ref_choices is None:
                         video_prompt_type_image_refs = gr.Dropdown(
                             # choices=[ ("None", ""),("Start", "KI"),("Ref Image", "I")],
@@ -8645,11 +8672,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         video_prompt_type_image_refs = gr.Dropdown(
                             choices= image_ref_choices["choices"],
                             value=filter_letters(video_prompt_type_value, image_ref_choices["letters_filter"]),
-                            visible = image_ref_choices.get("visible", True),
+                            visible = (dropdown_selectable or image_ref_inpaint) and image_ref_choices.get("visible", True),
                             label=image_ref_choices.get("label", "Inject Reference Images"), show_label= True, scale = 1
                         )
 
-                image_guide = gr.Image(label= "Control Image", height = 800, type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and ("U" in video_prompt_type_value or not "A" in video_prompt_type_value ) , value= ui_defaults.get("image_guide", None))
+                image_guide = gr.Image(label= "Control Image", height = 800, type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and ("U" in video_prompt_type_value or "A" not in video_prompt_type_value ) , value= ui_defaults.get("image_guide", None))
                 video_guide = gr.Video(label= "Control Video", height = gallery_height, visible= (not image_outputs) and "V" in video_prompt_type_value, value= ui_defaults.get("video_guide", None), elem_id="video_input")
                 if image_mode_value >= 1:  
                     image_guide_value = ui_defaults.get("image_guide", None)
@@ -8674,7 +8701,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         # transforms=None,
                         # interactive=True, 
                         elem_id="img_editor",
-                        visible= "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value
+                        visible= "V" in video_prompt_type_value and "A" in video_prompt_type_value and "U" not in video_prompt_type_value
                     )
                     any_control_image = True
                 else:

@@ -48,7 +48,7 @@ Then in your terminal window just write this:
 ```bash
 python wgp.py --process my_queue.zip
 ```
-With WanGP 9.82, you can also process settings file (.json file exported using th *Export Settings* button):
+With WanGP 9.83, you can also process settings file (.json file exported using th *Export Settings* button):
 ```bash
 python wgp.py --process my_settings.json
 ```
@@ -65,7 +65,7 @@ Processing Settings can be useful to do some quick gen / testing if you don't ne
 
 *update 9.81*: added Hunyuan Video 1.5 i2v distilled + magcache
 *update 9.82*: added Settings headless processing, output file customization, refactored Task edition and queue processing
-
+*update 9.83*: Qwen Edit+ upgraded: no more any zoom at 1080p, enabled mask, enabled image refs with inpainting
 
 ### December 4 2025: WanGP v9.74, The Alpha & the Omega ... and the Dancer
 

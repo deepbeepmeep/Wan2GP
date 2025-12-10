@@ -27,6 +27,7 @@ class family_handler():
 
         if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]: 
             extra_model_def["inpaint_support"] = True
+            extra_model_def["image_ref_inpaint"]=  base_model_type in ["qwen_image_edit_plus_20B"]
             extra_model_def["image_ref_choices"] = {
             "choices": [
                 ("None", ""),
@@ -49,12 +50,15 @@ class family_handler():
 
         if base_model_type in ["qwen_image_edit_plus_20B"]: 
             extra_model_def["guide_preprocessing"] = {
-                    "selection": ["", "PV", "DV", "SV", "CV"], #, "MV" 
+                    "selection": ["", "PV", "DV", "SV", "CV", "V"], #, "MV" 
+                    "labels": {"V": "Qwen Raw Format"},
                 }
+
+            extra_model_def["mask_strength_always_enabled"] = True
 
             extra_model_def["mask_preprocessing"] = {
                     "selection": ["", "A"],
-                    "visible": False,
+                    "visible": True,
                 }
         return extra_model_def
 

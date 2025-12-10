@@ -16,15 +16,24 @@ Process saved queues without launching the web UI. Useful for batch processing o
 
 ### Quick Start
 ```bash
-# Process a saved queue
+# Process a saved queue (ZIP with attachments)
 python wgp.py --process my_queue.zip
 
-# Validate queue without generating (dry-run)
+# Process a settings file (JSON)
+python wgp.py --process my_settings.json
+
+# Validate without generating (dry-run)
 python wgp.py --process my_queue.zip --dry-run
 
 # Process with custom output directory
 python wgp.py --process my_queue.zip --output-dir ./batch_outputs
 ```
+
+### Supported File Formats
+| Format | Description |
+|--------|-------------|
+| `.zip` | Full queue with embedded attachments (images, videos, audio). Created via "Save Queue" button. |
+| `.json` | Settings file only. Media paths are used as-is (absolute or relative to WanGP folder). Created via "Export Settings" button. |
 
 ### Workflow
 1. **Create your queue** in the web UI using the normal interface
@@ -37,8 +46,8 @@ python wgp.py --process my_queue.zip --output-dir ./batch_outputs
 
 ### CLI Queue Options
 ```bash
---process PATH          # Path to saved queue .zip file (enables headless mode)
---dry-run               # Validate queue without generating (use with --process)
+--process PATH          # Path to queue (.zip) or settings (.json) file (enables headless mode)
+--dry-run               # Validate file without generating (use with --process)
 --output-dir PATH       # Override output directory (use with --process)
 --verbose LEVEL         # Verbosity level 0-2 for detailed logging
 ```

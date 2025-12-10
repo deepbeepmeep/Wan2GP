@@ -83,7 +83,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
-WanGP_version = "9.81"
+WanGP_version = "9.82"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -516,7 +516,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     queue= gen.get("queue", [])
     return update_queue_data(queue), gr.update(open=True) if new_prompts_count > 1 else gr.update()
 
-def validate_settings(state, model_type, edit, inputs):
+def validate_settings(state, model_type, single_prompt, inputs):
     def ret():
         return None, None, None, None
 
@@ -553,7 +553,7 @@ def validate_settings(state, model_type, edit, inputs):
     prompts = prompt.replace("\r", "").split("\n")
     prompts = [prompt.strip() for prompt in prompts if len(prompt.strip())>0 and not prompt.startswith("#")]
 
-    if edit or multi_prompts_gen_type == 2:
+    if single_prompt or multi_prompts_gen_type == 2:
         prompts = ["\n".join(prompts)]
 
     if len(prompts) == 0:
@@ -868,9 +868,9 @@ def validate_settings(state, model_type, edit, inputs):
             gr.Info("Filtering Frames with this model is not supported")
             return ret()
 
-    if multi_prompts_gen_type in [1,2] or edit:
+    if multi_prompts_gen_type in [1,2] or single_prompt:
         if image_start != None and len(image_start) > 1:
-            if multi_prompts_gen_type == 2 or edit:
+            if multi_prompts_gen_type == 2 or single_prompt:
                 gr.Info("Only one Start Image must be provided if there is a single Prompt") 
             else:
                 gr.Info("Only one Start Image must be provided if multiple prompts are used for different windows") 
@@ -1222,16 +1222,16 @@ def _process_task_params(params, state, log_prefix="[load]"):
     if get_model_def(model_type) is None:
         return None, f"Unknown model type: {original_model_type}"
 
-    defaults = get_default_settings(model_type)
-    if defaults:
-        saved_settings_version = params.get('settings_version', 0)
-        merged = defaults.copy()
-        merged.update(params)
-        params.clear()
-        params.update(merged)
-        fix_settings(model_type, params, saved_settings_version)
-        for meta_key in ['type', 'base_model_type', 'settings_version']:
-            params.pop(meta_key, None)
+    # Use primary_settings as base (not model-specific saved settings)
+    # This ensures loaded queues/settings behave predictably
+    saved_settings_version = params.get('settings_version', 0)
+    merged = primary_settings.copy()
+    merged.update(params)
+    params.clear()
+    params.update(merged)
+    fix_settings(model_type, params, saved_settings_version)
+    for meta_key in ['type', 'base_model_type', 'settings_version']:
+        params.pop(meta_key, None)
 
     params['state'] = state
     return model_type, None
@@ -1240,7 +1240,6 @@ def _process_task_params(params, state, log_prefix="[load]"):
 def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_prefix="[load]"):
     global task_id
     newly_loaded_queue = []
-    prop_names = _get_generate_video_param_names()
 
     for task_index, task_data in enumerate(manifest):
         if task_data is None or not isinstance(task_data, dict):
@@ -1258,11 +1257,6 @@ def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_p
 
         # Load media attachments
         _load_task_attachments(params, media_base_path, cache_dir, log_prefix)
-
-        # Fill missing params with primary settings
-        for k in prop_names:
-            if k not in params:
-                params[k] = primary_settings.get(k, "")
 
         # Build runtime task
         runtime_task = _build_runtime_task(task_id_loaded, params, task_data.get('plugin_data', {}))
@@ -6263,6 +6257,20 @@ def process_tasks(state):
     release_gen()
 
 
+def validate_task(task, state):
+    """Validate a task's settings. Returns updated params dict or None if invalid."""
+    params = task.get('params', {})
+    model_type = params.get('model_type')
+    if not model_type:
+        print("  [SKIP] No model_type specified")
+        return None
+
+    inputs = {**params, 'prompt': task.get('prompt', '')}
+    override_inputs, _, _, _ = validate_settings(state, model_type, single_prompt=True, inputs=inputs)
+    if override_inputs is None: return None
+    return {**params, **override_inputs}
+
+
 def process_tasks_cli(queue, state):
     """Process queue tasks with console output for CLI mode. Returns True on success."""
     from shared.utils.thread_utils import AsyncStream, async_run
@@ -6271,6 +6279,7 @@ def process_tasks_cli(queue, state):
     gen = get_gen_info(state)
     total_tasks = len(queue)
     completed = 0
+    skipped = 0
     start_time = time.time()
 
     for task_idx, task in enumerate(queue):
@@ -6278,11 +6287,18 @@ def process_tasks_cli(queue, state):
         prompt_preview = (task.get('prompt', '') or '')[:60]
         print(f"\n[Task {task_no}/{total_tasks}] {prompt_preview}...")
 
+        # Validate task settings before processing
+        validated_params = validate_task(task, state)
+        if validated_params is None:
+            print(f"  [SKIP] Task {task_no} failed validation")
+            skipped += 1
+            continue
+
         # Update gen state for this task
         gen["prompt_no"] = task_no
         gen["prompts_max"] = total_tasks
 
-        params = task['params'].copy()
+        params = validated_params.copy()
         params['state'] = state
 
         com_stream = AsyncStream()
@@ -6291,21 +6307,8 @@ def process_tasks_cli(queue, state):
         def make_error_handler(task, params, send_cmd):
             def error_handler():
                 try:
-                    model_type = params.get('model_type')
-                    known_defaults = {'image_refs_relative_size': 50}
-
-                    for arg_name, default_value in known_defaults.items():
-                        if arg_name not in params:
-                            params[arg_name] = default_value
-
-                    expected_args = set(inspect.signature(generate_video).parameters.keys())
-                    if model_type:
-                        default_settings = get_default_settings(model_type)
-                        for arg_name in expected_args:
-                            if arg_name not in params and arg_name in default_settings:
-                                params[arg_name] = default_settings[arg_name]
-
                     # Filter to only valid generate_video params
+                    expected_args = set(inspect.signature(generate_video).parameters.keys())
                     filtered_params = {k: v for k, v in params.items() if k in expected_args}
                     plugin_data = task.get('plugin_data', {})
                     generate_video(task, send_cmd, plugin_data=plugin_data, **filtered_params)
@@ -6322,12 +6325,16 @@ def process_tasks_cli(queue, state):
         # Process output stream
         task_error = False
         last_msg_len = 0
+        in_status_line = False  # Track if we're in an overwritable line
         while True:
             cmd, data = com_stream.output_queue.next()
             if cmd == "exit":
+                if in_status_line:
+                    print()  # End the status line
                 break
             elif cmd == "error":
                 print(f"\n  [ERROR] {data}")
+                in_status_line = False
                 task_error = True
             elif cmd == "progress":
                 if isinstance(data, list) and len(data) >= 2:
@@ -6341,14 +6348,24 @@ def process_tasks_cli(queue, state):
                     # Pad to clear previous longer messages
                     print(status_line.ljust(max(last_msg_len, len(status_line))), end="", flush=True)
                     last_msg_len = len(status_line)
+                    in_status_line = True
             elif cmd == "status":
-                status_line = f"\r  {data}"
-                print(status_line.ljust(max(last_msg_len, len(status_line))), end="", flush=True)
-                last_msg_len = len(status_line)
+                # "Loading..." messages are followed by external library output, so end with newline
+                if "Loading" in str(data):
+                    print(data)
+                    in_status_line = False
+                    last_msg_len = 0
+                else:
+                    status_line = f"\r  {data}"
+                    print(status_line.ljust(max(last_msg_len, len(status_line))), end="", flush=True)
+                    last_msg_len = len(status_line)
+                    in_status_line = True
             elif cmd == "output":
-                print(f"\n  Video saved")
+                # "output" is used for UI refresh, not just video saves - don't print anything
+                pass
             elif cmd == "info":
                 print(f"\n  [INFO] {data}")
+                in_status_line = False
 
         if not task_error:
             completed += 1
@@ -6356,8 +6373,11 @@ def process_tasks_cli(queue, state):
 
     elapsed = time.time() - start_time
     print(f"\n{'='*50}")
-    print(f"Queue completed: {completed}/{total_tasks} tasks in {format_time(elapsed)}")
-    return completed == total_tasks
+    summary = f"Queue completed: {completed}/{total_tasks} tasks in {format_time(elapsed)}"
+    if skipped > 0:
+        summary += f" ({skipped} skipped)"
+    print(summary)
+    return completed == (total_tasks - skipped)
 
 
 def get_generation_status(prompt_no, prompts_max, repeat_no, repeat_max, window_no, total_windows):
@@ -10145,374 +10165,11 @@ def get_js():
     return start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js, click_brush_js
 
 def create_ui():
-    css = """
-        .postprocess div,  
-        .postprocess span,    
-        .postprocess label,
-        .postprocess input,
-        .postprocess select,
-        .postprocess textarea {
-            font-size: 12px !important;
-            padding: 0px !important;
-            border:  5px !important;
-            border-radius: 0px !important;
-            --form-gap-width: 0px !important;
-            box-shadow: none !important;
-            --layout-gap: 0px !important;
-        }    
-        .postprocess span {margin-top:4px;margin-bottom:4px} 
-        #model_list, #family_list, #model_base_types_list {
-        background-color:black;
-        padding:1px}
+    # Load CSS from external file
+    css_path = os.path.join(os.path.dirname(__file__), "shared", "gradio", "ui_styles.css")
+    with open(css_path, "r", encoding="utf-8") as f:
+        css = f.read()
 
-        #model_list,#model_base_types_list { padding-left:0px}
-
-        #model_list input, #family_list input, #model_base_types_list input {
-        font-size:25px}
-
-        #family_list div div {
-        border-radius: 4px 0px 0px 4px;
-        }
-
-        #model_list div div {
-        border-radius: 0px 4px 4px 0px;
-        }
-
-        #model_base_types_list div div {
-        border-radius: 0px 0px 0px 0px;
-        }
-
-        .title-with-lines {
-            display: flex;
-            align-items: center;
-            margin: 25px 0;
-        }
-        .line {
-            flex-grow: 1;
-            height: 1px;
-            background-color: #333;
-        }
-        h2 {
-            margin: 0 20px;
-            white-space: nowrap;
-        }
-        #edit-tab-content {
-            max-width: 960px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-        #edit_tab_apply_button {
-            background-color: #4535ec !important;
-            color: white !important;
-            transition: background-color 0.2s ease-in-out;
-        }
-        #edit_tab_apply_button:hover {
-            background-color: #3323d8 !important;
-        }
-        #edit_tab_cancel_button {
-            background-color: #7e73f2 !important;
-            color: white !important;
-            transition: background-color 0.2s ease-in-out;
-        }
-        #edit_tab_cancel_button:hover {
-            background-color: #5c50e2 !important;
-        }
-        #queue_html_container .pastel-row {
-            background-color: hsl(var(--item-hue, 0), 80%, 92%);
-        }
-        #queue_html_container .alternating-grey-row.even-row {
-            background-color: #F8FAFC; /* Light mode grey */
-        }
-        @media (prefers-color-scheme: dark) {
-            #queue_html_container tr:hover td {
-                 background-color: rgba(255, 255, 255, 0.1) !important;
-            }
-            #queue_html_container .pastel-row {
-                background-color: hsl(var(--item-hue, 0), 35%, 25%);
-            }
-            #queue_html_container .alternating-grey-row.even-row {
-                background-color: #2a3748; /* Dark mode grey */
-            }
-            #queue_html_container .alternating-grey-row {
-                background-color: transparent;
-            }
-        }
-        #queue_html_container table {
-            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-            table-layout: fixed;
-        }
-        #queue_html_container th {
-            text-align: left;
-            padding: 10px 8px;
-            border-bottom: 2px solid #4a5568;
-            font-weight: bold;
-            font-size: 11px;
-            text-transform: uppercase;
-            color: #a0aec0;
-            white-space: nowrap;
-        }
-        #queue_html_container td {
-            padding: 8px;
-            border-bottom: 1px solid #2d3748;
-            vertical-align: middle;
-        }
-        #queue_html_container tr:hover td {
-            background-color: rgba(255, 255, 255, 0.6);
-        }
-        #queue_html_container .prompt-cell {
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        #queue_html_container .action-button {
-            background: none;
-            border: none;
-            cursor: pointer;
-            font-size: 1.3em;
-            padding: 0;
-            color: #718096;
-            transition: color 0.2s;
-            line-height: 1;
-        }
-        #queue_html_container .action-button:hover {
-            color: #e2e8f0;
-        }
-        #queue_html_container .center-align {
-            text-align: center;
-        }
-        #queue_html_container .text-left {
-            text-align: left;
-        }
-        #queue_html_container .hover-image img {
-            max-width: 50px;
-            max-height: 50px;
-            object-fit: contain;
-            display: block;
-            margin: auto;
-        }
-        #queue_html_container .draggable-row {
-            cursor: grab;
-        }
-        #queue_html_container tr.dragging {
-            opacity: 0.5;
-            background: #2d3748;
-        }
-        #queue_html_container tr.drag-over-top {
-            border-top: 6px solid #4299e1;
-        }
-        #queue_html_container tr.drag-over-bottom {
-            border-bottom: 6px solid #4299e1;
-        }
-        #queue_html_container .action-button svg {
-            width: 20px;
-            height: 20px;
-        }
-        
-        #queue_html_container .drag-handle svg {
-            width: 20px;
-            height: 20px;
-        }
-        #queue_html_container .action-button:hover svg {
-            fill: #e2e8f0;
-        }
-        #image-modal-container {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.85);
-            z-index: 1000;
-            cursor: pointer;
-        }
-        #image-modal-container .modal-flex-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            width: 100%;
-            height: 100%;
-            padding: 2vh;
-            box-sizing: border-box;
-        }
-        #image-modal-container .modal-content-wrapper {
-            position: relative;
-            background: #1f2937;
-            padding: 0;
-            border-radius: 8px;
-            cursor: default;
-            display: flex;
-            flex-direction: column;
-            max-width: 95vw;
-            max-height: 95vh;
-            overflow: hidden;
-        }
-        #image-modal-container .modal-close-btn {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            width: 40px;
-            height: 40px;
-            background-color: rgba(0, 0, 0, 0.5);
-            border-radius: 50%;
-            color: #fff;
-            font-size: 1.8rem;
-            font-weight: bold;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            cursor: pointer;
-            line-height: 1;
-            z-index: 1002;
-            transition: background-color 0.2s, transform 0.2s;
-            text-shadow: 0 0 5px rgba(0,0,0,0.5);
-        }
-        #image-modal-container .modal-close-btn:hover {
-            background-color: rgba(0, 0, 0, 0.8);
-            transform: scale(1.1);
-        }
-        #image-modal-container .modal-label {
-            position: absolute;
-            top: 10px;
-            left: 15px;
-            background: rgba(0,0,0,0.7);
-            color: white;
-            padding: 5px 10px;
-            font-size: 14px;
-            border-radius: 4px;
-            z-index: 1001;
-        }
-        #image-modal-container .modal-image {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
-        .progress-container-custom {
-            width: 100%;
-            background-color: #e9ecef;
-            border-radius: 0.375rem;
-            overflow: hidden;
-            height: 25px;
-            position: relative;
-            margin-top: 5px;
-            margin-bottom: 5px;
-        }
-        .progress-bar-custom {
-            height: 100%;
-            background-color: #0d6efd;
-            transition: width 0.3s ease-in-out;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 0.9em;
-            font-weight: bold;
-            white-space: nowrap;
-            overflow: hidden;
-        }
-        .progress-bar-custom.idle {
-            background-color: #6c757d;
-        }
-        .progress-bar-text {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            mix-blend-mode: difference;
-            font-size: 0.9em;
-            font-weight: bold;
-            white-space: nowrap;
-            z-index: 2;
-            pointer-events: none;
-        }
-
-        .hover-image {
-        cursor: pointer;
-        position: relative;
-        display: inline-block; /* Important for positioning */
-        }
-
-        .hover-image .tooltip {
-        visibility: hidden;
-        opacity: 0;
-        position: absolute;
-        top: 100%;
-        left: 50%;
-        transform: translateX(-50%);
-        background-color: rgba(0, 0, 0, 0.8);
-        color: white;
-        padding: 4px 6px;
-        border-radius: 2px;
-        font-size: 14px;
-        white-space: nowrap;
-        pointer-events: none;
-        z-index: 9999;         
-        transition: visibility 0s linear 1s, opacity 0.3s linear 1s; /* Delay both properties */
-        }
-        div.compact_tab , span.compact_tab 
-        { padding: 0px !important;
-        } 
-        .hover-image .tooltip2 {
-            visibility: hidden;
-            opacity: 0;
-            position: absolute;
-            top: 50%; /* Center vertically with the image */
-            left: 0; /* Position to the left of the image */
-            transform: translateY(-50%); /* Center vertically */
-            margin-left: -10px; /* Small gap to the left of image */
-            background-color: rgba(0, 0, 0, 0.8);
-            color: white;
-            padding: 8px 12px;
-            border-radius: 4px;
-            font-size: 14px;
-            white-space: nowrap;
-            pointer-events: none;
-            z-index: 9999;         
-            transition: visibility 0s linear 1s, opacity 0.3s linear 1s;
-        }
-                
-        .hover-image:hover .tooltip, .hover-image:hover .tooltip2 {
-        visibility: visible;
-        opacity: 1;
-        transition: visibility 0s linear 1s, opacity 0.3s linear 1s; /* 1s delay before showing */
-        }
-        .btn_centered {margin-top:10px; text-wrap-mode: nowrap;}
-        .cbx_centered label {margin-top:8px; text-wrap-mode: nowrap;}
-
-        .copy-swap { display:block; max-width:100%; 
-        }
-        .copy-swap__trunc {
-        display: block;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        }
-        .copy-swap__full { display: none; }
-        .copy-swap:hover .copy-swap__trunc,
-        .copy-swap:focus-within .copy-swap__trunc { display: none; }
-        .copy-swap:hover .copy-swap__full,
-        .copy-swap:focus-within .copy-swap__full {
-        display: inline;
-        white-space: normal;
-        user-select: text;
-        }
-        .compact_text {padding: 1px}
-        #video_input .video-container .container {
-            flex-direction: row !important;
-            display: flex !important;
-        }
-        #video_input .video-container .container .controls {
-            overflow: visible !important;
-        }
-        .tabitem {padding-top:0px}
-    """
     UI_theme = server_config.get("UI_theme", "default")
     UI_theme  = args.theme if len(args.theme) > 0 else UI_theme
     if UI_theme == "gradio":
@@ -10520,128 +10177,10 @@ def create_ui():
     else:
         theme = gr.themes.Soft(font=["Verdana"], primary_hue="sky", neutral_hue="slate", text_size="md")
 
-    js = """
-    function() {
-        console.log("[WanGP] main JS initialized");
-        window.updateAndTrigger = function(action) {
-            const hiddenTextbox = document.querySelector('#queue_action_input textarea');
-            const hiddenButton = document.querySelector('#queue_action_trigger');
-            if (hiddenTextbox && hiddenButton) {
-                hiddenTextbox.value = action;
-                hiddenTextbox.dispatchEvent(new Event('input', { bubbles: true }));
-                hiddenButton.click();
-            } else {
-                console.error("Could not find hidden queue action elements.");
-            }
-        };
-
-        window.scrollToQueueTop = function() {
-            const container = document.querySelector('#queue-scroll-container');
-            if (container) container.scrollTop = 0;
-        };
-        window.scrollToQueueBottom = function() {
-            const container = document.querySelector('#queue-scroll-container');
-            if (container) container.scrollTop = container.scrollHeight;
-        };
-
-        window.showImageModal = function(action) {
-            const hiddenTextbox = document.querySelector('#modal_action_input textarea');
-            const hiddenButton = document.querySelector('#modal_action_trigger');
-            if (hiddenTextbox && hiddenButton) {
-                hiddenTextbox.value = action;
-                hiddenTextbox.dispatchEvent(new Event('input', { bubbles: true }));
-                hiddenButton.click();
-            }
-        };
-        window.closeImageModal = function() {
-            const closeButton = document.querySelector('#modal_close_trigger_btn');
-            if (closeButton) closeButton.click();
-        };
-
-        let draggedItem = null;
-
-        function attachDelegatedDragAndDrop(container) {
-            if (container.dataset.dndDelegated) return; // Listeners already attached
-            container.dataset.dndDelegated = 'true';
-
-            container.addEventListener('dragstart', (e) => {
-                const row = e.target.closest('.draggable-row');
-                if (!row || e.target.closest('.action-button') || e.target.closest('.hover-image')) {
-                    if (row) e.preventDefault(); // Prevent dragging if it's on a button/image
-                    return;
-                }
-                draggedItem = row;
-                setTimeout(() => draggedItem.classList.add('dragging'), 0);
-            });
-
-            container.addEventListener('dragend', () => {
-                if (draggedItem) {
-                    draggedItem.classList.remove('dragging');
-                }
-                draggedItem = null;
-                document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => {
-                    el.classList.remove('drag-over-top', 'drag-over-bottom');
-                });
-            });
-
-            container.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                const targetRow = e.target.closest('.draggable-row');
-
-                document.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => {
-                    el.classList.remove('drag-over-top', 'drag-over-bottom');
-                });
-
-                if (targetRow && draggedItem && targetRow !== draggedItem) {
-                    const rect = targetRow.getBoundingClientRect();
-                    const midpoint = rect.top + rect.height / 2;
-                    
-                    if (e.clientY < midpoint) {
-                        targetRow.classList.add('drag-over-top');
-                    } else {
-                        targetRow.classList.add('drag-over-bottom');
-                    }
-                }
-            });
-
-            container.addEventListener('drop', (e) => {
-                e.preventDefault();
-                const targetRow = e.target.closest('.draggable-row');
-                if (!draggedItem || !targetRow || targetRow === draggedItem) return;
-
-                const oldIndex = draggedItem.dataset.index;
-                let newIndex = parseInt(targetRow.dataset.index);
-
-                if (targetRow.classList.contains('drag-over-bottom')) {
-                    newIndex++;
-                }
-
-                if (oldIndex != newIndex) {
-                   const action = `move_${oldIndex}_to_${newIndex}`;
-                   window.updateAndTrigger(action);
-                }
-            });
-        }
-
-        const observer = new MutationObserver((mutations, obs) => {
-            const container = document.querySelector('#queue_html_container');
-            if (container) {
-                attachDelegatedDragAndDrop(container);
-                obs.disconnect();
-            }
-        });
-
-        const targetNode = document.querySelector('gradio-app');
-        if (targetNode) {
-            observer.observe(targetNode, { childList: true, subtree: true });
-        }
-
-        const hit = n => n?.id === "img_editor" || n?.classList?.contains("wheel-pass");
-        addEventListener("wheel", e => {
-            const path = e.composedPath?.() || (() => { let a=[],n=e.target; for(;n;n=n.parentNode||n.host) a.push(n); return a; })();
-            if (path.some(hit)) e.stopImmediatePropagation();
-        }, { capture: true, passive: true });
-"""
+    # Load main JS from external file
+    js_path = os.path.join(os.path.dirname(__file__), "shared", "gradio", "ui_scripts.js")
+    with open(js_path, "r", encoding="utf-8") as f:
+        js = f.read()
     js += AudioGallery.get_javascript()
     app.initialize_plugins(globals())
     plugin_js = ""
@@ -10852,15 +10391,22 @@ if __name__ == "__main__":
         # Dry-run mode: validate and exit
         if args.dry_run:
             print("\n[DRY-RUN] Queue validation:")
+            valid_count = 0
             for i, task in enumerate(queue, 1):
                 prompt = (task.get('prompt', '') or '')[:50]
                 model = task.get('params', {}).get('model_type', 'unknown')
-                steps = task.get('steps', '?')
-                length = task.get('length', '?')
+                steps = task.get('params', {}).get('num_inference_steps', '?')
+                length = task.get('params', {}).get('video_length', '?')
                 print(f"  Task {i}: model={model}, steps={steps}, frames={length}")
                 print(f"          prompt: {prompt}...")
-            print(f"\n[DRY-RUN] Validation complete. {len(queue)} task(s) ready.")
-            sys.exit(0)
+                validated = validate_task(task, state)
+                if validated is None:
+                    print(f"          [INVALID]")
+                else:
+                    print(f"          [OK]")
+                    valid_count += 1
+            print(f"\n[DRY-RUN] Validation complete. {valid_count}/{len(queue)} task(s) valid.")
+            sys.exit(0 if valid_count == len(queue) else 1)
 
         state["gen"]["queue"] = queue
 

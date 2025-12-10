@@ -266,6 +266,17 @@ def clean_image_list(gradio_list):
     gradio_list = [ convert_image( Image.open(img) if isinstance(img, str) else img  ) for img in gradio_list  ]        
     return gradio_list
 
+_generate_video_param_names = None
+def _get_generate_video_param_names():
+    """Get parameter names from generate_video signature (cached)."""
+    global _generate_video_param_names
+    if _generate_video_param_names is None:
+        _generate_video_param_names = [
+            x for x in inspect.signature(generate_video).parameters
+            if x not in ["task", "send_cmd", "plugin_data"]
+        ]
+    return _generate_video_param_names
+
 
 def silent_cancel_edit(state):
     gen = get_gen_info(state)
@@ -1117,157 +1128,226 @@ def save_queue_action(state):
     finally:
         zip_buffer.close()
 
-def _parse_queue_zip(filename, state):
-    """Parse queue ZIP file. Returns (queue_list, error_msg or None).
-    Core parsing logic used by both load_queue_action() and CLI mode.
-    """
-    global task_id
-    save_path_base = server_config.get("save_path", "outputs")
-    loaded_cache_dir = os.path.join(save_path_base, "_loaded_queue_cache")
-    newly_loaded_queue = []
+def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="[load]"):
 
-    prop_names = list(inspect.signature(generate_video).parameters)
-    prop_names = [x for x in prop_names  if x not in ["task", "send_cmd", "plugin_data"] ]
+    for key in ATTACHMENT_KEYS:
+        value = params.get(key)
+        if value is None:
+            continue
+
+        is_originally_list = isinstance(value, list)
+        filenames = value if is_originally_list else [value]
+
+        loaded_items = []
+        for filename in filenames:
+            if not isinstance(filename, str) or not filename.strip():
+                print(f"{log_prefix} Warning: Invalid filename for key '{key}'. Skipping.")
+                continue
+
+            if os.path.isabs(filename):
+                source_path = filename
+            else:
+                source_path = os.path.join(media_base_path, filename)
+
+            if not os.path.exists(source_path):
+                print(f"{log_prefix} Warning: File not found for '{key}': {source_path}")
+                continue
+
+            if cache_dir:
+                final_path = os.path.join(cache_dir, os.path.basename(filename))
+                try:
+                    shutil.copy2(source_path, final_path)
+                except Exception as e:
+                    print(f"{log_prefix} Error copying {filename}: {e}")
+                    continue
+            else:
+                final_path = source_path
+
+            # Load images as PIL, keep videos/audio as paths
+            if has_image_file_extension(final_path):
+                try:
+                    loaded_items.append(Image.open(final_path))
+                    print(f"{log_prefix} Loaded image: {final_path}")
+                except Exception as e:
+                    print(f"{log_prefix} Error loading image {final_path}: {e}")
+            else:
+                loaded_items.append(final_path)
+                print(f"{log_prefix} Using path: {final_path}")
+
+        # Update params, preserving list/single structure
+        if loaded_items:
+            params[key] = loaded_items if is_originally_list else loaded_items[0]
+        else:
+            params.pop(key, None)
+
+
+def _build_runtime_task(task_id_val, params, plugin_data=None):
+    """Build a runtime task dict from params."""
+    primary_preview, secondary_preview, primary_labels, secondary_labels = get_preview_images(params)
+
+    start_b64 = [pil_to_base64_uri(primary_preview[0], format="jpeg", quality=70)] if isinstance(primary_preview, list) and primary_preview else None
+    end_b64 = [pil_to_base64_uri(secondary_preview[0], format="jpeg", quality=70)] if isinstance(secondary_preview, list) and secondary_preview else None
+
+    return {
+        "id": task_id_val,
+        "params": params,
+        "plugin_data": plugin_data or {},
+        "repeats": params.get('repeat_generation', 1),
+        "length": params.get('video_length'),
+        "steps": params.get('num_inference_steps'),
+        "prompt": params.get('prompt'),
+        "start_image_labels": primary_labels,
+        "end_image_labels": secondary_labels,
+        "start_image_data": params.get("image_start") or params.get("image_refs"),
+        "end_image_data": params.get("image_end"),
+        "start_image_data_base64": start_b64,
+        "end_image_data_base64": end_b64,
+    }
+
+
+def _process_task_params(params, state, log_prefix="[load]"):
+    """Apply defaults, fix settings, and prepare params for a task.
+
+    Returns (model_type, error_msg or None). Modifies params in place.
+    """
+    base_model_type = params.get('base_model_type', None)
+    model_type = original_model_type = params.get('model_type', base_model_type)
+
+    if model_type is not None and get_model_def(model_type) is None:
+        model_type = base_model_type
+
+    if model_type is None:
+        return None, "Settings must contain 'model_type'"
+    params["model_type"] = model_type
+    if get_model_def(model_type) is None:
+        return None, f"Unknown model type: {original_model_type}"
+
+    defaults = get_default_settings(model_type)
+    if defaults:
+        saved_settings_version = params.get('settings_version', 0)
+        merged = defaults.copy()
+        merged.update(params)
+        params.clear()
+        params.update(merged)
+        fix_settings(model_type, params, saved_settings_version)
+        for meta_key in ['type', 'base_model_type', 'settings_version']:
+            params.pop(meta_key, None)
+
+    params['state'] = state
+    return model_type, None
+
+
+def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_prefix="[load]"):
+    global task_id
+    newly_loaded_queue = []
+    prop_names = _get_generate_video_param_names()
+
+    for task_index, task_data in enumerate(manifest):
+        if task_data is None or not isinstance(task_data, dict):
+            print(f"{log_prefix} Skipping invalid task data at index {task_index}")
+            continue
+
+        params = task_data.get('params', {})
+        task_id_loaded = task_data.get('id', task_id + 1)
+
+        # Process params (merge defaults, fix settings)
+        model_type, error = _process_task_params(params, state, log_prefix)
+        if error:
+            print(f"{log_prefix} {error} for task #{task_id_loaded}. Skipping.")
+            continue
+
+        # Load media attachments
+        _load_task_attachments(params, media_base_path, cache_dir, log_prefix)
+
+        # Fill missing params with primary settings
+        for k in prop_names:
+            if k not in params:
+                params[k] = primary_settings.get(k, "")
+
+        # Build runtime task
+        runtime_task = _build_runtime_task(task_id_loaded, params, task_data.get('plugin_data', {}))
+        newly_loaded_queue.append(runtime_task)
+        print(f"{log_prefix} Task {task_index+1}/{len(manifest)} ready, ID: {task_id_loaded}, model: {model_type}")
+
+    # Update global task_id
+    if newly_loaded_queue:
+        current_max_id = max([t['id'] for t in newly_loaded_queue if 'id' in t] + [0])
+        if current_max_id >= task_id:
+            task_id = current_max_id + 1
+
+    return newly_loaded_queue, None
+
+
+def _parse_queue_zip(filename, state):
+    """Parse queue ZIP file. Returns (queue_list, error_msg or None)."""
+    save_path_base = server_config.get("save_path", "outputs")
+    cache_dir = os.path.join(save_path_base, "_loaded_queue_cache")
 
     try:
         print(f"[load_queue] Attempting to load queue from: {filename}")
-        os.makedirs(loaded_cache_dir, exist_ok=True)
-        print(f"[load_queue] Using cache directory: {loaded_cache_dir}")
+        os.makedirs(cache_dir, exist_ok=True)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with zipfile.ZipFile(filename, 'r') as zf:
                 if "queue.json" not in zf.namelist():
                     return None, "queue.json not found in zip file"
-                print(f"[load_queue] Extracting {filename} to {tmpdir}")
+                print(f"[load_queue] Extracting to temp directory...")
                 zf.extractall(tmpdir)
-                print(f"[load_queue] Extraction complete.")
 
             manifest_path = os.path.join(tmpdir, "queue.json")
-            print(f"[load_queue] Reading manifest: {manifest_path}")
             with open(manifest_path, 'r', encoding='utf-8') as f:
-                loaded_manifest = json.load(f)
-            print(f"[load_queue] Manifest loaded. Processing {len(loaded_manifest)} tasks.")
+                manifest = json.load(f)
+            print(f"[load_queue] Loaded manifest with {len(manifest)} tasks.")
 
-            for task_index, task_data in enumerate(loaded_manifest):
-                if task_data is None or not isinstance(task_data, dict):
-                    print(f"[load_queue] Skipping invalid task data at index {task_index}")
-                    continue
-
-                params = task_data.get('params', {})
-                task_id_loaded = task_data.get('id', 0)
-
-                base_model_type = params.get('base_model_type', None)
-                model_type = original_model_type = params.get('model_type', base_model_type)
-                if model_type is not None and get_model_def(model_type) is None:
-                    model_type = base_model_type
-
-                if model_type is not None:
-                    if get_model_def(model_type) is None:
-                        print(f"Unknown model type {original_model_type} for task #{task_id_loaded}. Skipping Task")
-                        continue
-                    defaults = get_default_settings(model_type)
-                    if defaults:
-                        saved_settings_version = params.get('settings_version', 0)
-                        merged = defaults.copy()
-                        merged.update(params)
-                        params = merged
-                        fix_settings(model_type, params, saved_settings_version)
-                        for meta_key in ['type', 'base_model_type', 'settings_version']:
-                            params.pop(meta_key, None)
-
-                params['state'] = state
-
-                # Load all attachments - images as PIL, videos/audio as paths
-                for key in ATTACHMENT_KEYS:
-                    value = params.get(key)
-                    if value is None:
-                        continue
-
-                    is_originally_list = isinstance(value, list)
-                    filenames = value if is_originally_list else [value]
-
-                    loaded_items = []
-                    for filename_in_zip in filenames:
-                        if not isinstance(filename_in_zip, str):
-                            print(f"[load_queue] Warning: Non-string filename for key '{key}'. Skipping.")
-                            continue
-
-                        file_path = os.path.join(tmpdir, filename_in_zip)
-                        if not os.path.exists(file_path):
-                            print(f"[load_queue] File not found: {file_path}. Skipping.")
-                            continue
-
-                        persistent_path = os.path.join(loaded_cache_dir, filename_in_zip)
-                        try:
-                            shutil.copy2(file_path, persistent_path)
-                            # Load images as PIL, keep videos/audio as paths
-                            if has_image_file_extension(persistent_path):
-                                loaded_items.append(Image.open(persistent_path))
-                            else:
-                                loaded_items.append(persistent_path)
-                            print(f"Loaded: {filename_in_zip} -> {persistent_path}")
-                        except Exception as e:
-                            print(f"[load_queue] Error copying {filename_in_zip}: {e}")
-
-                    if loaded_items:
-                        params[key] = loaded_items if is_originally_list else loaded_items[0]
-                    else:
-                        params.pop(key, None)
-
-                primary_preview_pil_list, secondary_preview_pil_list, primary_preview_pil_labels, secondary_preview_pil_labels = get_preview_images(params)
-
-                start_b64 = [pil_to_base64_uri(primary_preview_pil_list[0], format="jpeg", quality=70)] if isinstance(primary_preview_pil_list, list) and primary_preview_pil_list else None
-                end_b64 = [pil_to_base64_uri(secondary_preview_pil_list[0], format="jpeg", quality=70)] if isinstance(secondary_preview_pil_list, list) and secondary_preview_pil_list else None
-
-                top_level_start_image = params.get("image_start") or params.get("image_refs")
-                top_level_end_image = params.get("image_end")
-
-                for k in prop_names:
-                    if k not in params:
-                        params[k] =  primary_settings.get(k, "") 
-
-                runtime_task = {
-                    "id": task_id_loaded,
-                    "params": params,
-                    "plugin_data": task_data.get('plugin_data', {}),
-                    "repeats": params.get('repeat_generation', 1),
-                    "length": params.get('video_length'),
-                    "steps": params.get('num_inference_steps'),
-                    "prompt": params.get('prompt'),
-                    "start_image_labels": primary_preview_pil_labels,
-                    "end_image_labels": secondary_preview_pil_labels,
-                    "start_image_data": top_level_start_image,
-                    "end_image_data": top_level_end_image,
-                    "start_image_data_base64": start_b64,
-                    "end_image_data_base64": end_b64,
-                }
-                newly_loaded_queue.append(runtime_task)
-                print(f"[load_queue] Reconstructed task {task_index+1}/{len(loaded_manifest)}, ID: {task_id_loaded}")
-
-        # Update global task_id
-        current_max_id = max([t['id'] for t in newly_loaded_queue if 'id' in t] + [0])
-        if current_max_id >= task_id:
-            new_task_id = current_max_id + 1
-            print(f"[load_queue] Updating global task_id from {task_id} to {new_task_id}")
-            task_id = new_task_id
-
-        return newly_loaded_queue, None
+            return _parse_task_manifest(manifest, state, tmpdir, cache_dir, "[load_queue]")
 
     except Exception as e:
         traceback.print_exc()
         return None, str(e)
 
+
+def _parse_settings_json(filename, state):
+    """Parse a single settings JSON file. Returns (queue_list, error_msg or None).
+
+    Media paths in JSON are filesystem paths (absolute or relative to WanGP folder).
+    """
+    global task_id
+
+    try:
+        print(f"[load_settings] Loading settings from: {filename}")
+
+        with open(filename, 'r', encoding='utf-8') as f:
+            params = json.load(f)
+
+        if not isinstance(params, dict):
+            return None, "Settings file must contain a JSON object"
+
+        # Wrap as single-task manifest
+        task_id += 1
+        manifest = [{"id": task_id, "params": params, "plugin_data": {}}]
+
+        # Media paths are relative to WanGP folder (no cache needed)
+        wgp_folder = os.path.dirname(os.path.abspath(__file__))
+
+        return _parse_task_manifest(manifest, state, wgp_folder, None, "[load_settings]")
+
+    except json.JSONDecodeError as e:
+        return None, f"Invalid JSON: {e}"
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+
+
 def load_queue_action(filepath, state, evt:gr.EventData):
-    """Load queue from ZIP file (Gradio UI wrapper for _parse_queue_zip)."""
+    """Load queue from ZIP or JSON file (Gradio UI wrapper)."""
+    global task_id
     gen = get_gen_info(state)
     original_queue = gen.get("queue", [])
-    if len(original_queue):
-        gr.Info("Queue must be empty before loading a new queue")
-        return update_queue_data(original_queue)
 
     # Determine filename (autoload vs user upload)
     delete_autoqueue_file = False
     if evt.target == None:
+        # Autoload only works with empty queue
         if original_queue or not Path(AUTOSAVE_FILENAME).is_file():
             return
         print(f"Autoloading queue from {AUTOSAVE_FILENAME}...")
@@ -1280,20 +1360,53 @@ def load_queue_action(filepath, state, evt:gr.EventData):
         filename = filepath.name
 
     try:
-        # Use shared parser
-        newly_loaded_queue, error = _parse_queue_zip(filename, state)
+        # Detect file type and use appropriate parser
+        is_json = filename.lower().endswith('.json')
+        if is_json:
+            newly_loaded_queue, error = _parse_settings_json(filename, state)
+            # Safety: clear attachment paths when loading JSON through UI
+            # (JSON files contain filesystem paths which could be security-sensitive)
+            if newly_loaded_queue:
+                for task in newly_loaded_queue:
+                    params = task.get('params', {})
+                    for key in ATTACHMENT_KEYS:
+                        if key in params:
+                            params[key] = None
+        else:
+            newly_loaded_queue, error = _parse_queue_zip(filename, state)
         if error:
             gr.Warning(f"Failed to load queue: {error[:200]}")
             return update_queue_data(original_queue)
 
+        # Merge with existing queue: renumber task IDs to avoid conflicts
+        # IMPORTANT: Modify list in-place to preserve references held by process_tasks
+        if original_queue:
+            # Find the highest existing task ID
+            max_existing_id = max([t.get('id', 0) for t in original_queue] + [0])
+            # Renumber newly loaded tasks
+            for i, task in enumerate(newly_loaded_queue):
+                task['id'] = max_existing_id + 1 + i
+            # Update global task_id counter
+            task_id = max_existing_id + len(newly_loaded_queue) + 1
+            # Extend existing queue in-place (preserves reference for running process_tasks)
+            original_queue.extend(newly_loaded_queue)
+            action_msg = f"Merged {len(newly_loaded_queue)} task(s) with existing {len(original_queue) - len(newly_loaded_queue)} task(s)"
+            merged_queue = original_queue
+        else:
+            # No existing queue - assign newly loaded queue directly
+            merged_queue = newly_loaded_queue
+            action_msg = f"Loaded {len(newly_loaded_queue)} task(s)"
+            with lock:
+                gen["queue"] = merged_queue
+
         # Update state (Gradio-specific)
         with lock:
-            gen["queue"] = newly_loaded_queue[:]
-            gen["prompts_max"] = len(newly_loaded_queue)
-        update_global_queue_ref(newly_loaded_queue)
+            gen["prompts_max"] = len(merged_queue)
+        update_global_queue_ref(merged_queue)
 
-        print(f"[load_queue_action] Queue load successful. {len(newly_loaded_queue)} tasks.")
-        return update_queue_data(newly_loaded_queue)
+        print(f"[load_queue_action] {action_msg}.")
+        gr.Info(action_msg)
+        return update_queue_data(merged_queue)
 
     except Exception as e:
         error_message = f"Error during queue load: {e}"
@@ -1845,12 +1958,12 @@ def _parse_args():
         "--process",
         type=str,
         default="",
-        help="Process a saved queue file without launching the web UI"
+        help="Process a saved queue (.zip) or settings file (.json) without launching the web UI"
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate queue file without generating (use with --process)"
+        help="Validate file without generating (use with --process)"
     )
     parser.add_argument(
         "--output-dir",
@@ -6185,15 +6298,17 @@ def process_tasks_cli(queue, state):
                         if arg_name not in params:
                             params[arg_name] = default_value
 
+                    expected_args = set(inspect.signature(generate_video).parameters.keys())
                     if model_type:
                         default_settings = get_default_settings(model_type)
-                        expected_args = inspect.signature(generate_video).parameters.keys()
                         for arg_name in expected_args:
                             if arg_name not in params and arg_name in default_settings:
                                 params[arg_name] = default_settings[arg_name]
 
+                    # Filter to only valid generate_video params
+                    filtered_params = {k: v for k, v in params.items() if k in expected_args}
                     plugin_data = task.get('plugin_data', {})
-                    generate_video(task, send_cmd, plugin_data=plugin_data, **params)
+                    generate_video(task, send_cmd, plugin_data=plugin_data, **filtered_params)
                 except Exception as e:
                     print(f"\n  [ERROR] {e}")
                     traceback.print_exc()
@@ -9236,7 +9351,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     with gr.Row(visible= True):
                         queue_zip_base64_output = gr.Text(visible=False)
                         save_queue_btn = gr.DownloadButton("Save Queue", size="sm")
-                        load_queue_btn = gr.UploadButton("Load Queue", file_types=[".zip"], size="sm")
+                        load_queue_btn = gr.UploadButton("Load Queue", file_types=[".zip", ".json"], size="sm")
                         clear_queue_btn = gr.Button("Clear Queue", size="sm", variant="stop")
                         quit_button = gr.Button("Save and Quit", size="sm", variant="secondary")
                         with gr.Row(visible=False) as quit_confirmation_row:
@@ -10679,11 +10794,15 @@ if __name__ == "__main__":
     # CLI Queue Processing Mode
     if len(args.process) > 0:
         download_ffmpeg()  # Still needed for video encoding
-        print(f"WanGP CLI Mode - Processing queue: {args.process}")
 
         if not os.path.isfile(args.process):
             print(f"[ERROR] File not found: {args.process}")
             sys.exit(1)
+
+        # Detect file type
+        is_json = args.process.lower().endswith('.json')
+        file_type = "settings" if is_json else "queue"
+        print(f"WanGP CLI Mode - Processing {file_type}: {args.process}")
 
         # Override output directory if specified
         if len(args.output_dir) > 0:
@@ -10715,8 +10834,11 @@ if __name__ == "__main__":
             "loras": [],
         }
 
-        # Use shared queue parser
-        queue, error = _parse_queue_zip(args.process, state)
+        # Parse file based on type
+        if is_json:
+            queue, error = _parse_settings_json(args.process, state)
+        else:
+            queue, error = _parse_queue_zip(args.process, state)
         if error:
             print(f"[ERROR] {error}")
             sys.exit(1)

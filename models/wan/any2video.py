@@ -773,7 +773,8 @@ class WanAny2V:
                 # save_video(image_mask_latents.squeeze(0), "mama.mp4", value_range=(0,1) )
                 # image_mask_rebuilt = image_mask_latents.repeat_interleave(8, dim=-1).repeat_interleave(8, dim=-2).unsqueeze(0)
                 masked_steps = math.ceil(sampling_steps * masking_strength)
-
+        else:
+            denoising_strength = 1
         # Phantom
         if phantom:
             lat_input_ref_images_neg = None

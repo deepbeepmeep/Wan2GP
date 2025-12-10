@@ -37,7 +37,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 ## 🔥 Latest Updates : 
 
-### December 10 2025: WanGP v9.82, Simple Pleasures...
+### December 10 2025: WanGP v9.83, Simple Pleasures...
 
 These two features are going to change the life of many people:
 - **Pause Button**: ever had a urge to use your GPU for a very important task that can't wait (a game for instance ?), here comes your new friend the *Pause* button. Not only it will suspend the current gen in progress but it will free most of the VRAM used by WanGP (please note that the RAM by WanGP used wont be released). When you are done just click the *Resume* button to restart exactly from where you stopped.
@@ -48,7 +48,7 @@ Then in your terminal window just write this:
 ```bash
 python wgp.py --process my_queue.zip
 ```
-With WanGP 9.83, you can also process settings file (.json file exported using th *Export Settings* button):
+With WanGP 9.82, you can also process settings file (.json file exported using th *Export Settings* button):
 ```bash
 python wgp.py --process my_settings.json
 ```

@@ -89,5 +89,6 @@
 	"video_source": null,
 	"audio_guide": null,
 	"audio_guide2": null,
+	"custom_guide": null,
 	"audio_source": null
 }

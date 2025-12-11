@@ -36,6 +36,7 @@ from shared.utils.basic_flowmatch import FlowMatchScheduler
 from shared.utils.lcm_scheduler import LCMScheduler
 from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
+from .wanmove.trajectory import replace_feature, create_pos_feature_map
 from shared.utils.audio_video import save_video
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
@@ -372,6 +373,7 @@ class WanAny2V:
         input_video = None,
         image_start = None,
         image_end = None,
+        input_custom = None,
         denoising_strength = 1.0,
         masking_strength = 1.0,
         target_camera=None,                  
@@ -432,7 +434,7 @@ class WanAny2V:
         face_arc_embeds = None,
         control_scale_alt = 1.,
         motion_amplitude = 1.,
-        full_prefix_video = None,
+        window_start_frame_no = 0,
         **bbargs
                 ):
         
@@ -529,6 +531,7 @@ class WanAny2V:
         chrono_edit = model_type in ["chrono_edit"]
         mocha = model_type in ["mocha"] 
         steadydancer = model_type in ["steadydancer"] 
+        wanmove = model_type in ["wanmove"] 
         start_step_no = 0
         ref_images_count = inner_latent_frames = 0
         trim_frames = 0
@@ -644,6 +647,19 @@ class WanAny2V:
             lat_y = None
             kwargs.update({ 'y': y})
 
+        # Wan-Move
+        if wanmove:
+            track = np.load(input_custom)
+            if track.ndim == 4: track = track.squeeze(0)
+            if track.max() <= 1:
+                track = np.round(track * [width, height]).astype(np.int64)
+            control_video_pos= 0 if "T" in video_prompt_type else window_start_frame_no
+            track = torch.from_numpy(track[control_video_pos:control_video_pos+frame_num]).to(self.device)
+            track_feats, track_pos = create_pos_feature_map(track, None, [4, 8, 8], height, width, 16, device=y.device)
+            track_feats = None #track_feats.permute(3, 0, 1, 2)
+            y_cond = kwargs.pop("y")
+            y_uncond = y_cond.clone()
+            y_cond[4:20] = replace_feature(y[4:20].unsqueeze(0), track_pos.unsqueeze(0))[0]
 
         # Steady Dancer
         if steadydancer:
@@ -1051,6 +1067,12 @@ class WanAny2V:
                     # "face_pixel_values": [face_pixel_values, None]
                     "face_pixel_values": [face_pixel_values, face_pixel_values] # seems to look better this way
                 }
+            elif wanmove:
+                gen_args = {
+                    "x" : [latent_model_input, latent_model_input],
+                    "context" : [context, context_null],
+                    "y" : [y_cond, y_uncond],
+                }
             elif lynx:
                 gen_args = {
                     "x" : [latent_model_input, latent_model_input],
@@ -1244,7 +1266,7 @@ class WanAny2V:
         else:
             videos = videos[0] # return only first video
             if any_vae2: videos2 = videos2[0] # return only first video
-        if color_correction_strength > 0 and not ( window_no == 1 and (full_prefix_video is None or full_prefix_video.shape[1]<= 1) ):
+        if color_correction_strength > 0 and (window_start_frame_no + prefix_frames_count) >1:
             if vace and False:
                 # videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), input_frames[0].unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "progressive_blend").squeeze(0)
                 videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), input_frames[0].unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "reference").squeeze(0)

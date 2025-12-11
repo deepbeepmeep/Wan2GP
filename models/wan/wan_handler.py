@@ -11,7 +11,7 @@ def test_vace(base_model_type):
     return base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B", "vace_ditto_14B"]     
 
 def test_class_i2v(base_model_type):    
-    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer" ]
+    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer", "wanmove" ]
 
 def test_class_t2v(base_model_type):    
     return base_model_type in ["t2v", "t2v_2_2", "alpha", "lynx"]
@@ -43,7 +43,7 @@ class family_handler():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B", 
                     "recam_1.3B", "animate", "alpha", "alpha_lynx", "chrono_edit",
-                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer"]
+                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove"]
 
 
     @staticmethod
@@ -301,7 +301,11 @@ class family_handler():
                 }
             extra_model_def["v2i_switch_supported"] = True
 
-        
+
+        if base_model_type in ["wanmove"]:
+            extra_model_def["custom_guide"] = { "label": "Trajectory File", "required": True, "file_types": [".npy"]}
+            extra_model_def["i2v_trajectory"] = True
+
         if base_model_type in ["steadydancer"]:
             extra_model_def["guide_custom_choices"] = {
             "choices":[

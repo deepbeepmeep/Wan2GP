@@ -83,14 +83,14 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
-WanGP_version = "9.83"
+WanGP_version = "9.84"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
 # All media attachment keys for queue save/load
 ATTACHMENT_KEYS = ["image_start", "image_end", "image_refs", "image_guide", "image_mask",
-                   "video_guide", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source"]
+                   "video_guide",  "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source", "custom_guide"]
 
 from importlib.metadata import version
 mmgp_version = version("mmgp")
@@ -445,7 +445,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     override_inputs, prompts, image_start, image_end = validate_settings(state, model_type, False, inputs)
 
     if override_inputs is None:
-        ret()
+        return ret()
 
     multi_prompts_gen_type = inputs["multi_prompts_gen_type"]
 
@@ -588,6 +588,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
     image_guide = inputs["image_guide"]
     video_mask = inputs["video_mask"]
     image_mask = inputs["image_mask"]
+    custom_guide = inputs["custom_guide"]
     speakers_locations = inputs["speakers_locations"]
     video_source = inputs["video_source"]
     frames_positions = inputs["frames_positions"]
@@ -692,6 +693,13 @@ def validate_settings(state, model_type, single_prompt, inputs):
 
     if image_outputs:
         image_prompt_type = image_prompt_type.replace("V", "").replace("L", "")
+    custom_guide_def = model_def.get("custom_guide", None)
+    if custom_guide_def is not None:
+        if custom_guide is None and custom_guide_def.get("required", False):
+            gr.Info(f"You must provide a {custom_guide_def.get('label', 'Custom Guide')}")
+            return ret()
+    else:
+        custom_guide = None
 
     if "V" in image_prompt_type:
         if video_source == None:
@@ -891,6 +899,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
         "image_guide": image_guide,
         "video_mask": video_mask,
         "image_mask": image_mask,
+        "custom_guide": custom_guide,
         "video_source": video_source,
         "frames_positions": frames_positions,
         "keep_frames_video_source": keep_frames_video_source,
@@ -4932,6 +4941,7 @@ def generate_video(
     mask_expand,
     audio_guide,
     audio_guide2,
+    custom_guide,
     audio_source,
     audio_prompt_type,
     speakers_locations,
@@ -5653,6 +5663,7 @@ def generate_video(
                     input_masks2 = src_mask2,
                     input_video= pre_video_guide,
                     input_faces = src_faces,
+                    input_custom = custom_guide,
                     denoising_strength=denoising_strength,
                     masking_strength=masking_strength,
                     prefix_frames_count = source_video_overlap_frames_count if window_no <= 1 else reuse_frames,
@@ -5725,7 +5736,7 @@ def generate_video(
                     exaggeration=exaggeration,
                     pace=pace,
                     temperature=temperature,
-                    full_prefix_video = prefix_video,
+                    window_start_frame_no = window_start_frame,
                 )
             except Exception as e:
                 if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:
@@ -6910,7 +6921,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if "lset_name" in inputs:
         inputs.pop("lset_name")
         
-    unsaved_params = ["image_start", "image_end", "image_refs", "video_guide", "image_guide", "video_source", "video_mask", "image_mask", "audio_guide", "audio_guide2", "audio_source"]
+    unsaved_params = ATTACHMENT_KEYS
     for k in unsaved_params:
         inputs.pop(k)
     inputs["type"] = get_model_record(get_model_name(model_type))  
@@ -7611,6 +7622,7 @@ def save_inputs(
             mask_expand,
             audio_guide,
             audio_guide2,
+            custom_guide,
             audio_source,            
             audio_prompt_type,
             speakers_locations,
@@ -8780,6 +8792,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_audio_guide2 = any_multi_speakers 
                 audio_guide = gr.Audio(value= ui_defaults.get("audio_guide", None), type="filepath", label= model_def.get("audio_guide_label","Voice to follow"), show_download_button= True, visible= any_audio_voices_support and "A" in audio_prompt_type_value )
                 audio_guide2 = gr.Audio(value= ui_defaults.get("audio_guide2", None), type="filepath", label=model_def.get("audio_guide2_label","Voice to follow #2"), show_download_button= True, visible= any_audio_voices_support and "B" in audio_prompt_type_value )
+            custom_guide_def = model_def.get("custom_guide", None)
+            any_custom_guide= custom_guide_def is not None
+            with gr.Row(visible = any_custom_guide) as custom_guide_row:
+                if custom_guide_def is None:
+                    custom_guide = gr.File(value= None, type="filepath", label= "Custom Guide", height=41, visible= False )
+                else:
+                    custom_guide = gr.File(value= ui_defaults.get("custom_guide", None), type="filepath", label= custom_guide_def.get("label","Custom Guide"), height=41, visible= True, file_types = custom_guide_def.get("file_types", ["*.*"]) )
             remove_background_sound = gr.Checkbox(label= "Remove Background Music" if audio_only else "Video Motion ignores Background Music (to get a better LipSync)", value="V" in audio_prompt_type_value, visible =  any_audio_voices_support and any_letters(audio_prompt_type_value, "ABX") and not image_outputs)
             with gr.Row(visible = any_audio_voices_support and ("B" in audio_prompt_type_value or "X" in audio_prompt_type_value) and not image_outputs ) as speakers_locations_row:
                 speakers_locations = gr.Text( ui_get("speakers_locations"), label="Speakers Locations separated by a Space. Each Location = Left:Right or a BBox Left:Top:Right:Bottom", visible= True)
@@ -9212,7 +9231,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             ],
                             value=filter_letters(video_prompt_type_value, "T"),
                             label="Control Video / Control Audio / Positioned Frames Temporal Alignment when any Video to continue",
-                            visible = vace or ltxv or t2v or infinitetalk
+                            visible = any_control_image or any_control_video or any_audio_guide or any_audio_guide2 or any_custom_guide 
                         )
 
                         
@@ -9410,7 +9429,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
         extra_inputs = prompt_vars + [wizard_prompt, wizard_variables_var, wizard_prompt_activated_var, video_prompt_column, image_prompt_column, image_prompt_type_group, image_prompt_type_radio, image_prompt_type_endcheckbox,
                                       prompt_column_advanced, prompt_column_wizard_vars, prompt_column_wizard, lset_name, save_lset_prompt_drop, advanced_row, speed_tab, audio_tab, mmaudio_col, quality_tab,
-                                      sliding_window_tab, misc_tab, prompt_enhancer_row, inference_steps_row, skip_layer_guidance_row, audio_guide_row, RIFLEx_setting_col,
+                                      sliding_window_tab, misc_tab, prompt_enhancer_row, inference_steps_row, skip_layer_guidance_row, audio_guide_row, custom_guide_row, RIFLEx_setting_col,
                                       video_prompt_type_video_guide, video_prompt_type_video_guide_alt, video_prompt_type_video_mask, video_prompt_type_image_refs, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox,
                                       apg_col, audio_prompt_type_sources,  audio_prompt_type_remux, audio_prompt_type_remux_row, force_fps_col,
                                       video_guide_outpainting_col,video_guide_outpainting_top, video_guide_outpainting_bottom, video_guide_outpainting_left, video_guide_outpainting_right,

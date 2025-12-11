@@ -1471,8 +1471,12 @@ class WanModel(ModelMixin, ConfigMixin):
         steadydancer = steadydancer_condition is not None
         if steadydancer: # steady dancer
             x_noise_clone = x_list[0].clone()
+        if isinstance(y, list):
+            y_list = y
+        else:
+            y_list = [y] * len(x_list)
 
-        for i, (is_source, x) in enumerate(zip(is_source_x, x_list)):
+        for i, (is_source, x, y) in enumerate(zip(is_source_x, x_list, y_list)):
             if is_source:
                 x_list[i] = x_list[0].clone()
                 last_x_idx = i
@@ -1488,7 +1492,7 @@ class WanModel(ModelMixin, ConfigMixin):
                     x = self.patch_embedding(x).to(modulation_dtype)
                     grid_sizes = x.shape[2:]
                 x_list[i] = x
-        y = None
+        y = y_list = None
         
         if steadydancer: # steady dancer
             # Spatial Structure Adaptive Extractor.

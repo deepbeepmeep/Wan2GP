@@ -5,6 +5,7 @@
     const RENDER_MODES = {
         CUT_DRAG: "cut_drag",
         CLASSIC: "classic",
+        TRAJECTORY: "trajectory",
     };
     const MIME_CANDIDATES = [
         "video/webm;codecs=vp9",
@@ -92,6 +93,7 @@
         updateModeToggleUI();
         applyModeToggleVisibility();
         updateClassicOutlineControls();
+        updateTrajectoryModeUI();
         initExternalBridge();
         setupHeightObserver();
         requestAnimationFrame(render);
@@ -145,6 +147,7 @@
         dom.modeSwitcher = document.getElementById("modeSwitcher");
         dom.modeCutDragBtn = document.getElementById("modeCutDragBtn");
         dom.modeClassicBtn = document.getElementById("modeClassicBtn");
+        dom.modeTrajectoryBtn = document.getElementById("modeTrajectoryBtn");
         dom.canvasFooter = document.getElementById("canvasFooter");
         dom.downloadMaskBtn = document.getElementById("downloadMaskBtn");
         dom.sendToWangpBtn = document.getElementById("sendToWangpBtn");
@@ -290,6 +293,9 @@
         if (dom.modeClassicBtn) {
             dom.modeClassicBtn.addEventListener("click", () => setRenderMode(RENDER_MODES.CLASSIC));
         }
+        if (dom.modeTrajectoryBtn) {
+            dom.modeTrajectoryBtn.addEventListener("click", () => setRenderMode(RENDER_MODES.TRAJECTORY));
+        }
 
         dom.canvas.addEventListener("pointerdown", onPointerDown);
         dom.canvas.addEventListener("pointermove", onPointerMove);
@@ -328,16 +334,69 @@
     }
 
     function setRenderMode(mode) {
-        const normalized = mode === RENDER_MODES.CLASSIC ? RENDER_MODES.CLASSIC : RENDER_MODES.CUT_DRAG;
+        let normalized;
+        if (mode === RENDER_MODES.CLASSIC) {
+            normalized = RENDER_MODES.CLASSIC;
+        } else if (mode === RENDER_MODES.TRAJECTORY) {
+            normalized = RENDER_MODES.TRAJECTORY;
+        } else {
+            normalized = RENDER_MODES.CUT_DRAG;
+        }
         if (state.renderMode === normalized) {
             updateModeToggleUI();
             updateClassicOutlineControls();
+            updateTrajectoryModeUI();
             return;
         }
+        const previousMode = state.renderMode;
         state.renderMode = normalized;
+        // Handle mode switching edge cases
+        handleModeSwitchCleanup(previousMode, normalized);
         updateModeToggleUI();
         updateClassicOutlineControls();
         updateBackgroundToggleUI();
+        updateTrajectoryModeUI();
+    }
+
+    function handleModeSwitchCleanup(fromMode, toMode) {
+        const wasTrajectory = fromMode === RENDER_MODES.TRAJECTORY;
+        const isTrajectory = toMode === RENDER_MODES.TRAJECTORY;
+        if (wasTrajectory && !isTrajectory) {
+            // Switching FROM trajectory mode: remove ALL trajectory-only layers
+            const trajectoryLayers = state.layers.filter((l) => isTrajectoryOnlyLayer(l));
+            if (trajectoryLayers.length > 0) {
+                state.layers = state.layers.filter((l) => !isTrajectoryOnlyLayer(l));
+                state.activeLayerId = state.layers[0]?.id || null;
+                recomputeBackgroundFill();
+                refreshLayerSelect();
+                updateBadge();
+                updateActionAvailability();
+                if (state.baseImage) {
+                    setStatus("Switched mode. Trajectory layers removed.", "info");
+                }
+            }
+            // Add a new empty layer for shape creation if none exist
+            if (state.layers.length === 0 && state.baseImage) {
+                addLayer(state.shapeMode);
+            }
+        } else if (!wasTrajectory && isTrajectory) {
+            // Switching TO trajectory mode: remove ALL non-trajectory layers
+            const shapeLayers = state.layers.filter((l) => !isTrajectoryOnlyLayer(l));
+            if (shapeLayers.length > 0) {
+                state.layers = state.layers.filter((l) => isTrajectoryOnlyLayer(l));
+                state.activeLayerId = state.layers[0]?.id || null;
+                recomputeBackgroundFill();
+                refreshLayerSelect();
+                updateBadge();
+                updateActionAvailability();
+                if (state.baseImage) {
+                    setStatus("Trajectory mode. Shape layers cleared.", "info");
+                }
+            }
+            if (state.baseImage && state.layers.length === 0) {
+                setStatus("Trajectory mode. Click to place trajectory points.", "info");
+            }
+        }
     }
 
     function updateModeToggleUI() {
@@ -345,10 +404,16 @@
             return;
         }
         const isClassic = state.renderMode === RENDER_MODES.CLASSIC;
-        dom.modeCutDragBtn.classList.toggle("active", !isClassic);
+        const isCutDrag = state.renderMode === RENDER_MODES.CUT_DRAG;
+        const isTrajectory = state.renderMode === RENDER_MODES.TRAJECTORY;
+        dom.modeCutDragBtn.classList.toggle("active", isCutDrag);
         dom.modeClassicBtn.classList.toggle("active", isClassic);
-        dom.modeCutDragBtn.setAttribute("aria-pressed", (!isClassic).toString());
+        dom.modeCutDragBtn.setAttribute("aria-pressed", isCutDrag.toString());
         dom.modeClassicBtn.setAttribute("aria-pressed", isClassic.toString());
+        if (dom.modeTrajectoryBtn) {
+            dom.modeTrajectoryBtn.classList.toggle("active", isTrajectory);
+            dom.modeTrajectoryBtn.setAttribute("aria-pressed", isTrajectory.toString());
+        }
     }
 
     function setModeToggleVisibility(visible) {
@@ -362,6 +427,32 @@
         }
         dom.modeSwitcher.classList.toggle("is-hidden", !state.modeToggleVisible);
         updateBackgroundToggleUI();
+    }
+
+    function updateTrajectoryModeUI() {
+        const isTrajectory = state.renderMode === RENDER_MODES.TRAJECTORY;
+        // Hide shape selector in trajectory mode (points only, no shapes)
+        const shapeSelector = document.querySelector(".shape-selector");
+        if (shapeSelector) {
+            shapeSelector.classList.toggle("is-hidden", isTrajectory);
+        }
+        // Hide scale and rotation controls in trajectory mode (not applicable to points)
+        const scaleStartLabel = dom.scaleStartInput?.closest(".multi-field");
+        const rotationStartLabel = dom.rotationStartInput?.closest(".multi-field");
+        if (scaleStartLabel) {
+            scaleStartLabel.classList.toggle("is-hidden", isTrajectory);
+        }
+        if (rotationStartLabel) {
+            rotationStartLabel.classList.toggle("is-hidden", isTrajectory);
+        }
+        // Update Send button label for trajectory mode
+        if (dom.sendToWangpBtn) {
+            dom.sendToWangpBtn.textContent = isTrajectory ? "Export Trajectories" : "Send to Video Generator";
+        }
+        // Update Preview button label for trajectory mode
+        if (dom.previewModeBtn && !state.previewMode) {
+            dom.previewModeBtn.textContent = isTrajectory ? "Preview Trajectories" : "Preview Mask";
+        }
     }
 
     function initExternalBridge() {
@@ -495,6 +586,26 @@
 
     function addLayer(shapeOverride) {
         const layer = createLayer(`Object ${state.layers.length + 1}`, state.layers.length, shapeOverride);
+        state.layers.push(layer);
+        state.activeLayerId = layer.id;
+        updateLayerPathCache(layer);
+        refreshLayerSelect();
+        updateBindings();
+        updateBadge();
+        updateActionAvailability();
+        return layer;
+    }
+
+    function addTrajectoryLayer(initialPoint) {
+        // Creates a trajectory-only layer for trajectory mode (no shape/polygon)
+        const layer = createLayer(`Trajectory ${state.layers.length + 1}`, state.layers.length, "trajectory");
+        // Mark polygon as closed so we skip polygon creation and go directly to trajectory
+        layer.polygonClosed = true;
+        layer.shapeType = "trajectory";
+        // Add initial trajectory point
+        if (initialPoint) {
+            layer.path.push({ x: initialPoint.x, y: initialPoint.y });
+        }
         state.layers.push(layer);
         state.activeLayerId = layer.id;
         updateLayerPathCache(layer);
@@ -1229,6 +1340,30 @@
             stage = "none";
             selectionChanged = true;
         }
+        // In trajectory mode, handle differently
+        if (state.renderMode === RENDER_MODES.TRAJECTORY) {
+            // If no layer exists, or existing layer is an empty non-trajectory layer, create a trajectory layer
+            const isEmptyRegularLayer = layer && !isTrajectoryOnlyLayer(layer) && isLayerEmpty(layer);
+            if (!layer || isEmptyRegularLayer) {
+                // Remove the empty regular layer if it exists
+                if (isEmptyRegularLayer) {
+                    state.layers = state.layers.filter((l) => l.id !== layer.id);
+                }
+                const newLayer = addTrajectoryLayer(pt);
+                setActiveLayer(newLayer.id);
+                layer = newLayer;
+                stage = getLayerStage(layer);
+                selectionChanged = false;
+                evt.preventDefault();
+                return;
+            }
+            // Existing trajectory layer - add point to it
+            if (isTrajectoryOnlyLayer(layer) && !layer.pathLocked) {
+                addTrajectoryPoint(pt);
+                evt.preventDefault();
+                return;
+            }
+        }
         if (!layer) {
             const newLayer = addLayer(state.shapeMode);
             setActiveLayer(newLayer.id);
@@ -1767,11 +1902,19 @@
         if (!layer) {
             return false;
         }
+        // Trajectory-only layers are ready if they have at least one trajectory point
+        if (layer.shapeType === "trajectory") {
+            return Array.isArray(layer.path) && layer.path.length >= 1;
+        }
         if (!layer.objectCut || !layer.polygonClosed) {
             return false;
         }
         // Allow static objects (no trajectory) as long as their shape is finalized.
         return true;
+    }
+
+    function isTrajectoryOnlyLayer(layer) {
+        return layer && layer.shapeType === "trajectory";
     }
 
     function downloadBackgroundImage() {
@@ -1797,6 +1940,11 @@
     }
 
     function handleSendToWangp() {
+        // Handle trajectory mode export separately
+        if (state.renderMode === RENDER_MODES.TRAJECTORY) {
+            exportTrajectoryData();
+            return;
+        }
         if (state.renderMode === RENDER_MODES.CUT_DRAG) {
             state.transfer.pending = true;
             state.transfer.mask = null;
@@ -1809,6 +1957,133 @@
         const started = startExport("wangp", "mask");
         if (!started && state.renderMode === RENDER_MODES.CUT_DRAG) {
             resetTransferState();
+        }
+    }
+
+    function exportTrajectoryData() {
+        const readyLayers = state.layers.filter((layer) => isTrajectoryOnlyLayer(layer) && layerReadyForExport(layer));
+        if (readyLayers.length === 0) {
+            setStatus("Add at least one trajectory point before exporting.", "warn");
+            return;
+        }
+        setStatus("Exporting trajectory data...", "info");
+        const totalFrames = Math.max(1, Math.round(state.scene.totalFrames));
+        const width = state.resolution.width || 1;
+        const height = state.resolution.height || 1;
+        const numLayers = readyLayers.length;
+        // Build trajectories array: [T, N, 2] where T=frames, N=trajectory count, 2=X,Y (normalized to [0,1])
+        // Frames outside the layer's [startFrame, endFrame] range get [-1, -1]
+        const trajectories = [];
+        for (let frame = 0; frame < totalFrames; frame++) {
+            const frameData = [];
+            readyLayers.forEach((layer) => {
+                const startFrame = layer.startFrame ?? 0;
+                const endFrame = layer.endFrame ?? totalFrames;
+                // Check if object exists at this frame
+                if (frame < startFrame || frame > endFrame) {
+                    frameData.push([-1, -1]);
+                    return;
+                }
+                // Compute progress within the layer's active range
+                const rangeFrames = endFrame - startFrame;
+                const progress = rangeFrames === 0 ? 0 : (frame - startFrame) / rangeFrames;
+                const position = computeTrajectoryPosition(layer, progress);
+                if (position) {
+                    // Normalize coordinates to [0, 1] range
+                    frameData.push([position.x / width, position.y / height]);
+                } else {
+                    // Use first point if no position computed
+                    const firstPt = layer.path[0] || { x: 0, y: 0 };
+                    frameData.push([firstPt.x / width, firstPt.y / height]);
+                }
+            });
+            trajectories.push(frameData);
+        }
+        const metadata = {
+            renderMode: "trajectory",
+            width: state.resolution.width,
+            height: state.resolution.height,
+            fps: state.scene.fps,
+            totalFrames: totalFrames,
+            trajectoryCount: numLayers,
+        };
+        // Get background image for image_start
+        const backgroundImage = getTrajectoryBackgroundImage();
+        // Send trajectory data to WanGP
+        const success = sendTrajectoryPayload(trajectories, metadata, backgroundImage);
+        if (success) {
+            setStatus("Trajectory data sent to WanGP.", "success");
+        }
+    }
+
+    function getTrajectoryBackgroundImage() {
+        if (!state.baseImage) {
+            return null;
+        }
+        // Export the base canvas as data URL
+        try {
+            return state.baseCanvas.toDataURL("image/png");
+        } catch (err) {
+            console.warn("Failed to export background image", err);
+            return null;
+        }
+    }
+
+    function computeTrajectoryPosition(layer, progress) {
+        if (!layer || !Array.isArray(layer.path) || layer.path.length === 0) {
+            return null;
+        }
+        // If only one point, return it directly
+        if (layer.path.length === 1) {
+            return { x: layer.path[0].x, y: layer.path[0].y };
+        }
+        // Use the cached render path for interpolation
+        const renderPath = getRenderPath(layer);
+        if (!renderPath || renderPath.length === 0) {
+            return { x: layer.path[0].x, y: layer.path[0].y };
+        }
+        if (renderPath.length === 1) {
+            return { x: renderPath[0].x, y: renderPath[0].y };
+        }
+        // Interpolate along the render path based on progress
+        const meta = layer.pathMeta || computePathMeta(renderPath);
+        if (!meta || meta.total === 0) {
+            return { x: renderPath[0].x, y: renderPath[0].y };
+        }
+        // Apply speed mode if configured
+        const adjustedProgress = getSpeedProfileProgress(layer, progress);
+        const targetDist = adjustedProgress * meta.total;
+        // meta.lengths is cumulative: [0, dist0to1, dist0to2, ...]
+        // Find the segment where targetDist falls
+        for (let i = 1; i < renderPath.length; i++) {
+            const cumulativeDist = meta.lengths[i];
+            if (targetDist <= cumulativeDist) {
+                const prevCumulativeDist = meta.lengths[i - 1];
+                const segLen = cumulativeDist - prevCumulativeDist;
+                const segProgress = segLen > 0 ? (targetDist - prevCumulativeDist) / segLen : 0;
+                const p0 = renderPath[i - 1];
+                const p1 = renderPath[i];
+                return {
+                    x: p0.x + (p1.x - p0.x) * segProgress,
+                    y: p0.y + (p1.y - p0.y) * segProgress,
+                };
+            }
+        }
+        // Return last point if we've exceeded the path
+        return { x: renderPath[renderPath.length - 1].x, y: renderPath[renderPath.length - 1].y };
+    }
+
+    function sendTrajectoryPayload(trajectories, metadata, backgroundImage) {
+        try {
+            window.parent?.postMessage(
+                { type: EVENT_TYPE, trajectoryData: trajectories, metadata, backgroundImage, isTrajectoryExport: true },
+                "*",
+            );
+            return true;
+        } catch (err) {
+            console.error("Unable to send trajectory data to WanGP", err);
+            setStatus("Failed to send trajectory data to WanGP.", "error");
+            return false;
         }
     }
 
@@ -2317,13 +2592,21 @@
         const { fillBackground = false, backgroundColor = "#000", fillColor = "white" } = options;
         const currentRenderMode = state.export.running ? state.export.renderMode : state.renderMode;
         const outlineMode = currentRenderMode === RENDER_MODES.CLASSIC;
+        const isTrajectoryMode = currentRenderMode === RENDER_MODES.TRAJECTORY;
         const outlineWidth = outlineMode ? getClassicOutlineWidth() : 0;
         ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
         ctx.fillStyle = backgroundColor;
         ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
         state.layers
             .filter((layer) => layerReadyForExport(layer))
-            .forEach((layer) => {
+            .forEach((layer, index) => {
+                // Handle trajectory-only layers differently
+                if (isTrajectoryOnlyLayer(layer)) {
+                    if (isTrajectoryMode) {
+                        drawTrajectoryMarker(ctx, layer, progress, index, fillColor);
+                    }
+                    return;
+                }
                 const transform = computeTransform(layer, progress);
                 if (!transform || layer.localPolygon.length === 0) {
                     return;
@@ -2349,6 +2632,22 @@
             });
     }
 
+    function drawTrajectoryMarker(ctx, layer, progress, index, fillColor) {
+        const position = computeTrajectoryPosition(layer, progress);
+        if (!position) {
+            return;
+        }
+        const markerRadius = 5;
+        const color = layer.color || COLOR_POOL[index % COLOR_POOL.length];
+        ctx.save();
+        // Draw filled circle with the layer color for visibility
+        ctx.beginPath();
+        ctx.arc(position.x, position.y, markerRadius, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.restore();
+    }
+
     function drawGuideFrame(ctx, progress) {
         ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
         if (!state.baseImage) {
@@ -2370,11 +2669,16 @@
     function render() {
         const ctx = dom.ctx;
         if (state.previewMode) {
-            drawMaskFrame(ctx, state.animation.playhead, {
-                fillBackground: true,
-                backgroundColor: "#04060b",
-                fillColor: "white",
-            });
+            // In trajectory mode, show base image with animated markers
+            if (state.renderMode === RENDER_MODES.TRAJECTORY) {
+                drawTrajectoryPreview(ctx, state.animation.playhead);
+            } else {
+                drawMaskFrame(ctx, state.animation.playhead, {
+                    fillBackground: true,
+                    backgroundColor: "#04060b",
+                    fillColor: "white",
+                });
+            }
         } else {
             ctx.clearRect(0, 0, dom.canvas.width, dom.canvas.height);
             if (state.baseImage) {
@@ -2394,6 +2698,28 @@
             }
         }
         requestAnimationFrame(render);
+    }
+
+    function drawTrajectoryPreview(ctx, progress) {
+        // Black background like other preview modes
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.fillStyle = "#04060b";
+        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        // Draw white dots at current position for each trajectory
+        state.layers
+            .filter((layer) => isTrajectoryOnlyLayer(layer) && layerReadyForExport(layer))
+            .forEach((layer) => {
+                const position = computeTrajectoryPosition(layer, progress);
+                if (!position) {
+                    return;
+                }
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(position.x, position.y, 5, 0, Math.PI * 2);
+                ctx.fillStyle = "white";
+                ctx.fill();
+                ctx.restore();
+            });
     }
 
     function drawPolygonOverlay(ctx) {
@@ -2436,15 +2762,20 @@
     }
 
     function drawTrajectoryOverlay(ctx) {
-        state.layers.forEach((layer) => {
+        const isTrajectoryMode = state.renderMode === RENDER_MODES.TRAJECTORY;
+        const isPlaying = state.animation.playing;
+        const playhead = state.animation.playhead;
+
+        state.layers.forEach((layer, layerIndex) => {
             const points = getRenderPath(layer);
             if (!points || points.length === 0) {
                 return;
             }
             const showPath = points.length > 1;
+            const isActive = layer.id === state.activeLayerId;
             ctx.save();
             ctx.strokeStyle = TRAJECTORY_EDGE_COLOR;
-            ctx.globalAlpha = layer.id === state.activeLayerId ? 0.95 : 0.5;
+            ctx.globalAlpha = isActive ? 0.95 : 0.5;
             ctx.lineWidth = 2;
             if (showPath) {
                 ctx.beginPath();
@@ -2454,10 +2785,10 @@
                 }
                 ctx.stroke();
             }
-            // Draw anchor indicator
+            // Draw anchor indicator (start point)
             ctx.beginPath();
             ctx.arc(points[0].x, points[0].y, 5, 0, Math.PI * 2);
-            ctx.fillStyle = layer.id === state.activeLayerId ? "#57f0b7" : "#1a2b3d";
+            ctx.fillStyle = isActive ? "#57f0b7" : "#1a2b3d";
             ctx.fill();
             ctx.strokeStyle = TRAJECTORY_EDGE_COLOR;
             ctx.stroke();
@@ -2470,6 +2801,27 @@
                 ctx.strokeStyle = "#ffbe7a";
                 ctx.stroke();
             });
+            // Draw animated position marker when playing (in trajectory mode)
+            if (isTrajectoryMode && (isPlaying || playhead > 0) && isTrajectoryOnlyLayer(layer) && layerReadyForExport(layer)) {
+                const position = computeTrajectoryPosition(layer, playhead);
+                if (position) {
+                    const color = layer.color || COLOR_POOL[layerIndex % COLOR_POOL.length];
+                    // Draw animated marker with glow
+                    ctx.globalAlpha = 1;
+                    ctx.shadowColor = color;
+                    ctx.shadowBlur = 10;
+                    ctx.beginPath();
+                    ctx.arc(position.x, position.y, 8, 0, Math.PI * 2);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+                    // Inner dot
+                    ctx.shadowBlur = 0;
+                    ctx.beginPath();
+                    ctx.arc(position.x, position.y, 3, 0, Math.PI * 2);
+                    ctx.fillStyle = "#ffffff";
+                    ctx.fill();
+                }
+            }
             ctx.restore();
         });
     }

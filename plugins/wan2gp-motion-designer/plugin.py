@@ -7,6 +7,7 @@ from pathlib import Path
 
 import ffmpeg
 import gradio as gr
+import numpy as np
 from PIL import Image, ImageOps
 
 from shared.utils.plugins import WAN2GPPlugin
@@ -88,11 +89,47 @@ class MotionDesignerPlugin(WAN2GPPlugin):
                 visible=False,
                 elem_id="motion_designer_mode_sync",
             )
+            trajectory_payload = gr.Textbox(
+                label="Trajectory Payload",
+                visible=False,
+                elem_id="motion_designer_trajectory_payload",
+            )
+            trajectory_metadata = gr.Textbox(
+                label="Trajectory Metadata",
+                visible=False,
+                elem_id="motion_designer_trajectory_meta",
+            )
+            trajectory_background = gr.Textbox(
+                label="Trajectory Background",
+                visible=False,
+                elem_id="motion_designer_trajectory_background",
+            )
             trigger = gr.Button(
                 "Apply Motion Designer data",
                 visible=False,
                 elem_id="motion_designer_apply_trigger",
             )
+            trajectory_trigger = gr.Button(
+                "Apply Trajectory data",
+                visible=False,
+                elem_id="motion_designer_trajectory_trigger",
+            )
+
+        trajectory_trigger.click(
+            fn=self._apply_trajectory,
+            inputs=[
+                self.state,
+                trajectory_payload,
+                trajectory_metadata,
+                trajectory_background,
+            ],
+            outputs=[self.refresh_form_trigger],
+            show_progress="hidden",
+        ).then(
+            fn=self.goto_video_tab,
+            inputs=[self.state],
+            outputs=[self.main_tabs],
+        )
 
         trigger.click(
             fn=self._apply_mask,
@@ -126,7 +163,7 @@ class MotionDesignerPlugin(WAN2GPPlugin):
                     return;
                 }
                 if (window.motionDesignerSetRenderMode) {
-                    window.motionDesignerSetRenderMode(normalized === "classic" ? "classic" : "cut_drag");
+                    window.motionDesignerSetRenderMode(normalized);
                 } else {
                     console.warn("[MotionDesignerPlugin] motionDesignerSetRenderMode not ready yet.");
                 }
@@ -142,6 +179,8 @@ class MotionDesignerPlugin(WAN2GPPlugin):
             mode = "cut_drag"
         elif model_def.get("vace_class", False):
             mode = "classic"
+        elif model_def.get("i2v_trajectory", False):
+            mode = "trajectory"
         else:
             return gr.update()
         return f"{mode}|{time.time():.6f}"
@@ -263,6 +302,61 @@ class MotionDesignerPlugin(WAN2GPPlugin):
             self.update_video_prompt_type(state, any_video_guide = True, any_video_mask = True, default_update="G")
 
         gr.Info("Motion Designer data transferred to the Video Generator.")
+        return time.time()
+
+    def _apply_trajectory(
+        self,
+        state,
+        trajectory_json: str | None,
+        metadata_json: str | None,
+        background_data_url: str | None,
+    ):
+        if not trajectory_json:
+            raise gr.Error("No trajectory data received from Motion Designer.")
+
+        try:
+            trajectories = json.loads(trajectory_json)
+            if not isinstance(trajectories, list) or len(trajectories) == 0:
+                raise gr.Error("Invalid trajectory data: expected non-empty array.")
+        except json.JSONDecodeError as exc:
+            raise gr.Error("Unable to parse trajectory data.") from exc
+
+        metadata: dict[str, object] = {}
+        if metadata_json:
+            try:
+                metadata = json.loads(metadata_json)
+                if not isinstance(metadata, dict):
+                    metadata = {}
+            except json.JSONDecodeError:
+                metadata = {}
+
+        # Convert to numpy array with shape [T, N, 2]
+        # T = number of frames, N = number of trajectories, 2 = (x, y) coordinates
+        trajectory_array = np.array(trajectories, dtype=np.float32)
+
+        # Validate shape
+        if len(trajectory_array.shape) != 3 or trajectory_array.shape[2] != 2:
+            raise gr.Error(f"Invalid trajectory shape: expected [T, N, 2], got {trajectory_array.shape}")
+
+        # Save to .npy file
+        output_dir = Path("mask_outputs")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        file_path = output_dir / f"motion_designer_trajectory_{timestamp}.npy"
+        np.save(file_path, trajectory_array)
+
+        print(f"[MotionDesignerPlugin] Trajectory saved: {file_path} (shape: {trajectory_array.shape})")
+
+        # Update UI settings with custom_guide path
+        ui_settings = self.get_current_model_settings(state)
+        ui_settings["custom_guide"] = str(file_path.absolute())
+
+        # Decode and set background image as image_start
+        background_image = self._decode_background_image(background_data_url)
+        if background_image is not None:
+            ui_settings["image_start"] = [background_image]
+
+        gr.Info(f"Trajectory data saved ({trajectory_array.shape[0]} frames, {trajectory_array.shape[1]} trajectories).")
         return time.time()
 
     def _decode_background_image(self, data_url: str | None):
@@ -477,7 +571,14 @@ class MotionDesignerPlugin(WAN2GPPlugin):
         if (!normalized) {
             return;
         }
-        const target = normalized === "classic" ? "classic" : "cut_drag";
+        let target;
+        if (normalized === "classic") {
+            target = "classic";
+        } else if (normalized === "trajectory") {
+            target = "trajectory";
+        } else {
+            target = "cut_drag";
+        }
         console.log("[MotionDesignerPlugin] Mode sync triggered:", target);
         motionDesignerSendControlMessage("setMode", target);
     };
@@ -576,6 +677,27 @@ class MotionDesignerPlugin(WAN2GPPlugin):
         }
         console.debug("[MotionDesignerPlugin] Received iframe payload", event.data);
         const appRoot = motionDesignerRoot();
+
+        // Handle trajectory export separately
+        if (event.data.isTrajectoryExport) {
+            const trajectoryInput = appRoot.querySelector("#motion_designer_trajectory_payload textarea, #motion_designer_trajectory_payload input");
+            const trajectoryMetaInput = appRoot.querySelector("#motion_designer_trajectory_meta textarea, #motion_designer_trajectory_meta input");
+            const trajectoryBgInput = appRoot.querySelector("#motion_designer_trajectory_background textarea, #motion_designer_trajectory_background input");
+            const trajectoryButton = appRoot.querySelector("#motion_designer_trajectory_trigger button, #motion_designer_trajectory_trigger");
+            if (!trajectoryInput || !trajectoryMetaInput || !trajectoryBgInput || !trajectoryButton) {
+                console.warn("[MotionDesignerPlugin] Trajectory bridge components missing in Gradio DOM.");
+                return;
+            }
+            const trajectoryData = event.data.trajectoryData || [];
+            const trajectoryMetadata = event.data.metadata || {};
+            const backgroundImage = event.data.backgroundImage || "";
+            motionDesignerDispatchInput(trajectoryInput, JSON.stringify(trajectoryData));
+            motionDesignerDispatchInput(trajectoryMetaInput, JSON.stringify(trajectoryMetadata));
+            motionDesignerDispatchInput(trajectoryBgInput, backgroundImage);
+            trajectoryButton.click();
+            return;
+        }
+
         const maskInput = appRoot.querySelector("#motion_designer_mask_payload textarea, #motion_designer_mask_payload input");
         const metaInput = appRoot.querySelector("#motion_designer_meta_payload textarea, #motion_designer_meta_payload input");
         const bgInput = appRoot.querySelector("#motion_designer_background_payload textarea, #motion_designer_background_payload input");

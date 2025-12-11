@@ -64,9 +64,9 @@ Processing Settings can be useful to do some quick gen / testing if you don't ne
 - **Wan-Move** : Another model specialized to control motion using a *Start Image* and *Trajectories*. According to the author's paper it is the best one. *Motion Designer* has been upgraded to generate also trajectories for *Wan-Move*.
 
 
-*update 9.81*: added Hunyuan Video 1.5 i2v distilled + magcache
-*update 9.82*: added Settings headless processing, output file customization, refactored Task edition and queue processing
-*update 9.83*: Qwen Edit+ upgraded: no more any zoom out at 1080p, enabled mask, enabled image refs with inpainting
+*update 9.81*: added Hunyuan Video 1.5 i2v distilled + magcache\
+*update 9.82*: added Settings headless processing, output file customization, refactored Task edition and queue processing\
+*update 9.83*: Qwen Edit+ upgraded: no more any zoom out at 1080p, enabled mask, enabled image refs with inpainting\
 *update 9.84*: added Wan-Move support
 
 ### December 4 2025: WanGP v9.74, The Alpha & the Omega ... and the Dancer
@@ -89,9 +89,9 @@ I have added a new Memory Profile *Profile 4+* that is sligthly slower than *Pro
 
 Also as we have now quite few models and Loras folders. *I have moved all the loras folder in the 'loras' folder*. There are also now unique subfolders for *Wan 5B* and *Wan 1.3B* models. A conversion script should have moved the loras in the right locations, but I advise that you check just in case.
 
-*update 9.71* : added missing source file, have fun !
-*update 9.72* : added Z-Image & Loras reorg
-*update 9.73* : added Steady Dancer
+*update 9.71* : added missing source file, have fun !\
+*update 9.72* : added Z-Image & Loras reorg\
+*update 9.73* : added Steady Dancer\
 *update 9.74* : added Z-Image Fun Control Net & Flux 2 Control Net + Masking
 
 ### November 24 2025: WanGP v9.62, The Return of the King

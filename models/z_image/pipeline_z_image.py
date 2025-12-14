@@ -25,8 +25,9 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
-from .transformer_z_image import ZImageTransformer2DModel
+from .z_image_transformer2d import ZImageTransformer2DModel
 from .pipeline_output import ZImagePipelineOutput
+from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -327,7 +328,9 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         callback=None,
         pipeline=None,
         control_image: Optional[torch.Tensor] = None,
+        inpaint_mask: Optional[torch.Tensor] = None,
         control_context_scale: float = 0.75,
+        input_ref_images = None,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -516,6 +519,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
 
         # Encode control image if provided and transformer supports it
         control_latent = None
+        control_in_dim = self.transformer.control_in_dim
         if control_image is not None and hasattr(self.transformer, 'has_control') and self.transformer.has_control:
             # input_frames comes in video format [C, F, H, W] - convert to image format [B, C, H, W]
             control_image_tensor = control_image
@@ -526,8 +530,47 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 # Shape is [C, H, W] - just add batch dim
                 control_image_tensor = control_image_tensor.unsqueeze(0)  # [1, C, H, W]
             control_image_tensor = control_image_tensor.to(device=device, dtype=self.vae.dtype)
-            control_latent = self.vae.encode(control_image_tensor).latent_dist.sample()
+            control_latent = self.vae.encode(control_image_tensor).latent_dist.mode()
             control_latent = (control_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+
+        # Build control_latent_input outside the loop (doesn't change per step)
+        control_latent_input = None
+        if control_latent is not None:
+            # For v2 control (control_in_dim=33): concat [control_latent(16), keep_mask(1), inpaint_latent(16)]
+            if control_in_dim is not None and control_in_dim > num_channels_latents:
+                if inpaint_mask is not None:
+                    mask = inpaint_mask
+                    if mask.dim() == 3:
+                        mask = mask.unsqueeze(0)  # Add batch dim
+                    if mask.dim() == 4 and mask.shape[1] > 1:
+                        mask = mask[:, :1]  # Take first channel only
+                    if mask.shape[-2:] != control_latent.shape[-2:]:
+                        mask = torch.nn.functional.interpolate(
+                            mask.float(), size=control_latent.shape[-2:], mode='nearest'
+                        )
+                    mask = mask.to(device=control_latent.device, dtype=control_latent.dtype)
+                    keep_mask = 1.0 - mask
+                    inpaint_mask = inpaint_mask.to(device)
+                    inpaint_image = control_image_tensor #* (1-inpaint_mask) + inpaint_mask
+                    control_image_tensor = convert_image_to_tensor(input_ref_images[0]).unsqueeze(0) 
+                    control_image_tensor = control_image_tensor.to(device=device, dtype=self.vae.dtype)
+                    control_latent = self.vae.encode(control_image_tensor).latent_dist.mode()
+                    control_latent = (control_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+
+                    inpaint_latent = self.vae.encode(inpaint_image).latent_dist.mode()
+                    inpaint_latent = (inpaint_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+                    control_context = torch.cat([control_latent, keep_mask, inpaint_latent], dim=1)
+                else:
+                    keep_mask = torch.zeros(
+                        (control_latent.shape[0], 1, control_latent.shape[2], control_latent.shape[3]),
+                        device=control_latent.device, dtype=control_latent.dtype
+                    )
+                    inpaint_latent = torch.zeros_like(control_latent)
+                    control_context = torch.cat([control_latent, keep_mask, inpaint_latent], dim=1)
+                control_latent_input = control_context.unsqueeze(2)
+            else:
+                # v1 control: just use the control latent directly (16 channels)
+                control_latent_input = control_latent.unsqueeze(2)
 
         callback(-1, None, True, len(timesteps))
 
@@ -556,66 +599,56 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 # Run CFG only if configured AND scale is non-zero
                 apply_cfg = self.do_classifier_free_guidance and current_guidance_scale > 0
 
-                if apply_cfg:
-                    latents_typed = latents if latents.dtype == dtype else latents.to(dtype)
-                    latent_model_input = latents_typed.repeat(2, 1, 1, 1)
-                    prompt_embeds_model_input = prompt_embeds + negative_prompt_embeds
-                    timestep_model_input = timestep.repeat(2)
-                else:
-                    latent_model_input = latents if latents.dtype == dtype else latents.to(dtype)
-                    prompt_embeds_model_input = prompt_embeds
-                    timestep_model_input = timestep
-
+                # Prepare latent list (same latents used for both pos and neg in CFG)
+                latent_model_input = latents if latents.dtype == dtype else latents.to(dtype)
                 latent_model_input = latent_model_input.unsqueeze(2)
-                latent_model_input_list = list(latent_model_input.unbind(dim=0))
-
-                # Prepare control latent list if available
-                control_latent_list = None
-                if control_latent is not None:
-                    control_latent_input = control_latent.unsqueeze(2)
-                    if apply_cfg:
-                        # Duplicate control latent for CFG (both positive and negative)
-                        control_latent_input = control_latent_input.repeat(2, 1, 1, 1, 1)
-                    control_latent_list = list(control_latent_input.unbind(dim=0))
-
-                model_out_list = self.transformer(
-                    latent_model_input_list,
-                    timestep_model_input,
-                    prompt_embeds_model_input,
-                    control_latent=control_latent_list,
-                    control_context_scale=control_context_scale,
-                    callback=callback,
-                    pipeline=self,
-                )[0]
-
-                if model_out_list is None or (isinstance(model_out_list, list) and model_out_list and model_out_list[0] is None):
-                    return None
 
                 if apply_cfg:
-                    # Perform CFG
-                    pos_out = model_out_list[:batch_size]
-                    neg_out = model_out_list[batch_size:]
+                    model_out_list = self.transformer(
+                        [latent_model_input, latent_model_input],
+                        timestep,
+                        [prompt_embeds[0], negative_prompt_embeds[0]] ,
+                        control_context_list=[control_latent_input, control_latent_input] if control_latent_input is not None else None,
+                        control_context_scale=control_context_scale,
+                        callback=callback,
+                        pipeline=self,
+                    )
 
-                    noise_pred = []
-                    for j in range(batch_size):
-                        pos = pos_out[j].float()
-                        neg = neg_out[j].float()
+                    if model_out_list is None:
+                        return None
 
-                        pred = pos + current_guidance_scale * (pos - neg)
+                    pos, neg = model_out_list
+                    model_out_list = None
+                    pos, neg = pos.float(), neg.float()
 
-                        # Renormalization
-                        if self._cfg_normalization and float(self._cfg_normalization) > 0.0:
-                            ori_pos_norm = torch.linalg.vector_norm(pos)
-                            new_pos_norm = torch.linalg.vector_norm(pred)
-                            max_new_norm = ori_pos_norm * float(self._cfg_normalization)
-                            if new_pos_norm > max_new_norm:
-                                pred = pred * (max_new_norm / new_pos_norm)
+                    noise_pred = pos + current_guidance_scale * (pos - neg)
 
-                        noise_pred.append(pred)
-
-                    noise_pred = torch.stack(noise_pred, dim=0)
+                    # Renormalization
+                    if self._cfg_normalization and float(self._cfg_normalization) > 0.0:
+                        ori_pos_norm = torch.linalg.vector_norm(pos)
+                        new_pos_norm = torch.linalg.vector_norm(noise_pred)
+                        max_new_norm = ori_pos_norm * float(self._cfg_normalization)
+                        if new_pos_norm > max_new_norm:
+                            noise_pred = noise_pred * (max_new_norm / new_pos_norm)
+                    pos = neg = None
                 else:
-                    noise_pred = torch.stack([t.float() for t in model_out_list], dim=0)
+                    # Non-CFG mode: single forward pass
+
+                    model_out_list = self.transformer(
+                        [latent_model_input],
+                        timestep,
+                        [prompt_embeds[0]],
+                        control_context_list=[control_latent_input] if control_latent_input is not None else None,
+                        control_context_scale=control_context_scale,
+                        callback=callback,
+                        pipeline=self,
+                    )
+
+                    if model_out_list is None:
+                        return None
+                    noise_pred = model_out_list[0]
+                    model_out_list = None
+
 
                 noise_pred = noise_pred.squeeze(2)
                 noise_pred = -noise_pred

@@ -1974,6 +1974,13 @@ def _parse_args():
         default="",
         help="Override output directory for CLI processing (use with --process)"
     )
+    parser.add_argument(
+        "--z-image-engine",
+        type=str,
+        choices=["original", "wangp"],
+        default="original",
+        help="Z-Image transformer engine: 'original' (VideoX-Fun) or 'wangp' (modified)"
+    )
 
     args = parser.parse_args()
 

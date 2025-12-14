@@ -40,8 +40,8 @@ class family_handler():
             extra_model_def["video_guide_outpainting"] = [2]
             extra_model_def["model_modes"] = {
                         "choices": [
-                            ("Lora Inpainting: Inpainted area completely unrelated to occulted content", 1),
-                            ("Masked Denoising : Inpainted area may reuse some content that has been occulted", 0),
+                            ("Lora Inpainting: Inpainted area completely unrelated to masked content", 1),
+                            ("Masked Denoising : Inpainted area may reuse some content that has been masked", 0),
                             ],
                         "default": 1,
                         "label" : "Inpainting Method",

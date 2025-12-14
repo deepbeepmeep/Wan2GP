@@ -29,5 +29,6 @@
   "rope_theta": 256.0,
   "t_scale": 1000.0,
   "enable_control": true,
-  "control_layers_places": [0, 5, 10, 15, 20, 25]
+  "control_layers_places": [0, 5, 10, 15, 20, 25],
+  "control_in_dim": 16  
 }

@@ -37,7 +37,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 ## 🔥 Latest Updates : 
 
-### December 11 2025: WanGP v9.84, Simple Pleasures...
+### December 14 2025: WanGP v9.84, Simple Pleasures...
 
 These two features are going to change the life of many people:
 - **Pause Button**: ever had a urge to use your GPU for a very important task that can't wait (a game for instance ?), here comes your new friend the *Pause* button. Not only it will suspend the current gen in progress but it will free most of the VRAM used by WanGP (please note that the RAM by WanGP used wont be released). When you are done just click the *Resume* button to restart exactly from where you stopped.
@@ -63,11 +63,13 @@ Processing Settings can be useful to do some quick gen / testing if you don't ne
 
 - **Wan-Move** : Another model specialized to control motion using a *Start Image* and *Trajectories*. According to the author's paper it is the best one. *Motion Designer* has been upgraded to generate also trajectories for *Wan-Move*.
 
+- **Z-Image Control Net v2** : This is an upgrade of Z-Image Control Net. It offers much better results but requires much more processing an VRAM. But don't panic yet, as it was VRAM optimized. It was not an easy trick as this one is complex. It has also Inpainting support,but I need more info to release this feature.
 
 *update 9.81*: added Hunyuan Video 1.5 i2v distilled + magcache\
 *update 9.82*: added Settings headless processing, output file customization, refactored Task edition and queue processing\
 *update 9.83*: Qwen Edit+ upgraded: no more any zoom out at 1080p, enabled mask, enabled image refs with inpainting\
-*update 9.84*: added Wan-Move support
+*update 9.84*: added Wan-Move support\
+*update 9.85*: added Z-Image Control net v2
 
 ### December 4 2025: WanGP v9.74, The Alpha & the Omega ... and the Dancer
 

@@ -69,7 +69,8 @@ Processing Settings can be useful to do some quick gen / testing if you don't ne
 *update 9.82*: added Settings headless processing, output file customization, refactored Task edition and queue processing\
 *update 9.83*: Qwen Edit+ upgraded: no more any zoom out at 1080p, enabled mask, enabled image refs with inpainting\
 *update 9.84*: added Wan-Move support\
-*update 9.85*: added Z-Image Control net v2
+*update 9.85*: added Z-Image Control net v2\
+*update 9.86*: added NAG support for Z-Image
 
 ### December 4 2025: WanGP v9.74, The Alpha & the Omega ... and the Dancer
 

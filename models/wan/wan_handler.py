@@ -580,6 +580,7 @@ class family_handler():
             extra_model_def["background_removal_color"] = [128, 128, 128]  
         if base_model_type in ["fantasy"] or multitalk:
             extra_model_def["audio_guidance"] = True
+        extra_model_def["NAG"] = vace_class or t2v or i2v
 
         if test_oneframe_overlap(base_model_type):
             extra_model_def["sliding_window_defaults"] = { "overlap_min" : 1, "overlap_max" : 1, "overlap_step": 0, "overlap_default": 1}

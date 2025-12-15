@@ -83,7 +83,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
-WanGP_version = "9.85"
+WanGP_version = "9.86"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -7048,7 +7048,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if not model_def.get("adaptive_projected_guidance", False):
         pop += ["apg_switch"] 
 
-    if not model_family == "wan" or diffusion_forcing:
+    if not model_def.get("NAG", False):
         pop +=["NAG_scale", "NAG_tau", "NAG_alpha" ]
 
     for k in pop:
@@ -8973,12 +8973,12 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_get("control_net_weight_alt"), step=0.01, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0, show_reset_button= False)
                         with gr.Row(visible = not (hunyuan_t2v or hunyuan_i2v or no_negative_prompt)) as negative_prompt_row:
                             negative_prompt = gr.Textbox(label="Negative Prompt (ignored if no Guidance that is if CFG = 1)", value=ui_get("negative_prompt")  )
-                        with gr.Column(visible = vace or t2v or test_class_i2v(model_type)) as NAG_col:
+                        with gr.Column(visible = model_def.get("NAG", False)) as NAG_col:
                             gr.Markdown("<B>NAG enforces Negative Prompt even if no Guidance is set (CFG = 1), set NAG Scale to > 1 to enable it</B>")
                             with gr.Row():
-                                NAG_scale = gr.Slider(1.0, 20.0, value=ui_get("NAG_scale"), step=0.1, label="NAG Scale", visible = True, show_reset_button= False)
-                                NAG_tau = gr.Slider(1.0, 5.0, value=ui_get("NAG_tau"), step=0.1, label="NAG Tau", visible = True, show_reset_button= False)
-                                NAG_alpha = gr.Slider(0.0, 2.0, value=ui_get("NAG_alpha"), step=0.1, label="NAG Alpha", visible = True, show_reset_button= False)
+                                NAG_scale = gr.Slider(1.0, 20.0, value=ui_get("NAG_scale"), step=0.01, label="NAG Scale", visible = True, show_reset_button= False)
+                                NAG_tau = gr.Slider(1.0, 5.0, value=ui_get("NAG_tau"), step=0.01, label="NAG Tau", visible = True, show_reset_button= False)
+                                NAG_alpha = gr.Slider(0.0, 2.0, value=ui_get("NAG_alpha"), step=0.01, label="NAG Alpha", visible = True, show_reset_button= False)
                         with gr.Row():
                             repeat_generation = gr.Slider(1, 25.0, value=ui_get("repeat_generation"), step=1, label=f"Num. of Generated {'Audio Files' if audio_only else 'Videos'} per Prompt", visible = not image_outputs, show_reset_button= False) 
                             multi_images_gen_type = gr.Dropdown( value=ui_get("multi_images_gen_type"), 

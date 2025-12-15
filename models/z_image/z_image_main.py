@@ -196,6 +196,9 @@ class model_factory:
         input_masks=None,
         context_scale: float = [0],
         input_ref_images = None,
+        NAG_scale: float = 1.0,
+        NAG_tau: float = 3.5,
+        NAG_alpha: float = 0.5,
         **kwargs,
     ):
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -237,7 +240,10 @@ class model_factory:
             control_image=input_frames,
             inpaint_mask=input_masks,
             control_context_scale=None if context_scale is None else context_scale[0],
-            input_ref_images= input_ref_images ,
+            input_ref_images= input_ref_images,
+            NAG_scale=NAG_scale,
+            NAG_tau=NAG_tau,
+            NAG_alpha=NAG_alpha,
         )
 
         if images is None:

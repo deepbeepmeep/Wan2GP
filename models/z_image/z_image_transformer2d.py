@@ -114,7 +114,7 @@ class Attention(nn.Module):
         self.norm_q = RMSNorm(self.head_dim, eps=1e-5) if qk_norm else None
         self.norm_k = RMSNorm(self.head_dim, eps=1e-5) if qk_norm else None
 
-    def forward(self, h_list: list, freqs_cis: torch.Tensor) -> torch.Tensor:
+    def forward(self, h_list: list, freqs_cis: torch.Tensor, NAG= None) -> torch.Tensor:
         """Compute self-attention with RoPE. h_list is cleared to free memory early."""
         h = h_list.pop()
         query = self.to_q(h)
@@ -134,10 +134,48 @@ class Attention(nn.Module):
             query = apply_rotary_emb_inplace(q_list, freqs_cis)
             k_list = [key]; del key
             key = apply_rotary_emb_inplace(k_list, freqs_cis)
-        # Compute attention
         dtype = query.dtype
-        out = pay_attention([query, key, value]); del query, key, value
-        return self.to_out(out.flatten(2, 3).to(dtype))
+
+        # NAG for joint-attention models: transformer duplicates batch into [pos, neg] halves.
+
+        if NAG is not None:
+            nag_scale = NAG["scale"]
+            nag_alpha = NAG["alpha"]
+            nag_tau = NAG["tau"]
+            cap_embed_len = NAG["cap_embed_len"]
+
+            x_list = [query[:, :-cap_embed_len], key[:, :-cap_embed_len], value[:, :-cap_embed_len] ]
+            x_pos = pay_attention(x_list).flatten(2, 3).to(dtype)
+            query[:, -2 *cap_embed_len:-cap_embed_len] = query[:, -cap_embed_len:]
+            key[:, -2 *cap_embed_len:-cap_embed_len] = key[:, -cap_embed_len:]
+            value[:, -2 *cap_embed_len:-cap_embed_len] = value[:, -cap_embed_len:]
+            x_list = [query[:, :-cap_embed_len], key[:, :-cap_embed_len], value[:, :-cap_embed_len] ]
+            del query, key, value
+            x_neg = pay_attention(x_list).flatten(2, 3).to(dtype)
+
+            x_neg_tail =  x_neg[:, -cap_embed_len:].clone()
+            x_guidance = x_neg
+            x_guidance.mul_(1 - nag_scale)
+            x_guidance.add_(x_pos, alpha=nag_scale)
+            norm_positive = torch.norm(x_pos, p=1, dim=-1, keepdim=True)
+            norm_guidance = torch.norm(x_guidance, p=1, dim=-1, keepdim=True)
+            scale = norm_guidance / norm_positive
+            scale = torch.nan_to_num(scale, 10)
+            factor = (1 / (norm_guidance + 1e-7) * norm_positive * nag_tau).to(x_guidance.dtype)
+            x_guidance = torch.where(scale > nag_tau, x_guidance * factor, x_guidance).to(dtype)
+            del norm_positive, norm_guidance, scale, factor
+
+            x_guidance.mul_(nag_alpha)
+            x_guidance.add_(x_pos, alpha=(1 - nag_alpha))
+            x_pos = None
+            out = torch.cat([x_guidance, x_neg_tail], dim=1)
+            x_pos = x_neg = x_guidance = None
+        else:
+            x_list = [query, key, value]
+            del query, key, value
+            out = pay_attention(x_list).flatten(2, 3).to(dtype); 
+
+        return self.to_out(out)
 
 
 class ZImageTransformerBlock(nn.Module):
@@ -189,6 +227,7 @@ class ZImageTransformerBlock(nn.Module):
         attn_mask: torch.Tensor,
         freqs_cis: torch.Tensor,
         adaln_input: Optional[torch.Tensor] = None,
+        NAG = None,
     ):
         if self.modulation:
             scale_msa, gate_msa, scale_mlp, gate_mlp = self.adaLN_modulation(adaln_input).unsqueeze(1).chunk(4, dim=2)
@@ -196,7 +235,7 @@ class ZImageTransformerBlock(nn.Module):
             scale_msa.add_(1.0)
             normed = self.attention_norm1(x)
             normed.mul_(scale_msa)
-            attn_out = self.attention_norm2(self.attention([normed], freqs_cis))
+            attn_out = self.attention_norm2(self.attention([normed], freqs_cis, NAG=NAG))
             attn_out.mul_(gate_msa.tanh_())
             x.add_(attn_out); attn_out = None
             # In-place modulation for FFN block (chunked)
@@ -208,7 +247,7 @@ class ZImageTransformerBlock(nn.Module):
             ffn_out.mul_(gate_mlp.tanh_())
             x.add_(ffn_out); ffn_out = None
         else:
-            x.add_(self.attention_norm2(self.attention([self.attention_norm1(x)], freqs_cis)))
+            x.add_(self.attention_norm2(self.attention([self.attention_norm1(x)], freqs_cis, NAG=NAG)))
             normed = self.ffn_norm1(x)
             self._apply_ffn_chunked(normed)
             x.add_(self.ffn_norm2(normed)); normed = None
@@ -276,7 +315,7 @@ class BaseZImageTransformerBlock(ZImageTransformerBlock):
             hints_processed = self.control()(hints, **hints_kwargs)
         hidden_states = super().forward(hidden_states, **kwargs)
         if hints_processed is not None:
-            hidden_states.add_(hints_processed, alpha=context_scale); hints_processed = None
+            hidden_states[:, :hints_processed.shape[1]].add_(hints_processed, alpha=context_scale)
         return hidden_states
 
 
@@ -912,6 +951,7 @@ class ZImageTransformer2DModel(nn.Module):
         control_context_scale=1.0,
         callback=None,
         pipeline=None,
+        NAG =None,
     ):
         """Forward pass with list-based processing (outer loop over layers, inner loop over samples)."""
         assert patch_size in self.all_patch_size
@@ -932,6 +972,8 @@ class ZImageTransformer2DModel(nn.Module):
         cap_seqlen = None
         x_freqs_cis = None
         cap_freqs_cis = None
+        cap_ori_len_ref = None
+        cap_pad_mask_ref = None
 
         for i,(x,cap_feats) in enumerate(zip(x_list, cap_feats_list)):
             bsz = x.shape[0]
@@ -944,6 +986,8 @@ class ZImageTransformer2DModel(nn.Module):
                 x_freqs_cis = self.rope_embedder(torch.cat(x_pos_ids[:1], dim=0))
                 cap_freqs_cis = self.rope_embedder(torch.cat(cap_pos_ids[:1], dim=0))
                 x_size = x_i_size
+                cap_ori_len_ref = len(cap_feats)
+                cap_pad_mask_ref = cap_inner_pad_mask[0]
             # Embed x
             # x_patches = 
             x_embedded = x_embedder(torch.stack(x_patches))
@@ -1016,6 +1060,28 @@ class ZImageTransformer2DModel(nn.Module):
         # Context refiner
         cap_attn_mask = torch.ones((1, cap_seqlen), dtype=torch.bool, device=device)
         cap_freqs_i = cap_freqs_cis.unsqueeze(0)
+
+        # NAG: prepare negative caption embedding once (it is static w.r.t. timestep).
+        NAG_index = -1
+        nag_enabled = NAG is not None
+        if nag_enabled:
+            neg_feats = NAG["neg_feats"]
+            NAG_index = 0
+            if len(neg_feats) < cap_ori_len_ref:
+                pad_len = cap_ori_len_ref - len(neg_feats)
+                neg_feats = torch.cat([neg_feats, neg_feats[-1:].repeat(pad_len, 1)], dim=0)
+            elif len(neg_feats) > cap_ori_len_ref:
+                neg_feats = neg_feats[:cap_ori_len_ref]
+            pad_len = cap_seqlen - len(neg_feats)
+            if pad_len > 0:
+                neg_feats = torch.cat([neg_feats, neg_feats[-1:].repeat(pad_len, 1)], dim=0)
+            neg_cap_embedded = self.cap_embedder(neg_feats.unsqueeze(0)).type_as(cap_embedded_list[0])
+            neg_cap_embedded[cap_pad_mask_ref.unsqueeze(0)] = self.cap_pad_token
+            for layer in self.context_refiner:
+                neg_cap_embedded = layer(neg_cap_embedded, attn_mask=cap_attn_mask, freqs_cis=cap_freqs_i)
+            NAG["cap_embed_len"] = neg_cap_embedded.shape[1]
+            neg_feats =  None
+
         for layer in self.context_refiner:
             for i, cap_i in enumerate(cap_embedded_list):
                 cap_embedded_list[i] = layer( cap_i, attn_mask=cap_attn_mask, freqs_cis=cap_freqs_i)
@@ -1024,10 +1090,13 @@ class ZImageTransformer2DModel(nn.Module):
         # Create unified (x + cap) for each sample
         unified_list = []
         for i,(embedded_x, cap_embedded) in enumerate(zip(embedded_x_list, cap_embedded_list)):
-            unified_list.append(torch.cat([embedded_x, cap_embedded], dim=1))
+            unified_list.append(torch.cat([embedded_x, cap_embedded] + ([neg_cap_embedded.expand(len(cap_embedded), -1, -1)] if i==NAG_index else []), dim=1))
             embedded_x_list[i] = None
-        unified_freqs_i = torch.cat([x_freqs_i, cap_freqs_i], dim=1)
-        unified_seqlen = x_seqlen + cap_seqlen
+        neg_cap_embedded = None
+        unified_freqs_i = torch.cat([x_freqs_i, cap_freqs_i] + ([cap_freqs_i] if nag_enabled else []) , dim=1)
+        unified_seqlen = x_seqlen + cap_seqlen 
+        control_seqlen = unified_seqlen
+        if nag_enabled: unified_seqlen +=  cap_seqlen
         unified_attn_mask = torch.ones((1, unified_seqlen), dtype=torch.bool, device=device)
         hints_list = []
         hints_kwargs_list = []
@@ -1036,21 +1105,21 @@ class ZImageTransformer2DModel(nn.Module):
         if any_control:
             cap_embedded_ref = cap_embedded_list[0]
             control_kwargs = dict(
-                attn_mask=unified_attn_mask,
-                freqs_cis=unified_freqs_i,
+                attn_mask=unified_attn_mask[:, :control_seqlen],
+                freqs_cis=unified_freqs_i[:, :control_seqlen],
                 adaln_input=adaln_input.expand(num_noise_samples, -1),
             )
             if control_V2:
                 # Control v2.0 
                 for unified_batch, ctrl_ctx_tensor, ctrl_seqlens in zip(unified_list, ctrl_ctx_tensor_list, ctrl_seqlens_list):
-                    hints_kwargs, hints_tuple = self.prepare_forward_control_2_0_layers( unified_batch, cap_embedded_ref , ctrl_ctx_tensor, ctrl_seqlens, control_kwargs )
+                    hints_kwargs, hints_tuple = self.prepare_forward_control_2_0_layers( unified_batch[:, :control_seqlen], cap_embedded_ref , ctrl_ctx_tensor, ctrl_seqlens, control_kwargs )
                     hints_kwargs_list.append(hints_kwargs)
                     hints_list.append([hints_tuple])
                     unified_batch = ctrl_ctx_tensor = ctrl_seqlens = None
             else:
                 # Control v1.0 
                 for unified_batch, ctrl_ctx_tensor in zip(unified_list, control_context_list):
-                    hints_kwargs, hints_tuple = self.prepare_forward_control_1_0( unified_batch, cap_embedded_ref, ctrl_ctx_tensor, control_kwargs, t=adaln_input, patch_size=patch_size, f_patch_size=f_patch_size)
+                    hints_kwargs, hints_tuple = self.prepare_forward_control_1_0( unified_batch[:, :control_seqlen], cap_embedded_ref, ctrl_ctx_tensor, control_kwargs, t=adaln_input, patch_size=patch_size, f_patch_size=f_patch_size)
                     hints_kwargs_list.append(hints_kwargs)
                     hints_list.append([hints_tuple])
                     unified_batch = ctrl_ctx_tensor = None
@@ -1070,6 +1139,7 @@ class ZImageTransformer2DModel(nn.Module):
                 kwargs = {}
                 if hints is not None:
                     kwargs.update(dict(hints= hints, hints_kwargs = hints_kwargs, context_scale = control_context_scale))
+                if NAG_index == i: kwargs["NAG"]= NAG
                 unified_list[i] = layer(unified_i, attn_mask=unified_attn_mask, freqs_cis=unified_freqs_i, adaln_input=adaln_input, **kwargs)
                 unified_i = hints = kwargs = hints_kwargs = None
 

@@ -25,6 +25,7 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
+from mmgp import offload
 from .z_image_transformer2d import ZImageTransformer2DModel
 from .pipeline_output import ZImagePipelineOutput
 from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
@@ -331,6 +332,9 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         inpaint_mask: Optional[torch.Tensor] = None,
         control_context_scale: float = 0.75,
         input_ref_images = None,
+        NAG_scale: float = 1.0,
+        NAG_tau: float = 3.5,
+        NAG_alpha: float = 0.5,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -425,6 +429,11 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             )
 
         self._guidance_scale = guidance_scale
+        kwargs = {}
+        NAG = None
+        if NAG_scale > 1:
+            NAG = { "scale": NAG_scale, "tau": NAG_tau, "alpha": NAG_alpha, }
+
         dtype = (
             self.text_encoder.dtype
             if prompt_embeds is None
@@ -463,7 +472,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             ) = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                do_classifier_free_guidance=self.do_classifier_free_guidance,
+                do_classifier_free_guidance=self.do_classifier_free_guidance or NAG is not None,
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=negative_prompt_embeds,
                 dtype=dtype,
@@ -472,6 +481,11 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 max_sequence_length=max_sequence_length,
                 lora_scale=lora_scale,
             )
+        neg_embeds_list = negative_prompt_embeds if isinstance(negative_prompt_embeds, list) else []
+        if NAG is not None and len(neg_embeds_list) > 0:
+            NAG["neg_feats"] = neg_embeds_list[0]
+            kwargs["NAG"] = NAG
+
         batch_size = num_images_per_prompt
         num_images_per_prompt = 1
         if batch_size > 1:
@@ -479,8 +493,6 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             if len(negative_prompt_embeds) > 0:
                 negative_prompt_embeds = negative_prompt_embeds * batch_size
 
-        # if prompt_embeds is not None:
-        #     prompt_embeds = prompt_embeds.expand(num_images_per_prompt, -1, -1)
         # 4. Prepare latent variables
 
         num_channels_latents = self.transformer.in_channels
@@ -612,6 +624,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                         control_context_scale=control_context_scale,
                         callback=callback,
                         pipeline=self,
+                        **kwargs,
                     )
 
                     if model_out_list is None:
@@ -642,6 +655,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                         control_context_scale=control_context_scale,
                         callback=callback,
                         pipeline=self,
+                        **kwargs,
                     )
 
                     if model_out_list is None:

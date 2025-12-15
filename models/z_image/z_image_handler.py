@@ -18,7 +18,6 @@ class family_handler:
             "guidance_max_phases": 0,
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [],
-            "no_negative_prompt": True,
         }
 
         if base_model_type in ["z_image_control", "z_image_control2"]:
@@ -40,14 +39,14 @@ class family_handler:
                 "selection":[ "", "A", "NA"],
                 "visible": False,
             }
-            extra_model_def["image_ref_choices"] = {
-                "choices":[("No Reference Image",""), ("Image is a Reference Image", "KI")],
-                "default": "",
-                "letters_filter": "KI",
-                "label": "Reference Image for Inpainting",
-                "visible": False,
-            }
-
+            # extra_model_def["image_ref_choices"] = {
+            #     "choices":[("No Reference Image",""), ("Image is a Reference Image", "KI")],
+            #     "default": "",
+            #     "letters_filter": "KI",
+            #     "label": "Reference Image for Inpainting",
+            #     "visible": False,
+            # }
+        extra_model_def["NAG"] = base_model_type in ["z_image"]
         return extra_model_def
 
     @staticmethod
@@ -152,6 +151,9 @@ class family_handler:
             {
                 "guidance_scale": 0.0,
                 "num_inference_steps": ui_defaults.get("num_inference_steps", 9),
+                "NAG_scale": ui_defaults.get("NAG_scale", 1.0),
+                "NAG_tau": ui_defaults.get("NAG_tau", 3.5),
+                "NAG_alpha": ui_defaults.get("NAG_alpha", 0.5),
             }
         )
 

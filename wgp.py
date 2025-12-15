@@ -573,7 +573,9 @@ def validate_settings(state, model_type, single_prompt, inputs):
     width, height = resolution.split("x")
     width, height = int(width), int(height)
     image_start = inputs["image_start"]
+    if image_start is not None and not isinstance(image_start, list): image_start = [image_start]
     image_end = inputs["image_end"]
+    if image_end is not None and not isinstance(image_end, list): image_end = [image_end]
     image_refs = inputs["image_refs"]
     image_prompt_type = inputs["image_prompt_type"]
     audio_prompt_type = inputs["audio_prompt_type"]

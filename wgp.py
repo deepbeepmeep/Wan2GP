@@ -4580,16 +4580,15 @@ def edit_video(
             sample = sample.float().div_(127.5).sub_(1.).permute(-1,0,1,2)
             frames_count = sample.shape[1] 
 
+        if len(spatial_upsampling) > 0:
+            sample = perform_spatial_upsampling(sample, spatial_upsampling )
+            configs["spatial_upsampling"] = spatial_upsampling
+
         output_fps  = round(fps)
         if len(temporal_upsampling) > 0:
             sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, None, temporal_upsampling, fps)
             configs["temporal_upsampling"] = temporal_upsampling
             frames_count = sample.shape[1] 
-
-
-        if len(spatial_upsampling) > 0:
-            sample = perform_spatial_upsampling(sample, spatial_upsampling )
-            configs["spatial_upsampling"] = spatial_upsampling
 
         if film_grain_intensity > 0:
             from postprocessing.film_grain import add_film_grain
@@ -5860,16 +5859,18 @@ def generate_video(
 
                 if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and not "vae2" in spatial_upsampling:                
                     send_cmd("progress", [0, get_latest_status(state,"Upsampling")])
+                          
+                if len(spatial_upsampling) > 0:
+                    sample = perform_spatial_upsampling(sample, spatial_upsampling)
                 
                 output_fps  = fps
                 if len(temporal_upsampling) > 0:
                     sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, previous_last_frame if sliding_window and window_no > 1 else None, temporal_upsampling, fps)
-
-                if len(spatial_upsampling) > 0:
-                    sample = perform_spatial_upsampling(sample, spatial_upsampling )
+                    
                 if film_grain_intensity> 0:
                     from postprocessing.film_grain import add_film_grain
                     sample = add_film_grain(sample, film_grain_intensity, film_grain_saturation) 
+                    
                 if sliding_window :
                     if frames_already_processed == None:
                         frames_already_processed = sample

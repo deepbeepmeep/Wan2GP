@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 
 import torch
 from torch import Tensor, nn
@@ -51,6 +52,7 @@ class FluxParams:
     double_mlp_ratio: float | None = None
     double_linear1_mlp_ratio: float | None = None
     flux2: bool = False
+    piflow: bool = False
 
 class Flux(nn.Module):
     """
@@ -92,6 +94,7 @@ class Flux(nn.Module):
         self.chroma = params.chroma
         self.is_flux2 = getattr(params, "flux2", False)
         self.radiance = getattr(params, "radiance", False)
+        self.piflow = getattr(params, "piflow", False)
         if params.hidden_size % params.num_heads != 0:
             raise ValueError(
                 f"Hidden size {params.hidden_size} must be divisible by num_heads {params.num_heads}"
@@ -183,6 +186,20 @@ class Flux(nn.Module):
                 modulation_bias=not self.is_flux2,
             )
 
+        if self.piflow:
+            # Pi-Flow prediction heads for Gaussian mixture velocity field.
+            self.proj_out_means = nn.Linear(self.hidden_size, 1024, bias=True)
+            self.proj_out_logweights = nn.Linear(self.hidden_size, 32, bias=True)
+            self.proj_out_logstds = nn.Sequential(
+                nn.Identity(),
+                nn.Linear(self.hidden_size, 1024, bias=True),
+                nn.SiLU(),
+                nn.Linear(1024, 1, bias=True),
+            )
+            self.num_gaussians = self.proj_out_means.out_features // self.out_channels
+            self.logweights_channels = self.proj_out_logweights.out_features // self.num_gaussians
+            self.piflow_patch_size = int(math.sqrt(self.logweights_channels))
+
     def _apply_final_layer(self, tokens: Tensor, vec):
         final_layer = self.final_layer
         normed = final_layer.norm_final(tokens)
@@ -197,6 +214,54 @@ class Flux(nn.Module):
             raise RuntimeError("Final layer projection is not available.")
         base_tokens = final_layer.linear(modulated)
         return modulated, base_tokens
+
+    def _apply_piflow_final_layer(self, tokens: Tensor, vec: Tensor, img_ids: Tensor, img_len: int):
+        if img_ids is None:
+            raise RuntimeError("pi-Flow requires image ids to reshape outputs.")
+        final_layer = self.final_layer
+        normed = final_layer.norm_final(tokens)
+        shift, scale = final_layer.adaLN_modulation(vec).chunk(2, dim=1)
+        modulated = torch.addcmul(shift[:, None, :], 1 + scale[:, None, :], normed)
+
+        proj_dtype = self.proj_out_means.weight.dtype
+        modulated = modulated.to(proj_dtype)
+        means = self.proj_out_means(modulated)
+        logweights = self.proj_out_logweights(modulated)
+        logstds = self.proj_out_logstds(vec.detach().to(self.proj_out_logstds[-1].weight.dtype))
+
+        base_img_ids = img_ids[:, :img_len]
+        h_len = int(base_img_ids[..., 1].max().item() + 1)
+        w_len = int(base_img_ids[..., 2].max().item() + 1)
+        if h_len * w_len != img_len:
+            raise RuntimeError("pi-Flow token length does not match latent grid.")
+
+        patch_size = self.piflow_patch_size
+        if patch_size * patch_size != self.logweights_channels:
+            raise RuntimeError("pi-Flow logweights channels mismatch.")
+
+        bsz = means.shape[0]
+        k = self.num_gaussians
+        c = self.out_channels
+        c_unpacked = c // (patch_size * patch_size)
+
+        means = means.view(
+            bsz, h_len, w_len, k, c_unpacked, patch_size, patch_size
+        ).permute(
+            0, 3, 4, 1, 5, 2, 6
+        ).reshape(
+            bsz, k, c_unpacked, h_len * patch_size, w_len * patch_size
+        )
+
+        logweights = logweights.view(
+            bsz, h_len, w_len, k, 1, patch_size, patch_size
+        ).permute(
+            0, 3, 4, 1, 5, 2, 6
+        ).reshape(
+            bsz, k, 1, h_len * patch_size, w_len * patch_size
+        ).log_softmax(dim=1)
+
+        logstds = logstds.reshape(bsz, 1, 1, 1, 1)
+        return modulated, {"means": means, "logweights": logweights, "logstds": logstds}
 
     def preprocess_loras(self, model_type, sd):
         new_sd = {}
@@ -250,7 +315,7 @@ class Flux(nn.Module):
                     "img_in", "txt_in", "final_layer.linear", "time_in.in_layer", "time_in.out_layer" ]
 
             double_src = ["norm1.linear", "norm1_context.linear", "attn.norm_q",  "attn.norm_k", "ff.net.0.proj", "ff.net.2", "ff_context.net.0.proj", "ff_context.net.2", "attn.to_out.0" ,"attn.to_add_out", "attn.to_out", ".attn.to_", ".attn.add_q_proj.", ".attn.add_k_proj.", ".attn.add_v_proj.", ".ff_context.linear_out.", ".ff_context.linear_in.", ".ff.linear_out.", ".ff.linear_in." ] 
-            double_tgt = ["img_mod.lin", "txt_mod.lin", "img_attn.norm.query_norm", "img_attn.norm.key_norm", "img_mlp.0", "img_mlp.2", "txt_mlp.0", "txt_mlp.2", "img_attn.proj", "txt_attn.proj", "img_attn.proj", ".img_attn.", ".txt_attn.q.", ".txt_attn.k.", ".txt_attn.v.", ".txt_mlp.0.", ".txt_mlp.2.", ".img_mlp.0.", ".img_mlp.2." ] 
+            double_tgt = ["img_mod.lin", "txt_mod.lin", "img_attn.norm.query_norm", "img_attn.norm.key_norm", "img_mlp.0", "img_mlp.2", "txt_mlp.0", "txt_mlp.2", "img_attn.proj", "txt_attn.proj", "img_attn.proj", ".img_attn.", ".txt_attn.q.", ".txt_attn.k.", ".txt_attn.v.", ".txt_mlp.2.", ".txt_mlp.0.", ".img_mlp.2.", ".img_mlp.0." ] 
 
             single_src = ["norm.linear", "attn.norm_q", "attn.norm_k", "proj_out",".attn.to_q.", ".attn.to_k.", ".attn.to_v.", ".proj_mlp.", ".attn.to_out."]
             single_tgt = ["modulation.lin","norm.query_norm", "norm.key_norm", "linear2", ".linear1_attn_q.", ".linear1_attn_k.", ".linear1_attn_v.", ".linear1_mlp.", ".linear2."]
@@ -424,7 +489,12 @@ class Flux(nn.Module):
                 img_list[i] = hidden_seq = None
             else:
                 vec = final_vecs[i]
-                modulated, pred_tokens = self._apply_final_layer(hidden_seq, vec)
+                if self.piflow:
+                    modulated, pred_tokens = self._apply_piflow_final_layer(
+                        hidden_seq, vec, img_ids, img_len
+                    )
+                else:
+                    modulated, pred_tokens = self._apply_final_layer(hidden_seq, vec)
                 img_list[i] = hidden_seq = vec = modulated = None
             out_list.append(pred_tokens)
         return out_list

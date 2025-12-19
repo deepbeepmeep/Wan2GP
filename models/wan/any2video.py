@@ -537,7 +537,7 @@ class WanAny2V:
         ref_images_count = inner_latent_frames = 0
         trim_frames = 0
         last_latent_preview = False
-        extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = None
+        extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = post_freqs = None
         # SCAIL uses a fixed ref latent frame that should not be noised.
         no_noise_latents_injection = infinitetalk or scail
         timestep_injection = False

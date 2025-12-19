@@ -699,19 +699,18 @@ class family_handler():
             if video_guide_processed.numel() == 0:
                 gr.Info("Unable to detect a Person")
                 return None, None, None, None
-            # SCAIL doesn't use augmented poses
             return video_guide_processed, None, video_mask, None
         else:
-            # Steadydancer/wanmove: Use 2D pose alignment
+            # Steadydancer 
             from .steadydancer.pose_align import PoseAligner
             aligner = PoseAligner()
-            outputs = aligner.align(frames, ref_image, ref_video_mask=mask_frames, align_frame=0, max_frames=None, augment=True, include_composite=False, cpu_resize_workers=max_workers, expand_scale=expand_scale)
+            outputs = aligner.align(frames, ref_image, ref_video_mask=None, align_frame=0, max_frames=None, augment=True, include_composite=False, cpu_resize_workers=max_workers, expand_scale=expand_scale)
 
             video_guide_processed, video_guide_processed2 = outputs["pose_only"], outputs["pose_aug"]
             if video_guide_processed.numel() == 0:
                 return None, None, None, None
 
-            return video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2 
+            return video_guide_processed, video_guide_processed2, None, None 
 
 
     @staticmethod

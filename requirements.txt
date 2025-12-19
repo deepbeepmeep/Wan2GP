@@ -44,6 +44,7 @@ insightface @ https://github.com/deepbeepmeep/insightface/raw/refs/heads/master/
 insightface==0.7.3 ; sys_platform == "linux"
 facexlib==0.3.0
 taichi
+smplfitter
 
 # Config & orchestration
 omegaconf

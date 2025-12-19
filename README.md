@@ -42,7 +42,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 WanGP version has the following perks: 3D pose Preprocessing entirely rewritten to be fast,  and compatible with any pytorch version, very Low VRAM requirements for multicharacters, experimental long gen mode / sliding windows (SCAIL Preview doesnt  support officialy long gen yet)
 
-- **pi-Flux 2**: you don't Flux 2 because you find it too slow ? You won't be able to use this excuse anymore: pi-Flux 2 is *4 steps distills* of the best image generator. It supports both image edition and text to image generation.
+- **pi-Flux 2**: you don't use Flux 2 because you find it too slow ? You won't be able to use this excuse anymore: pi-Flux 2 is *4 steps distills* of the best image generator. It supports both image edition and text to image generation.
 
 - **loras accelerator**: *loras accelerator* for *Qwen* and *Wan i2v* have been added (activable using the *Profile settings* as usual) 
 

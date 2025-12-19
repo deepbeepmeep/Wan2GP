@@ -19,6 +19,7 @@ from ..multitalk.multitalk_utils import get_attn_map_with_target
 from ..animate.motion_encoder import Generator
 from ..animate.face_blocks import FaceAdapter, FaceEncoder 
 from ..animate.model_animate import after_patch_embedding
+from ..scail.model_scail import build_scail_pose_tokens
 from ..steadydancer.small_archs import FactorConv3d, PoseRefNetNoBNV3
 from ..steadydancer.mobilenetv2_dcd import DYModule
 
@@ -916,13 +917,17 @@ class WanModel(ModelMixin, ConfigMixin):
             if not k.startswith("vae."):
                 new_sd[k] = v
         return new_sd
-    def preprocess_loras(self, model_type, sd):
+    def preprocess_loras(self, base_model_type, sd):
 
         first = next(iter(sd), None)
         if first == None:
             return sd
 
-
+        if base_model_type in ["scail"]:
+            sd.pop("diffusion_model.patch_embedding.diff", None)
+            sd.pop("diffusion_model.patch_embedding.diff_b", None)
+            return sd
+        
         new_sd = {}
         for k,v in sd.items():
             if k.endswith("modulation.diff"):
@@ -978,7 +983,7 @@ class WanModel(ModelMixin, ConfigMixin):
 
             sd = new_sd
         from wgp import test_class_i2v 
-        if not test_class_i2v(model_type) or model_type in ["i2v_2_2"]:
+        if not test_class_i2v(base_model_type) or base_model_type in ["i2v_2_2"]:
             new_sd = {}
             # convert loras for i2v to t2v
             for k,v in sd.items():
@@ -1031,6 +1036,7 @@ class WanModel(ModelMixin, ConfigMixin):
                  motion_encoder_dim=0,
                  lynx=None,
                  steadydancer = False,
+                 scail = False,
                  ):
 
         super().__init__()
@@ -1063,7 +1069,8 @@ class WanModel(ModelMixin, ConfigMixin):
 
         multitalk = multitalk_output_dim > 0
         self.multitalk = multitalk
-        self.steadydancer = steadydancer 
+        self.steadydancer = steadydancer
+        self.scail = scail
         animate = motion_encoder_dim > 0
 
         # embeddings
@@ -1183,6 +1190,13 @@ class WanModel(ModelMixin, ConfigMixin):
                 in_dim=motion_encoder_dim,
                 hidden_dim=self.dim,
                 num_heads=4,
+            )
+
+        if scail:
+            # SCAIL only needs pose embedding (no motion_encoder/face_adapter)
+            # pose_latents (16 ch) + mask (4 ch) = 20 channels = in_dim
+            self.pose_patch_embedding = nn.Conv3d(
+                in_dim, dim, kernel_size=patch_size, stride=patch_size
             )
 
         if steadydancer:
@@ -1449,6 +1463,7 @@ class WanModel(ModelMixin, ConfigMixin):
         steadydancer_ref_x = None,
         steadydancer_ref_c = None,
         steadydancer_clip_fea_c = None,
+        scail_pose_latents = None,
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
         modulation_dtype = self.time_projection[1].weight.dtype
@@ -1515,9 +1530,13 @@ class WanModel(ModelMixin, ConfigMixin):
             x_noise_clone = x = None
 
         motion_vec_list = []
+        pose_tokens = None
+        if scail_pose_latents is not None:
+            pose_tokens = build_scail_pose_tokens(self, scail_pose_latents, modulation_dtype)
+        
         if face_pixel_values is None: face_pixel_values =  [None] * len(x_list)
         for i, (x, one_face_pixel_values) in enumerate(zip(x_list, face_pixel_values)):
-                # animate embeddings
+                # animate/scail embeddings
                 motion_vec = None
                 if pose_latents is not None: 
                     x, motion_vec = after_patch_embedding(self, x, pose_latents, torch.zeros_like(face_pixel_values[0]) if one_face_pixel_values is None else one_face_pixel_values)
@@ -1528,6 +1547,11 @@ class WanModel(ModelMixin, ConfigMixin):
                     x = voxel_chunk_no_padding(x, voxel_shape).squeeze(-1).transpose(1, 2)
                 else:
                     x = x.flatten(2).transpose(1, 2)
+
+                if scail_pose_latents is not None:
+                    if pose_tokens.shape[0] != x.shape[0]: pose_tokens = pose_tokens.repeat(x.shape[0], 1, 1)
+                    x = torch.cat([x, pose_tokens], dim=1)
+
                 x_list[i] = x
         x = None
 
@@ -1844,4 +1868,3 @@ class WanModel(ModelMixin, ConfigMixin):
 
         # init output layer
         nn.init.zeros_(self.head.head.weight)
-

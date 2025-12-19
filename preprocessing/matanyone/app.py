@@ -17,7 +17,7 @@ from .tools.painter import mask_painter
 from .tools.interact_tools import SamControler
 from .tools.misc import get_device
 from .tools.download_util import load_file_from_url
-from segment_anything.modeling.image_encoder import window_partition, window_unpartition, get_rel_pos, Block as image_encoder_block
+from .tools.base_segmenter import set_image_encoder_patch
 from .utils.get_default_model import get_matanyone_model
 from .matanyone.inference.inference_core import InferenceCore
 from .matanyone_wrapper import matanyone
@@ -281,97 +281,6 @@ def get_end_number(track_pause_number_slider, video_state, interactive_state):
 
     return video_state["painted_images"][track_pause_number_slider],interactive_state
 
-
-def patched_forward(self, x: torch.Tensor) -> torch.Tensor:        
-    def split_mlp(mlp, x, divide = 4):
-        x_shape = x.shape
-        x = x.view(-1, x.shape[-1])
-        chunk_size = int(x.shape[0]/divide)
-        x_chunks = torch.split(x, chunk_size)
-        for i, x_chunk  in enumerate(x_chunks):
-            mlp_chunk = mlp.lin1(x_chunk)
-            mlp_chunk = mlp.act(mlp_chunk)
-            x_chunk[...] = mlp.lin2(mlp_chunk)
-        return x.reshape(x_shape)     
-
-    def get_decomposed_rel_pos( q, rel_pos_h, rel_pos_w, q_size, k_size) -> torch.Tensor:
-        q_h, q_w = q_size
-        k_h, k_w = k_size
-        Rh = get_rel_pos(q_h, k_h, rel_pos_h)
-        Rw = get_rel_pos(q_w, k_w, rel_pos_w)
-        B, _, dim = q.shape
-        r_q = q.reshape(B, q_h, q_w, dim)
-        rel_h = torch.einsum("bhwc,hkc->bhwk", r_q, Rh)
-        rel_w = torch.einsum("bhwc,wkc->bhwk", r_q, Rw)
-        attn = torch.zeros(B, q_h, q_w, k_h, k_w, dtype=q.dtype, device=q.device)
-        attn += rel_h[:, :, :, :, None]
-        attn += rel_w[:, :, :, None, :]
-        return attn.view(B, q_h * q_w, k_h * k_w)
-
-    def pay_attention(self, x: torch.Tensor, split_heads = 1) -> torch.Tensor:
-            B, H, W, _ = x.shape
-            # qkv with shape (3, B, nHead, H * W, C)
-            qkv = self.qkv(x).reshape(B, H * W, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
-
-            if not bfloat16_supported: qkv = qkv.to(torch.float16)
-
-            # q, k, v with shape (B * nHead, H * W, C)
-            q, k, v = qkv.reshape(3, B * self.num_heads, H * W, -1).unbind(0)
-            if split_heads == 1:
-                attn_mask = None
-                if self.use_rel_pos:
-                    attn_mask = get_decomposed_rel_pos(q, self.rel_pos_h.to(q), self.rel_pos_w.to(q), (H, W), (H, W))
-                x = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, scale=self.scale)
-            else:
-                chunk_size = self.num_heads // split_heads 
-                x = torch.empty_like(q)
-                q_chunks = torch.split(q, chunk_size)
-                k_chunks = torch.split(k, chunk_size)
-                v_chunks = torch.split(v, chunk_size)
-                x_chunks = torch.split(x, chunk_size)
-                for x_chunk, q_chunk, k_chunk, v_chunk  in zip(x_chunks, q_chunks, k_chunks, v_chunks):
-                    attn_mask = None
-                    if self.use_rel_pos:
-                        attn_mask = get_decomposed_rel_pos(q_chunk, self.rel_pos_h.to(q), self.rel_pos_w.to(q), (H, W), (H, W))
-                    x_chunk[...]  = F.scaled_dot_product_attention(q_chunk, k_chunk, v_chunk, attn_mask=attn_mask, scale=self.scale)
-                del x_chunk, q_chunk, k_chunk, v_chunk
-            del q, k, v, attn_mask
-            x = x.view(B, self.num_heads, H, W, -1).permute(0, 2, 3, 1, 4).reshape(B, H, W, -1)
-            if not bfloat16_supported: x = x.to(torch.bfloat16)
-
-            return self.proj(x)
-
-    shortcut = x
-    x = self.norm1(x)
-    # Window partition
-    if self.window_size > 0:
-        H, W = x.shape[1], x.shape[2]
-        x, pad_hw = window_partition(x, self.window_size)
-    x_shape = x.shape
-
-    if x_shape[0] > 10:
-        chunk_size = int(x.shape[0]/4) + 1
-        x_chunks = torch.split(x, chunk_size)
-        for i, x_chunk  in enumerate(x_chunks):
-            x_chunk[...] = pay_attention(self.attn,x_chunk)  
-    else:
-        x = pay_attention(self.attn,x, 4)
-
-
-    # Reverse window partition
-    if self.window_size > 0:
-        x = window_unpartition(x, self.window_size, pad_hw, (H, W))
-    x += shortcut
-    shortcut[...] = self.norm2(x)
-    # x += self.mlp(shortcut)
-    x +=  split_mlp(self.mlp, shortcut)
-
-    return x
-
-def set_image_encoder_patch():
-    if not hasattr(image_encoder_block, "patched"):  #and False
-        image_encoder_block.forward = patched_forward
-        image_encoder_block.patched = True
 
 # use sam to get the mask
 def sam_refine(state, video_state, point_prompt, click_state, interactive_state, evt:gr.SelectData ): #

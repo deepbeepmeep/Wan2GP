@@ -83,7 +83,7 @@ global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
-WanGP_version = "9.86"
+WanGP_version = "9.9"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2995,8 +2995,8 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
     default_lora_preset_prompt = ""
 
     from pathlib import Path
-
-    lora_dir = get_lora_dir(model_type)
+    base_model_type = get_base_model_type(model_type)
+    lora_dir = get_lora_dir(base_model_type)
     if lora_dir != None :
         if not os.path.isdir(lora_dir):
             raise Exception("--lora-dir should be a path to a directory that contains Loras")
@@ -3015,7 +3015,7 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
         loras_presets = [ Path(file_path).parts[-1] for file_path in dir_presets_settings + dir_presets]
 
     if transformer !=None:
-        loras = offload.load_loras_into_model(transformer, loras,  activate_all_loras=False, check_only= True, preprocess_sd=get_loras_preprocessor(transformer, model_type), split_linear_modules_map = split_linear_modules_map) #lora_multiplier,
+        loras = offload.load_loras_into_model(transformer, loras,  activate_all_loras=False, check_only= True, preprocess_sd=get_loras_preprocessor(transformer, base_model_type), split_linear_modules_map = split_linear_modules_map) #lora_multiplier,
 
     if len(loras) > 0:
         loras = [ os.path.basename(lora) for lora in loras  ]
@@ -3024,7 +3024,7 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
         if not os.path.isfile(os.path.join(lora_dir, lora_preselected_preset + ".lset")):
             raise Exception(f"Unknown preset '{lora_preselected_preset}'")
         default_lora_preset = lora_preselected_preset
-        default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, _ , error = extract_preset(model_type, default_lora_preset, loras)
+        default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, _ , error = extract_preset(base_model_type, default_lora_preset, loras)
         if len(error) > 0:
             print(error[:200])
     return loras, loras_presets, default_loras_choices, default_loras_multis_str, default_lora_preset_prompt, default_lora_preset
@@ -3458,7 +3458,7 @@ def refresh_gallery(state): #, msg
         multi_prompts_gen_type = params["multi_prompts_gen_type"]
         base_model_type = get_base_model_type(model_type)
         model_def = get_model_def(model_type) 
-        onemorewindow_visible = test_any_sliding_window(base_model_type) and params.get("image_mode",0) == 0 and not params.get("mode","").startswith("edit_")
+        onemorewindow_visible = test_any_sliding_window(base_model_type) and params.get("image_mode",0) == 0 and (not params.get("mode","").startswith("edit_")) and not model_def.get("preprocess_all", False)
         enhanced = False
         if prompt.startswith("!enhanced!\n"):
             enhanced = True
@@ -4863,7 +4863,7 @@ def truncate_audio(generated_audio, trim_video_frames_beginning, trim_video_fram
     end = len(generated_audio) - int(trim_video_frames_end * samples_per_frame)
     return generated_audio[start:end if end > 0 else None]
 
-def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_guide, video_guide, video_mask, height, width, max_frames, start_frame, fit_canvas, fit_crop, target_fps,  block_size, expand_scale):
+def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_guide, video_guide, video_mask, height, width, max_frames, start_frame, fit_canvas, fit_crop, target_fps,  block_size, expand_scale, video_prompt_type):
     pad_frames = 0
     if start_frame < 0:
         pad_frames= -start_frame
@@ -4881,10 +4881,31 @@ def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_
         video_mask = get_resampled_video(video_mask, start_frame, max_frames, target_fps).permute(-1, 0, 1, 2)
         video_mask = video_mask[:1] / 255.
 
+    # Mask filtering: resize, binarize, expand mask and keep only masked areas of video guide
+    if any_mask:
+        invert_mask = "N" in video_prompt_type
+        import concurrent.futures
+        tgt_h, tgt_w = video_guide.shape[2], video_guide.shape[3]
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (abs(expand_scale), abs(expand_scale))) if expand_scale != 0 else None
+        op = (cv2.dilate if expand_scale > 0 else cv2.erode) if expand_scale != 0 else None
+        def process_mask(idx):
+            m = (video_mask[0, idx].numpy() * 255).astype(np.uint8)
+            if m.shape[0] != tgt_h or m.shape[1] != tgt_w:
+                m = cv2.resize(m, (tgt_w, tgt_h), interpolation=cv2.INTER_NEAREST)
+            _, m = cv2.threshold(m, 127, 255, cv2.THRESH_BINARY)  # binarize grey values
+            if op: m = op(m, kernel, iterations=3)
+            if invert_mask:
+                return torch.from_numpy((m <= 127).astype(np.float32))
+            else:
+                return torch.from_numpy((m > 127).astype(np.float32))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            video_mask = torch.stack([f.result() for f in [ex.submit(process_mask, i) for i in range(video_mask.shape[1])]]).unsqueeze(0)
+        video_guide = video_guide * video_mask + (-1) * (1-video_mask)
+
     if video_guide.shape[1] == 0 or any_mask and video_mask.shape[1] == 0:
         return None, None, None, None
     
-    video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2  = model_handler.custom_preprocess(base_model_type = base_model_type, pre_video_guide = pre_video_guide, video_guide = video_guide, video_mask = video_mask, height = height, width = width, fit_canvas = fit_canvas , fit_crop = fit_crop, target_fps = target_fps,  block_size = block_size, max_workers = max_workers, expand_scale = expand_scale)
+    video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2  = model_handler.custom_preprocess(base_model_type = base_model_type, pre_video_guide = pre_video_guide, video_guide = video_guide, video_mask = video_mask, height = height, width = width, fit_canvas = fit_canvas , fit_crop = fit_crop, target_fps = target_fps,  block_size = block_size, max_workers = max_workers, expand_scale = expand_scale, video_prompt_type=video_prompt_type)
 
     # if pad_frames > 0:
     #     masked_frames = masked_frames[0] * pad_frames + masked_frames
@@ -5353,6 +5374,8 @@ def generate_video(
         gen["window_no"] = 1
         num_frames_generated = 0 # num of new frames created (lower than the number of frames really processed due to overlaps and discards)
         requested_frames_to_generate = default_requested_frames_to_generate # num  of num frames to create (if any source window this num includes also the overlapped source window frames)
+        cached_video_guide_processed = cached_video_mask_processed = cached_video_guide_processed2 = cached_video_mask_processed2 = None
+        cached_video_video_start_frame = cached_video_video_end_frame = -1
         start_time = time.time()
         if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0 and server_config.get("enhancer_mode", 0) == 0:
             send_cmd("progress", [0, get_latest_status(state, "Enhancing Prompt")])
@@ -5474,6 +5497,11 @@ def generate_video(
                 keep_frames_parsed += keep_frames_parsed_full[max(0, guide_frames_extract_start): aligned_guide_end_frame ] 
                 guide_frames_extract_count = len(keep_frames_parsed)
 
+                process_all = model_def.get("preprocess_all", False)
+                if process_all:
+                    guide_slice_to_extract  = guide_frames_extract_count
+                    guide_frames_extract_count = (-guide_frames_extract_start if guide_frames_extract_start  <0 else 0) +  len( keep_frames_parsed_full[max(0, guide_frames_extract_start):] )
+
                 # Extract Faces to video
                 if "B" in video_prompt_type:
                     send_cmd("progress", [0, get_latest_status(state, "Extracting Face Movements")])
@@ -5486,38 +5514,50 @@ def generate_video(
                 if "R" in video_prompt_type:
                     sparse_video_image = get_video_frame(video_guide, aligned_guide_start_frame, return_last_if_missing = True, target_fps = fps, return_PIL = True)
 
-                # Generic Video Preprocessing
-                process_outside_mask = process_map_outside_mask.get(filter_letters(video_prompt_type, "YWX"), None)
-                preprocess_type, preprocess_type2 =  "raw", None 
-                for process_num, process_letter in enumerate( filter_letters(video_prompt_type, video_guide_processes)):
-                    if process_num == 0:
-                        preprocess_type = process_map_video_guide.get(process_letter, "raw")
+                if not process_all or cached_video_video_start_frame < 0:
+                    # Generic Video Preprocessing
+                    process_outside_mask = process_map_outside_mask.get(filter_letters(video_prompt_type, "YWX"), None)
+                    preprocess_type, preprocess_type2 =  "raw", None 
+                    for process_num, process_letter in enumerate( filter_letters(video_prompt_type, video_guide_processes)):
+                        if process_num == 0:
+                            preprocess_type = process_map_video_guide.get(process_letter, "raw")
+                        else:
+                            preprocess_type2 = process_map_video_guide.get(process_letter, None)
+                    custom_preprocessor = model_def.get("custom_preprocessor", None) 
+                    if custom_preprocessor is not None:
+                        status_info = custom_preprocessor
+                        send_cmd("progress", [0, get_latest_status(state, status_info)])
+                        video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2 =  custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_guide, video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  block_size = block_size, expand_scale = mask_expand, video_prompt_type= video_prompt_type)
                     else:
-                        preprocess_type2 = process_map_video_guide.get(process_letter, None)
-                custom_preprocessor = model_def.get("custom_preprocessor", None) 
-                if custom_preprocessor is not None:
-                    status_info = custom_preprocessor
-                    send_cmd("progress", [0, get_latest_status(state, status_info)])
-                    video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2 =  custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_guide, video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  block_size = block_size, expand_scale = mask_expand)
-                else:
-                    status_info = "Extracting " + processes_names[preprocess_type]
-                    extra_process_list = ([] if preprocess_type2==None else [preprocess_type2]) + ([] if process_outside_mask==None or process_outside_mask == preprocess_type else [process_outside_mask])
-                    if len(extra_process_list) == 1:
-                        status_info += " and " + processes_names[extra_process_list[0]]
-                    elif len(extra_process_list) == 2:
-                        status_info +=  ", " + processes_names[extra_process_list[0]] + " and " + processes_names[extra_process_list[1]]
-                    context_scale = [control_net_weight /2, control_net_weight2 /2] if preprocess_type2 is not None else [control_net_weight]
+                        status_info = "Extracting " + processes_names[preprocess_type]
+                        extra_process_list = ([] if preprocess_type2==None else [preprocess_type2]) + ([] if process_outside_mask==None or process_outside_mask == preprocess_type else [process_outside_mask])
+                        if len(extra_process_list) == 1:
+                            status_info += " and " + processes_names[extra_process_list[0]]
+                        elif len(extra_process_list) == 2:
+                            status_info +=  ", " + processes_names[extra_process_list[0]] + " and " + processes_names[extra_process_list[1]]
+                        context_scale = [control_net_weight /2, control_net_weight2 /2] if preprocess_type2 is not None else [control_net_weight]
 
-                    if not (preprocess_type == "identity" and preprocess_type2 is None and video_mask is None):send_cmd("progress", [0, get_latest_status(state, status_info)])
-                    inpaint_color = 0 if preprocess_type=="pose" and process_outside_mask == "inpaint" else guide_inpaint_color
-                    video_guide_processed, video_mask_processed = preprocess_video_with_mask(video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type )
-                    if preprocess_type2 != None:
-                        video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type  )
+                        if not (preprocess_type == "identity" and preprocess_type2 is None and video_mask is None):send_cmd("progress", [0, get_latest_status(state, status_info)])
+                        inpaint_color = 0 if preprocess_type=="pose" and process_outside_mask == "inpaint" else guide_inpaint_color
+                        video_guide_processed, video_mask_processed = preprocess_video_with_mask(video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type )
+                        if preprocess_type2 != None:
+                            video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type  )
 
-                if video_guide_processed is not None  and sample_fit_canvas is not None:
-                    image_size = video_guide_processed.shape[-2:]
-                    sample_fit_canvas = None
+                    if video_guide_processed is not None  and sample_fit_canvas is not None:
+                        image_size = video_guide_processed.shape[-2:]
+                        sample_fit_canvas = None
 
+                    if process_all:
+                        cached_video_guide_processed, cached_video_mask_processed, cached_video_guide_processed2, cached_video_mask_processed2 = video_guide_processed, video_mask_processed, video_guide_processed2, video_mask_processed2
+                        cached_video_video_start_frame = guide_frames_extract_start
+
+                if process_all:
+                    process_slice = slice(guide_frames_extract_start - cached_video_video_start_frame, guide_frames_extract_start - cached_video_video_start_frame + guide_slice_to_extract  )
+                    video_guide_processed = None if cached_video_guide_processed is None else cached_video_guide_processed[:, process_slice] 
+                    video_mask_processed =  None if cached_video_mask_processed is None else cached_video_mask_processed[:, process_slice] 
+                    video_guide_processed2 =  None if cached_video_guide_processed2 is None else cached_video_guide_processed2[:, process_slice] 
+                    video_mask_processed2 = None if cached_video_mask_processed2 is None else cached_video_mask_processed2[:, process_slice] 
+                    
             if window_no == 1 and image_refs is not None and len(image_refs) > 0:
                 if sample_fit_canvas is not None and (nb_frames_positions > 0 or "K" in video_prompt_type) :
                     from shared.utils.utils import get_outpainting_full_area_dimensions
@@ -10401,6 +10441,10 @@ if __name__ == "__main__":
             if not os.path.isdir(args.output_dir):
                 os.makedirs(args.output_dir, exist_ok=True)
             server_config["save_path"] = args.output_dir
+            server_config["image_save_path"] = args.output_dir
+            # Keep module-level paths in sync (used by save_video / get_available_filename).
+            save_path = args.output_dir
+            image_save_path = args.output_dir
             print(f"Output directory: {args.output_dir}")
 
         # Create minimal state with all required fields

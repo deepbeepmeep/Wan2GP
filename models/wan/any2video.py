@@ -529,22 +529,25 @@ class WanAny2V:
         lucy_edit=  model_type in ["lucy_edit"]
         animate=  model_type in ["animate"]
         chrono_edit = model_type in ["chrono_edit"]
-        mocha = model_type in ["mocha"] 
-        steadydancer = model_type in ["steadydancer"] 
-        wanmove = model_type in ["wanmove"] 
+        mocha = model_type in ["mocha"]
+        steadydancer = model_type in ["steadydancer"]
+        wanmove = model_type in ["wanmove"]
+        scail = model_type in ["scail"] 
         start_step_no = 0
         ref_images_count = inner_latent_frames = 0
         trim_frames = 0
         last_latent_preview = False
         extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = None
-        no_noise_latents_injection = infinitetalk
+        # SCAIL uses a fixed ref latent frame that should not be noised.
+        no_noise_latents_injection = infinitetalk or scail
         timestep_injection = False
+        ps_t, ps_h, ps_w = self.model.patch_size
 
         lat_frames = int((frame_num - 1) // self.vae_stride[0]) + 1
         extended_input_dim = 0
         ref_images_before = False            
         # image2video 
-        if model_def.get("i2v_class", False) and not animate:
+        if model_def.get("i2v_class", False) and not (animate or scail):
             any_end_frame = False
             if infinitetalk:
                 new_shot = "0" in video_prompt_type
@@ -716,7 +719,59 @@ class WanAny2V:
             ref_images_before = True
             ref_images_count = 1
             lat_frames = int((input_frames.shape[1] - 1) // self.vae_stride[0]) + 1
-                        
+
+        # SCAIL - 3D pose-guided character animation
+        if scail:
+            pose_pixels = input_frames
+            image_ref = input_ref_images[0].to(self.device) if input_ref_images is not None else convert_image_to_tensor(pre_video_frame).unsqueeze(1).to(self.device)
+            insert_start_frames = window_start_frame_no + prefix_frames_count > 1
+            if insert_start_frames:
+                ref_latents = self.vae.encode([image_ref], VAE_tile_size)[0].unsqueeze(0)
+                start_frames = input_video.to(self.device)
+                color_reference_frame = input_video[:, :1].to(self.device)
+                start_latents = self.vae.encode([start_frames], VAE_tile_size)[0].unsqueeze(0)
+                extended_overlapped_latents = torch.cat([ref_latents, start_latents], dim=2)
+                start_latents = None
+            else:
+                # sigma = torch.exp(torch.normal(mean=-2.5, std=0.5, size=(1,), device=self.device)).to(image_ref.dtype)
+                sigma = torch.exp(torch.normal(mean=-5.0, std=0.5, size=(1,), device=self.device)).to(image_ref.dtype)
+                noisy_ref = image_ref + torch.randn_like(image_ref) * sigma
+                ref_latents = self.vae.encode([noisy_ref], VAE_tile_size)[0].unsqueeze(0)
+                extended_overlapped_latents = ref_latents
+
+            lat_h, lat_w = height // self.vae_stride[1], width // self.vae_stride[2]
+            pose_frames = pose_pixels.shape[1]
+            lat_t = int((pose_frames - 1) // self.vae_stride[0]) + 1
+            msk_ref = self.get_i2v_mask(lat_h, lat_w, nb_frames_unchanged=1, lat_t=1, device=self.device)
+            msk_control = self.get_i2v_mask(lat_h, lat_w, nb_frames_unchanged=prefix_frames_count if insert_start_frames else 0, lat_t=lat_t, device=self.device)
+            y = torch.concat([msk_ref, msk_control], dim=1)
+            # Downsample pose video by 0.5x before VAE encoding (matches `smpl_downsample` in upstream configs)
+            pose_pixels_ds = pose_pixels.permute(1, 0, 2, 3)
+            toto = [pose_pixels]
+            pose_pixels_ds = F.interpolate( pose_pixels_ds, size=(max(1, pose_pixels.shape[-2] // 2), max(1, pose_pixels.shape[-1] // 2)), mode="bilinear", align_corners=False, ).permute(1, 0, 2, 3)
+            pose_latents = self.vae.encode([pose_pixels_ds], VAE_tile_size)[0].unsqueeze(0)
+
+            clip_image_start = image_ref.squeeze(1)
+            kwargs.update({"y": y, "scail_pose_latents": pose_latents, "ref_images_count": 1})
+
+            pose_grid_t = pose_latents.shape[2] // ps_t
+            pose_rope_h = lat_h // ps_h
+            pose_rope_w = lat_w // ps_w
+            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed( (ref_images_count, 0, 120), (ref_images_count + pose_grid_t, pose_rope_h, 120 + pose_rope_w), (pose_grid_t, pose_rope_h, pose_rope_w), L_test = lat_t, enable_riflex = enable_RIFLEx)
+
+            head_dim = pose_freqs_cos.shape[1]
+            pose_freqs_cos = pose_freqs_cos.view(pose_grid_t, pose_rope_h, pose_rope_w, head_dim).permute(0, 3, 1, 2)
+            pose_freqs_sin = pose_freqs_sin.view(pose_grid_t, pose_rope_h, pose_rope_w, head_dim).permute(0, 3, 1, 2)
+
+            pose_freqs_cos = F.avg_pool2d(pose_freqs_cos, kernel_size=2, stride=2).permute(0, 2, 3, 1).reshape(-1, head_dim)
+            pose_freqs_sin = F.avg_pool2d(pose_freqs_sin, kernel_size=2, stride=2).permute(0, 2, 3, 1).reshape(-1, head_dim)
+            post_freqs = (pose_freqs_cos, pose_freqs_sin)
+
+            pose_pixels = pose_pixels_ds = pose_freqs_cos_full =  None
+            ref_images_before = True
+            ref_images_count = 1
+            lat_frames = lat_t
+
         # Clip image
         if hasattr(self, "clip") and clip_image_start is not None:                                   
             clip_image_size = self.clip.model.image_size
@@ -925,6 +980,9 @@ class WanAny2V:
             freqs = get_rotary_pos_embed(shape, enable_RIFLEx= False) 
         else:
             freqs = get_rotary_pos_embed( (target_shape[1]+ inner_latent_frames ,) + target_shape[2:] , enable_RIFLEx= enable_RIFLEx) 
+
+        if post_freqs is not None:
+            freqs = ( torch.cat([freqs[0], post_freqs[0]]), torch.cat([freqs[1], post_freqs[1]]) )
 
         kwargs["freqs"] = freqs
 
@@ -1230,6 +1288,8 @@ class WanAny2V:
         clear()
         if timestep_injection:
             latents[:, :, :source_latents.shape[2]] = source_latents
+        if extended_overlapped_latents != None:
+            latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents 
 
         if ref_images_before and ref_images_count > 0: latents = latents[:, :, ref_images_count:]
         if trim_frames > 0:  latents=  latents[:, :,:-trim_frames]
@@ -1297,4 +1357,3 @@ class WanAny2V:
             if len(preloadURLs) > model_mode: 
                 return [fl.locate_file(os.path.basename(preloadURLs[model_mode]))] , [1]
         return [], []
-

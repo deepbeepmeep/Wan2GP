@@ -36,6 +36,7 @@ from shared.utils.basic_flowmatch import FlowMatchScheduler
 from shared.utils.lcm_scheduler import LCMScheduler
 from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
+from .wanmove.trajectory import replace_feature, create_pos_feature_map
 from shared.utils.audio_video import save_video
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
@@ -372,6 +373,7 @@ class WanAny2V:
         input_video = None,
         image_start = None,
         image_end = None,
+        input_custom = None,
         denoising_strength = 1.0,
         masking_strength = 1.0,
         target_camera=None,                  
@@ -432,7 +434,7 @@ class WanAny2V:
         face_arc_embeds = None,
         control_scale_alt = 1.,
         motion_amplitude = 1.,
-        full_prefix_video = None,
+        window_start_frame_no = 0,
         **bbargs
                 ):
         
@@ -527,21 +529,25 @@ class WanAny2V:
         lucy_edit=  model_type in ["lucy_edit"]
         animate=  model_type in ["animate"]
         chrono_edit = model_type in ["chrono_edit"]
-        mocha = model_type in ["mocha"] 
-        steadydancer = model_type in ["steadydancer"] 
+        mocha = model_type in ["mocha"]
+        steadydancer = model_type in ["steadydancer"]
+        wanmove = model_type in ["wanmove"]
+        scail = model_type in ["scail"] 
         start_step_no = 0
         ref_images_count = inner_latent_frames = 0
         trim_frames = 0
         last_latent_preview = False
-        extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = None
-        no_noise_latents_injection = infinitetalk
+        extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = post_freqs = None
+        # SCAIL uses a fixed ref latent frame that should not be noised.
+        no_noise_latents_injection = infinitetalk or scail
         timestep_injection = False
+        ps_t, ps_h, ps_w = self.model.patch_size
 
         lat_frames = int((frame_num - 1) // self.vae_stride[0]) + 1
         extended_input_dim = 0
         ref_images_before = False            
         # image2video 
-        if model_def.get("i2v_class", False) and not animate:
+        if model_def.get("i2v_class", False) and not (animate or scail):
             any_end_frame = False
             if infinitetalk:
                 new_shot = "0" in video_prompt_type
@@ -644,6 +650,19 @@ class WanAny2V:
             lat_y = None
             kwargs.update({ 'y': y})
 
+        # Wan-Move
+        if wanmove:
+            track = np.load(input_custom)
+            if track.ndim == 4: track = track.squeeze(0)
+            if track.max() <= 1:
+                track = np.round(track * [width, height]).astype(np.int64)
+            control_video_pos= 0 if "T" in video_prompt_type else window_start_frame_no
+            track = torch.from_numpy(track[control_video_pos:control_video_pos+frame_num]).to(self.device)
+            track_feats, track_pos = create_pos_feature_map(track, None, [4, 8, 8], height, width, 16, device=y.device)
+            track_feats = None #track_feats.permute(3, 0, 1, 2)
+            y_cond = kwargs.pop("y")
+            y_uncond = y_cond.clone()
+            y_cond[4:20] = replace_feature(y[4:20].unsqueeze(0), track_pos.unsqueeze(0))[0]
 
         # Steady Dancer
         if steadydancer:
@@ -700,7 +719,59 @@ class WanAny2V:
             ref_images_before = True
             ref_images_count = 1
             lat_frames = int((input_frames.shape[1] - 1) // self.vae_stride[0]) + 1
-                        
+
+        # SCAIL - 3D pose-guided character animation
+        if scail:
+            pose_pixels = input_frames
+            image_ref = input_ref_images[0].to(self.device) if input_ref_images is not None else convert_image_to_tensor(pre_video_frame).unsqueeze(1).to(self.device)
+            insert_start_frames = window_start_frame_no + prefix_frames_count > 1
+            if insert_start_frames:
+                ref_latents = self.vae.encode([image_ref], VAE_tile_size)[0].unsqueeze(0)
+                start_frames = input_video.to(self.device)
+                color_reference_frame = input_video[:, :1].to(self.device)
+                start_latents = self.vae.encode([start_frames], VAE_tile_size)[0].unsqueeze(0)
+                extended_overlapped_latents = torch.cat([ref_latents, start_latents], dim=2)
+                start_latents = None
+            else:
+                # sigma = torch.exp(torch.normal(mean=-2.5, std=0.5, size=(1,), device=self.device)).to(image_ref.dtype)
+                sigma = torch.exp(torch.normal(mean=-5.0, std=0.5, size=(1,), device=self.device)).to(image_ref.dtype)
+                noisy_ref = image_ref + torch.randn_like(image_ref) * sigma
+                ref_latents = self.vae.encode([noisy_ref], VAE_tile_size)[0].unsqueeze(0)
+                extended_overlapped_latents = ref_latents
+
+            lat_h, lat_w = height // self.vae_stride[1], width // self.vae_stride[2]
+            pose_frames = pose_pixels.shape[1]
+            lat_t = int((pose_frames - 1) // self.vae_stride[0]) + 1
+            msk_ref = self.get_i2v_mask(lat_h, lat_w, nb_frames_unchanged=1, lat_t=1, device=self.device)
+            msk_control = self.get_i2v_mask(lat_h, lat_w, nb_frames_unchanged=prefix_frames_count if insert_start_frames else 0, lat_t=lat_t, device=self.device)
+            y = torch.concat([msk_ref, msk_control], dim=1)
+            # Downsample pose video by 0.5x before VAE encoding (matches `smpl_downsample` in upstream configs)
+            pose_pixels_ds = pose_pixels.permute(1, 0, 2, 3)
+            toto = [pose_pixels]
+            pose_pixels_ds = F.interpolate( pose_pixels_ds, size=(max(1, pose_pixels.shape[-2] // 2), max(1, pose_pixels.shape[-1] // 2)), mode="bilinear", align_corners=False, ).permute(1, 0, 2, 3)
+            pose_latents = self.vae.encode([pose_pixels_ds], VAE_tile_size)[0].unsqueeze(0)
+
+            clip_image_start = image_ref.squeeze(1)
+            kwargs.update({"y": y, "scail_pose_latents": pose_latents, "ref_images_count": 1})
+
+            pose_grid_t = pose_latents.shape[2] // ps_t
+            pose_rope_h = lat_h // ps_h
+            pose_rope_w = lat_w // ps_w
+            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed( (ref_images_count, 0, 120), (ref_images_count + pose_grid_t, pose_rope_h, 120 + pose_rope_w), (pose_grid_t, pose_rope_h, pose_rope_w), L_test = lat_t, enable_riflex = enable_RIFLEx)
+
+            head_dim = pose_freqs_cos.shape[1]
+            pose_freqs_cos = pose_freqs_cos.view(pose_grid_t, pose_rope_h, pose_rope_w, head_dim).permute(0, 3, 1, 2)
+            pose_freqs_sin = pose_freqs_sin.view(pose_grid_t, pose_rope_h, pose_rope_w, head_dim).permute(0, 3, 1, 2)
+
+            pose_freqs_cos = F.avg_pool2d(pose_freqs_cos, kernel_size=2, stride=2).permute(0, 2, 3, 1).reshape(-1, head_dim)
+            pose_freqs_sin = F.avg_pool2d(pose_freqs_sin, kernel_size=2, stride=2).permute(0, 2, 3, 1).reshape(-1, head_dim)
+            post_freqs = (pose_freqs_cos, pose_freqs_sin)
+
+            pose_pixels = pose_pixels_ds = pose_freqs_cos_full =  None
+            ref_images_before = True
+            ref_images_count = 1
+            lat_frames = lat_t
+
         # Clip image
         if hasattr(self, "clip") and clip_image_start is not None:                                   
             clip_image_size = self.clip.model.image_size
@@ -773,7 +844,8 @@ class WanAny2V:
                 # save_video(image_mask_latents.squeeze(0), "mama.mp4", value_range=(0,1) )
                 # image_mask_rebuilt = image_mask_latents.repeat_interleave(8, dim=-1).repeat_interleave(8, dim=-2).unsqueeze(0)
                 masked_steps = math.ceil(sampling_steps * masking_strength)
-
+        else:
+            denoising_strength = 1
         # Phantom
         if phantom:
             lat_input_ref_images_neg = None
@@ -908,6 +980,9 @@ class WanAny2V:
             freqs = get_rotary_pos_embed(shape, enable_RIFLEx= False) 
         else:
             freqs = get_rotary_pos_embed( (target_shape[1]+ inner_latent_frames ,) + target_shape[2:] , enable_RIFLEx= enable_RIFLEx) 
+
+        if post_freqs is not None:
+            freqs = ( torch.cat([freqs[0], post_freqs[0]]), torch.cat([freqs[1], post_freqs[1]]) )
 
         kwargs["freqs"] = freqs
 
@@ -1049,6 +1124,12 @@ class WanAny2V:
                     "context" : [context, context_null],
                     # "face_pixel_values": [face_pixel_values, None]
                     "face_pixel_values": [face_pixel_values, face_pixel_values] # seems to look better this way
+                }
+            elif wanmove:
+                gen_args = {
+                    "x" : [latent_model_input, latent_model_input],
+                    "context" : [context, context_null],
+                    "y" : [y_cond, y_uncond],
                 }
             elif lynx:
                 gen_args = {
@@ -1207,6 +1288,8 @@ class WanAny2V:
         clear()
         if timestep_injection:
             latents[:, :, :source_latents.shape[2]] = source_latents
+        if extended_overlapped_latents != None:
+            latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents 
 
         if ref_images_before and ref_images_count > 0: latents = latents[:, :, ref_images_count:]
         if trim_frames > 0:  latents=  latents[:, :,:-trim_frames]
@@ -1243,7 +1326,7 @@ class WanAny2V:
         else:
             videos = videos[0] # return only first video
             if any_vae2: videos2 = videos2[0] # return only first video
-        if color_correction_strength > 0 and not ( window_no == 1 and (full_prefix_video is None or full_prefix_video.shape[1]<= 1) ):
+        if color_correction_strength > 0 and (window_start_frame_no + prefix_frames_count) >1:
             if vace and False:
                 # videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), input_frames[0].unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "progressive_blend").squeeze(0)
                 videos = match_and_blend_colors_with_mask(videos.unsqueeze(0), input_frames[0].unsqueeze(0), input_masks[0][:1].unsqueeze(0), color_correction_strength,copy_mode= "reference").squeeze(0)
@@ -1274,4 +1357,3 @@ class WanAny2V:
             if len(preloadURLs) > model_mode: 
                 return [fl.locate_file(os.path.basename(preloadURLs[model_mode]))] , [1]
         return [], []
-

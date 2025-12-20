@@ -74,6 +74,8 @@ class AdvancedMediaGallery:
 
     def _normalize_initial(self, items: Sequence[Union[FilePath, ImageLike]], mode: str) -> List[Any]:
         out: List[Any] = []
+        if not isinstance(items, list):
+            items = [items]
         if mode == "image":
             for it in items:
                 p = self._ensure_image_item(it)

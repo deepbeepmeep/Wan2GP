@@ -282,6 +282,197 @@ def get_schedule_flux2(num_steps: int, image_seq_len: int) -> list[float]:
     return timesteps.tolist()
 
 
+def get_schedule_piflux2(num_steps: int, image_seq_len: int) -> list[float]:
+    """
+    pi-FLUX.2 FlowMapSDE schedule with shift=3.2 and final_step_size_scale=0.5.
+    """
+    if num_steps <= 0:
+        return [0.0]
+    shift = 3.2
+    final_step_size_scale = 0.5
+    end = (final_step_size_scale - 1.0) / (num_steps + final_step_size_scale - 1.0)
+    step = (end - 1.0) / num_steps
+    raw_timesteps = 1.0 + step * torch.arange(num_steps, dtype=torch.float32)
+    raw_timesteps = raw_timesteps.clamp(min=0)
+    sigmas = shift * raw_timesteps / (1 + (shift - 1) * raw_timesteps)
+    sigmas = torch.cat([sigmas, torch.zeros(1, dtype=sigmas.dtype)])
+    return sigmas.tolist()
+
+
+def _flow_map_sde_warp_t(raw_t: Tensor, shift: float) -> Tensor:
+    return shift * raw_t / (1 + (shift - 1) * raw_t)
+
+
+def _flow_map_sde_unwarp_t(sigma_t: Tensor, shift: float) -> Tensor:
+    return sigma_t / (shift + (1 - shift) * sigma_t)
+
+
+def _flow_map_sde_calculate_sigmas_dst(
+    sigmas: Tensor, h: float = 0.0, eps: float = 1e-6
+) -> tuple[Tensor, Tensor]:
+    sigmas_src = sigmas[:-1]
+    sigmas_to = sigmas[1:]
+    alphas_src = 1 - sigmas_src
+    alphas_to = 1 - sigmas_to
+
+    if h <= 0.0:
+        m_vals = torch.ones_like(sigmas_src)
+    else:
+        h2 = h * h
+        m_vals = (sigmas_to * alphas_src / (sigmas_src * alphas_to).clamp(min=eps)) ** h2
+
+    sigmas_to_mul_m = sigmas_to * m_vals
+    sigmas_dst = sigmas_to_mul_m / (alphas_to + sigmas_to_mul_m).clamp(min=eps)
+    return sigmas_dst, m_vals
+
+
+def _gmflow_posterior_mean(
+    sigma_t_src: Tensor,
+    sigma_t: Tensor,
+    x_t_src: Tensor,
+    x_t: Tensor,
+    gm_means: Tensor,
+    gm_vars: Tensor,
+    gm_logweights: Tensor,
+    *,
+    eps: float = 1e-6,
+    gm_dim: int = -4,
+    channel_dim: int = -3,
+) -> Tensor:
+    sigma_t_src = sigma_t_src.clamp(min=eps)
+    sigma_t = sigma_t.clamp(min=eps)
+
+    alpha_t_src = 1 - sigma_t_src
+    alpha_t = 1 - sigma_t
+
+    alpha_over_sigma_t_src = alpha_t_src / sigma_t_src
+    alpha_over_sigma_t = alpha_t / sigma_t
+
+    zeta = alpha_over_sigma_t.square() - alpha_over_sigma_t_src.square()
+    nu = alpha_over_sigma_t * x_t / sigma_t - alpha_over_sigma_t_src * x_t_src / sigma_t_src
+
+    nu = nu.unsqueeze(gm_dim)
+    zeta = zeta.unsqueeze(gm_dim)
+    denom = (gm_vars * zeta + 1).clamp(min=eps)
+
+    out_means = (gm_vars * nu + gm_means) / denom
+    logweights_delta = (gm_means * (nu - 0.5 * zeta * gm_means)).sum(dim=channel_dim, keepdim=True) / denom
+    out_weights = (gm_logweights + logweights_delta).softmax(dim=gm_dim)
+
+    return (out_means * out_weights).sum(dim=gm_dim)
+
+
+class _GMFlowPolicy:
+    def __init__(
+        self,
+        denoising_output: dict[str, Tensor],
+        x_t_src: Tensor,
+        sigma_t_src: Tensor,
+        eps: float = 1e-4,
+    ) -> None:
+        self.x_t_src = x_t_src
+        self.ndim = x_t_src.dim()
+        self.eps = eps
+        self.sigma_t_src = sigma_t_src.reshape(
+            *sigma_t_src.size(), *((self.ndim - sigma_t_src.dim()) * [1])
+        )
+        self.denoising_output_x_0 = self._u_to_x_0(denoising_output, self.x_t_src, self.sigma_t_src)
+
+    @staticmethod
+    def _u_to_x_0(denoising_output: dict[str, Tensor], x_t: Tensor, sigma_t: Tensor) -> dict[str, Tensor]:
+        x_t = x_t.unsqueeze(1)
+        sigma_t = sigma_t.unsqueeze(1)
+        means_x_0 = x_t - sigma_t * denoising_output["means"]
+        gm_vars = (denoising_output["logstds"] * 2).exp() * sigma_t.square()
+        return {"means": means_x_0, "gm_vars": gm_vars, "logweights": denoising_output["logweights"]}
+
+    def pi(self, x_t: Tensor, sigma_t: Tensor) -> Tensor:
+        sigma_t = sigma_t.reshape(*sigma_t.size(), *((self.ndim - sigma_t.dim()) * [1]))
+        means = self.denoising_output_x_0["means"]
+        gm_vars = self.denoising_output_x_0["gm_vars"]
+        logweights = self.denoising_output_x_0["logweights"]
+
+        if (sigma_t == self.sigma_t_src).all() and (x_t == self.x_t_src).all():
+            x_0 = (logweights.softmax(dim=1) * means).sum(dim=1)
+        else:
+            x_0 = _gmflow_posterior_mean(
+                self.sigma_t_src,
+                sigma_t,
+                self.x_t_src,
+                x_t,
+                means,
+                gm_vars,
+                logweights,
+                eps=self.eps,
+            )
+        return (x_t - x_0) / sigma_t.clamp(min=self.eps)
+
+    def temperature_(self, temperature: float) -> None:
+        if temperature >= 1.0:
+            return
+        temperature = max(temperature, self.eps)
+        gm = self.denoising_output_x_0
+        gm["logweights"] = (gm["logweights"] / temperature).log_softmax(dim=1)
+        gm["gm_vars"] = gm["gm_vars"] * temperature
+
+
+def _policy_rollout(
+    x_t_start: Tensor,
+    sigma_t_start: Tensor,
+    sigma_t_end: Tensor,
+    total_substeps: int,
+    policy: _GMFlowPolicy,
+    *,
+    shift: float = 3.2,
+) -> Tensor:
+    num_batches = x_t_start.size(0)
+    ndim = x_t_start.dim()
+    sigma_t_start = sigma_t_start.reshape(num_batches, *((ndim - 1) * [1]))
+    sigma_t_end = sigma_t_end.reshape(num_batches, *((ndim - 1) * [1]))
+
+    raw_t_start = _flow_map_sde_unwarp_t(sigma_t_start, shift)
+    raw_t_end = _flow_map_sde_unwarp_t(sigma_t_end, shift)
+    delta_raw_t = raw_t_start - raw_t_end
+    num_substeps = (delta_raw_t * total_substeps).round().to(torch.long).clamp(min=1)
+    substep_size = delta_raw_t / num_substeps
+    max_num_substeps = num_substeps.max()
+
+    raw_t = raw_t_start
+    sigma_t = sigma_t_start
+    x_t = x_t_start
+
+    for substep_id in range(max_num_substeps.item()):
+        u = policy.pi(x_t, sigma_t)
+        raw_t_minus = (raw_t - substep_size).clamp(min=0)
+        sigma_t_minus = _flow_map_sde_warp_t(raw_t_minus, shift)
+        x_t_minus = x_t + u * (sigma_t_minus - sigma_t)
+        active_mask = num_substeps > substep_id
+        x_t = torch.where(active_mask, x_t_minus, x_t)
+        sigma_t = torch.where(active_mask, sigma_t_minus, sigma_t)
+        raw_t = torch.where(active_mask, raw_t_minus, raw_t)
+
+    return x_t
+
+
+def _unpack_latent_piflux2(x: Tensor, patch_size: int = 2) -> Tensor:
+    bsz, packed_channels, h, w = x.shape
+    channels = packed_channels // (patch_size * patch_size)
+    x = x.view(bsz, channels, patch_size, patch_size, h, w)
+    x = x.permute(0, 1, 4, 2, 5, 3).reshape(bsz, channels, h * patch_size, w * patch_size)
+    return x
+
+
+def _pack_latent_piflux2(x: Tensor, patch_size: int = 2) -> Tensor:
+    bsz, channels, h, w = x.shape
+    h_packed = h // patch_size
+    w_packed = w // patch_size
+    x = x.view(bsz, channels, h_packed, patch_size, w_packed, patch_size)
+    x = x.permute(0, 1, 3, 5, 2, 4).reshape(
+        bsz, channels * patch_size * patch_size, h_packed, w_packed
+    )
+    return x
+
+
 def compute_empirical_mu(image_seq_len: int, num_steps: int) -> float:
     a1, b1 = 8.73809524e-05, 1.89833333
     a2, b2 = 0.00016927, 0.45666666
@@ -330,6 +521,7 @@ def denoise(
     timesteps: list[float],
     guidance: float = 4.0,
     real_guidance_scale = None,
+    final_step_size_scale: float | None = None,
     # extra img tokens (channel-wise)
     neg_txt: Tensor = None,
     neg_txt_ids: Tensor= None,
@@ -351,6 +543,10 @@ def denoise(
     masking_strength = 1,
     preview_meta = None,
     original_image_latents = None,
+    # pi-Flow settings
+    piflow_substeps: int = 128,
+    piflow_generator: torch.Generator | None = None,
+    piflow_gm_temperature: float | None = None,
 ):
 
     kwargs = {
@@ -365,6 +561,9 @@ def denoise(
         callback(-1, None, True)
 
     original_timesteps = timesteps
+    is_piflow = getattr(model, "piflow", False)
+    piflow_spatial_h = piflow_spatial_w = None
+    piflow_sigmas = piflow_sigmas_dst = piflow_m_vals = None
     
     morph, first_step = False, 0
     if img_msk_latents is not None:
@@ -381,6 +580,11 @@ def denoise(
             timesteps = timesteps[first_step:]
 
 
+    if is_piflow:
+        base_img_ids = img_ids[:, :img.shape[1]]
+        piflow_spatial_h = int(base_img_ids[..., 1].max().item() + 1)
+        piflow_spatial_w = int(base_img_ids[..., 2].max().item() + 1)
+
     updated_num_steps= len(timesteps) -1
     if callback != None:
         from shared.utils.loras_mutipliers import update_loras_slists
@@ -389,6 +593,15 @@ def denoise(
     from mmgp import offload
     # this is ignored for schnell
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
+    if is_piflow and len(timesteps) > 1:
+        piflow_sigmas = torch.tensor(timesteps, device=img.device, dtype=torch.float32)
+        piflow_sigmas_dst, piflow_m_vals = _flow_map_sde_calculate_sigmas_dst(
+            piflow_sigmas, h=0.0
+        )
+        if piflow_gm_temperature is None:
+            nfe = len(timesteps) - 1
+            piflow_gm_temperature = min(max(0.1 * (nfe - 1), 0.0), 1.0)
+
     for i, (t_curr, t_prev) in enumerate(zip(timesteps[:-1], timesteps[1:])):
         offload.set_step_no_for_lora(model, first_step  + i)
         if pipeline._interrupt:
@@ -443,10 +656,57 @@ def denoise(
             )
             if pred == None: return None
 
-        if real_guidance_scale > 1:
-            pred = neg_pred + real_guidance_scale * (pred - neg_pred)
+        if is_piflow and isinstance(pred, dict):
+            if real_guidance_scale > 1:
+                pred = {k: neg_pred[k] + real_guidance_scale * (pred[k] - neg_pred[k]) for k in pred}
 
-        img += (t_prev - t_curr) * pred
+            patch_size = getattr(model, "piflow_patch_size", 2)
+            img_packed = rearrange(
+                img, "b (h w) c -> b c h w", h=piflow_spatial_h, w=piflow_spatial_w
+            )
+            img_unpacked = _unpack_latent_piflux2(img_packed, patch_size=patch_size).float()
+            pred = {k: v.float() for k, v in pred.items()}
+
+            sigma_t_src = piflow_sigmas[i].expand(img.shape[0])
+            sigma_t_dst = piflow_sigmas_dst[i].expand(img.shape[0])
+            policy = _GMFlowPolicy(pred, img_unpacked, sigma_t_src)
+            if (
+                piflow_gm_temperature is not None
+                and i != len(timesteps) - 2
+                and piflow_gm_temperature < 1.0
+            ):
+                policy.temperature_(piflow_gm_temperature)
+            img_unpacked = _policy_rollout(
+                img_unpacked,
+                sigma_t_src,
+                sigma_t_dst,
+                total_substeps=piflow_substeps,
+                policy=policy,
+                shift=3.2,
+            )
+
+            sigma_t_to = piflow_sigmas[i + 1]
+            m = piflow_m_vals[i]
+            alpha_t_to = 1 - sigma_t_to
+            if not torch.allclose(m, torch.ones_like(m)):
+                if piflow_generator is not None and img_unpacked.device.type == "cpu":
+                    noise = torch.randn_like(img_unpacked, generator=piflow_generator)
+                else:
+                    noise = torch.randn(img_unpacked.shape, device=img_unpacked.device, dtype=img_unpacked.dtype)
+                img_unpacked = (alpha_t_to + sigma_t_to * m) * img_unpacked + sigma_t_to * (
+                    1 - m.square()
+                ).clamp(min=0).sqrt() * noise
+
+            img_packed = _pack_latent_piflux2(img_unpacked, patch_size=patch_size)
+            img = rearrange(img_packed, "b c h w -> b (h w) c").to(img.dtype)
+        else:
+            if real_guidance_scale > 1:
+                pred = neg_pred + real_guidance_scale * (pred - neg_pred)
+
+            step_size = t_prev - t_curr
+            if final_step_size_scale is not None and i == len(timesteps) - 2:
+                step_size = step_size * final_step_size_scale
+            img += step_size * pred
 
         if img_msk_latents is not None and i < masked_steps:
             latent_noise_factor = t_prev

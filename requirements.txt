@@ -43,6 +43,10 @@ timm
 insightface @ https://github.com/deepbeepmeep/insightface/raw/refs/heads/master/wheels/insightface-0.7.3-cp310-cp310-win_amd64.whl ; sys_platform == "win32" and python_version == "3.10"
 insightface==0.7.3 ; sys_platform == "linux"
 facexlib==0.3.0
+taichi
+# chumpy wheel hosted on GitHub to avoid sdist build isolation issue
+chumpy @ https://github.com/deepbeepmeep/chumpy/releases/download/v0.71/chumpy-0.71-py3-none-any.whl
+smplfitter==0.2.10
 
 # Config & orchestration
 omegaconf

@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Z-Image Turbo Fun ControlNet 6B",
+        "name": "Z-Image Turbo Fun ControlNet v1 6B",
         "architecture": "z_image_control",
         "modules": [
             [
@@ -11,6 +11,7 @@
         "description": "Z-Image Turbo with ControlNet Union supporting Pose, Canny, Depth, and Scribble control types.",
         "URLs": "z_image"
     },
+    "resolution": "1024x1024",	
     "batch_size": 1,
     "num_inference_steps": 9,
     "guidance_scale": 0,

@@ -27,12 +27,18 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
         bin_dir = Path(bin_directory)
 
     bin_dir.mkdir(parents=True, exist_ok=True)
+    repo_root = bin_dir.parent
 
     def _ensure_bin_dir_on_path():
         current_path = os.environ.get("PATH", "")
         path_parts = current_path.split(os.pathsep) if current_path else []
-        if str(bin_dir) not in path_parts:
-            os.environ["PATH"] = os.pathsep.join([str(bin_dir)] + path_parts) if current_path else str(bin_dir)
+        dirs_to_add = []
+        # Add ffmpeg_bins and repo root to PATH
+        for d in [bin_dir, repo_root]:
+            if str(d) not in path_parts:
+                dirs_to_add.append(str(d))
+        if dirs_to_add:
+            os.environ["PATH"] = os.pathsep.join(dirs_to_add + path_parts)
 
     def _ensure_library_path():
         if os.name == "nt":
@@ -51,9 +57,16 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
         return name
 
     def _resolve_path(name: str) -> typing.Optional[Path]:
+        # Check ffmpeg_bins folder first
         candidate = bin_dir / _candidate_name(name)
         if candidate.exists():
             return candidate
+        # Check repo root folder (some users put ffmpeg there)
+        repo_root = bin_dir.parent
+        candidate_root = repo_root / _candidate_name(name)
+        if candidate_root.exists():
+            return candidate_root
+        # Fall back to system PATH
         resolved = shutil.which(name)
         return Path(resolved) if resolved else None
 

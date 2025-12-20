@@ -36,22 +36,50 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
+### December 19 2025: WanGP v9.9, Early Christmas
 
-### December 5 2025: WanGP v9.81, Simple Pleasures...
+- **SCAIL Preview**: enjoy this *Wan Animate*, *Steady Dancer* contender that can support multiple people. Thanks to its 3D positioning, it can take into account which parts of the body are hidden and which are not. 
+
+WanGP version has the following perks: 3D pose Preprocessing entirely rewritten to be fast,  and compatible with any pytorch version, very Low VRAM requirements for multicharacters, experimental long gen mode / sliding windows (SCAIL Preview doesnt  support officialy long gen yet)
+
+- **pi-Flux 2**: you don't use Flux 2 because you find it too slow ? You won't be able to use this excuse anymore: pi-Flux 2 is *4 steps distills* of the best image generator. It supports both image edition and text to image generation.
+
+- **loras accelerator**: *loras accelerator* for *Qwen* and *Wan i2v* have been added (activable using the *Profile settings* as usual) 
+
+### December 14 2025: WanGP v9.86, Simple Pleasures...
 
 These two features are going to change the life of many people:
 - **Pause Button**: ever had a urge to use your GPU for a very important task that can't wait (a game for instance ?), here comes your new friend the *Pause* button. Not only it will suspend the current gen in progress but it will free most of the VRAM used by WanGP (please note that the RAM by WanGP used wont be released). When you are done just click the *Resume* button to restart exactly from where you stopped.
 
 - **WanGP Headless**:  trouble running remotely WanGP or having some stability issues with Gradio or your Web Browser. This is all past thanks to *WanGP Headless* mode. Here is how it works : first make you shopping list of Video Gen using the classic WanGP gradio interface. When you are done, click the *Save Queue* button and quit WanGP.
 
-- **Hunyuan Video 1.5 i2v distilled** : for those in need of their daily dose of new models, added *Hunyuan Video 1.5 i2v Distilled* (official release) + Lora Accelerator extracted from it (to be used in future finetunes). Also added *Magcache* support (optimized for 20 steps) for Hunyuan Video 1.5.
-
 Then in your terminal window just write this:
 ```bash
 python wgp.py --process my_queue.zip
 ```
+With WanGP 9.82, you can also process settings file (.json file exported using th *Export Settings* button):
+```bash
+python wgp.py --process my_settings.json
+```
+Processing Settings can be useful to do some quick gen / testing if you don't need to provide source image files (otherwise you will need to fill the paths to Start Images, Ref Image, ...)
 
-*update 9.81*: added Hunyuan Video 1.5 i2v distilled + magcache
+- **Output Filename Customization**: in the *Misc* tab you can now customize how the file names of new Generation are created, for example:
+```
+{date(YYYY-MM-DD_HH-mm-ss)}_{seed}_{prompt(50)}, {num_inference_steps}
+```
+
+- **Hunyuan Video 1.5 i2v distilled** : for those in need of their daily dose of new models, added *Hunyuan Video 1.5 i2v Distilled* (official release) + Lora Accelerator extracted from it (to be used in future finetunes). Also added *Magcache* support (optimized for 20 steps) for Hunyuan Video 1.5.
+
+- **Wan-Move** : Another model specialized to control motion using a *Start Image* and *Trajectories*. According to the author's paper it is the best one. *Motion Designer* has been upgraded to generate also trajectories for *Wan-Move*.
+
+- **Z-Image Control Net v2** : This is an upgrade of Z-Image Control Net. It offers much better results but requires much more processing an VRAM. But don't panic yet, as it was VRAM optimized. It was not an easy trick as this one is complex. It has also Inpainting support,but I need more info to release this feature.
+
+*update 9.81*: added Hunyuan Video 1.5 i2v distilled + magcache\
+*update 9.82*: added Settings headless processing, output file customization, refactored Task edition and queue processing\
+*update 9.83*: Qwen Edit+ upgraded: no more any zoom out at 1080p, enabled mask, enabled image refs with inpainting\
+*update 9.84*: added Wan-Move support\
+*update 9.85*: added Z-Image Control net v2\
+*update 9.86*: added NAG support for Z-Image
 
 ### December 4 2025: WanGP v9.74, The Alpha & the Omega ... and the Dancer
 
@@ -73,9 +101,9 @@ I have added a new Memory Profile *Profile 4+* that is sligthly slower than *Pro
 
 Also as we have now quite few models and Loras folders. *I have moved all the loras folder in the 'loras' folder*. There are also now unique subfolders for *Wan 5B* and *Wan 1.3B* models. A conversion script should have moved the loras in the right locations, but I advise that you check just in case.
 
-*update 9.71* : added missing source file, have fun !
-*update 9.72* : added Z-Image & Loras reorg
-*update 9.73* : added Steady Dancer
+*update 9.71* : added missing source file, have fun !\
+*update 9.72* : added Z-Image & Loras reorg\
+*update 9.73* : added Steady Dancer\
 *update 9.74* : added Z-Image Fun Control Net & Flux 2 Control Net + Masking
 
 ### November 24 2025: WanGP v9.62, The Return of the King

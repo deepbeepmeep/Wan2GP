@@ -6,7 +6,7 @@ from glob import iglob
 from mmgp import offload as offload
 import torch
 from shared.utils.utils import calculate_new_dimensions
-from .sampling import denoise, get_schedule, get_schedule_flux2, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack, resizeinput, patches_to_image, build_mask
+from .sampling import denoise, get_schedule, get_schedule_flux2, get_schedule_piflux2, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack, resizeinput, patches_to_image, build_mask
 from .modules.layers import get_linear_split_map
 from transformers import SiglipVisionModel, SiglipImageProcessor
 import torchvision.transforms.functional as TVF
@@ -94,16 +94,16 @@ class model_factory:
         self.dtype = dtype
         torch_device = "cpu"
         self.model_def = model_def 
+        self.guidance_max_phases = model_def.get("guidance_max_phases", 0)
         self.name = model_def.get("flux-model", "flux-dev")
-        self.guidance_max_phases = model_def.get("guidance_max_phases", 0) 
-        self.is_flux2 = self.name.startswith("flux2")
+        self.is_piflux2 = self.name == "pi-flux2"
+        self.is_flux2 = self.name.startswith("flux2") or self.is_piflux2
 
         # model_filename = ["c:/temp/flux1-schnell.safetensors"] 
         source = model_def.get("source", None)
         self.clip = self.t5 = self.vision_encoder = self.mistal = None
         if self.is_flux2:
-            self.model = load_flow_model(self.name, model_filename[0] if source is None else source, torch_device)
-
+            self.model = load_flow_model(self.name, model_filename if source is None else source, torch_device)
             from .modules.text_encoder_mistral import Mistral3SmallEmbedder
             self.mistral = Mistral3SmallEmbedder( model_spec = text_encoder_filename)
     
@@ -275,7 +275,10 @@ class model_factory:
                     inp.update({"img_cond_seq": cond_latents, "img_cond_seq_ids": cond_ids})
 
                 noise_patch_size = 2
-                timesteps = get_schedule_flux2(sampling_steps, inp["img"].shape[1])
+                if self.is_piflux2:
+                    timesteps = get_schedule_piflux2(sampling_steps, inp["img"].shape[1])
+                else:
+                    timesteps = get_schedule_flux2(sampling_steps, inp["img"].shape[1])
                 unpack_latent = lambda x : self.vae.pre_decode(torch.cat(scatter_ids(x, inp["img_ids"])).squeeze(2))
                 ref_style_imgs = []
                 image_mask = None
@@ -386,6 +389,7 @@ class model_factory:
                 timesteps=timesteps,
                 guidance=embedded_guidance_scale,
                 real_guidance_scale=guide_scale,
+                final_step_size_scale=0.5 if self.is_piflux2 else None,
                 callback=callback,
                 pipeline=self,
                 loras_slists=loras_slists,
@@ -411,9 +415,22 @@ class model_factory:
             return x
 
     def get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, video_prompt_type, **kwargs):
-        if model_type != "flux_dev_kontext_dreamomni2": return [], []
+        def resolve_preload_lora(lora_ref: str) -> str:
+            resolved = fl.locate_file(lora_ref, error_if_none=False)
+            if resolved is None:
+                resolved = fl.locate_file(os.path.basename(lora_ref))
+            return resolved
 
         preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
-        if len(preloadURLs) < 2: return [], []
+        if self.is_piflux2:
+            if len(preloadURLs) < 1:
+                return [], []
+            return [resolve_preload_lora(preloadURLs[0])], [1]
+
+        if model_type != "flux_dev_kontext_dreamomni2":
+            return [], []
+
+        if len(preloadURLs) < 2:
+            return [], []
         edit = "K" in video_prompt_type
-        return [ fl.locate_file(os.path.basename(preloadURLs[0 if edit else 1]))] , [1]
+        return [resolve_preload_lora(preloadURLs[0 if edit else 1])], [1]

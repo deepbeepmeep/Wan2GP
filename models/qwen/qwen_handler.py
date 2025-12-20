@@ -27,6 +27,7 @@ class family_handler():
 
         if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]: 
             extra_model_def["inpaint_support"] = True
+            extra_model_def["image_ref_inpaint"]=  base_model_type in ["qwen_image_edit_plus_20B"]
             extra_model_def["image_ref_choices"] = {
             "choices": [
                 ("None", ""),
@@ -39,8 +40,8 @@ class family_handler():
             extra_model_def["video_guide_outpainting"] = [2]
             extra_model_def["model_modes"] = {
                         "choices": [
-                            ("Lora Inpainting: Inpainted area completely unrelated to occulted content", 1),
-                            ("Masked Denoising : Inpainted area may reuse some content that has been occulted", 0),
+                            ("Lora Inpainting: Inpainted area completely unrelated to masked content", 1),
+                            ("Masked Denoising : Inpainted area may reuse some content that has been masked", 0),
                             ],
                         "default": 1,
                         "label" : "Inpainting Method",
@@ -49,12 +50,15 @@ class family_handler():
 
         if base_model_type in ["qwen_image_edit_plus_20B"]: 
             extra_model_def["guide_preprocessing"] = {
-                    "selection": ["", "PV", "DV", "SV", "CV"], #, "MV" 
+                    "selection": ["", "PV", "DV", "SV", "CV", "V"], #, "MV" 
+                    "labels": {"V": "Qwen Raw Format"},
                 }
+
+            extra_model_def["mask_strength_always_enabled"] = True
 
             extra_model_def["mask_preprocessing"] = {
                     "selection": ["", "A"],
-                    "visible": False,
+                    "visible": True,
                 }
         return extra_model_def
 

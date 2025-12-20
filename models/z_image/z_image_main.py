@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, Qwen3ForCausalLM
 
 from .autoencoder_kl import AutoencoderKL
 from .pipeline_z_image import ZImagePipeline
-from .transformer_z_image import ZImageTransformer2DModel
+from .z_image_transformer2d import ZImageTransformer2DModel
 
 
 logger = logging.get_logger(__name__)
@@ -98,37 +98,38 @@ class model_factory:
         self.base_model_type = base_model_type
         self.is_control = is_control
 
-        # Transformer - use control config if in control mode
-        if is_control:
-            default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_control.json")
-        else:
-            default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-
+        default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", f"{base_model_type}.json")
 
         preprocess_sd = conv_state_dict
 
-        kwargs_light= { "modelClass": ZImageTransformer2DModel, "writable_tensors": False, "preprocess_sd": preprocess_sd , "forcedConfigPath" : default_transformer_config}
+        model_class = ZImageTransformer2DModel
+
+        kwargs_light= { "writable_tensors": False, "preprocess_sd": preprocess_sd }
+        # model_filename contains all files to load (transformer + modules merged by loader)
+        import json
+        import accelerate
+        with open(default_transformer_config, "r") as f:
+            config = json.load(f)
+        config.pop("_class_name", None)
+        config.pop("_diffusers_version", None)
+
+        with accelerate.init_empty_weights():
+            transformer = model_class(**config)
 
         if source is not None:
-            transformer = offload.fast_load_transformers_model(fl.locate_file(source),  **kwargs_light)
+            offload.load_model_data(transformer, fl.locate_file(source), **kwargs_light)
         elif module_source is not None:
-            transformer = offload.fast_load_transformers_model(model_filename[:1] + [fl.locate_file(module_source)], **kwargs_light)
+            offload.load_model_data(transformer, model_filename[:1] + [fl.locate_file(module_source)], **kwargs_light)
         else:
-            transformer= None
+            offload.load_model_data(transformer, model_filename, **kwargs_light)
 
-        if transformer is not None:
-            from wgp import save_model
-            from mmgp.safetensors2 import torch_load_file
-        else:
-            # model_filename contains all files to load (transformer + modules merged by loader)
-            transformer = offload.fast_load_transformers_model( model_filename, **kwargs_light )
-
-
+        from wgp import save_model
+        from mmgp.safetensors2 import torch_load_file
 
         transformer.to(dtype)
 
         if module_source is not None:
-            save_model(transformer, model_type, dtype, None, is_module=True, filter=list(torch_load_file(module_source)), module_source_no=1)
+            save_model(transformer, model_type, dtype, None, is_module=True, filter=list(torch_load_file(fl.locate_file(module_source))), module_source_no=1)
 
         if not source is None:
             save_model(transformer, model_type, dtype, None, submodel_no= 1)
@@ -136,11 +137,6 @@ class model_factory:
         if save_quantized:
             from wgp import save_quantized_model
             save_quantized_model(transformer, model_type, transformer_filename, dtype, default_transformer_config)
-
-
-        if is_control:
-            transformer.adapt_control_model()
-
 
         # Text encoder
 
@@ -197,7 +193,12 @@ class model_factory:
         cfg_normalization: bool = False,
         cfg_truncation: float = 1.0,
         input_frames=None,
+        input_masks=None,
         context_scale: float = [0],
+        input_ref_images = None,
+        NAG_scale: float = 1.0,
+        NAG_tau: float = 3.5,
+        NAG_alpha: float = 0.5,
         **kwargs,
     ):
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -237,7 +238,12 @@ class model_factory:
             callback=callback,
             pipeline=self.pipeline,
             control_image=input_frames,
+            inpaint_mask=input_masks,
             control_context_scale=None if context_scale is None else context_scale[0],
+            input_ref_images= input_ref_images,
+            NAG_scale=NAG_scale,
+            NAG_tau=NAG_tau,
+            NAG_alpha=NAG_alpha,
         )
 
         if images is None:

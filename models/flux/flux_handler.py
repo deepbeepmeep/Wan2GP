@@ -4,7 +4,7 @@ from PIL import Image
 from shared.utils import files_locator as fl 
 
 def test_flux2(base_model_type):
-    return base_model_type in ["flux2_dev"]
+    return base_model_type in ["flux2_dev", "pi_flux2"]
 
 
 def get_flux_text_encoder_filename(text_encoder_quantization, base_model_type):
@@ -23,6 +23,7 @@ class family_handler():
         return [
             "flux",
             "flux2_dev",
+            "pi_flux2",
             "flux_chroma",
             "flux_chroma_radiance",
             "flux_dev_kontext",
@@ -44,18 +45,20 @@ class family_handler():
             "flux_chroma_radiance": "flux",
             "flux_dev_kontext_dreamomni2": "flux",
             "flux2_dev": "flux",
+            "pi_flux2": "flux",
         }
 
-        models_comp_map = { 
-                    "flux": ["flux2_dev", "flux_chroma", "flux_chroma_radiance", "flux_dev_kontext", "flux_dev_umo", "flux_dev_uso", "flux_schnell", "flux_dev_kontext_dreamomni2" ]
+        models_comp_map = {
+                    "flux": ["flux2_dev", "pi_flux2", "flux_chroma", "flux_chroma_radiance", "flux_dev_kontext", "flux_dev_umo", "flux_dev_uso", "flux_schnell", "flux_dev_kontext_dreamomni2" ]
                     }
         return models_eqv_map, models_comp_map
     @staticmethod
     def query_model_def(base_model_type, model_def):
         flux_model = "flux-dev" if base_model_type == "flux" else base_model_type.replace("_", "-")
-        flux2 = flux_model.startswith("flux2")
-        flux_schnell = flux_model == "flux-schnell" 
-        flux_chroma = flux_model == "flux-chroma" 
+        pi_flux2 = flux_model == "pi-flux2"
+        flux2 = flux_model.startswith("flux2") or pi_flux2
+        flux_schnell = flux_model == "flux-schnell"
+        flux_chroma = flux_model == "flux-chroma"
         flux_chroma_radiance = flux_model == "flux-chroma-radiance"
         flux_uso = flux_model == "flux-dev-uso"
         flux_umo = flux_model == "flux-dev-umo"
@@ -109,7 +112,7 @@ class family_handler():
             }
 
         if flux2:
-            extra_model_def["group"] ="flux2"             
+            extra_model_def["group"] ="flux2"
             extra_model_def["no_background_removal"] = True
             # extra_model_def["inpaint_support"] = True
             extra_model_def["mask_preprocessing"] = {
@@ -130,6 +133,10 @@ class family_handler():
 
             # extra_model_def["guide_inpaint_color"] = 0
             # extra_model_def["video_guide_outpainting"] = [1,2]
+
+        if pi_flux2:
+            extra_model_def["piflow"] = True
+            extra_model_def["inpaint_support"] = True
 
         extra_model_def["fit_into_canvas_image_refs"] = 0
 

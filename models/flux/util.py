@@ -330,6 +330,43 @@ configs = {
             shift_factor=0.0,
         ),
     ),
+    "pi-flux2": ModelSpec(
+        repo_id="",
+        repo_flow="",
+        repo_ae="ckpts/flux2_vae.safetensors",
+        params=FluxParams(
+            in_channels=128,
+            out_channels=128,
+            vec_in_dim=1,
+            context_in_dim=15360,
+            hidden_size=6144,
+            mlp_ratio=3.0,
+            single_linear1_mlp_ratio=6.0,
+            single_mlp_hidden_ratio=3.0,
+            double_mlp_ratio=3.0,
+            double_linear1_mlp_ratio=6.0,
+            num_heads=48,
+            depth=8,
+            depth_single_blocks=48,
+            axes_dim=[32, 32, 32, 32],
+            theta=2000,
+            qkv_bias=False,
+            guidance_embed=True,
+            flux2=True,
+            piflow=True,
+        ),
+        ae_params=AutoEncoderParams(
+            resolution=1024,
+            in_channels=3,
+            ch=128,
+            out_ch=3,
+            ch_mult=[1, 2, 4, 4],
+            num_res_blocks=2,
+            z_channels=32,
+            scale_factor=0.5,
+            shift_factor=0.0,
+        ),
+    ),
     "flux-dev": ModelSpec(
         repo_id="",
         repo_flow="",
@@ -897,7 +934,7 @@ def load_flow_model(name: str, model_filename, device: str | torch.device = "cud
 
     # print(f"Loading checkpoint: {ckpt_path}")
     from mmgp import offload
-    offload.load_model_data(model, model_filename )
+    offload.load_model_data(model, model_filename)
 
     # # load_sft doesn't support torch.device
     # sd = load_sft(ckpt_path, device=str(device))

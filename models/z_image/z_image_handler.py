@@ -18,10 +18,9 @@ class family_handler:
             "guidance_max_phases": 0,
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [],
-            "no_negative_prompt": True,
         }
 
-        if base_model_type == "z_image_control":
+        if base_model_type in ["z_image_control", "z_image_control2"]:
             extra_model_def["mask_preprocessing"] = {
                 "selection":[ ""],
                 "visible": False
@@ -35,11 +34,24 @@ class family_handler:
                 "labels" : { "V": "Use Z-Image Raw Format"},
             }
 
+        if base_model_type in ["z_image_control2"]:
+            extra_model_def["mask_preprocessing"] = {
+                "selection":[ "", "A", "NA"],
+                "visible": False,
+            }
+            # extra_model_def["image_ref_choices"] = {
+            #     "choices":[("No Reference Image",""), ("Image is a Reference Image", "KI")],
+            #     "default": "",
+            #     "letters_filter": "KI",
+            #     "label": "Reference Image for Inpainting",
+            #     "visible": False,
+            # }
+        extra_model_def["NAG"] = base_model_type in ["z_image"]
         return extra_model_def
 
     @staticmethod
     def query_supported_types():
-        return ["z_image", "z_image_control"]
+        return ["z_image", "z_image_control", "z_image_control2"]
 
     @staticmethod
     def query_family_maps():
@@ -51,7 +63,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"z_image": (50, "Z-Image"), "z_image_control": (51, "Z-Image ControlNet")}
+        return {"z_image": (50, "Z-Image") }
 
     @staticmethod
     def register_lora_cli_args(parser):
@@ -103,8 +115,8 @@ class family_handler:
             override_text_encoder if override_text_encoder is not None else get_z_image_text_encoder_filename(text_encoder_quantization)
         )
 
-        # Detect if this is the control variant
-        is_control = base_model_type == "z_image_control"
+        # Detect if this is a control variant (v1 or v2)
+        is_control = base_model_type in ["z_image_control", "z_image_control2"]
 
         pipe_processor = model_factory(
             checkpoint_dir="ckpts",
@@ -139,11 +151,14 @@ class family_handler:
             {
                 "guidance_scale": 0.0,
                 "num_inference_steps": ui_defaults.get("num_inference_steps", 9),
+                "NAG_scale": ui_defaults.get("NAG_scale", 1.0),
+                "NAG_tau": ui_defaults.get("NAG_tau", 3.5),
+                "NAG_alpha": ui_defaults.get("NAG_alpha", 0.5),
             }
         )
 
-        # Add control defaults for z_image_control
-        if base_model_type == "z_image_control":
+        # Add control defaults for z_image_control and z_image_control2
+        if base_model_type in ["z_image_control", "z_image_control2"]:
             ui_defaults.update(
                 {
                     "control_net_weight":  0.75,

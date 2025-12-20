@@ -12,4 +12,5 @@
     "batch_size": 1,
     "embedded_guidance_scale": 4,
  	"num_inference_steps": 4
+}
 

@@ -155,7 +155,7 @@ class family_handler():
             })
         elif base_model_type in ["qwen_image_edit_plus_20B"]: 
             ui_defaults.update({
-                "video_prompt_type": "I",
+                "video_prompt_type": "",
                 "denoising_strength" : 1.,
                 "model_mode" : 0,
             })

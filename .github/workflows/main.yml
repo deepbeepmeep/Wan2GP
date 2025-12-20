@@ -1,4 +1,4 @@
-           - name: Claude Code Action Official
+ - name: Claude Code Action Official
   # You may pin to the exact commit or the version.
   # uses: anthropics/claude-code-action@87facd7051952ac2f27354dfadb90dc91e9ebc76
   uses: anthropics/claude-code-action@v0.0.31

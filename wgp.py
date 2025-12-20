@@ -4483,7 +4483,7 @@ def perform_spatial_upsampling(sample, spatial_upsampling):
         return resize_lanczos(frame, h, w, method).unsqueeze(1)
     sample = torch.cat(process_images_multithread(upsample_frames, frames_to_upsample, "upsample", wrap_in_list = False, max_workers=get_default_workers(), in_place=True), dim=1)
     frames_to_upsample = None
-    return sample 
+    return sample
 
 def any_audio_track(model_type):
     base_model_type = get_base_model_type(model_type)
@@ -4581,14 +4581,14 @@ def edit_video(
             frames_count = sample.shape[1] 
 
         if len(spatial_upsampling) > 0:
-            sample = perform_spatial_upsampling(sample, spatial_upsampling )
+            sample = perform_spatial_upsampling(sample, spatial_upsampling)
             configs["spatial_upsampling"] = spatial_upsampling
 
         output_fps  = round(fps)
         if len(temporal_upsampling) > 0:
             sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, None, temporal_upsampling, fps)
             configs["temporal_upsampling"] = temporal_upsampling
-            frames_count = sample.shape[1] 
+            frames_count = sample.shape[1]
 
         if film_grain_intensity > 0:
             from postprocessing.film_grain import add_film_grain
@@ -4604,8 +4604,8 @@ def edit_video(
     tmp_path = None
     any_change = False
     if sample != None:
-        video_path =get_available_filename(save_path, video_source, "_tmp") if any_mmaudio or has_already_audio else get_available_filename(save_path, video_source, "_post")  
-        save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type= server_config.get("video_output_codec", None), container=server_config.get("video_container", "mp4"))
+        video_path =get_available_filename(save_path, video_source, "_tmp") if any_mmaudio or has_already_audio else get_available_filename(save_path, video_source, "_post")
+        save_video(tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type= server_config.get("video_output_codec", None), container=server_config.get("video_container", "mp4"))
 
         if any_mmaudio or has_already_audio: tmp_path = video_path
         any_change = True
@@ -5837,7 +5837,6 @@ def generate_video(
                     else:
                         pre_video_guide =  sample[:, -reuse_frames:].clone()
 
-
                 if prefix_video != None and window_no == 1:
                     # remove source video overlapped frames at the beginning of the generation
                     sample = torch.cat([ prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
@@ -5856,21 +5855,21 @@ def generate_video(
                     full_generated_audio =  generated_audio if full_generated_audio is None else np.concatenate([full_generated_audio, generated_audio], axis=0)
                     output_new_audio_data = full_generated_audio
 
-
                 if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and not "vae2" in spatial_upsampling:                
                     send_cmd("progress", [0, get_latest_status(state,"Upsampling")])
                           
                 if len(spatial_upsampling) > 0:
+                    # h_before, w_before = sample.shape[-2:]
                     sample = perform_spatial_upsampling(sample, spatial_upsampling)
                 
                 output_fps  = fps
                 if len(temporal_upsampling) > 0:
                     sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, previous_last_frame if sliding_window and window_no > 1 else None, temporal_upsampling, fps)
-                    
+
                 if film_grain_intensity> 0:
                     from postprocessing.film_grain import add_film_grain
-                    sample = add_film_grain(sample, film_grain_intensity, film_grain_saturation) 
-                    
+                    sample = add_film_grain(sample, film_grain_intensity, film_grain_saturation)
+
                 if sliding_window :
                     if frames_already_processed == None:
                         frames_already_processed = sample
@@ -9271,7 +9270,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             force_fps_choices +=  [("Source Video fps", "source")]
                         force_fps_choices += [
                                 ("15", "15"), 
-                                ("16", "16"), 
+                                ("16", "16"),
+                                ("20", "20"),
                                 ("23", "23"), 
                                 ("24", "24"), 
                                 ("25", "25"), 

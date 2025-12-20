@@ -1558,8 +1558,8 @@ def generate_queue_html(queue):
                 <th style="width:7%;" class="center-align">Steps</th>
                 <th style="width:10%;" class="center-align">Start/Ref</th>
                 <th style="width:10%;" class="center-align">End</th>
-                <th style="width:4%;" class="center-align" title="Edit"></th>
-                <th style="width:4%;" class="center-align" title="Remove"></th>
+                <th style="width:4%;" class="center-align" title="Edit" aria-label="Edit Actions"></th>
+                <th style="width:4%;" class="center-align" title="Remove" aria-label="Remove Actions"></th>
             </tr>
         </thead>
         <tbody>
@@ -1597,8 +1597,8 @@ def generate_queue_html(queue):
         if end_img_uri:
             end_img_md = f'<div class="hover-image" onclick="showImageModal(\'end_{row_index}\')"><img src="{end_img_uri}" alt="{end_img_labels[0]}" /></div>'
 
-        edit_btn = f"""<button onclick="updateAndTrigger('edit_{task_id}')" class="action-button" title="Edit"><img src="/gradio_api/file=icons/edit.svg" style="width: 20px; height: 20px;"></button>"""
-        remove_btn = f"""<button onclick="updateAndTrigger('remove_{task_id}')" class="action-button" title="Remove"><img src="/gradio_api/file=icons/remove.svg" style="width: 20px; height: 20px;"></button>"""
+        edit_btn = f"""<button onclick="updateAndTrigger('edit_{task_id}')" class="action-button" title="Edit" aria-label="Edit Task {task_id}"><img src="/gradio_api/file=icons/edit.svg" alt="Edit" style="width: 20px; height: 20px;"></button>"""
+        remove_btn = f"""<button onclick="updateAndTrigger('remove_{task_id}')" class="action-button" title="Remove" aria-label="Remove Task {task_id}"><img src="/gradio_api/file=icons/remove.svg" alt="Remove" style="width: 20px; height: 20px;"></button>"""
 
         row_class = "draggable-row"
         row_style = ""

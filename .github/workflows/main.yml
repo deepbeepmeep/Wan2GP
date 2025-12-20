@@ -1,0 +1,54 @@
+           - name: Claude Code Action Official
+  # You may pin to the exact commit or the version.
+  # uses: anthropics/claude-code-action@87facd7051952ac2f27354dfadb90dc91e9ebc76
+  uses: anthropics/claude-code-action@v0.0.31
+  with:
+    # The trigger phrase to look for in comments or issue body
+    trigger_phrase: # optional, default is @claude
+    # The assignee username that triggers the action (e.g. @claude)
+    assignee_trigger: # optional
+    # The label that triggers the action (e.g. claude)
+    label_trigger: # optional, default is claude
+    # The branch to use as the base/source when creating new branches (defaults to repository default branch)
+    base_branch: # optional
+    # The prefix to use for Claude branches (defaults to 'claude/', use 'claude-' for dash format)
+    branch_prefix: # optional, default is claude/
+    # Model to use (provider-specific format required for Bedrock/Vertex)
+    model: # optional
+    # DEPRECATED: Use 'model' instead. Model to use (provider-specific format required for Bedrock/Vertex)
+    anthropic_model: # optional
+    # Enable automatic fallback to specified model when primary model is unavailable
+    fallback_model: # optional
+    # Additional tools for Claude to use (the base GitHub tools will always be included)
+    allowed_tools: # optional, default is 
+    # Tools that Claude should never use
+    disallowed_tools: # optional, default is 
+    # Additional custom instructions to include in the prompt for Claude
+    custom_instructions: # optional, default is 
+    # Direct instruction for Claude (bypasses normal trigger detection)
+    direct_prompt: # optional, default is 
+    # Additional MCP configuration (JSON string) that merges with the built-in GitHub MCP servers
+    mcp_config: # optional
+    # Additional permissions to enable. Currently supports 'actions: read' for viewing workflow results
+    additional_permissions: # optional, default is 
+    # Custom environment variables to pass to Claude Code execution (YAML format)
+    claude_env: # optional, default is 
+    # Anthropic API key (required for direct API, not needed for Bedrock/Vertex)
+    anthropic_api_key: # optional
+    # Claude Code OAuth token (alternative to anthropic_api_key)
+    claude_code_oauth_token: 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
+    # GitHub token with repo and pull request permissions (optional if using GitHub App)
+    github_token: # optional
+    # Use Amazon Bedrock with OIDC authentication instead of direct Anthropic API
+    use_bedrock: # optional, default is false
+    # Use Google Vertex AI with OIDC authentication instead of direct Anthropic API
+    use_vertex: # optional, default is false
+    # Maximum number of conversation turns
+    max_turns: # optional, default is 
+    # Timeout in minutes for execution
+    timeout_minutes: # optional, default is 30
+    # Use just one comment to deliver issue/PR comments
+    use_sticky_comment: # optional, default is false
+    # Enable commit signing using GitHub's commit signature verification. When false, Claude uses standard git commands
+    use_commit_signing: # optional, default is false
+          

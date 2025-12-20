@@ -18,6 +18,7 @@ import time
 import threading
 import argparse
 import warnings
+from functools import lru_cache
 warnings.filterwarnings('ignore', message='Failed to find.*', module='triton')
 from mmgp import offload, safetensors2, profile_type , fp8_quanto_bridge
 if not os.name == "nt": fp8_quanto_bridge.enable_fp8_marlin_fallback()
@@ -205,21 +206,19 @@ def format_generation_time(seconds):
     
     return f"{raw_seconds} ({human_readable})"
 
-def pil_to_base64_uri(pil_image, format="png", quality=75):
-    if pil_image is None:
+@lru_cache(maxsize=128)
+def _cached_path_to_base64_uri(path, format, quality):
+    if has_video_file_extension(path):
+        from shared.utils.utils import get_video_frame
+        pil_image = get_video_frame(path, 0)
+    elif has_image_file_extension(path):
+        pil_image = Image.open(path)
+    else:
         return None
 
-    if isinstance(pil_image, str):
-        # Check file type and load appropriately
-        if has_video_file_extension(pil_image):
-            from shared.utils.utils import get_video_frame
-            pil_image = get_video_frame(pil_image, 0)
-        elif has_image_file_extension(pil_image):
-            pil_image = Image.open(pil_image)
-        else:
-            # Audio or unknown file type - can't convert to image
-            return None
+    return _image_to_base64(pil_image, format, quality)
 
+def _image_to_base64(pil_image, format, quality):
     buffer = io.BytesIO()
     try:
         img_to_save = pil_image
@@ -239,6 +238,15 @@ def pil_to_base64_uri(pil_image, format="png", quality=75):
     except Exception as e:
         print(f"Error converting PIL to base64: {e}")
         return None
+
+def pil_to_base64_uri(pil_image, format="png", quality=75):
+    if pil_image is None:
+        return None
+
+    if isinstance(pil_image, str):
+        return _cached_path_to_base64_uri(pil_image, format, quality)
+
+    return _image_to_base64(pil_image, format, quality)
 
 def is_integer(n):
     try:

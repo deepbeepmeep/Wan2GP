@@ -361,7 +361,7 @@ class LoraManagerPlugin(WAN2GPPlugin):
         )
 
         self.refresh_btn.click(
-            fn=self.force_refresh,
+            fn=self.refresh_button_click,
             inputs=[self.state, self.category_dropdown],
             outputs=[self.category_dropdown, self.lora_list]
         )
@@ -487,30 +487,30 @@ class LoraManagerPlugin(WAN2GPPlugin):
     def force_refresh(self, state, current_selection):
         self.lora_root = self.discover_lora_root(state)
         display_map = self.build_category_map()
-        
-        folder_choices = [] 
+
+        folder_choices = []
         if os.path.isdir(self.lora_root):
             subdirs = [
-                d for d in os.listdir(self.lora_root) 
-                if os.path.isdir(os.path.join(self.lora_root, d)) 
+                d for d in os.listdir(self.lora_root)
+                if os.path.isdir(os.path.join(self.lora_root, d))
                 and not d.startswith('.') and not d.startswith('__')
             ]
-            
+
             for d in sorted(subdirs):
                 label = display_map.get(d, d)
                 folder_choices.append((label, d))
-        
+
         choices = [("All LoRAs", "All LoRAs")] + folder_choices
-        
+
         selected_val = current_selection
         valid_values = [c[1] for c in choices]
-        
+
         if not selected_val or selected_val not in valid_values:
             current_model_type = self.get_state_model_type(state)
             try:
                 target_dir = self.get_lora_dir(current_model_type)
                 target_folder = os.path.basename(target_dir)
-                
+
                 if target_folder in valid_values:
                     selected_val = target_folder
                 else:
@@ -519,7 +519,13 @@ class LoraManagerPlugin(WAN2GPPlugin):
                 selected_val = "All LoRAs"
 
         list_update = self.update_list_by_category(selected_val)
-        return True, gr.update(choices=choices, value=selected_val), list_update
+        dropdown_update = gr.update(choices=choices, value=selected_val)
+        return True, dropdown_update, list_update
+
+    def refresh_button_click(self, state, current_selection):
+        """Wrapper for refresh button - returns only dropdown and list updates (2 values)."""
+        _, dropdown_update, list_update = self.force_refresh(state, current_selection)
+        return dropdown_update, list_update
 
     def update_list_by_category(self, category):
         files = []
@@ -546,7 +552,7 @@ class LoraManagerPlugin(WAN2GPPlugin):
                         files.append(f)
         
         files.sort()
-        return gr.update(choices=files, label=f"Files in {category}")
+        return gr.update(choices=files, value=[], label=f"Files in {category}")
 
     def prepare_injection(self, selected_loras, prompt_mode, lora_mode):
         if not selected_loras:

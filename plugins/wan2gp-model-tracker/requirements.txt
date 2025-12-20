@@ -1,0 +1,7 @@
+# Wan2GP Model Tracker Plugin - Requirements
+#
+# Note: These dependencies are typically already installed with Wan2GP,
+# but are listed here for completeness and standalone testing.
+
+gradio>=3.0.0
+pandas>=1.3.0

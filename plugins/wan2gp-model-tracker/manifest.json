@@ -1,0 +1,16 @@
+{
+  "name": "Model Tracker",
+  "id": "wan2gp-model-tracker",
+  "version": "1.0.0",
+  "description": "Track model download status and performance metrics",
+  "author": "Wan2GP Community",
+  "main": "plugin.py",
+  "entry_point": "WAN2GPPlugin",
+  "tab_name": "📊 Models",
+  "requires": [
+    "gradio>=3.0.0",
+    "pandas>=1.3.0"
+  ],
+  "category": "utilities",
+  "tags": ["models", "tracker", "performance", "metrics"]
+}

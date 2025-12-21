@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "Kandinsky 5 Pro I2V SFT 5s 19B",
+        "architecture": "k5_pro_i2v",
+        "description": "Kandinsky 5.0 Video Pro is a line-up of 19B models that generates high-quality HD videos from an input image and English or Russian prompts with controllable camera motion.",
+        "group": "kandinsky5",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Kandinsky5/resolve/main/kandinsky5pro_i2v_sft_5s_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Kandinsky5/resolve/main/kandinsky5pro_i2v_sft_5s_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "The subject slowly turns toward the camera, with subtle lighting changes and gentle motion.",
+    "num_inference_steps": 30,
+    "guidance_scale": 5.0,
+    "flow_shift": 10.0,
+    "video_length": 81
+}

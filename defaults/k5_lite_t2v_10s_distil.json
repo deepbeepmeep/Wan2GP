@@ -1,0 +1,20 @@
+{
+    "model": {
+        "name": "Kandinsky 5 Lite T2V Distilled 10s 2B",
+        "architecture": "k5_lite_t2v",
+        "description": "Kandinsky 5.0 Video Lite is a line-up of 2B models that generates high-quality HD videos from English and Russian prompts with controllable camera motion.",
+        "group": "kandinsky5",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Kandinsky5/resolve/main/kandinsky5lite_t2v_distilled16steps_10s_bf16.safetensors"
+        ],
+        "k5_config_overrides": {
+            "metrics": {
+                "scheduler_scale": 10
+            }
+        }
+    },
+    "num_inference_steps": 16,
+    "guidance_scale": 1.0,
+    "flow_shift": 10.0,
+    "video_length": 161
+}

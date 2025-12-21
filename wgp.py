@@ -86,7 +86,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
-WanGP_version = "9.9"
+WanGP_version = "9.91"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1325,12 +1325,23 @@ def _parse_settings_json(filename, state):
         with open(filename, 'r', encoding='utf-8') as f:
             params = json.load(f)
 
-        if not isinstance(params, dict):
-            return None, "Settings file must contain a JSON object"
-
-        # Wrap as single-task manifest
-        task_id += 1
-        manifest = [{"id": task_id, "params": params, "plugin_data": {}}]
+        if isinstance(params, list):
+            # Accept full queue manifests or a list of settings dicts
+            if all(isinstance(item, dict) and "params" in item for item in params):
+                manifest = params
+            else:
+                manifest = []
+                for item in params:
+                    if not isinstance(item, dict):
+                        continue
+                    task_id += 1
+                    manifest.append({"id": task_id, "params": item, "plugin_data": {}})
+        elif isinstance(params, dict):
+            # Wrap as single-task manifest
+            task_id += 1
+            manifest = [{"id": task_id, "params": params, "plugin_data": {}}]
+        else:
+            return None, "Settings file must contain a JSON object or a list of tasks"
 
         # Media paths are relative to WanGP folder (no cache needed)
         wgp_folder = os.path.dirname(os.path.abspath(__file__))
@@ -1665,7 +1676,7 @@ def update_generation_status(html_content):
     if(html_content):
         return gr.update(value=html_content)
 
-family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.z_image.z_image_handler", "models.chatterbox.chatterbox_handler"]
+family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler", "models.z_image.z_image_handler", "models.chatterbox.chatterbox_handler"]
 
 def register_family_lora_args(parser):
     registered_families = set()
@@ -1737,6 +1748,11 @@ def _parse_args():
         "--save-quantized",
         action="store_true",
         help="Save a quantized version of the current model"
+    )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Load the model and exit generation immediately"
     )
 
     parser.add_argument(
@@ -2250,6 +2266,8 @@ def test_class_t2v(model_type):
 
 def test_any_sliding_window(model_type):
     model_def = get_model_def(model_type)
+    if model_def is None:
+        return False
     return model_def.get("sliding_window", False)
 
 def get_model_min_frames_and_step(model_type):
@@ -5111,6 +5129,9 @@ def generate_video(
         wan_model, offloadobj = load_models(model_type, override_profile, **model_kwargs)
         send_cmd("status", "Model loaded")
         reload_needed=  False
+    if args.test:
+        send_cmd("info", "Test mode: model loaded, skipping generation.")
+        return
     overridden_attention = get_overridden_attention(model_type)
     # if overridden_attention is not None and overridden_attention !=  attention_mode: print(f"Attention mode has been overriden to {overridden_attention} for model type '{model_type}'")
     attn = overridden_attention if overridden_attention is not None else attention_mode
@@ -6355,10 +6376,15 @@ def validate_task(task, state):
         print("  [SKIP] No model_type specified")
         return None
 
-    inputs = {**params, 'prompt': task.get('prompt', '')}
+    inputs = primary_settings.copy()
+    inputs.update(params)
+    inputs['prompt'] = task.get('prompt', '')
+    inputs.setdefault('mode', "")
     override_inputs, _, _, _ = validate_settings(state, model_type, single_prompt=True, inputs=inputs)
-    if override_inputs is None: return None
-    return {**params, **override_inputs}
+    if override_inputs is None:
+        return None
+    inputs.update(override_inputs)
+    return inputs
 
 
 def process_tasks_cli(queue, state):

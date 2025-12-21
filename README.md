@@ -44,7 +44,7 @@ WanGP version has the following perks: 3D pose Preprocessing entirely rewritten 
 
 - **pi-Flux 2**: you don't use Flux 2 because you find it too slow ? You won't be able to use this excuse anymore: pi-Flux 2 is *4 steps distills* of the best image generator. It supports both image edition and text to image generation.
 
-- **loras accelerator**: *loras accelerator* for *Qwen* and *Wan i2v* have been added (activable using the *Profile settings* as usual) 
+- **loras accelerators**: *loras accelerator* for *Qwen* and *Wan i2v* have been added (activable using the *Profile settings* as usual) 
 
 ### December 14 2025: WanGP v9.86, Simple Pleasures...
 
@@ -89,7 +89,7 @@ The only snag is that it is a 60B parameters for the *Transformer* part and 40B 
 
 Behold the WanGP Miracle ! Flux 2 wil work with only 8 GB of VRAM if you are happy with 8 bits quantization (no need for lower quality 4bits). With 9GB of VRAM you can run the model at full power. You will need at least 64 GB of RAM. If not maybe Memory Profile 5 will be your friend.
 
-*With WanGP v9.74*, **Flux 2 Control Net** hidden power has also been unleashed from the vanilla model. You can now enjoy Flux 2 *Inpainting* and *Pose transfer*. This can be combined with *Image Refs* to get the best *Identity Preservation* / *Face Swapping* an Image Model can offer: just target the effect to a specific area using a *Mask* and set a *Masking Strength* of 0.3-0.4 for a perfect blending 
+*With WanGP v9.74*, **Flux 2 Control Net** hidden power has also been unleashed from the vanilla model. You can now enjoy Flux 2 *Inpainting* and *Pose transfer*. This can be combined with *Image Refs* to get the best *Identity Preservation* / *Face Swapping* an Image Model can offer: just target the effect to a specific area using a *Mask* and set *Denoising Strength* to 0.9-1.0 and *Masking Strength* to 0.3-0.4 for a perfect blending 
 
 - **Z-Image**: a small model, very fast (8 steps), very low VRAM (optimized even more in WanGP for fun, just in case you want to generate 16 images at a time) that produces outstanding Image quality. Not yet the Flux 2 level, and no Image editing yet but a very good trade-off.
 

@@ -12,5 +12,12 @@
     "version": "1.0.0",
     "description": "Dynamically set lora multipliers with a fast, JavaScript-powered UI.",
     "url": "https://github.com/Tophness/wan2gp-lora-multipliers-ui.git"
+  },
+  {
+    "name": "Lora Manager",
+    "author": "Tophness and Kovacs3d",
+    "version": "1.1.0",
+    "description": "Manage your lora files, view their CivitAi metadata, assign prompts to them, send loras and prompts to generator.",
+    "url": "https://github.com/Tophness/wan2gp-lora-manager.git"
   }
 ]

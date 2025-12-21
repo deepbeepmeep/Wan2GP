@@ -81,6 +81,9 @@ from collections import defaultdict
 
 global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
+AUTOSAVE_PATH = AUTOSAVE_FILENAME
+AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
+CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
 WanGP_version = "9.9"
@@ -1351,11 +1354,18 @@ def load_queue_action(filepath, state, evt:gr.EventData):
     delete_autoqueue_file = False
     if evt.target == None:
         # Autoload only works with empty queue
-        if original_queue or not Path(AUTOSAVE_FILENAME).is_file():
+        if original_queue:
             return
-        print(f"Autoloading queue from {AUTOSAVE_FILENAME}...")
-        filename = AUTOSAVE_FILENAME
-        delete_autoqueue_file = True
+        autoload_path = None
+        if Path(AUTOSAVE_PATH).is_file():
+            autoload_path = AUTOSAVE_PATH
+            delete_autoqueue_file = True
+        elif AUTOSAVE_TEMPLATE_PATH != AUTOSAVE_PATH and Path(AUTOSAVE_TEMPLATE_PATH).is_file():
+            autoload_path = AUTOSAVE_TEMPLATE_PATH
+        else:
+            return
+        print(f"Autoloading queue from {autoload_path}...")
+        filename = autoload_path
     else:
         if not filepath or not hasattr(filepath, 'name') or not Path(filepath.name).is_file():
             print("[load_queue_action] Warning: No valid file selected or file not found.")
@@ -1463,12 +1473,12 @@ def clear_queue_action(state):
 
     if cleared_pending:
         try:
-            if os.path.isfile(AUTOSAVE_FILENAME):
-                os.remove(AUTOSAVE_FILENAME)
-                print(f"Clear Queue: Deleted autosave file '{AUTOSAVE_FILENAME}'.")
+            if os.path.isfile(AUTOSAVE_PATH):
+                os.remove(AUTOSAVE_PATH)
+                print(f"Clear Queue: Deleted autosave file '{AUTOSAVE_PATH}'.")
         except OSError as e:
-            print(f"Clear Queue: Error deleting autosave file '{AUTOSAVE_FILENAME}': {e}")
-            gr.Warning(f"Could not delete the autosave file '{AUTOSAVE_FILENAME}'. You may need to remove it manually.")
+            print(f"Clear Queue: Error deleting autosave file '{AUTOSAVE_PATH}': {e}")
+            gr.Warning(f"Could not delete the autosave file '{AUTOSAVE_PATH}'. You may need to remove it manually.")
 
     if aborted_current and cleared_pending:
         gr.Info("Queue cleared and current generation aborted.")
@@ -1507,10 +1517,10 @@ def autosave_queue():
         print("Autosave: Queue is empty, nothing to save.")
         return
 
-    print(f"Autosaving queue ({len(global_queue_ref)} items) to {AUTOSAVE_FILENAME}...")
+    print(f"Autosaving queue ({len(global_queue_ref)} items) to {AUTOSAVE_PATH}...")
     try:
-        if _save_queue_to_zip(global_queue_ref, AUTOSAVE_FILENAME):
-            print(f"Queue autosaved successfully to {AUTOSAVE_FILENAME}")
+        if _save_queue_to_zip(global_queue_ref, AUTOSAVE_PATH):
+            print(f"Queue autosaved successfully to {AUTOSAVE_PATH}")
         else:
             print("Autosave failed.")
     except Exception as e:
@@ -1764,6 +1774,12 @@ def _parse_args():
         type=str,
         default="settings",
         help="Path to settings folder"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="",
+        help=f"Path to config folder for {CONFIG_FILENAME} and queue.zip"
     )
 
 
@@ -2033,16 +2049,32 @@ check_loras = args.check_loras ==1
 with open("models/_settings.json", "r", encoding="utf-8") as f:
     primary_settings = json.load(f)
 
-server_config_filename = "wgp_config.json"
+wgp_root = os.path.abspath(os.getcwd())
+config_dir = args.config.strip()
+server_config_filename = CONFIG_FILENAME
+server_config_fallback = server_config_filename
+if config_dir:
+    config_dir = os.path.abspath(config_dir)
+    os.makedirs(config_dir, exist_ok=True)
+    server_config_filename = os.path.join(config_dir, CONFIG_FILENAME)
+    server_config_fallback = os.path.join(wgp_root, CONFIG_FILENAME)
+    AUTOSAVE_PATH = os.path.join(config_dir, AUTOSAVE_FILENAME)
+    AUTOSAVE_TEMPLATE_PATH = os.path.join(wgp_root, AUTOSAVE_FILENAME)
+else:
+    AUTOSAVE_PATH = AUTOSAVE_FILENAME
+    AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
+
 if not os.path.isdir("settings"):
-    os.mkdir("settings") 
+    os.mkdir("settings")
 if os.path.isfile("t2v_settings.json"):
     for f in glob.glob(os.path.join(".", "*_settings.json*")):
-        target_file = os.path.join("settings",  Path(f).parts[-1] )
-        shutil.move(f, target_file) 
+        target_file = os.path.join("settings",  Path(f).parts[-1])
+        shutil.move(f, target_file)
 
-if not os.path.isfile(server_config_filename) and os.path.isfile("gradio_config.json"):
-    shutil.move("gradio_config.json", server_config_filename) 
+config_load_filename = server_config_filename
+if config_dir and not Path(server_config_filename).is_file():
+    if Path(server_config_fallback).is_file():
+        config_load_filename = server_config_fallback
 
 src_move = [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "models_t5_umt5-xxl-enc-bf16.safetensors", "models_t5_umt5-xxl-enc-quanto_int8.safetensors" ]
 tgt_move = [ "xlm-roberta-large", "umt5-xxl", "umt5-xxl"]
@@ -2060,7 +2092,7 @@ for src,tgt in zip(src_move,tgt_move):
             pass
     
 
-if not Path(server_config_filename).is_file():
+if not Path(config_load_filename).is_file():
     server_config = {
         "attention_mode" : "auto",  
         "transformer_types": [], 
@@ -2084,7 +2116,7 @@ if not Path(server_config_filename).is_file():
     with open(server_config_filename, "w", encoding="utf-8") as writer:
         writer.write(json.dumps(server_config))
 else:
-    with open(server_config_filename, "r", encoding="utf-8") as reader:
+    with open(config_load_filename, "r", encoding="utf-8") as reader:
         text = reader.read()
     server_config = json.loads(text)
 
@@ -2557,7 +2589,7 @@ transformer_types = server_config.get("transformer_types", [])
 new_transformer_types = []
 for model_type in transformer_types:
     if get_model_def(model_type) == None:
-        print(f"Model '{model_type}' is missing. Either install it in the finetune folder or remove this model from ley 'transformer_types' in wgp_config.json")
+        print(f"Model '{model_type}' is missing. Either install it in the finetune folder or remove this model from ley 'transformer_types' in {CONFIG_FILENAME}")
     else:
         new_transformer_types.append(model_type)
 transformer_types = new_transformer_types

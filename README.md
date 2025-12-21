@@ -44,7 +44,7 @@ WanGP version has the following perks: 3D pose Preprocessing entirely rewritten 
 
 - **pi-Flux 2**: you don't use Flux 2 because you find it too slow ? You won't be able to use this excuse anymore: pi-Flux 2 is *4 steps distills* of the best image generator. It supports both image edition and text to image generation.
 
-- **loras accelerators**: *loras accelerator* for *Qwen* and *Wan i2v* have been added (activable using the *Profile settings* as usual) 
+- **loras accelerator**: *loras accelerator* for *Wan 2.2 t2v* and *Wan 2.1 i2v* have been added (activable using the *Profile settings* as usual) 
 
 ### December 14 2025: WanGP v9.86, Simple Pleasures...
 

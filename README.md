@@ -36,7 +36,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### December 19 2025: WanGP v9.91, Early Christmas
+### December 22 2025: WanGP v9.91, Early Christmas
 
 - **SCAIL Preview**: enjoy this *Wan Animate*, *Steady Dancer* contender that can support multiple people. Thanks to its 3D positioning, it can take into account which parts of the body are hidden and which are not. 
 

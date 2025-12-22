@@ -50,6 +50,8 @@ WanGP version has the following perks: 3D pose Preprocessing entirely rewritten 
 
 - **loras accelerator**: *loras accelerator* for *Wan 2.2 t2v* and *Wan 2.1 i2v* have been added (activable using the *Profile settings* as usual) 
 
+*update 9.91*: added Kandinsky 5 & Qwen Image Layered
+
 ### December 14 2025: WanGP v9.86, Simple Pleasures...
 
 These two features are going to change the life of many people:

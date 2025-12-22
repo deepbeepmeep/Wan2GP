@@ -6070,7 +6070,8 @@ def generate_video(
                 video_path = [video_path] if not isinstance(video_path, list) else video_path
                 for no, path in enumerate(video_path):
                     if metadata_choice == "json":
-                        with open(path.replace(f'.{extension}', '.json'), 'w') as f:
+                        json_path = os.path.splitext(path)[0] + ".json"
+                        with open(json_path, 'w') as f:
                             json.dump(configs, f, indent=4)
                     elif metadata_choice == "metadata":
                         if audio_only:
@@ -8985,7 +8986,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     scale = 5
                 )
             with gr.Row(visible= not audio_only) as number_frames_row:
-                batch_size = gr.Slider(1, 16, value=ui_get("batch_size"), step=1, label="Number of Images to Generate", visible = image_outputs, show_reset_button= False)
+                batch_label = model_def.get("batch_size_label", "Number of Images to Generate")
+                batch_size = gr.Slider(1, 16, value=ui_get("batch_size"), step=1, label=batch_label, visible = image_outputs, show_reset_button= False)
                 if image_outputs:
                     video_length = gr.Slider(1, 9999, value=ui_get("video_length"), step=1, label="Number of frames", visible = False, show_reset_button= False)
                 else:

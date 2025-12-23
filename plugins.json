@@ -16,7 +16,7 @@
   {
     "name": "Lora Manager",
     "author": "Tophness and Kovacs3d",
-    "version": "2.5.1",
+    "version": "2.5.3",
     "description": "Manage your lora files, view their CivitAi metadata, assign prompts to them, browse CivitAI, send loras and prompts to generator.",
     "url": "https://github.com/Tophness/wan2gp-lora-manager.git"
   },

@@ -36,9 +36,9 @@ class family_handler():
             extra_model_def["vae_upsampler"] = [1]
             extra_model_def["sample_solvers"] = [("Default", "default")]
 
-        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]: 
+        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             extra_model_def["inpaint_support"] = True
-            extra_model_def["image_ref_inpaint"]=  base_model_type in ["qwen_image_edit_plus_20B"]
+            extra_model_def["image_ref_inpaint"]=  base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]
             extra_model_def["image_ref_choices"] = {
             "choices": [
                 ("None", ""),
@@ -59,7 +59,7 @@ class family_handler():
                         "image_modes" : [2],
             }
 
-        if base_model_type in ["qwen_image_edit_plus_20B"]: 
+        if base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             extra_model_def["guide_preprocessing"] = {
                     "selection": ["", "PV", "DV", "SV", "CV", "V"], #, "MV" 
                     "labels": {"V": "Qwen Raw Format"},
@@ -75,11 +75,17 @@ class family_handler():
 
     @staticmethod
     def query_supported_types():
-        return ["qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_layered_20B"]
+        return ["qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B", "qwen_image_layered_20B"]
 
     @staticmethod
     def query_family_maps():
-        return {}, {}
+        models_eqv_map = {
+            "qwen_image_edit_plus2_20B": "qwen_image_edit_plus_20B",
+        }
+        models_comp_map = {
+            "qwen_image_edit_plus_20B": ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"],
+        }
+        return models_eqv_map, models_comp_map
 
     @staticmethod
     def query_model_family():
@@ -167,7 +173,7 @@ class family_handler():
                 "denoising_strength" : 1.,
                 "model_mode" : 0,
             })
-        elif base_model_type in ["qwen_image_edit_plus_20B"]: 
+        elif base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             ui_defaults.update({
                 "video_prompt_type": "",
                 "denoising_strength" : 1.,
@@ -180,7 +186,7 @@ class family_handler():
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
-        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]:
+        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             model_mode = inputs["model_mode"]
             denoising_strength= inputs["denoising_strength"]
             video_guide_outpainting= inputs["video_guide_outpainting"]

@@ -828,7 +828,7 @@ class QwenImageTransformer2DModel(nn.Module):
             seq_counts = [f * h * w for f, h, w in base_shapes]
             base_index = [0] * seq_counts[0] + [1] * sum(seq_counts[1:])
             modulate_index = torch.tensor(base_index, device=timestep.device, dtype=torch.int).unsqueeze(0)
-            modulate_index = modulate_index.repeat(hidden_states.shape[0], 1)
+            modulate_index = modulate_index.expand(hidden_states.shape[0], -1)
         hidden_states_list = [hidden_states if i == 0 else hidden_states.clone() for i, _ in enumerate(encoder_hidden_states_list)]
         
         new_encoder_hidden_states_list = []
@@ -869,9 +869,12 @@ class QwenImageTransformer2DModel(nn.Module):
                 )
 
         # Use only the image part (hidden_states) from the dual-stream blocks
+        temb_out = temb
+        if self.zero_cond_t:
+            temb_out = temb.chunk(2, dim=0)[0]
         output_list = []
         for i in range(len(hidden_states_list)):
-            hidden_states = self.norm_out(hidden_states_list[i], temb)
+            hidden_states = self.norm_out(hidden_states_list[i], temb_out)
             hidden_states_list[i] = None
             output_list.append(self.proj_out(hidden_states))
 

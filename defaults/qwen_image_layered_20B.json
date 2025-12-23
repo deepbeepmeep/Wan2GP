@@ -13,6 +13,6 @@
         "image_outputs": true
     },
     "prompt": "decompose the image into layers",
-    "resolution": "640x640",
+    "resolution": "1024x1024",
     "batch_size": 4
 }

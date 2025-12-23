@@ -53,13 +53,15 @@ class model_factory():
         transformer_filename = model_filename[0]
         processor = None
         tokenizer = None
-        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_layered_20B"]:
+        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B", "qwen_image_layered_20B"]:
             processor = Qwen2VLProcessor.from_pretrained(fl.locate_folder("Qwen2.5-VL-7B-Instruct"))
         tokenizer = AutoTokenizer.from_pretrained(fl.locate_folder("Qwen2.5-VL-7B-Instruct"))
         self.base_model_type = base_model_type
 
         if base_model_type == "qwen_image_layered_20B":
             base_config_file = "models/qwen/configs/qwen_image_layered_20B.json"
+        elif base_model_type == "qwen_image_edit_plus2_20B":
+            base_config_file = "models/qwen/configs/qwen_image_edit_plus2_20B.json"
         else:
             base_config_file = "models/qwen/configs/qwen_image_20B.json"
         with open(base_config_file, 'r', encoding='utf-8') as f:
@@ -215,7 +217,7 @@ class model_factory():
             self.vae.tile_latent_min_width  = VAE_tile_size[1]
             tile_size  = VAE_tile_size[1]
         # tile_size = 256
-        qwen_edit_plus = self.base_model_type in ["qwen_image_edit_plus_20B"]
+        qwen_edit_plus = self.base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]
         qwen_layered = self.base_model_type in ["qwen_image_layered_20B"]
         if hasattr(self.vae, "enable_slicing"):
             self.vae.enable_slicing()

@@ -36,7 +36,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### December 22 2025: WanGP v9.91, Early Christmas
+### December 23 2025: WanGP v9.92, Early Christmas
 
 - **SCAIL Preview**: enjoy this *Wan Animate*, *Steady Dancer* contender that can support multiple people. Thanks to its 3D positioning, it can take into account which parts of the body are hidden and which are not. 
 
@@ -47,6 +47,8 @@ WanGP version has the following perks: 3D pose Preprocessing entirely rewritten 
 - **Zandinksy v5** : for the video models collectors among you, you can try the Zandinsky model families, the 2B model quality is especially impressive given its small size
 
 - **Qwen Image Layered**: a new Qwen Image variant that lets you extract RGBA layers of your images so that  each layer can be edited separately
+
+- **Qwen Image Edit Plus 2511**: Qwen Image Edit Plus 2511 improves identity transfers and integrates out of the box popular effects such as religthing and camera changes
 
 - **loras accelerator**: *loras accelerator* for *Wan 2.2 t2v* and *Wan 2.1 i2v* have been added (activable using the *Profile settings* as usual) 
 

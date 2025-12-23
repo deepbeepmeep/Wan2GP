@@ -158,6 +158,7 @@ class model_factory:
             default_dtype=VAE_dtype,
         )
         vae = vae.to(dtype=VAE_dtype, device=load_device).eval()
+        vae._model_dtype = VAE_dtype
 
         device_map = {"dit": self.device, "vae": self.device, "text_embedder": self.device}
         self.pipeline = Kandinsky5Pipeline(

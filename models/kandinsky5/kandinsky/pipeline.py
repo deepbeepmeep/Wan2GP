@@ -42,19 +42,8 @@ def get_first_frame_from_image(image, vae, device, max_area, divisibility):
     image = image / 127.5 - 1.0
 
     with torch.no_grad():
-        image = image.to(device=device, dtype=torch.float16).transpose(0, 1).unsqueeze(0)
-        opt_tiling = bool(
-            getattr(vae, "_use_vae_tiling", False)
-            or getattr(vae, "_forced_tile_config", None) is not None
-        )
-        try:
-            enc_out = vae.encode(image, opt_tiling=opt_tiling)
-        except TypeError:
-            if opt_tiling and hasattr(vae, "enable_tiling"):
-                vae.enable_tiling(True)
-            elif not opt_tiling and hasattr(vae, "disable_tiling"):
-                vae.disable_tiling()
-            enc_out = vae.encode(image)
+        image = image.to(device=device, dtype=vae.dtype).transpose(0, 1).unsqueeze(0)
+        enc_out = vae.encode(image)
         lat_image = (
             enc_out.latent_dist.sample()
             .squeeze(0)

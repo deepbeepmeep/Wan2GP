@@ -879,10 +879,10 @@ def validate_settings(state, model_type, single_prompt, inputs):
             gr.Info("Filtering Frames with this model is not supported")
             return ret()
 
-    if multi_prompts_gen_type in [1,2] or single_prompt:
+    if multi_prompts_gen_type in [1] or single_prompt:
         if image_start != None and len(image_start) > 1:
-            if multi_prompts_gen_type == 2 or single_prompt:
-                gr.Info("Only one Start Image must be provided if there is a single Prompt") 
+            if single_prompt:
+                gr.Info("Only one Start Image can be provided in Edit Mode") 
             else:
                 gr.Info("Only one Start Image must be provided if multiple prompts are used for different windows") 
             return ret()

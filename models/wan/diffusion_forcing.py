@@ -87,6 +87,8 @@ class DTT2V:
 
         self.scheduler = FlowUniPCMultistepScheduler()
 
+        self.model.apply_post_init_changes()
+
     @property
     def do_classifier_free_guidance(self) -> bool:
         return self._guidance_scale > 1

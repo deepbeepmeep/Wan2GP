@@ -26,5 +26,13 @@
     "version": "1.0.0",
     "description": "A plugin for WAN2GP to allow toggling UI elements.",
     "url": "https://github.com/MrKuenning/Wan2GP-HideUI.git"
+  },
+  {
+    "name": "FlashVSR",
+    "author": "Hakaze",
+    "version": "1.0.0",
+    "description": "AI-powered 4x video upscaling using FlashVSR models with Sparse SageAttention.",
+    "url": "https://github.com/Hakaze/wan2gp-flashvsr.git"
   }
+  
 ]

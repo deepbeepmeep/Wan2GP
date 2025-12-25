@@ -4996,6 +4996,48 @@ def generate_video(
             if temp_filename!= None and os.path.isfile(temp_filename):
                 os.remove(temp_filename)
 
+    # --- CONTINUING VIDEO + UPSAMPLING VALIDATION CHECK ---
+    # Before starting generation, ensure that if we are continuing a video ("V" or "L")
+    # and using upsampling, the final result matches the source video resolution/FPS.
+    do_upsampling = len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0
+    if video_source and any_letters(image_prompt_type, "VL") and do_upsampling:
+        # 1. Determine Upscaling Multipliers
+        s_mult = 1.0
+        if "lanczos1.5" in spatial_upsampling: s_mult = 1.5
+        elif "lanczos2" in spatial_upsampling or "vae2" in spatial_upsampling: s_mult = 2.0
+        elif "vae1" in spatial_upsampling: s_mult = 0.5 
+        
+        t_mult = 1
+        if "rife2" in temporal_upsampling: t_mult = 2
+        elif "rife4" in temporal_upsampling: t_mult = 4
+        
+        # 2. Calculate Expected Target Properties (Model Resolution * Multiplier)
+        base_w, base_h = resolution.split("x")
+        base_w, base_h = int(base_w), int(base_h)
+        # Note: Model gen usually snaps to block_size (16), assume passed resolution is close to model output
+        expected_w = base_w * s_mult
+        expected_h = base_h * s_mult
+        
+        base_model_type_check = get_base_model_type(model_type)
+        base_fps = get_computed_fps(force_fps, base_model_type_check, video_guide, video_source)
+        expected_fps = base_fps * t_mult
+        
+        # 3. Get Source Properties
+        src_fps, src_w, src_h, _ = get_video_info(video_source)
+        
+        # 4. Compare with tolerance (16px for dims, 0.1 for FPS)
+        err_msg = []
+        if abs(src_w - expected_w) > 16 or abs(src_h - expected_h) > 16:
+             err_msg.append(f"Resolution Mismatch: Source is {src_w}x{src_h}, but upscaled result will be approx {int(expected_w)}x{int(expected_h)}.")
+        
+        if abs(src_fps - expected_fps) > 0.1:
+             err_msg.append(f"FPS Mismatch: Source is {src_fps:.2f} fps, but upscaled result will be {expected_fps:.2f} fps.")
+             
+        if len(err_msg) > 0:
+            err_msg.append("Please adjust Resolution, Spatial Upsampling, Force FPS, or Temporal Upsampling settings to match the source.")
+            raise gr.Error("\n".join(err_msg))
+    # -----------------------------------
+
     global wan_model, offloadobj, reload_needed
     gen = get_gen_info(state)
     torch.set_grad_enabled(False) 
@@ -5068,7 +5110,7 @@ def generate_video(
         return
     
     width, height = resolution.split("x")
-    width, height = int(width) // block_size *  block_size, int(height) // block_size *  block_size
+    width, height = int(width) // block_size * block_size, int(height) // block_size * block_size
     default_image_size = (height, width)
 
     if slg_switch == 0:
@@ -5823,6 +5865,7 @@ def generate_video(
                 #     sample =torch.load("output.pt")
                 if gen.get("extra_windows",0) > 0:
                     sliding_window = True 
+                
                 if sliding_window :
                     # guide_start_frame = guide_end_frame
                     guide_start_frame += current_video_length
@@ -5838,8 +5881,12 @@ def generate_video(
                         pre_video_guide =  sample[:, -reuse_frames:].clone()
 
                 if prefix_video != None and window_no == 1:
-                    # remove source video overlapped frames at the beginning of the generation
-                    sample = torch.cat([ prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
+                    # Only concatenate low-res prefix if NO continue video upscaling is performed.
+                    # If continue video upscaling is active, we concat high-res original frames LATER.
+                    if not (any_letters(image_prompt_type, "VL") and do_upsampling):
+                        # remove prefix video overlapped frames at the beginning of the generation
+                        sample = torch.cat([ prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
+                        
                     guide_start_frame -= source_video_overlap_frames_count 
                     if generated_audio is not None:
                         generated_audio = truncate_audio(generated_audio, source_video_overlap_frames_count, 0, fps, audio_sampling_rate)
@@ -5855,16 +5902,48 @@ def generate_video(
                     full_generated_audio =  generated_audio if full_generated_audio is None else np.concatenate([full_generated_audio, generated_audio], axis=0)
                     output_new_audio_data = full_generated_audio
 
-                if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and not "vae2" in spatial_upsampling:                
+                if do_upsampling and not "vae2" in spatial_upsampling:                
                     send_cmd("progress", [0, get_latest_status(state,"Upsampling")])
                           
                 if len(spatial_upsampling) > 0:
-                    # h_before, w_before = sample.shape[-2:]
                     sample = perform_spatial_upsampling(sample, spatial_upsampling)
                 
                 output_fps  = fps
                 if len(temporal_upsampling) > 0:
                     sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, previous_last_frame if sliding_window and window_no > 1 else None, temporal_upsampling, fps)
+
+                # --- MERGE WITH ORIGINAL VIDEO SOURCE IF UPSCALED ---
+                if any_letters(image_prompt_type, "VL") and do_upsampling: 
+                    src_fps, src_w, src_h, _ = get_video_info(video_source) 
+                    src_video = preprocess_video(
+                        width=src_w, 
+                        height=src_h, 
+                        video_in=video_source, 
+                        max_frames=parsed_keep_frames_video_source, 
+                        start_frame=0, 
+                        fit_canvas=None, 
+                        fit_crop=False, 
+                        target_fps=src_fps, 
+                        block_size=block_size
+                    )
+                    src_video = src_video.permute(3, 0, 1, 2).float().div_(127.5).sub_(1.) # c, f, h, w
+
+                    # Resize sample to match the source's resolution exactly if they differ
+                    if src_video.shape[-2:] != sample.shape[-2:]:
+                        # Permute to (F, C, H, W) for torch.nn.functional.interpolate
+                        sample = sample.permute(1, 0, 2, 3)
+                        sample = torch.nn.functional.interpolate(
+                            sample,
+                            size=src_video.shape[-2:],
+                            mode='bilinear',
+                            align_corners=False
+                        )
+                        # Permute back to (C, F, H, W)
+                        sample = sample.permute(1, 0, 2, 3)
+                    
+                    # remove source video overlapped frames and merge with new generated sample
+                    sample = torch.cat([src_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
+                # -----------------------------------------------
 
                 if film_grain_intensity> 0:
                     from postprocessing.film_grain import add_film_grain

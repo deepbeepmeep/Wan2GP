@@ -46,7 +46,7 @@ facexlib==0.3.0
 taichi
 # chumpy wheel hosted on GitHub to avoid sdist build isolation issue
 chumpy @ https://github.com/deepbeepmeep/chumpy/releases/download/v0.71/chumpy-0.71-py3-none-any.whl
-smplfitter==0.2.10
+smplfitter @ https://github.com/deepbeepmeep/smplfitter/releases/download/v0.2.10/smplfitter-0.2.10-py3-none-any.whl
 
 # Config & orchestration
 omegaconf

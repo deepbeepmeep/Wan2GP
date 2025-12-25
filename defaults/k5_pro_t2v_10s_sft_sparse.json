@@ -1,0 +1,64 @@
+{
+    "model": {
+        "name": "Kandinsky 5 Pro T2V SFT 10s Sparse 19B",
+        "architecture": "k5_pro_t2v",
+        "description": "Kandinsky 5.0 Video Pro is a line-up of 19B models that generates high-quality HD videos from English and Russian prompts with controllable camera motion.",
+        "group": "kandinsky5",
+        "visible": false,
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Kandinsky5/resolve/main/kandinsky5pro_t2v_sft_10s_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Kandinsky5/resolve/main/kandinsky5pro_t2v_sft_10s_quanto_bf16_int8.safetensors"
+        ],
+        "resolutions": [
+            [
+                "1024x1024 (1:1)",
+                "1024x1024"
+            ],
+            [
+                "768x1024 (3:4)",
+                "768x1024"
+            ],
+            [
+                "1024x768 (4:3)",
+                "1024x768"
+            ],
+            [
+                "512x1024 (1:2)",
+                "512x1024"
+            ],
+            [
+                "1024x512 (2:1)",
+                "1024x512"
+            ],
+            [
+                "768x768 (1:1)",
+                "768x768"
+            ],
+            [
+                "768x512 (3:2)",
+                "768x512"
+            ],
+            [
+                "512x768 (2:3)",
+                "512x768"
+            ]
+        ],
+        "k5_config_overrides": {
+            "model": {
+                "attention": {
+                    "type": "nabla",
+                    "method": "topcdf",
+                    "P": 0.9,
+                    "add_sta": true,
+                    "wT": 11,
+                    "wW": 3,
+                    "wH": 3
+                }
+            }
+        }
+    },
+    "num_inference_steps": 30,
+    "guidance_scale": 5.0,
+    "flow_shift": 10.0,
+    "video_length": 161
+}

@@ -326,9 +326,9 @@ class family_handler():
         if flux2:
             ui_defaults.update({
                 "embedded_guidance_scale": 4.0,
+                "denoising_strength": 1.0,
+                "masking_strength": 0.25,
                 "remove_background_images_ref" : 0,
-                "mask_strength": 0.3,
-
             })
 
         if flux_kontext or flux_uso or flux_kontext_dreamomni2:

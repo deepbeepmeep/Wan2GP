@@ -4575,22 +4575,24 @@ def edit_video(
 
     if mode == "edit_postprocessing":
         if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 or film_grain_intensity > 0:                
-            send_cmd("progress", [0, get_latest_status(state,"Upsampling" if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 else "Adding Film Grain"  )])
             sample = get_resampled_video(video_source, 0, max_source_video_frames, fps)
             sample = sample.float().div_(127.5).sub_(1.).permute(-1,0,1,2)
             frames_count = sample.shape[1] 
 
         if len(spatial_upsampling) > 0:
+            send_cmd("progress", [0, get_latest_status(state,"Spatial Upsampling")])
             sample = perform_spatial_upsampling(sample, spatial_upsampling)
             configs["spatial_upsampling"] = spatial_upsampling
 
         output_fps  = round(fps)
         if len(temporal_upsampling) > 0:
+            send_cmd("progress", [0, get_latest_status(state,"Temporal Upsampling")])
             sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, None, temporal_upsampling, fps)
             configs["temporal_upsampling"] = temporal_upsampling
             frames_count = sample.shape[1]
 
         if film_grain_intensity > 0:
+            send_cmd("progress", [0, get_latest_status(state,"Film Grain")])
             from postprocessing.film_grain import add_film_grain
             sample = add_film_grain(sample, film_grain_intensity, film_grain_saturation) 
             configs["film_grain_intensity"] = film_grain_intensity
@@ -4598,6 +4600,7 @@ def edit_video(
     else:
         output_fps  = round(fps)
 
+    send_cmd("progress", [0, get_latest_status(state,"Finalizing")])
     any_mmaudio = MMAudio_setting != 0 and server_config.get("mmaudio_enabled", 0) != 0 and frames_count >=output_fps
     if any_mmaudio: download_mmaudio()
 
@@ -5025,17 +5028,12 @@ def generate_video(
         # 3. Get Source Properties
         src_fps, src_w, src_h, _ = get_video_info(video_source)
         
-        # 4. Compare with tolerance (16px for dims, 0.1 for FPS)
-        err_msg = []
+        # 4. Compare with tolerance (16px for resolution, 0.1 for FPS)
         if abs(src_w - expected_w) > 16 or abs(src_h - expected_h) > 16:
-             err_msg.append(f"Resolution Mismatch: Source is {src_w}x{src_h}, but upscaled result will be approx {int(expected_w)}x{int(expected_h)}.")
+             raise gr.Error(f"Resolution Mismatch: Source is {src_w}x{src_h}, but upscaled result will be approx {int(expected_w)}x{int(expected_h)}. Please adjust Resolution or Spatial Upsampling to match the source.")
         
         if abs(src_fps - expected_fps) > 0.1:
-             err_msg.append(f"FPS Mismatch: Source is {src_fps:.2f} fps, but upscaled result will be {expected_fps:.2f} fps.")
-             
-        if len(err_msg) > 0:
-            err_msg.append("Please adjust Resolution, Spatial Upsampling, Force FPS, or Temporal Upsampling settings to match the source.")
-            raise gr.Error("\n".join(err_msg))
+             raise gr.Error(f"FPS Mismatch: Source is {src_fps:.2f} fps, but upscaled result will be {expected_fps:.2f} fps. Please adjust Default Model FPS or Temporal Upsampling to match the source.")
     # -----------------------------------
 
     global wan_model, offloadobj, reload_needed
@@ -5438,13 +5436,14 @@ def generate_video(
                     image_start_tensor = convert_image_to_tensor(image_start_tensor)
                     pre_video_guide =  prefix_video = image_start_tensor.unsqueeze(1)
                 else:
-                    prefix_video  = preprocess_video(width=width, height=height,video_in=video_source, max_frames= parsed_keep_frames_video_source , start_frame = 0, fit_canvas= sample_fit_canvas, fit_crop = fit_crop, target_fps = fps, block_size = block_size )
-                    prefix_video  = prefix_video.permute(3, 0, 1, 2)
-                    prefix_video  = prefix_video.float().div_(127.5).sub_(1.) # c, f, h, w
+                    prefix_video = preprocess_video(width=width, height=height,video_in=video_source, max_frames= parsed_keep_frames_video_source , start_frame = 0, fit_canvas= sample_fit_canvas, fit_crop = fit_crop, target_fps = fps, block_size = block_size )
+                    prefix_video = prefix_video.permute(3, 0, 1, 2)
+                    prefix_video = prefix_video.float().div_(127.5).sub_(1.) # c, f, h, w
                     if fit_crop or "L" in image_prompt_type: refresh_preview["video_source"] = convert_tensor_to_image(prefix_video, 0) 
 
-                    new_height, new_width = prefix_video.shape[-2:]                    
-                    pre_video_guide =  prefix_video[:, -reuse_frames:]
+                    new_height, new_width = prefix_video.shape[-2:]
+                    #print("Downsampled Video:", str(new_width), str(new_height))                    
+                    pre_video_guide = prefix_video[:, -reuse_frames:]
                 pre_video_frame = convert_tensor_to_image(prefix_video[:, -1])
                 source_video_overlap_frames_count = pre_video_guide.shape[1]
                 source_video_frames_count = prefix_video.shape[1]
@@ -5902,19 +5901,19 @@ def generate_video(
                     full_generated_audio =  generated_audio if full_generated_audio is None else np.concatenate([full_generated_audio, generated_audio], axis=0)
                     output_new_audio_data = full_generated_audio
 
-                if do_upsampling and not "vae2" in spatial_upsampling:                
-                    send_cmd("progress", [0, get_latest_status(state,"Upsampling")])
-                          
                 if len(spatial_upsampling) > 0:
+                    send_cmd("progress", [0, get_latest_status(state,"Spatial Upsampling")])
                     sample = perform_spatial_upsampling(sample, spatial_upsampling)
                 
                 output_fps  = fps
                 if len(temporal_upsampling) > 0:
+                    send_cmd("progress", [0, get_latest_status(state,"Temporal Upsampling")])
                     sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, previous_last_frame if sliding_window and window_no > 1 else None, temporal_upsampling, fps)
 
                 # --- MERGE WITH ORIGINAL VIDEO SOURCE IF UPSCALED ---
                 if any_letters(image_prompt_type, "VL") and do_upsampling: 
-                    src_fps, src_w, src_h, _ = get_video_info(video_source) 
+                    send_cmd("progress", [0, get_latest_status(state,"Resizing Video")])
+                    src_fps, src_w, src_h, _ = get_video_info(video_source)
                     src_video = preprocess_video(
                         width=src_w, 
                         height=src_h, 
@@ -5927,35 +5926,42 @@ def generate_video(
                         block_size=block_size
                     )
                     src_video = src_video.permute(3, 0, 1, 2).float().div_(127.5).sub_(1.) # c, f, h, w
-
+                    #print("Source Video:", str(src_w), str(src_h)) 
+                    #print("Sample Video:", str(sample.shape[-2:]))                    
+                    
                     # Resize sample to match the source's resolution exactly if they differ
-                    if src_video.shape[-2:] != sample.shape[-2:]:
+                    if [src_h, src_w] != sample.shape[-2:]:
                         # Permute to (F, C, H, W) for torch.nn.functional.interpolate
                         sample = sample.permute(1, 0, 2, 3)
                         sample = torch.nn.functional.interpolate(
                             sample,
-                            size=src_video.shape[-2:],
+                            size=[src_h, src_w],
                             mode='bilinear',
                             align_corners=False
                         )
                         # Permute back to (C, F, H, W)
                         sample = sample.permute(1, 0, 2, 3)
                     
-                    # remove source video overlapped frames and merge with new generated sample
-                    sample = torch.cat([src_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
+                    # last frame of source is first frame of generated sample which can be skipped
+                    # remove source overlapped frame and merge with new generated sample
+                    send_cmd("progress", [0, get_latest_status(state,"Merging Videos")])
+                    sample = torch.cat([src_video[:, :-source_video_overlap_frames_count], sample[:, 1:]], dim = 1)
                 # -----------------------------------------------
 
                 if film_grain_intensity> 0:
+                    send_cmd("progress", [0, get_latest_status(state,"Film Grain")])
                     from postprocessing.film_grain import add_film_grain
                     sample = add_film_grain(sample, film_grain_intensity, film_grain_saturation)
 
-                if sliding_window :
+                if sliding_window:
+                    send_cmd("progress", [0, get_latest_status(state,"Sliding Window")])
                     if frames_already_processed == None:
                         frames_already_processed = sample
                     else:
                         sample = torch.cat([frames_already_processed, sample], dim=1)
                     frames_already_processed = sample
 
+                send_cmd("progress", [0, get_latest_status(state,"Saving")])
                 time_flag = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss")
                 save_prompt = original_prompts[0]
                 if audio_only:
@@ -6027,6 +6033,7 @@ def generate_video(
 
                 end_time = time.time()
 
+                send_cmd("progress", [0, get_latest_status(state,"Add Meta Data")])
                 inputs.pop("send_cmd")
                 inputs.pop("task")
                 inputs.pop("mode")
@@ -8943,13 +8950,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 pace = gr.Slider( 0.2, 1, value=ui_get("pace"), step=0.01, label="Pace", show_reset_button= False)
 
             with gr.Row(visible=not audio_only) as resolution_row:
-                fit_canvas = server_config.get("fit_canvas", 0)
-                if fit_canvas == 1:
-                    label = "Outer Box Resolution (one dimension may be less to preserve video W/H ratio)"
-                elif fit_canvas == 2:
-                    label = "Output Resolution (Input Images wil be Cropped if the W/H ratio is different)"
-                else:
-                    label = "Resolution Budget (Pixels will be reallocated to preserve Inputs W/H ratio)" 
                 current_resolution_choice = ui_get("resolution") if update_form or last_resolution is None else last_resolution
                 model_resolutions = model_def.get("resolutions", None)
                 resolution_choices, current_resolution_choice = get_resolution_choices(current_resolution_choice, model_resolutions)
@@ -8962,8 +8962,16 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 resolution = gr.Dropdown(
                 choices = selected_group_resolutions,
                     value= current_resolution_choice,
-                    label= label,
-                    scale = 5
+                    label= "Format",
+                    scale = 2
+                )
+                fit_canvas = gr.Dropdown(
+                choices=[("Resolution Budget (Pixels will be reallocated to preserve Inputs W/H ratio)", 0),
+                         ("Outer Box Resolution (one dimension may be less to preserve video W/H ratio)", 1),
+                         ("Output Resolution (Input Images wil be Cropped if the W/H ratio is different)", 2)],
+                    value= server_config.get("fit_canvas", 0),
+                    label="Fit Canvas",
+                    scale = 3
                 )
             with gr.Row(visible= not audio_only) as number_frames_row:
                 batch_size = gr.Slider(1, 16, value=ui_get("batch_size"), step=1, label="Number of Images to Generate", visible = image_outputs, show_reset_button= False)

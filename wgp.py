@@ -8954,6 +8954,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 model_resolutions = model_def.get("resolutions", None)
                 resolution_choices, current_resolution_choice = get_resolution_choices(current_resolution_choice, model_resolutions)
                 available_groups, selected_group_resolutions, selected_group = group_resolutions(model_def,resolution_choices, current_resolution_choice)
+                current_fit_canvas = server_config.get("fit_canvas", 0)
                 resolution_group = gr.Dropdown(
                 choices = available_groups,
                     value= selected_group,
@@ -8969,9 +8970,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 choices=[("Resolution Budget (Pixels will be reallocated to preserve Inputs W/H ratio)", 0),
                          ("Outer Box Resolution (one dimension may be less to preserve video W/H ratio)", 1),
                          ("Output Resolution (Input Images wil be Cropped if the W/H ratio is different)", 2)],
-                    value= server_config.get("fit_canvas", 0),
+                    value= current_fit_canvas,
                     label="Fit Canvas",
-                    scale = 3
+                    scale = 3,
+                    interactive = True
                 )
             with gr.Row(visible= not audio_only) as number_frames_row:
                 batch_size = gr.Slider(1, 16, value=ui_get("batch_size"), step=1, label="Number of Images to Generate", visible = image_outputs, show_reset_button= False)

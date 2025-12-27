@@ -68,13 +68,18 @@ class family_handler():
         parser.add_argument(
             "--lora-dir-ltxv",
             type=str,
-            default=os.path.join("loras", "ltxv"),
-            help="Path to a directory that contains LTX Videos Loras"
+            default=None,
+            help="Path to a directory that contains LTX Videos Loras (default: loras/ltxv)"
         )
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
-        return args.lora_dir_ltxv
+        from wgp import get_lora_config_path
+
+        # Priority: CLI args → config file → defaults
+        return (args.lora_dir_ltxv or
+                get_lora_config_path("ltxv") or
+                os.path.join("loras", "ltxv"))
 
     @staticmethod
     def get_vae_block_size(base_model_type):

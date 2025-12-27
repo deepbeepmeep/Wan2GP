@@ -6,7 +6,21 @@ Loras (Low-Rank Adaptations) allow you to customize video generation models by a
 
 Loras are organized in different folders based on the model they're designed for:
 
-All loras now live under the single `loras/` root:
+All loras now live under the single `loras/` root.
+
+**Subdirectory Support:** You can organize your LoRAs into subdirectories within each model folder for better organization. For example:
+```
+loras/wan/
+├── characters/
+│   ├── character1.safetensors
+│   └── character2.safetensors
+├── styles/
+│   ├── anime.safetensors
+│   └── realistic.safetensors
+└── misc.safetensors
+```
+
+WanGP will automatically discover and display LoRAs in all subdirectories. In the UI, they will be shown with their relative paths (e.g., `characters/character1.safetensors`).
 
 ### Wan Models
 - `loras/wan/`    - Wan t2v (14B / general) loras

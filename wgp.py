@@ -3037,9 +3037,15 @@ def check_loras_exist(model_type, loras_choices_files, download = False, send_cm
     missing_local_loras = []
     missing_remote_loras = []
     for lora_file in loras_choices_files:
+        # Support subdirectories: check if lora_file is a relative path first
+        if os.path.isfile(os.path.join(lora_dir, lora_file)):
+            # File exists with relative path (e.g., "characters/style1.safetensors")
+            continue
+
+        # Try with just basename for backwards compatibility
         local_path = os.path.join(lora_dir, os.path.basename(lora_file))
         if not os.path.isfile(local_path):
-            url = loras_url_cache.get(local_path, None)         
+            url = loras_url_cache.get(local_path, None)
             if url is not None:
                 if download:
                     if send_cmd is not None:
@@ -3104,13 +3110,17 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
 
 
     if lora_dir != None:
-        dir_loras =  glob.glob( os.path.join(lora_dir , "*.sft") ) + glob.glob( os.path.join(lora_dir , "*.safetensors") ) 
+        # Search for LoRA files in main directory and all subdirectories
+        dir_loras = (glob.glob(os.path.join(lora_dir, "*.sft")) +
+                     glob.glob(os.path.join(lora_dir, "*.safetensors")) +
+                     glob.glob(os.path.join(lora_dir, "**", "*.sft"), recursive=True) +
+                     glob.glob(os.path.join(lora_dir, "**", "*.safetensors"), recursive=True))
         dir_loras.sort()
         loras += [element for element in dir_loras if element not in loras ]
 
-        dir_presets_settings = glob.glob( os.path.join(lora_dir , "*.json") ) 
+        dir_presets_settings = glob.glob( os.path.join(lora_dir , "*.json") )
         dir_presets_settings.sort()
-        dir_presets =   glob.glob( os.path.join(lora_dir , "*.lset") ) 
+        dir_presets =   glob.glob( os.path.join(lora_dir , "*.lset") )
         dir_presets.sort()
         # loras_presets = [ Path(Path(file_path).parts[-1]).stem for file_path in dir_presets_settings + dir_presets]
         loras_presets = [ Path(file_path).parts[-1] for file_path in dir_presets_settings + dir_presets]
@@ -3119,7 +3129,9 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
         loras = offload.load_loras_into_model(transformer, loras,  activate_all_loras=False, check_only= True, preprocess_sd=get_loras_preprocessor(transformer, base_model_type), split_linear_modules_map = split_linear_modules_map) #lora_multiplier,
 
     if len(loras) > 0:
-        loras = [ os.path.basename(lora) for lora in loras  ]
+        # Use relative path from lora_dir if in subdirectory, otherwise just basename
+        loras = [os.path.relpath(lora, lora_dir) if lora_dir and lora.startswith(lora_dir)
+                 else os.path.basename(lora) for lora in loras]
 
     if len(lora_preselected_preset) > 0:
         if not os.path.isfile(os.path.join(lora_dir, lora_preselected_preset + ".lset")):
@@ -7537,11 +7549,20 @@ def update_loras_url_cache(lora_dir, loras_selected):
     new_loras_selected = []
     update = False
     for lora in loras_selected:
-        base_name = os.path.basename(lora)
-        local_name = os.path.join(lora_dir, base_name)
-        url = loras_url_cache.get(local_name, base_name)
+        # Support subdirectories: use relative path if it exists, otherwise just basename
+        if os.path.isfile(os.path.join(lora_dir, lora)):
+            # Lora is a relative path (e.g., "characters/style1.safetensors")
+            local_name = os.path.join(lora_dir, lora)
+            cache_key = local_name
+        else:
+            # Lora is just a filename or URL
+            base_name = os.path.basename(lora)
+            local_name = os.path.join(lora_dir, base_name)
+            cache_key = local_name
+
+        url = loras_url_cache.get(cache_key, lora)
         if (lora.startswith("http:") or lora.startswith("https:")) and url != lora:
-            loras_url_cache[local_name]=lora
+            loras_url_cache[cache_key] = lora
             update = True
         new_loras_selected.append(url)
 

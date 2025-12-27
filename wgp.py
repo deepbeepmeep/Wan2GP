@@ -2986,14 +2986,17 @@ def check_loras_exist(model_type, loras_choices_files, download = False, send_cm
     missing_local_loras = []
     missing_remote_loras = []
     for lora_file in loras_choices_files:
-        local_path = os.path.join(lora_dir, os.path.basename(lora_file))
+        # Support relative paths with subfolders
+        local_path = os.path.join(lora_dir, lora_file)
         if not os.path.isfile(local_path):
-            url = loras_url_cache.get(local_path, None)         
+            url = loras_url_cache.get(local_path, None)
             if url is not None:
                 if download:
                     if send_cmd is not None:
                         send_cmd("status", f'Downloading Lora {os.path.basename(lora_file)}...')
                     try:
+                        # Ensure parent directory exists for subfolders
+                        os.makedirs(os.path.dirname(local_path), exist_ok=True)
                         download_file(url, local_path)
                     except:
                         missing_remote_loras.append(lora_file)
@@ -3053,13 +3056,14 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
 
 
     if lora_dir != None:
-        dir_loras =  glob.glob( os.path.join(lora_dir , "*.sft") ) + glob.glob( os.path.join(lora_dir , "*.safetensors") ) 
+        # Scan recursively for LoRA files in subfolders
+        dir_loras =  glob.glob( os.path.join(lora_dir , "**", "*.sft"), recursive=True ) + glob.glob( os.path.join(lora_dir , "**", "*.safetensors"), recursive=True )
         dir_loras.sort()
         loras += [element for element in dir_loras if element not in loras ]
 
-        dir_presets_settings = glob.glob( os.path.join(lora_dir , "*.json") ) 
+        dir_presets_settings = glob.glob( os.path.join(lora_dir , "*.json") )
         dir_presets_settings.sort()
-        dir_presets =   glob.glob( os.path.join(lora_dir , "*.lset") ) 
+        dir_presets =   glob.glob( os.path.join(lora_dir , "*.lset") )
         dir_presets.sort()
         # loras_presets = [ Path(Path(file_path).parts[-1]).stem for file_path in dir_presets_settings + dir_presets]
         loras_presets = [ Path(file_path).parts[-1] for file_path in dir_presets_settings + dir_presets]
@@ -3068,7 +3072,8 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
         loras = offload.load_loras_into_model(transformer, loras,  activate_all_loras=False, check_only= True, preprocess_sd=get_loras_preprocessor(transformer, base_model_type), split_linear_modules_map = split_linear_modules_map) #lora_multiplier,
 
     if len(loras) > 0:
-        loras = [ os.path.basename(lora) for lora in loras  ]
+        # Preserve relative paths from lora_dir to keep subfolder structure
+        loras = [ os.path.relpath(lora, lora_dir) for lora in loras  ]
 
     if len(lora_preselected_preset) > 0:
         if not os.path.isfile(os.path.join(lora_dir, lora_preselected_preset + ".lset")):
@@ -4740,7 +4745,8 @@ def get_transformer_loras(model_type):
     model_def = get_model_def(model_type)
     transformer_loras_filenames = get_model_recursive_prop(model_type, "loras", return_list=True)
     lora_dir = get_lora_dir(model_type)
-    transformer_loras_filenames = [ os.path.join(lora_dir, os.path.basename(filename)) for filename in transformer_loras_filenames]
+    # Support relative paths with subfolders
+    transformer_loras_filenames = [ os.path.join(lora_dir, filename) for filename in transformer_loras_filenames]
     transformer_loras_multipliers = get_model_recursive_prop(model_type, "loras_multipliers", return_list=True) + [1.] * len(transformer_loras_filenames)
     transformer_loras_multipliers = transformer_loras_multipliers[:len(transformer_loras_filenames)]
     return transformer_loras_filenames, transformer_loras_multipliers
@@ -5186,7 +5192,8 @@ def generate_video(
         lora_dir = get_lora_dir(model_type)
         errors = check_loras_exist(model_type, activated_loras, True, send_cmd)
         if len(errors) > 0 : raise gr.Error(errors)
-        loras_selected += [ os.path.join(lora_dir, os.path.basename(lora)) for lora in activated_loras]
+        # Use relative paths to support subfolders
+        loras_selected += [ os.path.join(lora_dir, lora) for lora in activated_loras]
 
     if hasattr(wan_model, "get_trans_lora"):
         trans_lora, trans2_lora = wan_model.get_trans_lora()
@@ -6770,15 +6777,58 @@ def delete_lset(state, lset_name):
     return  gr.Dropdown(choices=lset_choices, value= selected_lset_name), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Checkbox(visible= False)
 
 def get_updated_loras_dropdown(loras, loras_choices):
-    loras_choices = [os.path.basename(choice) for choice in loras_choices]    
-    loras_choices_dict = { choice : True for choice in loras_choices}
+    # Preserve the relative paths for selected loras
+    loras_choices_normalized = []
+    for choice in loras_choices:
+        # Normalize path separators and remove extensions for comparison
+        normalized = choice.replace('\\', os.sep).replace('/', os.sep)
+        loras_choices_normalized.append(normalized)
+
+    loras_choices_dict = { choice : True for choice in loras_choices_normalized}
     for lora in loras:
         loras_choices_dict.pop(lora, False)
     new_loras = loras[:]
     for choice, _ in loras_choices_dict.items():
-        new_loras.append(choice)    
+        new_loras.append(choice)
 
-    new_loras_dropdown= [ ( os.path.splitext(choice)[0], choice) for choice in new_loras ]
+    # Organize LoRAs by subfolder with visual separators
+    from collections import defaultdict
+    loras_by_folder = defaultdict(list)
+
+    for lora in new_loras:
+        # Get the parent folder of the lora file
+        folder = os.path.dirname(lora)
+        if folder == '':
+            folder = 'Root'  # Files in root directory
+        loras_by_folder[folder].append(lora)
+
+    # Sort folders and create dropdown with visual organization
+    sep = '\u2500'  # Horizontal line character
+    indent = chr(160) * 4  # Non-breaking space for indentation
+    new_loras_dropdown = []
+
+    # Sort folders alphabetically
+    sorted_folders = sorted(loras_by_folder.keys())
+
+    for folder in sorted_folders:
+        folder_loras = sorted(loras_by_folder[folder])
+
+        # Add folder header with visual separator (only if more than one folder)
+        if len(sorted_folders) > 1:
+            # Calculate separator length to center folder name
+            folder_display = folder if folder != 'Root' else 'Root Directory'
+            sep_length = max(0, (40 - len(folder_display)) // 2)
+            header = (sep * sep_length) + ' ' + folder_display + ' ' + (sep * sep_length)
+            new_loras_dropdown.append((header, f'>folder:{folder}'))
+
+        # Add loras in this folder with indentation
+        for lora in folder_loras:
+            # Display name: just the filename without extension
+            display_name = os.path.splitext(os.path.basename(lora))[0]
+            if len(sorted_folders) > 1:
+                display_name = indent + display_name
+            new_loras_dropdown.append((display_name, lora))
+
     return new_loras, new_loras_dropdown
 
 def refresh_lora_list(state, lset_name, loras_choices):
@@ -6835,7 +6885,7 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
                 prompt = preset_prompt + '\n' + prompt
             loras_choices, loras_mult_choices = merge_loras_settings(old_activated_loras, old_loras_multipliers, loras_choices, loras_mult_choices, "merge after")
             loras_choices = update_loras_url_cache(get_lora_dir(current_model_type), loras_choices)
-            loras_choices = [os.path.basename(lora) for lora in loras_choices]
+            # Keep relative paths to support subfolders
             gr.Info(f"Lora Preset '{lset_name}' has been applied")
             state["apply_success"] = 1
             wizard_prompt_activated = "on"
@@ -7486,9 +7536,16 @@ def update_loras_url_cache(lora_dir, loras_selected):
     new_loras_selected = []
     update = False
     for lora in loras_selected:
-        base_name = os.path.basename(lora)
-        local_name = os.path.join(lora_dir, base_name)
-        url = loras_url_cache.get(local_name, base_name)
+        # Support relative paths with subfolders
+        # If lora is a URL, extract filename; otherwise keep relative path
+        if lora.startswith("http:") or lora.startswith("https:"):
+            # For URLs, use basename as the relative path
+            relative_path = os.path.basename(lora)
+        else:
+            # For local paths, preserve the relative path
+            relative_path = lora
+        local_name = os.path.join(lora_dir, relative_path)
+        url = loras_url_cache.get(local_name, relative_path)
         if (lora.startswith("http:") or lora.startswith("https:")) and url != lora:
             loras_url_cache[local_name]=lora
             update = True
@@ -8494,7 +8551,16 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
         launch_prompt = ui_defaults.get("prompt","")
     if len(launch_loras) == 0:
         launch_multis_str = ui_defaults.get("loras_multipliers","")
-        launch_loras = [os.path.basename(path) for path in ui_defaults.get("activated_loras",[])]
+        # Support both old configs (absolute paths) and new configs (relative paths)
+        raw_loras = ui_defaults.get("activated_loras",[])
+        launch_loras = []
+        for path in raw_loras:
+            # If it's an absolute path, convert to basename for backwards compatibility
+            # Otherwise, keep the relative path (which may include subfolders)
+            if os.path.isabs(path):
+                launch_loras.append(os.path.basename(path))
+            else:
+                launch_loras.append(path)
     with gr.Row():
         column_kwargs = {'elem_id': 'edit-tab-content'} if tab_id == 'edit' else {}
         with gr.Column(**column_kwargs):

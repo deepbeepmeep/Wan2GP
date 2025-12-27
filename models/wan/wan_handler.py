@@ -111,6 +111,18 @@ class family_handler():
             default=None,
             help="Path to a directory that contains Wan i2v Loras (default: loras/wan_i2v)"
         )
+        parser.add_argument(
+            "--lora-dir-wan-2-2-t2v",
+            type=str,
+            default=None,
+            help="Path to a directory that contains Wan 2.2 T2V Loras (default: loras/wan_2_2_t2v)"
+        )
+        parser.add_argument(
+            "--lora-dir-wan-2-2-i2v",
+            type=str,
+            default=None,
+            help="Path to a directory that contains Wan 2.2 I2V Loras (default: loras/wan_2_2_i2v)"
+        )
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
@@ -137,6 +149,21 @@ class family_handler():
                       get_lora_config_path("wan_5B") or
                       os.path.join("loras", "wan_5B"))
 
+        wan_2_2_t2v_dir = (getattr(args, "lora_dir_wan_2_2_t2v", None) or
+                           get_lora_config_path("wan_2_2_t2v") or
+                           os.path.join("loras", "wan_2_2_t2v"))
+
+        wan_2_2_i2v_dir = (getattr(args, "lora_dir_wan_2_2_i2v", None) or
+                           get_lora_config_path("wan_2_2_i2v") or
+                           os.path.join("loras", "wan_2_2_i2v"))
+
+        # Check for Wan 2.2 specific models first
+        if base_model_type == "t2v_2_2":
+            return wan_2_2_t2v_dir
+        if base_model_type in ["i2v_2_2", "i2v_2_2_multitalk"]:
+            return wan_2_2_i2v_dir
+
+        # Check for other model variants
         if i2v:
             return wan_i2v_dir
         if "1.3B" in base_model_type:

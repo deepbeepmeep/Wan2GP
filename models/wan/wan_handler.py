@@ -84,32 +84,32 @@ class family_handler():
         parser.add_argument(
             "--lora-dir-i2v",
             type=str,
-            default=os.path.join("loras", "wan_i2v"),
-            help="Path to a directory that contains Wan i2v Loras "
+            default=None,
+            help="Path to a directory that contains Wan i2v Loras (default: loras/wan_i2v)"
         )
         parser.add_argument(
             "--lora-dir",
             type=str,
-            default=os.path.join("loras", "wan"),
-            help="Path to a directory that contains Wan t2v Loras"
+            default=None,
+            help="Path to a directory that contains Wan t2v Loras (default: loras/wan)"
         )
         parser.add_argument(
             "--lora-dir-wan-1-3b",
             type=str,
-            default=os.path.join("loras", "wan_1.3B"),
-            help="Path to a directory that contains Wan 1.3B Loras"
+            default=None,
+            help="Path to a directory that contains Wan 1.3B Loras (default: loras/wan_1.3B)"
         )
         parser.add_argument(
             "--lora-dir-wan-5b",
             type=str,
-            default=os.path.join("loras", "wan_5B"),
-            help="Path to a directory that contains Wan 5B Loras"
+            default=None,
+            help="Path to a directory that contains Wan 5B Loras (default: loras/wan_5B)"
         )
         parser.add_argument(
             "--lora-dir-wan-i2v",
             type=str,
-            default=os.path.join("loras", "wan_i2v"),
-            help="Path to a directory that contains Wan i2v Loras"
+            default=None,
+            help="Path to a directory that contains Wan i2v Loras (default: loras/wan_i2v)"
         )
 
     @staticmethod

@@ -190,14 +190,14 @@ class family_handler():
         parser.add_argument(
             "--lora-dir-flux",
             type=str,
-            default=os.path.join("loras", "flux"),
-            help="Path to a directory that contains flux images Loras"
+            default=None,
+            help="Path to a directory that contains flux images Loras (default: loras/flux)"
         )
         parser.add_argument(
             "--lora-dir-flux2",
             type=str,
-            default=os.path.join("loras", "flux2"),
-            help="Path to a directory that contains flux2 images Loras"
+            default=None,
+            help="Path to a directory that contains flux2 images Loras (default: loras/flux2)"
         )
 
     @staticmethod

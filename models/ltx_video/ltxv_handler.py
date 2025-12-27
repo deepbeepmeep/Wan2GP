@@ -68,8 +68,8 @@ class family_handler():
         parser.add_argument(
             "--lora-dir-ltxv",
             type=str,
-            default=os.path.join("loras", "ltxv"),
-            help="Path to a directory that contains LTX Videos Loras"
+            default=None,
+            help="Path to a directory that contains LTX Videos Loras (default: loras/ltxv)"
         )
 
     @staticmethod

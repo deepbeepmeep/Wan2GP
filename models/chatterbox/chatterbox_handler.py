@@ -58,8 +58,8 @@ class family_handler:
         parser.add_argument(
             "--lora-dir-tts",
             type=str,
-            default=os.path.join("loras", "tts"),
-            help="Path to a directory that contains TTS settings"
+            default=None,
+            help="Path to a directory that contains TTS settings (default: loras/tts)"
         )
 
     @staticmethod

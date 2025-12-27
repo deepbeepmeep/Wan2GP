@@ -70,8 +70,8 @@ class family_handler:
         parser.add_argument(
             "--lora-dir-z-image",
             type=str,
-            default=os.path.join("loras", "z_image"),
-            help="Path to a directory that contains z image settings"
+            default=None,
+            help="Path to a directory that contains z image settings (default: loras/z_image)"
         )
 
     @staticmethod

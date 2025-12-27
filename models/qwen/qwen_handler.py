@@ -100,8 +100,8 @@ class family_handler():
         parser.add_argument(
             "--lora-dir-qwen",
             type=str,
-            default=os.path.join("loras", "qwen"),
-            help="Path to a directory that contains qwen images Loras"
+            default=None,
+            help="Path to a directory that contains qwen images Loras (default: loras/qwen)"
         )
 
     @staticmethod

@@ -438,6 +438,21 @@ class WanAny2V:
         **bbargs
                 ):
         
+        model_def = self.model_def
+        distill_steps = None
+        distill_debug = os.getenv("WAN_DISTILL_DEBUG", "0").lower() not in ("0", "false", "no")
+        if model_def is not None and model_def.get("distill_scheduler", False):
+            distill_steps = model_def.get("denoising_step_list", None)
+            if distill_steps is None:
+                raise ValueError("distill_scheduler requires denoising_step_list in model definition")
+            sample_solver = "distill"
+            sampling_steps = len(distill_steps)
+            if model_def.get("sample_shift", None) is not None:
+                shift = model_def["sample_shift"]
+            if distill_debug:
+                print(f"Wan distill scheduler enabled: steps={distill_steps} shift={shift}")
+
+        distill_sigmas = None
         if sample_solver =="euler":
             # prepare timesteps
             timesteps = list(np.linspace(self.num_timesteps, 1, sampling_steps, dtype=np.float32))
@@ -447,6 +462,19 @@ class WanAny2V:
                 timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]
             timesteps = torch.tensor(timesteps)
             sample_scheduler = None                  
+        elif sample_solver == "distill":
+            if distill_steps is None:
+                raise ValueError("distill scheduler requires denoising_step_list")
+            num_train_timesteps = 1000
+            sigmas = torch.linspace(1.0, 0.0, num_train_timesteps + 1, device=self.device)[:-1]
+            sigmas = shift * sigmas / (1 + (shift - 1) * sigmas)
+            timesteps = sigmas * num_train_timesteps
+            denoise_indices = [num_train_timesteps - int(x) for x in distill_steps]
+            timesteps = timesteps[denoise_indices].to(self.device)
+            distill_sigmas = sigmas[denoise_indices].to("cpu")
+            if distill_debug:
+                print(f"Wan distill timesteps: {timesteps.tolist()} sigmas: {distill_sigmas.tolist()}")
+            sample_scheduler = None
         elif sample_solver == 'causvid':
             sample_scheduler = FlowMatchScheduler(num_inference_steps=sampling_steps, shift=shift, sigma_min=0, extra_one_step=True)
             timesteps = torch.tensor([1000, 934, 862, 756, 603, 410, 250, 140, 74])[:sampling_steps].to(self.device)
@@ -480,6 +508,8 @@ class WanAny2V:
             timesteps = sample_scheduler.timesteps
         else:
             raise NotImplementedError(f"Unsupported Scheduler {sample_solver}")
+        if sample_solver == "distill":
+            sampling_steps = len(timesteps)
         original_timesteps = timesteps
 
         seed_g = torch.Generator(device=self.device)
@@ -515,7 +545,6 @@ class WanAny2V:
         if NAG_scale > 1: context = torch.cat([context, context_null], dim=0)
         # if NAG_scale > 1: context = torch.cat([context, context_NAG], dim=0)
         if self._interrupt: return None
-        model_def  = self.model_def
         vace = model_def.get("vace_class", False)
         phantom = model_type in ["phantom_1.3B", "phantom_14B"]
         fantasy = model_type in ["fantasy"]
@@ -1258,7 +1287,14 @@ class WanAny2V:
                     noise_pred = noise_pred_uncond + guide_scale * (noise_pred_text - noise_pred_uncond)            
             ret_values = noise_pred_uncond = noise_pred_cond = noise_pred_text = neg  = None
             
-            if sample_solver == "euler":
+            if sample_solver == "distill":
+                flow_pred = noise_pred[:, :, :target_shape[1]].to(torch.float32)
+                sigma = distill_sigmas[i].item()
+                latents = latents.to(torch.float32) - sigma * flow_pred
+                if i < len(distill_sigmas) - 1:
+                    sigma_next = distill_sigmas[i + 1].item()
+                    latents = latents + sigma_next * flow_pred
+            elif sample_solver == "euler":
                 dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
                 dt = dt.item() / self.num_timesteps
                 latents = latents - noise_pred * dt

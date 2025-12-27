@@ -1188,7 +1188,11 @@ def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="
 
         # Update params, preserving list/single structure
         if loaded_items:
-            params[key] = loaded_items if is_originally_list else loaded_items[0]
+            has_pil_item = any(isinstance(item, Image.Image) for item in loaded_items)
+            if is_originally_list or has_pil_item:
+                params[key] = loaded_items
+            else:
+                params[key] = loaded_items[0]
         else:
             params.pop(key, None)
 
@@ -2380,8 +2384,9 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
     if len(choices) <= 1:
         raw_filename = choices[0]
     else:
-        if quantization in ("int8", "fp8"):
-            sub_choices = [ name for name in choices if quantization in os.path.basename(name) or quantization.upper() in os.path.basename(name)]
+        if quantization.lower() in ("int8", "fp8", "nvfp4"):
+            q = quantization.lower()
+            sub_choices = [name for name in choices if q in os.path.basename(name).lower()]
         else:
             sub_choices = [ name for name in choices if "quanto" not in os.path.basename(name)]
 
@@ -2563,7 +2568,10 @@ def init_model_def(model_type, model_def):
     base_model_type = get_base_model_type(model_type)
     family_handler = model_types_handlers.get(base_model_type, None)
     if family_handler is None:
-        raise Exception(f"Unknown model type {base_model_type}")
+        if model_def.get("visible", True):
+            print(f"Skipping model type '{model_type}' with unsupported architecture '{base_model_type}'.")
+        model_def["visible"] = False
+        return model_def
     default_model_def = family_handler.query_model_def(base_model_type, model_def)
     if default_model_def is None: return model_def
     default_model_def.update(model_def)
@@ -2982,6 +2990,7 @@ offload.default_verboseLevel = verbose_level
 
 
 def check_loras_exist(model_type, loras_choices_files, download = False, send_cmd = None):
+    _ensure_loras_url_cache()
     lora_dir = get_lora_dir(model_type)
     missing_local_loras = []
     missing_remote_loras = []
@@ -3324,7 +3333,9 @@ def generate_header(model_type, compile, attention_mode):
     else:
         header += ", Data Type <B>BF16</B>"
 
-    if "int8" in model_filename:
+    if "nvfp4" in model_filename.lower():
+        header += ", Quantization <B>NVFP4</B>"
+    elif "int8" in model_filename:
         header += ", Quantization <B>Scaled Int8</B>"
     header += "<FONT></DIV>"
 
@@ -5179,8 +5190,7 @@ def generate_video(
         if len(errors) > 0: raise Exception(f"Error parsing Extra Transformer Loras: {errors}")
         loras_selected += extra_loras_transformers 
 
-    loras = state["loras"]
-    if len(loras) > 0:
+    if len(activated_loras) > 0:
         loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(loras_multipliers, len(activated_loras), num_inference_steps, nb_phases = guidance_phases, merge_slist= loras_slists )
         if len(errors) > 0: raise Exception(f"Error parsing Loras: {errors}")
         lora_dir = get_lora_dir(model_type)
@@ -7471,7 +7481,8 @@ def use_video_settings(state, input_file_list, choice, source):
     return gr.update(), gr.update(), gr.update(), gr.update()
 loras_url_cache = None
 def update_loras_url_cache(lora_dir, loras_selected):
-    if loras_selected is None: return None
+    if loras_selected is None:
+        return None
     global loras_url_cache
     loras_cache_file = "loras_url_cache.json"
     if loras_url_cache is None:
@@ -7499,6 +7510,9 @@ def update_loras_url_cache(lora_dir, loras_selected):
             writer.write(json.dumps(loras_url_cache, indent=4))
 
     return new_loras_selected
+
+def _ensure_loras_url_cache():
+    update_loras_url_cache("", [])
 
 def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, switch_type_if_compatible, min_settings_version = 0, merge_loras = None):    
     configs = None
@@ -10506,6 +10520,9 @@ if __name__ == "__main__":
             save_path = args.output_dir
             image_save_path = args.output_dir
             print(f"Output directory: {args.output_dir}")
+
+        # Headless CLI runs: disable notification sounds to avoid pygame/sounddevice issues.
+        server_config["notification_sound_enabled"] = 0
 
         # Create minimal state with all required fields
         state = {

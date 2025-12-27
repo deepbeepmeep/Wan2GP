@@ -909,6 +909,8 @@ class WanModel(ModelMixin, ConfigMixin):
                 if k.startswith(prefix): 
                     k = k[len(prefix)+1:]
                     break
+            if ".attn2.norm_added_q." in k:
+                continue
             if v.dtype in (torch.float8_e5m2, torch.float8_e4m3fn):
                 for endfix in end_list:
                     if k.endswith(endfix):

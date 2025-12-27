@@ -618,7 +618,8 @@ def validate_settings(state, model_type, single_prompt, inputs):
 
     outpainting_dims = get_outpainting_dims(video_guide_outpainting)
 
-    if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
+    fit_canvas = inputs["fit_canvas"]
+    if fit_canvas == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
 
     if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
@@ -4901,6 +4902,7 @@ def generate_video(
     prompt,
     negative_prompt,    
     resolution,
+    fit_canvas,
     video_length,
     batch_size,
     seed,
@@ -4999,11 +5001,10 @@ def generate_video(
             if temp_filename!= None and os.path.isfile(temp_filename):
                 os.remove(temp_filename)
 
-    # --- CONTINUING VIDEO + UPSAMPLING VALIDATION CHECK ---
+    # --- CONTINUING VIDEO VALIDATION CHECK ---
     # Before starting generation, ensure that if we are continuing a video ("V" or "L")
-    # and using upsampling, the final result matches the source video resolution/FPS.
-    do_upsampling = len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0
-    if video_source and any_letters(image_prompt_type, "VL") and do_upsampling:
+    # the final result matches the source video resolution/FPS.
+    if video_source and any_letters(image_prompt_type, "VL"):
         # 1. Determine Upscaling Multipliers
         s_mult = 1.0
         if "lanczos1.5" in spatial_upsampling: s_mult = 1.5
@@ -5017,7 +5018,6 @@ def generate_video(
         # 2. Calculate Expected Target Properties (Model Resolution * Multiplier)
         base_w, base_h = resolution.split("x")
         base_w, base_h = int(base_w), int(base_h)
-        # Note: Model gen usually snaps to block_size (16), assume passed resolution is close to model output
         expected_w = base_w * s_mult
         expected_h = base_h * s_mult
         
@@ -5025,15 +5025,12 @@ def generate_video(
         base_fps = get_computed_fps(force_fps, base_model_type_check, video_guide, video_source)
         expected_fps = base_fps * t_mult
         
-        # 3. Get Source Properties
+        # 3. Get Source Properties and compare with tolerance (16px for resolution, 0.1 for FPS)
         src_fps, src_w, src_h, _ = get_video_info(video_source)
-        
-        # 4. Compare with tolerance (16px for resolution, 0.1 for FPS)
         if abs(src_w - expected_w) > 16 or abs(src_h - expected_h) > 16:
-             raise gr.Error(f"Resolution Mismatch: Source is {src_w}x{src_h}, but upscaled result will be approx {int(expected_w)}x{int(expected_h)}. Please adjust Resolution or Spatial Upsampling to match the source.")
-        
+            raise gr.Error(f"Resolution Mismatch: Source is {src_w}x{src_h}, but result will be approx {int(expected_w)}x{int(expected_h)}. Please adjust Resolution or Spatial Upsampling to match the source.")      
         if abs(src_fps - expected_fps) > 0.1:
-             raise gr.Error(f"FPS Mismatch: Source is {src_fps:.2f} fps, but upscaled result will be {expected_fps:.2f} fps. Please adjust Default Model FPS or Temporal Upsampling to match the source.")
+            raise gr.Error(f"FPS Mismatch: Source is {src_fps:.2f} fps, but result will be {expected_fps:.2f} fps. Please adjust Default Model FPS or Temporal Upsampling to match the source.")
     # -----------------------------------
 
     global wan_model, offloadobj, reload_needed
@@ -5239,7 +5236,6 @@ def generate_video(
         any_background_ref = 2 if model_def.get("all_image_refs_are_background_ref", False) else 1
 
     outpainting_dims = get_outpainting_dims(video_guide_outpainting)
-    fit_canvas = server_config.get("fit_canvas", 0)
     fit_crop = fit_canvas == 2
     if fit_crop and outpainting_dims is not None:
         fit_crop = False
@@ -5441,8 +5437,7 @@ def generate_video(
                     prefix_video = prefix_video.float().div_(127.5).sub_(1.) # c, f, h, w
                     if fit_crop or "L" in image_prompt_type: refresh_preview["video_source"] = convert_tensor_to_image(prefix_video, 0) 
 
-                    new_height, new_width = prefix_video.shape[-2:]
-                    #print("Downsampled Video:", str(new_width), str(new_height))                    
+                    new_height, new_width = prefix_video.shape[-2:]                    
                     pre_video_guide = prefix_video[:, -reuse_frames:]
                 pre_video_frame = convert_tensor_to_image(prefix_video[:, -1])
                 source_video_overlap_frames_count = pre_video_guide.shape[1]
@@ -5880,11 +5875,10 @@ def generate_video(
                         pre_video_guide =  sample[:, -reuse_frames:].clone()
 
                 if prefix_video != None and window_no == 1:
-                    # Only concatenate low-res prefix if NO continue video upscaling is performed.
-                    # If continue video upscaling is active, we concat high-res original frames LATER.
-                    if not (any_letters(image_prompt_type, "VL") and do_upsampling):
+                    # If continue (last) video is active, we concat high-res original frames LATER.
+                    if not any_letters(image_prompt_type, "VL"):
                         # remove prefix video overlapped frames at the beginning of the generation
-                        sample = torch.cat([ prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
+                        sample = torch.cat([prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
                         
                     guide_start_frame -= source_video_overlap_frames_count 
                     if generated_audio is not None:
@@ -5910,27 +5904,13 @@ def generate_video(
                     send_cmd("progress", [0, get_latest_status(state,"Temporal Upsampling")])
                     sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, previous_last_frame if sliding_window and window_no > 1 else None, temporal_upsampling, fps)
 
-                # --- MERGE WITH ORIGINAL VIDEO SOURCE IF UPSCALED ---
-                if any_letters(image_prompt_type, "VL") and do_upsampling: 
-                    send_cmd("progress", [0, get_latest_status(state,"Resizing Video")])
+                if any_letters(image_prompt_type, "VL"): 
                     src_fps, src_w, src_h, _ = get_video_info(video_source)
-                    src_video = preprocess_video(
-                        width=src_w, 
-                        height=src_h, 
-                        video_in=video_source, 
-                        max_frames=parsed_keep_frames_video_source, 
-                        start_frame=0, 
-                        fit_canvas=None, 
-                        fit_crop=False, 
-                        target_fps=src_fps, 
-                        block_size=block_size
-                    )
-                    src_video = src_video.permute(3, 0, 1, 2).float().div_(127.5).sub_(1.) # c, f, h, w
-                    #print("Source Video:", str(src_w), str(src_h)) 
-                    #print("Sample Video:", str(sample.shape[-2:]))                    
+                    sample_height, sample_width = sample.shape[-2:]                   
                     
-                    # Resize sample to match the source's resolution exactly if they differ
-                    if [src_h, src_w] != sample.shape[-2:]:
+                    # Resize sample to match the source's resolution exactly if they differ                  
+                    if src_h != sample_height or src_w != sample_width:
+                        send_cmd("progress", [0, get_latest_status(state,"Resizing Video")])
                         # Permute to (F, C, H, W) for torch.nn.functional.interpolate
                         sample = sample.permute(1, 0, 2, 3)
                         sample = torch.nn.functional.interpolate(
@@ -5941,12 +5921,6 @@ def generate_video(
                         )
                         # Permute back to (C, F, H, W)
                         sample = sample.permute(1, 0, 2, 3)
-                    
-                    # last frame of source is first frame of generated sample which can be skipped
-                    # remove source overlapped frame and merge with new generated sample
-                    send_cmd("progress", [0, get_latest_status(state,"Merging Videos")])
-                    sample = torch.cat([src_video[:, :-source_video_overlap_frames_count], sample[:, 1:]], dim = 1)
-                # -----------------------------------------------
 
                 if film_grain_intensity> 0:
                     send_cmd("progress", [0, get_latest_status(state,"Film Grain")])
@@ -6030,7 +6004,17 @@ def generate_video(
 
                 else:
                     save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None), container= container)
-
+                
+                # If continue (last) video is chosen             
+                if any_letters(image_prompt_type, "VL"):
+                    send_cmd("progress", [0, get_latest_status(state,"Merging Videos")])
+                    # Add "_Preview" to the file name of the new generated sample
+                    base, ext = os.path.splitext(video_path)
+                    video_preview_path = base + "_Preview" + ext
+                    os.rename(video_path, video_preview_path)
+                    # Merge the saved video with the last one via ffmpeg, which saves a lot of RAM in comparison to torch.cat
+                    combine_videos(video_source, video_preview_path, video_path, trim_end_frames1=source_video_overlap_frames_count, trim_start_frames2=1, fps=output_fps)
+                
                 end_time = time.time()
 
                 send_cmd("progress", [0, get_latest_status(state,"Add Meta Data")])
@@ -6115,6 +6099,48 @@ def generate_video(
         cleanup_temp_audio_files(control_audio_tracks + source_audio_tracks)
 
     remove_temp_filenames(temp_filenames_list)
+
+def combine_videos(
+    video1_path,
+    video2_path,
+    output_path, 
+    trim_end_frames1=0,
+    trim_start_frames2=0,
+    fps=16,
+    vcodec='libx264',
+    crf=10,
+    preset='veryfast',
+    audio_bitrate='192k'):
+    
+    import ffmpeg
+    
+    # Calculate trim duration in seconds
+    trim_end_seconds1 = trim_end_frames1 / fps
+    trim_start_seconds2 = trim_start_frames2 / fps
+    
+    probe1 = ffmpeg.probe(video1_path)
+    probe2 = ffmpeg.probe(video2_path)
+    duration1 = float(probe1['streams'][0]['duration'])
+    
+    # Trim the end of the first and the beginning of the second video, then join them
+    input1 = ffmpeg.input(video1_path, ss=0, t=duration1 - trim_end_seconds1)
+    input2 = ffmpeg.input(video2_path, ss=trim_start_seconds2)   
+    v1 = input1.video
+    v2 = input2.video
+    joined_video = ffmpeg.concat(v1, v2, v=1, a=0)
+    
+    # Check if videos have audio
+    has_audio1 = any(s['codec_type'] == 'audio' for s in probe1['streams'])
+    has_audio2 = any(s['codec_type'] == 'audio' for s in probe2['streams'])
+    if has_audio1 and has_audio2:
+        a1 = input1.audio
+        a2 = input2.audio
+        joined_audio = ffmpeg.concat(a1, a2, v=0, a=1)
+        output = ffmpeg.output(joined_video, joined_audio, output_path, vcodec=vcodec, crf=crf, preset=preset, audio_bitrate=audio_bitrate)
+    else:
+        output = ffmpeg.output(joined_video, output_path, vcodec=vcodec, crf=crf, preset=preset)
+    
+    ffmpeg.run(output, overwrite_output=True)
 
 def prepare_generate_video(state):    
 
@@ -7666,6 +7692,7 @@ def save_inputs(
             prompt,
             negative_prompt,
             resolution,
+            fit_canvas,
             video_length,
             batch_size,
             seed,
@@ -8954,7 +8981,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 model_resolutions = model_def.get("resolutions", None)
                 resolution_choices, current_resolution_choice = get_resolution_choices(current_resolution_choice, model_resolutions)
                 available_groups, selected_group_resolutions, selected_group = group_resolutions(model_def,resolution_choices, current_resolution_choice)
-                current_fit_canvas = server_config.get("fit_canvas", 0)
+                current_fit_canvas = ui_get("fit_canvas", 0)
                 resolution_group = gr.Dropdown(
                 choices = available_groups,
                     value= selected_group,

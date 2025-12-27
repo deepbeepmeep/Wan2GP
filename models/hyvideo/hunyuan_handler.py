@@ -165,32 +165,40 @@ class family_handler():
         parser.add_argument(
             "--lora-dir-hunyuan",
             type=str,
-            default=os.path.join("loras", "hunyuan"),
-            help="Path to a directory that contains Hunyuan Video t2v Loras"
+            default=None,
+            help="Path to a directory that contains Hunyuan Video t2v Loras (default: loras/hunyuan)"
         )
         parser.add_argument(
             "--lora-dir-hunyuan-i2v",
             type=str,
-            default=os.path.join("loras", "hunyuan_i2v"),
-            help="Path to a directory that contains Hunyuan Video i2v Loras"
+            default=None,
+            help="Path to a directory that contains Hunyuan Video i2v Loras (default: loras/hunyuan_i2v)"
         )
         parser.add_argument(
             "--lora-dir-hunyuan-1-5",
             type=str,
-            default=os.path.join("loras", "hunyuan_1_5"),
-            help="Path to a directory that contains Hunyuan Video 1.5 Loras"
+            default=None,
+            help="Path to a directory that contains Hunyuan Video 1.5 Loras (default: loras/hunyuan_1.5)"
         )
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
-        if test_hunyuan_1_5(base_model_type):
-            return args.lora_dir_hunyuan_1_5
-            
-        elif "i2v" in base_model_type:
-            return args.lora_dir_hunyuan_i2v
+        from wgp import get_lora_config_path
 
-        root_lora_dir = args.lora_dir_hunyuan
-        return root_lora_dir
+        # Priority: CLI args → config file → defaults
+        if test_hunyuan_1_5(base_model_type):
+            return (args.lora_dir_hunyuan_1_5 or
+                    get_lora_config_path("hunyuan_1.5") or
+                    os.path.join("loras", "hunyuan_1_5"))
+
+        elif "i2v" in base_model_type:
+            return (args.lora_dir_hunyuan_i2v or
+                    get_lora_config_path("hunyuan_i2v") or
+                    os.path.join("loras", "hunyuan_i2v"))
+
+        return (args.lora_dir_hunyuan or
+                get_lora_config_path("hunyuan") or
+                os.path.join("loras", "hunyuan"))
 
     @staticmethod
     def get_rgb_factors(base_model_type ):

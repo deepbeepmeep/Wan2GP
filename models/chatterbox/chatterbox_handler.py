@@ -58,13 +58,18 @@ class family_handler:
         parser.add_argument(
             "--lora-dir-tts",
             type=str,
-            default=os.path.join("loras", "tts"),
-            help="Path to a directory that contains TTS settings"
+            default=None,
+            help="Path to a directory that contains TTS settings (default: loras/tts)"
         )
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
-        return args.lora_dir_tts
+        from wgp import get_lora_config_path
+
+        # Priority: CLI args → config file → defaults
+        return (args.lora_dir_tts or
+                get_lora_config_path("tts") or
+                os.path.join("loras", "tts"))
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

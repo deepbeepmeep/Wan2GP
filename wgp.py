@@ -84,6 +84,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 AUTOSAVE_PATH = AUTOSAVE_FILENAME
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
+LORA_CONFIG_FILENAME = "lora_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
 WanGP_version = "9.91"
@@ -107,6 +108,7 @@ unique_id = 0
 unique_id_lock = threading.Lock()
 offloadobj = enhancer_offloadobj = wan_model = None
 reload_needed = True
+lora_config = None  # Global variable to store custom LoRA folder configuration
 
 def set_wgp_global(variable_name: str, new_value: any) -> str:
     if variable_name not in globals():
@@ -2018,6 +2020,54 @@ def _parse_args():
 
     return args
 
+def load_lora_config():
+    """Load custom LoRA folder configuration from lora_config.json if it exists."""
+    global lora_config
+    config_dir = args.config.strip()
+
+    # Try loading from custom config directory first, then fall back to root
+    config_paths = []
+    if config_dir:
+        config_paths.append(os.path.join(os.path.abspath(config_dir), LORA_CONFIG_FILENAME))
+    config_paths.append(LORA_CONFIG_FILENAME)
+
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    lora_config = json.load(f)
+                print(f"Loaded custom LoRA folder configuration from: {config_path}")
+                return
+            except json.JSONDecodeError as e:
+                print(f"Warning: Failed to parse {config_path}: {e}")
+            except Exception as e:
+                print(f"Warning: Failed to load {config_path}: {e}")
+
+    lora_config = {}  # No config file found, use empty dict
+
+def get_lora_config_path(model_key):
+    """
+    Get custom LoRA folder path from config for a specific model.
+    Returns None if no custom path is configured.
+
+    Args:
+        model_key: The model identifier (e.g., 'wan', 'flux', 'hunyuan')
+
+    Returns:
+        Custom path string if configured, None otherwise
+    """
+    if lora_config is None or model_key not in lora_config:
+        return None
+
+    model_config = lora_config.get(model_key, {})
+    if isinstance(model_config, dict):
+        custom_path = model_config.get("lora_dir")
+        if custom_path:
+            # Expand user paths like ~/Documents
+            return os.path.expanduser(custom_path)
+
+    return None
+
 def get_lora_dir(model_type):
     base_model_type = get_base_model_type(model_type)
     if base_model_type is None:
@@ -2041,6 +2091,7 @@ attention_modes_installed = get_attention_modes()
 attention_modes_supported = get_supported_attention_modes()
 args = _parse_args()
 migrate_loras_layout()
+load_lora_config()  # Load custom LoRA folder configuration
 
 gpu_major, gpu_minor = torch.cuda.get_device_capability(args.gpu if len(args.gpu) > 0 else None)
 if  gpu_major < 8:
@@ -2986,8 +3037,13 @@ def check_loras_exist(model_type, loras_choices_files, download = False, send_cm
     missing_local_loras = []
     missing_remote_loras = []
     for lora_file in loras_choices_files:
-        # Support relative paths with subfolders
-        local_path = os.path.join(lora_dir, lora_file)
+        # Support subdirectories: check if lora_file is a relative path first
+        if os.path.isfile(os.path.join(lora_dir, lora_file)):
+            # File exists with relative path (e.g., "characters/style1.safetensors")
+            continue
+
+        # Try with just basename for backwards compatibility
+        local_path = os.path.join(lora_dir, os.path.basename(lora_file))
         if not os.path.isfile(local_path):
             url = loras_url_cache.get(local_path, None)
             if url is not None:
@@ -3056,8 +3112,11 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
 
 
     if lora_dir != None:
-        # Scan recursively for LoRA files in subfolders
-        dir_loras =  glob.glob( os.path.join(lora_dir , "**", "*.sft"), recursive=True ) + glob.glob( os.path.join(lora_dir , "**", "*.safetensors"), recursive=True )
+        # Search for LoRA files in main directory and all subdirectories
+        dir_loras = (glob.glob(os.path.join(lora_dir, "*.sft")) +
+                     glob.glob(os.path.join(lora_dir, "*.safetensors")) +
+                     glob.glob(os.path.join(lora_dir, "**", "*.sft"), recursive=True) +
+                     glob.glob(os.path.join(lora_dir, "**", "*.safetensors"), recursive=True))
         dir_loras.sort()
         loras += [element for element in dir_loras if element not in loras ]
 
@@ -3072,8 +3131,9 @@ def setup_loras(model_type, transformer,  lora_dir, lora_preselected_preset, spl
         loras = offload.load_loras_into_model(transformer, loras,  activate_all_loras=False, check_only= True, preprocess_sd=get_loras_preprocessor(transformer, base_model_type), split_linear_modules_map = split_linear_modules_map) #lora_multiplier,
 
     if len(loras) > 0:
-        # Preserve relative paths from lora_dir to keep subfolder structure
-        loras = [ os.path.relpath(lora, lora_dir) for lora in loras  ]
+        # Use relative path from lora_dir if in subdirectory, otherwise just basename
+        loras = [os.path.relpath(lora, lora_dir) if lora_dir and lora.startswith(lora_dir)
+                 else os.path.basename(lora) for lora in loras]
 
     if len(lora_preselected_preset) > 0:
         if not os.path.isfile(os.path.join(lora_dir, lora_preselected_preset + ".lset")):
@@ -7536,18 +7596,20 @@ def update_loras_url_cache(lora_dir, loras_selected):
     new_loras_selected = []
     update = False
     for lora in loras_selected:
-        # Support relative paths with subfolders
-        # If lora is a URL, extract filename; otherwise keep relative path
-        if lora.startswith("http:") or lora.startswith("https:"):
-            # For URLs, use basename as the relative path
-            relative_path = os.path.basename(lora)
+        # Support subdirectories: use relative path if it exists, otherwise just basename
+        if os.path.isfile(os.path.join(lora_dir, lora)):
+            # Lora is a relative path (e.g., "characters/style1.safetensors")
+            local_name = os.path.join(lora_dir, lora)
+            cache_key = local_name
         else:
-            # For local paths, preserve the relative path
-            relative_path = lora
-        local_name = os.path.join(lora_dir, relative_path)
-        url = loras_url_cache.get(local_name, relative_path)
+            # Lora is just a filename or URL
+            base_name = os.path.basename(lora)
+            local_name = os.path.join(lora_dir, base_name)
+            cache_key = local_name
+
+        url = loras_url_cache.get(cache_key, lora)
         if (lora.startswith("http:") or lora.startswith("https:")) and url != lora:
-            loras_url_cache[local_name]=lora
+            loras_url_cache[cache_key] = lora
             update = True
         new_loras_selected.append(url)
 

@@ -190,21 +190,28 @@ class family_handler():
         parser.add_argument(
             "--lora-dir-flux",
             type=str,
-            default=os.path.join("loras", "flux"),
-            help="Path to a directory that contains flux images Loras"
+            default=None,
+            help="Path to a directory that contains flux images Loras (default: loras/flux)"
         )
         parser.add_argument(
             "--lora-dir-flux2",
             type=str,
-            default=os.path.join("loras", "flux2"),
-            help="Path to a directory that contains flux2 images Loras"
+            default=None,
+            help="Path to a directory that contains flux2 images Loras (default: loras/flux2)"
         )
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
+        from wgp import get_lora_config_path
+
+        # Priority: CLI args → config file → defaults
         if test_flux2(base_model_type):
-            return args.lora_dir_flux2
-        return args.lora_dir_flux
+            return (args.lora_dir_flux2 or
+                    get_lora_config_path("flux2") or
+                    os.path.join("loras", "flux2"))
+        return (args.lora_dir_flux or
+                get_lora_config_path("flux") or
+                os.path.join("loras", "flux"))
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):

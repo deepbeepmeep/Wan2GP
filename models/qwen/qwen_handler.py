@@ -106,7 +106,12 @@ class family_handler():
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
-        return args.lora_dir_qwen
+        from wgp import get_lora_config_path
+
+        # Priority: CLI args → config file → defaults
+        return (args.lora_dir_qwen or
+                get_lora_config_path("qwen") or
+                os.path.join("loras", "qwen"))
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):

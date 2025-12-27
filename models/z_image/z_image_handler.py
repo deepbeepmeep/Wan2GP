@@ -76,7 +76,12 @@ class family_handler:
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
-        return args.lora_dir_z_image
+        from wgp import get_lora_config_path
+
+        # Priority: CLI args → config file → defaults
+        return (args.lora_dir_z_image or
+                get_lora_config_path("z_image") or
+                os.path.join("loras", "z_image"))
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):

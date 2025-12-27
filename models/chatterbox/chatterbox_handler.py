@@ -64,7 +64,12 @@ class family_handler:
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
-        return args.lora_dir_tts
+        from wgp import get_lora_config_path
+
+        # Priority: CLI args → config file → defaults
+        return (args.lora_dir_tts or
+                get_lora_config_path("tts") or
+                os.path.join("loras", "tts"))
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

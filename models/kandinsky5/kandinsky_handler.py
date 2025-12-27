@@ -141,12 +141,26 @@ class family_handler:
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
-        base_dir = getattr(args, "lora_dir_kandinsky5", None) or os.path.join("loras", "kandinsky5")
+        from wgp import get_lora_config_path
+
+        # Priority: CLI args → config file → defaults
+        base_dir = (getattr(args, "lora_dir_kandinsky5", None) or
+                    get_lora_config_path("kandinsky5") or
+                    os.path.join("loras", "kandinsky5"))
+
         per_arch = {
-            "k5_lite_t2v": getattr(args, "lora_dir_k5_lite_t2v", None) or os.path.join("loras", "k5_lite_t2v"),
-            "k5_lite_i2v": getattr(args, "lora_dir_k5_lite_i2v", None) or os.path.join("loras", "k5_lite_i2v"),
-            "k5_pro_t2v": getattr(args, "lora_dir_k5_pro_t2v", None) or os.path.join("loras", "k5_pro_t2v"),
-            "k5_pro_i2v": getattr(args, "lora_dir_k5_pro_i2v", None) or os.path.join("loras", "k5_pro_i2v"),
+            "k5_lite_t2v": (getattr(args, "lora_dir_k5_lite_t2v", None) or
+                            get_lora_config_path("k5_lite_t2v") or
+                            os.path.join("loras", "k5_lite_t2v")),
+            "k5_lite_i2v": (getattr(args, "lora_dir_k5_lite_i2v", None) or
+                            get_lora_config_path("k5_lite_i2v") or
+                            os.path.join("loras", "k5_lite_i2v")),
+            "k5_pro_t2v": (getattr(args, "lora_dir_k5_pro_t2v", None) or
+                           get_lora_config_path("k5_pro_t2v") or
+                           os.path.join("loras", "k5_pro_t2v")),
+            "k5_pro_i2v": (getattr(args, "lora_dir_k5_pro_i2v", None) or
+                           get_lora_config_path("k5_pro_i2v") or
+                           os.path.join("loras", "k5_pro_i2v")),
         }
         if base_model_type in per_arch:
             return per_arch[base_model_type]

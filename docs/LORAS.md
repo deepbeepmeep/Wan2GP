@@ -26,7 +26,11 @@ All loras now live under the single `loras/` root:
 
 ## Custom Lora Directory
 
-You can specify custom lora directories when launching the app:
+You can specify custom lora directories in three ways (in order of priority):
+
+### 1. Command Line Arguments (Highest Priority)
+
+Specify directories when launching the app:
 
 ```bash
 # Use shared lora directory for Wan t2v and i2v
@@ -35,6 +39,52 @@ python wgp.py --lora-dir /path/to/loras/wan --lora-dir-i2v /path/to/loras/wan_i2
 # Specify different directories for different models
 python wgp.py --lora-dir-hunyuan /path/to/loras/hunyuan --lora-dir-ltxv /path/to/loras/ltxv
 ```
+
+### 2. Configuration File (Medium Priority)
+
+Create a `lora_config.json` file in your WanGP root directory (or in your custom `--config` directory):
+
+```json
+{
+  "wan": {
+    "lora_dir": "/mnt/storage/my_loras/wan"
+  },
+  "flux": {
+    "lora_dir": "/mnt/storage/my_loras/flux"
+  },
+  "hunyuan": {
+    "lora_dir": "~/Documents/AI/loras/hunyuan"
+  }
+}
+```
+
+**Example Configuration File:**
+
+A template file `lora_config.json.example` is provided in the root directory showing all available model options. To use it:
+
+1. Copy `lora_config.json.example` to `lora_config.json`
+2. Edit the `lora_dir` values for the models you want to customize
+3. Set paths to `null` for models you want to use default paths
+4. Restart WanGP to apply changes
+
+**Supported Models:**
+- `wan`, `wan_1.3B`, `wan_5B`, `wan_i2v` - Wan model variants
+- `hunyuan`, `hunyuan_1.5`, `hunyuan_i2v` - Hunyuan Video variants
+- `flux`, `flux2` - Flux models
+- `ltxv` - LTX Video
+- `qwen` - Qwen image models
+- `z_image` - Z-Image models
+- `tts` - Chatterbox/TTS presets
+- `kandinsky5`, `k5_lite_t2v`, `k5_lite_i2v`, `k5_pro_t2v`, `k5_pro_i2v` - Kandinsky 5 variants
+
+**Path Formats:**
+- Absolute paths: `/mnt/storage/loras/wan`
+- Relative paths: `custom_loras/wan` (relative to WanGP root)
+- Home directory: `~/Documents/loras/wan` (automatically expanded)
+
+### 3. Default Directories (Lowest Priority)
+
+If no custom path is specified, WanGP uses the default `loras/` directory structure.
 
 ## Using Loras
 

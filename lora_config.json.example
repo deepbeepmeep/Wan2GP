@@ -1,0 +1,130 @@
+{
+  "_comment": "Custom LoRA folder configuration - Copy this to lora_config.json and customize paths as needed",
+  "_priority": "CLI arguments (--lora-dir-*) override these settings, config overrides defaults",
+
+  "wan": {
+    "lora_dir": null,
+    "_default": "loras/wan",
+    "_description": "Wan t2v (14B / general) LoRAs folder"
+  },
+
+  "wan_1.3B": {
+    "lora_dir": null,
+    "_default": "loras/wan_1.3B",
+    "_description": "Wan 1.3B LoRAs folder"
+  },
+
+  "wan_5B": {
+    "lora_dir": null,
+    "_default": "loras/wan_5B",
+    "_description": "Wan 5B LoRAs folder"
+  },
+
+  "wan_i2v": {
+    "lora_dir": null,
+    "_default": "loras/wan_i2v",
+    "_description": "Wan i2v LoRAs folder"
+  },
+
+  "hunyuan": {
+    "lora_dir": null,
+    "_default": "loras/hunyuan",
+    "_description": "Hunyuan Video t2v LoRAs folder"
+  },
+
+  "hunyuan_1.5": {
+    "lora_dir": null,
+    "_default": "loras/hunyuan_1.5",
+    "_description": "Hunyuan 1.5 LoRAs folder"
+  },
+
+  "hunyuan_i2v": {
+    "lora_dir": null,
+    "_default": "loras/hunyuan_i2v",
+    "_description": "Hunyuan i2v LoRAs folder"
+  },
+
+  "ltxv": {
+    "lora_dir": null,
+    "_default": "loras/ltxv",
+    "_description": "LTX Video LoRAs folder"
+  },
+
+  "flux": {
+    "lora_dir": null,
+    "_default": "loras/flux",
+    "_description": "Flux LoRAs folder"
+  },
+
+  "flux2": {
+    "lora_dir": null,
+    "_default": "loras/flux2",
+    "_description": "Flux2 LoRAs folder"
+  },
+
+  "qwen": {
+    "lora_dir": null,
+    "_default": "loras/qwen",
+    "_description": "Qwen LoRAs folder"
+  },
+
+  "z_image": {
+    "lora_dir": null,
+    "_default": "loras/z_image",
+    "_description": "Z-Image LoRAs folder"
+  },
+
+  "tts": {
+    "lora_dir": null,
+    "_default": "loras/tts",
+    "_description": "Chatterbox / TTS presets folder"
+  },
+
+  "kandinsky5": {
+    "lora_dir": null,
+    "_default": "loras/kandinsky5",
+    "_description": "Kandinsky 5 base LoRAs folder"
+  },
+
+  "k5_lite_t2v": {
+    "lora_dir": null,
+    "_default": "loras/k5_lite_t2v",
+    "_description": "Kandinsky 5 Lite T2V LoRAs folder"
+  },
+
+  "k5_lite_i2v": {
+    "lora_dir": null,
+    "_default": "loras/k5_lite_i2v",
+    "_description": "Kandinsky 5 Lite I2V LoRAs folder"
+  },
+
+  "k5_pro_t2v": {
+    "lora_dir": null,
+    "_default": "loras/k5_pro_t2v",
+    "_description": "Kandinsky 5 Pro T2V LoRAs folder"
+  },
+
+  "k5_pro_i2v": {
+    "lora_dir": null,
+    "_default": "loras/k5_pro_i2v",
+    "_description": "Kandinsky 5 Pro I2V LoRAs folder"
+  },
+
+  "_examples": {
+    "_comment": "Example configurations:",
+    "example_1": {
+      "wan": {"lora_dir": "/mnt/storage/my_loras/wan"},
+      "flux": {"lora_dir": "/mnt/storage/my_loras/flux"}
+    },
+    "example_2": {
+      "wan": {"lora_dir": "~/Documents/AI/loras/wan"},
+      "hunyuan": {"lora_dir": "~/Documents/AI/loras/hunyuan"}
+    },
+    "example_3_shared": {
+      "_comment": "Point all models to a shared custom folder structure",
+      "wan": {"lora_dir": "/data/shared_loras/wan"},
+      "flux": {"lora_dir": "/data/shared_loras/flux"},
+      "hunyuan": {"lora_dir": "/data/shared_loras/hunyuan"}
+    }
+  }
+}

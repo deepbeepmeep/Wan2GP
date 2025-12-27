@@ -84,6 +84,7 @@ AUTOSAVE_FILENAME = "queue.zip"
 AUTOSAVE_PATH = AUTOSAVE_FILENAME
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
+LORA_CONFIG_FILENAME = "lora_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.9"
 WanGP_version = "9.91"
@@ -107,6 +108,7 @@ unique_id = 0
 unique_id_lock = threading.Lock()
 offloadobj = enhancer_offloadobj = wan_model = None
 reload_needed = True
+lora_config = None  # Global variable to store custom LoRA folder configuration
 
 def set_wgp_global(variable_name: str, new_value: any) -> str:
     if variable_name not in globals():
@@ -2018,6 +2020,54 @@ def _parse_args():
 
     return args
 
+def load_lora_config():
+    """Load custom LoRA folder configuration from lora_config.json if it exists."""
+    global lora_config
+    config_dir = args.config.strip()
+
+    # Try loading from custom config directory first, then fall back to root
+    config_paths = []
+    if config_dir:
+        config_paths.append(os.path.join(os.path.abspath(config_dir), LORA_CONFIG_FILENAME))
+    config_paths.append(LORA_CONFIG_FILENAME)
+
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    lora_config = json.load(f)
+                print(f"Loaded custom LoRA folder configuration from: {config_path}")
+                return
+            except json.JSONDecodeError as e:
+                print(f"Warning: Failed to parse {config_path}: {e}")
+            except Exception as e:
+                print(f"Warning: Failed to load {config_path}: {e}")
+
+    lora_config = {}  # No config file found, use empty dict
+
+def get_lora_config_path(model_key):
+    """
+    Get custom LoRA folder path from config for a specific model.
+    Returns None if no custom path is configured.
+
+    Args:
+        model_key: The model identifier (e.g., 'wan', 'flux', 'hunyuan')
+
+    Returns:
+        Custom path string if configured, None otherwise
+    """
+    if lora_config is None or model_key not in lora_config:
+        return None
+
+    model_config = lora_config.get(model_key, {})
+    if isinstance(model_config, dict):
+        custom_path = model_config.get("lora_dir")
+        if custom_path:
+            # Expand user paths like ~/Documents
+            return os.path.expanduser(custom_path)
+
+    return None
+
 def get_lora_dir(model_type):
     base_model_type = get_base_model_type(model_type)
     if base_model_type is None:
@@ -2041,6 +2091,7 @@ attention_modes_installed = get_attention_modes()
 attention_modes_supported = get_supported_attention_modes()
 args = _parse_args()
 migrate_loras_layout()
+load_lora_config()  # Load custom LoRA folder configuration
 
 gpu_major, gpu_minor = torch.cuda.get_device_capability(args.gpu if len(args.gpu) > 0 else None)
 if  gpu_major < 8:

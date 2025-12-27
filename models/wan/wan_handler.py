@@ -114,11 +114,28 @@ class family_handler():
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
+        from wgp import get_lora_config_path
+
         i2v = test_class_i2v(base_model_type) and base_model_type not in ["i2v_2_2", "i2v_2_2_multitalk"]
-        wan_dir = getattr(args, "lora_dir_wan", None) or getattr(args, "lora_dir", None) or os.path.join("loras", "wan")
-        wan_i2v_dir = getattr(args, "lora_dir_wan_i2v", None) or getattr(args, "lora_dir_i2v", None) or os.path.join("loras", "wan_i2v")
-        wan_1_3b_dir = getattr(args, "lora_dir_wan_1_3b", None) or os.path.join("loras", "wan_1.3B")
-        wan_5b_dir = getattr(args, "lora_dir_wan_5b", None) or os.path.join("loras", "wan_5B")
+
+        # Priority: CLI args → config file → defaults
+        wan_dir = (getattr(args, "lora_dir_wan", None) or
+                   getattr(args, "lora_dir", None) or
+                   get_lora_config_path("wan") or
+                   os.path.join("loras", "wan"))
+
+        wan_i2v_dir = (getattr(args, "lora_dir_wan_i2v", None) or
+                       getattr(args, "lora_dir_i2v", None) or
+                       get_lora_config_path("wan_i2v") or
+                       os.path.join("loras", "wan_i2v"))
+
+        wan_1_3b_dir = (getattr(args, "lora_dir_wan_1_3b", None) or
+                        get_lora_config_path("wan_1.3B") or
+                        os.path.join("loras", "wan_1.3B"))
+
+        wan_5b_dir = (getattr(args, "lora_dir_wan_5b", None) or
+                      get_lora_config_path("wan_5B") or
+                      os.path.join("loras", "wan_5B"))
 
         if i2v:
             return wan_i2v_dir

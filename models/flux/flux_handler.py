@@ -202,9 +202,16 @@ class family_handler():
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
+        from wgp import get_lora_config_path
+
+        # Priority: CLI args → config file → defaults
         if test_flux2(base_model_type):
-            return args.lora_dir_flux2
-        return args.lora_dir_flux
+            return (args.lora_dir_flux2 or
+                    get_lora_config_path("flux2") or
+                    os.path.join("loras", "flux2"))
+        return (args.lora_dir_flux or
+                get_lora_config_path("flux") or
+                os.path.join("loras", "flux"))
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):

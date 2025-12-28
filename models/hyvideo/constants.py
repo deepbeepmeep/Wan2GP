@@ -72,6 +72,25 @@ PROMPT_TEMPLATE_ENCODE_VIDEO_I2V = (
 NEGATIVE_PROMPT = "Aerial view, aerial view, overexposed, low quality, deformation, a poor composition, bad hands, bad teeth, bad eyes, bad limbs, distortion"
 NEGATIVE_PROMPT_I2V = "deformation, a poor composition and deformed video, bad teeth, bad eyes, bad limbs"
 
+PROMPT_TEMPLATE_ENCODE_IMAGE_JSON = [
+    {"role": "system", "content": "You are a helpful assistant. Describe the image by detailing the following aspects: \
+        1. The main content and theme of the image. \
+        2. The color, shape, size, texture, quantity, text, and spatial relationships of the objects. \
+        3. The background environment, light, style and atmosphere."},
+    {"role": "user", "content": "{}"}
+]
+
+PROMPT_TEMPLATE_ENCODE_VIDEO_JSON = [
+    {"role": "system", "content": "You are a helpful assistant. Describe the video by detailing the following aspects: \
+        1. The main content and theme of the video. \
+        2. The color, shape, size, texture, quantity, text, and spatial relationships of the objects. \
+        3. Actions, events, behaviors temporal relationships, physical movement changes of the objects. \
+        4. background environment, light, style and atmosphere. \
+        5. camera angles, movements, and transitions used in the video."},
+    {"role": "user", "content": "{}"}
+]
+
+
 PROMPT_TEMPLATE = {
     "dit-llm-encode": {
         "template": PROMPT_TEMPLATE_ENCODE,
@@ -97,6 +116,8 @@ PROMPT_TEMPLATE = {
         "image_emb_len": 576,
         "double_return_token_id": 271
     },
+    "li-dit-encode-image-json": {"template": PROMPT_TEMPLATE_ENCODE_IMAGE_JSON, "crop_start": -1}, # auto-calculate crop_start
+    "li-dit-encode-video-json": {"template": PROMPT_TEMPLATE_ENCODE_VIDEO_JSON, "crop_start": -1}, # auto-calculate crop_start
 }
 
 # ======================= Model ======================
@@ -115,16 +136,16 @@ VAE_PATH = {"884-16c-hy": f"{MODEL_BASE}/hunyuan-video-t2v-720p/vae"}
 
 # Text Encoder
 TEXT_ENCODER_PATH = {
-    "clipL": f"{MODEL_BASE}/clip_vit_large_patch14",
-    "llm": f"{MODEL_BASE}/llava-llama-3-8b",
-    "llm-i2v": f"{MODEL_BASE}/llava-llama-3-8b",
+    "clipL": f"clip_vit_large_patch14",
+    "llm": f"llava-llama-3-8b",
+    "llm-i2v": f"llava-llama-3-8b",
 }
 
 # Tokenizer
 TOKENIZER_PATH = {
-    "clipL": f"{MODEL_BASE}/clip_vit_large_patch14",
-    "llm": f"{MODEL_BASE}/llava-llama-3-8b",
-    "llm-i2v": f"{MODEL_BASE}/llava-llama-3-8b",
+    "clipL": f"clip_vit_large_patch14",
+    "llm": f"llava-llama-3-8b",
+    "llm-i2v": f"llava-llama-3-8b",
 }
 
 TEXT_PROJECTION = {

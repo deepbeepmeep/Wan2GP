@@ -1,3 +1,4 @@
+import os
 import torch
 from shared.utils import files_locator as fl 
 
@@ -63,6 +64,19 @@ class family_handler():
         return {"ltxv":(10, "LTX Video")}
 
     @staticmethod
+    def register_lora_cli_args(parser):
+        parser.add_argument(
+            "--lora-dir-ltxv",
+            type=str,
+            default=os.path.join("loras", "ltxv"),
+            help="Path to a directory that contains LTX Videos Loras"
+        )
+
+    @staticmethod
+    def get_lora_dir(base_model_type, args):
+        return args.lora_dir_ltxv
+
+    @staticmethod
     def get_vae_block_size(base_model_type):
         return 32
 
@@ -77,12 +91,12 @@ class family_handler():
 
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None):
         from .ltxv import LTXV
 
         ltxv_model = LTXV(
             model_filepath = model_filename,
-            text_encoder_filepath = get_ltxv_text_encoder_filename(text_encoder_quantization),
+            text_encoder_filepath = get_ltxv_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
             model_type = model_type, 
             base_model_type = base_model_type,
             model_def = model_def,

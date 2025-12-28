@@ -1,0 +1,17 @@
+{
+  "patch_size": [1],
+  "model_type": "t2a",
+  "dim": 3072,
+  "ffn_dim": 14336,
+  "freq_dim": 256,
+  "num_heads": 24,
+  "num_layers": 30,
+  "in_dim": 20, 
+  "out_dim": 20,
+  "text_len": 512, 
+  "window_size": [-1, -1],
+  "qk_norm": true,
+  "cross_attn_norm": true,
+  "eps": 1e-6,
+  "temporal_rope_scaling_factor": 0.19676
+}

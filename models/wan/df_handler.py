@@ -26,7 +26,7 @@ class family_handler():
         extra_model_def["skip_layer_guidance"] = True
         extra_model_def["tea_cache"] = True
         extra_model_def["guidance_max_phases"] = 1
-
+        extra_model_def["flow_shift"] = True
         extra_model_def["model_modes"] = {
                     "choices": [
                         ("Synchronous", 0),
@@ -68,6 +68,18 @@ class family_handler():
         return {}
 
     @staticmethod
+    def register_lora_cli_args(parser):
+        from .wan_handler import family_handler as wan_family_handler
+
+        return wan_family_handler.register_lora_cli_args(parser)
+
+    @staticmethod
+    def get_lora_dir(base_model_type, args):
+        from .wan_handler import family_handler as wan_family_handler
+
+        return wan_family_handler.get_lora_dir(base_model_type, args)
+
+    @staticmethod
     def get_rgb_factors(base_model_type ):
         from shared.RGB_factors import get_rgb_factors
         latent_rgb_factors, latent_rgb_factors_bias = get_rgb_factors("wan", base_model_type)
@@ -79,7 +91,7 @@ class family_handler():
         return family_handler.query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization)
     
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, override_text_encoder = None):
         from .configs import WAN_CONFIGS
         from .wan_handler import family_handler
         cfg = WAN_CONFIGS['t2v-14B']
@@ -91,7 +103,7 @@ class family_handler():
             model_type = model_type,        
             model_def = model_def,
             base_model_type=base_model_type,
-            text_encoder_filename= family_handler.get_wan_text_encoder_filename(text_encoder_quantization),
+            text_encoder_filename= family_handler.get_wan_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
             quantizeTransformer = quantizeTransformer,
             dtype = dtype,
             VAE_dtype = VAE_dtype, 

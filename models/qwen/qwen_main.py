@@ -46,23 +46,29 @@ class model_factory():
         dtype = torch.bfloat16,
         VAE_dtype = torch.float32,
         mixed_precision_transformer = False,
+        VAE_upsampling = None,
     ):
     
 
         transformer_filename = model_filename[0]
         processor = None
         tokenizer = None
-        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]:
-            processor = Qwen2VLProcessor.from_pretrained(os.path.join(checkpoint_dir,"Qwen2.5-VL-7B-Instruct"))
-        tokenizer = AutoTokenizer.from_pretrained(os.path.join(checkpoint_dir,"Qwen2.5-VL-7B-Instruct"))
+        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B", "qwen_image_layered_20B"]:
+            processor = Qwen2VLProcessor.from_pretrained(fl.locate_folder("Qwen2.5-VL-7B-Instruct"))
+        tokenizer = AutoTokenizer.from_pretrained(fl.locate_folder("Qwen2.5-VL-7B-Instruct"))
         self.base_model_type = base_model_type
 
-        base_config_file = "models/qwen/configs/qwen_image_20B.json" 
+        if base_model_type == "qwen_image_layered_20B":
+            base_config_file = "models/qwen/configs/qwen_image_layered_20B.json"
+        elif base_model_type == "qwen_image_edit_plus2_20B":
+            base_config_file = "models/qwen/configs/qwen_image_edit_plus2_20B.json"
+        else:
+            base_config_file = "models/qwen/configs/qwen_image_20B.json"
         with open(base_config_file, 'r', encoding='utf-8') as f:
             transformer_config = json.load(f)
-        transformer_config.pop("_diffusers_version")
-        transformer_config.pop("_class_name")
-        transformer_config.pop("pooled_projection_dim")
+        transformer_config.pop("_diffusers_version", None)
+        transformer_config.pop("_class_name", None)
+        transformer_config.pop("pooled_projection_dim", None)
         
         from accelerate import init_empty_weights
         with init_empty_weights():
@@ -83,14 +89,46 @@ class model_factory():
             from wgp import save_quantized_model
             save_quantized_model(transformer, model_type, model_filename[0], dtype, base_config_file)
 
-        text_encoder = offload.fast_load_transformers_model(text_encoder_filename,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration,  defaultConfigPath= os.path.join(checkpoint_dir, "Qwen2.5-VL-7B-Instruct", "config.json"))
+        text_encoder = offload.fast_load_transformers_model(text_encoder_filename,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration,  defaultConfigPath= fl.locate_file(os.path.join("Qwen2.5-VL-7B-Instruct", "config.json")) )
         # text_encoder = offload.fast_load_transformers_model(text_encoder_filename, do_quantize=True,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration, defaultConfigPath="text_encoder_config.json", verboseLevel=2)
         # text_encoder.to(torch.float16)
         # offload.save_model(text_encoder, "text_encoder_quanto_fp16.safetensors", do_quantize= True)
+        use_Wan_VAE = False
+        if base_model_type == "qwen_image_layered_20B":
+            VAE_upsampling = None
+            VAE_upsampler_factor = 1
+        else:
+            VAE_upsampler_factor = 2 if VAE_upsampling is not None else 1
 
-        vae = offload.fast_load_transformers_model( os.path.join(checkpoint_dir,"qwen_vae.safetensors"), writable_tensors= True , modelClass=AutoencoderKLQwenImage, defaultConfigPath=os.path.join(checkpoint_dir,"qwen_vae_config.json"))
-        
+        if use_Wan_VAE:
+            vae_checkpoint = "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors" if VAE_upsampler_factor == 2 else "Wan2.1_VAE.safetensors"
+            from ..wan.modules.vae import WanVAE
+            vae = WanVAE( vae_pth=fl.locate_file(vae_checkpoint), dtype= VAE_dtype, upsampler_factor = VAE_upsampler_factor, device="cpu")
+            vae.device = "cuda" #self.device # need to set to cuda so that vae buffers are properly moved (although the rest will stay in the CPU)
+        else:
+            if base_model_type == "qwen_image_layered_20B":
+                convert_state_dict = None
+                vae_checkpoint = "qwen_image_layered_vae_bf16.safetensors"
+                vae_config_file = "models/qwen/configs/qwen_image_layered_vae_config.json"
+                vae_override = model_def.get("vae_URL", None) or model_def.get("vae_URLs", None)
+                if isinstance(vae_override, list):
+                    vae_override = vae_override[0] if len(vae_override) > 0 else None
+                if isinstance(vae_override, dict):
+                    vae_override = vae_override.get("URLs", None)
+                if vae_override:
+                    vae_checkpoint = vae_override
+            elif VAE_upsampler_factor ==2 :
+                from .convert_diffusers_qwen_vae import convert_state_dict
+                vae_checkpoint = "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
+                vae_config_file = "qwen_vae_config.json"
+            else:
+                convert_state_dict = None
+                vae_checkpoint = "qwen_vae.safetensors"
+                vae_config_file = "qwen_vae_config.json"
+            vae = offload.fast_load_transformers_model( fl.locate_file(vae_checkpoint), writable_tensors= True , modelClass=AutoencoderKLQwenImage, defaultConfigPath= fl.locate_file(vae_config_file), configKwargs={"upsampler_factor": VAE_upsampler_factor}, preprocess_sd=convert_state_dict)
+        vae.upsampling_set = VAE_upsampling
         self.pipeline = QwenImagePipeline(vae, text_encoder, tokenizer, transformer, processor)
+        self.pipeline.use_Wan_VAE = use_Wan_VAE
         self.vae=vae
         self.text_encoder=text_encoder
         self.tokenizer=tokenizer
@@ -118,6 +156,7 @@ class model_factory():
         joint_pass = True,
         sample_solver='default',
         denoising_strength = 1.,
+        masking_strength = 1.,
         model_mode = 0,
         outpainting_dims = None,
         **bbargs
@@ -170,16 +209,25 @@ class model_factory():
         self.scheduler=FlowMatchEulerDiscreteScheduler(**scheduler_config)
         self.pipeline.scheduler = self.scheduler 
         if VAE_tile_size is not None:
+            if isinstance(VAE_tile_size, int):
+                tiling_type = VAE_tile_size
+                VAE_tile_size = [False, 0] if tiling_type == 0 else [True, 256]  
             self.vae.use_tiling  = VAE_tile_size[0] 
             self.vae.tile_latent_min_height  = VAE_tile_size[1] 
             self.vae.tile_latent_min_width  = VAE_tile_size[1]
-
-        qwen_edit_plus = self.base_model_type in ["qwen_image_edit_plus_20B"]
-        self.vae.enable_slicing()
+            tile_size  = VAE_tile_size[1]
+        # tile_size = 256
+        qwen_edit_plus = self.base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]
+        qwen_layered = self.base_model_type in ["qwen_image_layered_20B"]
+        if hasattr(self.vae, "enable_slicing"):
+            self.vae.enable_slicing()
         # width, height = aspect_ratios["16:9"]
 
         if n_prompt is None or len(n_prompt) == 0:
-            n_prompt=  "text, watermark, copyright, blurry, low resolution"
+            if qwen_layered:
+                n_prompt = " "
+            else:
+                n_prompt=  "text, watermark, copyright, blurry, low resolution"
 
         image_mask = None if input_masks is None else convert_tensor_to_image(input_masks, mask_levels= True) 
         if input_frames is not None:
@@ -187,16 +235,21 @@ class model_factory():
 
         if input_ref_images is not None:
             # image stiching method
-            stiched = input_ref_images[0]
-            if "K" in video_prompt_type :
-                w, h = input_ref_images[0].size
-                height, width = calculate_new_dimensions(height, width, h, w, fit_into_canvas)
+            if qwen_layered:
+                input_ref_images = [input_ref_images[0]]
+            else:
+                stiched = input_ref_images[0]
+                if "K" in video_prompt_type :
+                    w, h = input_ref_images[0].size
+                    height, width = calculate_new_dimensions(height, width, h, w, fit_into_canvas)
 
-            if not qwen_edit_plus:
-                for new_img in input_ref_images[1:]:
-                    stiched = stitch_images(stiched, new_img)
-                input_ref_images  = [stiched]
+                if not qwen_edit_plus:
+                    for new_img in input_ref_images[1:]:
+                        stiched = stitch_images(stiched, new_img)
+                    input_ref_images  = [stiched]
 
+        num_images_per_prompt = 1 if qwen_layered else batch_size
+        layers = batch_size if qwen_layered else 1
         image = self.pipeline(
             prompt=input_prompt,
             negative_prompt=n_prompt,
@@ -205,23 +258,27 @@ class model_factory():
             width=width,
             height=height,
             num_inference_steps=sampling_steps,
-            num_images_per_prompt = batch_size,
+            num_images_per_prompt = num_images_per_prompt,
+            layers = layers,
+            cfg_normalize = True,
             true_cfg_scale=guide_scale,
             callback = callback,
             pipeline=self,
             loras_slists=loras_slists,
             joint_pass = joint_pass,
             denoising_strength=denoising_strength,
+            masking_strength=masking_strength,
             generator=torch.Generator(device="cuda").manual_seed(seed),
             lora_inpaint = image_mask is not None and model_mode == 1,
             outpainting_dims = outpainting_dims,
             qwen_edit_plus = qwen_edit_plus,
+            VAE_tile_size = tile_size,
         )      
         if image is None: return None
         return image.transpose(0, 1)
 
-    def get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, **kwargs):
-        if model_mode == 0: return [], []
+    def get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, image_mode, **kwargs):
+        if image_mode !=2 or model_mode != 1: return [], []
         preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
         if len(preloadURLs) == 0: return [], []
         return [ fl.locate_file(os.path.basename(preloadURLs[0]))] , [1]

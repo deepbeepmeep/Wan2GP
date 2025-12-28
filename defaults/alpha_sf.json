@@ -1,0 +1,17 @@
+{
+	"model":
+	{
+		"name": "Wan2.1 Alpha Lightning 14B",
+		"architecture" : "alpha",
+		"description": "This model is accelerated by the Lightning / SelfForcing process. It successfully generates various scenes with accurate and clearly rendered transparency. Notably, it can synthesize diverse semi-transparent objects, glowing effects, and fine-grained details such as hair. For each video generated you will find a Zip file with the same name that will contain the corresponding RGBA images.",
+		"URLs": "t2v_sf",
+		"preload_URLs": "alpha",
+		"loras": "alpha",		
+		"loras_multipliers": [ 1 ],
+		"profiles_dir" : [""]		
+	},
+	"prompt": "A large orange octopus is seen resting. The background of the video is transparent.",
+    "num_inference_steps": 4,
+    "guidance_scale": 1,
+    "flow_shift": 3	
+}

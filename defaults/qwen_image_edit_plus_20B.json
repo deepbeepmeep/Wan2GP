@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Qwen Image Edit Plus 20B",
+        "name": "Qwen Image Edit Plus (2509) 20B",
         "architecture": "qwen_image_edit_plus_20B",
         "description": "Qwen Image Edit Plus is a generative model that can generate very high quality images with long texts in it. Best results will be at 720p. This model is optimized to combine multiple Subjects & Objects.",
         "URLs": [

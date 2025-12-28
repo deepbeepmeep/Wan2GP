@@ -1,3 +1,4 @@
+import os
 import torch
 import gradio as gr
 from shared.utils import files_locator as fl 
@@ -22,12 +23,26 @@ class family_handler():
             "profiles_dir": ["qwen"],
         }
 
-        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]: 
+        extra_model_def["vae_upsampler"] = [1,2]
+
+        if base_model_type in ["qwen_image_layered_20B"]:
+            extra_model_def["batch_size_label"] = "Number of Layers"
+            extra_model_def["set_video_prompt_type"] = "V"
+            extra_model_def["guide_preprocessing"] = {
+                "selection": ["V"],
+                "labels": {"V": "Control Image"},
+                "visible": False,
+            }
+            extra_model_def["vae_upsampler"] = [1]
+            extra_model_def["sample_solvers"] = [("Default", "default")]
+
+        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             extra_model_def["inpaint_support"] = True
+            extra_model_def["image_ref_inpaint"]=  base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]
             extra_model_def["image_ref_choices"] = {
             "choices": [
                 ("None", ""),
-                ("Conditional Images is first Main Subject / Landscape and may be followed by People / Objects", "KI"),
+                ("Conditional Image is first Main Subject / Landscape and may be followed by People / Objects", "KI"),
                 ("Conditional Images are People / Objects", "I"),
                 ],
             "letters_filter": "KI",
@@ -36,32 +51,41 @@ class family_handler():
             extra_model_def["video_guide_outpainting"] = [2]
             extra_model_def["model_modes"] = {
                         "choices": [
-                            ("Lora Inpainting: Inpainted area completely unrelated to occulted content", 1),
-                            ("Masked Denoising : Inpainted area may reuse some content that has been occulted", 0),
+                            ("Lora Inpainting: Inpainted area completely unrelated to masked content", 1),
+                            ("Masked Denoising : Inpainted area may reuse some content that has been masked", 0),
                             ],
                         "default": 1,
                         "label" : "Inpainting Method",
                         "image_modes" : [2],
             }
 
-        if base_model_type in ["qwen_image_edit_plus_20B"]: 
+        if base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             extra_model_def["guide_preprocessing"] = {
-                    "selection": ["", "PV", "DV", "SV", "CV"],
+                    "selection": ["", "PV", "DV", "SV", "CV", "V"], #, "MV" 
+                    "labels": {"V": "Qwen Raw Format"},
                 }
+
+            extra_model_def["mask_strength_always_enabled"] = True
 
             extra_model_def["mask_preprocessing"] = {
                     "selection": ["", "A"],
-                    "visible": False,
+                    "visible": True,
                 }
         return extra_model_def
 
     @staticmethod
     def query_supported_types():
-        return ["qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B"]
+        return ["qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B", "qwen_image_layered_20B"]
 
     @staticmethod
     def query_family_maps():
-        return {}, {}
+        models_eqv_map = {
+            "qwen_image_edit_plus2_20B": "qwen_image_edit_plus_20B",
+        }
+        models_comp_map = {
+            "qwen_image_edit_plus_20B": ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"],
+        }
+        return models_eqv_map, models_comp_map
 
     @staticmethod
     def query_model_family():
@@ -72,16 +96,39 @@ class family_handler():
         return {"qwen":(40, "Qwen")}
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = get_qwen_text_encoder_filename(text_encoder_quantization)    
-        return  {  
-            "repoId" : "DeepBeepMeep/Qwen_image", 
-            "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
-            "fileList" : [ ["qwen_vae.safetensors", "qwen_vae_config.json"], ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json"] + computeList(text_encoder_filename)  ]
-            }
+    def register_lora_cli_args(parser):
+        parser.add_argument(
+            "--lora-dir-qwen",
+            type=str,
+            default=os.path.join("loras", "qwen"),
+            help="Path to a directory that contains qwen images Loras"
+        )
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None):
+    def get_lora_dir(base_model_type, args):
+        return args.lora_dir_qwen
+
+    @staticmethod
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+        text_encoder_filename = get_qwen_text_encoder_filename(text_encoder_quantization)    
+        vae_files = ["qwen_vae.safetensors", "qwen_vae_config.json"]
+        if base_model_type in ["qwen_image_layered_20B"]:
+            vae_files.append("qwen_image_layered_vae_bf16.safetensors")
+        download_def = [{  
+            "repoId" : "DeepBeepMeep/Qwen_image", 
+            "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
+            "fileList" : [ vae_files, ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"] + computeList(text_encoder_filename)  ]
+            }]
+
+        download_def  += [{
+            "repoId" : "DeepBeepMeep/Wan2.1", 
+            "sourceFolderList" :  [""  ],
+            "fileList" : [ ["Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]  ]   
+        }]
+        return download_def
+
+    @staticmethod
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None, VAE_upsampling = None, **kwargs):
         from .qwen_main import model_factory
         from mmgp import offload
 
@@ -91,15 +138,17 @@ class family_handler():
             model_type = model_type, 
             model_def = model_def,
             base_model_type=base_model_type,
-            text_encoder_filename= get_qwen_text_encoder_filename(text_encoder_quantization),
+            text_encoder_filename= get_qwen_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
             quantizeTransformer = quantizeTransformer,
             dtype = dtype,
             VAE_dtype = VAE_dtype, 
             mixed_precision_transformer = mixed_precision_transformer,
-            save_quantized = save_quantized
+            save_quantized = save_quantized,
+            VAE_upsampling = VAE_upsampling,
         )
 
-        pipe = {"tokenizer" : pipe_processor.tokenizer, "transformer" : pipe_processor.transformer, "text_encoder" : pipe_processor.text_encoder, "vae" : pipe_processor.vae}
+        from ..wan.modules.vae import WanVAE
+        pipe = {"tokenizer" : pipe_processor.tokenizer, "transformer" : pipe_processor.transformer, "text_encoder" : pipe_processor.text_encoder, "vae" : pipe_processor.vae.model if isinstance(pipe_processor.vae, WanVAE) else pipe_processor.vae }
 
         return pipe_processor, pipe
 
@@ -124,16 +173,20 @@ class family_handler():
                 "denoising_strength" : 1.,
                 "model_mode" : 0,
             })
-        elif base_model_type in ["qwen_image_edit_plus_20B"]: 
+        elif base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             ui_defaults.update({
-                "video_prompt_type": "I",
+                "video_prompt_type": "",
                 "denoising_strength" : 1.,
                 "model_mode" : 0,
+            })
+        elif base_model_type in ["qwen_image_layered_20B"]:
+            ui_defaults.update({
+                "video_prompt_type": "V",
             })
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
-        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]:
+        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             model_mode = inputs["model_mode"]
             denoising_strength= inputs["denoising_strength"]
             video_guide_outpainting= inputs["video_guide_outpainting"]
@@ -143,7 +196,10 @@ class family_handler():
             if denoising_strength < 1 and model_mode == 1:
                 gr.Info("Denoising Strength will be ignored while using Lora Inpainting")
             if outpainting_dims is not None and model_mode == 0 :
-                return "Outpainting is not supported with Masked Denoising  "
+                return "Outpainting is not supported with Masked Denoising"
+        if base_model_type in ["qwen_image_layered_20B"]:
+            if inputs.get("image_guide") is None:
+                return "Qwen Image Layered requires a Control Image."
             
     @staticmethod
     def get_rgb_factors(base_model_type ):

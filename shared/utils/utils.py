@@ -17,6 +17,7 @@ import os
 import tempfile
 import subprocess
 import json
+import time
 from functools import lru_cache
 os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
 
@@ -34,11 +35,15 @@ def seed_everything(seed: int):
 
 def has_video_file_extension(filename):
     extension = os.path.splitext(filename)[-1].lower()
-    return extension in [".mp4"]
+    return extension in [".mp4", ".mkv"]
 
 def has_image_file_extension(filename):
     extension = os.path.splitext(filename)[-1].lower()
     return extension in [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"]
+
+def has_audio_file_extension(filename):
+    extension = os.path.splitext(filename)[-1].lower()
+    return extension in [".wav", ".mp3", ".aac"]
 
 def resample(video_fps, video_frames_count, max_target_frames_count, target_fps, start_target_frame ):
     import math
@@ -76,7 +81,13 @@ def get_file_creation_date(file_path):
         stat = os.stat(file_path)
     return datetime.fromtimestamp(stat.st_birthtime if hasattr(stat, 'st_birthtime') else stat.st_mtime)
 
-def truncate_for_filesystem(s, max_bytes=255):
+def sanitize_file_name(file_name, rep =""):
+    return file_name.replace("/",rep).replace("\\",rep).replace("*",rep).replace(":",rep).replace("|",rep).replace("?",rep).replace("<",rep).replace(">",rep).replace("\"",rep).replace("\n",rep).replace("\r",rep) 
+
+def truncate_for_filesystem(s, max_bytes=None):
+    if max_bytes is None:
+        max_bytes = 50 if os.name == 'nt'else 100
+
     if len(s.encode('utf-8')) <= max_bytes: return s
     l, r = 0, len(s)
     while l < r:
@@ -85,6 +96,48 @@ def truncate_for_filesystem(s, max_bytes=255):
         else: r = m - 1
     return s[:l]
 
+def get_default_workers():
+    return os.cpu_count()/ 2
+
+def process_images_multithread(image_processor, items, process_type, wrap_in_list = True, max_workers: int = os.cpu_count()/ 2, in_place = False) :
+    if not items:
+       return []    
+
+    import concurrent.futures
+    start_time = time.time()
+    # print(f"Preprocessus:{process_type} started")
+    if process_type in ["prephase", "upsample"]: 
+        if wrap_in_list :
+            items_list = [ [img] for img in items]
+        else:
+            items_list = items
+        if max_workers == 1:
+            results = []
+            for idx, item in enumerate(items):
+                item = image_processor(item)
+                results.append(item)
+                if wrap_in_list: items_list[idx] = None
+                if in_place: items[idx] = item[0] if wrap_in_list else item
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(image_processor, img): idx for idx, img in enumerate(items_list)}
+                results = [None] * len(items_list)
+                for future in concurrent.futures.as_completed(futures):
+                    idx = futures[future]
+                    results[idx] = future.result()
+                    if wrap_in_list: items_list[idx] = None
+                    if in_place: 
+                        items[idx] = results[idx][0] if wrap_in_list else results[idx] 
+
+        if wrap_in_list: 
+            results = [ img[0] for img in results]
+    else:
+        results=  image_processor(items) 
+
+    end_time = time.time()
+    # print(f"duration:{end_time-start_time:.1f}")
+
+    return results
 @lru_cache(maxsize=100)
 def get_video_info(video_path):
     global video_info_cache
@@ -167,10 +220,10 @@ def convert_image_to_video(image):
         out.release()
         return temp_video.name
     
-def resize_lanczos(img, h, w):
+def resize_lanczos(img, h, w, method = None):
     img = (img + 1).float().mul_(127.5)
     img = Image.fromarray(np.clip(img.movedim(0, -1).cpu().numpy(), 0, 255).astype(np.uint8))
-    img = img.resize((w,h), resample=Image.Resampling.LANCZOS) 
+    img = img.resize((w,h), resample=Image.Resampling.LANCZOS if method is None else method) 
     img = torch.from_numpy(np.array(img).astype(np.float32)).movedim(-1, 0)
     img = img.div(127.5).sub_(1)
     return img
@@ -205,12 +258,11 @@ def get_outpainting_full_area_dimensions(frame_height,frame_width, outpainting_d
     frame_width =  int(frame_width * (100 + outpainting_left + outpainting_right) / 100)
     return frame_height, frame_width  
 
-def rgb_bw_to_rgba_mask(img, thresh=127):   
-    a = img.convert('L').point(lambda p: 255 if p > thresh else 0)  # alpha
-    out = Image.new('RGBA', img.size, (255, 255, 255, 0))           # white, transparent
-    out.putalpha(a)                                                 # white where alpha=255
-    return out
-                        
+def rgb_bw_to_rgba_mask(img, thresh=127):
+    arr = np.array(img.convert('L'))
+    alpha = (arr > thresh).astype(np.uint8) * 255
+    rgba = np.dstack([np.full_like(alpha, 255)] * 3 + [alpha])
+    return Image.fromarray(rgba, 'RGBA')
 
 
 def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims, block_size = 8):
@@ -273,7 +325,7 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
         image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
     return image, new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0 ):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255] ):
     if rm_background:
         session = new_session() 
 
@@ -306,7 +358,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
             resized_image= img.resize((new_width,new_height), resample=Image.Resampling.LANCZOS) 
         if rm_background  and not (any_background_ref and i==0 or any_background_ref == 2) :
             # resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1,alpha_matting_background_threshold = 70, alpha_foreground_background_threshold = 100, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
-            resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
+            resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True, bgcolor=background_removal_color + [0]).convert('RGB')
         if return_tensor:
             output_list.append(convert_image_to_tensor(resized_image).unsqueeze(1)) 
         else:
@@ -320,7 +372,6 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
     return output_list, output_mask_list
 
 def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, return_mask = False, return_image = False):
-    from shared.utils.utils import save_image
     inpaint_color = canvas_tf_bg / 127.5 - 1
 
     ref_width, ref_height = ref_img.size

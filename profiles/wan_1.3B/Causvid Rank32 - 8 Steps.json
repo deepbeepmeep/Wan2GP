@@ -1,0 +1,12 @@
+{
+
+    "activated_loras": [
+        "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/Wan21_CausVid_bidirect2_T2V_1_3B_lora_rank32.safetensors"
+	],
+	"loras_multipliers": "1",
+	"num_inference_steps": 8,
+    "guidance_phases": 1,
+    "guidance_scale": 1,
+    "sample_solver": "causvid",		
+	"flow_shift": 2		
+}

@@ -6,33 +6,34 @@ Loras (Low-Rank Adaptations) allow you to customize video generation models by a
 
 Loras are organized in different folders based on the model they're designed for:
 
-### Wan Text-to-Video Models
-- `loras/` - General t2v loras for Wan 2.1 (t2v only) and for all Wan 2.2 models
-Optional sub folders:
-- `loras/1.3B/` - Loras specifically for 1.3B models
-- `loras/5B/` - Loras specifically for 1.3B models
-- `loras/14B/` - Loras specifically for 14B models
+All loras now live under the single `loras/` root:
 
-### Wan Image-to-Video Models
-- `loras_i2v/` - Image-to-video loras for Wan 2.1
+### Wan Models
+- `loras/wan/`    - Wan t2v (14B / general) loras
+- `loras/wan_5B/` - Wan 5B loras
+- `loras/wan_1.3B/` - Wan 1.3B loras
+- `loras/wan_i2v/` - Wan i2v loras
 
 ### Other Models
-- `loras_hunyuan/` - Hunyuan Video t2v loras
-- `loras_hunyuan_i2v/` - Hunyuan Video i2v loras
-- `loras_ltxv/` - LTX Video loras
-- `loras_flux/` - Flux loras
-- `loras_qwen/` - Qwen loras
+- `loras/hunyuan/` - Hunyuan Video t2v loras
+- `loras/hunyuan/1.5/` - Loras specifically for Hunyuan 1.5 models
+- `loras/hunyuan_i2v/` - Hunyuan Video i2v loras
+- `loras/ltxv/` - LTX Video loras
+- `loras/flux/` and `loras/flux2/` - Flux loras
+- `loras/qwen/` - Qwen loras
+- `loras/z_image/` - Z-Image loras
+- `loras/tts/` - Chatterbox / TTS presets
 
 ## Custom Lora Directory
 
 You can specify custom lora directories when launching the app:
 
 ```bash
-# Use shared lora directory for both t2v and i2v
-python wgp.py --lora-dir /path/to/shared/loras --lora-dir-i2v /path/to/shared/loras
+# Use shared lora directory for Wan t2v and i2v
+python wgp.py --lora-dir /path/to/loras/wan --lora-dir-i2v /path/to/loras/wan_i2v
 
 # Specify different directories for different models
-python wgp.py --lora-dir-hunyuan /path/to/hunyuan/loras --lora-dir-ltxv /path/to/ltx/loras
+python wgp.py --lora-dir-hunyuan /path/to/loras/hunyuan --lora-dir-ltxv /path/to/loras/ltxv
 ```
 
 ## Using Loras
@@ -375,13 +376,19 @@ In the video, a man is presented. The man is in a city and looks at his watch.
 
 ```bash
 # Lora-related command line options
---lora-dir path                   # Path to t2v loras directory
---lora-dir-i2v path               # Path to i2v loras directory  
---lora-dir-hunyuan path           # Path to Hunyuan t2v loras
---lora-dir-hunyuan-i2v path       # Path to Hunyuan i2v loras
---lora-dir-ltxv path              # Path to LTX Video loras
---lora-dir-flux path              # Path to Flux loras
---lora-dir-qwen path              # Path to Qwen loras
+--lora-dir path                   # Path to Wan t2v loras (default loras/wan)
+--lora-dir-wan-5b path            # Path to Wan 5B loras (default loras/wan_5B)
+--lora-dir-wan-1-3b path          # Path to Wan 1.3B loras (default loras/wan_1.3B)
+--lora-dir-i2v path               # Path to Wan i2v loras (default loras/wan_i2v)
+--lora-dir-wan-i2v path           # Alias for Wan i2v loras
+--lora-dir-hunyuan path           # Path to Hunyuan t2v loras (default loras/hunyuan)
+--lora-dir-hunyuan-i2v path       # Path to Hunyuan i2v loras (default loras/hunyuan_i2v)
+--lora-dir-ltxv path              # Path to LTX Video loras (default loras/ltxv)
+--lora-dir-flux path              # Path to Flux loras (default loras/flux)
+--lora-dir-flux2 path             # Path to Flux2 loras (default loras/flux2)
+--lora-dir-qwen path              # Path to Qwen loras (default loras/qwen)
+--lora-dir-z-image path           # Path to Z-Image loras (default loras/z_image)
+--lora-dir-tts path               # Path to TTS presets (default loras/tts)
 --lora-preset preset              # Load preset on startup
 --check-loras                     # Filter incompatible loras
 ``` 

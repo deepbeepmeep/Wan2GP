@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Flux 2 Dev 32B",
+        "architecture": "flux2_dev",
+        "description": "FLUX.2 Dev is the latest rectified flow transformer from Black Forest Labs for image generation and editing.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux2-dev.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux2-dev_quanto_bf16_int8.safetensors"
+        ],
+        "image_outputs": true,
+        "no_negative_prompt": true
+    },
+    "prompt": "draw a hat on top of a hat inside a hat",
+    "resolution": "1024x1024",
+    "batch_size": 1,
+    "embedded_guidance_scale": 4,
+    "sampling_steps": 30
+}

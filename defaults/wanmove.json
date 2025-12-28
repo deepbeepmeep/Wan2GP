@@ -1,0 +1,12 @@
+{
+    "model": {
+        "name": "Wan2.1 Wan-Move 480p 14B",
+        "architecture": "wanmove",
+        "description": "High-Quality 5s 480p Motion Control: Through scaled training, Wan-Move can generate 5-second, 480p videos with SOTA motion controllability on par with commercial systems such as Kling 1.5 Pro\u2019s Motion Brush, as verified via user studies.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_wanmove_14B_mbf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_wanmove_14B_quanto_mbf16_int8.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_wanmove_14B_quanto_mfp16_int8.safetensors"
+        ]
+    }
+}

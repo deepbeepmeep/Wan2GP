@@ -540,8 +540,8 @@ if __name__ == "__main__":
     
     # Load original and fine-tuned models from safetensors files
     
-    original_state_dict = load_safetensors("ckpts/wan2.2_text2video_14B_high_mbf16.safetensors")
-    finetuned_state_dict = load_safetensors("ckpts/wan2.2_text2video_14B_low_mbf16.safetensors")
+    original_state_dict = load_safetensors("ckpts/hunyuan_video_1.5_i2v_480_bf16.safetensors")
+    finetuned_state_dict = load_safetensors("ckpts/hunyuan_video_1.5_i2v_480_step_distilled_bf16.safetensors")
 
     # original_state_dict = load_safetensors("ckpts/flux1-dev_bf16.safetensors")
     # finetuned_state_dict = load_safetensors("ckpts/flux1-schnell_bf16.safetensors")
@@ -551,7 +551,7 @@ if __name__ == "__main__":
     
     # extractor_test = LoRAExtractor(test_mode=True)
 
-    extractor_test = LoRAExtractor(show_reconstruction_errors=True, rank=128)
+    extractor_test = LoRAExtractor(show_reconstruction_errors=True, rank=32)
     
     lora_tensors_test = extractor_test.extract_lora_from_state_dicts(
         original_state_dict, 

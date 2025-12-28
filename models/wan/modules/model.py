@@ -19,6 +19,9 @@ from ..multitalk.multitalk_utils import get_attn_map_with_target
 from ..animate.motion_encoder import Generator
 from ..animate.face_blocks import FaceAdapter, FaceEncoder 
 from ..animate.model_animate import after_patch_embedding
+from ..scail.model_scail import build_scail_pose_tokens
+from ..steadydancer.small_archs import FactorConv3d, PoseRefNetNoBNV3
+from ..steadydancer.mobilenetv2_dcd import DYModule
 
 __all__ = ['WanModel']
 
@@ -338,9 +341,9 @@ class WanSelfAttention(nn.Module):
         self.norm_k(k)
         q,k,v = q.view(b, s, n, d), k.view(b, s, n, d), v.view(b, s, n, d)
         del x
+
         qklist = [q,k]
         del q,k
-
         q,k = apply_rotary_emb(qklist, freqs, head_first=False)
 
         if standin_phase >= 1:
@@ -475,8 +478,10 @@ class WanI2VCrossAttention(WanSelfAttention):
             audio_x = self.processor(q, audio_proj, grid_sizes[0], audio_context_lens)
         k_img = self.k_img(context_img)
         self.norm_k_img(k_img)
-        k_img = k_img.view(b, -1, n, d)
-        v_img = self.v_img(context_img).view(b, -1, n, d)
+        k_img = k_img.view(1, -1, n, d)
+        v_img = self.v_img(context_img).view(1, -1, n, d)
+        if b > 1:
+            k_img, v_img = k_img.expand(b, -1, -1, -1), v_img.expand(b, -1, -1, -1)
         qkv_list = [q, k_img, v_img]
         del q, k_img, v_img
         img_x = pay_attention(qkv_list)
@@ -616,7 +621,7 @@ class WanAttentionBlock(nn.Module):
                     hints_processed.append(self.vace(hint, x, **kwargs) if self.block_id == 0 else self.vace(hint, None, **kwargs))
                      
         latent_frames = e.shape[0]
-        e = (self.modulation + e).chunk(6, dim=1)
+        e = (self.modulation.weight + e).chunk(6, dim=1)
         # self-attention
         x_mod = self.norm1(x)
         x_mod = reshape_latent(x_mod , latent_frames)
@@ -838,7 +843,7 @@ class Head(nn.Module):
         dtype = x.dtype
 
         latent_frames = e.shape[0]
-        e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
+        e = (self.modulation.weight + e.unsqueeze(1)).chunk(2, dim=1)
         x = self.norm(x).to(dtype)
         x = reshape_latent(x , latent_frames)
         x *= (1 + e[1])
@@ -894,26 +899,67 @@ class WanModel(ModelMixin, ConfigMixin):
     def release_chipmunk(self):
         offload.shared_state["_chipmunk_layers"] = None
 
-    def preprocess_loras(self, model_type, sd):
+    @staticmethod
+    def preprocess_sd_with_dtype(dtype, sd):
+        new_sd = {}
+        prefix_list = ["model.diffusion_model"]
+        end_list = [".norm3.bias", ".norm3.weight", ".norm_q.bias", ".norm_q.weight", ".norm_k.bias", ".norm_k.weight" ]
+        for k,v in sd.items():
+            for prefix in prefix_list:
+                if k.startswith(prefix): 
+                    k = k[len(prefix)+1:]
+                    break
+            if v.dtype in (torch.float8_e5m2, torch.float8_e4m3fn):
+                for endfix in end_list:
+                    if k.endswith(endfix):
+                        v = v.to(dtype)
+                        break
+            if not k.startswith("vae."):
+                new_sd[k] = v
+        return new_sd
+    def preprocess_loras(self, base_model_type, sd):
 
         first = next(iter(sd), None)
         if first == None:
             return sd
 
+        if base_model_type in ["scail"]:
+            sd.pop("diffusion_model.patch_embedding.diff", None)
+            sd.pop("diffusion_model.patch_embedding.diff_b", None)
+            return sd
+        
         new_sd = {}
-
-        # for k,v in sd.items():
-        #     if k.endswith("modulation.diff"):
-        #         pass
-        #     else:
-        #         new_sd[ k] = v
-        # sd = new_sd
+        for k,v in sd.items():
+            if k.endswith("modulation.diff"):
+                pass
+            else:
+                new_sd[ k] = v
+        sd = new_sd
 
         # if first.startswith("blocks."):
         #     new_sd = {}
         #     for k,v in sd.items():
         #         new_sd["diffusion_model." + k] = v
         #     sd = new_sd
+        if ".default." in first:
+            new_sd = {}
+            for k,v in sd.items():
+                k = k.replace(".default.", ".")
+                new_sd[k] = v 
+            sd = new_sd
+
+        if first.startswith("vace_blocks."):
+            new_sd = {}
+            for k,v in sd.items():
+                if k.startswith("vace_blocks."):
+                    l = k.split(".")
+                    block_no = self.vace_layers[int(l[1])]
+                    l[0] = "blocks." + str(block_no)
+                    l[1] = "vace"
+                    k = ".".join(l)
+                    print(k)
+                new_sd[k] = v 
+            sd = new_sd
 
         if first.startswith("lora_unet_"):
             new_sd = {}
@@ -937,7 +983,7 @@ class WanModel(ModelMixin, ConfigMixin):
 
             sd = new_sd
         from wgp import test_class_i2v 
-        if not test_class_i2v(model_type) or model_type in ["i2v_2_2"]:
+        if not test_class_i2v(base_model_type) or base_model_type in ["i2v_2_2"]:
             new_sd = {}
             # convert loras for i2v to t2v
             for k,v in sd.items():
@@ -989,6 +1035,8 @@ class WanModel(ModelMixin, ConfigMixin):
                  standin= False,
                  motion_encoder_dim=0,
                  lynx=None,
+                 steadydancer = False,
+                 scail = False,
                  ):
 
         super().__init__()
@@ -1020,7 +1068,9 @@ class WanModel(ModelMixin, ConfigMixin):
         self.vae_scale = vae_scale
 
         multitalk = multitalk_output_dim > 0
-        self.multitalk = multitalk 
+        self.multitalk = multitalk
+        self.steadydancer = steadydancer
+        self.scail = scail
         animate = motion_encoder_dim > 0
 
         # embeddings
@@ -1142,11 +1192,83 @@ class WanModel(ModelMixin, ConfigMixin):
                 num_heads=4,
             )
 
+        if scail:
+            # SCAIL only needs pose embedding (no motion_encoder/face_adapter)
+            # pose_latents (16 ch) + mask (4 ch) = 20 channels = in_dim
+            self.pose_patch_embedding = nn.Conv3d(
+                in_dim, dim, kernel_size=patch_size, stride=patch_size
+            )
+
+        if steadydancer:
+            self.in_dim_c = 16
+
+        ############### Condition-Reconciliation Mechanism ###############
+            self.patch_embedding_fuse = nn.Conv3d(      # x, fused pose, aligned pose
+                in_dim + self.in_dim_c + self.in_dim_c, dim, kernel_size=patch_size, stride=patch_size)
+            self.patch_embedding_ref_c = nn.Conv3d(    # ref_c
+                self.in_dim_c, dim, kernel_size=patch_size, stride=patch_size)
+
+            ############### Synergistic Pose Modulation Modules ###############
+            # Spatial Structure Adaptive Extractor
+            self.condition_embedding_spatial = DYModule(inp=self.in_dim_c, oup=self.in_dim_c)
+            # Temporal Motion Coherence Module
+            self.condition_embedding_temporal = nn.Sequential(
+                FactorConv3d(in_channels=self.in_dim_c, out_channels=self.in_dim_c, kernel_size=(3, 3, 3), stride=1),
+                nn.SiLU(),
+                FactorConv3d(in_channels=self.in_dim_c, out_channels=self.in_dim_c, kernel_size=(3, 3, 3), stride=1),
+                nn.SiLU(),
+                FactorConv3d(in_channels=self.in_dim_c, out_channels=self.in_dim_c, kernel_size=(3, 3, 3), stride=1),
+                nn.SiLU()
+            )
+            # Frame-wise Attention Alignment Unit
+            self.condition_embedding_align = PoseRefNetNoBNV3(in_channels_x=16,
+                                                    in_channels_c=16,
+                                                    hidden_dim=128,
+                                                    num_heads=8)
+
+    def adapt_modulation(self, block_name ='blocks'):
+        def move(v, param_name = "modulation"):
+            module = torch.nn.Module()
+            module.weight = getattr(v, param_name)
+            delattr(v, param_name)
+            setattr(v, param_name, module)
+
+        modules_dict= { k: m for k, m in self.named_modules()}
+        for k,v in modules_dict[block_name]._modules.items():
+            move(v)
+
+        if block_name != "blocks": return
+        move(modules_dict["head"])
+
+    def adapt_vace_model(self):
+        self.adapt_modulation("vace_blocks")
+
+        modules_dict= { k: m for k, m in self.named_modules()}
+        for model_layer, vace_layer in self.vace_layers_mapping.items():
+            module = modules_dict[f"vace_blocks.{vace_layer}"]
+            target = modules_dict[f"blocks.{model_layer}"]
+            setattr(target, "vace", module )
+        delattr(self, "vace_blocks")
+
+
+    def adapt_animate_model(self):
+        modules_dict= { k: m for k, m in self.named_modules()}
+        for animate_layer in range(8):
+            module = modules_dict[f"face_adapter.fuser_blocks.{animate_layer}"]
+            model_layer = animate_layer * 5
+            target = modules_dict[f"blocks.{model_layer}"]
+            setattr(target, "face_adapter_fuser_blocks", module )
+        delattr(self, "face_adapter")
+
+    def apply_post_init_changes(self):
+        self.adapt_modulation()
+        if hasattr(self, "vace_blocks"): self.adapt_vace_model()
+        if hasattr(self, "face_adapter"): self.adapt_animate_model()
 
     def lock_layers_dtypes(self, hybrid_dtype = None, dtype = torch.float32):
         from optimum.quanto import QTensor
 
-        layer_list = [self.head, self.head.head, self.patch_embedding]
+        layer_list = [self.head, self.head.head, self.head.modulation, self.patch_embedding]
         target_dype= dtype
         
         layer_list2 = [ self.time_embedding, self.time_embedding[0], self.time_embedding[2], 
@@ -1178,12 +1300,14 @@ class WanModel(ModelMixin, ConfigMixin):
         for current_layer_list, current_dtype in zip([layer_list, layer_list2], [target_dype, target_dype2]):
             for layer in current_layer_list:
                 layer._lock_dtype = dtype
-
-                if hasattr(layer, "weight") and layer.weight.dtype != current_dtype:
+                if isinstance(layer, nn.Parameter):
+                    if not isinstance(layer.data, QTensor):
+                        layer.data = layer.data.to(current_dtype)
+                elif hasattr(layer, "weight") and layer.weight.dtype != current_dtype:
                     if not isinstance(layer.weight.data, QTensor):
                         layer.weight.data = layer.weight.data.to(current_dtype)
-                    if hasattr(layer, "bias"):
-                        layer.bias.data = layer.bias.data.to(current_dtype)
+                        if hasattr(layer, "bias"):
+                            layer.bias.data = layer.bias.data.to(current_dtype)
 
         self._lock_dtype = dtype
 
@@ -1334,8 +1458,12 @@ class WanModel(ModelMixin, ConfigMixin):
         lynx_ip_scale = 0,
         lynx_ref_scale = 0,
         lynx_feature_extractor = False,
-        lynx_ref_buffer = None,        
-
+        lynx_ref_buffer = None,
+        steadydancer_condition = None,
+        steadydancer_ref_x = None,
+        steadydancer_ref_c = None,
+        steadydancer_clip_fea_c = None,
+        scail_pose_latents = None,
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
         modulation_dtype = self.time_projection[1].weight.dtype
@@ -1350,12 +1478,20 @@ class WanModel(ModelMixin, ConfigMixin):
         if chipmunk:
             # from chipmunk.ops.voxel import voxel_chunk_no_padding, reverse_voxel_chunk_no_padding
             voxel_shape = (4, 6, 8)
-
+        real_seq = 0
         x_list = x
         joint_pass = len(x_list) > 1
         is_source_x = [ x.data_ptr() == x_list[0].data_ptr() and i > 0 for i, x in enumerate(x_list) ]
         last_x_idx  = 0
-        for i, (is_source, x) in enumerate(zip(is_source_x, x_list)):
+        steadydancer = steadydancer_condition is not None
+        if steadydancer: # steady dancer
+            x_noise_clone = x_list[0].clone()
+        if isinstance(y, list):
+            y_list = y
+        else:
+            y_list = [y] * len(x_list)
+
+        for i, (is_source, x, y) in enumerate(zip(is_source_x, x_list, y_list)):
             if is_source:
                 x_list[i] = x_list[0].clone()
                 last_x_idx = i
@@ -1367,15 +1503,40 @@ class WanModel(ModelMixin, ConfigMixin):
                     if bz > 1: y = y.expand(bz, -1, -1, -1, -1)
                     x = torch.cat([x, y], dim=1)
                 # embeddings
-                x = self.patch_embedding(x).to(modulation_dtype)
+                if not steadydancer:
+                    x = self.patch_embedding(x).to(modulation_dtype)
+                    grid_sizes = x.shape[2:]
+                x_list[i] = x
+        y = y_list = None
+        
+        if steadydancer: # steady dancer
+            # Spatial Structure Adaptive Extractor.
+            time_steps = steadydancer_condition[0].shape[2]
+            for i, (x, condition) in enumerate(zip(x_list, steadydancer_condition)):
+                real_seq = x.shape[1]
+                # Temporal Motion Coherence Module.
+                condition_temporal =self.condition_embedding_temporal(condition)                
+                condition_spatial = rearrange(self.condition_embedding_spatial(rearrange(condition, 'b c t h w -> (b t) c h w')), '(b t) c h w -> b c t h w', t=time_steps, b=1)
+                # Hierarchical Aggregation (1): condition, temporal condition, spatial condition
+                condition_fused = condition + condition_temporal + condition_spatial
+                # Frame-wise Attention Alignment Unit.
+                condition_aligned = self.condition_embedding_align(condition_fused, x_noise_clone)                
+                # Condition Fusion/Injection, Hierarchical Aggregation (2): x, fused condition, aligned condition
+                x = self.patch_embedding_fuse(torch.cat([x, condition_fused, condition_aligned], 1))
+                x = torch.cat([x, self.patch_embedding(steadydancer_ref_x.unsqueeze(0)), self.patch_embedding_ref_c(steadydancer_ref_c[:16].unsqueeze(0))], dim=2)
                 grid_sizes = x.shape[2:]
                 x_list[i] = x
-        y = None
-        
+                x = condition = condition_fused = condition_aligned = condition_temporal = condition_spatial = None
+            x_noise_clone = x = None
+
         motion_vec_list = []
+        pose_tokens = None
+        if scail_pose_latents is not None:
+            pose_tokens = build_scail_pose_tokens(self, scail_pose_latents, modulation_dtype)
+        
         if face_pixel_values is None: face_pixel_values =  [None] * len(x_list)
         for i, (x, one_face_pixel_values) in enumerate(zip(x_list, face_pixel_values)):
-                # animate embeddings
+                # animate/scail embeddings
                 motion_vec = None
                 if pose_latents is not None: 
                     x, motion_vec = after_patch_embedding(self, x, pose_latents, torch.zeros_like(face_pixel_values[0]) if one_face_pixel_values is None else one_face_pixel_values)
@@ -1386,8 +1547,14 @@ class WanModel(ModelMixin, ConfigMixin):
                     x = voxel_chunk_no_padding(x, voxel_shape).squeeze(-1).transpose(1, 2)
                 else:
                     x = x.flatten(2).transpose(1, 2)
+
+                if scail_pose_latents is not None:
+                    if pose_tokens.shape[0] != x.shape[0]: pose_tokens = pose_tokens.repeat(x.shape[0], 1, 1)
+                    x = torch.cat([x, pose_tokens], dim=1)
+
                 x_list[i] = x
         x = None
+
 
 
         block_mask = None
@@ -1465,6 +1632,9 @@ class WanModel(ModelMixin, ConfigMixin):
         
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
+            if steadydancer_clip_fea_c is not None:
+                context_clip += self.img_emb(steadydancer_clip_fea_c)  # bs x 257 x dim
+
             context_list = []
             for one_context in context: 
                 if len(one_context) != len(context_clip):
@@ -1539,7 +1709,7 @@ class WanModel(ModelMixin, ConfigMixin):
                 if x_id != 0:
                     should_calc = skips_steps_cache.should_calc
                 else:
-                    if real_step_no <= skips_steps_cache.start_step or real_step_no == skips_steps_cache.num_steps-1:
+                    if real_step_no <= skips_steps_cache.start_step or real_step_no == skips_steps_cache.num_steps-1 or skips_steps_cache.previous_modulated_input is None:
                         should_calc = True
                         skips_steps_cache.accumulated_rel_l1_distance = 0
                     else:
@@ -1641,6 +1811,8 @@ class WanModel(ModelMixin, ConfigMixin):
 
             # unpatchify
             x_list[i] = self.unpatchify(x, grid_sizes)
+            if real_seq > 0:
+                x = x[:, :real_seq]
             del x
 
         return [x.float() for x in x_list]

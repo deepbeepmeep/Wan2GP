@@ -1,0 +1,8 @@
+{
+    "activated_loras": [
+		"https://huggingface.co/DeepBeepMeep/Flux/resolve/main/loras_accelerators/FLUX.1-Turbo-Alpha.safetensors"
+	],
+	"loras_multipliers": "1",
+	"num_inference_steps": 10,
+    "embedded_guidance_scale": 3.5
+}

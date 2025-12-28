@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "Wan2.2 Lucy Edit v1.1 FastWan 5B",
+        "architecture": "lucy_edit",
+        "description": "Lucy Edit is a video editing model that performs instruction-guided edits on videos using free-text prompts. It supports a variety of edits, such as clothing & accessory changes, character changes, object insertions, and scene replacements while preserving the motion and composition perfectly. This is the FastWan version for faster generation.",
+        "URLs": "lucy_edit_1_1",
+        "group": "wan2_2",
+		"settings_dir": [ "" ],		
+		"loras": "ti2v_2_2_fastwan"
+    },
+	"prompt": "change the background setting with a jungle full of wild animals",
+    "video_length": 81,
+    "guidance_scale": 1,
+    "flow_shift": 3,
+    "num_inference_steps": 5,
+    "resolution": "1280x720"
+}

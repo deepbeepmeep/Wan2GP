@@ -23,10 +23,12 @@ loras/wan/
 WanGP will automatically discover and display LoRAs in all subdirectories. In the UI, they will be shown with their relative paths (e.g., `characters/character1.safetensors`).
 
 ### Wan Models
-- `loras/wan/`    - Wan t2v (14B / general) loras
-- `loras/wan_5B/` - Wan 5B loras
+- `loras/wan/`    - Wan 2.1 t2v (14B / general) loras
+- `loras/wan_2_2_t2v/` - Wan 2.2 t2v loras
+- `loras/wan_2_2_i2v/` - Wan 2.2 i2v loras
+- `loras/wan_5B/` - Wan 5B loras (ti2v_2_2, ovi)
 - `loras/wan_1.3B/` - Wan 1.3B loras
-- `loras/wan_i2v/` - Wan i2v loras
+- `loras/wan_i2v/` - Wan 2.1 i2v loras
 
 ### Other Models
 - `loras/hunyuan/` - Hunyuan Video t2v loras
@@ -63,6 +65,12 @@ Create a `lora_config.json` file in your WanGP root directory (or in your custom
   "wan": {
     "lora_dir": "/mnt/storage/my_loras/wan"
   },
+  "wan_2_2_t2v": {
+    "lora_dir": "/mnt/storage/my_loras/wan_2_2_t2v"
+  },
+  "wan_2_2_i2v": {
+    "lora_dir": "/mnt/storage/my_loras/wan_2_2_i2v"
+  },
   "flux": {
     "lora_dir": "/mnt/storage/my_loras/flux"
   },
@@ -82,7 +90,7 @@ A template file `lora_config.json.example` is provided in the root directory sho
 4. Restart WanGP to apply changes
 
 **Supported Models:**
-- `wan`, `wan_1.3B`, `wan_5B`, `wan_i2v` - Wan model variants
+- `wan`, `wan_1.3B`, `wan_5B`, `wan_i2v`, `wan_2_2_t2v`, `wan_2_2_i2v` - Wan model variants
 - `hunyuan`, `hunyuan_1.5`, `hunyuan_i2v` - Hunyuan Video variants
 - `flux`, `flux2` - Flux models
 - `ltxv` - LTX Video
@@ -440,11 +448,13 @@ In the video, a man is presented. The man is in a city and looks at his watch.
 
 ```bash
 # Lora-related command line options
---lora-dir path                   # Path to Wan t2v loras (default loras/wan)
+--lora-dir path                   # Path to Wan 2.1 t2v loras (default loras/wan)
 --lora-dir-wan-5b path            # Path to Wan 5B loras (default loras/wan_5B)
 --lora-dir-wan-1-3b path          # Path to Wan 1.3B loras (default loras/wan_1.3B)
---lora-dir-i2v path               # Path to Wan i2v loras (default loras/wan_i2v)
---lora-dir-wan-i2v path           # Alias for Wan i2v loras
+--lora-dir-i2v path               # Path to Wan 2.1 i2v loras (default loras/wan_i2v)
+--lora-dir-wan-i2v path           # Alias for Wan 2.1 i2v loras
+--lora-dir-wan-2-2-t2v path       # Path to Wan 2.2 t2v loras (default loras/wan_2_2_t2v)
+--lora-dir-wan-2-2-i2v path       # Path to Wan 2.2 i2v loras (default loras/wan_2_2_i2v)
 --lora-dir-hunyuan path           # Path to Hunyuan t2v loras (default loras/hunyuan)
 --lora-dir-hunyuan-i2v path       # Path to Hunyuan i2v loras (default loras/hunyuan_i2v)
 --lora-dir-ltxv path              # Path to LTX Video loras (default loras/ltxv)

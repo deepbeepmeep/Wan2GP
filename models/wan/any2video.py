@@ -89,7 +89,12 @@ class WanAny2V:
         self.param_dtype = config.param_dtype
         self.model_def = model_def
         self.model2 = None
-        self.transformer_switch = model_def.get("URLs2", None) is not None
+        # Disable dual-model mode for Frames2Video
+        if model_def.get("frames2video_class", False):
+            self.transformer_switch = False
+        else:
+            self.transformer_switch = model_def.get("URLs2", None) is not None
+
         self.is_mocha = model_def.get("mocha_mode", False)
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
@@ -182,7 +187,14 @@ class WanAny2V:
                     self.model2 = offload.fast_load_transformers_model(model_filename[1:2], modules = modules_for_2, **kwargs)
 
             else:
-                self.model = offload.fast_load_transformers_model(model_filename,  **kwargs)
+                # Ensure model_filename is always a list
+                if isinstance(model_filename, str):
+                    model_files = [model_filename]
+                else:
+                    model_files = model_filename
+
+                self.model = offload.fast_load_transformers_model(model_files, **kwargs)
+
         
 
         if self.model is not None:
@@ -484,8 +496,6 @@ class WanAny2V:
 
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
-        injection_denoising_step = bbargs.get("injection_denoising_step", 5)
-        inject_from_start = bbargs.get("inject_from_start", False)
         image_outputs = image_mode == 1
         kwargs = {'pipeline': self, 'callback': callback}
         color_reference_frame = None
@@ -651,6 +661,11 @@ class WanAny2V:
 
             lat_y = None
             kwargs.update({ 'y': y})
+            
+        # ⭐ Frames to video
+        elif model_def.get("frames2video_class", False):
+            from models.wan.frames2video.core import run_frames2video
+            return run_frames2video(self, model_def, inputs)
 
         # Wan-Move
         if wanmove:
@@ -1053,10 +1068,6 @@ class WanAny2V:
                 scheduler_kwargs = {"generator": seed_g}
         # b, c, lat_f, lat_h, lat_w
         latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=seed_g)
-                  
-        # Ensure source_latents is defined
-        if 'source_latents' not in locals():
-            source_latents = latents.clone()
         if "G" in video_prompt_type: randn = latents
         if apg_switch != 0:  
             apg_momentum = -0.75
@@ -1082,10 +1093,6 @@ class WanAny2V:
             kwargs.update({"t": timestep, "current_step_no": i, "real_step_no": start_step_no + i })  
             kwargs["slg_layers"] = slg_layers if int(slg_start * sampling_steps) <= i < int(slg_end * sampling_steps) else None
 
-            # Initialize randn for injection
-            randn = torch.randn_like(source_latents)
-
-            # Inject latents if within denoising step
             if denoising_strength < 1 and i <= injection_denoising_step:
                 sigma = t / 1000
                 if inject_from_start:

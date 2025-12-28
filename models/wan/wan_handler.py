@@ -12,7 +12,7 @@ def test_vace(base_model_type):
     return base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B", "vace_ditto_14B"]     
 
 def test_class_i2v(base_model_type):
-    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer", "wanmove", "scail" ]
+    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer", "wanmove", "scail", "frames2video" ]
 
 def test_class_t2v(base_model_type):    
     return base_model_type in ["t2v", "t2v_2_2", "alpha", "lynx"]
@@ -44,7 +44,7 @@ class family_handler():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B",
                     "recam_1.3B", "animate", "alpha", "alpha_lynx", "chrono_edit",
-                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail"]
+                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "frames2video"]
 
 
     @staticmethod
@@ -64,7 +64,7 @@ class family_handler():
 
         models_comp_map = { 
                     "vace_14B" : [ "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_lite_14B", "vace_lynx_14B", "vace_14B_2_2"],
-                    "t2v" : [ "vace_14B", "vace_1.3B" "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_lite_14B", "vace_lynx_14B", "vace_14B_2_2", "t2v_1.3B", "phantom_1.3B","phantom_14B", "standin", "lynx_lite", "lynx", "alpha"],
+                    "t2v" : [ "vace_14B", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_lite_14B", "vace_lynx_14B", "vace_14B_2_2", "t2v_1.3B", "phantom_1.3B","phantom_14B", "standin", "lynx_lite", "lynx", "alpha"],
                     "i2v" : [ "fantasy", "multitalk", "flf2v_720p" ],
                     "i2v_2_2" : ["i2v_2_2_multitalk"],
                     "fantasy": ["multitalk"],
@@ -193,13 +193,14 @@ class family_handler():
         extra_model_def["alpha_class"] = alpha = test_alpha(base_model_type)
         extra_model_def["wan_5B_class"] = wan_5B = test_wan_5B(base_model_type)        
         extra_model_def["vace_class"] = vace_class = test_vace(base_model_type)
+        extra_model_def["frames2video_class"] = (base_model_type == "frames2video")
         extra_model_def["color_correction"] = True
         
         if base_model_type in ["vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"]:
             extra_model_def["parent_model_type"] = "vace_14B"
 
         group = "wan"
-        if base_model_type in ["t2v_2_2", "i2v_2_2", "vace_14B_2_2"]:
+        if base_model_type in ["t2v_2_2", "i2v_2_2", "vace_14B_2_2", "frames2video"]:
             profiles_dir = "wan_2_2"
             group = "wan2_2"
         elif i2v:
@@ -215,6 +216,13 @@ class family_handler():
             profiles_dir = "wan_alpha"
         else:
             profiles_dir = "wan"
+            
+        if base_model_type == "frames2video":
+            extra_model_def["i2v_class"] = True
+            extra_model_def["flow_shift"] = True
+            extra_model_def["sliding_window"] = True
+            extra_model_def["motion_amplitude"] = True
+
 
         if  (test_class_t2v(base_model_type) or vace_class or base_model_type in ["chrono_edit"]) and not base_model_type in ["alpha"]:
             extra_model_def["vae_upsampler"] = [1,2]

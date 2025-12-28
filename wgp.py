@@ -6014,7 +6014,7 @@ def generate_video(
                     os.rename(video_path, video_preview_path)
                     # Merge the saved video with the last one via ffmpeg, which saves a lot of RAM in comparison to torch.cat
                     combine_videos(video_source, video_preview_path, video_path, trim_end_frames1=source_video_overlap_frames_count, trim_start_frames2=1, fps=output_fps)
-                
+                    os.remove(video_preview_path)
                 end_time = time.time()
 
                 send_cmd("progress", [0, get_latest_status(state,"Add Meta Data")])
@@ -6140,7 +6140,7 @@ def combine_videos(
     else:
         output = ffmpeg.output(joined_video, output_path, vcodec=vcodec, crf=crf, preset=preset)
     
-    ffmpeg.run(output, overwrite_output=True)
+    ffmpeg.run(output, overwrite_output=True, quiet=True)
 
 def prepare_generate_video(state):    
 

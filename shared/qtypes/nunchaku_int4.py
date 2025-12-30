@@ -1,4 +1,5 @@
 import ast
+import os
 import sys
 import types
 from types import SimpleNamespace
@@ -80,9 +81,13 @@ def _install_nunchaku_shim(candidate_root):
 
 def _load_nunchaku_ops():
     global _NUNCHAKU_OPS
-    # _NUNCHAKU_OPS = False
+    if os.environ.get("WAN2GP_FORCE_NUNCHAKU_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
+        _NUNCHAKU_OPS = False
+        return _NUNCHAKU_OPS
+
     if _NUNCHAKU_OPS is not None:
         return _NUNCHAKU_OPS
+    _NUNCHAKU_OPS = False
 
     try:
         from nunchaku.ops.gemm import svdq_gemm_w4a4_cuda
@@ -451,22 +456,37 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
         proj_down = _unpack_lowrank_weight(proj_down, down=True)
         proj_up = _unpack_lowrank_weight(proj_up, down=False)
         weight = weight + proj_up.to(dtype) @ proj_down.to(dtype)
-        smooth = self._smooth_factor
-        if smooth is not None and smooth.ndim == 1 and smooth.numel() == self.shape[1]:
-            smooth = _unpack_nunchaku_scale_vector(smooth, self.shape[1])
-            smooth = smooth.to(device)
-            if smooth.dtype != dtype:
-                smooth = smooth.to(dtype)
-            weight = weight / smooth.unsqueeze(0)
         return weight
 
     def _linear_fallback(self, input, bias=None):
         x = input.reshape(-1, input.shape[-1])
-        weight = self.dequantize(dtype=x.dtype, device=x.device)
-        out = x.matmul(weight.t())
+        out_features, in_features = self.shape
+        qweight = self._qweight.to(device=x.device)
+        wscales = self._wscales.to(device=x.device)
+        proj_down = self._proj_down.to(device=x.device)
+        proj_up = self._proj_up.to(device=x.device)
+
+        qvals = _unpack_nunchaku_w4a4_weight(qweight, out_features, in_features).to(x.dtype)
+        wscales = _unpack_nunchaku_wscales(wscales, out_features, in_features, self._group_size)
+        scales = _expand_group_scales(wscales, self._group_size).to(x.dtype)
+        base_weight = qvals * scales
+
+        proj_down = _unpack_lowrank_weight(proj_down, down=True).to(x.dtype)
+        proj_up = _unpack_lowrank_weight(proj_up, down=False).to(x.dtype)
+
+        smooth = _unpack_nunchaku_scale_vector(self._smooth_factor, in_features)
+        if torch.is_tensor(smooth):
+            smooth = smooth.to(device=x.device, dtype=x.dtype)
+            x_base = x / smooth
+        else:
+            x_base = x
+
+        out = x_base.matmul(base_weight.t())
+        lora_act = x.matmul(proj_down.t())
+        out.add_(lora_act.matmul(proj_up.t()))
         if bias is not None:
             out.add_(bias)
-        return out.reshape(*input.shape[:-1], weight.shape[0])
+        return out.reshape(*input.shape[:-1], out_features)
 
     def _linear_cuda(self, input, bias=None):
         ops = _load_nunchaku_ops()
@@ -701,8 +721,6 @@ class NunchakuAWQWeightTensor(NunchakuBaseWeightTensor):
         wscales = self._wscales.to(device)
         wzeros = self._wzeros.to(device)
         qvals = _unpack_int4_from_int32(qweight, out_features, in_features).to(dtype)
-        wscales = _unpack_nunchaku_wscales(wscales, out_features, in_features, self._group_size)
-        wzeros = _unpack_nunchaku_wscales(wzeros, out_features, in_features, self._group_size)
         scales = _expand_group_scales(wscales, self._group_size).to(dtype)
         zeros = _expand_group_scales(wzeros, self._group_size).to(dtype)
         return qvals * scales + zeros

@@ -212,6 +212,7 @@ class model_factory:
         NAG_scale: float = 1.0,
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
+        loras_slists=None,
         **kwargs,
     ):
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -257,6 +258,7 @@ class model_factory:
             NAG_scale=NAG_scale,
             NAG_tau=NAG_tau,
             NAG_alpha=NAG_alpha,
+            loras_slists=loras_slists,
         )
 
         if images is None:

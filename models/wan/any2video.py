@@ -445,20 +445,7 @@ class WanAny2V:
                 ):
         
         model_def = self.model_def
-        distill_steps = None
-        distill_debug = os.getenv("WAN_DISTILL_DEBUG", "0").lower() not in ("0", "false", "no")
-        if model_def is not None and model_def.get("distill_scheduler", False):
-            distill_steps = model_def.get("denoising_step_list", None)
-            if distill_steps is None:
-                raise ValueError("distill_scheduler requires denoising_step_list in model definition")
-            sample_solver = "distill"
-            sampling_steps = len(distill_steps)
-            if model_def.get("sample_shift", None) is not None:
-                shift = model_def["sample_shift"]
-            if distill_debug:
-                print(f"Wan distill scheduler enabled: steps={distill_steps} shift={shift}")
 
-        distill_sigmas = None
         if sample_solver =="euler":
             # prepare timesteps
             timesteps = list(np.linspace(self.num_timesteps, 1, sampling_steps, dtype=np.float32))
@@ -468,19 +455,6 @@ class WanAny2V:
                 timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]
             timesteps = torch.tensor(timesteps)
             sample_scheduler = None                  
-        elif sample_solver == "distill":
-            if distill_steps is None:
-                raise ValueError("distill scheduler requires denoising_step_list")
-            num_train_timesteps = 1000
-            sigmas = torch.linspace(1.0, 0.0, num_train_timesteps + 1, device=self.device)[:-1]
-            sigmas = shift * sigmas / (1 + (shift - 1) * sigmas)
-            timesteps = sigmas * num_train_timesteps
-            denoise_indices = [num_train_timesteps - int(x) for x in distill_steps]
-            timesteps = timesteps[denoise_indices].to(self.device)
-            distill_sigmas = sigmas[denoise_indices].to("cpu")
-            if distill_debug:
-                print(f"Wan distill timesteps: {timesteps.tolist()} sigmas: {distill_sigmas.tolist()}")
-            sample_scheduler = None
         elif sample_solver == 'causvid':
             sample_scheduler = FlowMatchScheduler(num_inference_steps=sampling_steps, shift=shift, sigma_min=0, extra_one_step=True)
             timesteps = torch.tensor([1000, 934, 862, 756, 603, 410, 250, 140, 74])[:sampling_steps].to(self.device)

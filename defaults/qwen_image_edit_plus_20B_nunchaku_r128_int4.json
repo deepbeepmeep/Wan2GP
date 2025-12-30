@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Qwen Image Edit Nunchaku INT4 r128 (2509) 20B",
+        "name": "Qwen Image Edit Plus (2509) Nunchaku INT4 r128 20B",
         "architecture": "qwen_image_edit_plus_20B",
         "description": "Nunchaku SVDQ INT4 weights for Qwen Image Edit 2509 20B.",
         "URLs": [

@@ -1,0 +1,14 @@
+{
+    "model": {
+        "name": "Z-Image Turbo Nunchaku FP4 (r128)",
+        "architecture": "z_image",
+        "description": "Nunchaku SVDQ FP4 weights for Z-Image Turbo. For full speed, a sm120+ GPU is needed (RTX 50xx) and the nunchaku kernels must be installed.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Z-Image/resolve/main/svdq-fp4_r128-z-image-turbo.safetensors"
+        ]
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1,
+    "num_inference_steps": 8,
+    "guidance_scale": 0
+}

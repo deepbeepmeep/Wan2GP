@@ -110,6 +110,7 @@ reload_needed = True
 _HANDLER_MODULES = [
     "shared.qtypes.nvfp4",
     "shared.qtypes.nunchaku_int4",
+    "shared.qtypes.nunchaku_fp4",
 ]
 for handler in _HANDLER_MODULES:
     quant_router.register_handler(handler)

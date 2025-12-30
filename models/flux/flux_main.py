@@ -15,13 +15,9 @@ from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image
 from shared.utils import files_locator as fl 
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2VLProcessor
 from .modules.autoencoder_flux2 import AutoencoderKLFlux2, AutoEncoderParamsFlux2
+from shared.qtypes import nunchaku_int4 as _nunchaku_int4
 
-from .util import (
-    load_ae,
-    load_clip,
-    load_flow_model,
-    load_t5,
-)
+from .util import load_ae, load_clip, load_flow_model, load_t5, preprocess_flux_state_dict
 from .flux2_adapter import (
     scatter_ids ,
     batched_prc_img, 
@@ -103,7 +99,12 @@ class model_factory:
         source = model_def.get("source", None)
         self.clip = self.t5 = self.vision_encoder = self.mistal = None
         if self.is_flux2:
-            self.model = load_flow_model(self.name, model_filename if source is None else source, torch_device)
+            self.model = load_flow_model(
+                self.name,
+                model_filename if source is None else source,
+                torch_device,
+                preprocess_sd=preprocess_flux_state_dict,
+            )
             from .modules.text_encoder_mistral import Mistral3SmallEmbedder
             self.mistral = Mistral3SmallEmbedder( model_spec = text_encoder_filename)
     
@@ -120,7 +121,12 @@ class model_factory:
             # self.name= "flux-dev"
             # self.name= "flux-schnell"
             source =  model_def.get("source", None)
-            self.model = load_flow_model(self.name, model_filename[0] if source is None else source, torch_device)
+            self.model = load_flow_model(
+                self.name,
+                model_filename[0] if source is None else source,
+                torch_device,
+                preprocess_sd=preprocess_flux_state_dict,
+            )
             self.model_def = model_def 
             self.vae = None if getattr(self.model, "radiance", False) else load_ae(self.name, device=torch_device)
 
@@ -168,7 +174,21 @@ class model_factory:
             getattr(self.model.params, "double_linear1_mlp_ratio", None),
         )
         self.model.split_linear_modules_map = split_linear_modules_map
-        offload.split_linear_modules(self.model, split_linear_modules_map )
+        split_kwargs = None
+        for module in self.model.modules():
+            qtype = getattr(module, "weight_qtype", None)
+            if getattr(qtype, "name", None) == _nunchaku_int4._NUNCHAKU_INT4_QTYPE_NAME:
+                split_kwargs = _nunchaku_int4.get_nunchaku_split_kwargs()
+                break
+        if split_kwargs:
+            offload.split_linear_modules(
+                self.model,
+                split_linear_modules_map,
+                split_handlers=split_kwargs.get("split_handlers"),
+                share_fields=split_kwargs.get("share_fields"),
+            )
+        else:
+            offload.split_linear_modules(self.model, split_linear_modules_map)
 
     def infer_vlm(self, input_img_path,input_instruction,prefix):
         tp=[]

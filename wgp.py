@@ -19,7 +19,7 @@ import threading
 import argparse
 import warnings
 warnings.filterwarnings('ignore', message='Failed to find.*', module='triton')
-from mmgp import offload, safetensors2, profile_type , fp8_quanto_bridge
+from mmgp import offload, safetensors2, profile_type , fp8_quanto_bridge, quant_router
 if not os.name == "nt": fp8_quanto_bridge.enable_fp8_marlin_fallback()
 try:
     import triton
@@ -107,6 +107,12 @@ unique_id = 0
 unique_id_lock = threading.Lock()
 offloadobj = enhancer_offloadobj = wan_model = None
 reload_needed = True
+_HANDLER_MODULES = [
+    "shared.qtypes.nvfp4",
+    "shared.qtypes.nunchaku_int4",
+]
+for handler in _HANDLER_MODULES:
+    quant_router.register_handler(handler)
 
 def set_wgp_global(variable_name: str, new_value: any) -> str:
     if variable_name not in globals():
@@ -1093,7 +1099,7 @@ def _save_queue_to_zip(queue, output):
                 params_copy.pop(runtime_key, None)
 
             params_copy['settings_version'] = settings_version
-            params_copy['base_model_type'] = get_base_model_type(model_type)
+            params_copy['base_model_type'] = get_base_model_type(params_copy["model_type"])
 
             manifest_entry = {"id": task.get('id'), "params": params_copy}
             manifest_entry = {k: v for k, v in manifest_entry.items() if v is not None}
@@ -1680,7 +1686,7 @@ def update_generation_status(html_content):
     if(html_content):
         return gr.update(value=html_content)
 
-family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler", "models.z_image.z_image_handler", "models.chatterbox.chatterbox_handler"]
+family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.chatterbox.chatterbox_handler"]
 
 def register_family_lora_args(parser):
     registered_families = set()
@@ -2191,6 +2197,9 @@ def map_family_handlers(family_handlers):
         models_eqv_map.update(eq_map); models_comp_map.update(comp_map)
     return base_types_handlers, families_infos, models_eqv_map, models_comp_map
 
+# models_eqv_map: bidirectional compatibility between base model types
+# models_comp_map : mono directional compatibility between base model types {"A" : {"B", "C"} } means B & C model types can accept A  model types (but not the other way). Said otherwise B & C are derived data types
+
 model_types_handlers, families_infos,  models_eqv_map, models_comp_map = map_family_handlers(family_handlers)
 
 def get_base_model_type(model_type):
@@ -2206,7 +2215,7 @@ def get_parent_model_type(model_type):
     if base_model_type is None: return None
     model_def = get_model_def(base_model_type)
     return model_def.get("parent_model_type", base_model_type)
-"vace_14B"
+    
 def get_model_handler(model_type):
     base_model_type = get_base_model_type(model_type)
     if base_model_type is None:
@@ -2219,11 +2228,15 @@ def get_model_handler(model_type):
 def are_model_types_compatible(imported_model_type, current_model_type):
     imported_base_model_type = get_base_model_type(imported_model_type)
     curent_base_model_type = get_base_model_type(current_model_type)
-    if imported_base_model_type == curent_base_model_type:
-        return True
 
     if imported_base_model_type in models_eqv_map:
         imported_base_model_type = models_eqv_map[imported_base_model_type]
+
+    if curent_base_model_type in models_eqv_map:
+        curent_base_model_type = models_eqv_map[curent_base_model_type]
+
+    if imported_base_model_type == curent_base_model_type:
+        return True
 
     comp_list=  models_comp_map.get(imported_base_model_type, None)
     if comp_list == None: return False
@@ -2384,11 +2397,15 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
     if len(choices) <= 1:
         raw_filename = choices[0]
     else:
-        if quantization.lower() in ("int8", "fp8", "nvfp4"):
-            q = quantization.lower()
-            sub_choices = [name for name in choices if q in os.path.basename(name).lower()]
+        quant_tokens = offload.get_quantization_tokens(quantization)
+        if quant_tokens:
+            sub_choices = [
+                name
+                for name in choices
+                if any(token in os.path.basename(name).lower() for token in quant_tokens)
+            ]
         else:
-            sub_choices = [ name for name in choices if "quanto" not in os.path.basename(name)]
+            sub_choices = [name for name in choices if "quanto" not in os.path.basename(name)]
 
         if len(sub_choices) > 0:
             dtype_str = "fp16" if dtype == torch.float16 else "bf16"
@@ -3312,7 +3329,8 @@ def generate_header(model_type, compile, attention_mode):
 
     description_container = [""]
     get_model_name(model_type, description_container)
-    model_filename = os.path.basename(get_model_filename(model_type, transformer_quantization, transformer_dtype_policy)) or "" 
+    full_filename = get_model_filename(model_type, transformer_quantization, transformer_dtype_policy)
+    model_filename = os.path.basename(full_filename)
     description  = description_container[0]
     header = f"<DIV style=height:{60 if server_config.get('display_stats', 0) == 1 else 40}px>{description}</DIV>"
     overridden_attention = get_overridden_attention(model_type)
@@ -3333,10 +3351,9 @@ def generate_header(model_type, compile, attention_mode):
     else:
         header += ", Data Type <B>BF16</B>"
 
-    if "nvfp4" in model_filename.lower():
-        header += ", Quantization <B>NVFP4</B>"
-    elif "int8" in model_filename:
-        header += ", Quantization <B>Scaled Int8</B>"
+    quant_label = offload.detect_quantization_label_from_filename(get_local_model_filename(full_filename))
+    if quant_label:
+        header += f", Quantization <B>{quant_label}</B>"
     header += "<FONT></DIV>"
 
     return header
@@ -4546,16 +4563,12 @@ def perform_spatial_upsampling(sample, spatial_upsampling):
     frames_to_upsample = None
     return sample 
 
+
 def any_audio_track(model_type):
-    base_model_type = get_base_model_type(model_type)
-    if base_model_type in ["fantasy", "hunyuan_avatar", "hunyuan_custom_audio", "chatterbox"]:
-        return True
     model_def = get_model_def(model_type)
     if not model_def:
         return False
-    if model_def.get("returns_audio", False):
-        return True
-    return model_def.get("multitalk_class", False)
+    return ( model_def.get("returns_audio", False) or model_def.get("any_audio_prompt", False) )
 
 def get_available_filename(target_path, video_source, suffix = "", force_extension = None):
     name, extension =  os.path.splitext(os.path.basename(video_source))
@@ -6154,6 +6167,7 @@ def generate_preview(model_type, payload):
         latents = payload
     if latents is None:
         return None
+    # latents shape should be C, T, H, W (no batch)    
     if not torch.is_tensor(latents):
         return None
     model_handler = get_model_handler(model_type)
@@ -7455,6 +7469,7 @@ def use_video_settings(state, input_file_list, choice, source):
             defaults = get_model_settings(state, model_type) 
             defaults = get_default_settings(model_type) if defaults == None else defaults
             defaults.update(configs)
+            defaults["model_type"] = model_type
             prompt = configs.get("prompt", "")
                         
             if has_audio_file_extension(file_name):
@@ -7618,7 +7633,7 @@ def switch_image_mode(state):
         model_cache = inpaint_cache.get(model_type, None)
         if model_cache is None:
             inpaint_cache[model_type] = model_cache ={}
-        video_prompt_inpaint_mode = "VAGI" if model_def.get("image_ref_inpaint", False) else "VAG"
+        video_prompt_inpaint_mode = model_def.get("inpaint_video_prompt_type", "VAG")
         video_prompt_image_mode = "KI"
         old_video_prompt_type = video_prompt_type
         if image_mode == 1:
@@ -8664,8 +8679,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 image_ref_inpaint = False
                 if image_mode_value==2:
                     dropdown_selectable = False
-                    image_ref_inpaint = model_def.get("image_ref_inpaint", False)
-
+                    image_ref_inpaint = "I" in model_def.get("inpaint_video_prompt_type", "")
 
                 with gr.Row(visible = dropdown_selectable or image_ref_inpaint) as guide_selection_row:
                     # Control Video Preprocessing
@@ -8902,7 +8916,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 audio_prompt_type_sources = gr.Dropdown(
                     choices=speaker_choices,
                     value= filter_letters(audio_prompt_type_value, "XCPAB"),
-                    label="Voices", scale = 3, visible = multitalk and not image_outputs
+                    label="Voices", scale = 3, visible = model_def.get("audio_prompt_choices") is not None and not image_outputs
                 )
             else:
                 audio_prompt_type_sources = gr.Dropdown( choices= [""], value = "", visible=False)
@@ -9676,7 +9690,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 outputs= None
             ).then( fn=use_video_settings, inputs =[state, output, last_choice, gr.State("video")] , outputs= [model_family, model_base_type_choice, model_choice, refresh_form_trigger])
 
-            gr.on( triggers=[video_info_extract_audio_settings_btn.click, video_info_extract_image_settings_btn.click], fn=validate_wizard_prompt,
+            gr.on( triggers=[video_info_extract_audio_settings_btn.click], fn=validate_wizard_prompt,
                 inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
                 show_progress="hidden",
                 outputs= [prompt],

@@ -530,7 +530,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         self._num_timesteps = len(timesteps)
 
         # Encode control image if provided and transformer supports it
-        control_latent = None
+        control_latent = control_image_tensor = None
         control_in_dim = self.transformer.control_in_dim
         if control_image is not None and hasattr(self.transformer, 'has_control') and self.transformer.has_control:
             # input_frames comes in video format [C, F, H, W] - convert to image format [B, C, H, W]
@@ -542,35 +542,40 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 # Shape is [C, H, W] - just add batch dim
                 control_image_tensor = control_image_tensor.unsqueeze(0)  # [1, C, H, W]
             control_image_tensor = control_image_tensor.to(device=device, dtype=self.vae.dtype)
-            control_latent = self.vae.encode(control_image_tensor).latent_dist.mode()
-            control_latent = (control_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+            if inpaint_mask is None:
+                control_latent = self.vae.encode(control_image_tensor).latent_dist.mode()
+                control_latent = (control_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
 
         # Build control_latent_input outside the loop (doesn't change per step)
         control_latent_input = None
-        if control_latent is not None:
+        if control_image_tensor is not None:
             # For v2 control (control_in_dim=33): concat [control_latent(16), keep_mask(1), inpaint_latent(16)]
             if control_in_dim is not None and control_in_dim > num_channels_latents:
                 if inpaint_mask is not None:
+                    inpaint_mask = inpaint_mask.to(device)
+                    inpaint_image = control_image_tensor * (1-inpaint_mask) #+ inpaint_mask
+                    inpaint_latent = self.vae.encode(inpaint_image).latent_dist.mode()
+                    inpaint_latent = (inpaint_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+
+                    if input_ref_images is not None and len(input_ref_images):
+                        control_image_tensor = convert_image_to_tensor(input_ref_images[0]).unsqueeze(0) 
+                    
+                    control_image_tensor = control_image_tensor.to(device=device, dtype=self.vae.dtype)
+                    control_latent = self.vae.encode(control_image_tensor).latent_dist.mode()
+                    control_latent = (control_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+
                     mask = inpaint_mask
                     if mask.dim() == 3:
                         mask = mask.unsqueeze(0)  # Add batch dim
                     if mask.dim() == 4 and mask.shape[1] > 1:
                         mask = mask[:, :1]  # Take first channel only
-                    if mask.shape[-2:] != control_latent.shape[-2:]:
+                    if mask.shape[-2:] != inpaint_latent.shape[-2:]:
                         mask = torch.nn.functional.interpolate(
-                            mask.float(), size=control_latent.shape[-2:], mode='nearest'
+                            mask.float(), size=inpaint_latent.shape[-2:], mode='nearest'
                         )
-                    mask = mask.to(device=control_latent.device, dtype=control_latent.dtype)
+                    mask = mask.to(device=control_latent.device, dtype=inpaint_latent.dtype)
                     keep_mask = 1.0 - mask
-                    inpaint_mask = inpaint_mask.to(device)
-                    inpaint_image = control_image_tensor #* (1-inpaint_mask) + inpaint_mask
-                    control_image_tensor = convert_image_to_tensor(input_ref_images[0]).unsqueeze(0) 
-                    control_image_tensor = control_image_tensor.to(device=device, dtype=self.vae.dtype)
-                    control_latent = self.vae.encode(control_image_tensor).latent_dist.mode()
-                    control_latent = (control_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
 
-                    inpaint_latent = self.vae.encode(inpaint_image).latent_dist.mode()
-                    inpaint_latent = (inpaint_latent - self.vae.config.shift_factor) * self.vae.config.scaling_factor
                     control_context = torch.cat([control_latent, keep_mask, inpaint_latent], dim=1)
                 else:
                     keep_mask = torch.zeros(

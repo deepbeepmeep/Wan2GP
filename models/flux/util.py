@@ -15,6 +15,7 @@ from .model import Flux, FluxLoraWrapper, FluxParams
 from .modules.autoencoder import AutoEncoder, AutoEncoderParams
 from .modules.conditioner import HFEmbedder
 from shared.utils import files_locator as fl 
+from shared.convert import convert_diffusers_to_flux
 
 CHECKPOINTS_DIR = Path("checkpoints")
 
@@ -920,7 +921,17 @@ def preprocess_flux2_state_dict(state_dict: dict, params: FluxParams) -> dict:
     return sd
 
 
-def load_flow_model(name: str, model_filename, device: str | torch.device = "cuda", verbose: bool = True) -> Flux:
+def preprocess_flux_state_dict(state_dict: dict) -> dict:
+    return convert_diffusers_to_flux.convert_state_dict(state_dict)
+
+
+def load_flow_model(
+    name: str,
+    model_filename,
+    device: str | torch.device = "cuda",
+    verbose: bool = True,
+    preprocess_sd=preprocess_flux_state_dict,
+) -> Flux:
     # Loading Flux
     config = configs[name]
 
@@ -934,7 +945,7 @@ def load_flow_model(name: str, model_filename, device: str | torch.device = "cud
 
     # print(f"Loading checkpoint: {ckpt_path}")
     from mmgp import offload
-    offload.load_model_data(model, model_filename)
+    offload.load_model_data(model, model_filename, preprocess_sd=preprocess_sd)
 
     # # load_sft doesn't support torch.device
     # sd = load_sft(ckpt_path, device=str(device))

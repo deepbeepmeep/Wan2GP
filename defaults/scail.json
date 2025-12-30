@@ -9,5 +9,5 @@
             "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_scail_preview_14B_quanto_fp16_int8.safetensors"
         ]
     },
-	"color_correction_strength": 1
+	"sliding_window_color_correction_strength": 1
 }

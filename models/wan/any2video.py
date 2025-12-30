@@ -37,6 +37,7 @@ from shared.utils.lcm_scheduler import LCMScheduler
 from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
 from .wanmove.trajectory import replace_feature, create_pos_feature_map
+from .alpha.utils import load_gauss_mask, apply_alpha_shift
 from shared.utils.audio_video import save_video
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
@@ -91,6 +92,7 @@ class WanAny2V:
         self.model2 = None
         self.transformer_switch = model_def.get("URLs2", None) is not None
         self.is_mocha = model_def.get("mocha_mode", False)
+        self.alpha2 = base_model_type == "alpha2"
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
             dtype=config.t5_dtype,
@@ -120,8 +122,12 @@ class WanAny2V:
                 vae_upsampler_factor = 2
                 vae_checkpoint ="Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
             elif model_def.get("alpha_class", False):
-                vae_checkpoint ="wan_alpha_2.1_vae_rgb_channel.safetensors"
-                vae_checkpoint2 ="wan_alpha_2.1_vae_alpha_channel.safetensors"
+                if self.alpha2:
+                    vae_checkpoint = "wan_alpha_2.1_vae_rgb_channel_v2.safetensors"
+                    vae_checkpoint2 = "wan_alpha_2.1_vae_alpha_channel_v2.safetensors"
+                else:
+                    vae_checkpoint ="wan_alpha_2.1_vae_rgb_channel.safetensors"
+                    vae_checkpoint2 ="wan_alpha_2.1_vae_alpha_channel.safetensors"
             else:
                 vae_checkpoint = "Wan2.1_VAE.safetensors"                
         self.patch_size = config.patch_size 
@@ -555,6 +561,7 @@ class WanAny2V:
         recam = model_type in ["recam_1.3B"]
         ti2v = model_def.get("wan_5B_class", False)
         alpha_class = model_def.get("alpha_class", False)
+        alpha2 = self.alpha2
         lucy_edit=  model_type in ["lucy_edit"]
         animate=  model_type in ["animate"]
         chrono_edit = model_type in ["chrono_edit"]
@@ -1080,6 +1087,9 @@ class WanAny2V:
                 scheduler_kwargs = {"generator": seed_g}
         # b, c, lat_f, lat_h, lat_w
         latents = torch.randn(batch_size, *target_shape, dtype=torch.float32, device=self.device, generator=seed_g)
+        if alpha_class and alpha2:
+            gauss_mask = load_gauss_mask(fl.locate_file("gauss_mask"))
+            latents = apply_alpha_shift(latents, gauss_mask, 0.03)
         if "G" in video_prompt_type: randn = latents
         if apg_switch != 0:  
             apg_momentum = -0.75

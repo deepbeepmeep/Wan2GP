@@ -1105,6 +1105,7 @@ class WanModel(ModelMixin, ConfigMixin):
         if model_type == 'i2v':
             self.img_emb = MLPProj(1280, dim, flf_pos_emb = flf)
 
+
         if multitalk :
             # init audio adapter
             self.audio_proj = AudioProjModel(
@@ -1630,7 +1631,7 @@ class WanModel(ModelMixin, ConfigMixin):
         # context
         context = [self.text_embedding( u ) for u in context  ] 
         
-        if clip_fea is not None:
+        if clip_fea is not None and hasattr(self, "img_emb"):
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
             if steadydancer_clip_fea_c is not None:
                 context_clip += self.img_emb(steadydancer_clip_fea_c)  # bs x 257 x dim

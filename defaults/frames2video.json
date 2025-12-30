@@ -1,0 +1,25 @@
+{
+    "model":
+    {
+        "name": "Wan2.2 Frames to Video 14B",
+        "architecture": "frames2video",
+        "base_model_type": "i2v",
+        "description": "Based on Wan 2.2 Image 2 Video model, this model morphs one image into another",
+        "URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_image2video_14B_high_mbf16.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_image2video_14B_high_quanto_mbf16_int8.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_image2video_14B_high_quanto_mfp16_int8.safetensors"
+        ],
+        "group": "wan2_2",
+        "settings_dir": "frames2video_2_2",
+        "loras": [
+            "https://huggingface.co/morphic/Wan2.2-frames-to-video/resolve/main/lora_interpolation_high_noise_final.safetensors"
+        ],
+        "loras_multipliers": [1.0]
+    },
+    "prompt": "placeholder prompt for F2V",
+    "video_length": 81,
+    "guidance_scale": 3.5,
+    "num_inference_steps": 30,
+    "resolution": "1280x720"
+}

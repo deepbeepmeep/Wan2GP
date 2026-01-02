@@ -854,7 +854,7 @@ class family_handler():
                 if remove_background_images_ref !=0:
                     ui_defaults["remove_background_images_ref"] = 0
 
-        if settings_version < 2.41 and test_svi2pro(base_model_type):
+        if settings_version < 2.42 and test_svi2pro(base_model_type):
             ui_defaults.update({
                 "sliding_window_size": 81, 
                 "sliding_window_overlap" : 4,

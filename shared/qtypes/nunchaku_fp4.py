@@ -584,6 +584,9 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
         self._group_size = 16
 
     def dequantize(self, dtype=None, device=None):
+        ref = getattr(self, "_nunchaku_transpose_ref", None)
+        if ref is not None:
+            return ref.dequantize(dtype=dtype, device=device).t()
         if dtype is None:
             dtype = self.dtype
         if device is None:
@@ -607,6 +610,10 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
         if torch.is_tensor(wcscales):
             wcscales = wcscales.to(device=device, dtype=dtype)
             base_weight = base_weight * wcscales.view(-1, 1)
+        smooth = _unpack_nunchaku_scale_vector(self._smooth_factor, self.shape[1])
+        if torch.is_tensor(smooth):
+            smooth = smooth.to(device=device, dtype=dtype)
+            base_weight = base_weight / smooth
         proj_down = _unpack_lowrank_weight(proj_down, down=True)
         proj_up = _unpack_lowrank_weight(proj_up, down=False)
         weight = base_weight + proj_up.to(dtype) @ proj_down.to(dtype)
@@ -774,15 +781,37 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
     def __torch_dispatch__(cls, op, types, args, kwargs=None):
         op = op.overloadpacket
         kwargs = kwargs or {}
+        if op in _VIEW_OPS:
+            t = args[0]
+            shape = _view_shape_from_args(args, t.numel())
+            if shape is not None and shape == tuple(t.shape):
+                return _wrap_nunchaku_weight(t, size=shape, stride=t.stride())
+        if op is torch.ops.aten.t:
+            t = args[0]
+            if isinstance(t, NunchakuSVDQWeightTensor):
+                return _transpose_nunchaku_weight(t)
+        if op is torch.ops.aten.transpose:
+            t, dim0, dim1 = args[:3]
+            if isinstance(t, NunchakuSVDQWeightTensor):
+                if (dim0, dim1) in ((0, 1), (1, 0), (-2, -1), (-1, -2)):
+                    return _transpose_nunchaku_weight(t)
+        if op is torch.ops.aten.mm or op is torch.ops.aten.matmul:
+            mat1, mat2 = args[:2]
+            if isinstance(mat2, NunchakuSVDQWeightTensor):
+                ref = getattr(mat2, "_nunchaku_transpose_ref", None)
+                if ref is not None:
+                    out = ref.linear(mat1, bias=None)
+                    return _apply_mod_params_if_needed(ref, out)
         if op is torch.ops.aten.linear:
             input = args[0]
             weight = args[1]
             bias = args[2] if len(args) > 2 else None
             if isinstance(weight, NunchakuSVDQWeightTensor):
-                return weight.linear(input, bias=bias)
+                out = weight.linear(input, bias=bias)
+                return _apply_mod_params_if_needed(weight, out)
         if op is torch.ops.aten.detach:
             t = args[0]
-            return NunchakuSVDQWeightTensor.create(
+            out = NunchakuSVDQWeightTensor.create(
                 qweight=op(t._qweight),
                 wscales=op(t._wscales),
                 wtscale=op(t._wtscale) if torch.is_tensor(t._wtscale) else t._wtscale,
@@ -796,6 +825,7 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
                 device=t.device,
                 requires_grad=t.requires_grad,
             )
+            return _copy_mod_flags(t, out)
         if op in (torch.ops.aten._to_copy, torch.ops.aten.to):
             t = args[0]
             dtype = kwargs.pop("dtype", t.dtype) if kwargs else t.dtype
@@ -817,7 +847,7 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
             out_smooth = op(t._smooth_factor, device=device, **(kwargs or {}))
             out_proj_down = op(t._proj_down, device=device, **(kwargs or {}))
             out_proj_up = op(t._proj_up, device=device, **(kwargs or {}))
-            return NunchakuSVDQWeightTensor.create(
+            out = NunchakuSVDQWeightTensor.create(
                 qweight=out_qweight,
                 wscales=out_wscales,
                 wtscale=out_wtscale,
@@ -831,6 +861,7 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
                 device=device,
                 requires_grad=t.requires_grad,
             )
+            return _copy_mod_flags(t, out)
         return _nunchaku_qfallback(op, *args, **(kwargs or {}))
 
 
@@ -903,6 +934,9 @@ class NunchakuAWQWeightTensor(NunchakuBaseWeightTensor):
         self._group_size = 64
 
     def dequantize(self, dtype=None, device=None):
+        ref = getattr(self, "_nunchaku_transpose_ref", None)
+        if ref is not None:
+            return ref.dequantize(dtype=dtype, device=device).t()
         if dtype is None:
             dtype = self.dtype
         if device is None:
@@ -1005,15 +1039,37 @@ class NunchakuAWQWeightTensor(NunchakuBaseWeightTensor):
     def __torch_dispatch__(cls, op, types, args, kwargs=None):
         op = op.overloadpacket
         kwargs = kwargs or {}
+        if op in _VIEW_OPS:
+            t = args[0]
+            shape = _view_shape_from_args(args, t.numel())
+            if shape is not None and shape == tuple(t.shape):
+                return _wrap_nunchaku_weight(t, size=shape, stride=t.stride())
+        if op is torch.ops.aten.t:
+            t = args[0]
+            if isinstance(t, NunchakuAWQWeightTensor):
+                return _transpose_nunchaku_weight(t)
+        if op is torch.ops.aten.transpose:
+            t, dim0, dim1 = args[:3]
+            if isinstance(t, NunchakuAWQWeightTensor):
+                if (dim0, dim1) in ((0, 1), (1, 0), (-2, -1), (-1, -2)):
+                    return _transpose_nunchaku_weight(t)
+        if op is torch.ops.aten.mm or op is torch.ops.aten.matmul:
+            mat1, mat2 = args[:2]
+            if isinstance(mat2, NunchakuAWQWeightTensor):
+                ref = getattr(mat2, "_nunchaku_transpose_ref", None)
+                if ref is not None:
+                    out = ref.linear(mat1, bias=None)
+                    return _apply_mod_params_if_needed(ref, out)
         if op is torch.ops.aten.linear:
             input = args[0]
             weight = args[1]
             bias = args[2] if len(args) > 2 else None
             if isinstance(weight, NunchakuAWQWeightTensor):
-                return weight.linear(input, bias=bias)
+                out = weight.linear(input, bias=bias)
+                return _apply_mod_params_if_needed(weight, out)
         if op is torch.ops.aten.detach:
             t = args[0]
-            return NunchakuAWQWeightTensor.create(
+            out = NunchakuAWQWeightTensor.create(
                 qweight=op(t._qweight),
                 wscales=op(t._wscales),
                 wzeros=op(t._wzeros),
@@ -1023,6 +1079,7 @@ class NunchakuAWQWeightTensor(NunchakuBaseWeightTensor):
                 device=t.device,
                 requires_grad=t.requires_grad,
             )
+            return _copy_mod_flags(t, out)
         if op in (torch.ops.aten._to_copy, torch.ops.aten.to):
             t = args[0]
             dtype = kwargs.pop("dtype", t.dtype) if kwargs else t.dtype
@@ -1032,7 +1089,7 @@ class NunchakuAWQWeightTensor(NunchakuBaseWeightTensor):
             out_qweight = op(t._qweight, device=device, **(kwargs or {}))
             out_wscales = op(t._wscales, device=device, **(kwargs or {}))
             out_wzeros = op(t._wzeros, device=device, **(kwargs or {}))
-            return NunchakuAWQWeightTensor.create(
+            out = NunchakuAWQWeightTensor.create(
                 qweight=out_qweight,
                 wscales=out_wscales,
                 wzeros=out_wzeros,
@@ -1042,6 +1099,7 @@ class NunchakuAWQWeightTensor(NunchakuBaseWeightTensor):
                 device=device,
                 requires_grad=t.requires_grad,
             )
+            return _copy_mod_flags(t, out)
         return _nunchaku_qfallback(op, *args, **(kwargs or {}))
 
 
@@ -1197,6 +1255,12 @@ class QLinearNunchakuFp4(QModuleMixin, torch.nn.Linear):
                     if prefix.endswith("img_mod.1.") or prefix.endswith("txt_mod.1."):
                         self._nunchaku_mod_reorder = True
                         self._nunchaku_mod_scale_shift = True
+                        for target in (nunchaku_weight, self.weight):
+                            try:
+                                target._nunchaku_mod_reorder = True
+                                target._nunchaku_mod_scale_shift = True
+                            except Exception:
+                                pass
 
         if bias is not None:
             if target_dtype is not None and bias.dtype != target_dtype:
@@ -1295,6 +1359,104 @@ def _apply_mod_scale_shift(out):
     out[..., dim : 2 * dim].sub_(1.0)
     out[..., 4 * dim : 5 * dim].sub_(1.0)
     return out
+
+
+_VIEW_OPS = (
+    torch.ops.aten.view,
+    torch.ops.aten.reshape,
+    torch.ops.aten._unsafe_view,
+    torch.ops.aten._reshape_alias,
+)
+_NO_REF = object()
+
+
+def _view_shape_from_args(args, numel):
+    if len(args) < 2:
+        return None
+    shape = args[1] if len(args) == 2 and isinstance(args[1], (tuple, list, torch.Size)) else args[1:]
+    shape = tuple(int(s) for s in shape)
+    if -1 not in shape:
+        return shape
+    known = 1
+    neg = None
+    for i, dim in enumerate(shape):
+        if dim == -1:
+            if neg is not None:
+                return shape
+            neg = i
+        else:
+            known *= dim
+    if neg is None or known == 0:
+        return shape
+    shape = list(shape)
+    shape[neg] = numel // known
+    return tuple(shape)
+
+
+def _copy_mod_flags(src, dst):
+    if getattr(src, "_nunchaku_mod_reorder", False):
+        dst._nunchaku_mod_reorder = True
+    if getattr(src, "_nunchaku_mod_scale_shift", False):
+        dst._nunchaku_mod_scale_shift = True
+    return dst
+
+
+def _apply_mod_params_if_needed(weight, out):
+    weight = getattr(weight, "_nunchaku_transpose_ref", weight)
+    if getattr(weight, "_nunchaku_mod_reorder", False):
+        out = _reorder_mod_params_output(out)
+    if getattr(weight, "_nunchaku_mod_scale_shift", False):
+        out = _apply_mod_scale_shift(out)
+    return out
+
+
+def _wrap_nunchaku_weight(weight, size=None, stride=None, transpose_ref=_NO_REF):
+    size = tuple(size) if size is not None else weight.size()
+    stride = tuple(stride) if stride is not None else weight.stride()
+    if isinstance(weight, NunchakuSVDQWeightTensor):
+        out = NunchakuSVDQWeightTensor.create(
+            qweight=weight._qweight,
+            wscales=weight._wscales,
+            smooth_factor=weight._smooth_factor,
+            proj_down=weight._proj_down,
+            proj_up=weight._proj_up,
+            wtscale=weight._wtscale,
+            wcscales=weight._wcscales,
+            size=size,
+            stride=stride,
+            dtype=weight.dtype,
+            device=weight.device,
+            requires_grad=weight.requires_grad,
+        )
+    elif isinstance(weight, NunchakuAWQWeightTensor):
+        out = NunchakuAWQWeightTensor.create(
+            qweight=weight._qweight,
+            wscales=weight._wscales,
+            wzeros=weight._wzeros,
+            size=size,
+            stride=stride,
+            dtype=weight.dtype,
+            device=weight.device,
+            requires_grad=weight.requires_grad,
+        )
+    else:
+        return weight
+    if transpose_ref is _NO_REF:
+        transpose_ref = getattr(weight, "_nunchaku_transpose_ref", None)
+    if transpose_ref is not None:
+        out._nunchaku_transpose_ref = transpose_ref
+    return _copy_mod_flags(weight, out)
+
+
+def _transpose_nunchaku_weight(weight):
+    ref = getattr(weight, "_nunchaku_transpose_ref", None)
+    if ref is not None:
+        return _wrap_nunchaku_weight(ref, size=ref.size(), stride=ref.stride())
+    if weight.ndim != 2:
+        return weight
+    size = (weight.size(1), weight.size(0))
+    stride = (weight.stride(1), weight.stride(0))
+    return _wrap_nunchaku_weight(weight, size=size, stride=stride, transpose_ref=weight)
 
 
 def detect(state_dict, verboseLevel=1):

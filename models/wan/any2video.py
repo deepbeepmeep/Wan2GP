@@ -551,6 +551,7 @@ class WanAny2V:
         post_decode_pre_trim = 0
         last_latent_preview = False
         extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = post_freqs = None
+        use_extended_overlapped_latents = True
         # SCAIL uses a fixed ref latent frame that should not be noised.
         no_noise_latents_injection = infinitetalk or scail
         timestep_injection = False
@@ -617,6 +618,7 @@ class WanAny2V:
             else:
                 remaining_frames = frame_num - control_pre_frames_count
                 if svi_pro or svi_mode and svi_ref_pad_num != 0:
+                    use_extended_overlapped_latents = False
                     if input_ref_images is None or len(input_ref_images)==0:                        
                         if pre_video_frame is None: raise Exception("Missing Reference Image")
                         image_ref = pre_video_frame
@@ -683,7 +685,7 @@ class WanAny2V:
             y = torch.concat([msk, lat_y])
             overlapped_latents_frames_num = int(1 + (preframes_count-1) // 4)
             # if overlapped_latents != None:
-            if overlapped_latents_frames_num > 0:
+            if overlapped_latents_frames_num > 0 and use_extended_overlapped_latents:
                 # disabled because looks worse
                 if False and overlapped_latents_frames_num > 1: lat_y[:, :, 1:overlapped_latents_frames_num]  = overlapped_latents[:, 1:]
                 if infinitetalk:

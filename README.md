@@ -62,6 +62,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
    ```
   pip install https://github.com/deepbeepmeep/kernels/releases/download/Nunchaku/nunchaku-1.1.0+torch2.7-cp310-cp310-win_amd64.whl
    ```
+   
 ### December 23 2025: WanGP v9.92, Early Christmas
 
 - **SCAIL Preview**: enjoy this *Wan Animate*, *Steady Dancer* contender that can support multiple people. Thanks to its 3D positioning, it can take into account which parts of the body are hidden and which are not. 

@@ -82,6 +82,8 @@ class family_handler:
                 "default": "en",
                 "label": "Language",
             },
+            "any_audio_prompt": True,
+
         }
         return extra_model_def
 

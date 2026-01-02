@@ -1099,6 +1099,9 @@ class QLinearNunchakuInt4(QModuleMixin, torch.nn.Linear):
 
 
 def _collect_nunchaku_specs(state_dict):
+    for key, tensor in state_dict.items():
+        if key.endswith(".wscales") and _is_float8_dtype(tensor.dtype):
+            return []
     specs = []
     for key, tensor in state_dict.items():
         if not key.endswith(".qweight"):

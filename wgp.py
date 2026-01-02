@@ -85,8 +85,8 @@ AUTOSAVE_PATH = AUTOSAVE_FILENAME
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.6.9"
-WanGP_version = "9.91"
+target_mmgp_version = "3.6.10"
+WanGP_version = "10.0"
 settings_version = 2.41
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -4938,7 +4938,7 @@ def truncate_audio(generated_audio, trim_video_frames_beginning, trim_video_fram
     end = len(generated_audio) - int(trim_video_frames_end * samples_per_frame)
     return generated_audio[start:end if end > 0 else None]
 
-def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_guide, video_guide, video_mask, height, width, max_frames, start_frame, fit_canvas, fit_crop, target_fps,  block_size, expand_scale, video_prompt_type):
+def custom_preprocess_video_with_mask(model_handler, base_model_type, model_def, pre_video_guide, video_guide, video_mask, height, width, max_frames, start_frame, fit_canvas, fit_crop, target_fps,  block_size, expand_scale, video_prompt_type):
     pad_frames = 0
     if start_frame < 0:
         pad_frames= -start_frame
@@ -4980,7 +4980,7 @@ def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_
     if video_guide.shape[1] == 0 or any_mask and video_mask.shape[1] == 0:
         return None, None, None, None
     
-    video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2  = model_handler.custom_preprocess(base_model_type = base_model_type, pre_video_guide = pre_video_guide, video_guide = video_guide, video_mask = video_mask, height = height, width = width, fit_canvas = fit_canvas , fit_crop = fit_crop, target_fps = target_fps,  block_size = block_size, max_workers = max_workers, expand_scale = expand_scale, video_prompt_type=video_prompt_type)
+    video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2  = model_handler.custom_preprocess(base_model_type = base_model_type, model_def = model_def, pre_video_guide = pre_video_guide, video_guide = video_guide, video_mask = video_mask, height = height, width = width, fit_canvas = fit_canvas , fit_crop = fit_crop, target_fps = target_fps,  block_size = block_size, max_workers = max_workers, expand_scale = expand_scale, video_prompt_type=video_prompt_type)
 
     # if pad_frames > 0:
     #     masked_frames = masked_frames[0] * pad_frames + masked_frames
@@ -5194,18 +5194,18 @@ def generate_video(
     transformer_loras_filenames, transformer_loras_multipliers  = get_transformer_loras(model_type)
     if guidance_phases < 1: guidance_phases = 1
     if transformer_loras_filenames != None:
-        loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(transformer_loras_multipliers, len(transformer_loras_filenames), num_inference_steps, nb_phases = guidance_phases )
+        loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(transformer_loras_multipliers, len(transformer_loras_filenames), num_inference_steps, nb_phases = guidance_phases, model_switch_phase= model_switch_phase )
         if len(errors) > 0: raise Exception(f"Error parsing Transformer Loras: {errors}")
         loras_selected = transformer_loras_filenames 
 
     if hasattr(wan_model, "get_loras_transformer"):
         extra_loras_transformers, extra_loras_multipliers = wan_model.get_loras_transformer(get_model_recursive_prop, **locals())
-        loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(extra_loras_multipliers, len(extra_loras_transformers), num_inference_steps, nb_phases = guidance_phases, merge_slist= loras_slists )
+        loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(extra_loras_multipliers, len(extra_loras_transformers), num_inference_steps, nb_phases = guidance_phases, merge_slist= loras_slists, model_switch_phase= model_switch_phase )
         if len(errors) > 0: raise Exception(f"Error parsing Extra Transformer Loras: {errors}")
         loras_selected += extra_loras_transformers 
 
     if len(activated_loras) > 0:
-        loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(loras_multipliers, len(activated_loras), num_inference_steps, nb_phases = guidance_phases, merge_slist= loras_slists )
+        loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(loras_multipliers, len(activated_loras), num_inference_steps, nb_phases = guidance_phases, merge_slist= loras_slists, model_switch_phase= model_switch_phase )
         if len(errors) > 0: raise Exception(f"Error parsing Loras: {errors}")
         lora_dir = get_lora_dir(model_type)
         errors = check_loras_exist(model_type, activated_loras, True, send_cmd)
@@ -5237,7 +5237,9 @@ def generate_video(
     if sliding_window_size !=0:
         sliding_window_size = (sliding_window_size -1) // latent_size * latent_size + 1
     if sliding_window_overlap !=0:
-        sliding_window_overlap = (sliding_window_overlap -1) // latent_size * latent_size + 1
+        sliding_window_defaults = model_def.get("sliding_window_defaults", {})
+        if sliding_window_defaults.get("overlap_default", 0) != sliding_window_overlap:
+            sliding_window_overlap = (sliding_window_overlap -1) // latent_size * latent_size + 1
     if sliding_window_discard_last_frames !=0:
         sliding_window_discard_last_frames = sliding_window_discard_last_frames // latent_size * latent_size 
 
@@ -5486,7 +5488,7 @@ def generate_video(
             gen["window_no"] = window_no
             return_latent_slice = None 
             if reuse_frames > 0:                
-                return_latent_slice = slice(-(reuse_frames - 1 + discard_last_frames ) // latent_size - 1, None if discard_last_frames == 0 else -(discard_last_frames // latent_size) )
+                return_latent_slice = slice(- min(1, (reuse_frames + discard_last_frames ) // latent_size) , None if discard_last_frames == 0 else -(discard_last_frames // latent_size) )
             refresh_preview  = {"image_guide" : image_guide, "image_mask" : image_mask} if image_mode >= 1 else {}
 
             image_start_tensor = image_end_tensor = None
@@ -5853,6 +5855,7 @@ def generate_video(
                     offloadobj = offloadobj,
                     set_header_text= set_header_text,
                     pre_video_frame = pre_video_frame,
+                    prefix_video = prefix_video,
                     original_input_ref_images = original_image_refs[nb_frames_positions:] if original_image_refs is not None else [],
                     image_refs_relative_size = image_refs_relative_size,
                     outpainting_dims = outpainting_dims,
@@ -5908,6 +5911,7 @@ def generate_video(
                 print(f"Skipped Steps:{skip_steps_cache.skipped_steps}/{skip_steps_cache.num_steps}" )
             generated_audio = None
             BGRA_frames = None
+            post_decode_pre_trim = 0
             output_audio_sampling_rate= audio_sampling_rate
             if samples != None:
                 if isinstance(samples, dict):
@@ -5915,7 +5919,9 @@ def generate_video(
                     BGRA_frames = samples.get("BGRA_frames", None)
                     generated_audio = samples.get("audio", generated_audio)
                     output_audio_sampling_rate =  samples.get("audio_sampling_rate", audio_sampling_rate)
+                    post_decode_pre_trim = samples.get("post_decode_pre_trim", 0) 
                     samples = samples.get("x", None)
+
                 if samples is not None:
                     samples = samples.to("cpu")
             clear_gen_cache()
@@ -5939,6 +5945,8 @@ def generate_video(
                 #     torch.save(sample, "output.pt")
                 # else:
                 #     sample =torch.load("output.pt")
+                if post_decode_pre_trim > 0 :
+                    sample = sample[:, post_decode_pre_trim:]
                 if gen.get("extra_windows",0) > 0:
                     sliding_window = True 
                 if sliding_window :
@@ -5956,9 +5964,13 @@ def generate_video(
                         pre_video_guide =  sample[:, -reuse_frames:].clone()
 
 
-                if prefix_video != None and window_no == 1:
-                    # remove source video overlapped frames at the beginning of the generation
-                    sample = torch.cat([ prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
+                if prefix_video != None and window_no == 1 :
+                    if prefix_video.shape[1] > 1:
+                        # remove sliding window overlapped frames at the beginning of the generation
+                        sample = torch.cat([ prefix_video, sample[: , source_video_overlap_frames_count:]], dim = 1)
+                    else:
+                        # remove source video overlapped frames at the beginning of the generation if there is only a start frame
+                        sample = torch.cat([ prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
                     guide_start_frame -= source_video_overlap_frames_count 
                     if generated_audio is not None:
                         generated_audio = truncate_audio(generated_audio, source_video_overlap_frames_count, 0, fps, audio_sampling_rate)
@@ -8820,7 +8832,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             choices= image_ref_choices["choices"],
                             value=filter_letters(video_prompt_type_value, image_ref_choices["letters_filter"]),
                             visible = (dropdown_selectable or image_ref_inpaint) and image_ref_choices.get("visible", True),
-                            label=image_ref_choices.get("label", "Inject Reference Images"), show_label= True, scale = 1
+                            label=image_ref_choices.get("label", "Inject Reference Images"), show_label= image_ref_choices.get("show_label", True), scale = 1
                         )
 
                 image_guide = gr.Image(label= "Control Image", height = 800, type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and ("U" in video_prompt_type_value or "A" not in video_prompt_type_value ) , value= ui_defaults.get("image_guide", None))
@@ -9066,9 +9078,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             switch_threshold = gr.Slider(0, 1000, value=ui_get("switch_threshold"), step=1, label = label, visible= guidance_max_phases >= 2 and guidance_phases_value >= 2, show_reset_button= False)
                             switch_threshold2 = gr.Slider(0, 1000, value=ui_get("switch_threshold2"), step=1, label="Phase 2-3", visible= guidance_max_phases >= 3 and guidance_phases_value >= 3, show_reset_button= False)
                         with gr.Row(visible = guidance_max_phases >=1 ) as guidance_row:
-                            guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance_scale"), step=0.5, label="Guidance (CFG)", visible=guidance_max_phases >=1, show_reset_button= False )
-                            guidance2_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance2_scale"), step=0.5, label="Guidance2 (CFG)", visible= guidance_max_phases >=2 and guidance_phases_value >= 2, show_reset_button= False)
-                            guidance3_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance3_scale"), step=0.5, label="Guidance3 (CFG)", visible= guidance_max_phases >=3  and guidance_phases_value >= 3, show_reset_button= False)
+                            guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance_scale"), step=0.1, label="Guidance (CFG)", visible=guidance_max_phases >=1, show_reset_button= False )
+                            guidance2_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance2_scale"), step=0.1, label="Guidance2 (CFG)", visible= guidance_max_phases >=2 and guidance_phases_value >= 2, show_reset_button= False)
+                            guidance3_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance3_scale"), step=0.1, label="Guidance3 (CFG)", visible= guidance_max_phases >=3  and guidance_phases_value >= 3, show_reset_button= False)
 
                         any_audio_guidance = model_def.get("audio_guidance", False) 
                         any_embedded_guidance = model_def.get("embedded_guidance", False)

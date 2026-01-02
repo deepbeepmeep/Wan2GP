@@ -156,6 +156,19 @@ def _is_float8_dtype(dtype):
     return "float8" in str(dtype).lower() or "f8" in str(dtype).lower()
 
 
+def _to_device(tensor, device):
+    if tensor.device == device:
+        return tensor
+    return tensor.to(device)
+
+
+def _maybe_cast_fp16(tensor, dtype):
+    if dtype in (torch.float16, torch.bfloat16):
+        if tensor.dtype in (torch.float16, torch.bfloat16) and tensor.dtype != dtype:
+            return tensor.to(dtype)
+    return tensor
+
+
 _FP4_LUT_BASE = torch.tensor(
     [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
     dtype=torch.float32,
@@ -488,37 +501,20 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
         requires_grad=False,
     ):
         device = qweight.device if device is None else device
-        if qweight.device != device:
-            qweight = qweight.to(device)
+        qweight = _to_device(qweight, device)
+        wscales = _maybe_cast_fp16(_to_device(wscales, device), dtype)
+        smooth_factor = _maybe_cast_fp16(_to_device(smooth_factor, device), dtype)
+        proj_down = _maybe_cast_fp16(_to_device(proj_down, device), dtype)
+        proj_up = _maybe_cast_fp16(_to_device(proj_up, device), dtype)
+
         if not torch.is_tensor(wtscale):
             wtscale = torch.tensor([1.0 if wtscale is None else float(wtscale)], device=device, dtype=dtype)
+        else:
+            wtscale = _maybe_cast_fp16(_to_device(wtscale, device), dtype)
         if not torch.is_tensor(wcscales):
             wcscales = torch.ones(qweight.size(0), device=device, dtype=dtype)
-        if wscales.device != device:
-            wscales = wscales.to(device)
-        if smooth_factor.device != device:
-            smooth_factor = smooth_factor.to(device)
-        if proj_down.device != device:
-            proj_down = proj_down.to(device)
-        if proj_up.device != device:
-            proj_up = proj_up.to(device)
-        if torch.is_tensor(wtscale) and wtscale.device != device:
-            wtscale = wtscale.to(device)
-        if torch.is_tensor(wcscales) and wcscales.device != device:
-            wcscales = wcscales.to(device)
-        if dtype in (torch.float16, torch.bfloat16):
-            if wscales.dtype in (torch.float16, torch.bfloat16) and wscales.dtype != dtype:
-                wscales = wscales.to(dtype)
-            if smooth_factor.dtype in (torch.float16, torch.bfloat16) and smooth_factor.dtype != dtype:
-                smooth_factor = smooth_factor.to(dtype)
-            if proj_down.dtype in (torch.float16, torch.bfloat16) and proj_down.dtype != dtype:
-                proj_down = proj_down.to(dtype)
-            if proj_up.dtype in (torch.float16, torch.bfloat16) and proj_up.dtype != dtype:
-                proj_up = proj_up.to(dtype)
-            if torch.is_tensor(wtscale) and wtscale.dtype in (torch.float16, torch.bfloat16) and wtscale.dtype != dtype:
-                wtscale = wtscale.to(dtype)
-            if torch.is_tensor(wcscales) and wcscales.dtype in (torch.float16, torch.bfloat16) and wcscales.dtype != dtype:
-                wcscales = wcscales.to(dtype)
+        else:
+            wcscales = _maybe_cast_fp16(_to_device(wcscales, device), dtype)
         return NunchakuSVDQWeightTensor(
             qtype=_NUNCHAKU_FP4_QTYPE,
             axis=0,
@@ -851,17 +847,9 @@ class NunchakuAWQWeightTensor(NunchakuBaseWeightTensor):
         requires_grad=False,
     ):
         device = qweight.device if device is None else device
-        if qweight.device != device:
-            qweight = qweight.to(device)
-        if wscales.device != device:
-            wscales = wscales.to(device)
-        if wzeros.device != device:
-            wzeros = wzeros.to(device)
-        if dtype in (torch.float16, torch.bfloat16):
-            if wscales.dtype in (torch.float16, torch.bfloat16) and wscales.dtype != dtype:
-                wscales = wscales.to(dtype)
-            if wzeros.dtype in (torch.float16, torch.bfloat16) and wzeros.dtype != dtype:
-                wzeros = wzeros.to(dtype)
+        qweight = _to_device(qweight, device)
+        wscales = _maybe_cast_fp16(_to_device(wscales, device), dtype)
+        wzeros = _maybe_cast_fp16(_to_device(wzeros, device), dtype)
         return NunchakuAWQWeightTensor(
             qtype=_NUNCHAKU_FP4_QTYPE,
             axis=0,
@@ -1140,45 +1128,36 @@ class QLinearNunchakuFp4(QModuleMixin, torch.nn.Linear):
             )
 
         _load_nunchaku_ops()
-                
-        qweight_key = prefix + "qweight"
-        wscales_key = prefix + "wscales"
-        smooth_key = prefix + "smooth_factor"
-        smooth_orig_key = prefix + "smooth_factor_orig"
-        proj_down_key = prefix + "proj_down"
-        proj_up_key = prefix + "proj_up"
-        wtscale_key = prefix + "wtscale"
-        wcscales_key = prefix + "wcscales"
-        bias_key = prefix + "bias"
-        input_scale_key = prefix + "input_scale"
-        output_scale_key = prefix + "output_scale"
 
-        qweight = state_dict.pop(qweight_key, None)
-        wscales = state_dict.pop(wscales_key, None)
-        smooth_factor = state_dict.pop(smooth_key, None)
-        state_dict.pop(smooth_orig_key, None)
-        proj_down = state_dict.pop(proj_down_key, None)
-        proj_up = state_dict.pop(proj_up_key, None)
-        wtscale = state_dict.pop(wtscale_key, None)
-        wcscales = state_dict.pop(wcscales_key, None)
-        bias = state_dict.pop(bias_key, None)
-        input_scale = state_dict.pop(input_scale_key, None)
-        output_scale = state_dict.pop(output_scale_key, None)
+        def _pop(name):
+            return state_dict.pop(prefix + name, None)
 
-        if qweight is None:
-            missing_keys.append(qweight_key)
-        if wscales is None:
-            missing_keys.append(wscales_key)
+        def _require(name, tensor):
+            if tensor is None:
+                missing_keys.append(prefix + name)
+
+        qweight = _pop("qweight")
+        wscales = _pop("wscales")
+        wzeros = _pop("wzeros")
+        smooth_factor = _pop("smooth_factor")
+        state_dict.pop(prefix + "smooth_factor_orig", None)
+        proj_down = _pop("proj_down")
+        proj_up = _pop("proj_up")
+        wtscale = _pop("wtscale")
+        wcscales = _pop("wcscales")
+        bias = _pop("bias")
+        input_scale = _pop("input_scale")
+        output_scale = _pop("output_scale")
+
+        _require("qweight", qweight)
+        _require("wscales", wscales)
 
         target_dtype = self._nunchaku_default_dtype or self.weight.dtype
         if qweight is not None and wscales is not None:
             if qweight.dtype == torch.int8:
-                if smooth_factor is None:
-                    missing_keys.append(smooth_key)
-                if proj_down is None:
-                    missing_keys.append(proj_down_key)
-                if proj_up is None:
-                    missing_keys.append(proj_up_key)
+                _require("smooth_factor", smooth_factor)
+                _require("proj_down", proj_down)
+                _require("proj_up", proj_up)
                 if smooth_factor is not None and proj_down is not None and proj_up is not None:
                     scale_device = qweight.device
                     scale_dtype = target_dtype or self.weight.dtype
@@ -1201,6 +1180,23 @@ class QLinearNunchakuFp4(QModuleMixin, torch.nn.Linear):
                         requires_grad=False,
                     )
                     self.weight = torch.nn.Parameter(nunchaku_weight, requires_grad=False)
+            elif qweight.dtype == torch.int32:
+                _require("wzeros", wzeros)
+                if wzeros is not None:
+                    nunchaku_weight = NunchakuAWQWeightTensor.create(
+                        qweight=qweight,
+                        wscales=wscales,
+                        wzeros=wzeros,
+                        size=self.weight.size(),
+                        stride=self.weight.stride(),
+                        dtype=target_dtype,
+                        device=qweight.device,
+                        requires_grad=False,
+                    )
+                    self.weight = torch.nn.Parameter(nunchaku_weight, requires_grad=False)
+                    if prefix.endswith("img_mod.1.") or prefix.endswith("txt_mod.1."):
+                        self._nunchaku_mod_reorder = True
+                        self._nunchaku_mod_scale_shift = True
 
         if bias is not None:
             if target_dtype is not None and bias.dtype != target_dtype:
@@ -1234,6 +1230,14 @@ class QLinearNunchakuFp4(QModuleMixin, torch.nn.Linear):
 
 
 def _collect_nunchaku_specs(state_dict):
+    has_fp4 = False
+    for key, tensor in state_dict.items():
+        if key.endswith(".wscales") and _is_float8_dtype(tensor.dtype):
+            has_fp4 = True
+            break
+    if not has_fp4:
+        return []
+
     specs = []
     for key, tensor in state_dict.items():
         if not key.endswith(".qweight"):
@@ -1242,15 +1246,16 @@ def _collect_nunchaku_specs(state_dict):
         wscales = state_dict.get(base + ".wscales", None)
         if wscales is None:
             continue
-        if not _is_float8_dtype(wscales.dtype):
-            continue
-        if tensor.dtype == torch.int8:
+        if tensor.dtype == torch.int8 and _is_float8_dtype(wscales.dtype):
             if (
                 base + ".smooth_factor" in state_dict
                 and base + ".proj_down" in state_dict
                 and base + ".proj_up" in state_dict
             ):
                 specs.append({"name": base, "kind": "svdq"})
+        elif tensor.dtype == torch.int32:
+            if base + ".wzeros" in state_dict:
+                specs.append({"name": base, "kind": "awq"})
     return specs
 
 

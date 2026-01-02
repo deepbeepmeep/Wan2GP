@@ -291,3 +291,15 @@ If Sage attention doesn't work:
 
 
 For more troubleshooting, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) 
+
+## Quantization Kernels Wheels for Windows / Python 3.10 / Pytorch 2.70
+- Light2xv (WAN-FP4)
+   ```
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/WAN_NVP4/lightx2v_kernel-0.0.1-cp39-abi3-win_amd64.whl
+   ```
+
+- Nunchaku
+   ```
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/Nunchaku/nunchaku-1.1.0+torch2.7-cp310-cp310-win_amd64.whl
+   ```
+

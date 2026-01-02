@@ -854,6 +854,12 @@ class family_handler():
                 if remove_background_images_ref !=0:
                     ui_defaults["remove_background_images_ref"] = 0
 
+        if settings_version < 2.41 and test_svi2pro(base_model_type):
+            ui_defaults.update({
+                "sliding_window_size": 81, 
+                "sliding_window_overlap" : 4,
+            })
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
@@ -967,6 +973,12 @@ class family_handler():
                 "force_fps": "control",
                 "sliding_window_overlap" : 1,
                 "sliding_window_size": 81,
+            })
+
+        if test_svi2pro(base_model_type):
+            ui_defaults.update({
+                "sliding_window_size": 81, 
+                "sliding_window_overlap" : 4,
             })
 
         if base_model_type in ["i2v_2_2"]:

@@ -36,7 +36,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### January 1st 2026: WanGP v10, Happy New Year !
+### January 1st 2026: WanGP v10.01, Happy New Year !
 
 - **Wan 2.2 i2v Stable Vision Infinity Pro 2**: SVI Pro 2 offers potentially unlimited Videos to Continue for i2v models. It will use either the Start frame as a Reference Image or you may provide an Anchor image to be used across all the windows or multiple Anchor Images one per Window.
 
@@ -44,13 +44,13 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 - **Qwen Image 2512**: This December release offers Enhanced Human Realism, Finer Natural Details & Improved Text Rendering.
 
-- **Wan NVP4**: *Light2xv nvfp4 support for Wan 2.1 i2v*& t2v 1.3B*, you can now load nvfp4 (4 bits quantized file) in WanGP. These will make really a difference with RTX 50xx as they support natively scaled FP4 calculation. Other GPUs will get the pytorch fallback witch slower. This model can be useful for machines with low RAM. Don't expect significant VRAM reduction of much faster speed for non RTX 50xx owners. You will need to install the Light2xv kernels.
+- **Wan NVP4**: *Light2xv nvfp4 support for Wan 2.1 i2v & t2v 1.3B*, you can now load nvfp4 (4 bits quantized file) in WanGP. These will make really a difference with RTX 50xx as they support natively scaled FP4 calculation. Other GPUs will get the pytorch fallback which is slower. This model can be useful for machines with low RAM but don't expect significant VRAM reduction of much faster speed for non RTX 50xx owners. You will need to install the Light2xv kernels.
 
 - **Nunckaku int4 & fp4 support for Qwen 2509 & Z Image**: int4 versions will work with most GPUs, fp4 will accelerate only RTX50xx. You will need to install the nunchaku kernels. See light2xv nvfp4 above, as the other comments apply here too.
 
 - **Z Image Control Net 2.1**: Control Net upgraded should work better. I have enabled as well inpainting for the control net.
 
-- **Now Qwen Loras Accelerators Added**
+- **New Qwen Loras Accelerators Added**
 
 *Quantization Kernels Wheels for Windows / Python 3.10 / Pytorch 2.70:*
 - *Light2xv (WAN-FP4)*

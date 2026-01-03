@@ -795,6 +795,21 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
             if isinstance(t, NunchakuSVDQWeightTensor):
                 if (dim0, dim1) in ((0, 1), (1, 0), (-2, -1), (-1, -2)):
                     return _transpose_nunchaku_weight(t)
+        if op is torch.ops.aten.addmm:
+            input, mat1, mat2 = args[:3]
+            if isinstance(mat2, NunchakuSVDQWeightTensor):
+                ref = getattr(mat2, "_nunchaku_transpose_ref", None)
+                if ref is not None:
+                    alpha = kwargs.get("alpha", 1)
+                    beta = kwargs.get("beta", 1)
+                    out = ref.linear(mat1, bias=None)
+                    if alpha != 1:
+                        out.mul_(alpha)
+                    if beta != 0 and input is not None:
+                        if input.dtype != out.dtype:
+                            input = input.to(out.dtype)
+                        out.add_(input, alpha=beta)
+                    return _apply_mod_params_if_needed(ref, out)
         if op is torch.ops.aten.mm or op is torch.ops.aten.matmul:
             mat1, mat2 = args[:2]
             if isinstance(mat2, NunchakuSVDQWeightTensor):
@@ -1053,6 +1068,21 @@ class NunchakuAWQWeightTensor(NunchakuBaseWeightTensor):
             if isinstance(t, NunchakuAWQWeightTensor):
                 if (dim0, dim1) in ((0, 1), (1, 0), (-2, -1), (-1, -2)):
                     return _transpose_nunchaku_weight(t)
+        if op is torch.ops.aten.addmm:
+            input, mat1, mat2 = args[:3]
+            if isinstance(mat2, NunchakuAWQWeightTensor):
+                ref = getattr(mat2, "_nunchaku_transpose_ref", None)
+                if ref is not None:
+                    alpha = kwargs.get("alpha", 1)
+                    beta = kwargs.get("beta", 1)
+                    out = ref.linear(mat1, bias=None)
+                    if alpha != 1:
+                        out.mul_(alpha)
+                    if beta != 0 and input is not None:
+                        if input.dtype != out.dtype:
+                            input = input.to(out.dtype)
+                        out.add_(input, alpha=beta)
+                    return _apply_mod_params_if_needed(ref, out)
         if op is torch.ops.aten.mm or op is torch.ops.aten.matmul:
             mat1, mat2 = args[:2]
             if isinstance(mat2, NunchakuAWQWeightTensor):

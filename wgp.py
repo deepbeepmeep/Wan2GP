@@ -2159,7 +2159,7 @@ MMAUDIO_MODE_V2 = 1
 MMAUDIO_MODE_NEW = 2
 MMAUDIO_PERSIST_UNLOAD = 1
 MMAUDIO_PERSIST_RAM = 2
-MMAUDIO_STANDARD = "v1-44.pth"
+MMAUDIO_STANDARD = "mmaudio_large_44k_v2.pth"
 MMAUDIO_ALTERNATE = "mmaudio_large_44k_gold_8.5k_final_fp16.safetensors"
 
 def _normalize_mmaudio_config(config):
@@ -2909,7 +2909,7 @@ def process_files_def(repoId = None, sourceFolderList = None, fileList = None, t
 def download_mmaudio():
     mmaudio_enabled, mmaudio_mode, _, _, _ = get_mmaudio_settings(server_config)
     if mmaudio_enabled:
-        mmaudio_files = ["synchformer_state_dict.pth", MMAUDIO_STANDARD if mmaudio_mode == MMAUDIO_MODE_V2 else MMAUDIO_ALTERNATE]
+        mmaudio_files = ["synchformer_state_dict.pth", "v1-44.pth", MMAUDIO_STANDARD if mmaudio_mode == MMAUDIO_MODE_V2 else MMAUDIO_ALTERNATE]
         enhancer_def = {
             "repoId" : "DeepBeepMeep/Wan2.1",
             "sourceFolderList" : [ "mmaudio", "DFN5B-CLIP-ViT-H-14-378"  ],

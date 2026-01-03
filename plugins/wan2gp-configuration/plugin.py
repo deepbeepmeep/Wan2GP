@@ -166,7 +166,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         mmaudio_persistence_default = 2 if legacy_mmaudio == 2 else 1
 
                     self.mmaudio_mode_choice = gr.Dropdown(
-                        choices=[("Off", 0), ("Standard", 1), ("Alternate", 2)],
+                        choices=[("Off", 0), ("Standard", 1), ("NSFW", 2)],
                         value=mmaudio_mode_default,
                         label="MMAudio Soundtrack Generation (requires 10GB extra download)"
                     )

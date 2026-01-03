@@ -1,0 +1,19 @@
+{
+	"model":
+	{
+		"name": "Wan2.2 Image2video SVI 2 Pro 14B",
+		"architecture" : "i2v_2_2_svi2pro", 
+		"description": "Wan 2.2 Image 2 Video Stable Video Infinity Pro 2 offers potentially unlimited Videos to Continue. It will use either the Start frame as a Reference Image or you may provide an Anchor image to be used across all the windows or multiple Anchor Images one per Window.",
+		"URLs": "i2v_2_2",
+		"URLs2": "i2v_2_2",
+		"group": "wan2_2",
+		"loras": ["https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/SVI_Wan2.2-I2V-A14B_high_noise_lora_v2.0_pro.safetensors",
+				 "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/SVI_Wan2.2-I2V-A14B_low_noise_lora_v2.0_pro.safetensors"],
+		"loras_multipliers": ["1;0", "0;1"] 
+	},
+	"guidance_phases": 2,	
+	"switch_threshold" : 900,
+	"guidance_scale" : 3.5,
+	"guidance2_scale" : 3.5,
+	"flow_shift" : 5	
+}

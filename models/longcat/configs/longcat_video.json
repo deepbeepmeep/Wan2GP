@@ -1,0 +1,28 @@
+{
+  "_class_name": "LongCatVideoTransformer3DModel",
+  "_diffusers_version": "0.32.0",
+  "adaln_tembed_dim": 512,
+  "bsa_params":{
+    "sparsity": 0.9375,
+    "chunk_3d_shape_q": [4, 4, 4],
+    "chunk_3d_shape_k": [4, 4, 4]
+  },
+  "caption_channels": 4096,
+  "cp_split_hw": null,
+  "depth": 48,
+  "enable_bsa": false,
+  "enable_flashattn3": false,
+  "enable_flashattn2": true,
+  "frequency_embedding_size": 256,
+  "hidden_size": 4096,
+  "in_channels": 16,
+  "text_tokens_zero_pad": true,  
+  "mlp_ratio": 4,
+  "num_heads": 32,
+  "out_channels": 16,
+  "patch_size": [
+    1,
+    2,
+    2
+  ]
+}

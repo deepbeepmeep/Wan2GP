@@ -12,13 +12,13 @@ def test_vace(base_model_type):
     return base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B", "vace_ditto_14B"]     
 
 def test_class_i2v(base_model_type):
-    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer", "wanmove", "scail" ]
+    return base_model_type in ["i2v", "i2v_2_2", "fun_inp_1.3B", "fun_inp", "flf2v_720p",  "fantasy",  "multitalk", "infinitetalk", "i2v_2_2_multitalk", "animate", "chrono_edit", "steadydancer", "wanmove", "scail", "i2v_2_2_svi2pro" ]
 
 def test_class_t2v(base_model_type):    
-    return base_model_type in ["t2v", "t2v_2_2", "alpha", "lynx"]
+    return base_model_type in ["t2v", "t2v_2_2", "alpha", "alpha2", "lynx"]
 
 def test_oneframe_overlap(base_model_type):
-    return test_class_i2v(base_model_type) and not (test_multitalk(base_model_type) or base_model_type in ["animate", "scail"]) or test_wan_5B(base_model_type)
+    return test_class_i2v(base_model_type) and not (test_multitalk(base_model_type) or base_model_type in ["animate", "scail"] or test_svi2pro(base_model_type))  or test_wan_5B(base_model_type)
 
 def test_class_1_3B(base_model_type):    
     return base_model_type in [ "vace_1.3B", "t2v_1.3B", "recam_1.3B","phantom_1.3B","fun_inp_1.3B"]
@@ -33,18 +33,25 @@ def test_lynx(base_model_type):
     return base_model_type in ["lynx_lite", "vace_lynx_lite_14B", "lynx", "vace_lynx_14B", "alpha_lynx"]
 
 def test_alpha(base_model_type):
-    return base_model_type in ["alpha", "alpha_lynx"]
+    return base_model_type in ["alpha", "alpha2", "alpha_lynx"]
 
 def test_wan_5B(base_model_type):
     return base_model_type in ["ti2v_2_2", "lucy_edit"]
+
+def test_i2v_2_2(base_model_type):
+    return base_model_type in ["i2v_2_2", "i2v_2_2_multitalk", "i2v_2_2_svi2pro"]
+
+
+def test_svi2pro(base_model_type):
+    return base_model_type in ["i2v_2_2_svi2pro"]
 
 class family_handler():
     @staticmethod
     def query_supported_types():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B",
-                    "recam_1.3B", "animate", "alpha", "alpha_lynx", "chrono_edit",
-                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail"]
+                    "recam_1.3B", "animate", "alpha", "alpha2", "alpha_lynx", "chrono_edit",
+                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "i2v_2_2_svi2pro"]
 
 
     @staticmethod
@@ -52,9 +59,11 @@ class family_handler():
 
         models_eqv_map = {
             "flf2v_720p" : "i2v",
+            "i2v_2_2_svi2pro": "i2v_2_2",
             "t2v_1.3B" : "t2v", 
             "t2v_2_2" : "t2v", 
             "alpha" : "t2v", 
+            "alpha2" : "t2v", 
             "lynx" : "t2v", 
             "standin" : "t2v", 
             "vace_standin_14B" : "vace_14B",
@@ -64,9 +73,9 @@ class family_handler():
 
         models_comp_map = { 
                     "vace_14B" : [ "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_lite_14B", "vace_lynx_14B", "vace_14B_2_2"],
-                    "t2v" : [ "vace_14B", "vace_1.3B" "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_lite_14B", "vace_lynx_14B", "vace_14B_2_2", "t2v_1.3B", "phantom_1.3B","phantom_14B", "standin", "lynx_lite", "lynx", "alpha"],
+                    "t2v" : [ "vace_14B", "vace_1.3B" "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_lite_14B", "vace_lynx_14B", "vace_14B_2_2", "t2v_1.3B", "phantom_1.3B","phantom_14B", "standin", "lynx_lite", "lynx", "alpha", "alpha2"],
                     "i2v" : [ "fantasy", "multitalk", "flf2v_720p" ],
-                    "i2v_2_2" : ["i2v_2_2_multitalk"],
+                    "i2v_2_2" : ["i2v_2_2_multitalk", "i2v_2_2_svi2pro"],
                     "fantasy": ["multitalk"],
                     }
         return models_eqv_map, models_comp_map
@@ -114,7 +123,7 @@ class family_handler():
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
-        i2v = test_class_i2v(base_model_type) and base_model_type not in ["i2v_2_2", "i2v_2_2_multitalk"]
+        i2v = test_class_i2v(base_model_type) and not test_i2v_2_2(base_model_type)
         wan_dir = getattr(args, "lora_dir_wan", None) or getattr(args, "lora_dir", None) or os.path.join("loras", "wan")
         wan_i2v_dir = getattr(args, "lora_dir_wan_i2v", None) or getattr(args, "lora_dir_i2v", None) or os.path.join("loras", "wan_i2v")
         wan_1_3b_dir = getattr(args, "lora_dir_wan_1_3b", None) or os.path.join("loras", "wan_1.3B")
@@ -194,12 +203,20 @@ class family_handler():
         extra_model_def["wan_5B_class"] = wan_5B = test_wan_5B(base_model_type)        
         extra_model_def["vace_class"] = vace_class = test_vace(base_model_type)
         extra_model_def["color_correction"] = True
+        extra_model_def["svi2pro"] = svi2pro = test_svi2pro(base_model_type)
+        extra_model_def["i2v_2_2"] = i2v_2_2 = test_i2v_2_2(base_model_type)
+
         
+        if multitalk or base_model_type in ["fantasy"]:
+            if multitalk:
+                extra_model_def["audio_prompt_choices"] = True                
+            extra_model_def["any_audio_prompt"] = True
+
         if base_model_type in ["vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"]:
             extra_model_def["parent_model_type"] = "vace_14B"
 
         group = "wan"
-        if base_model_type in ["t2v_2_2", "i2v_2_2", "vace_14B_2_2"]:
+        if base_model_type in ["t2v_2_2", "vace_14B_2_2"] or test_i2v_2_2(base_model_type):
             profiles_dir = "wan_2_2"
             group = "wan2_2"
         elif i2v:
@@ -211,12 +228,12 @@ class family_handler():
             group = "wan2_2"
         elif test_class_1_3B(base_model_type):
             profiles_dir = "wan_1.3B"
-        elif base_model_type in ["alpha"]:
+        elif test_alpha(base_model_type):
             profiles_dir = "wan_alpha"
         else:
             profiles_dir = "wan"
 
-        if  (test_class_t2v(base_model_type) or vace_class or base_model_type in ["chrono_edit"]) and not base_model_type in ["alpha"]:
+        if  (test_class_t2v(base_model_type) or vace_class or base_model_type in ["chrono_edit"]) and not test_alpha(base_model_type):
             extra_model_def["vae_upsampler"] = [1,2]
 
         extra_model_def["profiles_dir"] = [profiles_dir]
@@ -280,7 +297,19 @@ class family_handler():
                     "selection":[ "", "A"],
                     "visible": False
                 }
-        if base_model_type in ["i2v_2_2", "i2v", "flf2v_720p"]:
+            if svi2pro:
+                extra_model_def["image_ref_choices"] = {
+                        "choices": [("No Anchor Image", ""),
+                        ("Anchor Images For Each Window", "KI"),
+                        ],
+                        "letters_filter":  "KI",
+                        "show_label" : False,
+                }
+                extra_model_def["all_image_refs_are_background_ref"] = True
+                extra_model_def["parent_model_type"] = "i2v_2_2"
+
+
+        if base_model_type in ["i2v", "flf2v_720p"] or test_i2v_2_2(base_model_type):
             extra_model_def["black_frame"] = True
             
 
@@ -596,7 +625,7 @@ class family_handler():
             image_prompt_types_allowed = "TSVL"
         elif base_model_type in ["lucy_edit"]:
             image_prompt_types_allowed = "TVL"
-        elif multitalk or base_model_type in ["fantasy", "steadydancer", "scail"]:
+        elif multitalk or base_model_type in ["fantasy", "steadydancer", "scail"] or svi2pro:
             image_prompt_types_allowed = "SVL"
         elif i2v:
             image_prompt_types_allowed = "SEVL"
@@ -622,6 +651,8 @@ class family_handler():
 
         if test_oneframe_overlap(base_model_type):
             extra_model_def["sliding_window_defaults"] = { "overlap_min" : 1, "overlap_max" : 1, "overlap_step": 0, "overlap_default": 1}
+        elif svi2pro:
+            extra_model_def["sliding_window_defaults"] = { "overlap_min" : 4, "overlap_max" : 4, "overlap_step": 0, "overlap_default": 4}
 
         # if base_model_type in ["phantom_1.3B", "phantom_14B"]: 
         #     extra_model_def["one_image_ref_needed"] = True
@@ -823,6 +854,12 @@ class family_handler():
                 if remove_background_images_ref !=0:
                     ui_defaults["remove_background_images_ref"] = 0
 
+        if settings_version < 2.42 and test_svi2pro(base_model_type):
+            ui_defaults.update({
+                "sliding_window_size": 81, 
+                "sliding_window_overlap" : 4,
+            })
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
@@ -938,6 +975,12 @@ class family_handler():
                 "sliding_window_size": 81,
             })
 
+        if test_svi2pro(base_model_type):
+            ui_defaults.update({
+                "sliding_window_size": 81, 
+                "sliding_window_overlap" : 4,
+            })
+
         if base_model_type in ["i2v_2_2"]:
             ui_defaults.update({"masking_strength": 0.1, "denoising_strength": 0.9})
             
@@ -946,7 +989,7 @@ class family_handler():
 
         if test_oneframe_overlap(base_model_type):
             ui_defaults["sliding_window_overlap"] = 1
-            ui_defaults["color_correction_strength"]= 0
+            ui_defaults["sliding_window_color_correction_strength"]= 0
 
         if test_multitalk(base_model_type):
             ui_defaults["audio_guidance_scale"] = 4

@@ -1,0 +1,13 @@
+{
+    "model": {
+        "name": "LongCat Video 13.6B",
+        "architecture": "longcat_video",
+        "description": "LongCat Video supports text-to-video, image-to-video, and video continuation with a unified transformer.",
+		"visible": false,		
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/LongCat/resolve/main/longcat_video_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/LongCat/resolve/main/longcat_video_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "num_inference_steps": 50
+}

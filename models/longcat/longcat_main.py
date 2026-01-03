@@ -1,0 +1,846 @@
+import json
+import math
+import gc
+from typing import Optional, List
+
+import numpy as np
+import torch
+from accelerate import init_empty_weights
+from mmgp import offload
+from tqdm import tqdm
+import librosa
+import pyloudnorm as pyln
+import scipy.signal as ss
+from transformers import Wav2Vec2FeatureExtractor
+
+from shared.utils import files_locator as fl
+from ..wan.modules.t5 import T5EncoderModel
+from .modules.longcat_video_dit import LongCatVideoTransformer3DModel
+from .modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+from .modules.autoencoder_kl_wan import AutoencoderKLWan
+from .modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
+from .audio_process.wav2vec2 import Wav2Vec2ModelWrapper
+from ..qwen.convert_diffusers_qwen_vae import convert_state_dict
+
+
+def _load_json_config(path):
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    cfg.pop("_class_name", None)
+    cfg.pop("_diffusers_version", None)
+    return cfg
+
+
+def retrieve_latents(
+    encoder_output: torch.Tensor,
+    generator: Optional[torch.Generator] = None,
+    sample_mode: str = "sample",
+):
+    if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
+        return encoder_output.latent_dist.sample(generator)
+    if hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
+        return encoder_output.latent_dist.mode()
+    if hasattr(encoder_output, "latents"):
+        return encoder_output.latents
+    raise AttributeError("Could not access latents of provided encoder_output")
+
+
+def optimized_scale(positive_flat, negative_flat):
+    dot_product = torch.sum(positive_flat * negative_flat, dim=1, keepdim=True)
+    squared_norm = torch.sum(negative_flat ** 2, dim=1, keepdim=True) + 1e-8
+    return dot_product / squared_norm
+
+
+class LongCatModel:
+    def __init__(
+        self,
+        checkpoint_dir,
+        model_filename=None,
+        model_type=None,
+        model_def=None,
+        base_model_type=None,
+        text_encoder_filename=None,
+        quantizeTransformer=False,
+        save_quantized=False,
+        dtype=torch.bfloat16,
+        VAE_dtype=torch.float32,
+        mixed_precision_transformer=False,
+        **kwargs,
+    ):
+        self.device = torch.device("cuda")
+        self.dtype = dtype
+        self.VAE_dtype = VAE_dtype
+        self.model_def = model_def or {}
+        self.base_model_type = base_model_type
+        self.is_avatar = base_model_type in ["longcat_avatar"]
+        self.sparse_attention_enabled = bool(self.model_def.get("sparse_attention", False))
+        self._interrupt = False
+        self._reference_image = None
+
+        text_encoder_path = text_encoder_filename or fl.locate_file(
+            "umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors", True
+        )
+        self.text_encoder = T5EncoderModel(
+            text_len=512,
+            dtype=dtype,
+            device=torch.device("cpu"),
+            checkpoint_path=text_encoder_path,
+            tokenizer_path=fl.locate_folder("umt5-xxl"),
+            shard_fn=None,
+        )
+
+        transformer_config_path = (
+            "models/longcat/configs/longcat_avatar.json"
+            if self.is_avatar
+            else "models/longcat/configs/longcat_video.json"
+        )
+        transformer_cfg = _load_json_config(transformer_config_path)
+        if self.sparse_attention_enabled:
+            transformer_cfg["enable_bsa"] = True
+            sparse_params = self.model_def.get("sparse_attention_params")
+            if isinstance(sparse_params, dict) and sparse_params:
+                bsa_params = dict(transformer_cfg.get("bsa_params") or {})
+                bsa_params.update(sparse_params)
+                transformer_cfg["bsa_params"] = bsa_params
+        transformer_cls = (
+            LongCatVideoAvatarTransformer3DModel
+            if self.is_avatar
+            else LongCatVideoTransformer3DModel
+        )
+        with init_empty_weights():
+            transformer = transformer_cls(**transformer_cfg)
+        model_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
+        if model_path is None:
+            raise ValueError("Missing LongCat transformer weights path.")
+        offload.load_model_data(transformer, model_path, writable_tensors=False)
+        transformer._model_dtype = dtype
+        transformer.eval().requires_grad_(False)
+        self.transformer = transformer
+        if save_quantized:
+            from wgp import save_quantized_model
+
+            save_quantized_model(transformer, model_type, model_path, dtype, transformer_config_path)
+
+        vae_cfg_path = "models/longcat/configs/longcat_vae.json"
+        vae_weights = self.model_def.get("vae_URL")
+        if vae_weights:
+            vae_weights = fl.locate_file(vae_weights)
+        else:
+            for candidate in ["Wan2.1_VAE_bf16.safetensors", "Wan2.1_VAE.safetensors", "longcat_vae_bf16.safetensors"]:
+                vae_weights = fl.locate_file(candidate, error_if_none=False)
+                if vae_weights:
+                    break
+        if not vae_weights:
+            raise FileNotFoundError("Unable to locate a compatible VAE weights file for LongCat.")
+        def preprocess_vae_sd(sd):
+            return convert_state_dict(sd)
+
+        self.vae = offload.fast_load_transformers_model(
+            vae_weights,
+            modelClass=AutoencoderKLWan,
+            defaultConfigPath=fl.locate_file(vae_cfg_path),
+            preprocess_sd=preprocess_vae_sd,
+            default_dtype=VAE_dtype,
+        )
+        self.vae = self.vae.to(dtype=VAE_dtype, device="cpu")
+        self.vae._model_dtype = VAE_dtype
+        self.vae._dtype = VAE_dtype
+        self.vae.eval().requires_grad_(False)
+
+        scheduler_cfg = _load_json_config("models/longcat/configs/longcat_scheduler.json")
+        self.scheduler = FlowMatchEulerDiscreteScheduler(**scheduler_cfg)
+        self.num_timesteps = 1000
+        self.num_distill_sample_steps = 50
+
+        if self.is_avatar:
+            wav2vec_folder = fl.locate_folder("chinese-wav2vec2-base")
+            self.audio_encoder = Wav2Vec2ModelWrapper(wav2vec_folder)
+            self.audio_encoder.eval().requires_grad_(False)
+            if hasattr(self.audio_encoder, "feature_extractor"):
+                self.audio_encoder.feature_extractor._freeze_parameters()
+            self.wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+                wav2vec_folder, local_files_only=True
+            )
+        else:
+            self.audio_encoder = None
+            self.wav2vec_feature_extractor = None
+
+        self.vae_scale_factor_temporal = getattr(self.vae.config, "scale_factor_temporal", 4)
+        self.vae_scale_factor_spatial = getattr(self.vae.config, "scale_factor_spatial", 8)
+        self.transformer._interrupt_check = lambda: self._interrupt
+
+    def prepare_preview_payload(self, latents, preview_meta=None):
+        if not torch.is_tensor(latents):
+            return None
+        return {"latents": latents.float()}
+
+    def _apply_vae_tiling(self, VAE_tile_size):
+        if not hasattr(self.vae, "enable_tiling"):
+            return
+        if VAE_tile_size is None or VAE_tile_size == 0:
+            if hasattr(self.vae, "disable_tiling"):
+                self.vae.disable_tiling()
+            return
+        if isinstance(VAE_tile_size, dict):
+            tile = VAE_tile_size.get("tile_sample_min_size", None)
+        else:
+            tile = int(VAE_tile_size)
+        if tile and tile > 0:
+            stride = max(16, int(tile * 0.75))
+            self.vae.enable_tiling(
+                tile_sample_min_height=tile,
+                tile_sample_min_width=tile,
+                tile_sample_stride_height=stride,
+                tile_sample_stride_width=stride,
+            )
+
+    def _validate_sparse_attention(self, latents):
+        if not self.sparse_attention_enabled:
+            return
+        bsa_params = getattr(self.transformer.config, "bsa_params", None) or {}
+        chunk_shape_q = bsa_params.get("chunk_3d_shape_q")
+        chunk_shape_k = bsa_params.get("chunk_3d_shape_k")
+        chunk_shape = chunk_shape_q or chunk_shape_k
+        if not chunk_shape or latents.dim() != 5:
+            self.transformer.disable_bsa()
+            self.sparse_attention_enabled = False
+            print("Sparse attention disabled: missing BSA parameters.")
+            return
+        attn_mode = offload.shared_state.get("_attention", "auto")
+        require_grid_divisible = False
+        if attn_mode == "flash":
+            require_grid_divisible = True
+        elif attn_mode == "auto":
+            try:
+                from shared.attention import flash_attn_bsa_3d
+            except Exception:
+                flash_attn_bsa_3d = None
+            require_grid_divisible = flash_attn_bsa_3d is not None
+
+        patch_t, patch_h, patch_w = self.transformer.config.patch_size
+        n_t = latents.shape[2] // patch_t
+        n_h = latents.shape[3] // patch_h
+        n_w = latents.shape[4] // patch_w
+        cp_split_hw = getattr(self.transformer.config, "cp_split_hw", None)
+        if cp_split_hw:
+            if n_h % cp_split_hw[0] != 0 or n_w % cp_split_hw[1] != 0:
+                self.transformer.disable_bsa()
+                self.sparse_attention_enabled = False
+                print("Sparse attention disabled: cp_split_hw does not divide token grid.")
+                return
+        if require_grid_divisible:
+            shape_q = chunk_shape_q or chunk_shape
+            shape_k = chunk_shape_k or chunk_shape
+            if (
+                n_t % shape_q[0] != 0
+                or n_h % shape_q[1] != 0
+                or n_w % shape_q[2] != 0
+                or n_t % shape_k[0] != 0
+                or n_h % shape_k[1] != 0
+                or n_w % shape_k[2] != 0
+            ):
+                self.transformer.disable_bsa()
+                self.sparse_attention_enabled = False
+                print("Sparse attention disabled: flash BSA needs token grid divisible by chunk shape.")
+
+    def _encode_prompt(
+        self,
+        prompt,
+        negative_prompt,
+        num_videos_per_prompt=1,
+        max_length=512,
+        device=None,
+        dtype=None,
+    ):
+        device = device or self.device
+        dtype = dtype or self.dtype
+        prompt_list = [prompt] if isinstance(prompt, str) else prompt
+        batch_size = len(prompt_list)
+        ids, mask = self.text_encoder.tokenizer(
+            prompt_list,
+            return_mask=True,
+            add_special_tokens=True,
+        )
+        ids = ids.to(device)
+        mask = mask.to(device)
+        prompt_embeds = self.text_encoder.model(ids, mask).to(dtype)
+        seq_len = prompt_embeds.shape[1]
+        prompt_embeds = prompt_embeds.unsqueeze(1)
+        if num_videos_per_prompt > 1:
+            prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1, 1)
+            prompt_embeds = prompt_embeds.view(batch_size * num_videos_per_prompt, 1, seq_len, -1)
+            mask = mask.repeat(num_videos_per_prompt, 1)
+
+        neg_embeds = None
+        neg_mask = None
+        if negative_prompt is not None:
+            neg_list = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+            if len(neg_list) == 1 and batch_size > 1:
+                neg_list = neg_list * batch_size
+            ids, neg_mask = self.text_encoder.tokenizer(
+                neg_list,
+                return_mask=True,
+                add_special_tokens=True,
+            )
+            ids = ids.to(device)
+            neg_mask = neg_mask.to(device)
+            neg_embeds = self.text_encoder.model(ids, neg_mask).to(dtype)
+            neg_embeds = neg_embeds.unsqueeze(1)
+            if num_videos_per_prompt > 1:
+                neg_embeds = neg_embeds.repeat(1, num_videos_per_prompt, 1, 1)
+                neg_embeds = neg_embeds.view(batch_size * num_videos_per_prompt, 1, seq_len, -1)
+                neg_mask = neg_mask.repeat(num_videos_per_prompt, 1)
+
+        return prompt_embeds, mask, neg_embeds, neg_mask
+
+    def _prepare_latents(
+        self,
+        batch_size,
+        num_channels_latents,
+        height,
+        width,
+        num_frames,
+        dtype,
+        device,
+        generator,
+        latents=None,
+        image=None,
+        video=None,
+        num_cond_frames=0,
+    ):
+        num_latent_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1
+        if latents is None:
+            shape = (
+                batch_size,
+                num_channels_latents,
+                num_latent_frames,
+                int(height) // self.vae_scale_factor_spatial,
+                int(width) // self.vae_scale_factor_spatial,
+            )
+            latents = torch.randn(shape, generator=generator, device=device, dtype=dtype)
+        else:
+            latents = latents.to(device=device, dtype=dtype)
+
+        num_cond_latents = 0
+        if image is not None or video is not None:
+            cond_latents = []
+            for i in range(batch_size):
+                if image is not None:
+                    encoded_input = image[i].unsqueeze(0).unsqueeze(2)
+                else:
+                    encoded_input = video[i][:, -num_cond_frames:].unsqueeze(0)
+                latent = retrieve_latents(
+                    self.vae.encode(encoded_input),
+                    generator,
+                    sample_mode="argmax",
+                )
+                cond_latents.append(latent)
+            cond_latents = torch.cat(cond_latents, dim=0).to(dtype)
+            cond_latents = self.normalize_latents(cond_latents)
+            num_cond_latents = 1 + (num_cond_frames - 1) // self.vae_scale_factor_temporal
+            latents[:, :, :num_cond_latents] = cond_latents[:, :, :num_cond_latents]
+        return latents, num_cond_latents
+
+    def normalize_latents(self, latents):
+        latents_mean = (
+            torch.tensor(self.vae.config.latents_mean)
+            .view(1, self.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        latents_std = (
+            torch.tensor(self.vae.config.latents_std)
+            .view(1, self.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        return (latents - latents_mean) / latents_std
+
+    def denormalize_latents(self, latents):
+        latents_mean = (
+            torch.tensor(self.vae.config.latents_mean)
+            .view(1, self.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        latents_std = (
+            torch.tensor(self.vae.config.latents_std)
+            .view(1, self.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        return latents * latents_std + latents_mean
+
+    def _loudness_norm(self, audio_array, sr=16000, lufs=-23, threshold=100):
+        meter = pyln.Meter(sr)
+        loudness = meter.integrated_loudness(audio_array)
+        if not np.isfinite(loudness) or loudness > threshold:
+            return audio_array
+        return pyln.normalize.loudness(audio_array, loudness, lufs)
+
+    def _add_noise_floor(self, audio_array, noise_level=0.0001):
+        noise = np.random.normal(0, noise_level, size=audio_array.shape)
+        return audio_array + noise
+
+    def _smooth_transients(self, audio_array, sr=16000):
+        b, a = ss.butter(3, 3000 / (sr / 2))
+        return ss.lfilter(b, a, audio_array)
+
+    @torch.no_grad()
+    def _get_audio_embedding(self, speech_array, fps=32, device="cpu", sample_rate=16000):
+        audio_duration = len(speech_array) / sample_rate
+        video_length = audio_duration * fps
+
+        speech_array = self._loudness_norm(speech_array, sample_rate)
+        speech_array = self._add_noise_floor(speech_array)
+        speech_array = self._smooth_transients(speech_array, sample_rate)
+
+        audio_feature = np.squeeze(
+            self.wav2vec_feature_extractor(speech_array, sampling_rate=sample_rate).input_values
+        )
+        audio_feature = np.nan_to_num(audio_feature, nan=0.0, posinf=0.0, neginf=0.0)
+        audio_feature = torch.from_numpy(audio_feature).float().to(device=device)
+        audio_feature = audio_feature.unsqueeze(0)
+
+        embeddings = self.audio_encoder(audio_feature, seq_len=int(video_length), output_hidden_states=True)
+        audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
+        audio_emb = audio_emb.permute(1, 0, 2).contiguous()
+        audio_emb = torch.nan_to_num(audio_emb, nan=0.0, posinf=0.0, neginf=0.0)
+        return audio_emb
+
+    def _build_audio_windows(self, audio_path, frame_num, fps, window_start_frame_no, audio_stride):
+        speech_array, sr = librosa.load(audio_path, sr=16000)
+        target_len = int(frame_num / fps * sr)
+        if len(speech_array) < target_len:
+            pad = target_len - len(speech_array)
+            speech_array = np.pad(speech_array, (0, pad), mode="constant")
+
+        full_audio_emb = self._get_audio_embedding(speech_array, fps=fps * audio_stride, device="cpu", sample_rate=sr)
+        if torch.isnan(full_audio_emb).any():
+            raise ValueError("Audio embedding contains NaNs.")
+
+        audio_start_idx = window_start_frame_no * audio_stride
+        audio_end_idx = audio_start_idx + audio_stride * frame_num
+        window = self.transformer.audio_window if hasattr(self.transformer, "audio_window") else 5
+        offsets = torch.arange(window) - window // 2
+        centers = torch.arange(audio_start_idx, audio_end_idx, audio_stride).unsqueeze(1) + offsets.unsqueeze(0)
+        centers = torch.clamp(centers, min=0, max=full_audio_emb.shape[0] - 1)
+        audio_emb = full_audio_emb[centers][None, ...]
+        return audio_emb
+
+    def _build_ref_target_masks(self, height, width, speakers_bboxes=None):
+        if not speakers_bboxes:
+            return None
+        human_masks = []
+        background_mask = torch.zeros([height, width])
+        for _, person_bbox in speakers_bboxes.items():
+            y_min, x_min, y_max, x_max = person_bbox
+            x_min, y_min, x_max, y_max = max(x_min, 5), max(y_min, 5), min(x_max, 95), min(y_max, 95)
+            x_min, y_min, x_max, y_max = (
+                int(height * x_min / 100),
+                int(width * y_min / 100),
+                int(height * x_max / 100),
+                int(width * y_max / 100),
+            )
+            human_mask = torch.zeros([height, width])
+            human_mask[int(x_min) : int(x_max), int(y_min) : int(y_max)] = 1
+            background_mask += human_mask
+            human_masks.append(human_mask)
+        background_mask = torch.where(background_mask > 0, torch.tensor(0), torch.tensor(1))
+        human_masks.append(background_mask)
+        return torch.stack(human_masks, dim=0)
+
+    def get_timesteps_sigmas(self, sampling_steps, use_distill=False):
+        if use_distill:
+            distill_indices = torch.arange(1, self.num_distill_sample_steps + 1, dtype=torch.float32)
+            distill_indices = (distill_indices * (self.num_timesteps // self.num_distill_sample_steps)).round().long()
+            inference_indices = np.linspace(0, self.num_distill_sample_steps, num=sampling_steps, endpoint=False)
+            inference_indices = np.floor(inference_indices).astype(np.int64)
+            sigmas = torch.flip(distill_indices, [0])[inference_indices].float() / self.num_timesteps
+        else:
+            sigmas = torch.linspace(1, 0.001, sampling_steps, dtype=torch.float32)
+        return sigmas.to(dtype=torch.float32, device="cpu")
+
+    @torch.no_grad()
+    def generate(
+        self,
+        seed=None,
+        input_prompt="",
+        n_prompt="",
+        sampling_steps=50,
+        input_ref_images=None,
+        input_frames=None,
+        input_frames2=None,
+        input_masks=None,
+        input_masks2=None,
+        input_video=None,
+        image_start=None,
+        image_end=None,
+        frame_num=93,
+        batch_size=1,
+        height=480,
+        width=832,
+        guide_scale=4.0,
+        audio_cfg_scale=None,
+        joint_pass=False,
+        VAE_tile_size=None,
+        prefix_frames_count=0,
+        conditioning_latents_size=0,
+        callback=None,
+        cfg_star_switch=False,
+        cfg_zero_step=-1,
+        audio_guide=None,
+        audio_guide2=None,
+        fps=None,
+        window_start_frame_no=0,
+        **kwargs,
+    ):
+        if self._interrupt:
+            return None
+
+        if seed is None or seed == -1:
+            seed = torch.seed() % (2**32 - 1)
+        generator = torch.Generator(device=self.device)
+        generator.manual_seed(seed)
+
+        if fps is None or fps == 0:
+            fps = self.model_def.get("fps", 15 if not self.is_avatar else 16)
+
+        if frame_num % self.vae_scale_factor_temporal != 1:
+            frame_num = frame_num // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
+        frame_num = max(frame_num, 1)
+
+        sample_solver = kwargs.get("sample_solver", self.model_def.get("sample_solver", "auto"))
+        if sample_solver in (None, ""):
+            sample_solver = "auto"
+
+        prompt_embeds, prompt_mask, neg_embeds, neg_mask = self._encode_prompt(
+            input_prompt,
+            n_prompt if n_prompt is not None else "",
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+        any_guidance = guide_scale is not None and guide_scale > 1
+        if self.is_avatar:
+            if audio_cfg_scale is None:
+                audio_cfg_scale = 1.0
+            any_guidance = any_guidance or audio_cfg_scale > 1
+
+        reference_image_enabled = self.is_avatar and bool(
+            kwargs.get("reference_image_enabled", self.model_def.get("reference_image_enabled", True))
+        )
+        reference_features_enabled = reference_image_enabled
+
+        ref_img_index = kwargs.get("ref_img_index", self.model_def.get("ref_img_index", 10))
+        mask_frame_range = kwargs.get("mask_frame_range", self.model_def.get("mask_frame_range", 3))
+        if not reference_features_enabled:
+            ref_img_index = None
+            mask_frame_range = None
+
+        ref_image = None
+        if reference_image_enabled:
+            if input_ref_images is not None:
+                ref_list = input_ref_images if isinstance(input_ref_images, list) else [input_ref_images]
+                if len(ref_list) > 0:
+                    ref_image = ref_list[0]
+            window_no = kwargs.get("window_no", None)
+            if window_no == 1:
+                if ref_image is not None:
+                    self._reference_image = (
+                        ref_image.detach().to("cpu") if torch.is_tensor(ref_image) else ref_image
+                    )
+                else:
+                    self._reference_image = None
+            if ref_image is None and self._reference_image is not None:
+                ref_image = self._reference_image
+
+        cond_video = None
+        num_cond_frames = 0
+        if input_video is not None:
+            cond_video = input_video
+            num_cond_frames = max(int(prefix_frames_count or 0), 0)
+
+        self._apply_vae_tiling(VAE_tile_size)
+
+        if cond_video is not None:
+            cond_video = cond_video.to(device=self.device, dtype=self.VAE_dtype)
+            if cond_video.dim() == 4:
+                cond_video = cond_video.unsqueeze(0)
+            cond_video_frames = cond_video.shape[2]
+            if num_cond_frames <= 0:
+                cond_video = None
+                num_cond_frames = 0
+            else:
+                num_cond_frames = min(num_cond_frames, cond_video_frames)
+
+        if sample_solver not in ("auto", "default", "enhance_hf", "distill"):
+            raise ValueError(f"Unsupported scheduler '{sample_solver}' for LongCat.")
+        use_distill = sample_solver == "distill"
+        enhance_hf = sample_solver == "enhance_hf"
+        if sample_solver == "auto":
+            enhance_hf = cond_video is not None and num_cond_frames > 0
+        if use_distill and enhance_hf:
+            raise ValueError("distill and enhance_hf schedules cannot both be enabled.")
+
+        image_cond = None
+        ref_latent = None
+        num_ref_latents = 0
+        if reference_image_enabled and ref_image is not None:
+            if not torch.is_tensor(ref_image):
+                ref_image = torch.from_numpy(np.array(ref_image)).float().div_(127.5).sub_(1.).movedim(-1, 0)
+            ref_image = ref_image.to(device=self.device, dtype=self.VAE_dtype)
+            if ref_image.dim() == 3:
+                ref_image = ref_image.unsqueeze(0)
+            if ref_image.dim() == 5 and ref_image.shape[2] == 1:
+                ref_image = ref_image.squeeze(2)
+            if ref_image.dim() != 4:
+                raise ValueError("reference image must be CHW or BCHW for LongCat.")
+            if ref_image.shape[0] == 1 and batch_size > 1:
+                ref_image = ref_image.repeat(batch_size, 1, 1, 1)
+            elif ref_image.shape[0] != batch_size:
+                raise ValueError("reference image batch size does not match prompts.")
+            if cond_video is None:
+                image_cond = ref_image
+            else:
+                ref_image_5d = ref_image.unsqueeze(2)
+                ref_latent = retrieve_latents(self.vae.encode(ref_image_5d), generator, sample_mode="argmax")
+                ref_latent = self.normalize_latents(ref_latent).to(torch.float32)
+                num_ref_latents = 1
+
+        cond_image_frames = 1 if image_cond is not None else num_cond_frames
+        latents, num_cond_latents = self._prepare_latents(
+            batch_size=batch_size,
+            num_channels_latents=self.transformer.config.in_channels,
+            height=height,
+            width=width,
+            num_frames=frame_num,
+            dtype=torch.float32,
+            device=self.device,
+            generator=generator,
+            latents=None,
+            image=image_cond,
+            video=None if image_cond is not None else cond_video,
+            num_cond_frames=cond_image_frames,
+        )
+        if reference_image_enabled and ref_latent is None and self.is_avatar and num_cond_latents > 1:
+            ref_latent = latents[:, :, :1].clone()
+            num_ref_latents = 1
+        if ref_latent is not None:
+            num_cond_latents += num_ref_latents
+            latents = torch.cat([ref_latent, latents], dim=2)
+        self._validate_sparse_attention(latents)
+
+        sigmas = self.get_timesteps_sigmas(sampling_steps, use_distill=use_distill)
+        self.scheduler.set_timesteps(sampling_steps, sigmas=sigmas, device=self.device)
+        timesteps = self.scheduler.timesteps
+        if enhance_hf:
+            tail_uniform_start = 500
+            tail_uniform_end = 0
+            num_tail_uniform_steps = 10
+            timesteps_uniform_tail = list(
+                np.linspace(
+                    tail_uniform_start,
+                    tail_uniform_end,
+                    num_tail_uniform_steps,
+                    dtype=np.float32,
+                    endpoint=(tail_uniform_end != 0),
+                )
+            )
+            timesteps_uniform_tail = [
+                torch.tensor(t, device=self.device, dtype=torch.float32).unsqueeze(0)
+                for t in timesteps_uniform_tail
+            ]
+            filtered_timesteps = [timestep.unsqueeze(0) for timestep in timesteps if timestep > tail_uniform_start]
+            timesteps = torch.cat(filtered_timesteps + timesteps_uniform_tail)
+            self.scheduler.timesteps = timesteps
+            self.scheduler.sigmas = torch.cat(
+                [timesteps / self.num_timesteps, torch.zeros(1, device=timesteps.device)]
+            )
+
+        audio_emb = None
+        ref_target_masks = None
+        if self.is_avatar:
+            if audio_guide is None:
+                raise ValueError("Audio guide is required for LongCat Avatar.")
+            audio_stride = 2
+            audio_emb = self._build_audio_windows(
+                audio_guide, frame_num, fps, window_start_frame_no, audio_stride
+            )
+            if self.base_model_type == "longcat_avatar_multi":
+                if audio_guide2 is None:
+                    raise ValueError("Second audio guide is required for LongCat Avatar Multi.")
+                audio_emb2 = self._build_audio_windows(
+                    audio_guide2, frame_num, fps, window_start_frame_no, audio_stride
+                )
+                audio_emb = torch.cat([audio_emb, audio_emb2], dim=0)
+                speakers_bboxes = kwargs.get("speakers_bboxes")
+                ref_target_masks = self._build_ref_target_masks(height, width, speakers_bboxes)
+            if ref_target_masks is not None:
+                ref_target_masks = ref_target_masks.to(self.device)
+            audio_emb = audio_emb.to(self.device, dtype=self.dtype)
+
+        latents = latents.to(self.device, dtype=self.dtype)
+        prompt_embeds = prompt_embeds.to(self.device)
+        prompt_mask = prompt_mask.to(self.device)
+        if neg_embeds is None:
+            neg_embeds = prompt_embeds
+            neg_mask = prompt_mask
+        else:
+            neg_embeds = neg_embeds.to(self.device)
+            neg_mask = neg_mask.to(self.device)
+
+        ref_kwargs = {}
+        if self.is_avatar and num_ref_latents > 0:
+            ref_kwargs = {
+                "num_ref_latents": num_ref_latents,
+                "ref_img_index": ref_img_index,
+                "mask_frame_range": mask_frame_range,
+            }
+
+        with tqdm(total=len(timesteps), desc="Denoising") as progress_bar:
+            for i, t in enumerate(timesteps):
+                if self._interrupt:
+                    return None
+                def _aborted(outputs):
+                    if outputs is None:
+                        return True
+                    if isinstance(outputs, (list, tuple)):
+                        return any(item is None for item in outputs)
+                    return outputs is None
+
+                timestep = t.expand(latents.shape[0]).to(self.dtype)
+                if num_cond_latents > 0:
+                    timestep = timestep[:, None].expand(-1, latents.shape[2]).clone()
+                    timestep[:, :num_cond_latents] = 0
+
+                if self.is_avatar and audio_emb is not None and any_guidance:
+                    audio_cond = audio_emb.to(self.device, dtype=self.dtype)
+                    audio_uncond = torch.zeros_like(audio_cond)
+                    x_list = [latents, latents, latents]
+                    ctx_list = [prompt_embeds, neg_embeds, neg_embeds]
+                    mask_list = [prompt_mask, neg_mask, neg_mask]
+                    audio_list = [audio_cond, audio_cond, audio_uncond]
+                    ref_list = [ref_target_masks, ref_target_masks, ref_target_masks]
+                    if joint_pass:
+                        outputs = self.transformer(
+                            hidden_states=x_list,
+                            timestep=[timestep] * len(x_list),
+                            encoder_hidden_states=ctx_list,
+                            encoder_attention_mask=mask_list,
+                            num_cond_latents=[num_cond_latents] * len(x_list),
+                            audio_embs=audio_list,
+                            ref_target_masks=ref_list,
+                            **ref_kwargs,
+                        )
+                        if _aborted(outputs):
+                            return None
+                    else:
+                        outputs = []
+                        for x_i, ctx_i, mask_i, audio_i, ref_i in zip(
+                            x_list, ctx_list, mask_list, audio_list, ref_list
+                        ):
+                            output = self.transformer(
+                                hidden_states=x_i,
+                                timestep=timestep,
+                                encoder_hidden_states=ctx_i,
+                                encoder_attention_mask=mask_i,
+                                num_cond_latents=num_cond_latents,
+                                audio_embs=audio_i,
+                                ref_target_masks=ref_i,
+                                **ref_kwargs,
+                            )
+                            if _aborted(output):
+                                return None
+                            outputs.append(output)
+                    noise_pred_cond, noise_pred_uncond_text, noise_pred_uncond = outputs
+                    noise_pred = (
+                        noise_pred_uncond
+                        + guide_scale * (noise_pred_cond - noise_pred_uncond_text)
+                        + audio_cfg_scale * (noise_pred_uncond_text - noise_pred_uncond)
+                    )
+                elif any_guidance:
+                    x_list = [latents, latents]
+                    ctx_list = [prompt_embeds, neg_embeds]
+                    mask_list = [prompt_mask, neg_mask]
+                    if joint_pass:
+                        outputs = self.transformer(
+                            hidden_states=x_list,
+                            timestep=[timestep] * len(x_list),
+                            encoder_hidden_states=ctx_list,
+                            encoder_attention_mask=mask_list,
+                            num_cond_latents=[num_cond_latents] * len(x_list),
+                            **ref_kwargs,
+                        )
+                        if _aborted(outputs):
+                            return None
+                    else:
+                        outputs = []
+                        for x_i, ctx_i, mask_i in zip(x_list, ctx_list, mask_list):
+                            output = self.transformer(
+                                hidden_states=x_i,
+                                timestep=timestep,
+                                encoder_hidden_states=ctx_i,
+                                encoder_attention_mask=mask_i,
+                                num_cond_latents=num_cond_latents,
+                                **ref_kwargs,
+                            )
+                            if _aborted(output):
+                                return None
+                            outputs.append(output)
+                    noise_pred_cond, noise_pred_uncond = outputs
+                    if cfg_star_switch:
+                        positive_flat = noise_pred_cond.view(latents.shape[0], -1)
+                        negative_flat = noise_pred_uncond.view(latents.shape[0], -1)
+                        st_star = optimized_scale(positive_flat, negative_flat).view(latents.shape[0], 1, 1, 1)
+                        if cfg_zero_step >= 0 and i <= cfg_zero_step:
+                            noise_pred = noise_pred_cond * 0.0
+                        else:
+                            noise_pred_uncond = noise_pred_uncond * st_star
+                            noise_pred = noise_pred_uncond + guide_scale * (noise_pred_cond - noise_pred_uncond)
+                    else:
+                        noise_pred = noise_pred_uncond + guide_scale * (noise_pred_cond - noise_pred_uncond)
+                else:
+                    noise_pred = self.transformer(
+                        hidden_states=latents,
+                        timestep=timestep,
+                        encoder_hidden_states=prompt_embeds,
+                        encoder_attention_mask=prompt_mask,
+                        num_cond_latents=num_cond_latents,
+                        audio_embs=audio_emb if self.is_avatar else None,
+                        ref_target_masks=ref_target_masks if self.is_avatar else None,
+                        **ref_kwargs,
+                    )
+                    if _aborted(noise_pred):
+                        return None
+
+                noise_pred = -noise_pred
+
+                if num_cond_latents > 0:
+                    latents[:, :, num_cond_latents:] = self.scheduler.step(
+                        noise_pred[:, :, num_cond_latents:],
+                        t,
+                        latents[:, :, num_cond_latents:],
+                        return_dict=False,
+                    )[0]
+                else:
+                    latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+
+                if callback is not None:
+                    callback(i, latents.squeeze(0))
+                progress_bar.update()
+
+        if num_ref_latents > 0:
+            latents = latents[:, :, num_ref_latents:]
+            num_cond_latents -= num_ref_latents
+
+        latent_slice = None
+        return_latent_slice = kwargs.get("return_latent_slice")
+        if return_latent_slice is not None:
+            latent_slice = latents[:, :, return_latent_slice].detach().to("cpu")
+
+        latents = latents.to(self.vae.dtype)
+        latents = self.denormalize_latents(latents)
+        video = self.vae.decode(latents, return_dict=False)[0].clamp(-1, 1)
+        if video.dim() == 5:
+            video = video[0]
+
+        if latent_slice is not None:
+            return {"x": video, "latent_slice": latent_slice}
+        return video

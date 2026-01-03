@@ -1,0 +1,19 @@
+{
+	"model":
+	{
+		"name": "Wan2.1 Alpha v2.0 14B",
+		"architecture" : "alpha2",
+		"description": "Wan-Alpha v2.0 generates transparent videos with fine-grained alpha detail (hair, glow, smoke). For each video, a Zip file with RGBA frames is produced.",
+		"URLs": "t2v",
+		"preload_URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan_alpha_2.1_vae_rgb_channel_v2.safetensors", 
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan_alpha_2.1_vae_alpha_channel_v2.safetensors",
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/gauss_mask"
+		],
+		"loras": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan_alpha_2.1_dora_v2.safetensors"
+			],		
+		"loras_multipliers": [ 1 ]
+	},
+	"prompt": "A large orange octopus is seen resting. The background of the video is transparent."
+}

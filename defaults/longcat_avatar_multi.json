@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "LongCat Avatar Multi 13.6B",
+        "architecture": "longcat_avatar",
+        "description": "LongCat Avatar (multi speaker) for dual-audio driven character video.",
+		"multi_speakers_only": true,		
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/LongCat/resolve/main/longcat_avatar_multi_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/LongCat/resolve/main/longcat_avatar_multi_quanto_bf16_int8.safetensors"
+        ],
+        "reference_image_enabled": true,
+        "ref_img_index": 10,
+		"visible": false,
+        "mask_frame_range": 3
+    },
+    "num_inference_steps": 50
+}

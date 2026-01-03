@@ -1,0 +1,14 @@
+{
+    "model": {
+        "name": "Z-Image Turbo Nunchaku INT4 (r256)",
+        "architecture": "z_image",
+        "description": "Nunchaku SVDQ INT4 weights for Z-Image Turbo. For full speed, the nunchaku kernels must be installed.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Z-Image/resolve/main/svdq-int4_r256-z-image-turbo.safetensors"
+        ]
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1,
+    "num_inference_steps": 8,
+    "guidance_scale": 0
+}

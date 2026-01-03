@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Qwen Image 2512 Release 20B",
+        "architecture": "qwen_image_20B",
+        "description": "Qwen Image 2512 is a 20B image generator that excels at high quality visuals and long text rendering. This December release offers Enhanced Human Realism, Finer Natural Details & Improved Text Rendering.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_2512_20B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_2512_20B_quanto_bf16_int8.safetensors"
+        ],
+        "attention": {
+            "<89": "sdpa"
+        },
+        "image_outputs": true
+    },
+    "prompt": "draw a hat",
+    "resolution": "1280x720",
+    "batch_size": 1
+}

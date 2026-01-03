@@ -103,7 +103,7 @@ class family_handler:
     @staticmethod
     def query_family_infos():
         return {
-            "kandinsky5": (60, "Kandinsky 5"),
+            "kandinsky5": (50, "Kandinsky 5"),
         }
 
     @staticmethod

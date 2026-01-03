@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "SCAIL 14B Preview",
+        "name": "SCAIL Preview 14B",
         "architecture": "scail",
         "description": "SCAIL: Studio-Grade Character Animation. Animates reference image using driving video motion with 3D-consistent pose transfer. Uses NLFPose for accurate 3D skeleton extraction.",
         "URLs": [
@@ -9,5 +9,5 @@
             "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_scail_preview_14B_quanto_fp16_int8.safetensors"
         ]
     },
-	"color_correction_strength": 1
+	"sliding_window_color_correction_strength": 1
 }

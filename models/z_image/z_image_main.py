@@ -67,6 +67,17 @@ def conv_state_dict(sd: dict) -> dict:
     return out_sd
 
 
+_ZIMAGE_FUSED_SPLIT_MAP = {
+    "attention.to_qkv": {"mapped_modules": ("attention.to_q", "attention.to_k", "attention.to_v")},
+    "feed_forward.net.0.proj": {"mapped_modules": ("feed_forward.w3", "feed_forward.w1")},
+    "feed_forward.net.2": {"mapped_modules": ("feed_forward.w2",)},
+}
+
+
+from shared.qtypes import nunchaku_int4 as _nunchaku_int4
+_split_nunchaku_fused = _nunchaku_int4.make_nunchaku_splitter(_ZIMAGE_FUSED_SPLIT_MAP)
+
+
 class model_factory:
     def __init__(
         self,
@@ -100,7 +111,9 @@ class model_factory:
 
         default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", f"{base_model_type}.json")
 
-        preprocess_sd = conv_state_dict
+        def preprocess_sd(state_dict, verboseLevel=1):
+            state_dict = conv_state_dict(state_dict)
+            return _split_nunchaku_fused(state_dict, verboseLevel=verboseLevel)
 
         model_class = ZImageTransformer2DModel
 
@@ -199,6 +212,7 @@ class model_factory:
         NAG_scale: float = 1.0,
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
+        loras_slists=None,
         **kwargs,
     ):
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
@@ -244,6 +258,7 @@ class model_factory:
             NAG_scale=NAG_scale,
             NAG_tau=NAG_tau,
             NAG_alpha=NAG_alpha,
+            loras_slists=loras_slists,
         )
 
         if images is None:

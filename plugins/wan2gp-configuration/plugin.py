@@ -156,7 +156,25 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 with gr.Tab("Extensions"):
                     self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 + LLama 3.2", 1), ("Florence 2 + Llama Joy (uncensored)", 2)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires 8-14GB extra download)")
                     self.enhancer_mode_choice = gr.Dropdown(choices=[("Automatic on Generation", 0), ("On-Demand Button Only", 1)], value=self.server_config.get("enhancer_mode", 0), label="Prompt Enhancer Usage")
-                    self.mmaudio_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Enabled (unloads after use)", 1), ("Enabled (persistent in RAM)", 2)], value=self.server_config.get("mmaudio_enabled", 0), label="MMAudio Soundtrack Generation (requires 10GB extra download)")
+                    mmaudio_mode_default = self.server_config.get("mmaudio_mode", None)
+                    mmaudio_persistence_default = self.server_config.get("mmaudio_persistence", None)
+                    if mmaudio_mode_default is None:
+                        legacy_mmaudio = self.server_config.get("mmaudio_enabled", 0)
+                        mmaudio_mode_default = 0 if legacy_mmaudio == 0 else 1
+                    if mmaudio_persistence_default is None:
+                        legacy_mmaudio = self.server_config.get("mmaudio_enabled", 0)
+                        mmaudio_persistence_default = 2 if legacy_mmaudio == 2 else 1
+
+                    self.mmaudio_mode_choice = gr.Dropdown(
+                        choices=[("Off", 0), ("Standard", 1), ("Alternate", 2)],
+                        value=mmaudio_mode_default,
+                        label="MMAudio Soundtrack Generation (requires 10GB extra download)"
+                    )
+                    self.mmaudio_persistence_choice = gr.Dropdown(
+                        choices=[("Unload after use", 1), ("Persistent in RAM", 2)],
+                        value=mmaudio_persistence_default,
+                        label="MMAudio Model Persistence"
+                    )
 
                 with gr.Tab("Outputs"):
                     self.video_output_codec_choice = gr.Dropdown(choices=[("x265 CRF 28 (Balanced)", 'libx265_28'), ("x264 Level 8 (Balanced)", 'libx264_8'), ("x265 CRF 8 (High Quality)", 'libx265_8'), ("x264 Level 10 (High Quality)", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], value=self.server_config.get("video_output_codec", "libx264_8"), label="Video Codec")
@@ -192,7 +210,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.text_encoder_quantization_choice, self.VAE_precision_choice, self.compile_choice,
             self.depth_anything_v2_variant_choice, self.vae_config_choice, self.boost_choice,
             self.profile_choice, self.preload_in_VRAM_choice,
-            self.enhancer_enabled_choice, self.enhancer_mode_choice, self.mmaudio_enabled_choice,
+            self.enhancer_enabled_choice, self.enhancer_mode_choice, self.mmaudio_mode_choice, self.mmaudio_persistence_choice,
             self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice,
@@ -241,7 +259,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             text_encoder_quantization_choice, VAE_precision_choice, compile_choice,
             depth_anything_v2_variant_choice, vae_config_choice, boost_choice,
             profile_choice, preload_in_VRAM_choice,
-            enhancer_enabled_choice, enhancer_mode_choice, mmaudio_enabled_choice,
+            enhancer_enabled_choice, enhancer_mode_choice, mmaudio_mode_choice, mmaudio_persistence_choice,
             video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice,
@@ -256,6 +274,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         self.fl.set_checkpoints_paths(checkpoints_paths)
 
+        mmaudio_enabled_choice = 0 if mmaudio_mode_choice == 0 else mmaudio_persistence_choice
+
         new_server_config = {
             "attention_mode": attention_choice, "transformer_types": transformer_types_choices,
             "text_encoder_quantization": text_encoder_quantization_choice, "save_path": save_path_choice,
@@ -266,7 +286,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "boost": boost_choice, "clear_file_list": clear_file_list_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
             "fit_canvas": fit_canvas_choice, "enhancer_enabled": enhancer_enabled_choice,
-            "enhancer_mode": enhancer_mode_choice, "mmaudio_enabled": mmaudio_enabled_choice,
+            "enhancer_mode": enhancer_mode_choice, "mmaudio_mode": mmaudio_mode_choice,
+            "mmaudio_persistence": mmaudio_persistence_choice, "mmaudio_enabled": mmaudio_enabled_choice,
             "preload_in_VRAM": preload_in_VRAM_choice, "depth_anything_v2_variant": depth_anything_v2_variant_choice,
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
@@ -300,7 +321,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         no_reload_keys = [
             "attention_mode", "vae_config", "boost", "save_path", "image_save_path",
             "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant",
-            "notification_sound_enabled", "notification_sound_volume", "mmaudio_enabled",
+            "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
+            "mmaudio_persistence", "mmaudio_enabled",
             "max_frames_multiplier", "display_stats", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "checkpoints_paths",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"

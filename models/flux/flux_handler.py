@@ -183,7 +183,7 @@ class family_handler():
 
     @staticmethod
     def query_family_infos():
-        return {"flux":(30, "Flux 1"), "flux2":(31, "Flux 2")}
+        return {"flux":(100, "Flux 1"), "flux2":(101, "Flux 2")}
 
     @staticmethod
     def register_lora_cli_args(parser):

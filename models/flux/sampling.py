@@ -241,7 +241,7 @@ def prepare_kontext(
         "img_cond_seq_ids": img_cond_seq_ids,
     }
     if img_mask is not None:
-        return_dict.update(build_mask(target_width, target_height, img_mask), device)
+        return_dict.update(build_mask(target_width, target_height, img_mask, device))
 
     img = get_noise(
         bs,

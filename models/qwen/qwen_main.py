@@ -20,6 +20,16 @@ from PIL import Image
 from shared.utils.utils import calculate_new_dimensions, convert_tensor_to_image
 from shared.utils import files_locator as fl 
 
+_QWEN_FUSED_SPLIT_MAP = {
+    "attn.to_qkv": {"mapped_modules": ("attn.to_q", "attn.to_k", "attn.to_v")},
+    "attn.add_qkv_proj": {"mapped_modules": ("attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj")},
+}
+
+
+from shared.qtypes import nunchaku_int4 as _nunchaku_int4
+_split_nunchaku_fused_qkv = _nunchaku_int4.make_nunchaku_splitter(_QWEN_FUSED_SPLIT_MAP)
+
+
 def stitch_images(img1, img2):
     # Resize img2 to match img1's height
     width1, height1 = img1.size
@@ -76,9 +86,9 @@ class model_factory():
         source =  model_def.get("source", None)
 
         if source is not None:
-            offload.load_model_data(transformer, source)
+            offload.load_model_data(transformer, source, preprocess_sd=_split_nunchaku_fused_qkv)
         else:
-            offload.load_model_data(transformer, transformer_filename)
+            offload.load_model_data(transformer, transformer_filename, preprocess_sd=_split_nunchaku_fused_qkv)
         # transformer = offload.fast_load_transformers_model("transformer_quanto.safetensors", writable_tensors= True , modelClass=QwenImageTransformer2DModel, defaultConfigPath="transformer_config.json")
 
         if not source is None:

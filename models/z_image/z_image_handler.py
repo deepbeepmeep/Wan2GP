@@ -20,7 +20,7 @@ class family_handler:
             "profiles_dir": [],
         }
 
-        if base_model_type in ["z_image_control", "z_image_control2"]:
+        if base_model_type in ["z_image_control", "z_image_control2", "z_image_control2_1"]:
             extra_model_def["mask_preprocessing"] = {
                 "selection":[ ""],
                 "visible": False
@@ -34,28 +34,39 @@ class family_handler:
                 "labels" : { "V": "Use Z-Image Raw Format"},
             }
 
-        if base_model_type in ["z_image_control2"]:
+        if base_model_type in ["z_image_control2", "z_image_control2_1"]:
             extra_model_def["mask_preprocessing"] = {
                 "selection":[ "", "A", "NA"],
-                "visible": False,
+                "visible": False, 
             }
+
+            extra_model_def["inpaint_support"] = True
+            extra_model_def["inpaint_video_prompt_type"]= "VA"
+
             # extra_model_def["image_ref_choices"] = {
             #     "choices":[("No Reference Image",""), ("Image is a Reference Image", "KI")],
             #     "default": "",
             #     "letters_filter": "KI",
             #     "label": "Reference Image for Inpainting",
-            #     "visible": False,
+            #     "visible": True,
             # }
         extra_model_def["NAG"] = base_model_type in ["z_image"]
         return extra_model_def
 
     @staticmethod
     def query_supported_types():
-        return ["z_image", "z_image_control", "z_image_control2"]
+        return ["z_image", "z_image_control", "z_image_control2", "z_image_control2_1"]
 
     @staticmethod
     def query_family_maps():
-        return {}, {}
+
+        models_eqv_map = {
+            "z_image_control2_1" : "z_image_control2",
+        }
+
+        models_comp_map = {}
+
+        return models_eqv_map, models_comp_map
 
     @staticmethod
     def query_model_family():
@@ -63,7 +74,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"z_image": (50, "Z-Image") }
+        return {"z_image": (120, "Z-Image") }
 
     @staticmethod
     def register_lora_cli_args(parser):
@@ -116,7 +127,7 @@ class family_handler:
         )
 
         # Detect if this is a control variant (v1 or v2)
-        is_control = base_model_type in ["z_image_control", "z_image_control2"]
+        is_control = base_model_type in ["z_image_control", "z_image_control2", "z_image_control2_1"]
 
         pipe_processor = model_factory(
             checkpoint_dir="ckpts",
@@ -158,7 +169,7 @@ class family_handler:
         )
 
         # Add control defaults for z_image_control and z_image_control2
-        if base_model_type in ["z_image_control", "z_image_control2"]:
+        if base_model_type in ["z_image_control", "z_image_control2", "z_image_control2_1"]:
             ui_defaults.update(
                 {
                     "control_net_weight":  0.75,

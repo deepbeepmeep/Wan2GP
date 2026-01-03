@@ -674,7 +674,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
             gr.Info(error)
             return ret()
 
-    if MMAudio_setting != 0 and server_config.get("mmaudio_enabled", 0) != 0 and video_length <16: #should depend on the architecture
+    if MMAudio_setting != 0 and get_mmaudio_settings(server_config)[0] and video_length <16: #should depend on the architecture
         gr.Info("MMAudio can generate an Audio track only if the Video is at least 1s long")
     if "F" in video_prompt_type:
         if len(frames_positions.strip()) > 0:
@@ -2138,6 +2138,8 @@ if not Path(config_load_filename).is_file():
         "checkpoints_paths": fl.default_checkpoints_paths,
 		"queue_color_scheme": "pastel",
         "model_hierarchy_type": 1,
+        "mmaudio_mode": 0,
+        "mmaudio_persistence": 1,
     }
 
     with open(server_config_filename, "w", encoding="utf-8") as writer:
@@ -2151,6 +2153,47 @@ checkpoints_paths = server_config.get("checkpoints_paths", None)
 if checkpoints_paths is None: checkpoints_paths = server_config["checkpoints_paths"] = fl.default_checkpoints_paths
 fl.set_checkpoints_paths(checkpoints_paths)
 three_levels_hierarchy = server_config.get("model_hierarchy_type", 1) == 1
+
+MMAUDIO_MODE_OFF = 0
+MMAUDIO_MODE_V2 = 1
+MMAUDIO_MODE_NEW = 2
+MMAUDIO_PERSIST_UNLOAD = 1
+MMAUDIO_PERSIST_RAM = 2
+MMAUDIO_V2_FILENAME = "mmaudio_large_44k_v2.pth"
+MMAUDIO_NEW_FILENAME = "mmaudio_large_44k_gold_8.5k_final_fp16.safetensors"
+
+def _normalize_mmaudio_config(config):
+    mode = config.get("mmaudio_mode", None)
+    persistence = config.get("mmaudio_persistence", None)
+    if mode is None:
+        old = config.get("mmaudio_enabled", 0)
+        mode = MMAUDIO_MODE_OFF if old == 0 else MMAUDIO_MODE_V2
+    if persistence is None:
+        old = config.get("mmaudio_enabled", 0)
+        persistence = MMAUDIO_PERSIST_RAM if old == MMAUDIO_PERSIST_RAM else MMAUDIO_PERSIST_UNLOAD
+    if mode not in (MMAUDIO_MODE_OFF, MMAUDIO_MODE_V2, MMAUDIO_MODE_NEW):
+        mode = MMAUDIO_MODE_OFF
+    if persistence not in (MMAUDIO_PERSIST_UNLOAD, MMAUDIO_PERSIST_RAM):
+        persistence = MMAUDIO_PERSIST_UNLOAD
+    config["mmaudio_mode"] = mode
+    config["mmaudio_persistence"] = persistence
+    return mode, persistence
+
+def get_mmaudio_settings(config):
+    mode, persistence = _normalize_mmaudio_config(config)
+    enabled = mode != MMAUDIO_MODE_OFF
+    if mode == MMAUDIO_MODE_V2:
+        model_name = "large_44k_v2"
+        model_path = MMAUDIO_V2_FILENAME
+    elif mode == MMAUDIO_MODE_NEW:
+        model_name = "large_44k"
+        model_path = MMAUDIO_NEW_FILENAME
+    else:
+        model_name = None
+        model_path = None
+    return enabled, mode, persistence, model_name, model_path
+
+_normalize_mmaudio_config(server_config)
 
 #   Deprecated models
 for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion_forcing_1.3B_bf16.safetensors","sky_reels2_diffusion_forcing_720p_14B_bf16.safetensors",
@@ -2864,11 +2907,15 @@ def process_files_def(repoId = None, sourceFolderList = None, fileList = None, t
                         hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = targetRoot)
 
 def download_mmaudio():
-    if server_config.get("mmaudio_enabled", 0) != 0:
+    mmaudio_enabled, mmaudio_mode, _, _, _ = get_mmaudio_settings(server_config)
+    if mmaudio_enabled:
+        mmaudio_files = ["synchformer_state_dict.pth", "v1-44.pth"]
+        if mmaudio_mode == MMAUDIO_MODE_V2:
+            mmaudio_files.insert(0, MMAUDIO_V2_FILENAME)
         enhancer_def = {
             "repoId" : "DeepBeepMeep/Wan2.1",
             "sourceFolderList" : [ "mmaudio", "DFN5B-CLIP-ViT-H-14-378"  ],
-            "fileList" : [ ["mmaudio_large_44k_v2.pth", "synchformer_state_dict.pth", "v1-44.pth"],["open_clip_config.json", "open_clip_pytorch_model.bin"]]
+            "fileList" : [ mmaudio_files, ["open_clip_config.json", "open_clip_pytorch_model.bin"]]
         }
         process_files_def(**enhancer_def)
 
@@ -4674,7 +4721,8 @@ def edit_video(
     else:
         output_fps  = round(fps)
 
-    any_mmaudio = MMAudio_setting != 0 and server_config.get("mmaudio_enabled", 0) != 0 and frames_count >=output_fps
+    mmaudio_enabled, mmaudio_mode, mmaudio_persistence, mmaudio_model_name, mmaudio_model_path = get_mmaudio_settings(server_config)
+    any_mmaudio = MMAudio_setting != 0 and mmaudio_enabled and frames_count >=output_fps
     if any_mmaudio: download_mmaudio()
 
     tmp_path = None
@@ -4713,7 +4761,7 @@ def edit_video(
             send_cmd("progress", [0, get_latest_status(state,"MMAudio Soundtrack Generation")])
             from postprocessing.mmaudio.mmaudio import video_to_audio
             new_video_path = get_available_filename(save_path, video_source, suffix)
-            video_to_audio(video_path, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= frames_count /output_fps, save_path = new_video_path , persistent_models = server_config.get("mmaudio_enabled", 0) == 2, verboseLevel = verbose_level)
+            video_to_audio(video_path, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= frames_count /output_fps, save_path = new_video_path , persistent_models = mmaudio_persistence == MMAUDIO_PERSIST_RAM, verboseLevel = verbose_level, model_name = mmaudio_model_name, model_path = mmaudio_model_path)
             configs["MMAudio_setting"] = MMAudio_setting
             configs["MMAudio_prompt"] = MMAudio_prompt
             configs["MMAudio_neg_prompt"] = MMAudio_neg_prompt
@@ -6024,7 +6072,8 @@ def generate_video(
                 else:
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt)).strip()}.{extension}"
                 video_path = os.path.join(save_path, file_name)
-                any_mmaudio = MMAudio_setting != 0 and server_config.get("mmaudio_enabled", 0) != 0 and sample.shape[1] >=fps
+                mmaudio_enabled, mmaudio_mode, mmaudio_persistence, mmaudio_model_name, mmaudio_model_path = get_mmaudio_settings(server_config)
+                any_mmaudio = MMAudio_setting != 0 and mmaudio_enabled and sample.shape[1] >=fps
                 if BGRA_frames is not None:
                     from models.wan.alpha.utils import write_zip_file
                     write_zip_file(os.path.splitext(video_path)[0] + ".zip", BGRA_frames)
@@ -6054,7 +6103,7 @@ def generate_video(
                         send_cmd("progress", [0, get_latest_status(state,"MMAudio Soundtrack Generation")])
                         from postprocessing.mmaudio.mmaudio import video_to_audio
                         output_new_audio_filepath = output_new_audio_temp_filepath = get_available_filename(save_path, f"tmp{time_flag}.wav" )
-                        video_to_audio(save_path_tmp, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= sample.shape[1] /fps, save_path = output_new_audio_filepath, persistent_models = server_config.get("mmaudio_enabled", 0) == 2, audio_file_only = True, verboseLevel = verbose_level)
+                        video_to_audio(save_path_tmp, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= sample.shape[1] /fps, save_path = output_new_audio_filepath, persistent_models = mmaudio_persistence == MMAUDIO_PERSIST_RAM, audio_file_only = True, verboseLevel = verbose_level, model_name = mmaudio_model_name, model_path = mmaudio_model_path)
                         new_audio_added_from_audio_start =  False
                     elif audio_source is not None:
                         output_new_audio_filepath = audio_source
@@ -7093,7 +7142,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if model_def.get("sample_solvers", None) is None:
         pop += ["sample_solver"]
     
-    if any_audio_track(base_model_type) or server_config.get("mmaudio_enabled", 0) == 0:
+    if any_audio_track(base_model_type) or not get_mmaudio_settings(server_config)[0]:
         pop += ["MMAudio_setting", "MMAudio_prompt", "MMAudio_neg_prompt"]
 
     video_prompt_type = inputs["video_prompt_type"]
@@ -9226,7 +9275,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                 with gr.Tab("Audio", visible = not (image_outputs or audio_only)) as audio_tab:
                     any_audio_source = not (image_outputs or audio_only)
-                    with gr.Column(visible =  server_config.get("mmaudio_enabled", 0) != 0) as mmaudio_col:
+                    with gr.Column(visible = get_mmaudio_settings(server_config)[0]) as mmaudio_col:
                         gr.Markdown("<B>Add a soundtrack based on the content of the Generated Video</B>")
                         with gr.Row():
                             MMAudio_setting = gr.Dropdown(
@@ -9514,7 +9563,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     with gr.Tab("Audio Remuxing", id= "audio_remuxing", visible = True) as audio_remuxing_tab:
 
                         with gr.Group(elem_classes= "postprocess"):
-                            with gr.Column(visible = server_config.get("mmaudio_enabled", 0) != 0) as PP_MMAudio_col:
+                            with gr.Column(visible = get_mmaudio_settings(server_config)[0]) as PP_MMAudio_col:
                                 with gr.Row():
                                     PP_MMAudio_setting = gr.Dropdown(
                                         choices=[("Add Custom Audio Sountrack", 0),  ("Use MMAudio to generate a Soundtrack based on the Video", 1), ],
@@ -9582,7 +9631,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       apg_col, audio_prompt_type_sources,  audio_prompt_type_remux, audio_prompt_type_remux_row, force_fps_col,
                                       video_guide_outpainting_col,video_guide_outpainting_top, video_guide_outpainting_bottom, video_guide_outpainting_left, video_guide_outpainting_right,
                                       video_guide_outpainting_checkbox, video_guide_outpainting_row, show_advanced, video_info_to_control_video_btn, video_info_to_video_source_btn, sample_solver_row,
-                                      video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab, PP_MMAudio_setting, PP_MMAudio_row, PP_custom_audio_row, 
+                                      video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab, PP_MMAudio_col, PP_MMAudio_setting, PP_MMAudio_row, PP_custom_audio_row, 
                                       audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_eject_audio_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 

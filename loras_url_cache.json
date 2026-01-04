@@ -1,0 +1,6 @@
+{
+    "loras/wan/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_HIGH_fp16.safetensors": "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_HIGH_fp16.safetensors",
+    "loras/wan/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_LOW_fp16.safetensors": "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_LOW_fp16.safetensors",
+    "loras/wan/wan2.2_t2v_A14b_high_noise_lora_rank64_lightx2v_4step_1217.safetensors": "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/wan2.2_t2v_A14b_high_noise_lora_rank64_lightx2v_4step_1217.safetensors",
+    "loras/wan/wan2.2_t2v_A14b_low_noise_lora_rank64_lightx2v_4step_1217.safetensors": "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/wan2.2_t2v_A14b_low_noise_lora_rank64_lightx2v_4step_1217.safetensors"
+}

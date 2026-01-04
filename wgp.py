@@ -1,4 +1,5 @@
 import os, sys
+sys.dont_write_bytecode = True
 os.environ["GRADIO_LANG"] = "en"
 # # os.environ.pop("TORCH_LOGS", None)  # make sure no env var is suppressing/overriding
 # os.environ["TORCH_LOGS"]= "recompiles"
@@ -524,6 +525,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
         return None, None, None, None
 
     model_def = get_model_def(model_type)
+
     model_handler = get_model_handler(model_type)
     image_outputs = inputs["image_mode"] > 0
     any_steps_skipping = model_def.get("tea_cache", False) or model_def.get("mag_cache", False)
@@ -8911,6 +8913,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             advanced_prompt = advanced_ui
             prompt_vars=[]
+            
+            if base_model_type == "frames2video":
+                advanced_prompt = True
+
 
             if advanced_prompt:
                 default_wizard_prompt, variables, values= None, None, None

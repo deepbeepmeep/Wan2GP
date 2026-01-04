@@ -1,0 +1,8 @@
+{
+    "architecture": "frames2video",
+    "name": "Frames to Video",
+    "backend": "core.py",
+    "ui": "ui.py",
+    "class": "run_frames2video",
+    "frames2video_class": true
+}

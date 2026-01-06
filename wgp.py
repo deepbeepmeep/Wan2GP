@@ -19,8 +19,7 @@ import threading
 import argparse
 import warnings
 warnings.filterwarnings('ignore', message='Failed to find.*', module='triton')
-from mmgp import offload, safetensors2, profile_type , fp8_quanto_bridge, quant_router
-if not os.name == "nt": fp8_quanto_bridge.enable_fp8_marlin_fallback()
+from mmgp import offload, safetensors2, profile_type , quant_router
 try:
     import triton
 except ImportError:
@@ -108,10 +107,12 @@ unique_id_lock = threading.Lock()
 offloadobj = enhancer_offloadobj = wan_model = None
 reload_needed = True
 _HANDLER_MODULES = [
+    "shared.qtypes.scaled_fp8",
     "shared.qtypes.nvfp4",
     "shared.qtypes.nunchaku_int4",
     "shared.qtypes.nunchaku_fp4",
 ]
+quant_router.unregister_handler(".fp8_quanto_bridge")
 for handler in _HANDLER_MODULES:
     quant_router.register_handler(handler)
 
@@ -626,6 +627,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
     motion_amplitude = inputs["motion_amplitude"]
     medium = "Videos" if image_mode == 0 else "Images"
 
+    if image_start is not None and not isinstance(image_start, list): image_start = [image_start]
     outpainting_dims = get_outpainting_dims(video_guide_outpainting)
 
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
@@ -815,7 +817,6 @@ def validate_settings(state, model_type, single_prompt, inputs):
     else:
         image_guide = None
         image_mask = None
-
 
 
 
@@ -1195,8 +1196,8 @@ def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="
 
         # Update params, preserving list/single structure
         if loaded_items:
-            has_pil_item = any(isinstance(item, Image.Image) for item in loaded_items)
-            if is_originally_list or has_pil_item:
+            # has_pil_item = any(isinstance(item, Image.Image) for item in loaded_items)
+            if is_originally_list: # or has_pil_item
                 params[key] = loaded_items
             else:
                 params[key] = loaded_items[0]
@@ -5534,7 +5535,7 @@ def generate_video(
             gen["window_no"] = window_no
             return_latent_slice = None 
             if reuse_frames > 0:                
-                return_latent_slice = slice(- min(1, (reuse_frames + discard_last_frames ) // latent_size) , None if discard_last_frames == 0 else -(discard_last_frames // latent_size) )
+                return_latent_slice = slice(- max(1, (reuse_frames + discard_last_frames ) // latent_size) , None if discard_last_frames == 0 else -(discard_last_frames // latent_size) )
             refresh_preview  = {"image_guide" : image_guide, "image_mask" : image_mask} if image_mode >= 1 else {}
 
             image_start_tensor = image_end_tensor = None

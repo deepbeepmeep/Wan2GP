@@ -279,7 +279,7 @@ class model_factory():
             denoising_strength=denoising_strength,
             masking_strength=masking_strength,
             generator=torch.Generator(device="cuda").manual_seed(seed),
-            lora_inpaint = image_mask is not None and model_mode == 1,
+            model_mode = model_mode,
             outpainting_dims = outpainting_dims,
             qwen_edit_plus = qwen_edit_plus,
             VAE_tile_size = tile_size,

@@ -508,7 +508,7 @@ class LongCatModel:
 
         sample_solver = kwargs.get("sample_solver", self.model_def.get("sample_solver", "auto"))
         if sample_solver in (None, ""):
-            sample_solver = "auto"
+            sample_solver = "default"
 
         prompt_embeds, prompt_mask, neg_embeds, neg_mask = self._encode_prompt(
             input_prompt,
@@ -575,7 +575,7 @@ class LongCatModel:
         use_distill = sample_solver == "distill"
         enhance_hf = sample_solver == "enhance_hf"
         if sample_solver == "auto":
-            enhance_hf = cond_video is not None and num_cond_frames > 0
+            enhance_hf = cond_video is not None and num_cond_frames > 1
         if use_distill and enhance_hf:
             raise ValueError("distill and enhance_hf schedules cannot both be enabled.")
 
@@ -604,21 +604,86 @@ class LongCatModel:
                 ref_latent = self.normalize_latents(ref_latent).to(torch.float32)
                 num_ref_latents = 1
 
+        overlapped_latents = kwargs.get("overlapped_latents")
+        if torch.is_tensor(overlapped_latents):
+            if overlapped_latents.dim() == 4:
+                overlapped_latents = overlapped_latents.unsqueeze(0)
+            if overlapped_latents.dim() != 5:
+                overlapped_latents = None
+        else:
+            overlapped_latents = None
+
         cond_image_frames = 1 if image_cond is not None else num_cond_frames
-        latents, num_cond_latents = self._prepare_latents(
-            batch_size=batch_size,
-            num_channels_latents=self.transformer.config.in_channels,
-            height=height,
-            width=width,
-            num_frames=frame_num,
-            dtype=torch.float32,
-            device=self.device,
-            generator=generator,
-            latents=None,
-            image=image_cond,
-            video=None if image_cond is not None else cond_video,
-            num_cond_frames=cond_image_frames,
+        expected_num_cond_latents = (
+            1 + (cond_image_frames - 1) // self.vae_scale_factor_temporal if cond_image_frames > 0 else 0
         )
+        use_overlap_latents = (
+            overlapped_latents is not None and expected_num_cond_latents > 0 and image_cond is None
+        )
+        if use_overlap_latents:
+            lat_h = int(height) // self.vae_scale_factor_spatial
+            lat_w = int(width) // self.vae_scale_factor_spatial
+            if (
+                overlapped_latents.shape[1] != self.transformer.config.in_channels
+                or overlapped_latents.shape[3] != lat_h
+                or overlapped_latents.shape[4] != lat_w
+            ):
+                use_overlap_latents = False
+
+        if use_overlap_latents:
+            num_latent_frames = (frame_num - 1) // self.vae_scale_factor_temporal + 1
+            shape = (
+                batch_size,
+                self.transformer.config.in_channels,
+                num_latent_frames,
+                lat_h,
+                lat_w,
+            )
+            latents = torch.randn(shape, generator=generator, device=self.device, dtype=torch.float32)
+
+            overlap_latents = overlapped_latents.to(device=self.device, dtype=torch.float32)
+            if overlap_latents.shape[0] == 1 and batch_size > 1:
+                overlap_latents = overlap_latents.repeat(batch_size, 1, 1, 1, 1)
+            if overlap_latents.shape[2] > expected_num_cond_latents:
+                overlap_latents = overlap_latents[:, :, -expected_num_cond_latents:]
+
+            cond_latents = None
+            if cond_video is not None and overlap_latents.shape[2] < expected_num_cond_latents:
+                cond_latents_list = []
+                for i in range(batch_size):
+                    encoded_input = cond_video[i][:, -cond_image_frames:].unsqueeze(0)
+                    latent = retrieve_latents(
+                        self.vae.encode(encoded_input),
+                        generator,
+                        sample_mode="argmax",
+                    )
+                    cond_latents_list.append(latent)
+                cond_latents = torch.cat(cond_latents_list, dim=0).to(torch.float32)
+                cond_latents = self.normalize_latents(cond_latents)
+                overlap_len = min(overlap_latents.shape[2], cond_latents.shape[2])
+                if overlap_len > 0:
+                    cond_latents[:, :, -overlap_len:] = overlap_latents[:, :, -overlap_len:]
+            else:
+                cond_latents = overlap_latents
+
+            num_cond_latents = min(cond_latents.shape[2], num_latent_frames) if cond_latents is not None else 0
+            if num_cond_latents > 0:
+                latents[:, :, :num_cond_latents] = cond_latents[:, :, -num_cond_latents:]
+        else:
+            latents, num_cond_latents = self._prepare_latents(
+                batch_size=batch_size,
+                num_channels_latents=self.transformer.config.in_channels,
+                height=height,
+                width=width,
+                num_frames=frame_num,
+                dtype=torch.float32,
+                device=self.device,
+                generator=generator,
+                latents=None,
+                image=image_cond,
+                video=None if image_cond is not None else cond_video,
+                num_cond_frames=cond_image_frames,
+            )
         if reference_image_enabled and ref_latent is None and self.is_avatar and num_cond_latents > 1:
             ref_latent = latents[:, :, :1].clone()
             num_ref_latents = 1
@@ -631,9 +696,9 @@ class LongCatModel:
         self.scheduler.set_timesteps(sampling_steps, sigmas=sigmas, device=self.device)
         timesteps = self.scheduler.timesteps
         if enhance_hf:
-            tail_uniform_start = 500
+            num_tail_uniform_steps = max(3, min(15, int(len(timesteps) * 0.2)))
+            tail_uniform_start = float(timesteps.max()) * 0.5
             tail_uniform_end = 0
-            num_tail_uniform_steps = 10
             timesteps_uniform_tail = list(
                 np.linspace(
                     tail_uniform_start,
@@ -647,7 +712,9 @@ class LongCatModel:
                 torch.tensor(t, device=self.device, dtype=torch.float32).unsqueeze(0)
                 for t in timesteps_uniform_tail
             ]
-            filtered_timesteps = [timestep.unsqueeze(0) for timestep in timesteps if timestep > tail_uniform_start]
+            filtered_timesteps = [
+                timestep.unsqueeze(0).to(self.device) for timestep in timesteps if timestep > tail_uniform_start
+            ]
             timesteps = torch.cat(filtered_timesteps + timesteps_uniform_tail)
             self.scheduler.timesteps = timesteps
             self.scheduler.sigmas = torch.cat(
@@ -693,6 +760,8 @@ class LongCatModel:
                 "ref_img_index": ref_img_index,
                 "mask_frame_range": mask_frame_range,
             }
+
+        callback(-1, None, True, override_num_inference_steps = len(timesteps))
 
         with tqdm(total=len(timesteps), desc="Denoising") as progress_bar:
             for i, t in enumerate(timesteps):

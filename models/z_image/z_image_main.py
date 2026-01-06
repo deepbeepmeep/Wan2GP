@@ -95,8 +95,7 @@ class model_factory:
         is_control=False,
         **kwargs,
     ):
-        
-
+        model_def = model_def or {}
         source =  model_def.get("source", None)
         module_source =  model_def.get("module_source", None)
 
@@ -108,6 +107,7 @@ class model_factory:
 
         self.base_model_type = base_model_type
         self.is_control = is_control
+        self.model_def = model_def
 
         default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", f"{base_model_type}.json")
 
@@ -196,6 +196,7 @@ class model_factory:
         input_prompt: str = "",
         n_prompt: str | None = None,
         sampling_steps: int = 20,
+        sample_solver: str = "default",
         width: int = 1024,
         height: int = 1024,
         guide_scale: float = 0.0,
@@ -232,12 +233,19 @@ class model_factory:
             self.vae.tile_latent_min_height = tile_size
             self.vae.tile_latent_min_width = tile_size
 
+        unified_solver = self.model_def.get("unified_solver", False)
+        if unified_solver:
+            sample_solver = "unified"
+        elif not sample_solver:
+            sample_solver = "default"
+
         guide_scale = 0
 
         images = self.pipeline(
             prompt=input_prompt,
             negative_prompt=n_prompt,
             num_inference_steps=sampling_steps,
+            sample_solver=sample_solver,
             guidance_scale=guide_scale,
             num_images_per_prompt=batch_size,
             generator=generator,

@@ -177,7 +177,7 @@ class family_handler:
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update(
             {
-                "sliding_window_size": 241,
+                "sliding_window_size": 481,
                 "sliding_window_overlap": 9,
             }
         )

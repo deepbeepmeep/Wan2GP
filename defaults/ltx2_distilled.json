@@ -4,8 +4,8 @@
         "architecture": "ltx2_19B",
         "description": "LTX-2 distilled checkpoint with faster generation.",
         "URLs": [
-            "https://huggingface.co/DeepBeepMeep/LTX-2/ltx-2-19b-distilled.safetensors",
-            "https://huggingface.co/DeepBeepMeep/LTX-2/ltx-2-19b-distilled-fp8.safetensors"
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2-19b-distilled.safetensors",
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2-19b-distilled-fp8.safetensors"
         ],
         "ltx2_pipeline": "distilled"
     },

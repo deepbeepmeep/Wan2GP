@@ -36,9 +36,9 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### January 6st 2026: WanGP v10.10, Spoiled again
+### January 7st 2026: WanGP v10.10, Spoiled again
 
-- **LTV 2**: here is the long awaited *Ovi Challenger*, LTX-2 generates video and an audio soundtrack. This WanGP version is not only *low VRAM* but it supports on day one, *Start/End keyframes*, *Sliding-Window* / *Video Continuation* and *Generation Preview*. A *LTV 2 distilled* is part of the package for a very fast generation.
+- **LTX 2**: here is the long awaited *Ovi Challenger*, LTX-2 generates video and an audio soundtrack. As usual this WanGP version is *low VRAM*. You should be able to run it with as low as 10 GB of VRAM. If you have at least 24 GB of VRAM you will be able to generate 20s at 720p in a single window in only 2 minutes with the distilled model.  WanGP LTX 2 version supports on day one, *Start/End keyframes*, *Sliding-Window* / *Video Continuation* and *Generation Preview*. A *LTX 2 distilled* is part of the package for a very fast generation.
 
 - **Z Image Twin Folder Turbo**: Z Image even faster as this variant can generate images with as little as 1 step (3 steps recommend) 
 
@@ -48,7 +48,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 - **LongCat Video**: experimental support which includes *LongCat Avatar* a talking head model. For the moment it is mostly for models collectors as it is very slow. It needs 40+ steps and each step contains up 3 passes.
 
-- **MMaudio NSFW"**: for alternative audio background
+- **MMaudio NSFW**: for alternative audio background
 
 
 ### January 1st 2026: WanGP v10.01, Happy New Year !

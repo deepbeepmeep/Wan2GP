@@ -11,7 +11,7 @@ from ....loader.module_ops import ModuleOps
 from ..embeddings_connector import Embeddings1DConnector
 from ..feature_extractor import GemmaFeaturesExtractorProjLinear
 from ..tokenizer import LTXVGemmaTokenizer
-
+import os
 
 class GemmaTextEncoderModelBase(torch.nn.Module):
     """
@@ -314,23 +314,18 @@ def _find_merged_gemma_file(gemma_root: str) -> str | None:
 
 
 def module_ops_from_gemma_root(gemma_root: str) -> tuple[ModuleOps, ...]:
+    gemma_path = gemma_root
+    gemma_root = os.path.dirname(gemma_root)
     tokenizer_path = _find_matching_dir(gemma_root, "tokenizer.model")
 
     def load_gemma(module: GemmaTextEncoderModelBase) -> GemmaTextEncoderModelBase:
-        merged_path = _find_merged_gemma_file(gemma_root)
-        if merged_path is not None:
-            config_path = Path(gemma_root) / "config.json"
-            module.model = offload.fast_load_transformers_model(
-                merged_path,
-                modelClass=Gemma3ForConditionalGeneration,
-                defaultConfigPath=str(config_path) if config_path.is_file() else None,
-                writable_tensors=False,
-            )
-        else:
-            gemma_path = _find_matching_dir(gemma_root, "model*.safetensors")
-            module.model = Gemma3ForConditionalGeneration.from_pretrained(
-                gemma_path, local_files_only=True, torch_dtype=torch.bfloat16
-            )
+        config_path = Path(gemma_root) / "config.json"
+        module.model = offload.fast_load_transformers_model(
+            gemma_path,
+            modelClass=Gemma3ForConditionalGeneration,
+            defaultConfigPath=str(config_path) if config_path.is_file() else None,
+            writable_tensors=False,
+        )
         module._gemma_root = module._gemma_root or gemma_root
         return module
 

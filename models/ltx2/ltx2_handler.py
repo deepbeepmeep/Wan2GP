@@ -150,6 +150,7 @@ class family_handler:
             dtype=dtype,
             VAE_dtype=VAE_dtype,
             override_text_encoder=override_text_encoder,
+            text_encoder_filepath = get_text_encoder_name(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
         )
 
         pipe = {

@@ -290,6 +290,7 @@ class LTX2:
         dtype: torch.dtype = torch.bfloat16,
         VAE_dtype: torch.dtype = torch.float32,
         override_text_encoder: str | None = None,
+        text_encoder_filepath = None,
     ) -> None:
         self.device = torch.device("cuda")
         self.dtype = dtype
@@ -305,7 +306,7 @@ class LTX2:
         else:
             checkpoint_path = model_filename
 
-        gemma_root = override_text_encoder or fl.locate_folder(_GEMMA_FOLDER)
+        gemma_root = text_encoder_filepath
         spatial_upsampler_path = fl.locate_file(_SPATIAL_UPSCALER_FILENAME)
 
         # Keep internal FP8 off by default; mmgp handles quantization transparently.

@@ -51,7 +51,7 @@ class family_handler:
     @staticmethod
     def query_family_infos():
         # The numeric weight controls ordering in the family dropdown.
-        return {"tts": (70, "TTS")}
+        return {"tts": (200, "TTS")}
 
     @staticmethod
     def register_lora_cli_args(parser):
@@ -82,6 +82,8 @@ class family_handler:
                 "default": "en",
                 "label": "Language",
             },
+            "any_audio_prompt": True,
+
         }
         return extra_model_def
 

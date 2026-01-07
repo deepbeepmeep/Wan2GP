@@ -1,0 +1,20 @@
+{
+    "model": {
+        "name": "Qwen Image Edit Plus (2509) Nunchaku INT4 r128 20B",
+        "architecture": "qwen_image_edit_plus_20B",
+        "description": "Nunchaku SVDQ INT4 weights for Qwen Image Edit 2509 20B. Qwen distilled with lightning 4 steps 251115. For full speed, the nunchaku kernels must be installed.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors"
+        ],
+		"profiles_dir": [""],		
+        "preload_URLs": "qwen_image_edit_20B",
+        "attention": {
+            "<89": "sdpa"
+        }
+    },
+    "prompt": "add a hat",
+    "resolution": "1024x1024",
+	"num_inference_steps": 4,
+    "guidance_scale": 1,	
+    "batch_size": 1
+}

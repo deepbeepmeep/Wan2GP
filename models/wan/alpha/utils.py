@@ -1,10 +1,49 @@
+import os
 import torchvision
 from PIL import Image, ImageDraw
 import imageio
 import cv2
 import torch
+import torch.nn.functional as F
 import numpy as np 
 import zipfile
+
+_gauss_mask_cache = {}
+
+
+def load_gauss_mask(mask_path):
+    if not mask_path:
+        return None
+    abs_path = os.path.abspath(mask_path)
+    mask = _gauss_mask_cache.get(abs_path)
+    if mask is None:
+        mask = torch.load(abs_path, weights_only=False, map_location="cpu")
+        if not torch.is_tensor(mask):
+            mask = torch.tensor(mask)
+        _gauss_mask_cache[abs_path] = mask
+    return mask
+
+
+def apply_alpha_shift(latents, gauss_mask, shift_mean):
+    if gauss_mask is None:
+        return latents
+    mask = gauss_mask
+    if mask.ndim == 3:
+        mask = mask.unsqueeze(0).unsqueeze(0)
+    elif mask.ndim == 4:
+        if mask.shape[0] != 1:
+            mask = mask.unsqueeze(0)
+        if mask.shape[1] != 1:
+            mask = mask.unsqueeze(1)
+    elif mask.ndim != 5:
+        return latents
+
+    mask = mask.to(device=latents.device, dtype=latents.dtype)
+    target_shape = latents.shape[2:]
+    if mask.shape[-3:] != target_shape:
+        mask = F.interpolate(mask, size=target_shape, mode="trilinear", align_corners=False)
+    shift_mean = torch.as_tensor(shift_mean, dtype=latents.dtype, device=latents.device)
+    return latents + (1.0 - mask) * shift_mean
 
 def render_video(tensor_fgr,
                 tensor_pha,

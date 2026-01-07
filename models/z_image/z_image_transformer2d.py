@@ -394,6 +394,7 @@ class ZImageTransformer2DModel(nn.Module):
         control_in_dim=None,
         add_control_noise_refiner=False,
         enable_control=False,
+        use_separate_control_refiner=False,
         # Base model parameters
         all_patch_size=(2,),
         all_f_patch_size=(1,),
@@ -428,6 +429,10 @@ class ZImageTransformer2DModel(nn.Module):
         self.control_refiner_layers_places = [i for i in range(0, n_refiner_layers)] if control_refiner_layers_places is None else control_refiner_layers_places
         self.add_control_noise_refiner = add_control_noise_refiner
         self.enable_control = enable_control
+        self.use_separate_control_refiner = use_separate_control_refiner
+
+        # Track whether the refiner uses its own control blocks (v2.1 fix)
+        self._control_noise_uses_dedicated_layers = False
 
         assert 0 in self.control_layers_places
         self.control_layers_mapping = {i: n for n, i in enumerate(self.control_layers_places)}
@@ -797,6 +802,8 @@ class ZImageTransformer2DModel(nn.Module):
         if not self.enable_control or not hasattr(self, 'control_layers'):
             return
 
+        # Assume we will fall back to legacy behavior unless we wire dedicated control refiner blocks.
+        self._control_noise_uses_dedicated_layers = False
         modules_dict = {k: m for k, m in self.named_modules()}
         for model_layer, control_idx in self.control_layers_mapping.items():
             control_module = modules_dict[f"control_layers.{control_idx}"]
@@ -805,7 +812,20 @@ class ZImageTransformer2DModel(nn.Module):
 
 
         for model_layer, control_idx in self.control_refiner_layers_mapping.items():
-            control_module = modules_dict[f"control_layers.{control_idx}"]
+            control_module = None
+            if (
+                self.add_control_noise_refiner
+                and self.use_separate_control_refiner
+                and hasattr(self, "control_noise_refiner")
+            ):
+                noise_key = f"control_noise_refiner.{control_idx}"
+                control_module = modules_dict.get(noise_key, None)
+                if control_module is not None:
+                    self._control_noise_uses_dedicated_layers = True
+            if control_module is None:
+                control_module = modules_dict.get(f"control_layers.{control_idx}")
+            if control_module is None:
+                continue
             target = modules_dict[f"noise_refiner.{model_layer}"]
             setattr(target, "control", ModuleWrapper(control_module))
 
@@ -949,6 +969,7 @@ class ZImageTransformer2DModel(nn.Module):
         f_patch_size=1,
         control_context_list=None,
         control_context_scale=1.0,
+        target_timestep=None,
         callback=None,
         pipeline=None,
         NAG =None,
@@ -961,8 +982,15 @@ class ZImageTransformer2DModel(nn.Module):
         assert len(cap_feats_list) == num_noise_samples, "cap_feats_list must match x_list length"
 
         device = x_list[0].device
-        t = t * self.t_scale
-        t = self.t_embedder(t)
+        t_high = t.to(dtype=torch.float64)
+        t_emb = self.t_embedder(t_high.abs() * self.t_scale)
+        if target_timestep is not None:
+            target_t_high = target_timestep.to(dtype=torch.float64)
+            delta_t = t_high - target_t_high
+            delta_t_abs = delta_t.abs()
+            t_emb_2 = self.t_embedder((target_t_high - t_high) * self.t_scale)
+            t_emb = t_emb + t_emb_2 * delta_t_abs.unsqueeze(1)
+        t = t_emb
 
         # Patchify and embed each (x, cap_feats) pair
         x_embedder = self.all_x_embedder[f"{patch_size}-{f_patch_size}"]
@@ -1051,8 +1079,10 @@ class ZImageTransformer2DModel(nn.Module):
 
         if control_V2:
             # finish processing v2 control hints
+            control_layer_offset = 0 if getattr(self, "_control_noise_uses_dedicated_layers", False) else len(self.control_refiner_layers_places)
+            control_layers_seq = self.control_layers[control_layer_offset:]
             for hints, hints_kwargs in zip(refiner_hints_tuple_list, refiner_hints_kwargs_list):
-                for layer in self.control_layers[len(self.control_refiner_layers_places):]:
+                for layer in control_layers_seq:
                     layer(hints, **hints_kwargs)
                 ctrl_ctx_tensor_list.append(hints[0])
                 hints = hints_kwargs = None

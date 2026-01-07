@@ -61,7 +61,7 @@ class family_handler():
 
     @staticmethod
     def query_family_infos():
-        return {"ltxv":(10, "LTX Video")}
+        return {"ltxv":(30, "LTX Video")}
 
     @staticmethod
     def register_lora_cli_args(parser):

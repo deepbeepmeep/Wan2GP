@@ -14,5 +14,5 @@
         "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan22_A14B_T2V_LOW_Lightning_4steps_lora_250928_rank64_fp16.safetensors"
 	],
 	"loras_multipliers": "0;1;0 0;0;1",
-	"help": "This finetune uses the Lightning 250928 4 steps Loras Accelerator for Wan 2.2 but extend them to 8 steps in order to insert a CFG phase before the 2 accelerated phases with no Guidance. The ultimate goal is reduce the slow motion effect of these Loras Accelerators."
+	"help": "This profile uses the Lightning 250928 4 steps Loras Accelerator for Wan 2.2 but extend them to 8 steps in order to insert a CFG phase before the 2 accelerated phases with no Guidance. The ultimate goal is reduce the slow motion effect of these Loras Accelerators."
 }

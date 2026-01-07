@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Qwen Image Edit Plus (2511) 20B",
+        "architecture": "qwen_image_edit_plus2_20B",
+        "description": "Qwen Image Edit Plus 2511 improves identity preservation (especially at 1080p) and integrates out of the box popular effects such as religthing and camera changes.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_edit_plus2_20B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_edit_plus2_20B_quanto_bf16_int8.safetensors"
+        ],
+        "preload_URLs": "qwen_image_edit_20B",
+        "attention": {
+            "<89": "sdpa"
+        }
+    },
+    "prompt": "add a hat",
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

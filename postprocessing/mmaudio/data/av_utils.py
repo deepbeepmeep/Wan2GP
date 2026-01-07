@@ -7,6 +7,7 @@ import av
 import cv2
 import numpy as np
 import torch
+import os
 from av import AudioFrame
 
 
@@ -147,7 +148,7 @@ def remux_with_audio(video_path: Path, output_path: Path, audio: torch.Tensor, s
     temp_path_str= str(temp_path)
     import torchaudio
     torchaudio.save(temp_path_str, audio.unsqueeze(0) if audio.dim() == 1 else audio, sampling_rate)
-
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     combine_video_with_audio_tracks(video_path, [temp_path_str], output_path )
     temp_path.unlink(missing_ok=True)
 

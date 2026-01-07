@@ -1,0 +1,15 @@
+{
+	"model":
+	{
+		"name": "Wan2.1 Text2video NVFP4 Lightx2v 4-step 1.3B",
+		"architecture": "t2v_1.3B",
+		"description": "NVFP4-quantized Lightx2v 4-step finetune for Wan2.1 T2V 1.3B.",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_t2v_1_3b_nvfp4_lightx2v_4step.safetensors"
+		]
+	},
+	"guidance_scale" : 1,
+	"sampler_solver": "euler",
+	"num_inference_steps": 4,
+	"flow_shift": 1
+}

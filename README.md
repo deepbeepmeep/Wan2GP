@@ -36,6 +36,66 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
+### January 7st 2026: WanGP v10.10, Spoiled again
+
+- **LTX 2**: here is the long awaited *Ovi Challenger*, LTX-2 generates video and an audio soundtrack. As usual this WanGP version is *low VRAM*. You should be able to run it with as low as 10 GB of VRAM. If you have at least 24 GB of VRAM you will be able to generate 20s at 720p in a single window in only 2 minutes with the distilled model.  WanGP LTX 2 version supports on day one, *Start/End keyframes*, *Sliding-Window* / *Video Continuation* and *Generation Preview*. A *LTX 2 distilled* is part of the package for a very fast generation.
+
+- **Z Image Twin Folder Turbo**: Z Image even faster as this variant can generate images with as little as 1 step (3 steps recommend) 
+
+- **Qwen LanPaint**: very precise *In Painting*, offers a better integration of the inpainted area in the rest of the image. Beware it is up to 5x slower as it "searches" for the best replacement. 
+
+- **Optimized Pytorch Compiler** : *Patience is the Mother of Virtue*. Finally I may (or may not) have fixed the PyTorch compiler with the Wan models. It should work in much diverse situations and takes much less time. 
+
+- **LongCat Video**: experimental support which includes *LongCat Avatar* a talking head model. For the moment it is mostly for models collectors as it is very slow. It needs 40+ steps and each step contains up 3 passes.
+
+- **MMaudio NSFW**: for alternative audio background
+
+
+### January 1st 2026: WanGP v10.01, Happy New Year !
+
+- **Wan 2.2 i2v Stable Vision Infinity Pro 2**: SVI Pro 2 offers potentially unlimited Videos to Continue for i2v models. It will use either the Start frame as a Reference Image or you may provide an Anchor image to be used across all the windows or multiple Anchor Images one per Window.
+
+- **Wan 2.1 Alpha 2**: This new version of Alpha generates transparent videos with fine-grained alpha detail (hair, glow, smoke). 
+
+- **Qwen Image 2512**: This December release offers Enhanced Human Realism, Finer Natural Details & Improved Text Rendering.
+
+- **Wan NVP4**: *Light2xv nvfp4 support for Wan 2.1 i2v & t2v 1.3B*, you can now load nvfp4 (4 bits quantized file) in WanGP. These will make really a difference with RTX 50xx as they support natively scaled FP4 calculation. Other GPUs will get the pytorch fallback which is slower. This model can be useful for machines with low RAM but don't expect significant VRAM reduction of much faster speed for non RTX 50xx owners. You will need to install the Light2xv kernels.
+
+- **Nunckaku int4 & fp4 support for Qwen 2509 & Z Image**: int4 versions will work with most GPUs, fp4 will accelerate only RTX50xx. You will need to install the nunchaku kernels. See light2xv nvfp4 above, as the other comments apply here too.
+
+- **Z Image Control Net 2.1**: Control Net upgraded should work better. I have enabled as well inpainting for the control net.
+
+- **New Qwen Loras Accelerators Added**
+
+*Quantization Kernels Wheels for Windows / Python 3.10 / Pytorch 2.70:*
+- *Light2xv (WAN-FP4)*
+   ```
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/WAN_NVP4/lightx2v_kernel-0.0.1-cp39-abi3-win_amd64.whl
+   ```
+
+- *Nunchaku*
+   ```
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/Nunchaku/nunchaku-1.1.0+torch2.7-cp310-cp310-win_amd64.whl
+   ```
+   
+### December 23 2025: WanGP v9.92, Early Christmas
+
+- **SCAIL Preview**: enjoy this *Wan Animate*, *Steady Dancer* contender that can support multiple people. Thanks to its 3D positioning, it can take into account which parts of the body are hidden and which are not. 
+
+WanGP version has the following perks: 3D pose Preprocessing entirely rewritten to be fast,  and compatible with any pytorch version, very Low VRAM requirements for multicharacters, experimental long gen mode / sliding windows (SCAIL Preview doesnt  support officialy long gen yet)
+
+- **pi-Flux 2**: you don't use Flux 2 because you find it too slow ? You won't be able to use this excuse anymore: pi-Flux 2 is *4 steps distills* of the best image generator. It supports both image edition and text to image generation.
+
+- **Zandinksy v5** : for the video models collectors among you, you can try the Zandinsky model families, the 2B model quality is especially impressive given its small size
+
+- **Qwen Image Layered**: a new Qwen Image variant that lets you extract RGBA layers of your images so that  each layer can be edited separately
+
+- **Qwen Image Edit Plus 2511**: Qwen Image Edit Plus 2511 improves identity preservation (especially at 1080p) and integrates out of the box popular effects such as religthing and camera changes
+
+- **loras accelerator**: *loras accelerator* for *Wan 2.2 t2v* and *Wan 2.1 i2v* have been added (activable using the *Profile settings* as usual) 
+
+*update 9.91*: added Kandinsky 5 & Qwen Image Layered\
+*update 9.92*: added Qwen Image Edit Plus 2511
 
 ### December 14 2025: WanGP v9.86, Simple Pleasures...
 
@@ -80,7 +140,7 @@ The only snag is that it is a 60B parameters for the *Transformer* part and 40B 
 
 Behold the WanGP Miracle ! Flux 2 wil work with only 8 GB of VRAM if you are happy with 8 bits quantization (no need for lower quality 4bits). With 9GB of VRAM you can run the model at full power. You will need at least 64 GB of RAM. If not maybe Memory Profile 5 will be your friend.
 
-*With WanGP v9.74*, **Flux 2 Control Net** hidden power has also been unleashed from the vanilla model. You can now enjoy Flux 2 *Inpainting* and *Pose transfer*. This can be combined with *Image Refs* to get the best *Identity Preservation* / *Face Swapping* an Image Model can offer: just target the effect to a specific area using a *Mask* and set a *Masking Strength* of 0.3-0.4 for a perfect blending 
+*With WanGP v9.74*, **Flux 2 Control Net** hidden power has also been unleashed from the vanilla model. You can now enjoy Flux 2 *Inpainting* and *Pose transfer*. This can be combined with *Image Refs* to get the best *Identity Preservation* / *Face Swapping* an Image Model can offer: just target the effect to a specific area using a *Mask* and set *Denoising Strength* to 0.9-1.0 and *Masking Strength* to 0.3-0.4 for a perfect blending 
 
 - **Z-Image**: a small model, very fast (8 steps), very low VRAM (optimized even more in WanGP for fun, just in case you want to generate 16 images at a time) that produces outstanding Image quality. Not yet the Flux 2 level, and no Image editing yet but a very good trade-off.
 

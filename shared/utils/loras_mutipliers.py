@@ -35,7 +35,7 @@ def expand_slist(slists_dict, mult_no, num_inference_steps, model_switch_step, m
         if isinstance(phase1, float) and isinstance(phase2, float) and isinstance(phase3, float) and phase1 == phase2 and phase2 == phase3: return phase1 
         return expand_one(phase1, model_switch_step) + expand_one(phase2, model_switch_step2 - model_switch_step) + expand_one(phase3, num_inference_steps - model_switch_step2)
 
-def parse_loras_multipliers(loras_multipliers, nb_loras, num_inference_steps, merge_slist = None, nb_phases = 2, model_switch_step = None, model_switch_step2 = None):
+def parse_loras_multipliers(loras_multipliers, nb_loras, num_inference_steps, merge_slist = None, nb_phases = 2, model_switch_step = None, model_switch_step2 = None, model_switch_phase = 1):
     if "|" in loras_multipliers: 
         pos = loras_multipliers.find("|")
         if "|" in  loras_multipliers[pos+1:]: return "", "", "There can be only one '|' character in Loras Multipliers Sequence"
@@ -69,7 +69,9 @@ def parse_loras_multipliers(loras_multipliers, nb_loras, num_inference_steps, me
                 phase_mult = mult.split(";")
                 shared_phases = len(phase_mult) <=1
                 if not shared_phases and len(phase_mult) != nb_phases :
-                    return "", "", f"if the ';' syntax is used for one Lora multiplier, the multipliers for its {nb_phases} denoising phases should be specified for this multiplier"
+                    if len(phase_mult) > nb_phases:
+                        return "", "", f"if the ';' syntax is used for one Lora multiplier, there should be at most {nb_phases} phases for this multiplier"
+                    phase_mult = (phase_mult[:1] + phase_mult) if model_switch_phase == 2 else (phase_mult + phase_mult[-1:])
                 for phase_no, mult in enumerate(phase_mult):
                     if phase_no == 1: 
                         current_phase = phase2

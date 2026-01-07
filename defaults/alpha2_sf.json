@@ -1,0 +1,18 @@
+{
+	"model":
+	{
+		"name": "Wan2.1 Alpha v2.0 Lightning 14B",
+		"architecture" : "alpha2",
+		"description": "Wan-Alpha v2.0 Lightning with transparent video output and RGBA frames zip.",
+		"URLs": "t2v_sf",
+		"preload_URLs": "alpha2",
+		"loras": "alpha2",
+		"loras_multipliers": [ 1 ],
+		"profiles_dir" : [""]
+	},
+	"prompt": "A large orange octopus is seen resting. The background of the video is transparent.",
+	"num_inference_steps": 4,
+	"guidance_scale": 1,
+	"flow_shift": 3
+}
+	

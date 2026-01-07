@@ -6,7 +6,7 @@ from glob import iglob
 from mmgp import offload as offload
 import torch
 from shared.utils.utils import calculate_new_dimensions
-from .sampling import denoise, get_schedule, get_schedule_flux2, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack, resizeinput, patches_to_image, build_mask
+from .sampling import denoise, get_schedule, get_schedule_flux2, get_schedule_piflux2, prepare_kontext, prepare_prompt, prepare_multi_ip, unpack, resizeinput, patches_to_image, build_mask
 from .modules.layers import get_linear_split_map
 from transformers import SiglipVisionModel, SiglipImageProcessor
 import torchvision.transforms.functional as TVF
@@ -15,13 +15,9 @@ from shared.utils.utils import convert_image_to_tensor, convert_tensor_to_image
 from shared.utils import files_locator as fl 
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2VLProcessor
 from .modules.autoencoder_flux2 import AutoencoderKLFlux2, AutoEncoderParamsFlux2
+from shared.qtypes import nunchaku_int4 as _nunchaku_int4
 
-from .util import (
-    load_ae,
-    load_clip,
-    load_flow_model,
-    load_t5,
-)
+from .util import load_ae, load_clip, load_flow_model, load_t5, preprocess_flux_state_dict
 from .flux2_adapter import (
     scatter_ids ,
     batched_prc_img, 
@@ -94,16 +90,21 @@ class model_factory:
         self.dtype = dtype
         torch_device = "cpu"
         self.model_def = model_def 
+        self.guidance_max_phases = model_def.get("guidance_max_phases", 0)
         self.name = model_def.get("flux-model", "flux-dev")
-        self.guidance_max_phases = model_def.get("guidance_max_phases", 0) 
-        self.is_flux2 = self.name.startswith("flux2")
+        self.is_piflux2 = self.name == "pi-flux2"
+        self.is_flux2 = self.name.startswith("flux2") or self.is_piflux2
 
         # model_filename = ["c:/temp/flux1-schnell.safetensors"] 
         source = model_def.get("source", None)
         self.clip = self.t5 = self.vision_encoder = self.mistal = None
         if self.is_flux2:
-            self.model = load_flow_model(self.name, model_filename[0] if source is None else source, torch_device)
-
+            self.model = load_flow_model(
+                self.name,
+                model_filename if source is None else source,
+                torch_device,
+                preprocess_sd=preprocess_flux_state_dict,
+            )
             from .modules.text_encoder_mistral import Mistral3SmallEmbedder
             self.mistral = Mistral3SmallEmbedder( model_spec = text_encoder_filename)
     
@@ -120,7 +121,12 @@ class model_factory:
             # self.name= "flux-dev"
             # self.name= "flux-schnell"
             source =  model_def.get("source", None)
-            self.model = load_flow_model(self.name, model_filename[0] if source is None else source, torch_device)
+            self.model = load_flow_model(
+                self.name,
+                model_filename[0] if source is None else source,
+                torch_device,
+                preprocess_sd=preprocess_flux_state_dict,
+            )
             self.model_def = model_def 
             self.vae = None if getattr(self.model, "radiance", False) else load_ae(self.name, device=torch_device)
 
@@ -168,7 +174,21 @@ class model_factory:
             getattr(self.model.params, "double_linear1_mlp_ratio", None),
         )
         self.model.split_linear_modules_map = split_linear_modules_map
-        offload.split_linear_modules(self.model, split_linear_modules_map )
+        split_kwargs = None
+        for module in self.model.modules():
+            qtype = getattr(module, "weight_qtype", None)
+            if getattr(qtype, "name", None) == _nunchaku_int4._NUNCHAKU_INT4_QTYPE_NAME:
+                split_kwargs = _nunchaku_int4.get_nunchaku_split_kwargs()
+                break
+        if split_kwargs:
+            offload.split_linear_modules(
+                self.model,
+                split_linear_modules_map,
+                split_handlers=split_kwargs.get("split_handlers"),
+                share_fields=split_kwargs.get("share_fields"),
+            )
+        else:
+            offload.split_linear_modules(self.model, split_linear_modules_map)
 
     def infer_vlm(self, input_img_path,input_instruction,prefix):
         tp=[]
@@ -275,7 +295,10 @@ class model_factory:
                     inp.update({"img_cond_seq": cond_latents, "img_cond_seq_ids": cond_ids})
 
                 noise_patch_size = 2
-                timesteps = get_schedule_flux2(sampling_steps, inp["img"].shape[1])
+                if self.is_piflux2:
+                    timesteps = get_schedule_piflux2(sampling_steps, inp["img"].shape[1])
+                else:
+                    timesteps = get_schedule_flux2(sampling_steps, inp["img"].shape[1])
                 unpack_latent = lambda x : self.vae.pre_decode(torch.cat(scatter_ids(x, inp["img_ids"])).squeeze(2))
                 ref_style_imgs = []
                 image_mask = None
@@ -386,6 +409,7 @@ class model_factory:
                 timesteps=timesteps,
                 guidance=embedded_guidance_scale,
                 real_guidance_scale=guide_scale,
+                final_step_size_scale=0.5 if self.is_piflux2 else None,
                 callback=callback,
                 pipeline=self,
                 loras_slists=loras_slists,
@@ -411,9 +435,22 @@ class model_factory:
             return x
 
     def get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, video_prompt_type, **kwargs):
-        if model_type != "flux_dev_kontext_dreamomni2": return [], []
+        def resolve_preload_lora(lora_ref: str) -> str:
+            resolved = fl.locate_file(lora_ref, error_if_none=False)
+            if resolved is None:
+                resolved = fl.locate_file(os.path.basename(lora_ref))
+            return resolved
 
         preloadURLs = get_model_recursive_prop(model_type,  "preload_URLs")
-        if len(preloadURLs) < 2: return [], []
+        if self.is_piflux2:
+            if len(preloadURLs) < 1:
+                return [], []
+            return [resolve_preload_lora(preloadURLs[0])], [1]
+
+        if model_type != "flux_dev_kontext_dreamomni2":
+            return [], []
+
+        if len(preloadURLs) < 2:
+            return [], []
         edit = "K" in video_prompt_type
-        return [ fl.locate_file(os.path.basename(preloadURLs[0 if edit else 1]))] , [1]
+        return [resolve_preload_lora(preloadURLs[0 if edit else 1])], [1]

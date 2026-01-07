@@ -25,9 +25,22 @@ class family_handler():
 
         extra_model_def["vae_upsampler"] = [1,2]
 
-        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]: 
+        if base_model_type in ["qwen_image_layered_20B"]:
+            extra_model_def["batch_size_label"] = "Number of Layers"
+            extra_model_def["set_video_prompt_type"] = "V"
+            extra_model_def["guide_preprocessing"] = {
+                "selection": ["V"],
+                "labels": {"V": "Control Image"},
+                "visible": False,
+            }
+            extra_model_def["vae_upsampler"] = [1]
+            extra_model_def["sample_solvers"] = [("Default", "default")]
+
+        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             extra_model_def["inpaint_support"] = True
-            extra_model_def["image_ref_inpaint"]=  base_model_type in ["qwen_image_edit_plus_20B"]
+            if base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
+                extra_model_def["inpaint_video_prompt_type"]= "VAGI"            
+            extra_model_def["image_ref_inpaint"]=  base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]
             extra_model_def["image_ref_choices"] = {
             "choices": [
                 ("None", ""),
@@ -42,13 +55,14 @@ class family_handler():
                         "choices": [
                             ("Lora Inpainting: Inpainted area completely unrelated to masked content", 1),
                             ("Masked Denoising : Inpainted area may reuse some content that has been masked", 0),
+                            ("LanPaint : High Quality Inpainting but up x5 slower", 2),
                             ],
                         "default": 1,
                         "label" : "Inpainting Method",
                         "image_modes" : [2],
             }
 
-        if base_model_type in ["qwen_image_edit_plus_20B"]: 
+        if base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             extra_model_def["guide_preprocessing"] = {
                     "selection": ["", "PV", "DV", "SV", "CV", "V"], #, "MV" 
                     "labels": {"V": "Qwen Raw Format"},
@@ -64,11 +78,17 @@ class family_handler():
 
     @staticmethod
     def query_supported_types():
-        return ["qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B"]
+        return ["qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B", "qwen_image_layered_20B"]
 
     @staticmethod
     def query_family_maps():
-        return {}, {}
+        models_eqv_map = {
+            "qwen_image_edit_plus2_20B": "qwen_image_edit_plus_20B",
+        }
+        models_comp_map = {
+            "qwen_image_edit_plus_20B": ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"],
+        }
+        return models_eqv_map, models_comp_map
 
     @staticmethod
     def query_model_family():
@@ -76,7 +96,7 @@ class family_handler():
 
     @staticmethod
     def query_family_infos():
-        return {"qwen":(40, "Qwen")}
+        return {"qwen":(110, "Qwen")}
 
     @staticmethod
     def register_lora_cli_args(parser):
@@ -94,10 +114,13 @@ class family_handler():
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
         text_encoder_filename = get_qwen_text_encoder_filename(text_encoder_quantization)    
+        vae_files = ["qwen_vae.safetensors", "qwen_vae_config.json"]
+        if base_model_type in ["qwen_image_layered_20B"]:
+            vae_files.append("qwen_image_layered_vae_bf16.safetensors")
         download_def = [{  
             "repoId" : "DeepBeepMeep/Qwen_image", 
             "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
-            "fileList" : [ ["qwen_vae.safetensors", "qwen_vae_config.json"], ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"] + computeList(text_encoder_filename)  ]
+            "fileList" : [ vae_files, ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"] + computeList(text_encoder_filename)  ]
             }]
 
         download_def  += [{
@@ -153,26 +176,33 @@ class family_handler():
                 "denoising_strength" : 1.,
                 "model_mode" : 0,
             })
-        elif base_model_type in ["qwen_image_edit_plus_20B"]: 
+        elif base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             ui_defaults.update({
-                "video_prompt_type": "I",
+                "video_prompt_type": "",
                 "denoising_strength" : 1.,
                 "model_mode" : 0,
+            })
+        elif base_model_type in ["qwen_image_layered_20B"]:
+            ui_defaults.update({
+                "video_prompt_type": "V",
             })
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
-        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B"]:
+        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             model_mode = inputs["model_mode"]
             denoising_strength= inputs["denoising_strength"]
             video_guide_outpainting= inputs["video_guide_outpainting"]
             from wgp import get_outpainting_dims
             outpainting_dims = get_outpainting_dims(video_guide_outpainting)
 
-            if denoising_strength < 1 and model_mode == 1:
-                gr.Info("Denoising Strength will be ignored while using Lora Inpainting")
-            if outpainting_dims is not None and model_mode == 0 :
-                return "Outpainting is not supported with Masked Denoising"
+            if denoising_strength < 1 and model_mode != 0:
+                gr.Info("Denoising Strength will be ignored if Masked Denoising is not used")
+            if outpainting_dims is not None and model_mode != 1 :
+                return "Outpainting is supported only with Lora Inpainting"
+        if base_model_type in ["qwen_image_layered_20B"]:
+            if inputs.get("image_guide") is None:
+                return "Qwen Image Layered requires a Control Image."
             
     @staticmethod
     def get_rgb_factors(base_model_type ):

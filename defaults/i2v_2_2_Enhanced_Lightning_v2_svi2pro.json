@@ -1,0 +1,26 @@
+{
+	"model":
+	{
+		"name": "Wan2.2 Image2video SVI 2 Pro Enhanced Lightning v2 14B",
+		"architecture" : "i2v_2_2_svi2pro",
+		"description": "This finetune of WAN 2.2 I2V accelerated with Lightning has been updated to deliver better prompt comprehension and improved handling of camera angles and cinematic movements. It provides more accurate scene interpretation, smoother transitions, and enhanced control over dynamic. The SVI Pro 2 offers potentially unlimited Videos to Continue. It will use either the Start frame or an Anchor image as a Ref. Image to be used across all the windows (or one Anchor Image per Window).",
+
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan22EnhancedLightning_v2I2VFP8HIGH.safetensors"
+		],
+		"URLs2": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan22EnhancedLightning_v2I2VFP8LOW.safetensors"
+		],
+		"author": "https://civitai.com/models/2053259",
+		"loras": "i2v_2_2_svi2pro",
+		"loras_multipliers": "i2v_2_2_svi2pro",	
+		"profile_dirs": [""]
+	},
+	"guidance_phases": 2,	
+	"switch_threshold" : 900,
+	"guidance_scale" : 1,
+	"guidance2_scale" : 1,
+	"flow_shift" : 5,
+	"num_inference_steps": 8,
+	"prompt": "(at 0 seconds:a man open his fridge, takes a beer and drink it)"
+}

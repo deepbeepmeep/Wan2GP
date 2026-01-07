@@ -1,5 +1,6 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import logging
+import os
 from mmgp import offload
 import torch
 import torch.cuda.amp as amp
@@ -780,7 +781,7 @@ def _video_vae(pretrained_path=None, z_dim=None, device='cpu', **kwargs):
     # model.load_state_dict(
     #     torch.load(pretrained_path, map_location=device), assign=True)
     # offload.load_model_data(model, pretrained_path.replace(".pth", "_bf16.safetensors"), writable_tensors= False)    
-    offload.load_model_data(model, pretrained_path.replace(".pth", ".safetensors"), writable_tensors= False)    
+    offload.load_model_data(model, pretrained_path, writable_tensors= False)    
     return model
 
 

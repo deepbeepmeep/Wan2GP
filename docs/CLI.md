@@ -170,6 +170,7 @@ python wgp.py --process queue.zip --output-dir ./out --attention sage2
 
 ```bash
 --settings PATH              # Path to folder containing default settings for all models
+--config PATH                # Config folder for wgp_config.json and queue.zip
 --verbose LEVEL              # Information level 0-2 (default: 1)
 ```
 
@@ -283,6 +284,13 @@ Load custom settings:
 ```bash
 python wgp.py --settings /path/to/settings/folder
 ```
+
+### Config Folder
+Use a separate folder for the UI config and autosaved queue:
+```bash
+python wgp.py --config /path/to/config
+```
+If missing, `wgp_config.json` or `queue.zip` are loaded once from the WanGP root and then written to the config folder.
 
 ### Lora Presets
 Create and share lora configurations:

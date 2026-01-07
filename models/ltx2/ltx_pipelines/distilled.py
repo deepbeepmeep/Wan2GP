@@ -120,6 +120,7 @@ class DistilledPipeline:
         transformer = self.model_ledger.transformer()
         bind_interrupt_check(transformer, interrupt_check)
         stage_1_sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
+        pass_no = 1
         if loras_slists is not None:
             stage_1_steps = len(stage_1_sigmas) - 1
             update_loras_slists(
@@ -131,7 +132,7 @@ class DistilledPipeline:
             )
 
         if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=len(stage_1_sigmas) - 1, pass_no=1)
+            callback(-1, None, True, override_num_inference_steps=len(stage_1_sigmas) - 1, pass_no=pass_no)
 
         def denoising_loop(
             sigmas: torch.Tensor,
@@ -153,7 +154,7 @@ class DistilledPipeline:
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
-                pass_no=1,
+                pass_no=pass_no,
             )
 
         stage_1_output_shape = VideoPixelShape(
@@ -197,6 +198,7 @@ class DistilledPipeline:
         cleanup_memory()
 
         stage_2_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
+        pass_no = 2
         if loras_slists is not None:
             stage_2_steps = len(stage_2_sigmas) - 1
             update_loras_slists(
@@ -207,7 +209,7 @@ class DistilledPipeline:
                 phase_switch_step2=stage_2_steps,
             )
         if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=2)
+            callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=pass_no)
         stage_2_output_shape = VideoPixelShape(batch=1, frames=num_frames, width=width, height=height, fps=frame_rate)
         stage_2_conditionings = image_conditionings_by_replacing_latent(
             images=images,

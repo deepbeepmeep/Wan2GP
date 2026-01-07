@@ -8578,9 +8578,10 @@ def get_max_frames(nb):
 def change_guidance_phases(state, guidance_phases):
     model_type = get_state_model_type(state)
     model_def = get_model_def(model_type)
+    virtual_higher_phases = model_def.get("virtual_higher_phases", False) 
     multiple_submodels = model_def.get("multiple_submodels", False)
     label ="Phase 1-2" if guidance_phases ==3 else ( "Model / Guidance Switch Threshold" if multiple_submodels  else "Guidance Switch Threshold" )
-    return gr.update(visible= guidance_phases >=3 and multiple_submodels) , gr.update(visible= guidance_phases >=2), gr.update(visible= guidance_phases >=2, label = label), gr.update(visible= guidance_phases >=3), gr.update(visible= guidance_phases >=2), gr.update(visible= guidance_phases >=3)
+    return gr.update(visible= guidance_phases >=3 and multiple_submodels) , gr.update(visible= guidance_phases >=2 and not virtual_higher_phases), gr.update(visible= guidance_phases >=2, label = label), gr.update(visible= guidance_phases >=3), gr.update(visible= guidance_phases >=2 and not virtual_higher_phases), gr.update(visible= guidance_phases >=3 and not virtual_higher_phases)
 
 
 memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: at least 64 GB of RAM and 24 GB of VRAM, the fastest for short videos with a RTX 3090 / RTX 4090", 1),

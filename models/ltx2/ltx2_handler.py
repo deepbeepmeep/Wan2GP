@@ -62,7 +62,7 @@ class family_handler:
                 {
                     "lock_inference_steps": True,
                     "no_negative_prompt": True,
-                    "guidance_max_phases": 1,
+                    "guidance_max_phases": 0,
                 }
             )
         else:

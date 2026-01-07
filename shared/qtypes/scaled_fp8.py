@@ -47,6 +47,7 @@ _FP8_MM_SUPPORT = {
     torch.float8_e5m2: False,
 }
 _FP8_MM_PROBED = False
+_SCALED_FP8_DEFAULT_DTYPE = None
 
 def _is_float8_dtype(dtype):
     return dtype in _SCALED_FP8_QTYPE_BY_DTYPE
@@ -54,6 +55,24 @@ def _is_float8_dtype(dtype):
 
 def _get_fp8_qtype(dtype):
     return _SCALED_FP8_QTYPE_BY_DTYPE.get(dtype, None)
+
+
+def _set_default_dtype_from_loader(dtype):
+    global _SCALED_FP8_DEFAULT_DTYPE
+    if dtype is None:
+        return
+    if dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+        return
+    _SCALED_FP8_DEFAULT_DTYPE = dtype
+
+
+def _normalize_default_dtype(dtype):
+    if dtype is None:
+        return _SCALED_FP8_DEFAULT_DTYPE or torch.bfloat16
+    if dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+        return _SCALED_FP8_DEFAULT_DTYPE or torch.bfloat16
+    return dtype
+
 
 
 def _scaled_mm_available(dtype):
@@ -150,6 +169,7 @@ class ScaledFP8WeightTensor(QTensor):
         qtype = _get_fp8_qtype(weight.dtype)
         if qtype is None:
             raise TypeError(f"Scaled FP8 weight requires float8 dtype, got {weight.dtype}.")
+        dtype = _normalize_default_dtype(dtype)
         return ScaledFP8WeightTensor(
             qtype=qtype,
             axis=0,
@@ -206,7 +226,7 @@ class ScaledFP8WeightTensor(QTensor):
 
     def _linear_fallback(self, input, bias=None):
         qweight= self
-        target_type = qweight.dtype
+        target_type = _normalize_default_dtype(qweight.dtype)
         weights, output_scales = qweight._data, qweight._scale
         input = input.to(target_type)
         output_scales = output_scales.to(target_type)
@@ -310,6 +330,7 @@ class ScaledFP8WeightTensor(QTensor):
             dtype = getattr(torch, dtype_name, torch.float16)
         else:
             dtype = getattr(torch, dtype_str, torch.float16)
+        dtype = _normalize_default_dtype(dtype)
         return ScaledFP8WeightTensor(
             qtype=qtype,
             axis=axis,
@@ -397,7 +418,7 @@ class QLinearScaledFP8(QModuleMixin, torch.nn.Linear):
             optimizer=optimizer,
             quantize_input=quantize_input,
         )
-        self._scaled_fp8_default_dtype = dtype
+        self._scaled_fp8_default_dtype = _normalize_default_dtype(dtype)
 
     @classmethod
     def qcreate(cls, module, weights, activations=None, optimizer=None, device=None):
@@ -407,6 +428,7 @@ class QLinearScaledFP8(QModuleMixin, torch.nn.Linear):
             weight_dtype = module.bias.dtype
         else:
             weight_dtype = torch.float16
+        weight_dtype = _normalize_default_dtype(weight_dtype)
         return cls(
             module.in_features,
             module.out_features,
@@ -420,7 +442,7 @@ class QLinearScaledFP8(QModuleMixin, torch.nn.Linear):
         )
 
     def set_default_dtype(self, dtype):
-        self._scaled_fp8_default_dtype = dtype
+        self._scaled_fp8_default_dtype = _normalize_default_dtype(dtype)
 
     @property
     def qweight(self):
@@ -454,20 +476,26 @@ class QLinearScaledFP8(QModuleMixin, torch.nn.Linear):
 
         weight_key = prefix + "weight"
         scale_key = prefix + "scale_weight"
+        alt_scale_key = prefix + "weight_scale"
         bias_key = prefix + "bias"
         input_scale_key = prefix + "input_scale"
         output_scale_key = prefix + "output_scale"
 
         weight = state_dict.pop(weight_key, None)
         scale = state_dict.pop(scale_key, None)
+        alt_scale = state_dict.pop(alt_scale_key, None)
+        if scale is None:
+            scale = alt_scale
         bias = state_dict.pop(bias_key, None)
         input_scale = state_dict.pop(input_scale_key, None)
         output_scale = state_dict.pop(output_scale_key, None)
+        # input_scale isn't used in FP8 inference; drop to avoid persisting it.
+        input_scale = None
 
         if weight is None:
             missing_keys.append(weight_key)
 
-        target_dtype = self._scaled_fp8_default_dtype or self.weight.dtype
+        target_dtype = _normalize_default_dtype(self._scaled_fp8_default_dtype or self.weight.dtype)
         if weight is not None:
             qweight = ScaledFP8WeightTensor.create(
                 weight=weight,
@@ -539,6 +567,7 @@ def detect(state_dict, verboseLevel=1):
 def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None):
     if detection is not None and not detection.get("matched", False):
         return {"state_dict": state_dict, "quant_map": {}}
+    _set_default_dtype_from_loader(default_dtype)
     if "scaled_fp8" in state_dict:
         state_dict.pop("scaled_fp8", None)
     specs = _collect_fp8_specs(state_dict)
@@ -553,8 +582,95 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None)
     return {"state_dict": state_dict, "quant_map": quant_map}
 
 
+def _resolve_default_dtype(model, default_dtype):
+    if default_dtype is not None:
+        return default_dtype
+    if model is not None:
+        model_dtype = getattr(model, "_dtype", None) or getattr(model, "dtype", None)
+        if isinstance(model_dtype, torch.dtype):
+            return model_dtype
+        for _, param in model.named_parameters():
+            if torch.is_tensor(param) and param.dtype.is_floating_point:
+                return param.dtype
+    return torch.bfloat16
+
+
+def _collect_linear_param_keys(model):
+    if model is None:
+        return set()
+    keys = set()
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            keys.add(f"{name}.weight")
+            if module.bias is not None:
+                keys.add(f"{name}.bias")
+    return keys
+
+
+def _cast_non_linear_float8_params(model, target_dtype):
+    if model is None:
+        return
+    for module in model.modules():
+        if isinstance(module, torch.nn.Linear) or isinstance(module, QModuleMixin):
+            continue
+        for name, param in list(module.named_parameters(recurse=False)):
+            if torch.is_tensor(param) and _is_float8_dtype(param.dtype):
+                module._parameters[name] = torch.nn.Parameter(
+                    param.to(dtype=target_dtype),
+                    requires_grad=False,
+                )
+        for name, buf in list(module.named_buffers(recurse=False)):
+            if torch.is_tensor(buf) and _is_float8_dtype(buf.dtype):
+                module._buffers[name] = buf.to(dtype=target_dtype)
+
+
 def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=None, verboseLevel=1):
-    return quantization_map or {}, []
+    _set_default_dtype_from_loader(default_dtype)
+    if not quantization_map:
+        quantization_map = {}
+
+    has_float8 = False
+    for tensor in state_dict.values():
+        if torch.is_tensor(tensor) and _is_float8_dtype(tensor.dtype):
+            has_float8 = True
+            break
+    if not quantization_map and not has_float8:
+        return quantization_map or {}, []
+
+    target_dtype = _resolve_default_dtype(model, default_dtype)
+    linear_param_keys = _collect_linear_param_keys(model)
+
+    to_cast = []
+    for key, tensor in state_dict.items():
+        if not torch.is_tensor(tensor):
+            continue
+        if not _is_float8_dtype(tensor.dtype):
+            continue
+        if key.endswith(".weight") or key.endswith(".bias"):
+            module_name = key.rsplit(".", 1)[0]
+        else:
+            continue
+        if key in linear_param_keys:
+            continue
+        to_cast.append((key, module_name, tensor))
+
+    for key, module_name, tensor in to_cast:
+        state_dict[key] = tensor.to(dtype=target_dtype)
+        state_dict.pop(module_name + ".scale_weight", None)
+        state_dict.pop(module_name + ".weight_scale", None)
+        state_dict.pop(module_name + ".input_scale", None)
+        state_dict.pop(module_name + ".output_scale", None)
+        if module_name in quantization_map:
+            del quantization_map[module_name]
+
+    post_load = []
+    def _post_cast(model):
+        cast_dtype = _resolve_default_dtype(model, default_dtype)
+        _cast_non_linear_float8_params(model, cast_dtype)
+
+    post_load.append(_post_cast)
+
+    return quantization_map or {}, post_load
 
 
 _init_scaled_mm_support()

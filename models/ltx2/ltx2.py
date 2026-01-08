@@ -478,6 +478,8 @@ class LTX2:
         stage2_override = False
         has_prefix_frames = input_video is not None and torch.is_tensor(input_video) and prefix_frames_count > 0
         is_start_image_only = image_start is not None and (not has_prefix_frames or prefix_frames_count <= 1)
+        use_guiding_latent_for_start_image = bool(self.model_def.get("use_guiding_latent_for_start_image", False))
+        use_guiding_start_image = use_guiding_latent_for_start_image and is_start_image_only
 
         if isinstance(self.pipeline, TI2VidTwoStagesPipeline):
             if has_prefix_frames and not is_start_image_only:
@@ -494,7 +496,7 @@ class LTX2:
 
             if image_start is not None:
                 entry = (image_start, _to_latent_index(0, latent_stride), 1.0)
-                if is_start_image_only:
+                if use_guiding_start_image:
                     guiding_images.append(entry)
                     images_stage2.append(entry)
                     stage2_override = True

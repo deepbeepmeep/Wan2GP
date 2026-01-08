@@ -115,7 +115,7 @@ class family_handler:
             {
                 "repoId": "DeepBeepMeep/LTX-2",
                 "sourceFolderList": [""],
-                "fileList": [[_SPATIAL_UPSCALER_FILENAME, _DISTILLED_LORA_FILENAME] + computeList(model_filename)],
+                "fileList": [[_SPATIAL_UPSCALER_FILENAME] + computeList(model_filename)],
             },
             {
                 "repoId": "DeepBeepMeep/LTX-2",

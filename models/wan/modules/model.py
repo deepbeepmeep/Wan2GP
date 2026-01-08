@@ -1524,8 +1524,9 @@ class WanModel(ModelMixin, ConfigMixin):
                 # Frame-wise Attention Alignment Unit.
                 condition_aligned = self.condition_embedding_align(condition_fused, x_noise_clone)                
                 # Condition Fusion/Injection, Hierarchical Aggregation (2): x, fused condition, aligned condition
-                x = self.patch_embedding_fuse(torch.cat([x, condition_fused, condition_aligned], 1))
-                x = torch.cat([x, self.patch_embedding(steadydancer_ref_x.unsqueeze(0)), self.patch_embedding_ref_c(steadydancer_ref_c[:16].unsqueeze(0))], dim=2)
+                x = self.patch_embedding_fuse(torch.cat([x, condition_fused, condition_aligned], 1).to(self.patch_embedding_fuse.weight.dtype))
+                x = torch.cat([x, self.patch_embedding(steadydancer_ref_x.unsqueeze(0).to(self.patch_embedding.weight.dtype )),
+                                self.patch_embedding_ref_c(steadydancer_ref_c[:16].unsqueeze(0).to(self.patch_embedding_ref_c.weight.dtype ))], dim=2)
                 grid_sizes = x.shape[2:]
                 x_list[i] = x
                 x = condition = condition_fused = condition_aligned = condition_temporal = condition_spatial = None

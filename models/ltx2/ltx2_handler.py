@@ -39,6 +39,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
         extra_model_def = {
+            "dtype": "bf16",
             "fps": 24,
             "frames_minimum": 17,
             "frames_steps": 8,

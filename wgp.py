@@ -2434,8 +2434,7 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
     if len(quantization) == 0:
         quantization = "bf16"
 
-    model_family =  get_model_family(model_type) 
-    dtype = get_transformer_dtype(model_family, dtype_policy)
+    dtype = get_transformer_dtype(model_type, dtype_policy)
     if len(choices) <= 1:
         raw_filename = choices[0]
     else:
@@ -2461,7 +2460,13 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
 
     return raw_filename
 
-def get_transformer_dtype(model_family, transformer_dtype_policy):
+def get_transformer_dtype(model_type, transformer_dtype_policy):
+    base_model_type = get_base_model_type(model_type)
+    model_def = get_model_def(base_model_type)
+    dtype = model_def.get("dtype", None)
+    if dtype is not None: 
+        return torch.float16 if dtype =="fp16" else torch.bfloat16
+    model_family =  get_model_family(base_model_type) 
     if not isinstance(transformer_dtype_policy, str):
         return transformer_dtype_policy
     if len(transformer_dtype_policy) == 0:
@@ -3284,7 +3289,7 @@ def load_models(model_type, override_profile = -1, **model_kwargs):
         print(f"Autoquantize is not yet supported if some modules are declared")
         quantizeTransformer = False
     model_family = get_model_family(model_type)
-    transformer_dtype = get_transformer_dtype(model_family, transformer_dtype_policy)
+    transformer_dtype = get_transformer_dtype(model_type, transformer_dtype_policy)
     if quantizeTransformer or "quanto" in model_filename:
         transformer_dtype = torch.bfloat16 if "bf16" in model_filename or "BF16" in model_filename else transformer_dtype
         transformer_dtype = torch.float16 if "fp16" in model_filename or"FP16" in model_filename else transformer_dtype

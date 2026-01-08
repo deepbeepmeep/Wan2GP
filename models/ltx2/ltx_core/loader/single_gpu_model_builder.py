@@ -32,10 +32,10 @@ class SingleGPUModelBuilder(Generic[ModelType], ModelBuilderProtocol[ModelType],
     module_ops: tuple[ModuleOps, ...] = field(default_factory=tuple)
     loras: tuple[LoraPathStrengthAndSDOps, ...] = field(default_factory=tuple)
     model_loader: StateDictLoader = field(default_factory=SafetensorsModelStateDictLoader)
-    registry: Registry = field(default_factory=DummyRegistry)
-    shared_state_dict: dict | None = None
-    shared_quantization_map: dict | None = None
-    shared_config: dict | None = None
+    registry: Registry = field(default_factory=DummyRegistry, repr=False)
+    shared_state_dict: dict | None = field(default=None, repr=False)
+    shared_quantization_map: dict | None = field(default=None, repr=False)
+    shared_config: dict | None = field(default=None, repr=False)
     ignore_missing_keys: bool = False
     copy_shared_state_dict: bool = False
     consume_shared_state_dict: bool = False
@@ -131,21 +131,19 @@ class SingleGPUModelBuilder(Generic[ModelType], ModelBuilderProtocol[ModelType],
         if self.shared_state_dict is not None:
             sd = self._filter_state_dict(self.shared_state_dict, self.model_sd_ops)
             quantization_map = self._filter_quantization_map(self.shared_quantization_map, self.model_sd_ops)
+
             if self.copy_shared_state_dict:
                 sd = {key: value.clone() if torch.is_tensor(value) else value for key, value in sd.items()}
-            try:
+            if len(sd):
                 from mmgp import offload as mmgp_offload
 
                 mmgp_offload.load_model_data(
                     meta_model,
                     [(sd, quantization_map)],
                     default_dtype=dtype or torch.bfloat16,
-                    verboseLevel=0,
                     ignore_missing_keys=self.ignore_missing_keys,
                 )
                 return self._return_model(meta_model, device)
-            except Exception as exc:
-                logger.warning("Offload load_model_data failed: %s", exc)
 
         model_paths = self.model_path if isinstance(self.model_path, tuple) else [self.model_path]
         model_state_dict = self.load_sd(model_paths, sd_ops=self.model_sd_ops, registry=self.registry, device=device)

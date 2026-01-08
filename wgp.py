@@ -3362,15 +3362,11 @@ def load_models(model_type, override_profile = -1, **model_kwargs):
     profile, mmgp_profile = init_pipe(pipe, kwargs, override_profile)
     if server_config.get("enhancer_mode", 0) == 0:
         setup_prompt_enhancer(pipe, kwargs)
-    loras_transformer = []
+    loras_transformer = kwargs.pop("loras", [])
     if "transformer" in pipe:
         loras_transformer += ["transformer"]        
     if "transformer2" in pipe:
         loras_transformer += ["transformer2"]
-    if "text_embedding_projection" in pipe and "text_embedding_projection" not in loras_transformer:
-        loras_transformer += ["text_embedding_projection"]
-    if "text_embeddings_connector" in pipe and "text_embeddings_connector" not in loras_transformer:
-        loras_transformer += ["text_embeddings_connector"]
     if len(compile) > 0 and hasattr(wan_model, "custom_compile"):
         wan_model.custom_compile(backend= "inductor", mode ="default")
     compile_modules = model_def.get("compile", compile) if len(compile) > 0 else ""
@@ -3905,6 +3901,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             labels +=["Creation Date"]
         else: 
             video_prompt =  html.escape(configs.get("prompt", "")[:1024]).replace("\n", "<BR>")
+            enhanced_video_prompt = html.escape(configs.get("enhanced_prompt", "")[:1024]).replace("\n", "<BR>")
             video_video_prompt_type = configs.get("video_prompt_type", "")
             video_image_prompt_type = configs.get("image_prompt_type", "")
             video_audio_prompt_type = configs.get("audio_prompt_type", "")
@@ -3999,6 +3996,9 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_activated_loras_str = "<TABLE style='border:0px;padding:0px'>" + "".join(video_activated_loras) + "</TABLE>" if len(video_activated_loras) > 0 else ""
             values +=  misc_values + [video_prompt]
             labels +=  misc_labels + ["Text Prompt"]
+            if len(enhanced_video_prompt):
+                values += [enhanced_video_prompt]
+                labels += ["Enhanced Text Prompt"]
             if len(video_other_prompts) >0 :
                 values += [video_other_prompts]
                 labels += ["Other Prompts"]
@@ -5597,7 +5597,7 @@ def generate_video(
                 print(f"Enhanced prompts: {enhanced_prompts}" )
                 task["prompt"] = "\n".join(["!enhanced!"] + enhanced_prompts)
                 send_cmd("output")
-                prompt = enhanced_prompts[0]            
+                prompts = enhanced_prompts            
                 abort = gen.get("abort", False)
 
         while not abort:

@@ -167,6 +167,10 @@ class family_handler:
         }
         if ltx2_model.model2 is not None:
             pipe["transformer2"] = ltx2_model.model2
+
+        if model_def.get("ltx2_pipeline", "") != "distilled":
+            pipe = { "pipe": pipe, "loras" : ["text_embedding_projection", "text_embeddings_connector"] }
+
         return ltx2_model, pipe
 
     @staticmethod

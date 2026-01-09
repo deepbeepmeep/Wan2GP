@@ -93,6 +93,7 @@ class KeyframeInterpolationPipeline:
         images: list[tuple[str, int, float]],
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
+        audio_conditionings: list | None = None,
         callback: Callable[..., None] | None = None,
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
@@ -190,6 +191,7 @@ class KeyframeInterpolationPipeline:
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_1_output_shape,
             conditionings=stage_1_conditionings,
+            audio_conditionings=audio_conditionings,
             noiser=noiser,
             sigmas=sigmas,
             stepper=stepper,
@@ -268,6 +270,7 @@ class KeyframeInterpolationPipeline:
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_2_output_shape,
             conditionings=stage_2_conditionings,
+            audio_conditionings=audio_conditionings,
             noiser=noiser,
             sigmas=distilled_sigmas,
             stepper=stepper,

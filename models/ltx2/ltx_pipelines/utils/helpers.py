@@ -43,7 +43,7 @@ def cleanup_memory() -> None:
 
 
 def image_conditionings_by_replacing_latent(
-    images: list[tuple[str, int, float]],
+    images: list[tuple],
     height: int,
     width: int,
     video_encoder: VideoEncoder,
@@ -51,13 +51,19 @@ def image_conditionings_by_replacing_latent(
     device: torch.device,
 ) -> list[ConditioningItem]:
     conditionings = []
-    for image_path, frame_idx, strength in images:
+    for image_entry in images:
+        if len(image_entry) == 4:
+            image_path, frame_idx, strength, resample = image_entry
+        else:
+            image_path, frame_idx, strength = image_entry
+            resample = None
         image = load_image_conditioning(
             image_path=image_path,
             height=height,
             width=width,
             dtype=dtype,
             device=device,
+            resample=resample,
         )
         encoded_image = video_encoder(image)
         conditionings.append(
@@ -72,7 +78,7 @@ def image_conditionings_by_replacing_latent(
 
 
 def image_conditionings_by_adding_guiding_latent(
-    images: list[tuple[str, int, float]],
+    images: list[tuple],
     height: int,
     width: int,
     video_encoder: VideoEncoder,
@@ -80,13 +86,19 @@ def image_conditionings_by_adding_guiding_latent(
     device: torch.device,
 ) -> list[ConditioningItem]:
     conditionings = []
-    for image_path, frame_idx, strength in images:
+    for image_entry in images:
+        if len(image_entry) == 4:
+            image_path, frame_idx, strength, resample = image_entry
+        else:
+            image_path, frame_idx, strength = image_entry
+            resample = None
         image = load_image_conditioning(
             image_path=image_path,
             height=height,
             width=width,
             dtype=dtype,
             device=device,
+            resample=resample,
         )
         encoded_image = video_encoder(image)
         conditionings.append(
@@ -487,6 +499,7 @@ def denoise_audio_video(  # noqa: PLR0913
     components: PipelineComponents,
     dtype: torch.dtype,
     device: torch.device,
+    audio_conditionings: list[ConditioningItem] | None = None,
     noise_scale: float = 1.0,
     initial_video_latent: torch.Tensor | None = None,
     initial_audio_latent: torch.Tensor | None = None,
@@ -504,7 +517,7 @@ def denoise_audio_video(  # noqa: PLR0913
     audio_state, audio_tools = noise_audio_state(
         output_shape=output_shape,
         noiser=noiser,
-        conditionings=[],
+        conditionings=audio_conditionings or [],
         components=components,
         dtype=dtype,
         device=device,

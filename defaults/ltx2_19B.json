@@ -2,7 +2,7 @@
     "model": {
         "name": "LTX-2 Dev 19B",
         "architecture": "ltx2_19B",
-        "description": "LTX-2 generates video up to 20s with an audio soundtrack. Supports start/end keyframes and sliding-window continuation.",
+        "description": "LTX-2 generates video up to 20s with an audio soundtrack. Supports start/end keyframes and sliding-window continuation. You can force the audio soundtrack by providing an Audio Prompt.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2-19b-dev.safetensors",
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2-19b-dev-fp8.safetensors"

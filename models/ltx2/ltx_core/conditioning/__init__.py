@@ -2,11 +2,12 @@
 
 from .exceptions import ConditioningError
 from .item import ConditioningItem
-from .types import VideoConditionByKeyframeIndex, VideoConditionByLatentIndex
+from .types import AudioConditionByLatent, VideoConditionByKeyframeIndex, VideoConditionByLatentIndex
 
 __all__ = [
     "ConditioningError",
     "ConditioningItem",
+    "AudioConditionByLatent",
     "VideoConditionByKeyframeIndex",
     "VideoConditionByLatentIndex",
 ]

@@ -9,9 +9,12 @@ from ...ltx_core.loader.registry import DummyRegistry, Registry
 from ...ltx_core.loader.single_gpu_model_builder import SingleGPUModelBuilder as Builder
 from ...ltx_core.model.audio_vae import (
     AUDIO_VAE_DECODER_COMFY_KEYS_FILTER,
+    AUDIO_VAE_ENCODER_COMFY_KEYS_FILTER,
     VOCODER_COMFY_KEYS_FILTER,
     AudioDecoder,
     AudioDecoderConfigurator,
+    AudioEncoder,
+    AudioEncoderConfigurator,
     Vocoder,
     VocoderConfigurator,
 )
@@ -200,6 +203,18 @@ class ModelLedger:
                 consume_shared_state_dict=True,
             )
 
+            self.audio_encoder_builder = Builder(
+                model_path=self.checkpoint_path,
+                model_class_configurator=AudioEncoderConfigurator,
+                model_sd_ops=AUDIO_VAE_ENCODER_COMFY_KEYS_FILTER,
+                registry=self.registry,
+                shared_state_dict=self._shared_state_dict,
+                shared_quantization_map=self._shared_quantization_map,
+                shared_config=self._shared_config,
+                copy_shared_state_dict=True,
+                consume_shared_state_dict=False,
+            )
+
             self.vocoder_builder = Builder(
                 model_path=self.checkpoint_path,
                 model_class_configurator=VocoderConfigurator,
@@ -282,6 +297,7 @@ class ModelLedger:
             "transformer_builder",
             "vae_decoder_builder",
             "vae_encoder_builder",
+            "audio_encoder_builder",
             "audio_decoder_builder",
             "vocoder_builder",
             "text_encoder_builder",
@@ -337,6 +353,14 @@ class ModelLedger:
             )
 
         return self.vae_encoder_builder.build(device=self._target_device(), dtype=self.dtype).to(self.device).eval()
+
+    def audio_encoder(self) -> AudioEncoder:
+        if not hasattr(self, "audio_encoder_builder"):
+            raise ValueError(
+                "Audio encoder not initialized. Please provide a checkpoint path to the ModelLedger constructor."
+            )
+
+        return self.audio_encoder_builder.build(device=self._target_device(), dtype=self.dtype).to(self.device).eval()
 
     def text_encoder(self) -> GemmaTextEncoderModel:
         if not hasattr(self, "text_encoder_builder"):

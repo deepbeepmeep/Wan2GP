@@ -96,6 +96,7 @@ class ICLoraPipeline:
         images: list[tuple[str, int, float]],
         video_conditioning: list[tuple[str, float]],
         enhance_prompt: bool = False,
+        audio_conditionings: list | None = None,
         tiling_config: TilingConfig | None = None,
         callback: Callable[..., None] | None = None,
         interrupt_check: Callable[[], bool] | None = None,
@@ -189,6 +190,7 @@ class ICLoraPipeline:
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_1_output_shape,
             conditionings=stage_1_conditionings,
+            audio_conditionings=audio_conditionings,
             noiser=noiser,
             sigmas=stage_1_sigmas,
             stepper=stepper,
@@ -268,6 +270,7 @@ class ICLoraPipeline:
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_2_output_shape,
             conditionings=stage_2_conditionings,
+            audio_conditionings=audio_conditionings,
             noiser=noiser,
             sigmas=distilled_sigmas,
             stepper=stepper,

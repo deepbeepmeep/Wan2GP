@@ -46,6 +46,20 @@ class family_handler:
             "sliding_window": True,
             "image_prompt_types_allowed": "TSEV",
             "returns_audio": True,
+            "any_audio_prompt": True,
+            "audio_prompt_choices": True,
+            "one_speaker_only": True,
+            "audio_guide_label": "Audio Prompt (Soundtrack)",
+            "audio_scale_name": "Audio Strength (if Audio Prompt provided)",
+            "audio_prompt_type_sources": {
+                "selection": ["", "A"],
+                "labels": {
+                    "": "Generate Video & Soundtrack based on Text Prompt",
+                    "A": "Generate Video based on Soundtrack and Text Prompt",
+                },
+                "show_label": False,
+            },
+            "audio_guide_window_slicing": True,
             "profiles_dir": ["ltx2_19B"],
         }
         extra_model_def["sliding_window_defaults"] = {
@@ -126,6 +140,14 @@ class family_handler:
         return download_def
 
     @staticmethod
+    def validate_generative_settings(base_model_type, model_def, inputs):
+        audio_prompt_type = inputs.get("audio_prompt_type") or ""
+        if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
+            audio_source = inputs.get("audio_source")
+            if audio_source is not None:
+                inputs["audio_guide"] = audio_source
+
+    @staticmethod
     def load_model(
         model_filename,
         model_type,
@@ -161,6 +183,7 @@ class family_handler:
             "text_embeddings_connector": ltx2_model.text_embeddings_connector,
             "vae": ltx2_model.video_decoder,
             "video_encoder": ltx2_model.video_encoder,
+            "audio_encoder": ltx2_model.audio_encoder,
             "audio_decoder": ltx2_model.audio_decoder,
             "vocoder": ltx2_model.vocoder,
             "spatial_upsampler": ltx2_model.spatial_upsampler,
@@ -187,6 +210,7 @@ class family_handler:
                 "sliding_window_overlap": 9,
             }
         )
+        ui_defaults.setdefault("audio_scale", 1.0)
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
         if pipeline_kind != "distilled":
             ui_defaults.setdefault("guidance_phases", 2)

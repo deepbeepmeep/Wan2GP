@@ -36,7 +36,45 @@ def resize_aspect_ratio_preserving(image: torch.Tensor, long_side: int) -> torch
     return result[0] if result.shape[0] == 1 else result
 
 
-def resize_and_center_crop(tensor: torch.Tensor, height: int, width: int) -> torch.Tensor:
+def _get_lanczos_resample() -> int:
+    if hasattr(Image, "Resampling"):
+        return Image.Resampling.LANCZOS
+    return Image.LANCZOS
+
+
+def _resize_and_center_crop_lanczos(tensor: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    if tensor.ndim == 3:
+        frames = tensor.unsqueeze(0)
+    elif tensor.ndim == 4:
+        frames = tensor
+    else:
+        raise ValueError(f"Expected input with 3 or 4 dimensions; got shape {tensor.shape}.")
+
+    _, src_h, src_w, _ = frames.shape
+    if src_h == height and src_w == width:
+        return rearrange(frames, "f h w c -> 1 c f h w")
+
+    scale = max(height / src_h, width / src_w)
+    new_h = math.ceil(src_h * scale)
+    new_w = math.ceil(src_w * scale)
+    frames = frames.detach().cpu()
+    resample = _get_lanczos_resample()
+    resized_frames = []
+    for frame in frames:
+        frame_np = frame.numpy()
+        frame_np = np.clip(frame_np, 0, 255).astype(np.uint8)
+        pil_frame = Image.fromarray(frame_np)
+        pil_frame = pil_frame.resize((new_w, new_h), resample=resample)
+        crop_top = (new_h - height) // 2
+        crop_left = (new_w - width) // 2
+        pil_frame = pil_frame.crop((crop_left, crop_top, crop_left + width, crop_top + height))
+        resized_frames.append(torch.from_numpy(np.array(pil_frame).astype(np.float32)))
+
+    resized = torch.stack(resized_frames, dim=0)
+    return rearrange(resized, "f h w c -> 1 c f h w")
+
+
+def resize_and_center_crop(tensor: torch.Tensor, height: int, width: int, resample: str | None = None) -> torch.Tensor:
     """
     Resize tensor preserving aspect ratio (filling target), then center crop to exact dimensions.
     Args:
@@ -46,6 +84,9 @@ def resize_and_center_crop(tensor: torch.Tensor, height: int, width: int) -> tor
     Returns:
         Tensor with shape (1, C, 1, height, width) for 3D input or (1, C, F, height, width) for 4D input
     """
+    if resample == "lanczos":
+        return _resize_and_center_crop_lanczos(tensor, height, width)
+
     if tensor.ndim == 3:
         tensor = rearrange(tensor, "h w c -> 1 c h w")
     elif tensor.ndim == 4:
@@ -54,6 +95,8 @@ def resize_and_center_crop(tensor: torch.Tensor, height: int, width: int) -> tor
         raise ValueError(f"Expected input with 3 or 4 dimensions; got shape {tensor.shape}.")
 
     _, _, src_h, src_w = tensor.shape
+    if src_h == height and src_w == width:
+        return rearrange(tensor, "f c h w -> 1 c f h w")
 
     scale = max(height / src_h, width / src_w)
     # Use ceil to avoid floating-point rounding causing new_h/new_w to be
@@ -116,6 +159,7 @@ def load_image_conditioning(
     width: int,
     dtype: torch.dtype,
     device: torch.device,
+    resample: str | None = None,
 ) -> torch.Tensor:
     """
     Loads an image from a path or tensor and preprocesses it for conditioning.
@@ -130,7 +174,7 @@ def load_image_conditioning(
     image = _normalize_image_tensor(image)
     image = _scale_to_255(image)
     image = image.to(device=device)
-    image = resize_and_center_crop(image, height, width)
+    image = resize_and_center_crop(image, height, width, resample=resample)
     image = normalize_latent(image, device, dtype)
     return image
 

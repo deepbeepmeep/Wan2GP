@@ -585,7 +585,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         pipeline=None,
         loras_slists=None,
         joint_pass= True,
-        lora_inpaint = False,
+        model_mode = 0,
         outpainting_dims = None,
         qwen_edit_plus = False,
         VAE_tile_size = 0,
@@ -657,6 +657,9 @@ class QwenImagePipeline(): #DiffusionPipeline
             [`~pipelines.qwenimage.QwenImagePipelineOutput`] if `return_dict` is True, otherwise a `tuple`. When
             returning a tuple, the first element is a list with the generated images.
         """
+
+        lora_inpaint = image_mask is not None and model_mode == 1
+        lanpaint_enabled = image_mask is not None and model_mode == 2
 
         kwargs = {'pipeline': pipeline, 'callback': callback}
         if callback != None:
@@ -855,7 +858,10 @@ class QwenImagePipeline(): #DiffusionPipeline
         lanpaint_proc = original_image_latents = None
         if image_mask_latents is not None:
             original_image_latents =  image_latents[:, :latents.shape[1]].clone() 
-
+            if lanpaint_enabled:
+                from shared.inpainting.lanpaint import LanPaint
+                lanpaint_proc = LanPaint()
+                denoising_strength = 1.
             randn = torch.randn_like(original_image_latents)
             if denoising_strength < 1.:
                 first_step = int(len(timesteps) * (1. - denoising_strength))
@@ -867,8 +873,6 @@ class QwenImagePipeline(): #DiffusionPipeline
                 timesteps = timesteps[first_step:]
                 self.scheduler.timesteps = timesteps
                 self.scheduler.sigmas= self.scheduler.sigmas[first_step:]
-            # from shared.inpainting.lanpaint import LanPaint
-            # lanpaint_proc = LanPaint()
         # 6. Denoising loop
         self.scheduler.set_begin_index(0)
         updated_num_steps= len(timesteps)
@@ -958,7 +962,7 @@ class QwenImagePipeline(): #DiffusionPipeline
                 return noise_pred
 
 
-            if lanpaint_proc is not None and i<=3:
+            if lanpaint_proc is not None and i<=updated_num_steps-1:
                 latents = lanpaint_proc(denoise, cfg_predictions, true_cfg_scale, 1., latents, original_image_latents, randn, t/1000, image_mask_latents, height=height , width= width, vae_scale_factor= 8)
                 if latents is None: return None
 

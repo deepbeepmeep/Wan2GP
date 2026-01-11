@@ -58,6 +58,7 @@ class LanPaint():
         if n_steps is None:
             n_steps = self.n_steps
         out = self.LanPaint(denoise, cfg_predictions, true_cfg_scale, cfg_BIG, x, sigma, latent_mask, n_steps, self.IS_FLUX, self.IS_FLOW)
+        if out is None: return None
         out = _pack_latents(out)
         return out
     def LanPaint(self, denoise, cfg_predictions, true_cfg_scale, cfg_BIG,  x, sigma, latent_mask, n_steps, IS_FLUX, IS_FLOW):
@@ -65,16 +66,27 @@ class LanPaint():
             cfg_BIG = 1.0
 
         def double_denoise(latents, t):
+            latents_unpacked = latents
             latents = _pack_latents(latents)
             noise_pred, neg_noise_pred = denoise(latents, true_cfg_scale)
-            if noise_pred == None: return None, None
+            if noise_pred is None:
+                return None, None
             predict_std = cfg_predictions(noise_pred, neg_noise_pred, true_cfg_scale, t)
+            if predict_std is None:
+                return None, None
             predict_std = _unpack_latents(predict_std, self.height, self.width, self.vae_scale_factor)
             if true_cfg_scale ==  cfg_BIG:
                 predict_big = predict_std
             else:
                 predict_big = cfg_predictions(noise_pred, neg_noise_pred, cfg_BIG, t)
+                if predict_big is None:
+                    return None, None
                 predict_big = _unpack_latents(predict_big, self.height, self.width, self.vae_scale_factor)
+            if self.IS_FLUX or self.IS_FLOW:
+                # Flow/Flux models predict velocity; convert to x0 for LanPaint scoring.
+                t_broadcast = self.add_none_dims(t)
+                predict_std = latents_unpacked - t_broadcast * predict_std
+                predict_big = latents_unpacked - t_broadcast * predict_big
             return predict_std, predict_big
         
         if len(sigma.shape) == 0:
@@ -113,6 +125,7 @@ class LanPaint():
             score_func = partial( self.score_model, y = self.latent_image, mask = latent_mask, abt = self.add_none_dims(abt), sigma = self.add_none_dims(VE_Sigma), tflow = self.add_none_dims(Flow_t), denoise_func = double_denoise )
             if score_func is None: return None
             x_t, args = self.langevin_dynamics(x_t, score_func , latent_mask, step_size , current_times, sigma_x = self.add_none_dims(self.sigma_x(abt)), sigma_y = self.add_none_dims(self.sigma_y(abt)), args = args)  
+            if x_t is None: return None
         if IS_FLUX or IS_FLOW:
             x = x_t / ( self.add_none_dims(abt)**0.5 + (1-self.add_none_dims(abt))**0.5 )
         else:
@@ -168,6 +181,7 @@ class LanPaint():
 
         def Coef_C(x_t):
             x0 = self.x0_evalutation(x_t, score, sigma, args)
+            if x0 is None: return None 
             C = (abt**0.5 * x0  - x_t )/ (1-abt) + A * x_t
             return C
         def advance_time(x_t, v, dt, Gamma, A, C, D):
@@ -182,6 +196,8 @@ class LanPaint():
             #v = torch.zeros_like(x_t)
             v = None
             C = Coef_C(x_t)
+            if C is None: 
+                return None, None
             #print(torch.squeeze(dtx), torch.squeeze(dty))
             x_t, v = advance_time(x_t, v, dt, Gamma, A, C, D)
         else:
@@ -190,6 +206,8 @@ class LanPaint():
             x_t, v = advance_time(x_t, v, dt/2, Gamma, A, C, D)
 
             C_new = Coef_C(x_t)
+            if C_new is None: 
+                return None, None
             v = v + Gamma**0.5 * ( C_new - C) *dt
 
             x_t, v = advance_time(x_t, v, dt/2, Gamma, A, C, D)
@@ -236,5 +254,8 @@ class LanPaint():
 
 
     def x0_evalutation(self, x_t, score, sigma, args):
-        x0 = x_t + score(x_t)
+        score = score(x_t)
+        if score is None:
+            return None
+        x0 = x_t + score
         return x0

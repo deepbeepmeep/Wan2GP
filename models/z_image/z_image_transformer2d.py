@@ -969,6 +969,7 @@ class ZImageTransformer2DModel(nn.Module):
         f_patch_size=1,
         control_context_list=None,
         control_context_scale=1.0,
+        target_timestep=None,
         callback=None,
         pipeline=None,
         NAG =None,
@@ -981,8 +982,15 @@ class ZImageTransformer2DModel(nn.Module):
         assert len(cap_feats_list) == num_noise_samples, "cap_feats_list must match x_list length"
 
         device = x_list[0].device
-        t = t * self.t_scale
-        t = self.t_embedder(t)
+        t_high = t.to(dtype=torch.float64)
+        t_emb = self.t_embedder(t_high.abs() * self.t_scale)
+        if target_timestep is not None:
+            target_t_high = target_timestep.to(dtype=torch.float64)
+            delta_t = t_high - target_t_high
+            delta_t_abs = delta_t.abs()
+            t_emb_2 = self.t_embedder((target_t_high - t_high) * self.t_scale)
+            t_emb = t_emb + t_emb_2 * delta_t_abs.unsqueeze(1)
+        t = t_emb
 
         # Patchify and embed each (x, cap_feats) pair
         x_embedder = self.all_x_embedder[f"{patch_size}-{f_patch_size}"]

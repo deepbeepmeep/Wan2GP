@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from einops import rearrange
 
-from shared.attention import pay_attention, pay_sparse_attention
+from shared.attention import pay_attention #, pay_sparse_attention
 from .rope_3d import RotaryPositionalEmbedding
 from ..blocks import RMSNorm_FP32
 from ...audio_process.torch_utils import get_attn_map_with_target

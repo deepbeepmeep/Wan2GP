@@ -55,6 +55,7 @@ class family_handler():
                         "choices": [
                             ("Lora Inpainting: Inpainted area completely unrelated to masked content", 1),
                             ("Masked Denoising : Inpainted area may reuse some content that has been masked", 0),
+                            ("LanPaint : High Quality Inpainting but up x5 slower", 2),
                             ],
                         "default": 1,
                         "label" : "Inpainting Method",
@@ -195,10 +196,10 @@ class family_handler():
             from wgp import get_outpainting_dims
             outpainting_dims = get_outpainting_dims(video_guide_outpainting)
 
-            if denoising_strength < 1 and model_mode == 1:
-                gr.Info("Denoising Strength will be ignored while using Lora Inpainting")
-            if outpainting_dims is not None and model_mode == 0 :
-                return "Outpainting is not supported with Masked Denoising"
+            if denoising_strength < 1 and model_mode != 0:
+                gr.Info("Denoising Strength will be ignored if Masked Denoising is not used")
+            if outpainting_dims is not None and model_mode != 1 :
+                return "Outpainting is supported only with Lora Inpainting"
         if base_model_type in ["qwen_image_layered_20B"]:
             if inputs.get("image_guide") is None:
                 return "Qwen Image Layered requires a Control Image."

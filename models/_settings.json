@@ -34,6 +34,7 @@
 	"guidance2_scale":5,
 	"guidance3_scale":5,
 	"audio_guidance_scale": 4,
+	"audio_scale": 1,
 	"embedded_guidance_scale": 6.0,
 	"alt_guidance_scale": 6.0,
 	"temperature": 0.8,

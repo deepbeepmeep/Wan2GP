@@ -57,7 +57,7 @@ pydantic==2.10.6
 # Math & modeling
 torchdiffeq>=0.2.5
 tensordict>=0.6.1
-mmgp==3.6.10
+mmgp==3.6.11
 peft==0.15.0
 matplotlib
 

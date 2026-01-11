@@ -10,7 +10,7 @@ import torch.cuda.amp as amp
 import torch.nn as nn
 
 def after_patch_embedding(self, x: List[torch.Tensor], pose_latents, face_pixel_values):
-    pose_latents = self.pose_patch_embedding(pose_latents)
+    pose_latents = self.pose_patch_embedding(pose_latents.to(self.pose_patch_embedding.weight.dtype))
     x[:, :, 1:] += pose_latents
     
     b,c,T,h,w = face_pixel_values.shape
@@ -23,7 +23,7 @@ def after_patch_embedding(self, x: List[torch.Tensor], pose_latents, face_pixel_
     motion_vec = torch.cat(face_pixel_values_tmp)
     
     motion_vec = rearrange(motion_vec, "(b t) c -> b t c", t=T)
-    motion_vec = self.face_encoder(motion_vec)
+    motion_vec = self.face_encoder(motion_vec.to(self.face_encoder.conv1_local.conv.weight.dtype))
 
     B, L, H, C = motion_vec.shape
     pad_face = torch.zeros(B, 1, H, C).type_as(motion_vec)

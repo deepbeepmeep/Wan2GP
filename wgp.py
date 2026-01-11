@@ -9767,6 +9767,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 ("24", "24"), 
                                 ("25", "25"), 
                                 ("30", "30"), 
+                                ("50", "50"), 
                             ]
                     
                         force_fps = gr.Dropdown(

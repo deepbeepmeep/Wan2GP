@@ -118,6 +118,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         choices=[("Default", 1), ("x2", 2), ("x3", 3), ("x4", 4), ("x5", 5), ("x6", 6), ("x7", 7)],
                         value=self.server_config.get("max_frames_multiplier", 1), label="Max Frames Multiplier (requires restart)"
                     )
+                    self.enable_4k_resolutions_choice = gr.Dropdown(
+                        choices=[("Off", 0), ("On", 1)],
+                        value=self.server_config.get("enable_4k_resolutions", 0),
+                        label="3K/4K Resolutions"
+                    )
                     default_paths = self.fl.default_checkpoints_paths
                     checkpoints_paths_text = "\n".join(self.server_config.get("checkpoints_paths", default_paths))
                     self.checkpoints_paths_choice = gr.Textbox(
@@ -204,7 +209,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
             self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice,
-            self.display_stats_choice, self.max_frames_multiplier_choice, self.checkpoints_paths_choice,
+            self.display_stats_choice, self.max_frames_multiplier_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice,
             self.UI_theme_choice, self.queue_color_scheme_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.VAE_precision_choice, self.compile_choice,
@@ -253,7 +258,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         (
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
             attention_choice, preload_model_policy_choice, clear_file_list_choice,
-            display_stats_choice, max_frames_multiplier_choice, checkpoints_paths_choice,
+            display_stats_choice, max_frames_multiplier_choice, enable_4k_resolutions_choice, checkpoints_paths_choice,
             UI_theme_choice, queue_color_scheme_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, VAE_precision_choice, compile_choice,
@@ -292,6 +297,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
             "max_frames_multiplier": max_frames_multiplier_choice, "display_stats": display_stats_choice,
+            "enable_4k_resolutions": enable_4k_resolutions_choice,
             "video_output_codec": video_output_codec_choice, "image_output_codec": image_output_codec_choice,
             "audio_output_codec": audio_output_codec_choice,
             "model_hierarchy_type": model_hierarchy_type_choice,
@@ -323,7 +329,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled",
-            "max_frames_multiplier", "display_stats", "video_output_codec", "video_container",
+            "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "checkpoints_paths",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
         ]

@@ -85,7 +85,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.11"
-WanGP_version = "10.12"
+WanGP_version = "10.20"
 settings_version = 2.42
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2140,6 +2140,7 @@ if not Path(config_load_filename).is_file():
         "metadata_type": "metadata",
         "boost" : 1,
         "clear_file_list" : 5,
+        "enable_4k_resolutions": 0,
         "vae_config": 0,
         "profile" : profile_type.LowRAM_LowVRAM,
         "preload_model_policy": [],
@@ -2738,6 +2739,7 @@ image_save_path = server_config.get("image_save_path", os.path.join(os.getcwd(),
 if not "video_output_codec" in server_config: server_config["video_output_codec"]= "libx264_8"
 if not "video_container" in server_config: server_config["video_container"]= "mp4"
 if not "embed_source_images" in server_config: server_config["embed_source_images"]= False
+if not "enable_4k_resolutions" in server_config: server_config["enable_4k_resolutions"]= 0
 if not "image_output_codec" in server_config: server_config["image_output_codec"]= "jpeg_95"
 
 preload_model_policy = server_config.get("preload_model_policy", []) 
@@ -8537,6 +8539,14 @@ custom_resolutions = None
 def get_resolution_choices(current_resolution_choice, model_resolutions= None):
     global custom_resolutions
 
+    max_pixels_1080p = 1920 * 1088
+    def is_above_1080p(resolution_str):
+        try:
+            width, height = map(int, resolution_str.split("x"))
+        except Exception:
+            return False
+        return width * height > max_pixels_1080p
+
     resolution_file = "resolutions.json"
     if model_resolutions is not None:
         resolution_choices = model_resolutions
@@ -8609,6 +8619,12 @@ def get_resolution_choices(current_resolution_choice, model_resolutions= None):
             ("512x512 (1:1)", "512x512"),
         ]
 
+    allow_4k_resolutions = server_config.get("enable_4k_resolutions", 0) == 1
+    if model_resolutions is None and not allow_4k_resolutions:
+        filtered_choices = [choice for choice in resolution_choices if not is_above_1080p(choice[1])]
+        if filtered_choices:
+            resolution_choices = filtered_choices
+
     if current_resolution_choice is not None:
         found = False
         for label, res in resolution_choices:
@@ -8617,9 +8633,13 @@ def get_resolution_choices(current_resolution_choice, model_resolutions= None):
                 break
         if not found:
             if model_resolutions is None:
-                resolution_choices.append( (current_resolution_choice, current_resolution_choice ))
+                if allow_4k_resolutions or not is_above_1080p(current_resolution_choice):
+                    resolution_choices.append( (current_resolution_choice, current_resolution_choice ))
+                elif len(resolution_choices) > 0:
+                    current_resolution_choice = resolution_choices[0][1]
             else:
-                current_resolution_choice = resolution_choices[0][1]
+                if len(resolution_choices) > 0:
+                    current_resolution_choice = resolution_choices[0][1]
 
     return resolution_choices, current_resolution_choice
 

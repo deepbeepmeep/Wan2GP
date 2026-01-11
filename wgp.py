@@ -85,7 +85,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.11"
-WanGP_version = "10.11"
+WanGP_version = "10.12"
 settings_version = 2.42
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -115,6 +115,12 @@ _HANDLER_MODULES = [
 quant_router.unregister_handler(".fp8_quanto_bridge")
 for handler in _HANDLER_MODULES:
     quant_router.register_handler(handler)
+
+try:
+    from mmgp import quanto_int8_inject
+    # quanto_int8_inject.init_quanto_int8_patch()
+except Exception:
+    pass
 
 def set_wgp_global(variable_name: str, new_value: any) -> str:
     if variable_name not in globals():
@@ -607,6 +613,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
     keep_frames_video_source = inputs["keep_frames_video_source"]
     denoising_strength= inputs["denoising_strength"]     
     masking_strength= inputs["masking_strength"]     
+    input_video_strength = inputs.get("input_video_strength", 1.0)
     sliding_window_size = inputs["sliding_window_size"]
     sliding_window_overlap = inputs["sliding_window_overlap"]
     sliding_window_discard_last_frames = inputs["sliding_window_discard_last_frames"]
@@ -724,6 +731,9 @@ def validate_settings(state, model_type, single_prompt, inputs):
     else:
         video_source = None
 
+    if len(model_def.get("input_video_strength", ""))==0 or not any_letters(image_prompt_type, "SVL"):
+        input_video_strength = 1.0
+
     if "A" in audio_prompt_type:
         if audio_guide == None:
             gr.Info("You must provide an Audio Source")
@@ -788,7 +798,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
             image_mask = None
 
         if "G" in video_prompt_type:
-                if denoising_strength < 1.:
+                if denoising_strength < 1. and not model_def.get("custom_denoising_strength", False):
                     gr.Info(f"With Denoising Strength {denoising_strength:.1f}, Denoising will start at Step no {int(round(num_inference_steps * (1. - denoising_strength),4))} ")
         else: 
             denoising_strength = 1.0
@@ -918,6 +928,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
         "video_source": video_source,
         "frames_positions": frames_positions,
         "keep_frames_video_source": keep_frames_video_source,
+        "input_video_strength": input_video_strength,
         "keep_frames_video_guide": keep_frames_video_guide,
         "denoising_strength": denoising_strength,
         "masking_strength": masking_strength,
@@ -2439,16 +2450,19 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
         raw_filename = choices[0]
     else:
         quant_tokens = []
+        quant_order = []
         if quantization != "bf16":
             if quantization == "int8":
-                quant_tokens = quant_router.get_quantization_tokens("int8") or []
-                quant_tokens += quant_router.get_quantization_tokens("fp8") or []
+                quant_order =["int8", "fp8"]
+            elif quantization == "fp8":
+                quant_order =["fp8", "int8"]
 
-        sub_choices = [
-            name
-            for name in choices
-            if any(token in os.path.basename(name).lower() for token in quant_tokens)
-        ]
+        for quant_type in quant_order:
+            quant_tokens += quant_router.get_quantization_tokens(quant_type) or []
+
+        sub_choices = []
+        for token in quant_tokens:
+            sub_choices += [name for name in choices if token in os.path.basename(name).lower()]
 
         if len(sub_choices) > 0:
             dtype_str = "fp16" if dtype == torch.float16 else "bf16"
@@ -4010,8 +4024,8 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                         video_preprocesses += process_name if len(video_preprocesses) == 0 else ", " + process_name 
                 return video_preprocesses 
 
-            video_preprocesses_in = gen_process_list(all_process_map_video_guide)
-            video_preprocesses_out = gen_process_list(process_map_outside_mask)
+            video_preprocesses_in = gen_process_list(all_process_map_video_guide) if "V" else ""
+            video_preprocesses_out = gen_process_list(process_map_outside_mask) if "V" else ""
             if "N" in video_video_prompt_type:
                 alt = video_preprocesses_in
                 video_preprocesses_in = video_preprocesses_out
@@ -4030,6 +4044,10 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if len(video_outpainting) >0:
                 values += [video_outpainting]
                 labels += ["Outpainting"]
+            if len(model_def.get("input_video_strength", "")) and any_letters(video_image_prompt_type, "SVL"):
+                values += [configs.get("input_video_strength",1)]
+                labels += ["Input Image Strength"]
+
             if "G" in video_video_prompt_type and "V" in video_video_prompt_type:
                 values += [configs.get("denoising_strength",1)]
                 labels += ["Denoising Strength"]
@@ -5182,6 +5200,7 @@ def generate_video(
     model_mode,
     video_source,
     keep_frames_video_source,
+    input_video_strength,
     video_prompt_type,
     image_refs,
     frames_positions,
@@ -6066,6 +6085,7 @@ def generate_video(
                     pace=pace,
                     temperature=temperature,
                     window_start_frame_no = window_start_frame,
+                    input_video_strength = input_video_strength,
                 )
             except Exception as e:
                 if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:
@@ -7335,12 +7355,16 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if any_audio_track(base_model_type) or not get_mmaudio_settings(server_config)[0]:
         pop += ["MMAudio_setting", "MMAudio_prompt", "MMAudio_neg_prompt"]
 
+    image_prompt_type = inputs.get("image_prompt_type", "") or ""
     video_prompt_type = inputs["video_prompt_type"]
     if "G" not in video_prompt_type:
         pop += ["denoising_strength"]
 
     if  "G" not in video_prompt_type and not model_def.get("mask_strength_always_enabled", False):
         pop += ["masking_strength"]
+    
+    if len(model_def.get("input_video_strength", ""))==0 or not any_letters(image_prompt_type, "SVL"):
+        pop += ["input_video_strength"]
 
 
     if not (server_config.get("enhancer_enabled", 0) > 0 and server_config.get("enhancer_mode", 0) == 0):
@@ -7997,6 +8021,7 @@ def save_inputs(
             model_mode,
             video_source,
             keep_frames_video_source,
+            input_video_strength,
             video_guide_outpainting,
             video_prompt_type,
             image_refs,
@@ -8248,7 +8273,8 @@ def refresh_image_prompt_type_radio(state, image_prompt_type, image_prompt_type_
     model_def = get_model_def(get_state_model_type(state))
     image_prompt_types_allowed = model_def.get("image_prompt_types_allowed", "")
     end_visible = "E" in image_prompt_types_allowed and any_letters(image_prompt_type, "SVL")
-    return image_prompt_type, gr.update(visible = "S" in image_prompt_type ), gr.update(visible = end_visible and ("E" in image_prompt_type) ), gr.update(visible = "V" in image_prompt_type) , gr.update(visible = any_video_source), gr.update(visible = end_visible)
+    input_strength_visible = len(model_def.get("input_video_strength",""))  and any_letters(image_prompt_type, "SVL")
+    return image_prompt_type, gr.update(visible = "S" in image_prompt_type ), gr.update(visible = end_visible and ("E" in image_prompt_type) ), gr.update(visible = "V" in image_prompt_type) , gr.update(visible = input_strength_visible), gr.update(visible = any_video_source), gr.update(visible = end_visible)
 
 def refresh_image_prompt_type_endcheckbox(state, image_prompt_type, image_prompt_type_radio, end_checkbox):
     image_prompt_type = del_in_sequence(image_prompt_type, "E")
@@ -8542,6 +8568,21 @@ def get_resolution_choices(current_resolution_choice, model_resolutions= None):
         resolution_choices = custom_resolutions
     if resolution_choices == None:
         resolution_choices=[
+            # 4K
+            ("3840x2176 (16:9)", "3840x2176"),
+            ("2176x3840 (9:16)", "2176x3840"),
+            ("3840x1664 (21:9)", "3840x1664"),
+            ("1664x3840 (9:21)", "1664x3840"),
+            # 1440p
+            ("2560x1440 (16:9)", "2560x1440"),
+            ("1440x2560 (9:16)", "1440x2560"),
+            ("1920x1440 (4:3)", "1920x1440"),
+            ("1440x1920 (3:4)", "1440x1920"),
+            ("2160x1440 (3:2)", "2160x1440"),
+            ("1440x2160 (2:3)", "1440x2160"),
+            ("1440x1440 (1:1)", "1440x1440"),
+            ("2688x1152 (21:9)", "2688x1152"),
+            ("1152x2688 (9:21)", "1152x2688"),
             # 1080p
             ("1920x1088 (16:9)", "1920x1088"),
             ("1088x1920 (9:16)", "1088x1920"),
@@ -8588,7 +8629,8 @@ group_thresholds = {
     "540p": 960 * 544,   
     "720p": 1024 * 1024,  
     "1080p": 1920 * 1088,         
-    "1440p": 9999 * 9999
+    "1440p": 2560 * 1440,
+    "2160p": 3840 * 2176,
 }
     
 def categorize_resolution(resolution_str):
@@ -8598,7 +8640,7 @@ def categorize_resolution(resolution_str):
     for group in group_thresholds.keys():
         if pixel_count <= group_thresholds[group]:
             return group
-    return "1440p"
+    return next(reversed(group_thresholds))
 
 def group_resolutions(model_def, resolutions, selected_resolution):
 
@@ -8913,6 +8955,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             image_prompt_type_endcheckbox = gr.Checkbox( value =False, show_label= False, visible= False , scale= 1)
                 image_start_row, image_start, image_start_extra = get_image_gallery(label= "Images as starting points for new Videos in the Generation Queue" + (" (None for Black Frames)" if model_def.get("black_frame", False) else ''), value = ui_defaults.get("image_start", None), visible= "S" in image_prompt_type_value )
                 video_source = gr.Video(label= "Video to Continue", height = gallery_height, visible= "V" in image_prompt_type_value, value= ui_defaults.get("video_source", None), elem_id="video_input")
+                input_video_strength_label = model_def.get("input_video_strength", "")
+                input_video_strength = gr.Slider(0, 1, value=ui_get("input_video_strength", 1.0), step=0.01, label=input_video_strength_label, visible =  len(input_video_strength_label) and any_letters(image_prompt_type_value, "SVL"), show_reset_button= False)
                 image_end_row, image_end, image_end_extra = get_image_gallery(label= get_image_end_label(ui_get("multi_prompts_gen_type")), value = ui_defaults.get("image_end", None), visible= any_letters(image_prompt_type_value, "SVL") and ("E" in image_prompt_type_value)     ) 
                 if model_mode_choices is None or image_mode_value not in model_modes_visibility:
                     model_mode = gr.Dropdown(value=None, label="model mode", visible=False, allow_custom_value= True)
@@ -9893,7 +9937,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             audio_prompt_type_remux.change(fn=refresh_audio_prompt_type_remux, inputs=[state, audio_prompt_type, audio_prompt_type_remux], outputs=[audio_prompt_type])
             remove_background_sound.change(fn=refresh_remove_background_sound, inputs=[state, audio_prompt_type, remove_background_sound], outputs=[audio_prompt_type])
             audio_prompt_type_sources.change(fn=refresh_audio_prompt_type_sources, inputs=[state, audio_prompt_type, audio_prompt_type_sources], outputs=[audio_prompt_type, audio_guide, audio_guide2, speakers_locations_row, remove_background_sound, audio_guide_row])
-            image_prompt_type_radio.change(fn=refresh_image_prompt_type_radio, inputs=[state, image_prompt_type, image_prompt_type_radio], outputs=[image_prompt_type, image_start_row, image_end_row, video_source, keep_frames_video_source, image_prompt_type_endcheckbox], show_progress="hidden" ) 
+            image_prompt_type_radio.change(fn=refresh_image_prompt_type_radio, inputs=[state, image_prompt_type, image_prompt_type_radio], outputs=[image_prompt_type, image_start_row, image_end_row, video_source, input_video_strength, keep_frames_video_source, image_prompt_type_endcheckbox], show_progress="hidden" ) 
             image_prompt_type_endcheckbox.change(fn=refresh_image_prompt_type_endcheckbox, inputs=[state, image_prompt_type, image_prompt_type_radio, image_prompt_type_endcheckbox], outputs=[image_prompt_type, image_end_row] ) 
             video_prompt_type_image_refs.input(fn=refresh_video_prompt_type_image_refs, inputs = [state, video_prompt_type, video_prompt_type_image_refs,image_mode], outputs = [video_prompt_type, image_refs_row, remove_background_images_ref,  image_refs_relative_size, frames_positions,video_guide_outpainting_col], show_progress="hidden")
             video_prompt_type_video_guide.input(fn=refresh_video_prompt_type_video_guide,     inputs = [state, gr.State(""),   video_prompt_type, video_prompt_type_video_guide,     image_mode, image_mask_guide, image_guide, image_mask], outputs = [video_prompt_type, video_guide, image_guide, keep_frames_video_guide, denoising_strength, masking_strength,  video_guide_outpainting_col, video_prompt_type_video_mask, video_mask, image_mask, image_mask_guide, mask_expand, image_refs_row, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox], show_progress="hidden") 

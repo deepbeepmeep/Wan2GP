@@ -141,6 +141,35 @@ class AttentionFunction(Enum):
             )
 
 
+class DBMRMSNorm(torch.nn.Module):
+
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.weight = torch.nn.Parameter(torch.ones(dim))
+
+    def forward(self, x, in_place= True):
+        r"""
+        Args:
+            x(Tensor): Shape [B, L, C]
+        """
+        y = x.float()
+        y.pow_(2)
+        y = y.mean(dim=-1, keepdim=True)
+        y += self.eps
+        y.rsqrt_()
+        if in_place:
+            x *=  y
+        else:
+            x = x * y
+        x *= self.weight
+        return x
+        # return self._norm(x).type_as(x) * self.weight
+
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+    
 class Attention(torch.nn.Module):
     def __init__(
         self,
@@ -162,8 +191,8 @@ class Attention(torch.nn.Module):
         self.heads = heads
         self.dim_head = dim_head
 
-        self.q_norm = torch.nn.RMSNorm(inner_dim, eps=norm_eps)
-        self.k_norm = torch.nn.RMSNorm(inner_dim, eps=norm_eps)
+        self.q_norm = DBMRMSNorm(inner_dim, eps=norm_eps)
+        self.k_norm = DBMRMSNorm(inner_dim, eps=norm_eps)
 
         self.to_q = torch.nn.Linear(query_dim, inner_dim, bias=True)
         self.to_k = torch.nn.Linear(context_dim, inner_dim, bias=True)
@@ -183,19 +212,27 @@ class Attention(torch.nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
-        context: torch.Tensor | None = None,
+        x_list: torch.Tensor,
+        context_list: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
         pe: torch.Tensor | None = None,
         k_pe: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        x = x_list[0]
+        x_list.clear()
+        context = None
+        if context_list is not None:
+            context = context_list[0]
+            context_list.clear()
+        cross_attn = context is not None
         q = self.to_q(x)
         context = x if context is None else context
+        x = None
         k = self.to_k(context)
         v = self.to_v(context)
-
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        context = None
+        self.q_norm(q)
+        self.k_norm(k)
 
         if pe is not None:
             apply_rotary_emb_inplace(q, pe, self.rope_type)
@@ -213,7 +250,7 @@ class Attention(torch.nn.Module):
             attention_mask=mask,
             force_attention=force_attention,
             version=attention_version,
-            cross_attn=context is not None,
+            cross_attn=cross_attn
         )
         out = out.flatten(2, 3)
         out = self.to_out(out)

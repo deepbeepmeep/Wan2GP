@@ -439,6 +439,8 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
                 src_video = torch.cat([src_video, torch.full( (3, current_video_length - src_video.shape[1], *src_video.shape[-2:]  ), inpaint_color_compressed, dtype = src_video.dtype, device= src_video.device) ], dim=1)
         elif src_video is not None:
             new_num_frames = (src_video.shape[1] - 1) // latent_size * latent_size + 1 
+            if new_num_frames < src_video.shape[1]:
+                print(f"invalid number of control frames {src_video.shape[1]}, potentially {src_video.shape[1]-new_num_frames} frames will be lost")
             src_video = src_video[:, :new_num_frames]
 
         if any_mask and src_video is not None:

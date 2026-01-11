@@ -60,7 +60,23 @@ class family_handler:
                 "show_label": False,
             },
             "audio_guide_window_slicing": True,
+            "custom_denoising_strength": True,
             "profiles_dir": ["ltx2_19B"],
+        }
+        extra_model_def["extra_control_frames"] = 1
+        extra_model_def["dont_cat_preguide"] = True
+        extra_model_def["input_video_strength"] = "Image / Source Video Strength (you may try values lower value than 1 to get more motion)"
+        extra_model_def["guide_preprocessing"] = {
+            "selection": ["", "PVG", "DVG", "EVG", "VG"],
+            "labels": {
+                "PVG": "Transfer Human Motion",
+                "DVG": "Transfer Depth",
+                "EVG": "Transfer Canny Edges",
+                "VG": "Use LTX-2 raw format",
+            },
+        }
+        extra_model_def["mask_preprocessing"] = {
+            "selection": ["", "A", "NA", "XA", "XNA"],
         }
         extra_model_def["sliding_window_defaults"] = {
             "overlap_min": 1,
@@ -207,7 +223,9 @@ class family_handler:
         ui_defaults.update(
             {
                 "sliding_window_size": 481,
-                "sliding_window_overlap": 9,
+                "sliding_window_overlap": 17,
+                "denoising_strength": 1.0,
+                "masking_strength": 0,
             }
         )
         ui_defaults.setdefault("audio_scale", 1.0)

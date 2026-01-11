@@ -194,6 +194,8 @@ class family_handler():
         extra_model_def = {}
         if "URLs2" in model_def:
             extra_model_def["no_steps_skipping"] = True
+            extra_model_def["compile"] = ["transformer","transformer2"]
+            
         extra_model_def["i2v_class"] = i2v =  test_class_i2v(base_model_type)
         extra_model_def["t2v_class"] = t2v =  test_class_t2v(base_model_type)
         extra_model_def["multitalk_class"] = multitalk = test_multitalk(base_model_type)

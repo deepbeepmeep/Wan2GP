@@ -36,13 +36,22 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
-### January 9st 2026: WanGP v10.11, Spoiled again
+### January 11th 2026: WanGP v10.12, When there is no VRAM left there is still some VRAM left ...
 
 - **LTX 2**: here is the long awaited *Ovi Challenger*, LTX-2 generates video and an audio soundtrack. As usual this WanGP version is *low VRAM*. You should be able to run it with as low as 10 GB of VRAM. If you have at least 24 GB of VRAM you will be able to generate 20s at 720p in a single window in only 2 minutes with the distilled model.  WanGP LTX 2 version supports on day one, *Start/End keyframes*, *Sliding-Window* / *Video Continuation* and *Generation Preview*. A *LTX 2 distilled* is part of the package for a very fast generation.
 
 With WanGP v10.11 you can now force your soundtrack, it works like *Multitalk* / *Avatar* except in theory it should work with any kind of sound (not just vocals). Thanks to *Kijai* for showing it was possible.
 
-- **Z Image Twin Folder Turbo**: Z Image even faster as this variant can generate images with as little as 1 step (3 steps recommend) 
+- **LTX 2 - SUPER VRAM OPTIMIZATONS** (new with WanGP v10.12):  LTX Team said this video gen was for 4k. So I had no choice but to squeeze more VRAM for further optimizations:
+After much suffering I have managed to reduce by at least 1/3 the VRAM requirements for LTX 2, which means:
+  - 10s at 720p can be done with only 8GB of VRAM
+  - 10s at 1080p with only 12 GB of VRAM
+  - 20s at 1080p with only 16 GB of VRAM
+  - 10s at Full 4k (3840 x 2176 !!!) with 24 GB of VRAM.  However the bad news is LTX 2 video is not for 4K, as 4K outputs may give you nightmares ...
+
+ Oh and I also added *Ic Lora support* (*Control Video* with Pose, Depth, Canny Edge transfer) , *Start Image Strength* (values lower than 1 seems to reduce the static image effect, that one gets sometime with LTX2 i2v)... 
+ 
+- **Z Image Twin Folder Turbo**: Z Image even faster as this variant can generate images with as little as 1 step (3 steps recommended) 
 
 - **Qwen LanPaint**: very precise *In Painting*, offers a better integration of the inpainted area in the rest of the image. Beware it is up to 5x slower as it "searches" for the best replacement. 
 

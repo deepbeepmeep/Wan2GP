@@ -30,7 +30,12 @@ from .modules.clip import CLIPModel
 from shared.utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps)
 from shared.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-from .modules.posemb_layers import get_rotary_pos_embed, get_nd_rotary_pos_embed
+from .modules.posemb_layers import (
+    get_rotary_pos_embed,
+    get_nd_rotary_pos_embed,
+    set_rope_freqs_dtype,
+    set_use_fp32_rope_freqs,
+)
 from shared.utils.vace_preprocessor import VaceVideoProcessor
 from shared.utils.basic_flowmatch import FlowMatchScheduler
 from shared.utils.lcm_scheduler import LCMScheduler
@@ -41,6 +46,8 @@ from .alpha.utils import load_gauss_mask, apply_alpha_shift
 from shared.utils.audio_video import save_video
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
+
+WAN_USE_FP32_ROPE_FREQS = True
 
 def optimized_scale(positive_flat, negative_flat):
 
@@ -214,6 +221,10 @@ class WanAny2V:
             if self.model2 is not None:
                 save_quantized_model(self.model2, model_type, model_filename[1], dtype, base_config_file, submodel_no=2)
         self.sample_neg_prompt = config.sample_neg_prompt
+
+        self.use_fp32_rope_freqs = bool(model_def.get("wan_rope_freqs_fp32", WAN_USE_FP32_ROPE_FREQS))
+        set_use_fp32_rope_freqs(self.use_fp32_rope_freqs)
+        set_rope_freqs_dtype(self.dtype)
 
         self.model.apply_post_init_changes()
         if self.model2 is not None: self.model2.apply_post_init_changes()

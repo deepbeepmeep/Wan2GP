@@ -8,6 +8,7 @@
 	"keep_frames_video_source": "",
 	"video_prompt_type": "",
 	"denoising_strength": 0.5,
+	"input_video_strength": 1.0,
 	"keep_frames_video_guide": "",
 	"video_guide_outpainting": "#",
 	"masking_strength": 1,

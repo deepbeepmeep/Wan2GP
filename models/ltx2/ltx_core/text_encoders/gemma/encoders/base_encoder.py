@@ -11,6 +11,9 @@ from ....loader.module_ops import ModuleOps
 from ..embeddings_connector import Embeddings1DConnector
 from ..feature_extractor import GemmaFeaturesExtractorProjLinear
 from ..tokenizer import LTXVGemmaTokenizer
+from shared.utils import files_locator as fl
+from .....ltx2_handler import  _GEMMA_FOLDER
+
 import os
 
 class GemmaTextEncoderModelBase(torch.nn.Module):
@@ -316,14 +319,14 @@ def _find_merged_gemma_file(gemma_root: str) -> str | None:
 def module_ops_from_gemma_root(gemma_root: str) -> tuple[ModuleOps, ...]:
     gemma_path = gemma_root
     gemma_root = os.path.dirname(gemma_root)
-    tokenizer_path = _find_matching_dir(gemma_root, "tokenizer.model")
+    tokenizer_path =  fl.locate_file(_GEMMA_FOLDER, "tokenizer.model")
 
     def load_gemma(module: GemmaTextEncoderModelBase) -> GemmaTextEncoderModelBase:
-        config_path = Path(gemma_root) / "config.json"
+        config_path = fl.locate_file(_GEMMA_FOLDER, "config.json")
         module.model = offload.fast_load_transformers_model(
             gemma_path,
             modelClass=Gemma3ForConditionalGeneration,
-            defaultConfigPath=str(config_path) if config_path.is_file() else None,
+            defaultConfigPath=config_path,
             writable_tensors=False,
         )
         module._gemma_root = module._gemma_root or gemma_root

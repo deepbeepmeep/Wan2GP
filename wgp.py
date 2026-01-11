@@ -84,8 +84,8 @@ AUTOSAVE_PATH = AUTOSAVE_FILENAME
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.6.11"
-WanGP_version = "10.20"
+target_mmgp_version = "3.6.12"
+WanGP_version = "10.21"
 settings_version = 2.42
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2141,6 +2141,7 @@ if not Path(config_load_filename).is_file():
         "boost" : 1,
         "clear_file_list" : 5,
         "enable_4k_resolutions": 0,
+        "max_reserved_loras": -1,
         "vae_config": 0,
         "profile" : profile_type.LowRAM_LowVRAM,
         "preload_model_policy": [],
@@ -2740,6 +2741,7 @@ if not "video_output_codec" in server_config: server_config["video_output_codec"
 if not "video_container" in server_config: server_config["video_container"]= "mp4"
 if not "embed_source_images" in server_config: server_config["embed_source_images"]= False
 if not "enable_4k_resolutions" in server_config: server_config["enable_4k_resolutions"]= 0
+if not "max_reserved_loras" in server_config: server_config["max_reserved_loras"]= -1
 if not "image_output_codec" in server_config: server_config["image_output_codec"]= "jpeg_95"
 
 preload_model_policy = server_config.get("preload_model_policy", []) 
@@ -5424,6 +5426,7 @@ def generate_video(
             activate_all_loras=True,
             preprocess_sd=get_loras_preprocessor(preprocess_target, base_model_type),
             pinnedLora=pinnedLora,
+            maxReservedLoras=server_config.get("max_reserved_loras", -1),
             split_linear_modules_map=split_linear_modules_map,
         )
         errors = trans_lora._loras_errors

@@ -156,6 +156,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
                     self.profile_choice = gr.Dropdown(choices=self.memory_profile_choices, value=self.default_profile, label="Memory Profile (Advanced)")
                     self.preload_in_VRAM_choice = gr.Slider(0, 40000, value=self.server_config.get("preload_in_VRAM", 0), step=100, label="VRAM (MB) for Preloaded Models (0=profile default)")
+                    self.max_reserved_loras_choice = gr.Slider(
+                        -1,
+                        10000,
+                        value=self.server_config.get("max_reserved_loras", -1),
+                        step=1,
+                        label="Max Amount of Loras (in MB) to be Pinned To Reserved Memory (set it to 0-500MB if Out of Memory when starting Gen, -1= No limit)"
+                    )
                     self.release_RAM_btn = gr.Button("Force Unload Models from RAM")
 
                 with gr.Tab("Extensions"):
@@ -214,7 +221,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.VAE_precision_choice, self.compile_choice,
             self.depth_anything_v2_variant_choice, self.vae_config_choice, self.boost_choice,
-            self.profile_choice, self.preload_in_VRAM_choice,
+            self.profile_choice, self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
             self.enhancer_enabled_choice, self.enhancer_mode_choice, self.mmaudio_mode_choice, self.mmaudio_persistence_choice,
             self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
@@ -263,7 +270,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, VAE_precision_choice, compile_choice,
             depth_anything_v2_variant_choice, vae_config_choice, boost_choice,
-            profile_choice, preload_in_VRAM_choice,
+            profile_choice, preload_in_VRAM_choice, max_reserved_loras_choice,
             enhancer_enabled_choice, enhancer_mode_choice, mmaudio_mode_choice, mmaudio_persistence_choice,
             video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice,
             metadata_choice, embed_source_images_choice,
@@ -298,6 +305,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "notification_sound_volume": notification_sound_volume_choice,
             "max_frames_multiplier": max_frames_multiplier_choice, "display_stats": display_stats_choice,
             "enable_4k_resolutions": enable_4k_resolutions_choice,
+            "max_reserved_loras": max_reserved_loras_choice,
             "video_output_codec": video_output_codec_choice, "image_output_codec": image_output_codec_choice,
             "audio_output_codec": audio_output_codec_choice,
             "model_hierarchy_type": model_hierarchy_type_choice,
@@ -329,7 +337,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled",
-            "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "video_output_codec", "video_container",
+            "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "checkpoints_paths",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
         ]

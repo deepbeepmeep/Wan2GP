@@ -41,7 +41,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 - **LTX 2 - SUPER VRAM OPTIMIZATIONS**  
 
-*With WanGP 10.20 HD 720p Video Gens of 10s just need now 8GB of VRAM!*
+*With WanGP 10.21 HD 720p Video Gens of 10s just need now 8GB of VRAM!*
 
 LTX Team said this video gen was for 4k. So I had no choice but to squeeze more VRAM for further optimizations.
 
@@ -59,6 +59,9 @@ Use a *Control Video* to transfer *Pose*, *Depth*, *Canny Edges*. I have added s
 
 - **Start Image Strength**: if you set values lower than 1 you may to reduce the static image effect, you get sometime with LTX2 i2v
  
+- **Max Loras Pinned Slider**: Some users (with usually PC with less than 64 GB of RAM) have reported Out Of Memory although the model seemed to load just fine when starting a gen with Loras. This is sometime related to WanGP attempting (and failing due to unsufficient reserved RAM) to pin the Loras to Reserved Memory for faster gen. I have added a Slider at the bottom of the  *Configuration*  / *Performance* tab that you can use to prevent WanGP from Pinning Loras (to do so set it to 0). This may solve the oom crashes with *LTX2 Default (non distilled)*
+
+*update 10.21*: added slider Loras Max Pinning slider
 
 ### January 9st 2026: WanGP v10.11, Spoiled again
 

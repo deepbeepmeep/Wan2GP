@@ -84,8 +84,8 @@ AUTOSAVE_PATH = AUTOSAVE_FILENAME
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.6.12"
-WanGP_version = "10.21"
+target_mmgp_version = "3.6.13"
+WanGP_version = "10.22"
 settings_version = 2.43
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -136,35 +136,7 @@ def clear_gen_cache():
     if "_cache" in offload.shared_state:
         del offload.shared_state["_cache"]
 
-def _flush_torch_memory():
-    gc.collect()
-    if torch.cuda.is_available():
-        try:
-            torch.cuda.synchronize()
-        except torch.cuda.CudaError:
-            pass
-        for idx in range(torch.cuda.device_count()):
-            with torch.cuda.device(idx):
-                torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-        torch.cuda.reset_peak_memory_stats()
-    try:
-        torch._C._host_emptyCache()
-    except AttributeError:
-        pass
-    if os.name == "nt":
-        try:
-            import ctypes, ctypes.wintypes as wintypes, os as _os
-            PROCESS_SET_QUOTA = 0x0100
-            PROCESS_QUERY_INFORMATION = 0x0400
-            kernel32 = ctypes.windll.kernel32
-            psapi = ctypes.windll.psapi
-            handle = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, False, _os.getpid())
-            if handle:
-                psapi.EmptyWorkingSet(handle)
-                kernel32.CloseHandle(handle)
-        except Exception:
-            pass
+
 
 def release_model():
     global wan_model, offloadobj, reload_needed
@@ -175,12 +147,7 @@ def release_model():
     if offloadobj is not None:
         offloadobj.release()
         offloadobj = None
-    _flush_torch_memory()
-    from accelerate import init_empty_weights
-    with init_empty_weights():
-        for _ in range(3):
-            dummy_tensor = torch.nn.Embedding(256384, 1024)
-            dummy_tensor = None    
+    offload.flush_torch_caches()
     reload_needed = True
 def get_unique_id():
     global unique_id  
@@ -2885,28 +2852,6 @@ def save_quantized_model(model, model_type, model_filename, dtype,  config_file,
                 writer.write(json.dumps(saved_finetune_def, indent=4))
             print(f"The '{finetune_file}' definition file has been automatically updated with the local path to the new quantized model.")
 
-def save_gemma_text_encoder_files(wan_model, output_dir = "c:\\temp", send_cmd = None):
-    text_encoder = getattr(wan_model, "text_encoder", None)
-    if text_encoder is None:
-        return
-    gemma_root = getattr(text_encoder, "_gemma_root", None)
-    gemma_model = getattr(text_encoder, "model", None)
-    if gemma_root is None or gemma_model is None:
-        return
-
-    os.makedirs(output_dir, exist_ok=True)
-    base_name = os.path.basename(os.path.normpath(gemma_root))
-    merged_path = os.path.join(output_dir, f"{base_name}.safetensors")
-    quant_path = os.path.join(output_dir, f"{base_name}_quanto_bf16_int8.safetensors")
-    config_path = os.path.join(gemma_root, "config.json")
-    if not os.path.isfile(config_path):
-        config_path = None
-
-    if send_cmd is not None:
-        send_cmd("info", f"Saving Gemma weights to '{merged_path}' and quantized to '{quant_path}'.")
-
-    offload.save_model(gemma_model, merged_path, config_file_path=config_path)
-    offload.save_model(gemma_model, quant_path, config_file_path=config_path, do_quantize=True)
 
 def get_loras_preprocessor(transformer, model_type):
     preprocessor =  getattr(transformer, "preprocess_loras", None)
@@ -5330,7 +5275,12 @@ def generate_video(
         send_cmd("status", "Model loaded")
         reload_needed=  False
     if args.test:
-        save_gemma_text_encoder_files(wan_model, send_cmd=send_cmd)
+        skip_gemma_save = os.environ.get("WAN2GP_SKIP_GEMMA_SAVE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
         send_cmd("info", "Test mode: model loaded, skipping generation.")
         return
     overridden_attention = get_overridden_attention(model_type)
@@ -9219,10 +9169,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 )
 
             any_audio_prompt = model_def.get("any_audio_prompt", False)
-            audio_prompt_type_value = ui_get("audio_prompt_type", "A" if any_audio_prompt else "")
+            audio_prompt_type_sources_def = model_def.get("audio_prompt_type_sources", None)
+            audio_prompt_type_value = ui_get("audio_prompt_type", "A" if any_audio_prompt and audio_prompt_type_sources_def is None else "")
             any_multi_speakers = False
             if any_audio_prompt:
-                audio_prompt_type_sources_def = model_def.get("audio_prompt_type_sources", None)
                 any_single_speaker = not model_def.get("multi_speakers_only", False)
                 any_multi_speakers = not model_def.get("one_speaker_only", False) and not audio_only
                 audio_prompt_type_sources_labels_all = {

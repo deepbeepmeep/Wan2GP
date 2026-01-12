@@ -37,7 +37,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 ## 🔥 Latest Updates : 
 
-### January 11th 2026: WanGP v10.20, When there is no VRAM left there is still some VRAM left ...
+### January 12th 2026: WanGP v10.22, When there is no VRAM left there is still some VRAM left ...
 
 - **LTX 2 - SUPER VRAM OPTIMIZATIONS**  
 
@@ -57,11 +57,16 @@ After much suffering I have managed to reduce by at least 1/3 the VRAM requireme
 
 Use a *Control Video* to transfer *Pose*, *Depth*, *Canny Edges*. I have added some extra tweaks: with WanGP you can restrict the transfer to a *masked area*, define a *denoising strength* (how much the control video is going to be followed) and a *masking strength* (how much unmasked area is impacted) 
 
-- **Start Image Strength**: if you set values lower than 1 you may to reduce the static image effect, you get sometime with LTX2 i2v
+- **Start Image Strength**: This new slider will appear below a *Start Image* or Source *Video*. If you set it to values lower than 1 you may to reduce the static image effect, you get sometime with LTX2 i2v
  
-- **Max Loras Pinned Slider**: Some users (with usually PC with less than 64 GB of RAM) have reported Out Of Memory although the model seemed to load just fine when starting a gen with Loras. This is sometime related to WanGP attempting (and failing due to unsufficient reserved RAM) to pin the Loras to Reserved Memory for faster gen. I have added a Slider at the bottom of the  *Configuration*  / *Performance* tab that you can use to prevent WanGP from Pinning Loras (to do so set it to 0). This may solve the oom crashes with *LTX2 Default (non distilled)*
+- **Custom Gemma Text Encoder for LTX 2**: As a practical case, the *Heretic* text encoder is now supported by WanGP. Check the *finetune* doc, but in short create a *finetune* that has a *text_encoder_URLS* key that contains a list of one or more file paths or URLs.  
 
-*update 10.21*: added slider Loras Max Pinning slider
+- **Experimental Auto Recovery Failed Lora Pin**: Some users (with usually PC with less than 64 GB of RAM) have reported Out Of Memory although a model seemed to load just fine when starting a gen with Loras. This is sometime related to WanGP attempting (and failing due to unsufficient reserved RAM) to pin the Loras to Reserved Memory for faster gen. I have experimented a recovery mode that should release sufficient ressources to continue the Video Gen. This may solve the oom crashes with *LTX2 Default (non distilled)* 
+
+- **Max Loras Pinned Slider**:  If the Auto Recovery Mode is still not sufficient, I have added a Slider at the bottom of the  *Configuration*  / *Performance* tab that you can use to prevent WanGP from Pinning Loras (to do so set it to 0). As if there is no loading attempt there wont be any crash...
+
+*update 10.21*: added slider Loras Max Pinning slider\
+*update 10.22*: added support for custom Ltx2 Text Encoder + Auto Recovery mode if Lora Pinning failed
 
 ### January 9st 2026: WanGP v10.11, Spoiled again
 

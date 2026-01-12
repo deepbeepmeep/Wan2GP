@@ -234,6 +234,7 @@ class family_handler:
                 "sliding_window_overlap": 17,
                 "denoising_strength": 1.0,
                 "masking_strength": 0,
+                "audio_prompt_type": "",
             }
         )
         ui_defaults.setdefault("audio_scale", 1.0)

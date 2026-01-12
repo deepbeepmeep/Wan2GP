@@ -143,7 +143,7 @@ class SingleGPUModelBuilder(Generic[ModelType], ModelBuilderProtocol[ModelType],
                     default_dtype=dtype or torch.bfloat16,
                     ignore_missing_keys=self.ignore_missing_keys,
                 )
-                return self._return_model(meta_model, device)
+            return self._return_model(meta_model, device)
 
         model_paths = self.model_path if isinstance(self.model_path, tuple) else [self.model_path]
         model_state_dict = self.load_sd(model_paths, sd_ops=self.model_sd_ops, registry=self.registry, device=device)
@@ -152,25 +152,22 @@ class SingleGPUModelBuilder(Generic[ModelType], ModelBuilderProtocol[ModelType],
 
         quantization_map = {}
         post_load_hooks = []
-        try:
-            from mmgp import offload as mmgp_offload
-            from mmgp.quant_router import apply_pre_quantization, detect_and_convert
+        from mmgp import offload as mmgp_offload
+        from mmgp.quant_router import apply_pre_quantization, detect_and_convert
 
-            conv_result = detect_and_convert(sd, default_dtype=dtype or torch.bfloat16, verboseLevel=0)
-            sd = conv_result.get("state_dict", sd)
-            quantization_map = conv_result.get("quant_map", {}) or {}
+        conv_result = detect_and_convert(sd, default_dtype=dtype or torch.bfloat16, verboseLevel=0)
+        sd = conv_result.get("state_dict", sd)
+        quantization_map = conv_result.get("quant_map", {}) or {}
+        if quantization_map:
+            quantization_map, post_load_hooks = apply_pre_quantization(
+                meta_model,
+                sd,
+                quantization_map,
+                default_dtype=dtype,
+                verboseLevel=0,
+            )
             if quantization_map:
-                quantization_map, post_load_hooks = apply_pre_quantization(
-                    meta_model,
-                    sd,
-                    quantization_map,
-                    default_dtype=dtype,
-                    verboseLevel=0,
-                )
-                if quantization_map:
-                    mmgp_offload._requantize(meta_model, sd, quantization_map, default_dtype=dtype)
-        except Exception as exc:
-            logger.warning("Quantization handler skipped: %s", exc)
+                mmgp_offload._requantize(meta_model, sd, quantization_map, default_dtype=dtype)
 
         if dtype is not None and not quantization_map:
             sd = {key: value.to(dtype=dtype) for key, value in sd.items()}

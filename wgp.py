@@ -116,11 +116,7 @@ quant_router.unregister_handler(".fp8_quanto_bridge")
 for handler in _HANDLER_MODULES:
     quant_router.register_handler(handler)
 
-try:
-    from mmgp import quanto_int8_inject
-    # quanto_int8_inject.init_quanto_int8_patch()
-except Exception:
-    pass
+
 
 def set_wgp_global(variable_name: str, new_value: any) -> str:
     if variable_name not in globals():

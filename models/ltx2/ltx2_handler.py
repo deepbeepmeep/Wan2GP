@@ -218,6 +218,14 @@ class family_handler:
         if pipeline_kind != "distilled" and ui_defaults.get("guidance_phases", 0) < 2:
             ui_defaults["guidance_phases"] = 2
 
+        if settings_version < 2.43:
+            ui_defaults.update(
+                {
+                    "denoising_strength": 1.0,
+                    "masking_strength": 0,
+                }
+            )
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update(

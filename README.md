@@ -37,7 +37,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 ## 🔥 Latest Updates : 
 
-### January 12th 2026: WanGP v10.22, When there is no VRAM left there is still some VRAM left ...
+### January 12th 2026: WanGP v10.23, When there is no VRAM left there is still some VRAM left ...
 
 - **LTX 2 - SUPER VRAM OPTIMIZATIONS**  
 
@@ -66,7 +66,8 @@ Use a *Control Video* to transfer *Pose*, *Depth*, *Canny Edges*. I have added s
 - **Max Loras Pinned Slider**:  If the Auto Recovery Mode is still not sufficient, I have added a Slider at the bottom of the  *Configuration*  / *Performance* tab that you can use to prevent WanGP from Pinning Loras (to do so set it to 0). As if there is no loading attempt there wont be any crash...
 
 *update 10.21*: added slider Loras Max Pinning slider\
-*update 10.22*: added support for custom Ltx2 Text Encoder + Auto Recovery mode if Lora Pinning failed
+*update 10.22*: added support for custom Ltx2 Text Encoder + Auto Recovery mode if Lora Pinning failed\
+*update 10.23*: Fixed text prompt ignore in profile 1 & 2 (this created random output videos)
 
 ### January 9st 2026: WanGP v10.11, Spoiled again
 

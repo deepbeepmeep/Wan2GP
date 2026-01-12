@@ -315,7 +315,7 @@ class LTX2:
         else:
             checkpoint_path = model_filename
 
-        gemma_root = text_encoder_filepath
+        gemma_root = text_encoder_filepath if override_text_encoder is None else override_text_encoder
         spatial_upsampler_path = fl.locate_file(_SPATIAL_UPSCALER_FILENAME)
 
         # Keep internal FP8 off by default; mmgp handles quantization transparently.

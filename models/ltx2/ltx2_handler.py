@@ -10,11 +10,6 @@ _SPATIAL_UPSCALER_FILENAME = "ltx-2-spatial-upscaler-x2-1.0.safetensors"
 _DISTILLED_LORA_FILENAME = "ltx-2-19b-distilled-lora-384.safetensors"
 
 
-def get_text_encoder_name(text_encoder_quantization):
-    text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_MERGED_FILENAME}"
-    if text_encoder_quantization == "int8":
-        text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_QUANTO_FILENAME}"
-    return fl.locate_file(text_encoder_filename, True)
 
 
 class family_handler:
@@ -33,6 +28,13 @@ class family_handler:
     @staticmethod
     def query_family_infos():
         return {"ltx2": (40, "LTX-2")}
+
+    @staticmethod
+    def get_text_encoder_filename(text_encoder_quantization):
+        text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_MERGED_FILENAME}"
+        if text_encoder_quantization == "int8":
+            text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_QUANTO_FILENAME}"
+        return fl.locate_file(text_encoder_filename, True)
 
 
     @staticmethod
@@ -127,7 +129,7 @@ class family_handler:
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = get_text_encoder_name(text_encoder_quantization)
+        text_encoder_filename = family_handler.get_text_encoder_filename(text_encoder_quantization)
         gemma_files = [
             "added_tokens.json",
             "chat_template.json",
@@ -189,7 +191,7 @@ class family_handler:
             dtype=dtype,
             VAE_dtype=VAE_dtype,
             override_text_encoder=override_text_encoder,
-            text_encoder_filepath = get_text_encoder_name(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filepath = family_handler.get_text_encoder_filename(text_encoder_quantization),
         )
 
         pipe = {

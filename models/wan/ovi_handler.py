@@ -31,7 +31,7 @@ class family_handler:
         return wan_family_handler.register_lora_cli_args(parser)
 
     @staticmethod
-    def get_wan_text_encoder_filename(text_encoder_quantization):
+    def get_text_encoder_filename(text_encoder_quantization):
         text_encoder_filename =  "umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors"
         if text_encoder_quantization =="int8":
             text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_int8") 
@@ -112,7 +112,7 @@ class family_handler:
             checkpoint_dir=checkpoint_dir,
             model_def=model_def,
             model_filename = model_filename, 
-            text_encoder_filename = family_handler.get_wan_text_encoder_filename(text_encoder_quantization),
+            text_encoder_filename = family_handler.get_text_encoder_filename(text_encoder_quantization),
             dtype=dtype,
         )
 

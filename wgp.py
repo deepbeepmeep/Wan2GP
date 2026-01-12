@@ -2863,13 +2863,13 @@ def get_loras_preprocessor(transformer, model_type):
 
     return preprocessor_wrapper
 
-def get_local_model_filename(model_filename, use_locator = True):
+def get_local_model_filename(model_filename, use_locator = True, extra_paths = None):
     if model_filename.startswith("http"):
         local_model_filename =os.path.basename(model_filename)
     else:
         local_model_filename = model_filename
     if use_locator:
-        local_model_filename = fl.locate_file(local_model_filename, error_if_none= False)
+        local_model_filename = fl.locate_file(local_model_filename, error_if_none= False, extra_paths = extra_paths )
     return local_model_filename
     
 
@@ -2999,14 +2999,17 @@ def download_models(model_filename = None, model_type= None, module_type = False
                 raise Exception(f"'{url}' is invalid for Model '{model_type}' : {str(e)}'")
             if module_type: return
         model_filename = None
+    text_encoder_path = None
+    if hasattr(model_type_handler, "get_text_encoder_filename"):
+        text_encoder_path = [os.path.dirname(model_type_handler.get_text_encoder_filename("bf16"))]
 
-    for prop in ["preload_URLs", "text_encoder_URLs"]:
+    for prop, extra_paths in zip(["preload_URLs", "text_encoder_URLs"], [None, text_encoder_path ]):
         preload_URLs = get_model_recursive_prop(model_type, prop, return_list= True)
         if prop in  ["text_encoder_URLs"]:
             preload_URLs = [get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=preload_URLs)] if len(preload_URLs) > 0 else []
 
         for url in preload_URLs:
-            filename = get_local_model_filename(url)
+            filename = get_local_model_filename(url, extra_paths=extra_paths)
             if filename is None: 
                 filename = fl.get_download_location(os.path.basename(url))
                 if not url.startswith("http"):
@@ -3297,18 +3300,21 @@ def load_models(model_type, override_profile = -1, **model_kwargs):
         else: 
             print(f"Loading Module '{filename}' ...")
 
-
+    model_type_handler = model_types_handlers[base_model_type] 
     override_text_encoder = get_model_recursive_prop(model_type, "text_encoder_URLs", return_list= True)
     if len( override_text_encoder) > 0:
         override_text_encoder = get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=override_text_encoder) if len(override_text_encoder) > 0 else None
         if override_text_encoder is not None:
-            override_text_encoder =  get_local_model_filename(override_text_encoder)
+            text_encoder_path = None
+            if hasattr(model_type_handler, "get_text_encoder_filename"):
+                text_encoder_path = [os.path.dirname(model_type_handler.get_text_encoder_filename("bf16"))]
+            override_text_encoder =  get_local_model_filename(override_text_encoder, extra_paths=text_encoder_path)
             if override_text_encoder is not None:
                 print(f"Loading Text Encoder '{override_text_encoder}' ...")
     else:
         override_text_encoder = None
     torch.set_default_device('cpu')    
-    wan_model, pipe = model_types_handlers[base_model_type].load_model(
+    wan_model, pipe = model_type_handler.load_model(
                 local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
                 dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, override_text_encoder = override_text_encoder, **model_kwargs )
 

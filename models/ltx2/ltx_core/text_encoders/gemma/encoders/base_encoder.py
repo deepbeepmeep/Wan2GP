@@ -12,7 +12,7 @@ from ..embeddings_connector import Embeddings1DConnector
 from ..feature_extractor import GemmaFeaturesExtractorProjLinear
 from ..tokenizer import LTXVGemmaTokenizer
 from shared.utils import files_locator as fl
-from .....ltx2_handler import  _GEMMA_FOLDER, get_text_encoder_name
+from .....ltx2_handler import  _GEMMA_FOLDER, family_handler
 
 import os
 
@@ -349,9 +349,9 @@ def module_ops_from_gemma_root(gemma_root: str) -> tuple[ModuleOps, ...]:
                         break
 
             if len(submodels_prefixes):
-                original_text_encoder = fl.locate_file( os.path.join(_GEMMA_FOLDER, get_text_encoder_name("int8")), error_if_none=False) 
-                if original_text_encoder is None :
-                    original_text_encoder = fl.locate_file(os.path.join(_GEMMA_FOLDER, get_text_encoder_name("bf16")), error_if_none=True) 
+                original_text_encoder = family_handler.get_text_encoder_filename("int8")
+                if not os.path.isfile(original_text_encoder) :
+                    original_text_encoder =  family_handler.get_text_encoder_filename("bf16")
                 from mmgp.offload import load_sd
                 ori_sd, ori_qm, ori_twm = load_sd(original_text_encoder, list(submodels_prefixes.keys()), keep_prefixes= True, writable_tensors=False)
                 if ori_twm is None:

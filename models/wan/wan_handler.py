@@ -183,7 +183,7 @@ class family_handler():
             skip_steps_cache.coefficients = coefficients
 
     @staticmethod
-    def get_wan_text_encoder_filename(text_encoder_quantization):
+    def get_text_encoder_filename(text_encoder_quantization):
         text_encoder_filename =  "umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors"
         if text_encoder_quantization =="int8":
             text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_int8") 
@@ -676,7 +676,7 @@ class family_handler():
     
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = family_handler.get_wan_text_encoder_filename(text_encoder_quantization)
+        text_encoder_filename = family_handler.get_text_encoder_filename(text_encoder_quantization)
 
         if test_wan_5B(base_model_type):
             wan_files = []
@@ -764,7 +764,7 @@ class family_handler():
             model_type = model_type,        
             model_def = model_def,
             base_model_type=base_model_type,
-            text_encoder_filename= family_handler.get_wan_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filename= family_handler.get_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
             quantizeTransformer = quantizeTransformer,
             dtype = dtype,
             VAE_dtype = VAE_dtype, 

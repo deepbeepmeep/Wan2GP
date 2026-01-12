@@ -30,7 +30,10 @@ from .utils.helpers import (
     generate_enhanced_prompt,
     get_device,
     image_conditionings_by_replacing_latent,
+    latent_conditionings_by_latent_sequence,
+    prepare_mask_injection,
     simple_denoising_func,
+    video_conditionings_by_keyframe,
 )
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
@@ -83,6 +86,8 @@ class DistilledPipeline:
         num_frames: int,
         frame_rate: float,
         images: list[tuple[str, int, float]],
+        video_conditioning: list[tuple[str, float]] | None = None,
+        latent_conditioning_stage2: torch.Tensor | None = None,
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
         audio_conditionings: list | None = None,
@@ -90,10 +95,14 @@ class DistilledPipeline:
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
         text_connectors: dict | None = None,
+        masking_source: dict | None = None,
+        masking_strength: float | None = None,
+        return_latent_slice: slice | None = None,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
 
         generator = torch.Generator(device=self.device).manual_seed(seed)
+        mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
         stepper = EulerDiffusionStep()
         dtype = torch.bfloat16
@@ -120,6 +129,7 @@ class DistilledPipeline:
         video_encoder = self.model_ledger.video_encoder()
         transformer = self.model_ledger.transformer()
         bind_interrupt_check(transformer, interrupt_check)
+        # DISTILLED_SIGMA_VALUES = [0.421875, 0]
         stage_1_sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
         pass_no = 1
         if loras_slists is not None:
@@ -141,6 +151,7 @@ class DistilledPipeline:
             audio_state: LatentState,
             stepper: DiffusionStepProtocol,
             preview_tools: VideoLatentTools | None = None,
+            mask_context=None,
         ) -> tuple[LatentState, LatentState]:
             return euler_denoising_loop(
                 sigmas=sigmas,
@@ -152,6 +163,7 @@ class DistilledPipeline:
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
                 ),
+                mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
@@ -172,8 +184,32 @@ class DistilledPipeline:
             video_encoder=video_encoder,
             dtype=dtype,
             device=self.device,
+            tiling_config=tiling_config,
         )
+        if video_conditioning:
+            stage_1_conditionings += video_conditionings_by_keyframe(
+                video_conditioning=video_conditioning,
+                height=stage_1_output_shape.height,
+                width=stage_1_output_shape.width,
+                num_frames=num_frames,
+                video_encoder=video_encoder,
+                dtype=dtype,
+                device=self.device,
+                tiling_config=tiling_config,
+            )
 
+        mask_context = prepare_mask_injection(
+            masking_source=masking_source,
+            masking_strength=masking_strength,
+            output_shape=stage_1_output_shape,
+            video_encoder=video_encoder,
+            components=self.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+            generator=mask_generator,
+            num_steps=len(stage_1_sigmas) - 1,
+        )
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_1_output_shape,
             conditionings=stage_1_conditionings,
@@ -185,6 +221,7 @@ class DistilledPipeline:
             components=self.pipeline_components,
             dtype=dtype,
             device=self.device,
+            mask_context=mask_context,
         )
         if video_state is None or audio_state is None:
             return None, None
@@ -220,6 +257,25 @@ class DistilledPipeline:
             video_encoder=video_encoder,
             dtype=dtype,
             device=self.device,
+            tiling_config=tiling_config,
+        )
+        if latent_conditioning_stage2 is not None:
+            stage_2_conditionings += latent_conditionings_by_latent_sequence(
+                latent_conditioning_stage2,
+                strength=1.0,
+                start_index=0,
+            )
+        mask_context = prepare_mask_injection(
+            masking_source=masking_source,
+            masking_strength=masking_strength,
+            output_shape=stage_2_output_shape,
+            video_encoder=video_encoder,
+            components=self.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+            generator=mask_generator,
+            num_steps=len(stage_2_sigmas) - 1,
         )
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_2_output_shape,
@@ -235,6 +291,7 @@ class DistilledPipeline:
             noise_scale=stage_2_sigmas[0],
             initial_video_latent=upscaled_video_latent,
             initial_audio_latent=audio_state.latent,
+            mask_context=mask_context,
         )
         if video_state is None or audio_state is None:
             return None, None
@@ -246,10 +303,15 @@ class DistilledPipeline:
         del video_encoder
         cleanup_memory()
 
+        latent_slice = None
+        if return_latent_slice is not None:
+            latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
         decoded_video = vae_decode_video(video_state.latent, self.model_ledger.video_decoder(), tiling_config)
         decoded_audio = vae_decode_audio(
             audio_state.latent, self.model_ledger.audio_decoder(), self.model_ledger.vocoder()
         )
+        if latent_slice is not None:
+            return decoded_video, decoded_audio, latent_slice
         return decoded_video, decoded_audio
 
 

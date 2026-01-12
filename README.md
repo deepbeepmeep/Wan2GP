@@ -36,6 +36,33 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 -----
 
 ## 🔥 Latest Updates : 
+
+### January 11th 2026: WanGP v10.20, When there is no VRAM left there is still some VRAM left ...
+
+- **LTX 2 - SUPER VRAM OPTIMIZATIONS**  
+
+*With WanGP 10.21 HD 720p Video Gens of 10s just need now 8GB of VRAM!*
+
+LTX Team said this video gen was for 4k. So I had no choice but to squeeze more VRAM for further optimizations.
+
+After much suffering I have managed to reduce by at least 1/3 the VRAM requirements of LTX 2, which means:
+  - 10s at 720p can be done with only 8GB of VRAM
+  - 10s at 1080p with only 12 GB of VRAM
+  - 20s at 1080p with only 16 GB of VRAM
+  - 10s at Full 4k (3840 x 2176 !!!) with 24 GB of VRAM.  However the bad news is LTX 2 video is not for 4K, as 4K outputs may give you nightmares ...
+
+3K/4K resolutions will be available only if you enable them in the *Config* / *General* tab.
+
+- **Ic Loras support**
+
+Use a *Control Video* to transfer *Pose*, *Depth*, *Canny Edges*. I have added some extra tweaks: with WanGP you can restrict the transfer to a *masked area*, define a *denoising strength* (how much the control video is going to be followed) and a *masking strength* (how much unmasked area is impacted) 
+
+- **Start Image Strength**: if you set values lower than 1 you may to reduce the static image effect, you get sometime with LTX2 i2v
+ 
+- **Max Loras Pinned Slider**: Some users (with usually PC with less than 64 GB of RAM) have reported Out Of Memory although the model seemed to load just fine when starting a gen with Loras. This is sometime related to WanGP attempting (and failing due to unsufficient reserved RAM) to pin the Loras to Reserved Memory for faster gen. I have added a Slider at the bottom of the  *Configuration*  / *Performance* tab that you can use to prevent WanGP from Pinning Loras (to do so set it to 0). This may solve the oom crashes with *LTX2 Default (non distilled)*
+
+*update 10.21*: added slider Loras Max Pinning slider
+
 ### January 9st 2026: WanGP v10.11, Spoiled again
 
 - **LTX 2**: here is the long awaited *Ovi Challenger*, LTX-2 generates video and an audio soundtrack. As usual this WanGP version is *low VRAM*. You should be able to run it with as low as 10 GB of VRAM. If you have at least 24 GB of VRAM you will be able to generate 20s at 720p in a single window in only 2 minutes with the distilled model.  WanGP LTX 2 version supports on day one, *Start/End keyframes*, *Sliding-Window* / *Video Continuation* and *Generation Preview*. A *LTX 2 distilled* is part of the package for a very fast generation.

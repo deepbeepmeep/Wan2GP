@@ -9,7 +9,7 @@ from .attention import AttentionCallable, AttentionFunction
 from .modality import Modality
 from .rope import LTXRopeType
 from .text_projection import PixArtAlphaTextProjection
-from .transformer import BasicAVTransformerBlock, TransformerConfig
+from .transformer import BasicAVTransformerBlock, TransformerConfig, _apply_scale_shift
 from .transformer_args import (
     MultiModalTransformerArgsPreprocessor,
     TransformerArgs,
@@ -392,7 +392,7 @@ class LTXModel(torch.nn.Module):
         shift, scale = scale_shift_values[:, :, 0], scale_shift_values[:, :, 1]
 
         x = norm_out(x)
-        x = x * (1 + scale) + shift
+        x = _apply_scale_shift(x, scale, shift)
         x = proj_out(x)
         return x
 

@@ -118,6 +118,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         choices=[("Default", 1), ("x2", 2), ("x3", 3), ("x4", 4), ("x5", 5), ("x6", 6), ("x7", 7)],
                         value=self.server_config.get("max_frames_multiplier", 1), label="Max Frames Multiplier (requires restart)"
                     )
+                    self.enable_4k_resolutions_choice = gr.Dropdown(
+                        choices=[("Off", 0), ("On", 1)],
+                        value=self.server_config.get("enable_4k_resolutions", 0),
+                        label="3K/4K Resolutions"
+                    )
                     default_paths = self.fl.default_checkpoints_paths
                     checkpoints_paths_text = "\n".join(self.server_config.get("checkpoints_paths", default_paths))
                     self.checkpoints_paths_choice = gr.Textbox(
@@ -140,7 +145,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
 
                 with gr.Tab("Performance"):
-                    self.quantization_choice = gr.Dropdown(choices=[("Scaled Int8/Fp8 (recommended)", "int8"), ("16-bit (no quantization)", "bf16")], value=self.transformer_quantization, label="Transformer Model Quantization (if available)")
+                    self.quantization_choice = gr.Dropdown(choices=[("Scaled Int8 (recommended)", "int8"), ("Scaled Fp8", "fp8"), ("16-bit (no quantization)", "bf16")], value=self.transformer_quantization, label="Transformer Model Quantization (if available otherwise get the closest available)")
                     self.transformer_dtype_policy_choice = gr.Dropdown(choices=[("Auto (Best for Hardware)", ""), ("FP16", "fp16"), ("BF16", "bf16")], value=self.transformer_dtype_policy, label="Transformer Data Type (if available)")
                     self.mixed_precision_choice = gr.Dropdown(choices=[("16-bit only (less VRAM)", "0"), ("Mixed 16/32-bit (better quality)", "1")], value=self.server_config.get("mixed_precision", "0"), label="Transformer Engine Precision")
                     self.text_encoder_quantization_choice = gr.Dropdown(choices=[("16-bit (more RAM, better quality)", "bf16"), ("8-bit (less RAM, slightly lower quality)", "int8")], value=self.text_encoder_quantization, label="Text Encoder Precision")
@@ -151,6 +156,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
                     self.profile_choice = gr.Dropdown(choices=self.memory_profile_choices, value=self.default_profile, label="Memory Profile (Advanced)")
                     self.preload_in_VRAM_choice = gr.Slider(0, 40000, value=self.server_config.get("preload_in_VRAM", 0), step=100, label="VRAM (MB) for Preloaded Models (0=profile default)")
+                    self.max_reserved_loras_choice = gr.Slider(
+                        -1,
+                        10000,
+                        value=self.server_config.get("max_reserved_loras", -1),
+                        step=1,
+                        label="Max Amount of Loras (in MB) to be Pinned To Reserved Memory (set it to 0-500MB if Out of Memory when starting Gen, -1= No limit)"
+                    )
                     self.release_RAM_btn = gr.Button("Force Unload Models from RAM")
 
                 with gr.Tab("Extensions"):
@@ -204,12 +216,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
             self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice,
-            self.display_stats_choice, self.max_frames_multiplier_choice, self.checkpoints_paths_choice,
+            self.display_stats_choice, self.max_frames_multiplier_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice,
             self.UI_theme_choice, self.queue_color_scheme_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.VAE_precision_choice, self.compile_choice,
             self.depth_anything_v2_variant_choice, self.vae_config_choice, self.boost_choice,
-            self.profile_choice, self.preload_in_VRAM_choice,
+            self.profile_choice, self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
             self.enhancer_enabled_choice, self.enhancer_mode_choice, self.mmaudio_mode_choice, self.mmaudio_persistence_choice,
             self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
@@ -253,12 +265,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
         (
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
             attention_choice, preload_model_policy_choice, clear_file_list_choice,
-            display_stats_choice, max_frames_multiplier_choice, checkpoints_paths_choice,
+            display_stats_choice, max_frames_multiplier_choice, enable_4k_resolutions_choice, checkpoints_paths_choice,
             UI_theme_choice, queue_color_scheme_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, VAE_precision_choice, compile_choice,
             depth_anything_v2_variant_choice, vae_config_choice, boost_choice,
-            profile_choice, preload_in_VRAM_choice,
+            profile_choice, preload_in_VRAM_choice, max_reserved_loras_choice,
             enhancer_enabled_choice, enhancer_mode_choice, mmaudio_mode_choice, mmaudio_persistence_choice,
             video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice,
             metadata_choice, embed_source_images_choice,
@@ -292,6 +304,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
             "max_frames_multiplier": max_frames_multiplier_choice, "display_stats": display_stats_choice,
+            "enable_4k_resolutions": enable_4k_resolutions_choice,
+            "max_reserved_loras": max_reserved_loras_choice,
             "video_output_codec": video_output_codec_choice, "image_output_codec": image_output_codec_choice,
             "audio_output_codec": audio_output_codec_choice,
             "model_hierarchy_type": model_hierarchy_type_choice,
@@ -323,7 +337,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled",
-            "max_frames_multiplier", "display_stats", "video_output_codec", "video_container",
+            "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "checkpoints_paths",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
         ]

@@ -48,7 +48,9 @@ class _BasicTransformerBlock1D(torch.nn.Module):
         norm_hidden_states = norm_hidden_states.squeeze(1)
 
         # 2. Self-Attention
-        attn_output = self.attn1(norm_hidden_states, mask=attention_mask, pe=pe)
+        x_list = [norm_hidden_states]
+        del norm_hidden_states
+        attn_output = self.attn1(x_list, mask=attention_mask, pe=pe)
 
         hidden_states = attn_output + hidden_states
         if hidden_states.ndim == 4:

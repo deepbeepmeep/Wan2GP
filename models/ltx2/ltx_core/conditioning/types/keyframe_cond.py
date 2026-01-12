@@ -33,7 +33,11 @@ class VideoConditionByKeyframeIndex(ConditioningItem):
             scale_factors=latent_tools.scale_factors,
             causal_fix=latent_tools.causal_fix if self.frame_idx == 0 else False,
         )
-
+        remove_prepend = False
+        if self.frame_idx < 0:
+            self.frame_idx  = - self.frame_idx 
+            remove_prepend = True
+        
         positions[:, 0, ...] += self.frame_idx
         positions = positions.to(dtype=torch.float32)
         positions[:, 0, ...] /= latent_tools.fps
@@ -44,6 +48,11 @@ class VideoConditionByKeyframeIndex(ConditioningItem):
             device=self.keyframes.device,
             dtype=self.keyframes.dtype,
         )
+        if remove_prepend:
+            latent_frame_tokens = self.keyframes.shape[-1] * self.keyframes.shape[-2]
+            tokens = tokens[:, latent_frame_tokens:]
+            denoise_mask = denoise_mask[:, latent_frame_tokens:]
+            positions = positions[:, :, latent_frame_tokens:]
 
         return LatentState(
             latent=torch.cat([latent_state.latent, tokens], dim=1),

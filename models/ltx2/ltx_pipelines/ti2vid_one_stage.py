@@ -27,6 +27,7 @@ from .utils.helpers import (
     get_device,
     guider_denoising_func,
     image_conditionings_by_replacing_latent,
+    prepare_mask_injection,
 )
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
@@ -84,10 +85,13 @@ class TI2VidOneStagePipeline:
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
         text_connectors: dict | None = None,
+        masking_source: dict | None = None,
+        masking_strength: float | None = None,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=False)
 
         generator = torch.Generator(device=self.device).manual_seed(seed)
+        mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
         stepper = EulerDiffusionStep()
         cfg_guider = CFGGuider(cfg_guidance_scale)
@@ -139,6 +143,7 @@ class TI2VidOneStagePipeline:
             audio_state: LatentState,
             stepper: DiffusionStepProtocol,
             preview_tools: VideoLatentTools | None = None,
+            mask_context=None,
         ) -> tuple[LatentState, LatentState]:
             return euler_denoising_loop(
                 sigmas=sigmas,
@@ -153,6 +158,7 @@ class TI2VidOneStagePipeline:
                     a_context_n,
                     transformer=transformer,  # noqa: F821
                 ),
+                mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
@@ -169,6 +175,18 @@ class TI2VidOneStagePipeline:
             device=self.device,
         )
 
+        mask_context = prepare_mask_injection(
+            masking_source=masking_source,
+            masking_strength=masking_strength,
+            output_shape=stage_1_output_shape,
+            video_encoder=video_encoder,
+            components=self.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=None,
+            generator=mask_generator,
+            num_steps=len(sigmas) - 1,
+        )
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_1_output_shape,
             conditionings=stage_1_conditionings,
@@ -180,6 +198,7 @@ class TI2VidOneStagePipeline:
             components=self.pipeline_components,
             dtype=dtype,
             device=self.device,
+            mask_context=mask_context,
         )
         if video_state is None or audio_state is None:
             return None, None

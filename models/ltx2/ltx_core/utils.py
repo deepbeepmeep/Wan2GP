@@ -3,12 +3,23 @@ from typing import Any
 import torch
 
 
-def rms_norm(x: torch.Tensor, weight: torch.Tensor | None = None, eps: float = 1e-6) -> torch.Tensor:
-    """Root-mean-square (RMS) normalize `x` over its last dimension.
-    Thin wrapper around `torch.nn.functional.rms_norm` that infers the normalized
-    shape and forwards `weight` and `eps`.
-    """
-    return torch.nn.functional.rms_norm(x, (x.shape[-1],), weight=weight, eps=eps)
+def rms_norm(x: torch.Tensor, weight: torch.Tensor | None = None, eps: float = 1e-6, in_place = False) -> torch.Tensor:
+    # deepbeepmeep RMS Norm
+    dtype = x.dtype
+    y = x.float()
+    y.pow_(2)
+    y = y.mean(dim=-1, keepdim=True)
+    y += eps
+    y.rsqrt_()
+    if in_place:
+        x *=  y
+    else:
+        x = x * y.to(dtype)
+    if weight is not None:
+        x *= weight
+    return x
+
+    # return torch.nn.functional.rms_norm(x, (x.shape[-1],), weight=weight, eps=eps)
 
 
 def check_config_value(config: dict, key: str, expected: Any) -> None:  # noqa: ANN401

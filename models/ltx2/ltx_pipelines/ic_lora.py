@@ -6,7 +6,7 @@ import torch
 from ..ltx_core.components.diffusion_steps import EulerDiffusionStep
 from ..ltx_core.components.noisers import GaussianNoiser
 from ..ltx_core.components.protocols import DiffusionStepProtocol
-from ..ltx_core.conditioning import ConditioningItem, VideoConditionByKeyframeIndex
+from ..ltx_core.conditioning import ConditioningItem
 from ..ltx_core.loader import LoraPathStrengthAndSDOps
 from ..ltx_core.model.audio_vae import decode_audio as vae_decode_audio
 from ..ltx_core.model.upsampler import upsample_video
@@ -31,9 +31,11 @@ from .utils.helpers import (
     generate_enhanced_prompt,
     get_device,
     image_conditionings_by_replacing_latent,
+    prepare_mask_injection,
     simple_denoising_func,
+    video_conditionings_by_keyframe,
 )
-from .utils.media_io import encode_video, load_video_conditioning
+from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
 from shared.utils.loras_mutipliers import update_loras_slists
 
@@ -102,10 +104,13 @@ class ICLoraPipeline:
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
         text_connectors: dict | None = None,
+        masking_source: dict | None = None,
+        masking_strength: float | None = None,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
 
         generator = torch.Generator(device=self.device).manual_seed(seed)
+        mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
         stepper = EulerDiffusionStep()
         dtype = torch.bfloat16
@@ -155,6 +160,7 @@ class ICLoraPipeline:
             audio_state: LatentState,
             stepper: DiffusionStepProtocol,
             preview_tools: VideoLatentTools | None = None,
+            mask_context=None,
         ) -> tuple[LatentState, LatentState]:
             return euler_denoising_loop(
                 sigmas=sigmas,
@@ -166,6 +172,7 @@ class ICLoraPipeline:
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
                 ),
+                mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
@@ -186,6 +193,19 @@ class ICLoraPipeline:
             width=stage_1_output_shape.width,
             video_encoder=video_encoder,
             num_frames=num_frames,
+            tiling_config=tiling_config,
+        )
+        mask_context = prepare_mask_injection(
+            masking_source=masking_source,
+            masking_strength=masking_strength,
+            output_shape=stage_1_output_shape,
+            video_encoder=video_encoder,
+            components=self.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+            generator=mask_generator,
+            num_steps=len(stage_1_sigmas) - 1,
         )
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_1_output_shape,
@@ -198,6 +218,7 @@ class ICLoraPipeline:
             components=self.pipeline_components,
             dtype=dtype,
             device=self.device,
+            mask_context=mask_context,
         )
         if video_state is None or audio_state is None:
             return None, None
@@ -240,6 +261,7 @@ class ICLoraPipeline:
             audio_state: LatentState,
             stepper: DiffusionStepProtocol,
             preview_tools: VideoLatentTools | None = None,
+            mask_context=None,
         ) -> tuple[LatentState, LatentState]:
             return euler_denoising_loop(
                 sigmas=sigmas,
@@ -251,6 +273,7 @@ class ICLoraPipeline:
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
                 ),
+                mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
@@ -265,8 +288,21 @@ class ICLoraPipeline:
             video_encoder=video_encoder,
             dtype=self.dtype,
             device=self.device,
+            tiling_config=tiling_config,
         )
 
+        mask_context = prepare_mask_injection(
+            masking_source=masking_source,
+            masking_strength=masking_strength,
+            output_shape=stage_2_output_shape,
+            video_encoder=video_encoder,
+            components=self.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+            generator=mask_generator,
+            num_steps=len(distilled_sigmas) - 1,
+        )
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_2_output_shape,
             conditionings=stage_2_conditionings,
@@ -281,6 +317,7 @@ class ICLoraPipeline:
             noise_scale=distilled_sigmas[0],
             initial_video_latent=upscaled_video_latent,
             initial_audio_latent=audio_state.latent,
+            mask_context=mask_context,
         )
         if video_state is None or audio_state is None:
             return None, None
@@ -306,6 +343,7 @@ class ICLoraPipeline:
         width: int,
         num_frames: int,
         video_encoder: VideoEncoder,
+        tiling_config: TilingConfig | None = None,
     ) -> list[ConditioningItem]:
         conditionings = image_conditionings_by_replacing_latent(
             images=images,
@@ -314,19 +352,20 @@ class ICLoraPipeline:
             video_encoder=video_encoder,
             dtype=self.dtype,
             device=self.device,
+            tiling_config=tiling_config,
         )
 
-        for video_path, strength in video_conditioning:
-            video = load_video_conditioning(
-                video_path=video_path,
+        if video_conditioning:
+            conditionings += video_conditionings_by_keyframe(
+                video_conditioning=video_conditioning,
                 height=height,
                 width=width,
-                frame_cap=num_frames,
+                num_frames=num_frames,
+                video_encoder=video_encoder,
                 dtype=self.dtype,
                 device=self.device,
+                tiling_config=tiling_config,
             )
-            encoded_video = video_encoder(video)
-            conditionings.append(VideoConditionByKeyframeIndex(keyframes=encoded_video, frame_idx=0, strength=strength))
 
         return conditionings
 

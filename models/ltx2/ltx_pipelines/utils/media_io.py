@@ -141,6 +141,32 @@ def _normalize_image_tensor(image: torch.Tensor) -> torch.Tensor:
     raise ValueError(f"Unsupported image tensor shape: {tuple(image.shape)}")
 
 
+def _coerce_video_input(video_input: object) -> torch.Tensor:
+    if isinstance(video_input, Image.Image):
+        image = np.array(video_input)[..., :3]
+        return torch.tensor(image, dtype=torch.float32)
+    if isinstance(video_input, np.ndarray):
+        return torch.tensor(video_input, dtype=torch.float32)
+    if torch.is_tensor(video_input):
+        return video_input.detach().clone().to(dtype=torch.float32)
+    raise TypeError(f"Unsupported video input type: {type(video_input)}")
+
+
+def _normalize_video_tensor(video: torch.Tensor) -> torch.Tensor:
+    if video.ndim == 3:
+        if video.shape[-1] in (1, 3, 4):
+            return video.unsqueeze(0)
+        if video.shape[0] in (1, 3, 4):
+            return video.permute(1, 2, 0).unsqueeze(0)
+    if video.ndim == 4:
+        if video.shape[-1] in (1, 3, 4):
+            return video
+        if video.shape[0] in (1, 3, 4):
+            return video.permute(1, 2, 3, 0)
+        if video.shape[1] in (1, 3, 4):
+            return video.permute(0, 2, 3, 1)
+    raise ValueError(f"Unsupported video tensor shape: {tuple(video.shape)}")
+
 def _scale_to_255(image: torch.Tensor) -> torch.Tensor:
     if not torch.is_floating_point(image):
         return image.to(dtype=torch.float32)
@@ -180,19 +206,34 @@ def load_image_conditioning(
 
 
 def load_video_conditioning(
-    video_path: str, height: int, width: int, frame_cap: int, dtype: torch.dtype, device: torch.device
+    video_path: str | torch.Tensor | np.ndarray | Image.Image,
+    height: int,
+    width: int,
+    frame_cap: int,
+    dtype: torch.dtype,
+    device: torch.device,
 ) -> torch.Tensor:
     """
-    Loads a video from a path and preprocesses it for conditioning.
+    Loads a video from a path or tensor and preprocesses it for conditioning.
     Note: The video is resized to the nearest multiple of 2 for compatibility with video codecs.
     """
-    frames = decode_video_from_file(path=video_path, frame_cap=frame_cap, device=device)
-    result = None
-    for f in frames:
-        frame = resize_and_center_crop(f.to(torch.float32), height, width)
-        frame = normalize_latent(frame, device, dtype)
-        result = frame if result is None else torch.cat([result, frame], dim=2)
-    return result
+    if isinstance(video_path, str):
+        frames = decode_video_from_file(path=video_path, frame_cap=frame_cap, device=device)
+        result = None
+        for f in frames:
+            frame = resize_and_center_crop(f.to(torch.float32), height, width)
+            frame = normalize_latent(frame, device, dtype)
+            result = frame if result is None else torch.cat([result, frame], dim=2)
+        return result
+
+    video = _coerce_video_input(video_path)
+    video = _normalize_video_tensor(video)
+    if frame_cap is not None and video.shape[0] > frame_cap:
+        video = video[:frame_cap]
+    video = _scale_to_255(video)
+    video = video.to(device=device)
+    video = resize_and_center_crop(video, height, width)
+    return normalize_latent(video, device, dtype)
 
 
 def decode_image(image_path: str) -> np.ndarray:

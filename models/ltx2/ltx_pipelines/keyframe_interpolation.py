@@ -32,6 +32,7 @@ from .utils.helpers import (
     get_device,
     guider_denoising_func,
     image_conditionings_by_adding_guiding_latent,
+    prepare_mask_injection,
     simple_denoising_func,
 )
 from .utils.media_io import encode_video
@@ -98,10 +99,13 @@ class KeyframeInterpolationPipeline:
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
         text_connectors: dict | None = None,
+        masking_source: dict | None = None,
+        masking_strength: float | None = None,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
 
         generator = torch.Generator(device=self.device).manual_seed(seed)
+        mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
         stepper = EulerDiffusionStep()
         cfg_guider = CFGGuider(cfg_guidance_scale)
@@ -153,6 +157,7 @@ class KeyframeInterpolationPipeline:
             audio_state: LatentState,
             stepper: DiffusionStepProtocol,
             preview_tools: VideoLatentTools | None = None,
+            mask_context=None,
         ) -> tuple[LatentState, LatentState]:
             return euler_denoising_loop(
                 sigmas=sigmas,
@@ -167,6 +172,7 @@ class KeyframeInterpolationPipeline:
                     a_context_n,
                     transformer=transformer,  # noqa: F821
                 ),
+                mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
@@ -187,6 +193,19 @@ class KeyframeInterpolationPipeline:
             video_encoder=video_encoder,
             dtype=dtype,
             device=self.device,
+            tiling_config=tiling_config,
+        )
+        mask_context = prepare_mask_injection(
+            masking_source=masking_source,
+            masking_strength=masking_strength,
+            output_shape=stage_1_output_shape,
+            video_encoder=video_encoder,
+            components=self.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+            generator=mask_generator,
+            num_steps=len(sigmas) - 1,
         )
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_1_output_shape,
@@ -199,6 +218,7 @@ class KeyframeInterpolationPipeline:
             components=self.pipeline_components,
             dtype=dtype,
             device=self.device,
+            mask_context=mask_context,
         )
         if video_state is None or audio_state is None:
             return None, None
@@ -241,6 +261,7 @@ class KeyframeInterpolationPipeline:
             audio_state: LatentState,
             stepper: DiffusionStepProtocol,
             preview_tools: VideoLatentTools | None = None,
+            mask_context=None,
         ) -> tuple[LatentState, LatentState]:
             return euler_denoising_loop(
                 sigmas=sigmas,
@@ -252,6 +273,7 @@ class KeyframeInterpolationPipeline:
                     audio_context=a_context_p,
                     transformer=transformer,  # noqa: F821
                 ),
+                mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
@@ -266,6 +288,19 @@ class KeyframeInterpolationPipeline:
             video_encoder=video_encoder,
             dtype=dtype,
             device=self.device,
+            tiling_config=tiling_config,
+        )
+        mask_context = prepare_mask_injection(
+            masking_source=masking_source,
+            masking_strength=masking_strength,
+            output_shape=stage_2_output_shape,
+            video_encoder=video_encoder,
+            components=self.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+            generator=mask_generator,
+            num_steps=len(distilled_sigmas) - 1,
         )
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_2_output_shape,
@@ -281,6 +316,7 @@ class KeyframeInterpolationPipeline:
             noise_scale=distilled_sigmas[0],
             initial_video_latent=upscaled_video_latent,
             initial_audio_latent=audio_state.latent,
+            mask_context=mask_context,
         )
         if video_state is None or audio_state is None:
             return None, None

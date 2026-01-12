@@ -6,9 +6,10 @@ from .adaln import AdaLayerNormSingle
 from .modality import Modality
 from .rope import (
     LTXRopeType,
+    RopeCache,
+    build_rope_cache,
     generate_freq_grid_np,
     generate_freq_grid_pytorch,
-    precompute_freqs_cis,
 )
 from .text_projection import PixArtAlphaTextProjection
 
@@ -20,11 +21,45 @@ class TransformerArgs:
     context_mask: torch.Tensor
     timesteps: torch.Tensor
     embedded_timestep: torch.Tensor
-    positional_embeddings: torch.Tensor
-    cross_positional_embeddings: torch.Tensor | None
+    positional_embeddings: torch.Tensor | RopeCache | tuple[torch.Tensor, torch.Tensor]
+    cross_positional_embeddings: torch.Tensor | RopeCache | tuple[torch.Tensor, torch.Tensor] | None
     cross_scale_shift_timestep: torch.Tensor | None
     cross_gate_timestep: torch.Tensor | None
     enabled: bool
+
+
+def _can_broadcast_timesteps(frame_indices: torch.Tensor | None, frame_count: int) -> bool:
+    if frame_indices is None or frame_indices.ndim != 2:
+        return False
+    token_count = frame_indices.shape[1]
+    if frame_count <= 0 or token_count % frame_count != 0:
+        return False
+    tokens_per_frame = token_count // frame_count
+    if tokens_per_frame == 0:
+        return False
+    try:
+        frame_view = frame_indices.reshape(frame_indices.shape[0], frame_count, tokens_per_frame)
+    except RuntimeError:
+        return False
+    expected = torch.arange(frame_count, device=frame_indices.device).view(1, frame_count, 1)
+    return torch.equal(frame_view, expected.expand(frame_indices.shape[0], -1, tokens_per_frame))
+
+
+def _maybe_compress_timesteps(
+    timestep: torch.Tensor, frame_indices: torch.Tensor | None, batch_size: int
+) -> torch.Tensor:
+    if frame_indices is None or timestep.ndim != 2:
+        return timestep
+    token_count = frame_indices.shape[1]
+    if timestep.shape[1] != token_count:
+        return timestep
+    frame_count = int(frame_indices.max().item()) + 1
+    if not _can_broadcast_timesteps(frame_indices, frame_count):
+        return timestep
+    tokens_per_frame = token_count // frame_count
+    if tokens_per_frame <= 1:
+        return timestep
+    return timestep.reshape(batch_size, frame_count, tokens_per_frame)[:, :, 0]
 
 
 class TransformerArgsPreprocessor:
@@ -64,21 +99,16 @@ class TransformerArgsPreprocessor:
         """Prepare timestep embeddings."""
 
         timestep = timestep * self.timestep_scale_multiplier
-        if frame_indices is None:
-            timestep, embedded_timestep = self.adaln(
-                timestep.flatten(),
-                hidden_dtype=hidden_dtype,
-            )
-            timestep = timestep.view(batch_size, -1, timestep.shape[-1])
-            embedded_timestep = embedded_timestep.view(batch_size, -1, embedded_timestep.shape[-1])
-            return timestep, embedded_timestep
-
+        timestep = _maybe_compress_timesteps(timestep, frame_indices, batch_size)
         timestep, embedded_timestep = self.adaln(
             timestep.flatten(),
             hidden_dtype=hidden_dtype,
         )
         timestep = timestep.view(batch_size, -1, timestep.shape[-1])
         embedded_timestep = embedded_timestep.view(batch_size, -1, embedded_timestep.shape[-1])
+
+        if frame_indices is None or _can_broadcast_timesteps(frame_indices, timestep.shape[1]):
+            return timestep, embedded_timestep
 
         gather_index = frame_indices.unsqueeze(-1)
         timestep = timestep.gather(1, gather_index.expand(-1, -1, timestep.shape[-1]))
@@ -115,11 +145,14 @@ class TransformerArgsPreprocessor:
         use_middle_indices_grid: bool,
         num_attention_heads: int,
         x_dtype: torch.dtype,
-    ) -> torch.Tensor:
+        frame_indices: torch.Tensor | None = None,
+        rope_axes: tuple[int, ...] | None = None,
+        rope_max_pos: list[int] | None = None,
+    ) -> RopeCache | tuple[torch.Tensor, torch.Tensor]:
         """Prepare positional embeddings."""
         freq_grid_generator = generate_freq_grid_np if self.double_precision_rope else generate_freq_grid_pytorch
-        pe = precompute_freqs_cis(
-            positions,
+        return build_rope_cache(
+            positions=positions,
             dim=inner_dim,
             out_dtype=x_dtype,
             theta=self.positional_embedding_theta,
@@ -127,9 +160,11 @@ class TransformerArgsPreprocessor:
             use_middle_indices_grid=use_middle_indices_grid,
             num_attention_heads=num_attention_heads,
             rope_type=self.rope_type,
+            rope_axes=rope_axes,
+            frame_indices=frame_indices,
+            rope_max_pos=rope_max_pos,
             freq_grid_generator=freq_grid_generator,
         )
-        return pe
 
     def prepare(
         self,
@@ -151,6 +186,7 @@ class TransformerArgsPreprocessor:
             use_middle_indices_grid=self.use_middle_indices_grid,
             num_attention_heads=self.num_attention_heads,
             x_dtype=modality.latent.dtype,
+            frame_indices=modality.frame_indices,
         )
         return TransformerArgs(
             x=x,
@@ -211,12 +247,15 @@ class MultiModalTransformerArgsPreprocessor:
     ) -> TransformerArgs:
         transformer_args = self.simple_preprocessor.prepare(modality)
         cross_pe = self.simple_preprocessor._prepare_positional_embeddings(
-            positions=modality.positions[:, 0:1, :],
+            positions=modality.positions,
             inner_dim=self.audio_cross_attention_dim,
-            max_pos=[self.cross_pe_max_pos],
+            max_pos=self.simple_preprocessor.max_pos,
             use_middle_indices_grid=True,
             num_attention_heads=self.simple_preprocessor.num_attention_heads,
             x_dtype=modality.latent.dtype,
+            frame_indices=modality.frame_indices,
+            rope_axes=(0,),
+            rope_max_pos=[self.cross_pe_max_pos],
         )
 
         cross_scale_shift_timestep, cross_gate_timestep = self._prepare_cross_attention_timestep(
@@ -244,21 +283,9 @@ class MultiModalTransformerArgsPreprocessor:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Prepare cross attention timestep embeddings."""
         timestep = timestep * timestep_scale_multiplier
+        timestep = _maybe_compress_timesteps(timestep, frame_indices, batch_size)
 
         av_ca_factor = self.av_ca_timestep_scale_multiplier / timestep_scale_multiplier
-
-        if frame_indices is None:
-            scale_shift_timestep, _ = self.cross_scale_shift_adaln(
-                timestep.flatten(),
-                hidden_dtype=hidden_dtype,
-            )
-            scale_shift_timestep = scale_shift_timestep.view(batch_size, -1, scale_shift_timestep.shape[-1])
-            gate_noise_timestep, _ = self.cross_gate_adaln(
-                timestep.flatten() * av_ca_factor,
-                hidden_dtype=hidden_dtype,
-            )
-            gate_noise_timestep = gate_noise_timestep.view(batch_size, -1, gate_noise_timestep.shape[-1])
-            return scale_shift_timestep, gate_noise_timestep
 
         scale_shift_timestep, _ = self.cross_scale_shift_adaln(
             timestep.flatten(),
@@ -270,6 +297,9 @@ class MultiModalTransformerArgsPreprocessor:
             hidden_dtype=hidden_dtype,
         )
         gate_noise_timestep = gate_noise_timestep.view(batch_size, -1, gate_noise_timestep.shape[-1])
+
+        if frame_indices is None or _can_broadcast_timesteps(frame_indices, scale_shift_timestep.shape[1]):
+            return scale_shift_timestep, gate_noise_timestep
 
         gather_index = frame_indices.unsqueeze(-1)
         scale_shift_timestep = scale_shift_timestep.gather(

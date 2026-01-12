@@ -1,10 +1,12 @@
 import gc
 import inspect
 import logging
+import math
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from mmgp import offload
@@ -17,12 +19,12 @@ from ...ltx_core.conditioning import (
     VideoConditionByLatentIndex,
 )
 from ...ltx_core.model.transformer import Modality, X0Model
-from ...ltx_core.model.video_vae import VideoEncoder
+from ...ltx_core.model.video_vae import VideoEncoder, TilingConfig, encode_video as vae_encode_video
 from ...ltx_core.text_encoders.gemma import GemmaTextEncoderModelBase
 from ...ltx_core.tools import AudioLatentTools, LatentTools, VideoLatentTools
 from ...ltx_core.types import AudioLatentShape, LatentState, VideoLatentShape, VideoPixelShape
 from ...ltx_core.utils import to_denoised, to_velocity
-from .media_io import decode_image, load_image_conditioning, resize_aspect_ratio_preserving
+from .media_io import decode_image, load_image_conditioning, load_video_conditioning, resize_aspect_ratio_preserving
 from .types import (
     DenoisingFunc,
     DenoisingLoopFunc,
@@ -49,6 +51,7 @@ def image_conditionings_by_replacing_latent(
     video_encoder: VideoEncoder,
     dtype: torch.dtype,
     device: torch.device,
+    tiling_config: TilingConfig | None = None,
 ) -> list[ConditioningItem]:
     conditionings = []
     for image_entry in images:
@@ -65,7 +68,7 @@ def image_conditionings_by_replacing_latent(
             device=device,
             resample=resample,
         )
-        encoded_image = video_encoder(image)
+        encoded_image = vae_encode_video(image, video_encoder, tiling_config)
         conditionings.append(
             VideoConditionByLatentIndex(
                 latent=encoded_image,
@@ -84,6 +87,7 @@ def image_conditionings_by_adding_guiding_latent(
     video_encoder: VideoEncoder,
     dtype: torch.dtype,
     device: torch.device,
+    tiling_config: TilingConfig | None = None,
 ) -> list[ConditioningItem]:
     conditionings = []
     for image_entry in images:
@@ -100,11 +104,281 @@ def image_conditionings_by_adding_guiding_latent(
             device=device,
             resample=resample,
         )
-        encoded_image = video_encoder(image)
+        encoded_image = vae_encode_video(image, video_encoder, tiling_config)
         conditionings.append(
             VideoConditionByKeyframeIndex(keyframes=encoded_image, frame_idx=frame_idx, strength=strength)
         )
     return conditionings
+
+
+def video_conditionings_by_keyframe(
+    video_conditioning: list[tuple],
+    height: int,
+    width: int,
+    num_frames: int,
+    video_encoder: VideoEncoder,
+    dtype: torch.dtype,
+    device: torch.device,
+    tiling_config: TilingConfig | None = None,
+) -> list[ConditioningItem]:
+    conditionings = []
+    for entry in video_conditioning:
+        if len(entry) == 2:
+            video_path, strength = entry
+            frame_idx = 0
+        elif len(entry) == 3:
+            video_path, frame_idx, strength = entry
+        else:
+            raise ValueError("Video conditioning entries must be (video, strength) or (video, frame_idx, strength).")
+        video = load_video_conditioning(
+            video_path=video_path,
+            height=height,
+            width=width,
+            frame_cap=num_frames,
+            dtype=dtype,
+            device=device,
+        )
+        # remove_prepend = False
+        # if frame_idx < 0:
+        #     remove_prepend = True
+        #     frame_idx = -frame_idx
+        # if frame_idx < 0:
+        #     encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+        #     encoded_video = encoded_video[:, :, 1:]
+        #     frame_idx = -frame_idx + 1
+        # else:
+        #     encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+
+        encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+        cond =VideoConditionByKeyframeIndex(keyframes=encoded_video, frame_idx=frame_idx, strength=strength)
+        conditionings.append(cond)
+
+    return conditionings
+
+
+def latent_conditionings_by_latent_sequence(
+    latents: torch.Tensor,
+    strength: float = 1.0,
+    start_index: int = 0,
+) -> list[ConditioningItem]:
+    if latents.dim() == 4:
+        latents = latents.unsqueeze(0)
+    if latents.dim() != 5:
+        raise ValueError(f"Expected latent tensor with 5 dimensions; got {latents.shape}.")
+    if latents.shape[2] == 0:
+        return []
+    conditionings = []
+    for latent_idx in range(latents.shape[2]):
+        conditionings.append(
+            VideoConditionByLatentIndex(
+                latent=latents[:, :, latent_idx : latent_idx + 1],
+                strength=strength,
+                latent_idx=start_index + latent_idx,
+            )
+        )
+    return conditionings
+
+
+@dataclass(frozen=True)
+class MaskInjection:
+    mask_tokens: torch.Tensor
+    source_tokens: torch.Tensor
+    noise_tokens: torch.Tensor
+    token_slice: slice
+    masked_steps: int
+
+
+def _pixel_to_latent_index(frame_idx: int, stride: int) -> int:
+    if frame_idx <= 0:
+        return 0
+    return (frame_idx - 1) // stride + 1
+
+
+def _coerce_mask_tensor(mask: torch.Tensor) -> torch.Tensor:
+    if mask.ndim == 5:
+        if mask.shape[1] in (1, 3, 4):
+            return mask[:, :1]
+        if mask.shape[-1] in (1, 3, 4):
+            return mask.permute(0, 4, 1, 2, 3)[:, :1]
+    elif mask.ndim == 4:
+        if mask.shape[0] in (1, 3, 4):
+            return mask.unsqueeze(0)[:, :1]
+        if mask.shape[-1] in (1, 3, 4):
+            return mask.permute(3, 0, 1, 2).unsqueeze(0)[:, :1]
+        return mask.unsqueeze(1)
+    elif mask.ndim == 3:
+        if mask.shape[-1] in (1, 3, 4):
+            return mask.permute(2, 0, 1).unsqueeze(0).unsqueeze(2)[:, :1]
+        if mask.shape[0] in (1, 3, 4):
+            return mask.unsqueeze(0).unsqueeze(2)[:, :1]
+        return mask.unsqueeze(0).unsqueeze(0)
+    elif mask.ndim == 2:
+        return mask.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+    raise ValueError(f"Unsupported mask tensor shape: {tuple(mask.shape)}")
+
+
+def _normalize_mask_values(mask: torch.Tensor) -> torch.Tensor:
+    mask = mask.float()
+    if mask.min() < 0.0:
+        mask = (mask + 1.0) * 0.5
+    elif mask.max() > 1.0:
+        mask = mask / 255.0
+    return mask.clamp(0.0, 1.0)
+
+
+def _resize_mask_spatial(mask: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    if mask.shape[3] == height and mask.shape[4] == width:
+        return mask
+    return F.interpolate(mask, size=(mask.shape[2], height, width), mode="nearest")
+
+
+def _mask_to_latents(mask: torch.Tensor, target_frames: int, target_h: int, target_w: int) -> torch.Tensor:
+    if target_frames <= 0 or mask.shape[2] == 0:
+        raise ValueError("Mask has no frames to map into latent space.")
+    if mask.shape[2] == 1:
+        mask = F.interpolate(mask, size=(1, target_h, target_w), mode="nearest")
+        if target_frames > 1:
+            mask = mask.expand(-1, -1, target_frames, -1, -1)
+        return mask
+    if target_frames == 1:
+        return F.interpolate(mask[:, :, :1], size=(1, target_h, target_w), mode="nearest")
+    first = F.interpolate(mask[:, :, :1], size=(1, target_h, target_w), mode="nearest")
+    rest = mask[:, :, 1:]
+    if rest.shape[2] == 0:
+        rest = torch.ones(
+            (mask.shape[0], 1, target_frames - 1, target_h, target_w),
+            device=mask.device,
+            dtype=mask.dtype,
+        )
+    else:
+        rest = F.interpolate(rest, size=(target_frames - 1, target_h, target_w), mode="nearest")
+    return torch.cat([first, rest], dim=2)
+
+
+def prepare_mask_injection(  # noqa: PLR0913
+    masking_source: dict | None,
+    masking_strength: float | None,
+    output_shape: VideoPixelShape,
+    video_encoder: VideoEncoder,
+    components: PipelineComponents,
+    dtype: torch.dtype,
+    device: torch.device,
+    tiling_config: TilingConfig | None,
+    generator: torch.Generator,
+    num_steps: int,
+) -> MaskInjection | None:
+    if masking_source is None:
+        return None
+    try:
+        strength = float(masking_strength or 0.0)
+    except (TypeError, ValueError):
+        return None
+    strength = max(0.0, min(1.0, strength))
+    if strength <= 0.0 or num_steps <= 0:
+        return None
+    masked_steps = min(num_steps, int(math.ceil(num_steps * strength)))
+    if masked_steps <= 0:
+        return None
+
+    video = masking_source.get("video")
+    mask = masking_source.get("mask")
+    if video is None or mask is None:
+        return None
+    start_frame = int(masking_source.get("start_frame") or 0)
+
+    video_tensor = load_video_conditioning(
+        video_path=video,
+        height=output_shape.height,
+        width=output_shape.width,
+        frame_cap=None,
+        dtype=dtype,
+        device=device,
+    )
+
+    mask_tensor = _coerce_mask_tensor(mask).to(device=device)
+    mask_tensor = _normalize_mask_values(mask_tensor)
+    if mask_tensor.shape[0] != video_tensor.shape[0]:
+        if mask_tensor.shape[0] == 1:
+            mask_tensor = mask_tensor.expand(video_tensor.shape[0], -1, -1, -1, -1)
+        else:
+            return None
+    mask_tensor = _resize_mask_spatial(mask_tensor, output_shape.height, output_shape.width)
+    if mask_tensor.shape[2] < video_tensor.shape[2]:
+        pad_frames = video_tensor.shape[2] - mask_tensor.shape[2]
+        pad = torch.ones(
+            (mask_tensor.shape[0], 1, pad_frames, mask_tensor.shape[3], mask_tensor.shape[4]),
+            device=mask_tensor.device,
+            dtype=mask_tensor.dtype,
+        )
+        mask_tensor = torch.cat([mask_tensor, pad], dim=2)
+    elif mask_tensor.shape[2] > video_tensor.shape[2]:
+        mask_tensor = mask_tensor[:, :, : video_tensor.shape[2]]
+    if video_tensor.shape[2] == 0 or mask_tensor.shape[2] == 0:
+        return None
+
+    source_latents = vae_encode_video(video_tensor, video_encoder, tiling_config).to(device=device, dtype=dtype)
+    try:
+        mask_latents = _mask_to_latents(
+            mask_tensor, source_latents.shape[2], source_latents.shape[3], source_latents.shape[4]
+        )
+    except ValueError:
+        return None
+    mask_latents = (mask_latents >= 0.5).to(dtype)
+
+    output_latent_shape = VideoLatentShape.from_pixel_shape(
+        shape=output_shape,
+        latent_channels=components.video_latent_channels,
+        scale_factors=components.video_scale_factors,
+    )
+    start_latent = _pixel_to_latent_index(start_frame, components.video_scale_factors.time)
+    if start_latent >= output_latent_shape.frames:
+        return None
+    available_frames = output_latent_shape.frames - start_latent
+    control_frames = min(source_latents.shape[2], available_frames)
+    if control_frames <= 0:
+        return None
+    source_latents = source_latents[:, :, :control_frames]
+    mask_latents = mask_latents[:, :, :control_frames]
+
+    source_tokens = components.video_patchifier.patchify(source_latents)
+    mask_tokens = components.video_patchifier.patchify(mask_latents).to(dtype=source_tokens.dtype)
+    noise_tokens = torch.randn(
+        source_tokens.shape,
+        device=source_tokens.device,
+        dtype=source_tokens.dtype,
+        generator=generator,
+    )
+
+    patch_t, patch_h, patch_w = components.video_patchifier.patch_size
+    if patch_t != 1:
+        raise ValueError("Mask injection expects temporal patch size of 1.")
+    tokens_per_frame = (output_latent_shape.height // patch_h) * (output_latent_shape.width // patch_w)
+    token_offset = start_latent * tokens_per_frame
+    token_count = control_frames * tokens_per_frame
+    token_slice = slice(token_offset, token_offset + token_count)
+
+    return MaskInjection(
+        mask_tokens=mask_tokens,
+        source_tokens=source_tokens,
+        noise_tokens=noise_tokens,
+        token_slice=token_slice,
+        masked_steps=masked_steps,
+    )
+
+
+def _apply_mask_injection(
+    video_state: LatentState,
+    sigmas: torch.Tensor,
+    step_idx: int,
+    mask_context: MaskInjection,
+) -> None:
+    if step_idx >= mask_context.masked_steps:
+        return
+    sigma_next = sigmas[step_idx + 1].to(mask_context.source_tokens.dtype)
+    token_slice = mask_context.token_slice
+    current = video_state.latent[:, token_slice]
+    noisy_source = mask_context.noise_tokens * sigma_next + (1 - sigma_next) * mask_context.source_tokens
+    video_state.latent[:, token_slice] = noisy_source * (1 - mask_context.mask_tokens) + mask_context.mask_tokens * current
 
 
 def euler_denoising_loop(
@@ -114,6 +388,7 @@ def euler_denoising_loop(
     stepper: DiffusionStepProtocol,
     denoise_fn: DenoisingFunc,
     *,
+    mask_context: MaskInjection | None = None,
     interrupt_check: Callable[[], bool] | None = None,
     callback: Callable[..., None] | None = None,
     preview_tools: VideoLatentTools | None = None,
@@ -162,6 +437,8 @@ def euler_denoising_loop(
 
         video_state = replace(video_state, latent=stepper.step(video_state.latent, denoised_video, sigmas, step_idx))
         audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
+        if mask_context is not None:
+            _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
         _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
 
     return (video_state, audio_state)
@@ -175,6 +452,7 @@ def gradient_estimating_euler_denoising_loop(
     denoise_fn: DenoisingFunc,
     ge_gamma: float = 2.0,
     *,
+    mask_context: MaskInjection | None = None,
     interrupt_check: Callable[[], bool] | None = None,
     callback: Callable[..., None] | None = None,
     preview_tools: VideoLatentTools | None = None,
@@ -239,6 +517,8 @@ def gradient_estimating_euler_denoising_loop(
 
         video_state = replace(video_state, latent=stepper.step(video_state.latent, denoised_video, sigmas, step_idx))
         audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
+        if mask_context is not None:
+            _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
         _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
 
     return (video_state, audio_state)
@@ -503,6 +783,7 @@ def denoise_audio_video(  # noqa: PLR0913
     noise_scale: float = 1.0,
     initial_video_latent: torch.Tensor | None = None,
     initial_audio_latent: torch.Tensor | None = None,
+    mask_context: MaskInjection | None = None,
 ) -> tuple[LatentState | None, LatentState | None]:
     video_state, video_tools = noise_video_state(
         output_shape=output_shape,
@@ -528,6 +809,8 @@ def denoise_audio_video(  # noqa: PLR0913
     loop_kwargs = {}
     if "preview_tools" in inspect.signature(denoising_loop_fn).parameters:
         loop_kwargs["preview_tools"] = video_tools
+    if "mask_context" in inspect.signature(denoising_loop_fn).parameters:
+        loop_kwargs["mask_context"] = mask_context
     video_state, audio_state = denoising_loop_fn(
         sigmas,
         video_state,

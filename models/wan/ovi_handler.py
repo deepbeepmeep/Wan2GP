@@ -68,7 +68,7 @@ class family_handler:
         return cfg
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
 
         from .wan_handler import family_handler
         download_def = family_handler.query_model_files(computeList, "ti2v_2_2", model_filename, text_encoder_quantization)

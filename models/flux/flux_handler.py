@@ -207,7 +207,7 @@ class family_handler():
         return args.lora_dir_flux
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
         text_encoder_filename = get_flux_text_encoder_filename(text_encoder_quantization, base_model_type)    
         if test_flux2(base_model_type):
             ret = [

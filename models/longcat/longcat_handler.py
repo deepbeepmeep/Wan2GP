@@ -104,7 +104,7 @@ class family_handler:
         return get_rgb_factors("wan")
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
         text_encoder_filename = get_longcat_text_encoder_filename(text_encoder_quantization)
         download_def = [
             {

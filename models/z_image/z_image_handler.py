@@ -90,7 +90,7 @@ class family_handler:
         return args.lora_dir_z_image
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
         text_encoder_filename = get_z_image_text_encoder_filename(text_encoder_quantization)
         download_def = [
             {

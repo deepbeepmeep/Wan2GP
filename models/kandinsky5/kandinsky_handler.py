@@ -222,7 +222,7 @@ class family_handler:
         return extra_model_def
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
         text_encoder_filename = get_kandinsky_text_encoder_filename(text_encoder_quantization)
         return [
             {

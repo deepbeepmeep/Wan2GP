@@ -8,6 +8,46 @@ _GEMMA_MERGED_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
 _SPATIAL_UPSCALER_FILENAME = "ltx-2-spatial-upscaler-x2-1.0.safetensors"
 _DISTILLED_LORA_FILENAME = "ltx-2-19b-distilled-lora-384.safetensors"
+_VIDEO_VAE_FILENAME = "ltx-2-19b_vae.safetensors"
+_AUDIO_VAE_FILENAME = "ltx-2-19b_audio_vae.safetensors"
+_VOCODER_FILENAME = "ltx-2-19b_vocoder.safetensors"
+_TEXT_EMBEDDING_PROJECTION_FILENAME = "ltx-2-19b_text_embedding_projection.safetensors"
+_DEV_EMBEDDINGS_CONNECTOR_FILENAME = "ltx-2-19b-dev_embeddings_connector.safetensors"
+_DISTILLED_EMBEDDINGS_CONNECTOR_FILENAME = "ltx-2-19b-distilled_embeddings_connector.safetensors"
+
+
+def _use_multi_file_storage(model_def):
+    return (model_def or {}).get("storage", "").lower() == "multi_files"
+
+
+def _get_embeddings_connector_filename(model_def):
+    pipeline_kind = (model_def or {}).get("ltx2_pipeline", "two_stage")
+    if pipeline_kind == "distilled":
+        return _DISTILLED_EMBEDDINGS_CONNECTOR_FILENAME
+    return _DEV_EMBEDDINGS_CONNECTOR_FILENAME
+
+
+def _get_multi_file_names(model_def):
+    return {
+        "video_vae": _VIDEO_VAE_FILENAME,
+        "audio_vae": _AUDIO_VAE_FILENAME,
+        "vocoder": _VOCODER_FILENAME,
+        "text_embedding_projection": _TEXT_EMBEDDING_PROJECTION_FILENAME,
+        "text_embeddings_connector": _get_embeddings_connector_filename(model_def),
+    }
+
+
+def _resolve_multi_file_paths(model_def):
+    return {key: fl.locate_file(name) for key, name in _get_multi_file_names(model_def).items()}
+
+
+def _is_diffusion_only_file(model_filename):
+    if not model_filename:
+        return False
+    filename = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
+    if not filename:
+        return False
+    return "diffusion_model" in os.path.basename(str(filename)).lower()
 
 
 
@@ -46,6 +86,7 @@ class family_handler:
             "frames_minimum": 17,
             "frames_steps": 8,
             "sliding_window": True,
+            "storage": "multi_files",
             "image_prompt_types_allowed": "TSEV",
             "returns_audio": True,
             "any_audio_prompt": True,
@@ -128,7 +169,7 @@ class family_handler:
         return 64
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
         text_encoder_filename = family_handler.get_text_encoder_filename(text_encoder_quantization)
         gemma_files = [
             "added_tokens.json",
@@ -143,11 +184,17 @@ class family_handler:
             "tokenizer_config.json",
         ] + computeList(text_encoder_filename)
 
+        file_list = [_SPATIAL_UPSCALER_FILENAME] + computeList(model_filename)
+        if _use_multi_file_storage(model_def):
+            for name in _get_multi_file_names(model_def).values():
+                if name not in file_list:
+                    file_list.append(name)
+
         download_def = [
             {
                 "repoId": "DeepBeepMeep/LTX-2",
                 "sourceFolderList": [""],
-                "fileList": [[_SPATIAL_UPSCALER_FILENAME] + computeList(model_filename)],
+                "fileList": [file_list],
             },
             {
                 "repoId": "DeepBeepMeep/LTX-2",
@@ -183,6 +230,17 @@ class family_handler:
     ):
         from .ltx2 import LTX2
 
+        if not _use_multi_file_storage(model_def) and _is_diffusion_only_file(model_filename):
+            raise ValueError(
+                "Diffusion-only LTX-2 checkpoints require storage='multi_files' with companion files."
+            )
+
+        checkpoint_paths = None
+        if _use_multi_file_storage(model_def):
+            checkpoint_paths = _resolve_multi_file_paths(model_def)
+            transformer_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
+            checkpoint_paths["transformer"] = fl.locate_file(transformer_path)
+
         ltx2_model = LTX2(
             model_filename=model_filename,
             model_type=model_type,
@@ -192,6 +250,7 @@ class family_handler:
             VAE_dtype=VAE_dtype,
             override_text_encoder=override_text_encoder,
             text_encoder_filepath = family_handler.get_text_encoder_filename(text_encoder_quantization),
+            checkpoint_paths=checkpoint_paths,
         )
 
         pipe = {

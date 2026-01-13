@@ -37,13 +37,13 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 ## 🔥 Latest Updates : 
 
-### January 12th 2026: WanGP v10.23, When there is no VRAM left there is still some VRAM left ...
+### January 13th 2026: WanGP v10.24, When there is no VRAM left there is still some VRAM left ...
 
 - **LTX 2 - SUPER VRAM OPTIMIZATIONS**  
 
 *With WanGP 10.21 HD 720p Video Gens of 10s just need now 8GB of VRAM!*
 
-LTX Team said this video gen was for 4k. So I had no choice but to squeeze more VRAM for further optimizations.
+LTX Team said this video gen was for 4k. So I had no choice but to squeeze more VRAM with further optimizations.
 
 After much suffering I have managed to reduce by at least 1/3 the VRAM requirements of LTX 2, which means:
   - 10s at 720p can be done with only 8GB of VRAM
@@ -53,9 +53,9 @@ After much suffering I have managed to reduce by at least 1/3 the VRAM requireme
 
 3K/4K resolutions will be available only if you enable them in the *Config* / *General* tab.
 
-- **Ic Loras support**
+- **LTX Distilled VAE Upgrade**: *Kijai* has observed that the Distilled VAE produces images that were less sharp that the VAE of the Non Distilled model. I have used this as an opportunity to repackage all the LTX 2 checkpoints and reduce their overal HD footprint since they all share around 5GB. So dont be surprised if the old checkpoints are deleted and new are downloaded.
 
-Use a *Control Video* to transfer *Pose*, *Depth*, *Canny Edges*. I have added some extra tweaks: with WanGP you can restrict the transfer to a *masked area*, define a *denoising strength* (how much the control video is going to be followed) and a *masking strength* (how much unmasked area is impacted) 
+- **Ic Loras support**: Use a *Control Video* to transfer *Pose*, *Depth*, *Canny Edges*. I have added some extra tweaks: with WanGP you can restrict the transfer to a *masked area*, define a *denoising strength* (how much the control video is going to be followed) and a *masking strength* (how much unmasked area is impacted) 
 
 - **Start Image Strength**: This new slider will appear below a *Start Image* or Source *Video*. If you set it to values lower than 1 you may to reduce the static image effect, you get sometime with LTX2 i2v
  
@@ -67,7 +67,8 @@ Use a *Control Video* to transfer *Pose*, *Depth*, *Canny Edges*. I have added s
 
 *update 10.21*: added slider Loras Max Pinning slider\
 *update 10.22*: added support for custom Ltx2 Text Encoder + Auto Recovery mode if Lora Pinning failed\
-*update 10.23*: Fixed text prompt ignore in profile 1 & 2 (this created random output videos)
+*update 10.23*: Fixed text prompt ignore in profile 1 & 2 (this created random output videos)\
+*update 10.24*: Replaced LTX 2 Distilled VAE by sharper non Distilled VAE
 
 ### January 9st 2026: WanGP v10.11, Spoiled again
 

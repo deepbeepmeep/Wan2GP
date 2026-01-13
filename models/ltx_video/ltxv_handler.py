@@ -81,7 +81,7 @@ class family_handler():
         return 32
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
         text_encoder_filename = get_ltxv_text_encoder_filename(text_encoder_quantization)    
         return {
             "repoId" : "DeepBeepMeep/LTX_Video", 

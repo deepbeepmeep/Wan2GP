@@ -112,7 +112,7 @@ class family_handler():
         return args.lora_dir_qwen
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
         text_encoder_filename = get_qwen_text_encoder_filename(text_encoder_quantization)    
         vae_files = ["qwen_vae.safetensors", "qwen_vae_config.json"]
         if base_model_type in ["qwen_image_layered_20B"]:

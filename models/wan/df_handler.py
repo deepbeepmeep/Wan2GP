@@ -86,7 +86,7 @@ class family_handler():
         return latent_rgb_factors, latent_rgb_factors_bias
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
         from .wan_handler import family_handler
         return family_handler.query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization)
     

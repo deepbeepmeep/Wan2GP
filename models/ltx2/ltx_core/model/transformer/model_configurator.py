@@ -187,13 +187,17 @@ def amend_forward_with_upcast(
 LTXV_MODEL_COMFY_RENAMING_MAP = (
     SDOps("LTXV_MODEL_COMFY_PREFIX_MAP")
     .with_matching(prefix="model.diffusion_model.")
+    .with_matching(prefix="diffusion_model.")
     .with_replacement("model.diffusion_model.", "")
+    .with_replacement("diffusion_model.", "")
 )
 
 LTXV_MODEL_COMFY_RENAMING_WITH_TRANSFORMER_LINEAR_DOWNCAST_MAP = (
     SDOps("LTXV_MODEL_COMFY_PREFIX_MAP")
     .with_matching(prefix="model.diffusion_model.")
+    .with_matching(prefix="diffusion_model.")
     .with_replacement("model.diffusion_model.", "")
+    .with_replacement("diffusion_model.", "")
     .with_kv_operation(
         key_prefix="transformer_blocks.", key_suffix=".to_q.weight", operation=_naive_weight_or_bias_downcast
     )

@@ -201,7 +201,7 @@ class family_handler():
         return latent_rgb_factors, latent_rgb_factors_bias
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
         text_encoder_filename = get_hunyuan_text_encoder_filename(base_model_type,text_encoder_quantization)    
 
         if test_hunyuan_1_5(base_model_type):

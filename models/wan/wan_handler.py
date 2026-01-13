@@ -675,7 +675,7 @@ class family_handler():
         return latent_rgb_factors, latent_rgb_factors_bias
     
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
         text_encoder_filename = family_handler.get_text_encoder_filename(text_encoder_quantization)
 
         if test_wan_5B(base_model_type):

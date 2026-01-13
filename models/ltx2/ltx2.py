@@ -296,6 +296,7 @@ class LTX2:
         VAE_dtype: torch.dtype = torch.float32,
         override_text_encoder: str | None = None,
         text_encoder_filepath = None,
+        checkpoint_paths: dict | None = None,
     ) -> None:
         self.device = torch.device("cuda")
         self.dtype = dtype
@@ -314,6 +315,12 @@ class LTX2:
             checkpoint_path = model_filename[0]
         else:
             checkpoint_path = model_filename
+        transformer_path = checkpoint_path
+        if checkpoint_paths is not None:
+            transformer_path = checkpoint_paths.get("transformer")
+            if not transformer_path:
+                raise ValueError("Missing transformer path in checkpoint_paths.")
+            checkpoint_path = checkpoint_paths
 
         gemma_root = text_encoder_filepath if override_text_encoder is None else override_text_encoder
         spatial_upsampler_path = fl.locate_file(_SPATIAL_UPSCALER_FILENAME)
@@ -321,7 +328,7 @@ class LTX2:
         # Keep internal FP8 off by default; mmgp handles quantization transparently.
         fp8transformer = bool(model_def.get("ltx2_internal_fp8", False))
         if fp8transformer:
-            fp8transformer = "fp8" in os.path.basename(checkpoint_path).lower()
+            fp8transformer = "fp8" in os.path.basename(transformer_path).lower()
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
 
         if pipeline_kind == "distilled":

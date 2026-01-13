@@ -54,7 +54,7 @@ class DownloadsPlugin(WAN2GPPlugin):
             tmp_path = os.path.join(lora_dir, "tmp_lora_download")
             import glob
             snapshot_download(repo_id="DeepBeepMeep/Wan2.1", allow_patterns="loras_i2v/*", local_dir=tmp_path)
-            for f in glob.glob(os.path.join(tmp_path, "loras_i2v", "*.*")):
+            for f in glob.glob(os.path.join(tmp_path, "loras_i2v", "*")):
                 target_file = os.path.join(lora_dir, os.path.basename(f))
                 if os.path.exists(target_file):
                     os.remove(target_file)
@@ -62,8 +62,7 @@ class DownloadsPlugin(WAN2GPPlugin):
             try:
                 shutil.rmtree(tmp_path)
             except Exception as e:
-                pass
-        yield "<B><FONT SIZE=3>Loras have been completely downloaded</B></FONT>"
+                print(f"Failed to remove tmp_path: {e}")
 
         from datetime import datetime
         dt = datetime.today().strftime('%Y-%m-%d')

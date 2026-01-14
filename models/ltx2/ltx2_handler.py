@@ -16,10 +16,6 @@ _DEV_EMBEDDINGS_CONNECTOR_FILENAME = "ltx-2-19b-dev_embeddings_connector.safeten
 _DISTILLED_EMBEDDINGS_CONNECTOR_FILENAME = "ltx-2-19b-distilled_embeddings_connector.safetensors"
 
 
-def _use_multi_file_storage(model_def):
-    return (model_def or {}).get("storage", "").lower() == "multi_files"
-
-
 def _get_embeddings_connector_filename(model_def):
     pipeline_kind = (model_def or {}).get("ltx2_pipeline", "two_stage")
     if pipeline_kind == "distilled":
@@ -39,15 +35,6 @@ def _get_multi_file_names(model_def):
 
 def _resolve_multi_file_paths(model_def):
     return {key: fl.locate_file(name) for key, name in _get_multi_file_names(model_def).items()}
-
-
-def _is_diffusion_only_file(model_filename):
-    if not model_filename:
-        return False
-    filename = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
-    if not filename:
-        return False
-    return "diffusion_model" in os.path.basename(str(filename)).lower()
 
 
 
@@ -86,7 +73,6 @@ class family_handler:
             "frames_minimum": 17,
             "frames_steps": 8,
             "sliding_window": True,
-            "storage": "multi_files",
             "image_prompt_types_allowed": "TSEV",
             "returns_audio": True,
             "any_audio_prompt": True,
@@ -185,10 +171,9 @@ class family_handler:
         ] + computeList(text_encoder_filename)
 
         file_list = [_SPATIAL_UPSCALER_FILENAME] + computeList(model_filename)
-        if _use_multi_file_storage(model_def):
-            for name in _get_multi_file_names(model_def).values():
-                if name not in file_list:
-                    file_list.append(name)
+        for name in _get_multi_file_names(model_def).values():
+            if name not in file_list:
+                file_list.append(name)
 
         download_def = [
             {
@@ -230,16 +215,9 @@ class family_handler:
     ):
         from .ltx2 import LTX2
 
-        if not _use_multi_file_storage(model_def) and _is_diffusion_only_file(model_filename):
-            raise ValueError(
-                "Diffusion-only LTX-2 checkpoints require storage='multi_files' with companion files."
-            )
-
-        checkpoint_paths = None
-        if _use_multi_file_storage(model_def):
-            checkpoint_paths = _resolve_multi_file_paths(model_def)
-            transformer_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
-            checkpoint_paths["transformer"] = fl.locate_file(transformer_path)
+        checkpoint_paths = _resolve_multi_file_paths(model_def)
+        transformer_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
+        checkpoint_paths["transformer"] = transformer_path
 
         ltx2_model = LTX2(
             model_filename=model_filename,

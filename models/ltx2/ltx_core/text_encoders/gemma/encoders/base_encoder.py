@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 from einops import rearrange
-from transformers import AutoImageProcessor, Gemma3ForConditionalGeneration, Gemma3Processor
+from transformers import AutoImageProcessor, Gemma3ForConditionalGeneration, Gemma3Processor, Gemma3ForCausalLM
 
 from mmgp import offload
 from ....loader.module_ops import ModuleOps
@@ -316,57 +316,61 @@ def _find_merged_gemma_file(gemma_root: str) -> str | None:
     return None
 
 
+def _preprocess_gemma_state_dict(sd, qm, twm):
+    if len(sd) == 0:
+        return sd
+    sd.pop("spiece_model", None)
+    from mmgp.offload import map_state_dict
+    rules = {"model.language_model": "model",  "model.vision_tower": None, "model.multi_modal_projector": None, "multi_modal_projector": None }
+    sd, qm, twm = map_state_dict([sd, qm, twm], rules=rules)
+
+    if twm is None or len(twm)==0:
+        twm = {"model.embed_tokens.weight": ["lm_head.weight"]}
+
+    return sd, qm, twm
+
+
+def build_gemma_text_encoder(
+    gemma_root: str, default_dtype: torch.dtype = torch.bfloat16
+) -> GemmaTextEncoderModelBase:
+
+    gemma_path = gemma_root
+    if not gemma_path or not os.path.isfile(gemma_path):
+        raise FileNotFoundError(f"Gemma checkpoint not found: {gemma_root}")
+    gemma_dir = os.path.dirname(gemma_path)
+    tokenizer_path = fl.locate_folder(os.path.join(_GEMMA_FOLDER))
+    config_path = fl.locate_file(os.path.join(_GEMMA_FOLDER, "config.json"))
+    from accelerate import init_empty_weights
+    with init_empty_weights():
+        text_encoder = GemmaTextEncoderModelBase(feature_extractor_linear=None, tokenizer=None, model=None, dtype=default_dtype)
+    text_encoder.model = offload.fast_load_transformers_model(
+        gemma_path,
+        modelClass=Gemma3ForCausalLM, #Gemma3ForConditionalGeneration,
+        defaultConfigPath=config_path,
+        writable_tensors=False,
+        preprocess_sd=_preprocess_gemma_state_dict,
+        forcedConfigPath= config_path,
+        default_dtype=default_dtype,
+    )
+    text_encoder.tokenizer = LTXVGemmaTokenizer(tokenizer_path, 1024)
+    text_encoder._gemma_root = gemma_dir
+
+    return text_encoder
+
+
 def module_ops_from_gemma_root(gemma_root: str) -> tuple[ModuleOps, ...]:
     gemma_path = gemma_root
     gemma_root = os.path.dirname(gemma_root)
     tokenizer_path =  fl.locate_folder(os.path.join(_GEMMA_FOLDER)) #, "tokenizer.model"
 
     def load_gemma(module: GemmaTextEncoderModelBase) -> GemmaTextEncoderModelBase:
-        def preprocess_sd(sd):
-            if len(sd) == 0:
-                return sd
-            first = next(iter(sd))
-            if any(first.startswith(prefix) for prefix in ["model.embed", "embed.layers"]):
-                sd.pop('spiece_model', None)
-                new_sd = {}
-                for k,v in sd.items():
-                    if "model." in k:
-                        k = k.replace("model.", "model.language_model.")
-                    else:
-                        k = "model." + k
-                    new_sd[k] = v
-                sd = new_sd
-            submodels_prefixes = {"model.language_model":  0,"model.vision_tower": 0, "model.multi_modal_projector":0}
-            for k,v in sd.items():
-                pop = False
-                for prefix in submodels_prefixes:
-                    if k.startswith(prefix): 
-                        pop =True
-                        break
-                if pop:
-                    del submodels_prefixes[prefix]
-                    if len(submodels_prefixes)==0:
-                        break
-
-            if len(submodels_prefixes):
-                original_text_encoder = family_handler.get_text_encoder_filename("int8")
-                if not os.path.isfile(original_text_encoder) :
-                    original_text_encoder =  family_handler.get_text_encoder_filename("bf16")
-                from mmgp.offload import load_sd
-                ori_sd, ori_qm, ori_twm = load_sd(original_text_encoder, list(submodels_prefixes.keys()), keep_prefixes= True, writable_tensors=False)
-                if ori_twm is None:
-                    ori_twm = {'model.language_model.embed_tokens.weight': ['lm_head.weight']}
-                sd.update(ori_sd)
-                return sd, ori_qm, ori_twm
-            return sd
-        
         config_path = fl.locate_file(os.path.join(_GEMMA_FOLDER, "config.json"))
         module.model = offload.fast_load_transformers_model(
             gemma_path,
             modelClass=Gemma3ForConditionalGeneration,
             defaultConfigPath=config_path,
             writable_tensors=False,
-            preprocess_sd = preprocess_sd,
+            preprocess_sd=_preprocess_gemma_state_dict,
         )
         module._gemma_root = module._gemma_root or gemma_root
         return module

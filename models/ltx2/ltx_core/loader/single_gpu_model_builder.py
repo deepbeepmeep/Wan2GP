@@ -127,6 +127,7 @@ class SingleGPUModelBuilder(Generic[ModelType], ModelBuilderProtocol[ModelType],
         device = torch.device("cuda") if device is None else device
         config = self.model_config()
         meta_model = self.meta_model(config, self.module_ops)
+        from mmgp import offload as mmgp_offload
 
         if self.shared_state_dict is not None:
             sd = self._filter_state_dict(self.shared_state_dict, self.model_sd_ops)
@@ -135,7 +136,6 @@ class SingleGPUModelBuilder(Generic[ModelType], ModelBuilderProtocol[ModelType],
             if self.copy_shared_state_dict:
                 sd = {key: value.clone() if torch.is_tensor(value) else value for key, value in sd.items()}
             if len(sd):
-                from mmgp import offload as mmgp_offload
 
                 mmgp_offload.load_model_data(
                     meta_model,
@@ -145,7 +145,30 @@ class SingleGPUModelBuilder(Generic[ModelType], ModelBuilderProtocol[ModelType],
                 )
             return self._return_model(meta_model, device)
 
+        def preprocess_sd(sd):
+            new_sd = {}
+            prefixes = ["vae", "audio_vae", "vocoder", "text_embedding_projection", "diffusion_model"] #, ""
+            for k,v in sd.items():
+                if k.startswith("model"):
+                    k = k[len("model")+1:]
+                for prefix in prefixes:
+                    if k.startswith(prefix):
+                        k = k[len(prefix)+1:]
+                        break
+                new_sd[k] = v
+            return new_sd
+        
         model_paths = self.model_path if isinstance(self.model_path, tuple) else [self.model_path]
+        mmgp_offload.load_model_data(
+            meta_model,
+            model_paths,
+            default_dtype=dtype or torch.bfloat16,
+            preprocess_sd=preprocess_sd,
+            ignore_missing_keys=self.ignore_missing_keys,
+        )
+        return self._return_model(meta_model, device)
+
+
         model_state_dict = self.load_sd(model_paths, sd_ops=self.model_sd_ops, registry=self.registry, device=device)
 
         sd = model_state_dict.sd

@@ -55,40 +55,63 @@ class TI2VidTwoStagesPipeline:
 
     def __init__(
         self,
-        checkpoint_path: str,
-        distilled_lora: list[LoraPathStrengthAndSDOps],
-        spatial_upsampler_path: str,
-        gemma_root: str,
-        loras: list[LoraPathStrengthAndSDOps],
+        checkpoint_path: str | None = None,
+        distilled_lora: list[LoraPathStrengthAndSDOps] | None = None,
+        spatial_upsampler_path: str | None = None,
+        gemma_root: str | None = None,
+        loras: list[LoraPathStrengthAndSDOps] | None = None,
         device: str = device,
         fp8transformer: bool = False,
         model_device: torch.device | None = None,
+        stage_1_models: object | None = None,
+        stage_2_models: object | None = None,
     ):
         self.device = device
         self.dtype = torch.bfloat16
-        ledger_device = model_device or device
-        distilled_lora = distilled_lora or []
-        self.stage_1_model_ledger = ModelLedger(
-            dtype=self.dtype,
-            device=ledger_device,
-            checkpoint_path=checkpoint_path,
-            gemma_root_path=gemma_root,
-            spatial_upsampler_path=spatial_upsampler_path,
-            loras=loras,
-            fp8transformer=fp8transformer,
-        )
-
-        if distilled_lora:
-            self.stage_2_model_ledger = self.stage_1_model_ledger.with_loras(
-                loras=distilled_lora,
+        self.stage_1_models = stage_1_models
+        self.stage_2_models = stage_2_models or stage_1_models
+        if self.stage_1_models is None:
+            if checkpoint_path is None or gemma_root is None or spatial_upsampler_path is None:
+                raise ValueError("checkpoint_path, gemma_root, and spatial_upsampler_path are required.")
+            ledger_device = model_device or device
+            distilled_lora = distilled_lora or []
+            self.stage_1_model_ledger = ModelLedger(
+                dtype=self.dtype,
+                device=ledger_device,
+                checkpoint_path=checkpoint_path,
+                gemma_root_path=gemma_root,
+                spatial_upsampler_path=spatial_upsampler_path,
+                loras=loras or [],
+                fp8transformer=fp8transformer,
             )
+
+            if distilled_lora:
+                self.stage_2_model_ledger = self.stage_1_model_ledger.with_loras(
+                    loras=distilled_lora,
+                )
+            else:
+                self.stage_2_model_ledger = self.stage_1_model_ledger
         else:
-            self.stage_2_model_ledger = self.stage_1_model_ledger
+            self.stage_1_model_ledger = None
+            self.stage_2_model_ledger = None
 
         self.pipeline_components = PipelineComponents(
             dtype=self.dtype,
             device=device,
         )
+
+    def _get_stage_model(self, stage: int, name: str):
+        if stage == 1:
+            models = self.stage_1_models
+            ledger = self.stage_1_model_ledger
+        else:
+            models = self.stage_2_models
+            ledger = self.stage_2_model_ledger
+        if models is not None:
+            return getattr(models, name)
+        if ledger is None:
+            raise ValueError(f"Missing model source for stage {stage} '{name}'.")
+        return getattr(ledger, name)()
 
     @torch.inference_mode()
     def __call__(  # noqa: PLR0913
@@ -127,7 +150,7 @@ class TI2VidTwoStagesPipeline:
         cfg_guider = CFGGuider(cfg_guidance_scale)
         dtype = torch.bfloat16
 
-        text_encoder = self.stage_1_model_ledger.text_encoder()
+        text_encoder = self._get_stage_model(1, "text_encoder")
         if enhance_prompt:
             prompt = generate_enhanced_prompt(
                 text_encoder, prompt, images[0][0] if len(images) > 0 else None, seed=seed
@@ -154,8 +177,8 @@ class TI2VidTwoStagesPipeline:
         v_context_n, a_context_n = context_n
 
         # Stage 1: Initial low resolution video generation.
-        video_encoder = self.stage_1_model_ledger.video_encoder()
-        transformer = self.stage_1_model_ledger.transformer()
+        video_encoder = self._get_stage_model(1, "video_encoder")
+        transformer = self._get_stage_model(1, "transformer")
         bind_interrupt_check(transformer, interrupt_check)
         sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
         if loras_slists is not None:
@@ -274,13 +297,13 @@ class TI2VidTwoStagesPipeline:
         upscaled_video_latent = upsample_video(
             latent=video_state.latent[:1],
             video_encoder=video_encoder,
-            upsampler=self.stage_2_model_ledger.spatial_upsampler(),
+            upsampler=self._get_stage_model(2, "spatial_upsampler"),
         )
 
         torch.cuda.synchronize()
         cleanup_memory()
 
-        transformer = self.stage_2_model_ledger.transformer()
+        transformer = self._get_stage_model(2, "transformer")
         bind_interrupt_check(transformer, interrupt_check)
         distilled_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
         if loras_slists is not None:
@@ -379,9 +402,9 @@ class TI2VidTwoStagesPipeline:
         latent_slice = None
         if return_latent_slice is not None:
             latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
-        decoded_video = vae_decode_video(video_state.latent, self.stage_2_model_ledger.video_decoder(), tiling_config)
+        decoded_video = vae_decode_video(video_state.latent, self._get_stage_model(2, "video_decoder"), tiling_config)
         decoded_audio = vae_decode_audio(
-            audio_state.latent, self.stage_2_model_ledger.audio_decoder(), self.stage_2_model_ledger.vocoder()
+            audio_state.latent, self._get_stage_model(2, "audio_decoder"), self._get_stage_model(2, "vocoder")
         )
         if latent_slice is not None:
             return decoded_video, decoded_audio, latent_slice

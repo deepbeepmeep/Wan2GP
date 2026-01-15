@@ -195,7 +195,7 @@ class family_handler():
         if "URLs2" in model_def:
             extra_model_def["no_steps_skipping"] = True
             extra_model_def["compile"] = ["transformer","transformer2"]
-        extra_model_def["text_encoder_URLs"] = ["models_t5_umt5-xxl-enc-bf16.safetensors", "models_t5_umt5-xxl-enc-quanto_int8.safetensors"]  
+        extra_model_def["text_encoder_URLs"] = ["https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors", "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/umt5-xxl/models_t5_umt5-xxl-enc-quanto_int8.safetensors"]  
         extra_model_def["text_encoder_folder"] = "umt5-xxl"  
         extra_model_def["i2v_class"] = i2v =  test_class_i2v(base_model_type)
         extra_model_def["t2v_class"] = t2v =  test_class_t2v(base_model_type)

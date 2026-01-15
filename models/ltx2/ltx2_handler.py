@@ -2,7 +2,7 @@ import os
 import torch
 from shared.utils import files_locator as fl
 
-
+_GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
 _GEMMA_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
@@ -72,7 +72,7 @@ class family_handler:
 
         extra_model_def = {
             "text_encoder_folder": _GEMMA_FOLDER,
-            "text_encoder_URLs": [_GEMMA_FILENAME, _GEMMA_QUANTO_FILENAME],
+            "text_encoder_URLs": [ _GEMMA_FOLDER_URL + _GEMMA_FILENAME, _GEMMA_FOLDER_URL + _GEMMA_QUANTO_FILENAME],
             "dtype": "bf16",
             "fps": 24,
             "frames_minimum": 17,

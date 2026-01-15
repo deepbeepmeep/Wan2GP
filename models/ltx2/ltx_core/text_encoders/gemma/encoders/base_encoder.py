@@ -339,7 +339,7 @@ def build_gemma_text_encoder(
         raise FileNotFoundError(f"Gemma checkpoint not found: {gemma_root}")
     gemma_dir = os.path.dirname(gemma_path)
     tokenizer_path = fl.locate_folder(os.path.join(_GEMMA_FOLDER))
-    config_path = fl.locate_file(os.path.join(_GEMMA_FOLDER, "config.json"))
+    config_path = fl.locate_file(os.path.join(_GEMMA_FOLDER, "config_light.json"))
     from accelerate import init_empty_weights
     with init_empty_weights():
         text_encoder = GemmaTextEncoderModelBase(feature_extractor_linear=None, tokenizer=None, model=None, dtype=default_dtype)

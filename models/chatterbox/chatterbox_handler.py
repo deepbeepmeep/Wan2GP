@@ -117,7 +117,7 @@ class family_handler:
         mixed_precision_transformer=False,
         save_quantized=False,
         submodel_no_list=None,
-        override_text_encoder = None,
+        text_encoder_filename = None,
     ):
         from .pipeline import ChatterboxPipeline
 

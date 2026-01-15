@@ -117,13 +117,13 @@ class family_handler:
         mixed_precision_transformer=False,
         save_quantized=False,
         submodel_no_list=None,
-        override_text_encoder=None,
+        text_encoder_filename=None,
         **kwargs,
     ):
         from .z_image_main import model_factory
 
         text_encoder_filename = (
-            override_text_encoder if override_text_encoder is not None else get_z_image_text_encoder_filename(text_encoder_quantization)
+            text_encoder_filename if text_encoder_filename is not None else get_z_image_text_encoder_filename(text_encoder_quantization)
         )
 
         # Detect if this is a control variant (v1 or v2)

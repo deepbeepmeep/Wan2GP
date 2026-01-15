@@ -4,7 +4,7 @@ from shared.utils import files_locator as fl
 
 
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
-_GEMMA_MERGED_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
+_GEMMA_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
 _SPATIAL_UPSCALER_FILENAME = "ltx-2-spatial-upscaler-x2-1.0.safetensors"
 _DISTILLED_LORA_FILENAME = "ltx-2-19b-distilled-lora-384.safetensors"
@@ -58,7 +58,7 @@ class family_handler:
 
     @staticmethod
     def get_text_encoder_filename(text_encoder_quantization):
-        text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_MERGED_FILENAME}"
+        text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_FILENAME}"
         if text_encoder_quantization == "int8":
             text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_QUANTO_FILENAME}"
         return fl.locate_file(text_encoder_filename, True)
@@ -67,7 +67,12 @@ class family_handler:
     @staticmethod
     def query_model_def(base_model_type, model_def):
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
+
+        distilled = pipeline_kind == "distilled"
+
         extra_model_def = {
+            "text_encoder_folder": _GEMMA_FOLDER,
+            "text_encoder_URLs": [_GEMMA_FILENAME, _GEMMA_QUANTO_FILENAME],
             "dtype": "bf16",
             "fps": 24,
             "frames_minimum": 17,
@@ -79,7 +84,7 @@ class family_handler:
             "audio_prompt_choices": True,
             "one_speaker_only": True,
             "audio_guide_label": "Audio Prompt (Soundtrack)",
-            "audio_scale_name": "Audio Strength (if Audio Prompt provided)",
+            "audio_scale_name": "Prompt Audio Strength",
             "audio_prompt_type_sources": {
                 "selection": ["", "A"],
                 "labels": {
@@ -117,18 +122,16 @@ class family_handler:
             "window_step": 4,
             "window_default": 241,
         }
-        if pipeline_kind == "distilled":
+        if distilled:
             extra_model_def.update(
                 {
                     "lock_inference_steps": True,
                     "no_negative_prompt": True,
-                    "guidance_max_phases": 0,
                 }
             )
-        else:
-            extra_model_def["guidance_max_phases"] = 2
-            extra_model_def["virtual_higher_phases"] = True
-            extra_model_def["lock_guidance_phases"] = True
+        extra_model_def["guidance_max_phases"] = 2
+        extra_model_def["visible_phases"] = 0 if distilled else 1
+        extra_model_def["lock_guidance_phases"] = True
         return extra_model_def
 
     @staticmethod
@@ -156,11 +159,10 @@ class family_handler:
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
-        text_encoder_filename = family_handler.get_text_encoder_filename(text_encoder_quantization)
         gemma_files = [
             "added_tokens.json",
             "chat_template.json",
-            "config.json",
+            "config_light.json",
             "generation_config.json",
             "preprocessor_config.json",
             "processor_config.json",
@@ -168,7 +170,7 @@ class family_handler:
             "tokenizer.json",
             "tokenizer.model",
             "tokenizer_config.json",
-        ] + computeList(text_encoder_filename)
+        ] 
 
         file_list = [_SPATIAL_UPSCALER_FILENAME] + computeList(model_filename)
         for name in _get_multi_file_names(model_def).values():
@@ -210,7 +212,7 @@ class family_handler:
         mixed_precision_transformer=False,
         save_quantized=False,
         submodel_no_list=None,
-        override_text_encoder=None,
+        text_encoder_filename=None,
         **kwargs,
     ):
         from .ltx2 import LTX2
@@ -226,8 +228,8 @@ class family_handler:
             model_def=model_def,
             dtype=dtype,
             VAE_dtype=VAE_dtype,
-            override_text_encoder=override_text_encoder,
-            text_encoder_filepath = family_handler.get_text_encoder_filename(text_encoder_quantization),
+            text_encoder_filename=text_encoder_filename,
+            text_encoder_filepath = model_def.get("text_encoder_folder", os.path.dirname(text_encoder_filename)),
             checkpoint_paths=checkpoint_paths,
         )
 

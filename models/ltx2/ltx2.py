@@ -391,7 +391,7 @@ class LTX2:
         model_def: dict,
         dtype: torch.dtype = torch.bfloat16,
         VAE_dtype: torch.dtype = torch.float32,
-        override_text_encoder: str | None = None,
+        text_encoder_filename: str | None = None,
         text_encoder_filepath = None,
         checkpoint_paths: dict | None = None,
     ) -> None:
@@ -418,7 +418,7 @@ class LTX2:
             if not transformer_path:
                 raise ValueError("Missing transformer path in checkpoint_paths.")
 
-        gemma_root = text_encoder_filepath if override_text_encoder is None else override_text_encoder
+        gemma_root = text_encoder_filepath if text_encoder_filename is None else text_encoder_filename
         if not gemma_root:
             raise ValueError("Missing Gemma text encoder path.")
         spatial_upsampler_path = fl.locate_file(_SPATIAL_UPSCALER_FILENAME)

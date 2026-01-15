@@ -131,7 +131,7 @@ class family_handler():
         return download_def
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None, VAE_upsampling = None, **kwargs):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, text_encoder_filename = None, VAE_upsampling = None, **kwargs):
         from .qwen_main import model_factory
         from mmgp import offload
 
@@ -141,7 +141,7 @@ class family_handler():
             model_type = model_type, 
             model_def = model_def,
             base_model_type=base_model_type,
-            text_encoder_filename= get_qwen_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filename= get_qwen_text_encoder_filename(text_encoder_quantization) if text_encoder_filename is None else text_encoder_filename,
             quantizeTransformer = quantizeTransformer,
             dtype = dtype,
             VAE_dtype = VAE_dtype, 

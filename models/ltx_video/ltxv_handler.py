@@ -91,12 +91,12 @@ class family_handler():
 
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, text_encoder_filename = None):
         from .ltxv import LTXV
 
         ltxv_model = LTXV(
             model_filepath = model_filename,
-            text_encoder_filepath = get_ltxv_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filepath = get_ltxv_text_encoder_filename(text_encoder_quantization) if text_encoder_filename is None else text_encoder_filename,
             model_type = model_type, 
             base_model_type = base_model_type,
             model_def = model_def,

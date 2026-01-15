@@ -130,10 +130,21 @@ def _nvfp4_note_kernel():
 
 def _nvfp4_note_fallback():
     global _NVFP4_FALLBACK_LOGGED
+    global _NVFP4_KERNEL_LOGGED
     if not _NVFP4_FALLBACK_LOGGED:
-        print("NVFP4: linear fallback (dequantize)")
+        if _NVFP4_KERNEL_LOGGED:
+            print("NVFP4: linear fallback needed on some weights")
+        else:
+            print("NVFP4: linear fallback")
         _NVFP4_FALLBACK_LOGGED = True
 
+def _nvfp4_note_reset():
+    global _NVFP4_FALLBACK_LOGGED
+    global _NVFP4_KERNEL_LOGGED
+    global _NVFP4_LOAD_LOGGED
+    _NVFP4_KERNEL_LOGGED = False
+    _NVFP4_FALLBACK_LOGGED = False
+    _NVFP4_LOAD_LOGGED = False
 
 def _nvfp4_note_load_backend():
     global _NVFP4_LOAD_LOGGED
@@ -144,7 +155,7 @@ def _nvfp4_note_load_backend():
         label = _nvfp4_backend_label(_NVFP4_KERNEL_BACKEND) if _NVFP4_KERNEL_BACKEND else "unknown"
         print(f"NVFP4: kernels available ({label}); optimized path will be used when compatible.")
     else:
-        print("NVFP4: kernels unavailable; using dequantize fallback.")
+        print("NVFP4: kernels unavailable; using fallback.")
 
 
 def _check_nvfp4_kernel_support(device, backend):
@@ -591,6 +602,7 @@ def detect(state_dict, verboseLevel=1):
 def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None):
     if detection is not None and not detection.get("matched", False):
         return {"state_dict": state_dict, "quant_map": {}}
+    _nvfp4_note_reset()    
     return convert_nvfp4_to_quanto(state_dict, default_dtype=default_dtype, verboseLevel=verboseLevel)
 
 

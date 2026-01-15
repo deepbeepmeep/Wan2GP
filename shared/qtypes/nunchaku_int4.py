@@ -28,6 +28,7 @@ if _NUNCHAKU_INT4_QTYPE_NAME not in _quanto_qtypes:
 _NUNCHAKU_INT4_QTYPE = _quanto_qtypes[_NUNCHAKU_INT4_QTYPE_NAME]
 _NUNCHAKU_OPS = None
 _NUNCHAKU_FALLBACK_NOTICE = False
+_NUNCHAKU_KERNEL_NOTICE = False
 _NUNCHAKU_SPLIT_FIELDS = {
     "qweight": 0,
     "wscales": 1,
@@ -133,6 +134,18 @@ def _notify_nunchaku_fallback(reason):
         return
     print(f"[nunchaku_int4] {reason}")
     _NUNCHAKU_FALLBACK_NOTICE = True
+
+
+def _notify_nunchaku_kernel_status(verboseLevel=1):
+    global _NUNCHAKU_KERNEL_NOTICE
+    if _NUNCHAKU_KERNEL_NOTICE:
+        return
+    ops = _load_nunchaku_ops()
+    if ops:
+        print("[nunchaku_int4] Using Nunchaku kernels.")
+    elif not _NUNCHAKU_FALLBACK_NOTICE:
+        print("[nunchaku_int4] Nunchaku kernels unavailable; using Python fallback.")
+    _NUNCHAKU_KERNEL_NOTICE = True
 
 
 def _is_float8_dtype(dtype):
@@ -394,6 +407,53 @@ def _nunchaku_qfallback(callable, *args, **kwargs):
 class NunchakuBaseWeightTensor(QTensor):
     def __init__(self, qtype, axis):
         super().__init__(qtype, axis)
+
+    def __repr__(self):
+        cls_name = self.__class__.__name__
+        try:
+            shape = tuple(self.shape)
+        except Exception:
+            shape = "<?>"
+        try:
+            dtype = str(self.dtype).replace("torch.", "")
+        except Exception:
+            dtype = "<?>"
+        try:
+            device = str(self.device)
+        except Exception:
+            device = "<?>"
+        qtype = getattr(self, "_qtype", None)
+        qtype_name = getattr(qtype, "name", None) or str(qtype) if qtype is not None else "<?>"
+        parts = [
+            f"shape={shape}",
+            f"dtype={dtype}",
+            f"device={device}",
+            f"qtype={qtype_name}",
+        ]
+        group_size = getattr(self, "_group_size", None)
+        if group_size is not None:
+            parts.append(f"group_size={group_size}")
+        field_parts = []
+        for name in (
+            "_qweight",
+            "_wscales",
+            "_wzeros",
+            "_smooth_factor",
+            "_proj_down",
+            "_proj_up",
+        ):
+            if not hasattr(self, name):
+                continue
+            value = getattr(self, name)
+            if torch.is_tensor(value):
+                field_parts.append(f"{name[1:]}={tuple(value.shape)}:{value.dtype}")
+            else:
+                field_parts.append(f"{name[1:]}={value}")
+        if field_parts:
+            parts.append("fields={" + ", ".join(field_parts) + "}")
+        return f"{cls_name}(" + ", ".join(parts) + ")"
+
+    __str__ = __repr__
 
     def get_quantized_subtensors(self):
         raise NotImplementedError
@@ -1059,6 +1119,7 @@ class QLinearNunchakuInt4(QModuleMixin, torch.nn.Linear):
     def set_default_dtype(self, dtype):
         self._nunchaku_default_dtype = dtype
 
+    @torch.compiler.disable()
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         qweight = self.qweight
         if isinstance(qweight, NunchakuBaseWeightTensor):
@@ -1372,6 +1433,7 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None)
     specs = _collect_nunchaku_specs(state_dict)
     if not specs:
         return {"state_dict": state_dict, "quant_map": {}}
+    _notify_nunchaku_kernel_status(verboseLevel=verboseLevel)
     quant_map = {spec["name"]: {"weights": "nunchaku_int4", "activations": "none"} for spec in specs}
     return {"state_dict": state_dict, "quant_map": quant_map}
 

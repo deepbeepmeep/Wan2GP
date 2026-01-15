@@ -84,8 +84,8 @@ AUTOSAVE_PATH = AUTOSAVE_FILENAME
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.6.14"
-WanGP_version = "10.24"
+target_mmgp_version = "3.6.15"
+WanGP_version = "10.30"
 settings_version = 2.43
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2869,7 +2869,12 @@ def get_local_model_filename(model_filename, use_locator = True, extra_paths = N
     else:
         local_model_filename = model_filename
     if use_locator:
-        local_model_filename = fl.locate_file(local_model_filename, error_if_none= False, extra_paths = extra_paths )
+        if extra_paths is not None:
+            if not isinstance(extra_paths, list): extra_paths = [extra_paths]
+            for path in extra_paths:
+                filename = fl.locate_file(os.path.join(path, local_model_filename), error_if_none= False)
+                if filename is not None: return filename
+        local_model_filename = fl.locate_file(local_model_filename, error_if_none= False )
     return local_model_filename
     
 
@@ -2929,7 +2934,7 @@ def download_file(url,filename):
         urlretrieve(url,filename, create_progress_hook(filename))
 
 download_shared_done = False
-def download_models(model_filename = None, model_type= None, module_type = False, submodel_no = 1):
+def download_models(model_filename = None, model_type= None, file_type = 0, submodel_no = 1, force_path = None):
     def computeList(filename):
         if filename == None:
             return []
@@ -2938,40 +2943,39 @@ def download_models(model_filename = None, model_type= None, module_type = False
         return [filename]        
 
 
-
-
-    shared_def = {
-        "repoId" : "DeepBeepMeep/Wan2.1",
-        "sourceFolderList" : [ "pose", "scribble", "flow", "depth", "mask", "wav2vec", "chinese-wav2vec2-base", "roformer", "pyannote", "det_align", "" ],
-        "fileList" : [ ["dw-ll_ucoco_384.onnx", "yolox_l.onnx"],["netG_A_latest.pth"],  ["raft-things.pth"], 
-                      ["depth_anything_v2_vitl.pth","depth_anything_v2_vitb.pth"], ["sam_vit_h_4b8939_fp16.safetensors", "model.safetensors", "config.json"], 
-                      ["config.json", "feature_extractor_config.json", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer_config.json", "vocab.json"],
-                      ["config.json", "pytorch_model.bin", "preprocessor_config.json"],
-                      ["model_bs_roformer_ep_317_sdr_12.9755.ckpt", "model_bs_roformer_ep_317_sdr_12.9755.yaml", "download_checks.json"],
-                      ["pyannote_model_wespeaker-voxceleb-resnet34-LM.bin", "pytorch_model_segmentation-3.0.bin"], ["detface.pt"], [ "flownet.pkl" ] ]
-    }
-    process_files_def(**shared_def)
-
-
-    if server_config.get("enhancer_enabled", 0) == 1:
-        enhancer_def = {
-            "repoId" : "DeepBeepMeep/LTX_Video",
-            "sourceFolderList" : [ "Florence2", "Llama3_2"  ],
-            "fileList" : [ ["config.json", "configuration_florence2.py", "model.safetensors", "modeling_florence2.py", "preprocessor_config.json", "processing_florence2.py", "tokenizer.json", "tokenizer_config.json"],["config.json", "generation_config.json", "Llama3_2_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]  ]
+    if file_type == 0:
+        shared_def = {
+            "repoId" : "DeepBeepMeep/Wan2.1",
+            "sourceFolderList" : [ "pose", "scribble", "flow", "depth", "mask", "wav2vec", "chinese-wav2vec2-base", "roformer", "pyannote", "det_align", "" ],
+            "fileList" : [ ["dw-ll_ucoco_384.onnx", "yolox_l.onnx"],["netG_A_latest.pth"],  ["raft-things.pth"], 
+                        ["depth_anything_v2_vitl.pth","depth_anything_v2_vitb.pth"], ["sam_vit_h_4b8939_fp16.safetensors", "model.safetensors", "config.json"], 
+                        ["config.json", "feature_extractor_config.json", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer_config.json", "vocab.json"],
+                        ["config.json", "pytorch_model.bin", "preprocessor_config.json"],
+                        ["model_bs_roformer_ep_317_sdr_12.9755.ckpt", "model_bs_roformer_ep_317_sdr_12.9755.yaml", "download_checks.json"],
+                        ["pyannote_model_wespeaker-voxceleb-resnet34-LM.bin", "pytorch_model_segmentation-3.0.bin"], ["detface.pt"], [ "flownet.pkl" ] ]
         }
-        process_files_def(**enhancer_def)
+        process_files_def(**shared_def)
 
-    elif server_config.get("enhancer_enabled", 0) == 2:
-        enhancer_def = {
-            "repoId" : "DeepBeepMeep/LTX_Video",
-            "sourceFolderList" : [ "Florence2", "llama-joycaption-beta-one-hf-llava"  ],
-            "fileList" : [ ["config.json", "configuration_florence2.py", "model.safetensors", "modeling_florence2.py", "preprocessor_config.json", "processing_florence2.py", "tokenizer.json", "tokenizer_config.json"],["config.json", "llama_joycaption_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]  ]
-        }
-        process_files_def(**enhancer_def)
 
-    download_mmaudio()
-    global download_shared_done
-    download_shared_done = True
+        if server_config.get("enhancer_enabled", 0) == 1:
+            enhancer_def = {
+                "repoId" : "DeepBeepMeep/LTX_Video",
+                "sourceFolderList" : [ "Florence2", "Llama3_2"  ],
+                "fileList" : [ ["config.json", "configuration_florence2.py", "model.safetensors", "modeling_florence2.py", "preprocessor_config.json", "processing_florence2.py", "tokenizer.json", "tokenizer_config.json"],["config.json", "generation_config.json", "Llama3_2_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]  ]
+            }
+            process_files_def(**enhancer_def)
+
+        elif server_config.get("enhancer_enabled", 0) == 2:
+            enhancer_def = {
+                "repoId" : "DeepBeepMeep/LTX_Video",
+                "sourceFolderList" : [ "Florence2", "llama-joycaption-beta-one-hf-llava"  ],
+                "fileList" : [ ["config.json", "configuration_florence2.py", "model.safetensors", "modeling_florence2.py", "preprocessor_config.json", "processing_florence2.py", "tokenizer.json", "tokenizer_config.json"],["config.json", "llama_joycaption_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]  ]
+            }
+            process_files_def(**enhancer_def)
+
+        download_mmaudio()
+        global download_shared_done
+        download_shared_done = True
 
     if model_filename is None: return
 
@@ -2982,12 +2986,12 @@ def download_models(model_filename = None, model_type= None, module_type = False
     any_module_source = ("module_source2" if submodel_no ==2 else "module_source") in model_def 
     model_type_handler = model_types_handlers[base_model_type]
  
-    if any_source and not module_type or any_module_source and module_type:
+    if any_source and file_type==0 or any_module_source and file_type==1:
         model_filename = None
     else:
-        local_model_filename = get_local_model_filename(model_filename)
+        local_model_filename = get_local_model_filename(model_filename, extra_paths= force_path)
         if local_model_filename is None and len(model_filename) > 0:
-            local_model_filename = fl.get_download_location(os.path.basename(model_filename))
+            local_model_filename = fl.get_download_location(os.path.basename(model_filename), force_path= force_path)
             url = model_filename
 
             if not url.startswith("http"):
@@ -2997,19 +3001,18 @@ def download_models(model_filename = None, model_type= None, module_type = False
             except Exception as e:
                 if os.path.isfile(local_model_filename): os.remove(local_model_filename) 
                 raise Exception(f"'{url}' is invalid for Model '{model_type}' : {str(e)}'")
-            if module_type: return
+            if file_type!=0: return
         model_filename = None
-    text_encoder_path = None
-    if hasattr(model_type_handler, "get_text_encoder_filename"):
-        text_encoder_path = [os.path.dirname(model_type_handler.get_text_encoder_filename("bf16"))]
 
-    for prop, extra_paths in zip(["preload_URLs", "text_encoder_URLs"], [None, text_encoder_path ]):
-        preload_URLs = get_model_recursive_prop(model_type, prop, return_list= True)
-        if prop in  ["text_encoder_URLs"]:
-            preload_URLs = [get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=preload_URLs)] if len(preload_URLs) > 0 else []
+    for prop, recursive in zip(["preload_URLs", "VAE_URLs"], [True, False]):
+        if recursive:
+            preload_URLs = get_model_recursive_prop(model_type, prop, return_list= True)
+        else:
+            preload_URLs = model_def.get(prop, [])
+            if isinstance(preload_URLs, str): preload_URLs = [preload_URLs]
 
         for url in preload_URLs:
-            filename = get_local_model_filename(url, extra_paths=extra_paths)
+            filename = get_local_model_filename(url)
             if filename is None: 
                 filename = fl.get_download_location(os.path.basename(url))
                 if not url.startswith("http"):
@@ -3032,10 +3035,10 @@ def download_models(model_filename = None, model_type= None, module_type = False
                 if os.path.isfile(filename): os.remove(filename) 
                 raise Exception(f"Lora URL '{url}' is invalid: {str(e)}'")
             
-    if module_type: return            
-    model_files = model_type_handler.query_model_files(
-        computeList, base_model_type, model_filename, text_encoder_quantization, model_def
-    )
+    if file_type != 0: return            
+    # model_filename should be None (deprecated) as query_model_files is no longer in charge of loading the transformer
+    # likewise text_encoder_quantization is wont be used by coder_quantization since the text_encoder is loaded by load_models
+    model_files = model_type_handler.query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def)
     if not isinstance(model_files, list): model_files = [model_files]
     for one_repo in model_files:
         process_files_def(**one_repo)
@@ -3180,6 +3183,9 @@ def init_pipe(pipe, kwargs, override_profile):
     if profile == 4.5:
         mmgp_profile = 4
         kwargs["asyncTransfers"] = False
+    elif profile == 3.5:
+        mmgp_profile = 3
+        kwargs["pinnedMemory"] = False
     else:
         mmgp_profile = profile
 
@@ -3261,12 +3267,12 @@ def load_models(model_type, override_profile = -1, **model_kwargs):
     vram_safety_coefficient = args.vram_safety_coefficient 
     model_file_list = [model_filename]
     model_type_list = [model_type]
-    module_type_list = [None]
+    source_type_list = [0]
     model_submodel_no_list = [1]
     if model_filename2 != None:
         model_file_list += [model_filename2]
         model_type_list += [model_type]
-        module_type_list += [None]
+        source_type_list += [0]
         model_submodel_no_list += [2]
     for module_type in modules:
         if isinstance(module_type,dict):
@@ -3277,48 +3283,55 @@ def load_models(model_type, override_profile = -1, **model_kwargs):
             if URLs2 is None: raise Exception(f"No URL2s defined for Module {module_type}")
             model_file_list.append(get_model_filename(model_type, transformer_quantization, transformer_dtype, URLs = URLs2))
             model_type_list += [model_type] * 2
-            module_type_list += [True] * 2
+            source_type_list += [1] * 2
             model_submodel_no_list += [1,2]
         else:
             model_file_list.append(get_model_filename(model_type, transformer_quantization, transformer_dtype, module_type= module_type))
             model_type_list.append(model_type)
-            module_type_list.append(True)
+            source_type_list.append(True)
             model_submodel_no_list.append(0) 
+
     local_model_file_list= []
-    for filename, file_model_type, file_module_type, submodel_no in zip(model_file_list, model_type_list, module_type_list, model_submodel_no_list):
+    for filename, file_model_type, file_source_type, submodel_no in zip(model_file_list, model_type_list, source_type_list, model_submodel_no_list):
         if len(filename) == 0: continue 
-        download_models(filename, file_model_type, file_module_type, submodel_no)
+        download_models(filename, file_model_type, file_source_type, submodel_no)
         local_file_name = get_local_model_filename(filename )
         local_model_file_list.append( os.path.basename(filename) if local_file_name is None else local_file_name )
     if len(local_model_file_list) == 0:
-        download_models("", model_type, "", -1)
+        download_models("", model_type, 0, -1)
 
     VAE_dtype = torch.float16 if server_config.get("vae_precision","16") == "16" else torch.float
     mixed_precision_transformer =  server_config.get("mixed_precision","0") == "1"
     transformer_type = None
-    for module_type, filename in zip(module_type_list, local_model_file_list):
-        if module_type is None:  
+
+    for source_type, filename in zip(source_type_list, local_model_file_list):
+        if source_type==0:  
             print(f"Loading Model '{filename}' ...")
-        else: 
+        elif source_type==1:  
             print(f"Loading Module '{filename}' ...")
 
+
     model_type_handler = model_types_handlers[base_model_type] 
-    override_text_encoder = get_model_recursive_prop(model_type, "text_encoder_URLs", return_list= True)
-    if len( override_text_encoder) > 0:
-        override_text_encoder = get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=override_text_encoder) if len(override_text_encoder) > 0 else None
-        if override_text_encoder is not None:
-            text_encoder_path = None
-            if hasattr(model_type_handler, "get_text_encoder_filename"):
-                text_encoder_path = [os.path.dirname(model_type_handler.get_text_encoder_filename("bf16"))]
-            override_text_encoder =  get_local_model_filename(override_text_encoder, extra_paths=text_encoder_path)
-            if override_text_encoder is not None:
-                print(f"Loading Text Encoder '{override_text_encoder}' ...")
+    text_encoder_URLs= get_model_recursive_prop(model_type, "text_encoder_URLs", return_list= True)
+    text_encoder_filename = None
+    if text_encoder_URLs is None or len(text_encoder_URLs) == 0:
+        if hasattr(model_type_handler, "get_text_encoder_filename"):
+            text_encoder_filename = model_type_handler.get_text_encoder_filename(text_encoder_quantization)
+
     else:
-        override_text_encoder = None
+        text_encoder_filename = get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=text_encoder_URLs)
+    if text_encoder_filename is not None:
+        text_encoder_folder = model_def.get("text_encoder_folder", None)
+        if text_encoder_filename is not None:
+            download_models(text_encoder_filename, file_model_type, 2, -1, force_path =text_encoder_folder)
+            text_encoder_filename =  get_local_model_filename(text_encoder_filename, extra_paths=text_encoder_folder)
+            print(f"Loading Text Encoder '{text_encoder_filename}' ...")
+
+
     torch.set_default_device('cpu')    
     wan_model, pipe = model_type_handler.load_model(
                 local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
-                dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, override_text_encoder = override_text_encoder, **model_kwargs )
+                dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, text_encoder_filename = text_encoder_filename, **model_kwargs )
 
     kwargs = {}
     if "pipe" in pipe:
@@ -3925,18 +3938,21 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_guidance_phases = configs.get("guidance_phases", 0)
             video_embedded_guidance_scale = configs.get("embedded_guidance_scale", None)
             video_guidance_label = "Guidance"
+            visible_phases = model_def.get("visible_phases", video_guidance_phases)
             if model_def.get("embedded_guidance", False):
                 video_guidance_scale = video_embedded_guidance_scale
                 video_guidance_label = "Embedded Guidance Scale"
+            elif video_guidance_phases == 0 or visible_phases ==0:
+                video_guidance_scale = None 
             elif video_guidance_phases > 0:
-                if video_guidance_phases == 1 or model_def.get("virtual_higher_phases", False):
+                if video_guidance_phases == 1 and visible_phases >=1:
                     video_guidance_scale = f"{video_guidance_scale}"
-                elif video_guidance_phases == 2:
+                elif video_guidance_phases == 2 and visible_phases >=2:
                     if multiple_submodels:
                         video_guidance_scale = f"{video_guidance_scale} (High Noise), {video_guidance2_scale} (Low Noise) with Switch at Noise Level {video_switch_threshold}"
                     else:
                         video_guidance_scale = f"{video_guidance_scale}, {video_guidance2_scale}" + ("" if video_switch_threshold ==0 else " with Guidance Switch at Noise Level {video_switch_threshold}")
-                else:
+                elif visible_phases >=3:
                     video_guidance_scale = f"{video_guidance_scale}, {video_guidance2_scale} & {video_guidance3_scale} with Switch at Noise Levels {video_switch_threshold} & {video_switch_threshold2}"
                     if multiple_submodels:
                         video_guidance_scale += f" + Model Switch at {video_switch_threshold if video_model_switch_phase ==1 else video_switch_threshold2}"
@@ -7383,15 +7399,15 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
 
     guidance_max_phases = model_def.get("guidance_max_phases", 0)
     guidance_phases = inputs.get("guidance_phases", 1)
-    virtual_higher_phases = model_def.get("virtual_higher_phases", False) 
+    visible_phases = model_def.get("visible_phases", guidance_phases) 
 
-    if guidance_max_phases < 1:
+    if guidance_max_phases < 1 or visible_phases < 1:
         pop += ["guidance_scale", "guidance_phases"]
 
-    if guidance_max_phases < 2 or guidance_phases < 2 or virtual_higher_phases:
+    if guidance_max_phases < 2 or guidance_phases < 2 or visible_phases < 2:
         pop += ["guidance2_scale", "switch_threshold"]
 
-    if guidance_max_phases < 3 or guidance_phases < 3 or virtual_higher_phases:
+    if guidance_max_phases < 3 or guidance_phases < 3 or visible_phases < 3:
         pop += ["guidance3_scale", "switch_threshold2", "model_switch_phase"]
 
     if not model_def.get("flow_shift", False):
@@ -8682,15 +8698,16 @@ def get_max_frames(nb):
 def change_guidance_phases(state, guidance_phases):
     model_type = get_state_model_type(state)
     model_def = get_model_def(model_type)
-    virtual_higher_phases = model_def.get("virtual_higher_phases", False) 
+    visible_phases = model_def.get("visible_phases", guidance_phases) 
     multiple_submodels = model_def.get("multiple_submodels", False)
     label ="Phase 1-2" if guidance_phases ==3 else ( "Model / Guidance Switch Threshold" if multiple_submodels  else "Guidance Switch Threshold" )
-    return gr.update(visible= guidance_phases >=3 and multiple_submodels) , gr.update(visible= guidance_phases >=2 and not virtual_higher_phases), gr.update(visible= guidance_phases >=2, label = label), gr.update(visible= guidance_phases >=3), gr.update(visible= guidance_phases >=2 and not virtual_higher_phases), gr.update(visible= guidance_phases >=3 and not virtual_higher_phases)
+    return gr.update(visible= guidance_phases >=3 and visible_phases >=3 and multiple_submodels) , gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=2 and visible_phases >=2, label = label), gr.update(visible= guidance_phases >=3 and visible_phases >=3), gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=3 and visible_phases >=3)
 
 
 memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: at least 64 GB of RAM and 24 GB of VRAM, the fastest for short videos with a RTX 3090 / RTX 4090", 1),
                             ("Profile 2, HighRAM_LowVRAM: at least 64 GB of RAM and 12 GB of VRAM, the most versatile profile with high RAM, better suited for RTX 3070/3080/4070/4080 or for RTX 3090 / RTX 4090 with large pictures batches or long videos", 2),
                             ("Profile 3, LowRAM_HighVRAM: at least 32 GB of RAM and 24 GB of VRAM, adapted for RTX 3090 / RTX 4090 with limited RAM for good speed short video",3),
+                            ("Profile 3+, VeryLowRAM_HighVRAM: at least 32 GB of RAM and 24 GB of VRAM, variant of Profile 3 that won't used Reserved Memory to reduce RAM usage",3.5),
                             ("Profile 4, LowRAM_LowVRAM (Recommended): at least 32 GB of RAM and 12 GB of VRAM, if you have little VRAM or want to generate longer videos",4),
                             ("Profile 4+, LowRAM_LowVRAM+: at least 32 GB of RAM and 12 GB of VRAM, variant of Profile 4, slightly slower but needs less VRAM",4.5),
                             ("Profile 5, VerylowRAM_LowVRAM (Fail safe): at least 24 GB of RAM and 10 GB of VRAM, if you don't have much it won't be fast but maybe it will work",5)]
@@ -9355,7 +9372,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 guidance_phases_value = model_def.get("guidance_max_phases", 0)
                             else:
                                 guidance_phases_value = ui_get("guidance_phases") 
-                            virtual_higher_phases = model_def.get("virtual_higher_phases", False) 
+                            visible_phases = model_def.get("visible_phases", 3) 
                             guidance_phases = gr.Dropdown(
                                 choices=[
                                     ("One Phase", 1),
@@ -9363,10 +9380,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     ("Three Phases", 3)],
                                 value= guidance_phases_value,
                                 label="Guidance Phases",
-                                visible= guidance_max_phases >=2 and not virtual_higher_phases,
+                                visible= guidance_max_phases >=2 and visible_phases>=2,
                                 interactive = not model_def.get("lock_guidance_phases", False)
                             )
-                        with gr.Row(visible = guidance_phases_value >=2 and not virtual_higher_phases) as guidance_phases_row:
+                        with gr.Row(visible = guidance_phases_value >=2 and visible_phases>=2) as guidance_phases_row:
                             multiple_submodels = model_def.get("multiple_submodels", False)
                             model_switch_phase = gr.Dropdown(
                                 choices=[
@@ -9379,10 +9396,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label ="Phase 1-2" if guidance_phases_value ==3 else ( "Model / Guidance Switch Threshold" if multiple_submodels  else "Guidance Switch Threshold" )
                             switch_threshold = gr.Slider(0, 1000, value=ui_get("switch_threshold"), step=1, label = label, visible= guidance_max_phases >= 2 and guidance_phases_value >= 2, show_reset_button= False)
                             switch_threshold2 = gr.Slider(0, 1000, value=ui_get("switch_threshold2"), step=1, label="Phase 2-3", visible= guidance_max_phases >= 3 and guidance_phases_value >= 3, show_reset_button= False)
-                        with gr.Row(visible = guidance_max_phases >=1 ) as guidance_row:
-                            guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance_scale"), step=0.1, label="Guidance (CFG)", visible=guidance_max_phases >=1, show_reset_button= False )
-                            guidance2_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance2_scale"), step=0.1, label="Guidance2 (CFG)", visible= guidance_max_phases >=2 and guidance_phases_value >= 2 and not virtual_higher_phases, show_reset_button= False)
-                            guidance3_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance3_scale"), step=0.1, label="Guidance3 (CFG)", visible= guidance_max_phases >=3  and guidance_phases_value >= 3 and not virtual_higher_phases, show_reset_button= False)
+                        with gr.Row(visible = guidance_max_phases >=1 and visible_phases>=1 ) as guidance_row:
+                            guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance_scale"), step=0.1, label="Guidance (CFG)", visible=guidance_max_phases >=1 and visible_phases>=1, show_reset_button= False)
+                            guidance2_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance2_scale"), step=0.1, label="Guidance2 (CFG)", visible= guidance_max_phases >=2 and guidance_phases_value >= 2 and visible_phases>= 2, show_reset_button= False)
+                            guidance3_scale = gr.Slider(1.0, 20.0, value=ui_get("guidance3_scale"), step=0.1, label="Guidance3 (CFG)", visible= guidance_max_phases >=3 and guidance_phases_value >= 3 and visible_phases>= 3, show_reset_button= False)
 
                         any_audio_guidance = model_def.get("audio_guidance", False) 
                         any_embedded_guidance = model_def.get("embedded_guidance", False)

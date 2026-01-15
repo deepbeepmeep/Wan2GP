@@ -104,7 +104,7 @@ class WanAny2V:
             dtype=config.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=fl.locate_folder("umt5-xxl"),
+            tokenizer_path=fl.locate_folder(model_def.get("text_encoder_folder", os.path.dirname(text_encoder_filename))),
             shard_fn= None)
         if hasattr(config, "clip_checkpoint") and not model_def.get("i2v_2_2", False) or base_model_type in ["animate"]:
             self.clip = CLIPModel(
@@ -116,13 +116,18 @@ class WanAny2V:
         ignore_unused_weights = model_def.get("ignore_unused_weights", False)
         vae_upsampler_factor = 1
         vae_checkpoint2 = None
-        if model_def.get("wan_5B_class", False):
+        vae_checkpoint = model_def.get("VAE_URLs", None )
+        vae = WanVAE
+        self.vae_stride = config.vae_stride            
+        if isinstance(vae_checkpoint, str):
+            pass
+        elif isinstance(vae_checkpoint, list) and len(vae_checkpoint):
+            vae_checkpoint = vae_checkpoint[0]
+        elif model_def.get("wan_5B_class", False):
             self.vae_stride = (4, 16, 16)
             vae_checkpoint = "Wan2.2_VAE.safetensors"
             vae = Wan2_2_VAE
         else:
-            vae = WanVAE
-            self.vae_stride = config.vae_stride            
             if VAE_upsampling is not None:
                 vae_upsampler_factor = 2
                 vae_checkpoint ="Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"

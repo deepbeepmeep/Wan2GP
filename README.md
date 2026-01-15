@@ -20,22 +20,23 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
------
-
-### You have your choice of Dark or Light Theme
-
-
-<img width="1895" height="1023" alt="Screenshot 2025-10-23 210313" src="https://github.com/user-attachments/assets/3778ae4e-6a95-4752-ba47-bb160c653310" />
-
------
-<img width="1899" height="1020" alt="Screenshot 2025-10-23 210500" src="https://github.com/user-attachments/assets/5e524260-ad24-4203-acf2-6622676a83bb" />
-
------
-![Screen Recording 2025-10-23 210625 - frame at 0m9s](https://github.com/user-attachments/assets/c65a815e-09fa-41a7-bc49-5f879b0b8ece)
-
------
 
 ## 🔥 Latest Updates : 
+
+### January 15th 2026: WanGP v10.30, The Need for Speed ...
+
+- **LTX Distilled VAE Upgrade**: *Kijai* has observed that the Distilled VAE produces images that were less sharp that the VAE of the Non Distilled model. I have used this as an opportunity to repackage all the LTX 2 checkpoints and reduce their overal HD footprint since they all share around 5GB. 
+
+**So dont be surprised if the old checkpoints are deleted and new are downloaded !!!**.
+
+- **LTX2 Multi Passes Loras multipliers**: *LTX2* supports now loras multiplier that depend on the Pass No. For instance "1;0.5" means 1 will the strength for the first LTX2 pass and 0.5 will be the strength for the second pass.
+
+- **New Profile 3.5**: here is the lost kid of *Profile 3* & *Profile 5*, you got tons of VRAM, but little RAM ? Profile 3.5 will be your new friend as it will no longer use Reserved RAM to accelerate transfers. Use Profile 3.5 only if you can fit entirely a *Diffusion / Transformer* model in VRAM, otherwise the gen may be much slower.
+
+- **NVFP4 Quantization for LTX 2 & Flux 2**: you will now be able to load *NV FP4* model checkpoints in WanGP. On top of *Wan NV4* which was added recently, we now have *LTX 2 (non distilled)* & *Flux 2* support. NV FP4 uses slightly less VRAM and up to 30% less RAM. 
+
+To enjoy fully the NV FP4 checkpoints (**at least 30% faster gens**), you will need a RTX 50xx and to upgrade to *Pytorch 2.9.1 / Cuda 13* with the latest version of *lightx2v kernels* (check *docs/INSTALLATION.md*). To observe the speed gain, you have to make sure the workload is quite high (high res, long video).
+
 
 ### January 13th 2026: WanGP v10.24, When there is no VRAM left there is still some VRAM left ...
 
@@ -53,8 +54,6 @@ After much suffering I have managed to reduce by at least 1/3 the VRAM requireme
 
 3K/4K resolutions will be available only if you enable them in the *Config* / *General* tab.
 
-- **LTX Distilled VAE Upgrade**: *Kijai* has observed that the Distilled VAE produces images that were less sharp that the VAE of the Non Distilled model. I have used this as an opportunity to repackage all the LTX 2 checkpoints and reduce their overal HD footprint since they all share around 5GB. So dont be surprised if the old checkpoints are deleted and new are downloaded.
-
 - **Ic Loras support**: Use a *Control Video* to transfer *Pose*, *Depth*, *Canny Edges*. I have added some extra tweaks: with WanGP you can restrict the transfer to a *masked area*, define a *denoising strength* (how much the control video is going to be followed) and a *masking strength* (how much unmasked area is impacted) 
 
 - **Start Image Strength**: This new slider will appear below a *Start Image* or Source *Video*. If you set it to values lower than 1 you may to reduce the static image effect, you get sometime with LTX2 i2v
@@ -67,8 +66,7 @@ After much suffering I have managed to reduce by at least 1/3 the VRAM requireme
 
 *update 10.21*: added slider Loras Max Pinning slider\
 *update 10.22*: added support for custom Ltx2 Text Encoder + Auto Recovery mode if Lora Pinning failed\
-*update 10.23*: Fixed text prompt ignore in profile 1 & 2 (this created random output videos)\
-*update 10.24*: Replaced LTX 2 Distilled VAE by sharper non Distilled VAE
+*update 10.23*: Fixed text prompt ignore in profile 1 & 2 (this created random output videos)
 
 ### January 9st 2026: WanGP v10.11, Spoiled again
 
@@ -354,10 +352,9 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 ## 🚀 Quick Start
 
 **One-click installation:** 
-- Get started instantly with [Pinokio App](https://pinokio.computer/)\
+Get started instantly with [Pinokio App](https://pinokio.computer/)\
 It is recommended to use in Pinokio the Community Scripts *wan2gp* or *wan2gp-amd* by **Morpheus** rather than the official Pinokio install.
 
-- Use Redtash1 [One Click Install with Sage](https://github.com/Redtash1/Wan2GP-Windows-One-Click-Install-With-Sage)
 
 **Manual installation:**
 ```bash

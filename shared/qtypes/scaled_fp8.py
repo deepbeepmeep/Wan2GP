@@ -10,6 +10,7 @@ from optimum.quanto.tensor.qtype import qtype as _quanto_qtype, qtypes as _quant
 
 
 HANDLER_NAME = "fp8"
+HANDLER_PRIORITY = 10
 
 _SCALED_FP8_E4M3_QTYPE_NAME = "scaled_float8_e4m3fn"
 _SCALED_FP8_E5M2_QTYPE_NAME = "scaled_float8_e5m2"
@@ -198,6 +199,26 @@ class ScaledFP8WeightTensor(QTensor):
         self._scale = scale
         self._scaled_mm_static_ok = _scaled_mm_static_ok(self._data, self._scale)
         self._set_linear_impl()
+
+    def __repr__(self):
+        cls_name = self.__class__.__name__
+        try:
+            shape = tuple(self.shape)
+        except Exception:
+            shape = "<?>"
+        try:
+            dtype = str(self.dtype).replace("torch.", "")
+        except Exception:
+            dtype = "<?>"
+        try:
+            device = str(self.device)
+        except Exception:
+            device = "<?>"
+        qtype = getattr(self, "_qtype", None)
+        qtype_name = getattr(qtype, "name", None) or str(qtype) if qtype is not None else "<?>"
+        return f"{cls_name}(shape={shape}, dtype={dtype}, device={device}, qtype={qtype_name})"
+
+    __str__ = __repr__
 
     def _set_linear_impl(self):
         if self._scaled_mm_static_ok and _scaled_mm_available(self._data.dtype):

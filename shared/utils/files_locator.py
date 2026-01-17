@@ -42,6 +42,8 @@ def locate_folder(folder_name, error_if_none = True):
 
 
 def locate_file(file_name, create_path_if_none = False, error_if_none = True, extra_paths = None):
+    if file_name.startswith("http"):
+        file_name = os.path.basename(file_name)
     searched_locations = []
     if os.path.isabs(file_name):
         if os.path.isfile(file_name): return file_name

@@ -5,16 +5,19 @@
 <b>WanGP by DeepBeepMeep : The best Open Source Video Generative Models Accessible to the GPU Poor</b>
 </p>
 
-WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models with:
+WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image, LongCat, Kandinsky and LTX Video models with:
 - Low VRAM requirements (as low as 6 GB of VRAM is sufficient for certain models)
 - Support for old Nvidia GPUs (RTX 10XX, 20xx, ...)
 - Support for AMD GPUs Radeon RX 76XX, 77XX, 78XX & 79XX, instructions in the Installation Section Below.
 - Very Fast on the latest GPUs
 - Easy to use Full Web based interface
+- Support for many checkpoint Quantized formats: int8, fp8, gguf, NV FP4, Nunchaku
 - Auto download of the required model adapted to your specific architecture
-- Tools integrated to facilitate Video Generation : Mask Editor, Prompt Enhancer, Temporal and Spatial Generation, MMAudio, Video Browser, Pose / Depth / Flow extractor
+- Tools integrated to facilitate Video Generation : Mask Editor, Prompt Enhancer, Temporal and Spatial Generation, MMAudio, Video Browser, Pose / Depth / Flow extractor, Motion Designer
+- Plenty of ready to use Plug Ins: Gallery Browser, Upscaler, Models/Checkpoints Manager, CivitAI browser and downloader, ...
 - Loras Support to customize each model
 - Queuing system : make your shopping list of videos to generate and come back later
+- Headless mode: launch the generation of multiple image / videos using a command line
 
 **Discord Server to get Help from Other Users and show your Best Videos:** https://discord.gg/g7efUW9jGV
 
@@ -22,6 +25,22 @@ WanGP supports the Wan (and derived models), Hunyuan Video and LTV Video models 
 
 
 ## 🔥 Latest Updates : 
+
+### January 17th 2026: WanGP v10.40, The Cost Saver
+*GPUs are expensive, RAM is expensive, SSD are expensive, sadly we live now in a GPU & RAM poor.*
+
+WanGP comes again to the rescue:
+
+- **GGUF support**: as some of you know, I am not a big fan of this format because when used with image / video generative models we don't get any speed boost (matrices multiplications are still done at 16 bits), VRAM savings are small and quality is worse than with int8/fp8. Still gguf has one advantage: it consumes less RAM and hardware space. So enjoy gguf support. I have added ready to use *Kijai gguf finetunes* for *LTX 2*.
+
+- **Models Manager PlugIn**: use this *Plugin* to identify how much space is taken by each *model* / *finetune* and delete the ones you no longer use. Try to avoid deleting shared files otherwise they will be downloaded again.  
+
+- **LTX 2 Dual Video & Audio Control**: you no longer need to extract the audio track of a *Control Video* if you want to use it as well to drive the video generation. New mode will allow you to use both motion and audio from Video Control.
+
+- **LTX 2 - Custom VAE URL**: some users have asked if they could use the old *Distiller VAE* instead of the new one. To do that, create a *finetune* def based on an existing model definition and save it in the *finetunes/* folder with this entry (check the *docs/FINETUNES.md* doc):
+```
+		"VAE_URLs": ["https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2-19b_vae_old.safetensors"]
+```
 
 ### January 15th 2026: WanGP v10.30, The Need for Speed ...
 

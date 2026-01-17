@@ -111,9 +111,9 @@ class model_factory:
 
         default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", f"{base_model_type}.json")
 
-        def preprocess_sd(state_dict, verboseLevel=1):
+        def preprocess_sd(state_dict):
             state_dict = conv_state_dict(state_dict)
-            return _split_nunchaku_fused(state_dict, verboseLevel=verboseLevel)
+            return _split_nunchaku_fused(state_dict)
 
         model_class = ZImageTransformer2DModel
 
@@ -160,7 +160,11 @@ class model_factory:
         text_encoder = offload.fast_load_transformers_model( text_encoder_filename, writable_tensors=True, modelClass=Qwen3ForCausalLM,)
 
         # Tokenizer
-        tokenizer_path = os.path.join(os.path.dirname(text_encoder_filename))
+        text_encoder_folder = model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = fl.locate_folder(text_encoder_folder)
+        else:
+            tokenizer_path = os.path.dirname(text_encoder_filename)
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
         # VAE

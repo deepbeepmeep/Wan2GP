@@ -1,13 +1,6 @@
 import os
 import torch
-from shared.utils import files_locator as fl
-
-
-def get_z_image_text_encoder_filename(text_encoder_quantization=None):
-    text_encoder_filename = "Qwen3/qwen3_bf16.safetensors"
-    if text_encoder_quantization =="int8":
-        text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8") 
-    return fl.locate_file(text_encoder_filename, True)
+from shared.utils.hf import build_hf_url
 
 
 class family_handler:
@@ -19,6 +12,12 @@ class family_handler:
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [],
         }
+        text_encoder_folder = "Qwen3"
+        extra_model_def["text_encoder_URLs"] = [
+            build_hf_url("DeepBeepMeep/Z-Image", text_encoder_folder, "qwen3_bf16.safetensors"),
+            build_hf_url("DeepBeepMeep/Z-Image", text_encoder_folder, "qwen3_quanto_bf16_int8.safetensors"),
+        ]
+        extra_model_def["text_encoder_folder"] = text_encoder_folder
 
         if base_model_type in ["z_image_control", "z_image_control2", "z_image_control2_1"]:
             extra_model_def["mask_preprocessing"] = {
@@ -90,14 +89,13 @@ class family_handler:
         return args.lora_dir_z_image
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
-        text_encoder_filename = get_z_image_text_encoder_filename(text_encoder_quantization)
+    def query_model_files(computeList, base_model_type, model_def=None):
         download_def = [
             {
                 "repoId": "DeepBeepMeep/Z-Image",
                 "sourceFolderList": ["Qwen3", ""],
                 "fileList": [                    
-                    ["tokenizer.json", "tokenizer_config.json", "vocab.json", "config.json", "merges.txt"]+ computeList(text_encoder_filename),
+                    ["tokenizer.json", "tokenizer_config.json", "vocab.json", "config.json", "merges.txt"],
                     ["ZImageTurbo_VAE_bf16_config.json", "ZImageTurbo_VAE_bf16.safetensors", "ZImageTurbo_scheduler_config.json"],                
                 ],
             }
@@ -121,10 +119,6 @@ class family_handler:
         **kwargs,
     ):
         from .z_image_main import model_factory
-
-        text_encoder_filename = (
-            text_encoder_filename if text_encoder_filename is not None else get_z_image_text_encoder_filename(text_encoder_quantization)
-        )
 
         # Detect if this is a control variant (v1 or v2)
         is_control = base_model_type in ["z_image_control", "z_image_control2", "z_image_control2_1"]

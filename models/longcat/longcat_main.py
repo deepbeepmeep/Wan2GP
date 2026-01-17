@@ -1,6 +1,7 @@
 import json
 import math
 import gc
+import os
 from typing import Optional, List
 
 import numpy as np
@@ -80,12 +81,17 @@ class LongCatModel:
         text_encoder_path = text_encoder_filename or fl.locate_file(
             "umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors", True
         )
+        text_encoder_folder = self.model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = fl.locate_folder(text_encoder_folder)
+        else:
+            tokenizer_path = os.path.dirname(text_encoder_path)
         self.text_encoder = T5EncoderModel(
             text_len=512,
             dtype=dtype,
             device=torch.device("cpu"),
             checkpoint_path=text_encoder_path,
-            tokenizer_path=fl.locate_folder("umt5-xxl"),
+            tokenizer_path=tokenizer_path,
             shard_fn=None,
         )
 

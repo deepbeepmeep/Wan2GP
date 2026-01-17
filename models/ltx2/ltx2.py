@@ -46,6 +46,11 @@ LTX2_USE_FP32_ROPE_FREQS = True #False
 def _normalize_config(config_value):
     if isinstance(config_value, dict):
         return config_value
+    if isinstance(config_value, (bytes, bytearray, memoryview)):
+        try:
+            config_value = bytes(config_value).decode("utf-8")
+        except Exception:
+            return {}
     if isinstance(config_value, str):
         try:
             return json.loads(config_value)
@@ -76,6 +81,20 @@ def _strip_model_prefix(key: str) -> str:
 
 
 def _apply_sd_ops(state_dict: dict, quantization_map: dict | None, sd_ops):
+    if sd_ops is not None:
+        has_match = False
+        for key in state_dict.keys():
+            key = _strip_model_prefix(key)
+            if sd_ops.apply_to_key(key) is not None:
+                has_match = True
+                break
+        if not has_match:
+            new_sd = {_strip_model_prefix(k): v for k, v in state_dict.items()}
+            new_qm = {}
+            if quantization_map:
+                new_qm = {_strip_model_prefix(k): v for k, v in quantization_map.items()}
+            return new_sd, new_qm
+
     new_sd = {}
     for key, value in state_dict.items():
         key = _strip_model_prefix(key)
@@ -484,21 +503,14 @@ class LTX2:
             model.eval().requires_grad_(False)
             return model
 
-        # text_encoder = build_gemma_text_encoder(gemma_root, default_dtype=self.dtype)
-        # text_projection_path = _component_path("text_embedding_projection")
-        # text_projection_config = _component_config(text_projection_path)
-        # with init_empty_weights():
-        #     text_embedding_projection = GemmaFeaturesExtractorProjLinear.from_config(text_projection_config)
-        # text_embedding_projection = _load_component( text_embedding_projection, text_projection_path, TEXT_EMBEDDING_PROJECTION_KEY_OPS )
-
         transformer_sd_ops = LTXV_MODEL_COMFY_RENAMING_MAP
         with init_empty_weights():
             velocity_model = LTXModelConfigurator.from_config(base_config)
         velocity_model = _load_component(velocity_model, transformer_path, transformer_sd_ops)
         transformer = X0Model(velocity_model)
         transformer.eval().requires_grad_(False)
-
-        video_vae_path = _component_path("video_vae")
+        VAE_URLs = self.model_def.get("VAE_URLs", None)
+        video_vae_path =  fl.locate_file(VAE_URLs[0]) if VAE_URLs is not None and len(VAE_URLs) else _component_path("video_vae")
         video_config = _component_config(video_vae_path)
         with init_empty_weights():
             video_encoder = VideoEncoderConfigurator.from_config(video_config)
@@ -817,8 +829,9 @@ class LTX2:
         text_connectors = getattr(self, "_text_connectors", None)
 
         audio_conditionings = None
-        audio_guide = kwargs.get("audio_guide")
-        if audio_guide:
+        input_waveform = kwargs.get("input_waveform")
+        input_waveform_sample_rate = kwargs.get("input_waveform_sample_rate")
+        if input_waveform is not None:
             audio_scale = kwargs.get("audio_scale")
             if audio_scale is None:
                 audio_scale = 1.0
@@ -826,9 +839,7 @@ class LTX2:
             if audio_strength > 0.0:
                 if self._interrupt:
                     return None
-                if not os.path.isfile(audio_guide):
-                    raise FileNotFoundError(f"Audio guide '{audio_guide}' not found.")
-                waveform, waveform_sample_rate = torchaudio.load(audio_guide)
+                waveform, waveform_sample_rate =  torch.from_numpy(input_waveform), input_waveform_sample_rate
                 if self._interrupt:
                     return None
                 if waveform.ndim == 1:

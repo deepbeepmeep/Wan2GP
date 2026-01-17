@@ -1,4 +1,5 @@
 from dataclasses import dataclass, replace
+import os
 
 import torch
 
@@ -170,22 +171,34 @@ class TransformerArgsPreprocessor:
         self,
         modality: Modality,
     ) -> TransformerArgs:
-        x = self.patchify_proj(modality.latent)
+        latent = modality.latent
+        latent_dtype = latent.dtype
+        weight = getattr(self.patchify_proj, "weight", None)
+        weight_dtype = getattr(weight, "dtype", None)
+        if weight_dtype is not None and latent_dtype != weight_dtype:
+            latent = latent.to(weight_dtype)
+            latent_dtype = latent.dtype
+        if os.environ.get("WAN2GP_GGUF_TRACE_LATENT", "") in ("1", "true", "yes") and not hasattr(
+            self, "_gguf_latent_logged"
+        ):
+            self._gguf_latent_logged = True
+            print(f"[GGUF][patchify_proj] latent={latent_dtype} weight={weight_dtype}")
+        x = self.patchify_proj(latent)
         timestep, embedded_timestep = self._prepare_timestep(
             modality.timesteps,
             x.shape[0],
-            modality.latent.dtype,
+            latent_dtype,
             frame_indices=modality.frame_indices,
         )
         context, attention_mask = self._prepare_context(modality.context, x, modality.context_mask)
-        attention_mask = self._prepare_attention_mask(attention_mask, modality.latent.dtype)
+        attention_mask = self._prepare_attention_mask(attention_mask, latent_dtype)
         pe = self._prepare_positional_embeddings(
             positions=modality.positions,
             inner_dim=self.inner_dim,
             max_pos=self.max_pos,
             use_middle_indices_grid=self.use_middle_indices_grid,
             num_attention_heads=self.num_attention_heads,
-            x_dtype=modality.latent.dtype,
+            x_dtype=latent_dtype,
             frame_indices=modality.frame_indices,
         )
         return TransformerArgs(

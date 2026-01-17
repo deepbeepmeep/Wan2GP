@@ -1,14 +1,7 @@
 import os
 import torch
 from omegaconf import OmegaConf
-from shared.utils import files_locator as fl
-
-
-def get_kandinsky_text_encoder_filename(text_encoder_quantization):
-    text_encoder_filename = "Qwen2.5-VL-7B-Instruct/Qwen2.5-VL-7B-Instruct_bf16.safetensors"
-    if text_encoder_quantization == "int8":
-        text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8")
-    return fl.locate_file(text_encoder_filename, True)
+from shared.utils.hf import build_hf_url
 
 
 _MAGCACHE_RATIOS_CACHE = {}
@@ -196,6 +189,12 @@ class family_handler:
             "mag_cache": True,
             "profiles_dir": [profiles_dir],
         }
+        text_encoder_folder = "Qwen2.5-VL-7B-Instruct"
+        extra_model_def["text_encoder_URLs"] = [
+            build_hf_url("DeepBeepMeep/Qwen_image", text_encoder_folder, "Qwen2.5-VL-7B-Instruct_bf16.safetensors"),
+            build_hf_url("DeepBeepMeep/Qwen_image", text_encoder_folder, "Qwen2.5-VL-7B-Instruct_quanto_bf16_int8.safetensors"),
+        ]
+        extra_model_def["text_encoder_folder"] = text_encoder_folder
 
         if is_video:
             extra_model_def.update(
@@ -222,8 +221,7 @@ class family_handler:
         return extra_model_def
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
-        text_encoder_filename = get_kandinsky_text_encoder_filename(text_encoder_quantization)
+    def query_model_files(computeList, base_model_type, model_def=None):
         return [
             {
                 "repoId": "DeepBeepMeep/Qwen_image",
@@ -238,8 +236,7 @@ class family_handler:
                         "video_preprocessor_config.json",
                         "preprocessor_config.json",
                         "chat_template.json",
-                    ]
-                    + computeList(text_encoder_filename),
+                    ],
                 ],
             },
             {

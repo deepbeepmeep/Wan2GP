@@ -99,12 +99,17 @@ class WanAny2V:
         self.model2 = None
         self.transformer_switch = model_def.get("URLs2", None) is not None
         self.is_mocha = model_def.get("mocha_mode", False)
+        text_encoder_folder = model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = fl.locate_folder(text_encoder_folder)
+        else:
+            tokenizer_path = os.path.dirname(text_encoder_filename)
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
             dtype=config.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=fl.locate_folder(model_def.get("text_encoder_folder", os.path.dirname(text_encoder_filename))),
+            tokenizer_path=tokenizer_path,
             shard_fn= None)
         if hasattr(config, "clip_checkpoint") and not model_def.get("i2v_2_2", False) or base_model_type in ["animate"]:
             self.clip = CLIPModel(
@@ -122,7 +127,7 @@ class WanAny2V:
         if isinstance(vae_checkpoint, str):
             pass
         elif isinstance(vae_checkpoint, list) and len(vae_checkpoint):
-            vae_checkpoint = vae_checkpoint[0]
+            vae_checkpoint = fl.locate_file(vae_checkpoint[0])
         elif model_def.get("wan_5B_class", False):
             self.vae_stride = (4, 16, 16)
             vae_checkpoint = "Wan2.2_VAE.safetensors"

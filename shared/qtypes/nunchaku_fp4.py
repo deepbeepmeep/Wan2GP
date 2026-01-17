@@ -13,6 +13,7 @@ from optimum.quanto.tensor.qtype import qtype as _quanto_qtype, qtypes as _quant
 
 
 HANDLER_NAME = "nunchaku_fp4"
+HANDLER_PRIORITY = 2
 
 _NUNCHAKU_FP4_QTYPE_NAME = "nunchaku_fp4"
 if _NUNCHAKU_FP4_QTYPE_NAME not in _quanto_qtypes:

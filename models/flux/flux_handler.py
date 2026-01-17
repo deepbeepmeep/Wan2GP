@@ -1,20 +1,10 @@
 import os
 import torch
 from PIL import Image
-from shared.utils import files_locator as fl 
+from shared.utils.hf import build_hf_url
 
 def test_flux2(base_model_type):
     return base_model_type in ["flux2_dev", "pi_flux2"]
-
-
-def get_flux_text_encoder_filename(text_encoder_quantization, base_model_type):
-    if test_flux2( base_model_type):
-        text_encoder_filename =  "mistral3small/mistral3_small_bf16.safetensors"
-    else:
-        text_encoder_filename =  "T5_xxl_1.1/T5_xxl_1.1_enc_bf16.safetensors"
-    if text_encoder_quantization =="int8":
-        text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8") 
-    return fl.locate_file(text_encoder_filename, True)
 
 
 class family_handler():
@@ -70,6 +60,20 @@ class family_handler():
             "no_negative_prompt" : flux2 or not (flux_chroma or flux_chroma_radiance),
             "flux-model": flux_model,
         }
+        if flux2:
+            text_encoder_folder = "mistral3small"
+            extra_model_def["text_encoder_URLs"] = [
+                build_hf_url("DeepBeepMeep/Flux2", text_encoder_folder, "mistral3_small_bf16.safetensors"),
+                build_hf_url("DeepBeepMeep/Flux2", text_encoder_folder, "mistral3_small_quanto_bf16_int8.safetensors"),
+            ]
+            extra_model_def["text_encoder_folder"] = text_encoder_folder
+        else:
+            text_encoder_folder = "T5_xxl_1.1"
+            extra_model_def["text_encoder_URLs"] = [
+                build_hf_url("DeepBeepMeep/LTX_Video", text_encoder_folder, "T5_xxl_1.1_enc_bf16.safetensors"),
+                build_hf_url("DeepBeepMeep/LTX_Video", text_encoder_folder, "T5_xxl_1.1_enc_quanto_bf16_int8.safetensors"),
+            ]
+            extra_model_def["text_encoder_folder"] = text_encoder_folder
         extra_model_def["profiles_dir"] = [] if (flux_schnell or flux2) else  ["flux"] 
         if flux_chroma or flux_chroma_radiance:
             extra_model_def["guidance_max_phases"] = 1
@@ -207,15 +211,14 @@ class family_handler():
         return args.lora_dir_flux
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
-        text_encoder_filename = get_flux_text_encoder_filename(text_encoder_quantization, base_model_type)    
+    def query_model_files(computeList, base_model_type, model_def=None):
         if test_flux2(base_model_type):
             ret = [
                 {
                 "repoId": "DeepBeepMeep/Flux2",
                 "sourceFolderList": ["mistral3small", ""],
                 "fileList": [
-                    [ "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "processor_config.json", "config.json", "preprocessor_config.json", "chat_template.jinja", ] + computeList(text_encoder_filename),
+                    [ "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "processor_config.json", "config.json", "preprocessor_config.json", "chat_template.jinja", ],
                     [ "flux2_vae.safetensors", ],
                 ],
                 }
@@ -227,7 +230,7 @@ class family_handler():
                 {  
                 "repoId" : "DeepBeepMeep/LTX_Video", 
                 "sourceFolderList" :  ["T5_xxl_1.1"],
-                "fileList" : [ ["added_tokens.json", "special_tokens_map.json", "spiece.model", "tokenizer_config.json"] + computeList(text_encoder_filename)  ]   
+                "fileList" : [ ["added_tokens.json", "special_tokens_map.json", "spiece.model", "tokenizer_config.json"]  ]   
                 },
                 {  
                 "repoId" : "DeepBeepMeep/HunyuanVideo", 
@@ -271,7 +274,7 @@ class family_handler():
             model_type = model_type, 
             model_def = model_def,
             base_model_type=base_model_type,
-            text_encoder_filename= get_flux_text_encoder_filename(text_encoder_quantization, base_model_type) if text_encoder_filename is None else text_encoder_filename,
+            text_encoder_filename= text_encoder_filename,
             quantizeTransformer = quantizeTransformer,
             dtype = dtype,
             VAE_dtype = VAE_dtype, 

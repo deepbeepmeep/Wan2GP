@@ -85,6 +85,8 @@ For dynamic effects over generation steps, use comma-separated values:
 
 With models like Wan 2.2 that uses internally two diffusion models (*High noise* / *Low Noise*) you can specify which Loras you want to be applied for a specific phase by separating each phase with a ";".
 
+Like LTX 2 models have two passes the ";" can be used to specify the multiplier for each pass.
+
 For instance, if you want to disable a lora for phase *High Noise* and enables it only for phase *Low Noise*:
 ```
 0;1

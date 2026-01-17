@@ -84,8 +84,8 @@ AUTOSAVE_PATH = AUTOSAVE_FILENAME
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.6.15"
-WanGP_version = "10.30"
+target_mmgp_version = "3.6.16"
+WanGP_version = "10.40"
 settings_version = 2.43
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -111,10 +111,13 @@ _HANDLER_MODULES = [
     "shared.qtypes.nvfp4",
     "shared.qtypes.nunchaku_int4",
     "shared.qtypes.nunchaku_fp4",
+    "shared.qtypes.gguf",
 ]
 quant_router.unregister_handler(".fp8_quanto_bridge")
 for handler in _HANDLER_MODULES:
     quant_router.register_handler(handler)
+from shared.qtypes import gguf as gguf_handler
+offload.register_file_extension("gguf", gguf_handler)
 
 
 
@@ -643,6 +646,10 @@ def validate_settings(state, model_type, single_prompt, inputs):
     if image_mode > 0:
         audio_prompt_type = ""
 
+    if "K" in audio_prompt_type and "V" not in video_prompt_type:
+        gr.Info("You must enable a Control Video to use the Control Video Audio Track as an audio prompt")
+        return ret()
+
     if "B" in audio_prompt_type or "X" in audio_prompt_type:
         from models.wan.multitalk.multitalk import parse_speakers_locations
         speakers_bboxes, error = parse_speakers_locations(speakers_locations)
@@ -769,7 +776,8 @@ def validate_settings(state, model_type, single_prompt, inputs):
         if "G" in video_prompt_type or model_def.get("mask_strength_always_enabled", False):
                 if "A" in video_prompt_type and "U" not in video_prompt_type and masking_strength < 1.:
                     masking_duration = math.ceil(num_inference_steps * masking_strength)
-                    gr.Info(f"With Masking Strength {masking_strength:.1f}, Masking will last {masking_duration}{' Step' if masking_duration==1 else ' Steps'}")
+                    if masking_strength:
+                        gr.Info(f"With Masking Strength {masking_strength:.1f}, Masking will last {masking_duration}{' Step' if masking_duration==1 else ' Steps'}")
         else: 
             masking_strength = 1.0
         if len(keep_frames_video_guide) > 0 and model_type in ["ltxv_13B"]:
@@ -2986,9 +2994,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
     any_module_source = ("module_source2" if submodel_no ==2 else "module_source") in model_def 
     model_type_handler = model_types_handlers[base_model_type]
  
-    if any_source and file_type==0 or any_module_source and file_type==1:
-        model_filename = None
-    else:
+    if not (any_source and file_type==0 or any_module_source and file_type==1):
         local_model_filename = get_local_model_filename(model_filename, extra_paths= force_path)
         if local_model_filename is None and len(model_filename) > 0:
             local_model_filename = fl.get_download_location(os.path.basename(model_filename), force_path= force_path)
@@ -3002,7 +3008,6 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
                 if os.path.isfile(local_model_filename): os.remove(local_model_filename) 
                 raise Exception(f"'{url}' is invalid for Model '{model_type}' : {str(e)}'")
             if file_type!=0: return
-        model_filename = None
 
     for prop, recursive in zip(["preload_URLs", "VAE_URLs"], [True, False]):
         if recursive:
@@ -3036,9 +3041,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
                 raise Exception(f"Lora URL '{url}' is invalid: {str(e)}'")
             
     if file_type != 0: return            
-    # model_filename should be None (deprecated) as query_model_files is no longer in charge of loading the transformer
-    # likewise text_encoder_quantization is wont be used by coder_quantization since the text_encoder is loaded by load_models
-    model_files = model_type_handler.query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def)
+    model_files = model_type_handler.query_model_files(computeList, base_model_type, model_def)
     if not isinstance(model_files, list): model_files = [model_files]
     for one_repo in model_files:
         process_files_def(**one_repo)
@@ -3313,12 +3316,7 @@ def load_models(model_type, override_profile = -1, **model_kwargs):
 
     model_type_handler = model_types_handlers[base_model_type] 
     text_encoder_URLs= get_model_recursive_prop(model_type, "text_encoder_URLs", return_list= True)
-    text_encoder_filename = None
-    if text_encoder_URLs is None or len(text_encoder_URLs) == 0:
-        if hasattr(model_type_handler, "get_text_encoder_filename"):
-            text_encoder_filename = model_type_handler.get_text_encoder_filename(text_encoder_quantization)
-
-    else:
+    if text_encoder_URLs is not None:
         text_encoder_filename = get_model_filename(model_type=model_type, quantization= text_encoder_quantization, dtype_policy = transformer_dtype_policy, URLs=text_encoder_URLs)
     if text_encoder_filename is not None:
         text_encoder_folder = model_def.get("text_encoder_folder", None)
@@ -3894,7 +3892,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             image_outputs = configs.get("image_mode",0) > 0
             map_video_prompt  = {"V" : "Control Image" if image_outputs else "Control Video", ("VA", "U") : "Mask Image" if image_outputs else "Mask Video", "I" : "Reference Images"}
             map_image_prompt  = {"V" : "Source Video", "L" : "Last Video", "S" : "Start Image", "E" : "End Image"}
-            map_audio_prompt  = {"A" : "Audio Source", "B" : "Audio Source #2"}
+            map_audio_prompt  = {"A" : "Audio Source", "B" : "Audio Source #2", "K": "Control Video Audio Track"}
             video_other_prompts =  [ v for s,v in map_image_prompt.items() if all_letters(video_image_prompt_type,s)] \
                                  + [ v for s,v in map_video_prompt.items() if check(video_video_prompt_type,s)] \
                                  + [ v for s,v in map_audio_prompt.items() if all_letters(video_audio_prompt_type,s)] 
@@ -5012,18 +5010,11 @@ def truncate_audio(generated_audio, trim_video_frames_beginning, trim_video_fram
     return generated_audio[start:end if end > 0 else None]
 
 def slice_audio_window(audio_path, start_frame, num_frames, fps, output_dir, suffix=""):
-    if audio_path is None or num_frames <= 0 or fps <= 0:
-        return audio_path
-    try:
-        import soundfile as sf
-    except Exception:
-        return audio_path
+    import soundfile as sf
     import numpy as np
 
     start_sec = float(start_frame) / float(fps)
     duration_sec = float(num_frames) / float(fps)
-    if duration_sec <= 0:
-        return audio_path
 
     with sf.SoundFile(audio_path) as audio_file:
         sample_rate = audio_file.samplerate
@@ -5035,8 +5026,6 @@ def slice_audio_window(audio_path, start_frame, num_frames, fps, output_dir, suf
             pad_start = -start_sample
             start_sample = 0
         frames_to_read = int(round(duration_sec * sample_rate))
-        if pad_start == 0 and start_sample == 0 and frames_to_read >= total_frames:
-            return audio_path
         if start_sample > total_frames:
             data = np.zeros((0, channels), dtype=np.float32)
         else:
@@ -5049,11 +5038,33 @@ def slice_audio_window(audio_path, start_frame, num_frames, fps, output_dir, suf
     if data.shape[0] < target_frames:
         pad_end = target_frames - data.shape[0]
         data = np.concatenate([data, np.zeros((pad_end, channels), dtype=np.float32)], axis=0)
+    if data.ndim == 2:
+        data = data.T
+    return data, sample_rate
 
-    output_dir = output_dir or os.path.dirname(audio_path) or "."
-    temp_path = get_available_filename(output_dir, audio_path, suffix=suffix, force_extension=".wav")
-    sf.write(temp_path, data, sample_rate)
-    return temp_path
+def extract_audio_track_to_wav(video_path, output_dir, suffix=""):
+    if not video_path:
+        return None
+    try:
+        video_path = os.fspath(video_path)
+    except TypeError:
+        return None
+    try:
+        import ffmpeg
+    except Exception:
+        return None
+    output_dir = output_dir or os.path.dirname(video_path) or "."
+    output_path = get_available_filename(output_dir, video_path, suffix=suffix, force_extension=".wav")
+    try:
+        (
+            ffmpeg.input(video_path)
+            .output(output_path, **{"map": "0:a:0", "acodec": "pcm_s16le"})
+            .overwrite_output()
+            .run(quiet=True)
+        )
+    except Exception:
+        return None
+    return output_path
 
 
 def write_wav_file(file_path, audio_data, sampling_rate):
@@ -5445,8 +5456,15 @@ def generate_video(
             video_source = max(mp4_files, key=os.path.getmtime) if mp4_files else None                            
     fps = 1 if is_image else get_computed_fps(force_fps, base_model_type , video_guide, video_source )
     control_audio_tracks = source_audio_tracks = source_audio_metadata = []
-    if "R" in audio_prompt_type and video_guide is not None and MMAudio_setting == 0 and not any_letters(audio_prompt_type, "ABX"):
+    if any_letters(audio_prompt_type, "R") and video_guide is not None and MMAudio_setting == 0 and not any_letters(audio_prompt_type, "ABXK"):
         control_audio_tracks, _  = extract_audio_tracks(video_guide)
+    if "K" in audio_prompt_type and video_guide is not None:
+        try:
+            audio_guide = extract_audio_track_to_wav(video_guide, save_path, suffix="_control_audio")
+            temp_filenames_list.append(audio_guide)
+        except:
+            audio_guide = None
+        audio_guide2 = None
     if video_source is not None:
         source_audio_tracks, source_audio_metadata = extract_audio_tracks(video_source)
         video_fps, _, _, video_frames_count = get_video_info(video_source)
@@ -5515,7 +5533,6 @@ def generate_video(
     audio_scale = audio_scale if model_def.get("audio_scale_name") else None
     audio_context_lens = None
     if audio_guide != None:
-        from models.wan.fantasytalking.infer import parse_audio
         from preprocessing.extract_vocals import get_vocals
         import librosa
         duration = librosa.get_duration(path=audio_guide)
@@ -5550,11 +5567,11 @@ def generate_video(
                 audio_guide = get_vocals(original_audio_guide, get_available_filename(save_path, audio_guide, "_clean", ".wav"))
                 temp_filenames_list += [audio_guide]
 
-            if model_def.get("audio_scale_name", None) is None:
-                output_new_audio_filepath = original_audio_guide
+            output_new_audio_filepath = original_audio_guide
 
         current_video_length = min(int(fps * duration //latent_size) * latent_size + latent_size + 1, current_video_length)
         if fantasy:
+            from models.wan.fantasytalking.infer import parse_audio
             # audio_proj_split_full, audio_context_lens_full = parse_audio(audio_guide, num_frames= max_source_video_frames, fps= fps,  padded_frames_for_embeddings= (reuse_frames if reset_control_aligment else 0), device= processing_device  )
             if audio_scale is None:
                 audio_scale = 1.0
@@ -5631,6 +5648,7 @@ def generate_video(
         gen["extra_windows"] = 0
         gen["total_windows"] = 1
         gen["window_no"] = 1
+        input_waveform, input_waveform_sample_rate = None, 0        
         num_frames_generated = 0 # num of new frames created (lower than the number of frames really processed due to overlaps and discards)
         requested_frames_to_generate = default_requested_frames_to_generate # num  of num frames to create (if any source window this num includes also the overlapped source window frames)
         cached_video_guide_processed = cached_video_mask_processed = cached_video_guide_processed2 = cached_video_mask_processed2 = None
@@ -5708,21 +5726,11 @@ def generate_video(
             aligned_guide_start_frame = guide_start_frame - alignment_shift
             aligned_guide_end_frame = guide_end_frame - alignment_shift
             aligned_window_start_frame = window_start_frame - alignment_shift  
-            audio_guide_window = audio_guide
-            if sliding_window and audio_guide is not None and model_def.get("audio_guide_window_slicing", False):
+            if audio_guide is not None and model_def.get("audio_guide_window_slicing", False):
                 audio_start_frame = aligned_window_start_frame
                 if reset_control_aligment:
                     audio_start_frame += source_video_overlap_frames_count
-                audio_guide_window = slice_audio_window(
-                    audio_guide,
-                    audio_start_frame,
-                    current_video_length,
-                    fps,
-                    save_path,
-                    suffix=f"_win{window_no}",
-                )
-                if audio_guide_window != audio_guide:
-                    temp_filenames_list.append(audio_guide_window)
+                input_waveform, input_waveform_sample_rate = slice_audio_window( audio_guide, audio_start_frame, current_video_length, fps, save_path, suffix=f"_win{window_no}", )
             if fantasy and audio_guide is not None:
                 audio_proj_split , audio_context_lens = parse_audio(audio_guide, start_frame = aligned_window_start_frame, num_frames= current_video_length, fps= fps,  device= processing_device  )
             if multitalk:
@@ -6020,7 +6028,9 @@ def generate_video(
                     cfg_zero_step = cfg_zero_step,
                     alt_guide_scale= alt_guidance_scale,
                     audio_cfg_scale= audio_guidance_scale,
-                    audio_guide=audio_guide_window,
+                    input_waveform=input_waveform, 
+                    input_waveform_sample_rate=input_waveform_sample_rate,
+                    audio_guide=audio_guide,
                     audio_guide2=audio_guide2,
                     audio_proj= audio_proj_split,
                     audio_scale= audio_scale,
@@ -6116,19 +6126,17 @@ def generate_video(
                     overlapped_latents = samples.get("latent_slice", None)
                     BGRA_frames = samples.get("BGRA_frames", None)
                     generated_audio = samples.get("audio", generated_audio)
-                    output_audio_sampling_rate =  samples.get("audio_sampling_rate", audio_sampling_rate)
+                    if generated_audio is not None and model_def.get("output_audio_is_input_audio", False) and output_new_audio_filepath is not None:  
+                        generated_audio = None
+                    else:
+                        output_new_audio_filepath = None
+                        output_audio_sampling_rate =  samples.get("audio_sampling_rate", audio_sampling_rate)
                     post_decode_pre_trim = samples.get("post_decode_pre_trim", 0) 
                     samples = samples.get("x", None)
 
                 if samples is not None:
                     samples = samples.to("cpu")
-            if (
-                output_new_audio_filepath is None
-                and generated_audio is None
-                and original_audio_guide is not None
-                and model_def.get("audio_guide_window_slicing", False)
-            ):
-                output_new_audio_filepath = original_audio_guide
+  
             clear_gen_cache()
             offloadobj.unload_all()
             gc.collect()
@@ -6161,13 +6169,7 @@ def generate_video(
                         sample = sample[: , :-discard_last_frames]
                         guide_start_frame -= discard_last_frames
                         if generated_audio is not None:
-                            generated_audio = truncate_audio(
-                                generated_audio,
-                                0,
-                                discard_last_frames,
-                                fps,
-                                output_audio_sampling_rate,
-                            )
+                            generated_audio = truncate_audio( generated_audio, 0, discard_last_frames, fps, output_audio_sampling_rate,)
 
                     if reuse_frames == 0:
                         pre_video_guide =  sample[:,max_source_video_frames :].clone()
@@ -6184,25 +6186,13 @@ def generate_video(
                         sample = torch.cat([ prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
                     guide_start_frame -= source_video_overlap_frames_count 
                     if generated_audio is not None:
-                        generated_audio = truncate_audio(
-                            generated_audio,
-                            source_video_overlap_frames_count,
-                            0,
-                            fps,
-                            output_audio_sampling_rate,
-                        )
+                        generated_audio = truncate_audio( generated_audio, source_video_overlap_frames_count, 0, fps, output_audio_sampling_rate,)
                 elif sliding_window and window_no > 1 and reuse_frames > 0:
                     # remove sliding window overlapped frames at the beginning of the generation
                     sample = sample[: , reuse_frames:]
                     guide_start_frame -= reuse_frames 
                     if generated_audio is not None:
-                        generated_audio = truncate_audio(
-                            generated_audio,
-                            reuse_frames,
-                            0,
-                            fps,
-                            output_audio_sampling_rate,
-                        )
+                        generated_audio = truncate_audio( generated_audio, reuse_frames, 0, fps, output_audio_sampling_rate,)
 
                 num_frames_generated = guide_start_frame - (source_video_frames_count - source_video_overlap_frames_count) 
                 if generated_audio is not None:
@@ -8238,9 +8228,9 @@ def refresh_remove_background_sound(state, audio_prompt_type, remove_background_
 
 
 def refresh_audio_prompt_type_sources(state, audio_prompt_type, audio_prompt_type_sources):
-    audio_prompt_type = del_in_sequence(audio_prompt_type, "XCPAB")
+    audio_prompt_type = del_in_sequence(audio_prompt_type, "XCPABK")
     audio_prompt_type = add_to_sequence(audio_prompt_type, audio_prompt_type_sources)
-    return audio_prompt_type, gr.update(visible = "A" in audio_prompt_type), gr.update(visible = "B" in audio_prompt_type), gr.update(visible = ("B" in audio_prompt_type or "X" in audio_prompt_type)), gr.update(visible= any_letters(audio_prompt_type, "ABX")), gr.update(visible= any_letters(audio_prompt_type,"AB"))
+    return audio_prompt_type, gr.update(visible = "A" in audio_prompt_type), gr.update(visible = "B" in audio_prompt_type), gr.update(visible = ("B" in audio_prompt_type or "X" in audio_prompt_type)), gr.update(visible= any_letters(audio_prompt_type, "ABXK")), gr.update(visible= any_letters(audio_prompt_type,"AB"))
 
 def refresh_image_prompt_type_radio(state, image_prompt_type, image_prompt_type_radio):
     image_prompt_type = del_in_sequence(image_prompt_type, "VLTS")
@@ -9207,11 +9197,12 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     "XA": "Two speakers, Auto Separation of Speakers (will work only if Voices are distinct)",
                     "CAB": "Two speakers, Speakers Audio sources are assumed to be played in a Row",
                     "PAB": "Two speakers, Speakers Audio sources are assumed to be played in Parallel",
+                    "K": "Control Video Audio Track",
                 }
                 if not isinstance(audio_prompt_type_sources_def, dict):
                     has_multi_letter = "B" in audio_prompt_type_value or "X" in audio_prompt_type_value
                     if not any_single_speaker and "A" in audio_prompt_type_value and not has_multi_letter:
-                        audio_prompt_type_value = del_in_sequence(audio_prompt_type_value, "XCPAB")
+                        audio_prompt_type_value = del_in_sequence(audio_prompt_type_value, "XCPABK")
                     if not any_multi_speakers:
                         audio_prompt_type_value = del_in_sequence(audio_prompt_type_value, "XCPB")
                     selection = [""]
@@ -9229,11 +9220,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     audio_prompt_type_sources_choices.append((label, choice))
                 if len(audio_prompt_type_sources_choices) == 0:
                     audio_prompt_type_sources_choices = [(audio_prompt_type_sources_labels_all[""], "")]
-                letters_filter = audio_prompt_type_sources_def.get("letters_filter", "XCPAB")
+                letters_filter = audio_prompt_type_sources_def.get("letters_filter", "XCPABK")
                 default_choice = audio_prompt_type_sources_def.get("default", "")
                 audio_prompt_type_sources_value = filter_letters(audio_prompt_type_value, letters_filter, default_choice)
                 audio_prompt_type_sources_value = get_default_value(audio_prompt_type_sources_choices, audio_prompt_type_sources_value, default_choice)
-                audio_prompt_type_value = del_in_sequence(audio_prompt_type_value, "XCPAB")
+                audio_prompt_type_value = del_in_sequence(audio_prompt_type_value, "XCPABK")
                 audio_prompt_type_value = add_to_sequence(audio_prompt_type_value, audio_prompt_type_sources_value)
                 sources_visible = model_def.get("audio_prompt_choices") is not None and not image_outputs and audio_prompt_type_sources_def.get("visible", True)
                 audio_prompt_type_sources = gr.Dropdown(
@@ -9261,7 +9252,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     custom_guide = gr.File(value= None, type="filepath", label= "Custom Guide", height=41, visible= False )
                 else:
                     custom_guide = gr.File(value= ui_defaults.get("custom_guide", None), type="filepath", label= custom_guide_def.get("label","Custom Guide"), height=41, visible= True, file_types = custom_guide_def.get("file_types", ["*.*"]) )
-            remove_background_sound = gr.Checkbox(label= "Remove Background Music" if audio_only else "Video Motion ignores Background Music (to get a better LipSync)", value="V" in audio_prompt_type_value, visible =  any_audio_prompt and any_letters(audio_prompt_type_value, "ABX") and not image_outputs)
+            remove_background_sound = gr.Checkbox(label= "Remove Background Music" if audio_only else "Video Motion ignores Background Music (to get a better LipSync)", value="V" in audio_prompt_type_value, visible =  any_audio_prompt and any_letters(audio_prompt_type_value, "ABXK") and not image_outputs)
             with gr.Row(visible = any_audio_prompt and ("B" in audio_prompt_type_value or "X" in audio_prompt_type_value) and not image_outputs ) as speakers_locations_row:
                 speakers_locations = gr.Text( ui_get("speakers_locations"), label="Speakers Locations separated by a Space. Each Location = Left:Right or a BBox Left:Top:Right:Bottom", visible= True)
 

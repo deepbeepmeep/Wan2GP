@@ -44,6 +44,7 @@ if _NVFP4_QTYPE_NAME not in _quanto_qtypes:
         qmax=6.0,
     )
 _NVFP4_QTYPE = _quanto_qtypes[_NVFP4_QTYPE_NAME]
+HANDLER_PRIORITY = 1
 
 _NVFP4_LAYOUT_LEGACY = "legacy"
 _NVFP4_LAYOUT_TENSORCORE = "tensorcore"
@@ -413,6 +414,21 @@ def _nvfp4_linear_cuda(input, weight, bias=None):
     if _NVFP4_KERNEL_BACKEND == _NVFP4_BACKEND_LIGHTX2V:
         return _nvfp4_linear_cuda_lightx2v(input, weight, bias=bias)
     return _nvfp4_linear_cuda_comfy(input, weight, bias=bias)
+
+
+@torch.compiler.disable()
+def _nvfp4_linear(input, weight, bias=None, op=None):
+    if _nvfp4_can_use_kernel(input, weight):
+        return _nvfp4_linear_cuda(input, weight, bias=bias)
+    _nvfp4_note_fallback()
+    dtype = input.dtype if torch.is_tensor(input) else weight.dtype
+    device = input.device if torch.is_tensor(input) else weight.device
+    w = weight.dequantize(dtype=dtype, device=device)
+    if bias is not None and torch.is_tensor(bias) and bias.dtype != dtype:
+        bias = bias.to(dtype)
+    if op is not None:
+        return op(input, w, bias)
+    return torch.nn.functional.linear(input, w, bias)
 
 
 def _is_float8_dtype(dtype):
@@ -818,15 +834,7 @@ class NVFP4WeightTensor(QTensor):
             weight = args[1] if len(args) > 1 else kwargs.get("weight", None)
             bias = args[2] if len(args) > 2 else kwargs.get("bias", None)
             if isinstance(weight, NVFP4WeightTensor):
-                if _nvfp4_can_use_kernel(input, weight):
-                    return _nvfp4_linear_cuda(input, weight, bias=bias)
-                _nvfp4_note_fallback()
-                dtype = input.dtype if torch.is_tensor(input) else weight.dtype
-                device = input.device if torch.is_tensor(input) else weight.device
-                w = weight.dequantize(dtype=dtype, device=device)
-                if bias is not None and torch.is_tensor(bias) and bias.dtype != dtype:
-                    bias = bias.to(dtype)
-                return torch.nn.functional.linear(input, w, bias)
+                return _nvfp4_linear(input, weight, bias=bias)
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
 
@@ -838,15 +846,7 @@ class NVFP4WeightTensor(QTensor):
             weight = args[1]
             bias = args[2] if len(args) > 2 else None
             if isinstance(weight, NVFP4WeightTensor):
-                if _nvfp4_can_use_kernel(input, weight):
-                    return _nvfp4_linear_cuda(input, weight, bias=bias)
-                _nvfp4_note_fallback()
-                dtype = input.dtype if torch.is_tensor(input) else weight.dtype
-                device = input.device if torch.is_tensor(input) else weight.device
-                w = weight.dequantize(dtype=dtype, device=device)
-                if bias is not None and torch.is_tensor(bias) and bias.dtype != dtype:
-                    bias = bias.to(dtype)
-                return op(input, w, bias)
+                return _nvfp4_linear(input, weight, bias=bias, op=op)
         if op is torch.ops.aten.detach:
             t = args[0]
             return NVFP4WeightTensor.create(

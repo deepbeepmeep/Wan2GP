@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "TTS Chatterbox Multilingual",
+        "architecture": "chatterbox",
+        "description": "Resemble AI's open multilingual TTS with language selection via model mode.",
+        "URLs": []
+    },
+	"prompt": "Welcome to Chatterbox !",
+	"negative_prompt": "",
+	"audio_prompt_type": "A",
+	"model_mode": "en",
+	"repeat_generation": 1,
+	"video_length": 0,
+	"num_inference_steps": 0,
+	"pace": 0.5,
+	"exaggeration": 0.5,
+	"temperature": 0.8
+}

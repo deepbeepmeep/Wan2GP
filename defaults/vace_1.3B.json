@@ -1,7 +1,7 @@
 {
 	"model":
 	{
-		"name": "Vace ControlNet 1.3B",
+		"name": "Vace 1.3B",
 		"architecture" : "vace_1.3B",
 	    "modules": [
 			["https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_Vace_1_3B_module.safetensors"]

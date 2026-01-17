@@ -395,6 +395,7 @@ class QwenImageEncoder3d(nn.Module):
         attn_scales=[],
         temperal_downsample=[True, True, False],
         dropout=0.0,
+        input_channels: int = 3,
         non_linearity: str = "silu",
     ):
         super().__init__()
@@ -411,7 +412,7 @@ class QwenImageEncoder3d(nn.Module):
         scale = 1.0
 
         # init block
-        self.conv_in = QwenImageCausalConv3d(3, dims[0], 3, padding=1)
+        self.conv_in = QwenImageCausalConv3d(input_channels, dims[0], 3, padding=1)
 
         # downsample blocks
         self.down_blocks = nn.ModuleList([])
@@ -571,6 +572,8 @@ class QwenImageDecoder3d(nn.Module):
         attn_scales=[],
         temperal_upsample=[False, True, True],
         dropout=0.0,
+        upsampler_factor = 1,
+        input_channels: int = 3,
         non_linearity: str = "silu",
     ):
         super().__init__()
@@ -580,7 +583,7 @@ class QwenImageDecoder3d(nn.Module):
         self.num_res_blocks = num_res_blocks
         self.attn_scales = attn_scales
         self.temperal_upsample = temperal_upsample
-
+        self.upsampler_factor = upsampler_factor
         self.nonlinearity = get_activation(non_linearity)
 
         # dimensions
@@ -622,7 +625,8 @@ class QwenImageDecoder3d(nn.Module):
 
         # output blocks
         self.norm_out = QwenImageRMS_norm(out_dim, images=False)
-        self.conv_out = QwenImageCausalConv3d(out_dim, 3, 3, padding=1)
+        output_channels = input_channels * int(upsampler_factor * upsampler_factor)
+        self.conv_out = QwenImageCausalConv3d(out_dim, output_channels, 3, padding=1)
 
         self.gradient_checkpointing = False
 
@@ -661,6 +665,12 @@ class QwenImageDecoder3d(nn.Module):
             feat_idx[0] += 1
         else:
             x = self.conv_out(x)
+
+        
+        if self.upsampler_factor > 1:
+            x = F.pixel_shuffle(x.movedim(2, 1), upscale_factor=self.upsampler_factor).movedim(1, 2)  # pixel shuffle needs [..., C, H, W] format
+
+
         return x
 
 
@@ -711,6 +721,8 @@ class AutoencoderKLQwenImage(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         attn_scales: List[float] = [],
         temperal_downsample: List[bool] = [False, True, True],
         dropout: float = 0.0,
+        input_channels: int = 3,
+        upsampler_factor = 1,        
         latents_mean: List[float] = [-0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508, 0.4134, -0.0715, 0.5517, -0.3632, -0.1922, -0.9497, 0.2503, -0.2921],
         latents_std: List[float] = [2.8184, 1.4541, 2.3275, 2.6558, 1.2196, 1.7708, 2.6052, 2.0743, 3.2687, 2.1526, 2.8652, 1.5579, 1.6382, 1.1253, 2.8251, 1.9160],
     ) -> None:
@@ -720,15 +732,30 @@ class AutoencoderKLQwenImage(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.z_dim = z_dim
         self.temperal_downsample = temperal_downsample
         self.temperal_upsample = temperal_downsample[::-1]
-
+        self.upsampler_factor = upsampler_factor
         self.encoder = QwenImageEncoder3d(
-            base_dim, z_dim * 2, dim_mult, num_res_blocks, attn_scales, self.temperal_downsample, dropout
+            base_dim,
+            z_dim * 2,
+            dim_mult,
+            num_res_blocks,
+            attn_scales,
+            self.temperal_downsample,
+            dropout,
+            input_channels,
         )
         self.quant_conv = QwenImageCausalConv3d(z_dim * 2, z_dim * 2, 1)
         self.post_quant_conv = QwenImageCausalConv3d(z_dim, z_dim, 1)
 
         self.decoder = QwenImageDecoder3d(
-            base_dim, z_dim, dim_mult, num_res_blocks, attn_scales, self.temperal_upsample, dropout
+            base_dim,
+            z_dim,
+            dim_mult,
+            num_res_blocks,
+            attn_scales,
+            self.temperal_upsample,
+            dropout,
+            upsampler_factor,
+            input_channels,
         )
 
         self.spatial_compression_ratio = 2 ** len(self.temperal_downsample)
@@ -1025,16 +1052,18 @@ class AutoencoderKLQwenImage(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 returned.
         """
         _, _, num_frames, height, width = z.shape
-        sample_height = height * self.spatial_compression_ratio
-        sample_width = width * self.spatial_compression_ratio
+        factor = self.upsampler_factor
+        sample_height = height * self.spatial_compression_ratio * factor
+        sample_width = width * self.spatial_compression_ratio * factor
 
         tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
         tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
         tile_latent_stride_height = self.tile_sample_stride_height // self.spatial_compression_ratio
         tile_latent_stride_width = self.tile_sample_stride_width // self.spatial_compression_ratio
-
-        blend_height = self.tile_sample_min_height - self.tile_sample_stride_height
-        blend_width = self.tile_sample_min_width - self.tile_sample_stride_width
+        tile_sample_min_height, tile_sample_stride_height = self.tile_sample_min_height * factor , self.tile_sample_stride_height * factor 
+        tile_sample_min_width, tile_sample_stride_width = self.tile_sample_min_width * factor , self.tile_sample_stride_width * factor 
+        blend_height = tile_sample_min_height - tile_sample_stride_height
+        blend_width = tile_sample_min_width - tile_sample_stride_width
 
         # Split z into overlapping tiles and decode them separately.
         # The tiles have an overlap to avoid seams between tiles.
@@ -1064,7 +1093,7 @@ class AutoencoderKLQwenImage(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     tile = self.blend_v(rows[i - 1][j], tile, blend_height)
                 if j > 0:
                     tile = self.blend_h(row[j - 1], tile, blend_width)
-                result_row.append(tile[:, :, :, : self.tile_sample_stride_height, : self.tile_sample_stride_width])
+                result_row.append(tile[:, :, :, : tile_sample_stride_height, : tile_sample_stride_width])
             result_rows.append(torch.cat(result_row, dim=-1))
 
         dec = torch.cat(result_rows, dim=3)[:, :, :, :sample_height, :sample_width]

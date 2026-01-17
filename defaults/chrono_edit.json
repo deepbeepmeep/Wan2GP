@@ -1,0 +1,13 @@
+{
+    "model": {
+        "name": "Wan2.1 Chrono Edit 14B",
+        "architecture": "chrono_edit",
+        "description": "This model in an Image Editor that will follow your instructions. It generates internally a video to produce the desired effect on the original image (the result being the End Image). It expects a very specific prompt format. It is why you must absolutely use the Prompt Enhancer that has been tuned for this model.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_chrono_edit_14B_mbf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_chrono_edit_14B_quanto_mbf16_int8.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_chrono_edit_14B_quanto_mfp16_int8.safetensors"
+        ]
+    },
+	"prompt": "Rotate the pose of the woman so that she is facing the right"
+}

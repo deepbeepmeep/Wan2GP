@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Wan2.2 Ovi v1.1 5s 10B",
+        "architecture": "ovi",
+        "description": "Ovi will generate an Audio soundtrack with the Video. It is specialized in speaking characters. Use the tags &lt;S&gt; and &lt;E&gt; to delimit the speaker words and use Audio: as a prefix to set the background noise.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_ovi1_1_video_10B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_ovi1_1_video_10B_quanto_bf16_int8.safetensors"
+        ],
+        "URLs2": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_ovi1_1_audio_10B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_ovi1_1_audio_10B_quanto_bf16_int8.safetensors"
+        ]
+    },
+	"num_inference_steps": 30,
+	"prompt" : "A singer in a glittering jacket grips the microphone, sweat shining on his brow, and shouts, <S>The end is night<E>. The crowd roars in response, fists in the air. Behind him, a guitarist steps to the mic and adds to say <S>We must all find a bunker where to hide.<E>. The energy peaks as the lights flare brighter.. Audio: Electric guitar riffs, cheering crowd, shouted male voices."
+
+}

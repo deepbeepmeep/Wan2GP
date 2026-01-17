@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Infinitetalk Multi Speakers 480p",
+        "name": "Infinitetalk Multi Speakers 480p 14B",
         "architecture": "infinitetalk",
         "modules": [
             [

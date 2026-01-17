@@ -1,0 +1,10 @@
+{
+    "model": {
+        "name": "Vace Lynx 14B",
+        "architecture": "vace_lynx_14B",
+        "modules": [ "vace_14B", "lynx"],
+        "description": "The Vace ControlNet model is a powerful model that allows you to control the content of the generated video based of additional custom data : pose or depth video, images or objects you want to see in the video. The Lynx version is specialized in identity transfer, so the last Image Ref should always contain a close up of the Face of a Person to transfer.",
+        "URLs": "t2v",
+		"preload_URLs": "lynx"
+    }
+}

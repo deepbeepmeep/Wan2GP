@@ -1,0 +1,20 @@
+{
+    "model": {
+        "name": "Wan2.2 Lucy Edit v1 5B",
+        "architecture": "lucy_edit",
+        "description": "Lucy Edit is a video editing model that performs instruction-guided edits on videos using free-text prompts. It supports a variety of edits, such as clothing & accessory changes, character changes, object insertions, and scene replacements while preserving the motion and composition perfectly.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_lucy_edit_mbf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_lucy_edit_quanto_mbf16_int8.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_lucy_edit_quanto_mfp16_int8.safetensors"
+        ],
+		"settings_dir": "ti2v_2_2",		
+        "group": "wan2_2"
+    },
+	"prompt": "change the clothes to red",	
+    "video_length": 81,
+    "guidance_scale": 5,
+    "flow_shift": 5,
+    "num_inference_steps": 30,
+    "resolution": "1280x720"
+}

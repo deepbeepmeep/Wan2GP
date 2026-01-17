@@ -7,13 +7,29 @@ from torch import Tensor, nn
 
 from ..math import attention, rope
 
-def get_linear_split_map():
-    hidden_size = 3072
-    split_linear_modules_map =  {
-                                "qkv" : {"mapped_modules" : ["q", "k", "v"] , "split_sizes": [hidden_size, hidden_size, hidden_size]},
-                                "linear1" : {"mapped_modules" : ["linear1_attn_q", "linear1_attn_k", "linear1_attn_v", "linear1_mlp"] , "split_sizes":  [hidden_size, hidden_size, hidden_size, 7*hidden_size- 3*hidden_size]},
-                                "linear1_qkv" : {"mapped_modules" : ["linear1_attn_q", "linear1_attn_k", "linear1_attn_v"] , "split_sizes":  [hidden_size, hidden_size, hidden_size]},
-                                }
+def get_linear_split_map(
+    hidden_size: int = 3072,
+    mlp_ratio: float = 4.0,
+    single_linear1_mlp_ratio: float | None = None,
+    linear1_mlp_ratio: float | None = None,
+):
+    mlp_hidden_dim = int(hidden_size * mlp_ratio)
+    if linear1_mlp_ratio is None and mlp_ratio == 3.0:
+        lin1_ratio = mlp_ratio * 2
+    else:
+        lin1_ratio = linear1_mlp_ratio if linear1_mlp_ratio is not None else mlp_ratio
+    lin1_mlp = int(hidden_size * (single_linear1_mlp_ratio if single_linear1_mlp_ratio is not None else lin1_ratio))
+    split_linear_modules_map = {
+        "qkv": {"mapped_modules": ["q", "k", "v"], "split_sizes": [hidden_size, hidden_size, hidden_size]},
+        "linear1": {
+            "mapped_modules": ["linear1_attn_q", "linear1_attn_k", "linear1_attn_v", "linear1_mlp"],
+            "split_sizes": [hidden_size, hidden_size, hidden_size, lin1_mlp],
+        },
+        "linear1_qkv": {
+            "mapped_modules": ["linear1_attn_q", "linear1_attn_k", "linear1_attn_v"],
+            "split_sizes": [hidden_size, hidden_size, hidden_size],
+        },
+    }
     return split_linear_modules_map
 
 
@@ -33,6 +49,21 @@ class EmbedND(nn.Module):
 
         return emb.unsqueeze(1)
 
+class EmbedNDFlux2(nn.Module):
+    def __init__(self, dim: int, theta: int, axes_dim: list[int]):
+        super().__init__()
+        self.dim = dim
+        self.theta = theta
+        self.axes_dim = axes_dim
+
+    def forward(self, ids: Tensor) -> Tensor:
+        emb = torch.cat(
+            [rope(ids[..., i], self.axes_dim[i], self.theta) for i in range(len(self.axes_dim))],
+            dim=-3,
+        )
+
+        return emb.unsqueeze(1)
+       
 
 def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 1000.0):
     """
@@ -59,11 +90,11 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
 
 
 class MLPEmbedder(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int):
+    def __init__(self, in_dim: int, hidden_dim: int, bias: bool = True):
         super().__init__()
-        self.in_layer = nn.Linear(in_dim, hidden_dim, bias=True)
+        self.in_layer = nn.Linear(in_dim, hidden_dim, bias=bias)
         self.silu = nn.SiLU()
-        self.out_layer = nn.Linear(hidden_dim, hidden_dim, bias=True)
+        self.out_layer = nn.Linear(hidden_dim, hidden_dim, bias=bias)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.out_layer(self.silu(self.in_layer(x)))
@@ -99,14 +130,14 @@ class QKNorm(torch.nn.Module):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = False):
+    def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = False, proj_bias: bool = True):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.norm = QKNorm(head_dim)
-        self.proj = nn.Linear(dim, dim)
+        self.proj = nn.Linear(dim, dim, bias=proj_bias)
 
     def forward(self, x: Tensor, pe: Tensor) -> Tensor:
         raise Exception("not implemented")
@@ -140,11 +171,11 @@ def split_mlp(mlp, x, divide = 8):
     return x.reshape(x_shape)      
 
 class Modulation(nn.Module):
-    def __init__(self, dim: int, double: bool):
+    def __init__(self, dim: int, double: bool, bias: bool = True):
         super().__init__()
         self.is_double = double
         self.multiplier = 6 if double else 3
-        self.lin = nn.Linear(dim, self.multiplier * dim, bias=True)
+        self.lin = nn.Linear(dim, self.multiplier * dim, bias=bias)
 
     def forward(self, vec: Tensor) -> tuple[ModulationOut, ModulationOut | None]:
         out = self.lin(nn.functional.silu(vec))[:, None, :].chunk(self.multiplier, dim=-1)
@@ -154,41 +185,68 @@ class Modulation(nn.Module):
             ModulationOut(*out[3:]) if self.is_double else None,
         )
 
+class SiLUActivation(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.gate_fn = nn.SiLU()
+
+    def forward(self, x: Tensor) -> Tensor:
+        x1, x2 = x.chunk(2, dim=-1)
+        return self.gate_fn(x1) * x2
+
 
 class DoubleStreamBlock(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, mlp_ratio: float, qkv_bias: bool = False, chroma_modulation = False):
+    def __init__(self, hidden_size: int, num_heads: int, mlp_ratio: float, qkv_bias: bool = False, shared_modulation = False, double_mlp_ratio: float | None = None, double_linear1_mlp_ratio: float | None = None, mod_bias: bool = True, mlp_bias: bool = True, proj_bias: bool = True):
         super().__init__()
-
-        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        lin1_ratio = double_linear1_mlp_ratio
+        if lin1_ratio is None:
+            base_ratio = double_mlp_ratio if double_mlp_ratio is not None else mlp_ratio
+            lin1_ratio = base_ratio * 2 if base_ratio == 3.0 else base_ratio
+        mlp_hidden_dim = int(hidden_size * (double_mlp_ratio if double_mlp_ratio is not None else mlp_ratio))
+        lin1_mlp_dim = int(hidden_size * lin1_ratio)
         self.num_heads = num_heads
         self.hidden_size = hidden_size
-        self.chroma_modulation = chroma_modulation
-        if not chroma_modulation:
-            self.img_mod = Modulation(hidden_size, double=True)
+        self.shared_modulation = shared_modulation
+        if not shared_modulation:
+            self.img_mod = Modulation(hidden_size, double=True, bias=mod_bias)
         self.img_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.img_attn = SelfAttention(dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias)
+        self.img_attn = SelfAttention(dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias, proj_bias=proj_bias)
 
         self.img_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.img_mlp = nn.Sequential(
-            nn.Linear(hidden_size, mlp_hidden_dim, bias=True),
-            nn.GELU(approximate="tanh"),
-            nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
-        )
+        if double_linear1_mlp_ratio is not None:
+            self.img_mlp = nn.Sequential(
+                nn.Linear(hidden_size, lin1_mlp_dim, bias=mlp_bias),
+                SiLUActivation(),
+                nn.Linear(lin1_mlp_dim // 2, hidden_size, bias=mlp_bias),
+            )
+        else:
+            self.img_mlp = nn.Sequential(
+                nn.Linear(hidden_size, lin1_mlp_dim, bias=mlp_bias),
+                nn.GELU(approximate="tanh"),
+                nn.Linear(mlp_hidden_dim, hidden_size, bias=mlp_bias),
+            )
 
-        if not chroma_modulation:
-            self.txt_mod = Modulation(hidden_size, double=True)
+        if not shared_modulation:
+            self.txt_mod = Modulation(hidden_size, double=True, bias=mod_bias)
         self.txt_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.txt_attn = SelfAttention(dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias)
+        self.txt_attn = SelfAttention(dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias, proj_bias=proj_bias)
 
         self.txt_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.txt_mlp = nn.Sequential(
-            nn.Linear(hidden_size, mlp_hidden_dim, bias=True),
-            nn.GELU(approximate="tanh"),
-            nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
-        )
+        if double_linear1_mlp_ratio is not None:
+            self.txt_mlp = nn.Sequential(
+                nn.Linear(hidden_size, lin1_mlp_dim, bias=mlp_bias),
+                SiLUActivation(),
+                nn.Linear(lin1_mlp_dim // 2, hidden_size, bias=mlp_bias),
+            )
+        else:
+            self.txt_mlp = nn.Sequential(
+                nn.Linear(hidden_size, lin1_mlp_dim, bias=mlp_bias),
+                nn.GELU(approximate="tanh"),
+                nn.Linear(mlp_hidden_dim, hidden_size, bias=mlp_bias),
+            )
 
     def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor) -> tuple[Tensor, Tensor]:
-        if self.chroma_modulation:
+        if self.shared_modulation:
             (img_mod1, img_mod2), (txt_mod1, txt_mod2) = vec
         else:
             img_mod1, img_mod2 = self.img_mod(vec)
@@ -266,34 +324,44 @@ class SingleStreamBlock(nn.Module):
         num_heads: int,
         mlp_ratio: float = 4.0,
         qk_scale: float | None = None,
-        chroma_modulation = False,
+        shared_modulation = False,
+        single_linear1_mlp_ratio: float | None = None,
+        single_mlp_hidden_ratio: float | None = None,
+        linear_bias: bool = True,
+        modulation_bias: bool = True,
     ):
         super().__init__()
         self.hidden_dim = hidden_size
         self.num_heads = num_heads
-        self.chroma_modulation = chroma_modulation
+        self.shared_modulation = shared_modulation
         head_dim = hidden_size // num_heads
         self.scale = qk_scale or head_dim**-0.5
-
-        self.mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        lin1_mlp_dim = int(hidden_size * (single_linear1_mlp_ratio if single_linear1_mlp_ratio is not None else mlp_ratio))
+        self.use_silu = single_linear1_mlp_ratio is not None
+        if self.use_silu:
+            self.mlp_hidden_dim = lin1_mlp_dim // 2
+        else:
+            self.mlp_hidden_dim = int(hidden_size * (single_mlp_hidden_ratio if single_mlp_hidden_ratio is not None else mlp_ratio))
         # qkv and mlp_in
-        self.linear1 = nn.Linear(hidden_size, hidden_size * 3 + self.mlp_hidden_dim)
+        self.linear1 = nn.Linear(hidden_size, hidden_size * 3 + lin1_mlp_dim, bias=linear_bias)
         # proj and mlp_out
-        self.linear2 = nn.Linear(hidden_size + self.mlp_hidden_dim, hidden_size)
+        self.linear2 = nn.Linear(hidden_size + self.mlp_hidden_dim, hidden_size, bias=linear_bias)
 
         self.norm = QKNorm(head_dim)
 
         self.hidden_size = hidden_size
         self.pre_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
 
-        self.mlp_act = nn.GELU(approximate="tanh")
-        if not chroma_modulation:
-            self.modulation = Modulation(hidden_size, double=False)
+        self.mlp_act = SiLUActivation() if self.use_silu else nn.GELU(approximate="tanh")
+        if not shared_modulation:
+            self.modulation = Modulation(hidden_size, double=False, bias=modulation_bias)
+        else:
+            self.modulation = None
 
     def forward(self, x: Tensor, vec: Tensor, pe: Tensor) -> Tensor:
-        if self.chroma_modulation:
+        if self.shared_modulation:
             mod = vec
-        else:
+        elif self.modulation is not None:
             mod, _ = self.modulation(vec)
         x_mod = self.pre_norm(x)
         x_mod.mul_(1 + mod.scale)
@@ -338,13 +406,30 @@ class SingleStreamBlock(nn.Module):
 
 
 class LastLayer(nn.Module):
-    def __init__(self, hidden_size: int, patch_size: int, out_channels: int, chroma_modulation = False):
+    def __init__(
+        self,
+        hidden_size: int,
+        patch_size: int,
+        out_channels: int,
+        chroma_modulation: bool = False,
+        use_linear: bool = True,
+        linear_bias: bool = True,
+        modulation_bias: bool = True,
+    ):
         super().__init__()
         self.chroma_modulation = chroma_modulation
+        self.use_linear = use_linear
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
+        self.linear = (
+            nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=linear_bias)
+            if use_linear
+            else None
+        )
         if not chroma_modulation:        
-            self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True))
+            self.adaLN_modulation = nn.Sequential(
+                nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=modulation_bias)
+            )
+
 
     def forward(self, x: Tensor, vec: Tensor) -> Tensor:
         if self.chroma_modulation:
@@ -377,7 +462,7 @@ class DistilledGuidance(nn.Module):
         x = self.out_proj(x)
 
         return x
-    
+
 
 class SigLIPMultiFeatProjModel(torch.nn.Module):
     """

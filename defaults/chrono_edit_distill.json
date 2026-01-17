@@ -1,0 +1,16 @@
+{
+    "model": {
+        "name": "Wan2.1 Chrono Edit Distill 14B",
+        "architecture": "chrono_edit",
+        "description": "This model in an Image Editor that will follow your instructions. It generates internally a video to produce the desired effect on the original image (the result being the End Image). It expects a very specific prompt format. It is why you must absolutely use the Prompt Enhancer that has been tuned for this model. This version is accelerated using the Chrono Distill",
+        "URLs": "chrono_edit",
+		"profiles_dir": [""],
+		"loras": ["https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/chronoedit_distill_lora.safetensors"],
+		"loras_multipliers": [1]
+    },
+	"prompt": "Rotate the pose of the woman so that she is facing the right",
+	"num_inference_steps": 8,
+	"flow_shift": 2,
+    "guidance_phases": 1,
+    "guidance_scale": 1		
+}

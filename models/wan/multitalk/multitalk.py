@@ -19,6 +19,7 @@ from einops import rearrange
 import soundfile as sf
 import re
 import math
+from shared.utils import files_locator as fl 
 
 def custom_init(device, wav2vec):    
     audio_encoder = Wav2Vec2Model.from_pretrained(wav2vec, local_files_only=True).to(device)
@@ -214,18 +215,20 @@ def process_tts_multi(text, save_dir, voice1, voice2):
     return s1, s2, save_path_sum
 
 
-def get_full_audio_embeddings(audio_guide1 = None, audio_guide2 = None, combination_type ="add", num_frames =  0, fps = 25, sr = 16000, padded_frames_for_embeddings = 0, min_audio_duration = 0):
-    wav2vec_feature_extractor, audio_encoder= custom_init('cpu', "ckpts/chinese-wav2vec2-base")
+def get_full_audio_embeddings(audio_guide1 = None, audio_guide2 = None, combination_type ="add", num_frames =  0, fps = 25, sr = 16000, padded_frames_for_embeddings = 0, min_audio_duration = 0, return_sum_only = False):
+    wav2vec_feature_extractor, audio_encoder= custom_init('cpu', fl.locate_folder("chinese-wav2vec2-base"))
     # wav2vec_feature_extractor, audio_encoder= custom_init('cpu', "ckpts/wav2vec")
     pad = int(padded_frames_for_embeddings/ fps * sr)
     new_human_speech1, new_human_speech2, sum_human_speechs, duration_changed = audio_prepare_multi(audio_guide1, audio_guide2, combination_type, duration= num_frames / fps, pad = pad, min_audio_duration = min_audio_duration )
-    audio_embedding_1 = get_embedding(new_human_speech1, wav2vec_feature_extractor, audio_encoder, sr=sr, fps= fps)
-    audio_embedding_2 = get_embedding(new_human_speech2, wav2vec_feature_extractor, audio_encoder, sr=sr, fps= fps)
-    full_audio_embs = []
-    if audio_guide1 != None: full_audio_embs.append(audio_embedding_1)
-    # if audio_guide1 != None: full_audio_embs.append(audio_embedding_1)
-    if audio_guide2 != None: full_audio_embs.append(audio_embedding_2)
-    if audio_guide2 == None and not duration_changed: sum_human_speechs = None
+    if return_sum_only:
+        full_audio_embs = None
+    else:
+        audio_embedding_1 = get_embedding(new_human_speech1, wav2vec_feature_extractor, audio_encoder, sr=sr, fps= fps)
+        audio_embedding_2 = get_embedding(new_human_speech2, wav2vec_feature_extractor, audio_encoder, sr=sr, fps= fps)
+        full_audio_embs = []
+        if audio_guide1 != None: full_audio_embs.append(audio_embedding_1)
+        if audio_guide2 != None: full_audio_embs.append(audio_embedding_2)
+        if audio_guide2 == None and not duration_changed: sum_human_speechs = None
     return full_audio_embs, sum_human_speechs
 
 

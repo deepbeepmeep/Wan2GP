@@ -34,7 +34,23 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False):
               {'codec', 'sample_rate', 'channels', 'duration', 'language'}
               where 'duration' is set to container duration (for consistency).
     """
-    probe = ffmpeg.probe(source_video)
+    if not os.path.exists(source_video):
+        msg = f"ffprobe skipped; file not found: {source_video}"
+        if verbose:
+            print(msg)
+        raise FileNotFoundError(msg)
+
+    try:
+        probe = ffmpeg.probe(source_video)
+    except ffmpeg.Error as err:
+        stderr = getattr(err, 'stderr', b'')
+        if isinstance(stderr, (bytes, bytearray)):
+            stderr = stderr.decode('utf-8', errors='ignore')
+        stderr = (stderr or str(err)).strip()
+        message = f"ffprobe failed for {source_video}: {stderr}"
+        if verbose:
+            print(message)
+        raise RuntimeError(message) from err
     audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
     container_duration = float(probe['format'].get('duration', 0.0))
 
@@ -232,6 +248,9 @@ def save_video(tensor,
                 retry=5):
     """Save tensor as video with configurable codec and container options."""
         
+    if torch.is_tensor(tensor) and len(tensor.shape) == 4:
+        tensor = tensor.unsqueeze(0)
+        
     suffix = f'.{container}'
     cache_file = osp.join('/tmp', rand_name(suffix=suffix)) if save_file is None else save_file
     if not cache_file.endswith(suffix):
@@ -262,6 +281,7 @@ def save_video(tensor,
                 writer.append_data(frame)
         
             writer.close()
+
             return cache_file
             
         except Exception as e:
@@ -298,7 +318,11 @@ def save_image(tensor,
                 quality='jpeg_95',  # 'jpeg_95', 'jpeg_85', 'jpeg_70', 'jpeg_50', 'webp_95', 'webp_85', 'webp_70', 'webp_50', 'png', 'webp_lossless'
                 retry=5):
     """Save tensor as image with configurable format and quality."""
-    
+
+    RGBA = tensor.shape[0] == 4
+    if RGBA:
+        quality = "png"
+
     # Get format and quality settings
     format_info = _get_format_info(quality)
     
@@ -307,16 +331,18 @@ def save_image(tensor,
     
     # Save image
     error = None
+                         
     for _ in range(retry):
         try:
             tensor = tensor.clamp(min(value_range), max(value_range))
             
-            if format_info['use_pil']:
+            if format_info['use_pil'] or RGBA:
                 # Use PIL for WebP and advanced options
                 grid = torchvision.utils.make_grid(tensor, nrow=nrow, normalize=normalize, value_range=value_range)
                 # Convert to PIL Image
                 grid = grid.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
-                img = Image.fromarray(grid)
+                mode = 'RGBA' if RGBA else 'RGB'
+                img = Image.fromarray(grid, mode=mode)
                 img.save(save_file, **format_info['params'])
             else:
                 # Use torchvision for JPEG and PNG

@@ -1,0 +1,16 @@
+{
+    "model": {
+        "name": "Flux 1 USO SRPO 12B",
+        "architecture": "flux_dev_uso",
+        "description": "FLUX.1 USO SRPO is a model that can Edit Images with a specialization in Style Transfers (up to two). It leverages the improved Image quality brought by the SRPO process",
+		"modules": [ "flux_dev_uso"],
+        "URLs": "flux_srpo",
+		"loras": "flux_dev_uso"
+    },
+	"prompt": "the man is wearing a hat",
+	"embedded_guidance_scale": 4,
+    "resolution": "1024x1024",
+    "batch_size": 1
+}
+
+	

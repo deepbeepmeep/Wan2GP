@@ -4,8 +4,10 @@ from pathlib import Path
 from typing import Optional
 
 import av
+import cv2
 import numpy as np
 import torch
+import os
 from av import AudioFrame
 
 
@@ -54,38 +56,46 @@ class ImageInfo:
 
 def read_frames(video_path: Path, list_of_fps: list[float], start_sec: float, end_sec: float,
                 need_all_frames: bool) -> tuple[list[np.ndarray], list[np.ndarray], Fraction]:
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open {video_path}")
+
+    fps_val = cap.get(cv2.CAP_PROP_FPS)
+    if not fps_val or fps_val <= 0:
+        cap.release()
+        raise RuntimeError(f"Could not read fps from {video_path}")
+    fps = Fraction(fps_val).limit_denominator()
+
+    start_frame = int(start_sec * fps_val)
+    end_frame = int(end_sec * fps_val)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
     output_frames = [[] for _ in list_of_fps]
-    next_frame_time_for_each_fps = [0.0 for _ in list_of_fps]
-    time_delta_for_each_fps = [1 / fps for fps in list_of_fps]
+    next_frame_time_for_each_fps = [start_sec for _ in list_of_fps]
+    time_delta_for_each_fps = [1 / f for f in list_of_fps]
     all_frames = []
 
-    # container = av.open(video_path)
-    with av.open(video_path) as container:
-        stream = container.streams.video[0]
-        fps = stream.guessed_rate
-        stream.thread_type = 'AUTO'
-        for packet in container.demux(stream):
-            for frame in packet.decode():
-                frame_time = frame.time
-                if frame_time < start_sec:
-                    continue
-                if frame_time > end_sec:
-                    break
+    frame_idx = start_frame
+    while frame_idx <= end_frame:
+        ok, frame_bgr = cap.read()
+        if not ok:
+            break
+        frame_idx += 1
+        frame_time = frame_idx / fps_val  # seconds
+        frame_rgb = None
 
-                frame_np = None
-                if need_all_frames:
-                    frame_np = frame.to_ndarray(format='rgb24')
-                    all_frames.append(frame_np)
+        if need_all_frames:
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            all_frames.append(frame_rgb)
 
-                for i, _ in enumerate(list_of_fps):
-                    this_time = frame_time
-                    while this_time >= next_frame_time_for_each_fps[i]:
-                        if frame_np is None:
-                            frame_np = frame.to_ndarray(format='rgb24')
+        for i, _ in enumerate(list_of_fps):
+            while frame_time >= next_frame_time_for_each_fps[i]:
+                if frame_rgb is None:
+                    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                output_frames[i].append(frame_rgb)
+                next_frame_time_for_each_fps[i] += time_delta_for_each_fps[i]
 
-                        output_frames[i].append(frame_np)
-                        next_frame_time_for_each_fps[i] += time_delta_for_each_fps[i]
-
+    cap.release()
     output_frames = [np.stack(frames) for frames in output_frames]
     return output_frames, all_frames, fps
 
@@ -138,7 +148,7 @@ def remux_with_audio(video_path: Path, output_path: Path, audio: torch.Tensor, s
     temp_path_str= str(temp_path)
     import torchaudio
     torchaudio.save(temp_path_str, audio.unsqueeze(0) if audio.dim() == 1 else audio, sampling_rate)
-
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     combine_video_with_audio_tracks(video_path, [temp_path_str], output_path )
     temp_path.unlink(missing_ok=True)
 

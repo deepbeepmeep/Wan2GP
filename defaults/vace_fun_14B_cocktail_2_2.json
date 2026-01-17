@@ -1,0 +1,29 @@
+{
+    "model": {
+        "name": "Wan2.2 Vace Fun Cocktail 14B",
+        "architecture": "vace_14B_2_2",
+        "description": "This model has been created on the fly using the Wan text 2.2 video model and the Loras of FusioniX. The weight of the Detail Enhancer Lora has been reduced to improve identity preservation. This is the Fun Vace 2.2, that is not the official Vace 2.2",
+        "URLs": "vace_fun_14B_2_2",
+        "URLs2": "vace_fun_14B_2_2",
+        "loras": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/Wan21_CausVid_14B_T2V_lora_rank32_v2.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/DetailEnhancerV1.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/Wan21_AccVid_T2V_14B_lora_rank32_fp16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/Wan21_T2V_14B_MoviiGen_lora_rank32_fp16.safetensors"
+        ],
+        "loras_multipliers": [
+            1,
+            0.2,
+            0.5,
+            0.5
+        ],
+		"profiles_dir": [""],
+        "group": "wan2_2"
+    },
+    "guidance_phases": 2,
+    "num_inference_steps": 10,
+    "guidance_scale": 1,
+    "guidance2_scale": 1,
+    "flow_shift": 2,
+    "switch_threshold": 875
+}

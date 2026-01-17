@@ -42,6 +42,11 @@ try:
 except ImportError:
     sageattn_varlen_wrapper = None
 
+try:
+    from spas_sage_attn import block_sparse_sage2_attn_cuda
+except ImportError:
+    block_sparse_sage2_attn_cuda = None
+
 
 try:
     from .sage2_core import sageattn as sageattn2, is_sage2_supported
@@ -66,6 +71,12 @@ try:
     from sageattn import sageattn_blackwell as sageattn3
 except ImportError:
     sageattn3 = None
+
+if sageattn3 is None:
+    try:
+        from sageattn3 import sageattn3_blackwell as sageattn3 #word0 windows version
+    except ImportError:
+        sageattn3 = None
 
 @torch.compiler.disable()
 def sageattn3_wrapper(
@@ -144,6 +155,9 @@ def get_attention_modes():
         ret.append("sage")
     if sageattn2 != None and version("sageattention").startswith("2") :
         ret.append("sage2")
+    if block_sparse_sage2_attn_cuda != None and version("sageattention").startswith("2") :
+        ret.append("radial")
+
     if sageattn3 != None: # and version("sageattention").startswith("3") :
         ret.append("sage3")
         
@@ -159,6 +173,8 @@ def get_supported_attention_modes():
     if not sage2_supported:
         if "sage2" in ret:
             ret.remove("sage2")
+        if "radial" in ret:
+            ret.remove("radial")
 
     if  major < 7:
         if "sage" in ret:
@@ -225,6 +241,7 @@ def pay_attention(
     if attn == "chipmunk":
         from src.chipmunk.modules import SparseDiffMlp, SparseDiffAttn
         from src.chipmunk.util import LayerCounter, GLOBAL_CONFIG
+    if attn == "radial": attn ="sage2"
 
     if b > 1 and k_lens != None and attn in ("sage2", "sage3", "sdpa"):
         assert attention_mask == None

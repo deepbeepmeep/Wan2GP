@@ -1,5 +1,6 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import logging
+import os
 from mmgp import offload
 import torch
 import torch.cuda.amp as amp
@@ -410,7 +411,9 @@ class Decoder3d(nn.Module):
                  num_res_blocks=2,
                  attn_scales=[],
                  temperal_upsample=[False, True, True],
-                 dropout=0.0):
+                 dropout=0.0,
+                 upsampler_factor = 1,
+                 ):
         super().__init__()
         self.dim = dim
         self.z_dim = z_dim
@@ -453,7 +456,7 @@ class Decoder3d(nn.Module):
         # output blocks
         self.head = nn.Sequential(
             RMS_norm(out_dim, images=False), nn.SiLU(),
-            CausalConv3d(out_dim, 3, 3, padding=1))
+            CausalConv3d(out_dim, 3 * int(upsampler_factor*upsampler_factor), 3, padding=1))
 
     def forward(self, x, feat_cache=None, feat_idx=[0]):
         ## conv1
@@ -529,6 +532,7 @@ class WanVAE_(nn.Module):
                  num_res_blocks=2,
                  attn_scales=[],
                  temperal_downsample=[True, True, False],
+                 upsampler_factor = 1,
                  dropout=0.0):
         super().__init__()
         self.dim = dim
@@ -538,6 +542,7 @@ class WanVAE_(nn.Module):
         self.attn_scales = attn_scales
         self.temperal_downsample = temperal_downsample
         self.temperal_upsample = temperal_downsample[::-1]
+        self.upsampler_factor = upsampler_factor
 
         # modules
         self.encoder = Encoder3d(dim, z_dim * 2, dim_mult, num_res_blocks,
@@ -545,7 +550,7 @@ class WanVAE_(nn.Module):
         self.conv1 = CausalConv3d(z_dim * 2, z_dim * 2, 1)
         self.conv2 = CausalConv3d(z_dim, z_dim, 1)
         self.decoder = Decoder3d(dim, z_dim, dim_mult, num_res_blocks,
-                                 attn_scales, self.temperal_upsample, dropout)
+                                 attn_scales, self.temperal_upsample, dropout, upsampler_factor)
 
     def forward(self, x):
         mu, log_var = self.encode(x)
@@ -600,8 +605,7 @@ class WanVAE_(nn.Module):
         # z: [b,c,t,h,w]
         if scale != None:
             if isinstance(scale[0], torch.Tensor):
-                z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(
-                    1, self.z_dim, 1, 1, 1)
+                z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(1, self.z_dim, 1, 1, 1)
             else:
                 z = z / scale[1] + scale[0]
         iter_ = z.shape[2]
@@ -626,6 +630,10 @@ class WanVAE_(nn.Module):
                     feat_idx=self._conv_idx))
         self.clear_cache()
         out = torch.cat(out_list, 2)
+
+        if self.upsampler_factor > 1:
+            out = F.pixel_shuffle(out.movedim(2, 1), upscale_factor=self.upsampler_factor).movedim(1, 2)  # pixel shuffle needs [..., C, H, W] format
+
         return out
     
     def blend_v(self, a: torch.Tensor, b: torch.Tensor, blend_extent: int) -> torch.Tensor:
@@ -648,13 +656,13 @@ class WanVAE_(nn.Module):
         # z: [b,c,t,h,w]
 
         if isinstance(scale[0], torch.Tensor):
-            z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(
-                1, self.z_dim, 1, 1, 1)
+            z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view( 1, self.z_dim, 1, 1, 1)
         else:
             z = z / scale[1] + scale[0]
 
 
         overlap_size = int(tile_latent_min_size * (1 - tile_overlap_factor)) #8 0.75
+        tile_sample_min_size *=  self.upsampler_factor
         blend_extent = int(tile_sample_min_size * tile_overlap_factor) #256 0.25
         row_limit = tile_sample_min_size - blend_extent
 
@@ -773,7 +781,7 @@ def _video_vae(pretrained_path=None, z_dim=None, device='cpu', **kwargs):
     # model.load_state_dict(
     #     torch.load(pretrained_path, map_location=device), assign=True)
     # offload.load_model_data(model, pretrained_path.replace(".pth", "_bf16.safetensors"), writable_tensors= False)    
-    offload.load_model_data(model, pretrained_path.replace(".pth", ".safetensors"), writable_tensors= False)    
+    offload.load_model_data(model, pretrained_path, writable_tensors= False)    
     return model
 
 
@@ -783,9 +791,11 @@ class WanVAE:
                  z_dim=16,
                  vae_pth='cache/vae_step_411000.pth',
                  dtype=torch.float,
+                 upsampler_factor = 1,
                  device="cuda"):
         self.dtype = dtype
         self.device = device
+        self.z_dim = z_dim
 
         mean = [
             -0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508,
@@ -802,6 +812,7 @@ class WanVAE:
         # init model
         self.model = _video_vae(
             pretrained_path=vae_pth,
+            upsampler_factor = upsampler_factor,
             z_dim=z_dim,
         ).to(dtype).eval() #.requires_grad_(False).to(device)
         self.model._model_dtype = dtype

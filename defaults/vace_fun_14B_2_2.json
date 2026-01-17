@@ -1,0 +1,24 @@
+{
+    "model": {
+        "name": "Wan2.2 Vace Fun 14B",
+        "architecture": "vace_14B_2_2",
+        "description": "This is the Fun Vace 2.2 version, that is not the official Vace 2.2",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_HIGH_mbf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_HIGH_quanto_mbf16_int8.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_HIGH_quanto_mfp16_int8.safetensors"
+        ],
+        "URLs2": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_LOW_mbf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_LOW_quanto_mbf16_int8.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Wan2_2_Fun_VACE_A14B_LOW_quanto_mfp16_int8.safetensors"
+        ],
+        "group": "wan2_2"
+    },
+    "guidance_phases": 2,
+    "num_inference_steps": 30,
+    "guidance_scale": 1,
+    "guidance2_scale": 1,
+    "flow_shift": 2,
+    "switch_threshold": 875
+}

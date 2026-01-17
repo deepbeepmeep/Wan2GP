@@ -1,0 +1,16 @@
+{
+    "model": {
+        "name": "Hunyuan Video 1.5  Text2video 720p 8B",
+        "architecture": "hunyuan_1_5_t2v",
+        "description": "HunyuanVideo-1.5 is a video generation model that delivers top-tier quality with only 8.3B parameters, significantly lowering the barrier to usage. This is the Text2video 720p version.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/HunyuanVideo1.5/resolve/main/hunyuan_video_1.5_720_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/HunyuanVideo1.5/resolve/main/hunyuan_video_1.5_720_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "resolution": "1280x720",
+    "video_length": 97,
+    "num_inference_steps": 30,
+    "guidance_scale": 6.0,
+    "flow_shift": 9.0
+}

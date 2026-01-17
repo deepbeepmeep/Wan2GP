@@ -6,6 +6,7 @@
             "vace_14B"
         ],
         "description": "Vace control model enhanced using multiple open-source components and LoRAs to boost motion realism, temporal consistency, and expressive detail.",
+		"profiles_dir": [ "" ],		
         "URLs": "t2v_fusionix"
     },
     "negative_prompt": "",

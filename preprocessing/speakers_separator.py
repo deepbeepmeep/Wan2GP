@@ -100,7 +100,7 @@ class OptimizedPyannote31SpeakerSeparator:
         self.hf_token = hf_token
         self._overlap_pipeline = None
 
-    def separate_audio(self, audio_path: str, output1, output2 ) -> Dict[str, str]:
+    def separate_audio(self, audio_path: str, output1, output2, audio_original_path: str = None  ) -> Dict[str, str]:
         """Optimized main separation function with memory management."""
         xprint("Starting optimized audio separation...")
         self._current_audio_path = os.path.abspath(audio_path)        
@@ -128,7 +128,11 @@ class OptimizedPyannote31SpeakerSeparator:
         gc.collect()
         
         # Save outputs efficiently
-        output_paths = self._save_outputs_optimized(waveform, final_masks, sample_rate, audio_path, output1, output2)
+        if audio_original_path is None:
+            waveform_original = waveform
+        else:
+            waveform_original, sample_rate = self.load_audio(audio_original_path)
+        output_paths = self._save_outputs_optimized(waveform_original, final_masks, sample_rate, audio_path, output1, output2)
         
         return output_paths
 
@@ -835,7 +839,7 @@ class OptimizedPyannote31SpeakerSeparator:
         for turn, _, speaker in diarization.itertracks(yield_label=True):
             xprint(f"{speaker}: {turn.start:.1f}s - {turn.end:.1f}s")
 
-def extract_dual_audio(audio, output1, output2, verbose = False):
+def extract_dual_audio(audio, output1, output2, verbose = False, audio_original = None):
     global verbose_output
     verbose_output = verbose
     separator = OptimizedPyannote31SpeakerSeparator(
@@ -848,7 +852,7 @@ def extract_dual_audio(audio, output1, output2, verbose = False):
     import time
     start_time = time.time()
     
-    outputs = separator.separate_audio(audio, output1, output2)
+    outputs = separator.separate_audio(audio, output1, output2, audio_original)
     
     elapsed_time = time.time() - start_time
     xprint(f"\n=== SUCCESS (completed in {elapsed_time:.2f}s) ===")

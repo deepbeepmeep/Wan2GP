@@ -1,0 +1,18 @@
+ckpt_dir: ./ckpts
+output_dir: ./outputs
+num_steps: 50
+solver_name: unipc
+shift: 5.0
+sp_size: 1
+audio_guidance_scale: 3.0
+video_guidance_scale: 4.0
+mode: "i2v" # ["t2v", "i2v", "t2i2v"] all comes with audio
+fp8: False
+cpu_offload: False
+seed: 103
+video_negative_prompt: "jitter, bad hands, blur, distortion"  # Artifacts to avoid in video
+audio_negative_prompt: "robotic, muffled, echo, distorted"    # Artifacts to avoid in audio
+video_frame_height_width: [512, 992] # only useful if mode = t2v or t2i2v, recommended values: [512, 992], [992, 512], [960, 512], [512, 960], [720, 720], [448, 1120]
+text_prompt: example_prompts/gpt_examples_i2v.csv
+slg_layer: 11
+each_example_n_times: 2

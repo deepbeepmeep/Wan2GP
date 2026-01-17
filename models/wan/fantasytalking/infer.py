@@ -5,6 +5,7 @@ from transformers import Wav2Vec2Model, Wav2Vec2Processor
 from .model import FantasyTalkingAudioConditionModel
 from .utils import get_audio_features
 import gc, torch
+from shared.utils import files_locator as fl 
 
 def parse_audio(audio_path, start_frame, num_frames, fps = 23, device = "cuda"):
     fantasytalking = FantasyTalkingAudioConditionModel(None, 768, 2048).to(device)
@@ -16,10 +17,10 @@ def parse_audio(audio_path, start_frame, num_frames, fps = 23, device = "cuda"):
 
     with init_empty_weights():
         proj_model = AudioProjModel( 768, 2048)
-    offload.load_model_data(proj_model, "ckpts/fantasy_proj_model.safetensors")
+    offload.load_model_data(proj_model, fl.locate_file("fantasy_proj_model.safetensors"))
     proj_model.to("cpu").eval().requires_grad_(False)
 
-    wav2vec_model_dir = "ckpts/wav2vec"
+    wav2vec_model_dir = fl.locate_folder("wav2vec")
     wav2vec_processor = Wav2Vec2Processor.from_pretrained(wav2vec_model_dir)
     wav2vec = Wav2Vec2Model.from_pretrained(wav2vec_model_dir, device_map="cpu").eval().requires_grad_(False)
     wav2vec.to(device)

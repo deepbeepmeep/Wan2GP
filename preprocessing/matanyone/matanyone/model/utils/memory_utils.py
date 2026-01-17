@@ -2,7 +2,6 @@ import math
 import torch
 from typing import Optional, Union, Tuple
 
-
 # @torch.jit.script
 def get_similarity(mk: torch.Tensor,
                    ms: torch.Tensor,
@@ -59,6 +58,7 @@ def get_similarity(mk: torch.Tensor,
         del two_ab 
         # similarity = (-a_sq + two_ab)
 
+    similarity =similarity.float()
     if ms is not None:
         similarity *= ms
         similarity /=  math.sqrt(CK)

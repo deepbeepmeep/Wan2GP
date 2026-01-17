@@ -7,11 +7,10 @@
             "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_edit_20B_bf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_edit_20B_quanto_bf16_int8.safetensors"
         ],
+		"preload_URLs": ["https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_edit_inpainting.safetensors"],
         "attention": {
             "<89": "sdpa"
-        },
-        "reference_image": true,
-        "image_outputs": true
+        }
     },
     "prompt": "add a hat",
     "resolution": "1280x720",

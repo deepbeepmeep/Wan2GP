@@ -14,6 +14,8 @@ from safetensors.torch import load_file as load_sft
 from .model import Flux, FluxLoraWrapper, FluxParams
 from .modules.autoencoder import AutoEncoder, AutoEncoderParams
 from .modules.conditioner import HFEmbedder
+from shared.utils import files_locator as fl 
+from shared.convert import convert_diffusers_to_flux
 
 CHECKPOINTS_DIR = Path("checkpoints")
 
@@ -293,6 +295,79 @@ class ModelSpec:
 
 
 configs = {
+    "flux2-dev": ModelSpec(
+        repo_id="",
+        repo_flow="",
+        repo_ae="ckpts/flux2_vae.safetensors",
+        params=FluxParams(
+            in_channels=128,
+            out_channels=128,
+            vec_in_dim=1,
+            context_in_dim=15360,
+            hidden_size=6144,
+            mlp_ratio=3.0,
+            single_linear1_mlp_ratio=6.0,
+            single_mlp_hidden_ratio=3.0,
+            double_mlp_ratio=3.0,
+            double_linear1_mlp_ratio=6.0,
+            num_heads=48,
+            depth=8,
+            depth_single_blocks=48,
+            axes_dim=[32, 32, 32, 32],
+            theta=2000,
+            qkv_bias=False,
+            guidance_embed=True,
+            flux2=True,
+        ),
+        ae_params=AutoEncoderParams(
+            resolution=1024,
+            in_channels=3,
+            ch=128,
+            out_ch=3,
+            ch_mult=[1, 2, 4, 4],
+            num_res_blocks=2,
+            z_channels=32,
+            scale_factor=0.5,
+            shift_factor=0.0,
+        ),
+    ),
+    "pi-flux2": ModelSpec(
+        repo_id="",
+        repo_flow="",
+        repo_ae="ckpts/flux2_vae.safetensors",
+        params=FluxParams(
+            in_channels=128,
+            out_channels=128,
+            vec_in_dim=1,
+            context_in_dim=15360,
+            hidden_size=6144,
+            mlp_ratio=3.0,
+            single_linear1_mlp_ratio=6.0,
+            single_mlp_hidden_ratio=3.0,
+            double_mlp_ratio=3.0,
+            double_linear1_mlp_ratio=6.0,
+            num_heads=48,
+            depth=8,
+            depth_single_blocks=48,
+            axes_dim=[32, 32, 32, 32],
+            theta=2000,
+            qkv_bias=False,
+            guidance_embed=True,
+            flux2=True,
+            piflow=True,
+        ),
+        ae_params=AutoEncoderParams(
+            resolution=1024,
+            in_channels=3,
+            ch=128,
+            out_ch=3,
+            ch_mult=[1, 2, 4, 4],
+            num_res_blocks=2,
+            z_channels=32,
+            scale_factor=0.5,
+            shift_factor=0.0,
+        ),
+    ),
     "flux-dev": ModelSpec(
         repo_id="",
         repo_flow="",
@@ -386,7 +461,47 @@ configs = {
             scale_factor=0.3611,
             shift_factor=0.1159,
         ),
-    ),    
+    ),
+    "flux-chroma-radiance": ModelSpec(
+        repo_id="lodestones/Chroma1-Radiance",
+        repo_flow="",
+        repo_ae="ckpts/flux_vae.safetensors",
+        params=FluxParams(
+            in_channels=64,
+            out_channels=3,
+            vec_in_dim=768,
+            context_in_dim=4096,
+            hidden_size=3072,
+            mlp_ratio=4.0,
+            num_heads=24,
+            depth=19,
+            depth_single_blocks=38,
+            axes_dim=[16, 56, 56],
+            theta=10_000,
+            qkv_bias=True,
+            guidance_embed=False,
+            chroma=True,
+            radiance=True,
+            radiance_patch_size=16,
+            radiance_hidden_size=64,
+            radiance_mlp_ratio=4,
+            radiance_depth=4,
+            radiance_max_freqs=8,
+            radiance_tile_size=0,
+            radiance_final_head_type="conv",
+        ),
+        ae_params=AutoEncoderParams(
+            resolution=256,
+            in_channels=3,
+            ch=128,
+            out_ch=3,
+            ch_mult=[1, 2, 4, 4],
+            num_res_blocks=2,
+            z_channels=16,
+            scale_factor=0.3611,
+            shift_factor=0.1159,
+        ),
+    ),
     "flux-dev-canny": ModelSpec(
         repo_id="black-forest-labs/FLUX.1-Canny-dev",
         repo_flow="",
@@ -640,6 +755,70 @@ configs = {
             shift_factor=0.1159,
         ),
     ),
+    "flux-dev-umo": ModelSpec(
+        repo_id="",
+        repo_flow="",
+        repo_ae="ckpts/flux_vae.safetensors",
+        params=FluxParams(
+            in_channels=64,
+            out_channels=64,
+            vec_in_dim=768,
+            context_in_dim=4096,
+            hidden_size=3072,
+            mlp_ratio=4.0,
+            num_heads=24,
+            depth=19,
+            depth_single_blocks=38,
+            axes_dim=[16, 56, 56],
+            theta=10_000,
+            qkv_bias=True,
+            guidance_embed=True,
+            eso= True,
+        ),
+        ae_params=AutoEncoderParams(
+            resolution=256,
+            in_channels=3,
+            ch=128,
+            out_ch=3,
+            ch_mult=[1, 2, 4, 4],
+            num_res_blocks=2,
+            z_channels=16,
+            scale_factor=0.3611,
+            shift_factor=0.1159,
+        ),
+    ),
+    "flux-dev-kontext-dreamomni2": ModelSpec(
+        repo_id="",
+        repo_flow="",
+        repo_ae="ckpts/flux_vae.safetensors",
+        params=FluxParams(
+            in_channels=64,
+            out_channels=64,
+            vec_in_dim=768,
+            context_in_dim=4096,
+            hidden_size=3072,
+            mlp_ratio=4.0,
+            num_heads=24,
+            depth=19,
+            depth_single_blocks=38,
+            axes_dim=[16, 56, 56],
+            theta=10_000,
+            qkv_bias=True,
+            guidance_embed=True,
+            eso= True,
+        ),
+        ae_params=AutoEncoderParams(
+            resolution=256,
+            in_channels=3,
+            ch=128,
+            out_ch=3,
+            ch_mult=[1, 2, 4, 4],
+            num_res_blocks=2,
+            z_channels=16,
+            scale_factor=0.3611,
+            shift_factor=0.1159,
+        ),
+    ),
 }
 
 
@@ -684,7 +863,75 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
         print(f"Got {len(unexpected)} unexpected keys:\n\t" + "\n\t".join(unexpected))
 
 
-def load_flow_model(name: str, model_filename, device: str | torch.device = "cuda", verbose: bool = True) -> Flux:
+def preprocess_flux2_state_dict(state_dict: dict, params: FluxParams) -> dict:
+    """
+    Remap Flux2 checkpoint keys to the shared Flux1-style module layout.
+    - Duplicate shared modulation weights to each single/double block.
+    - Drop unused guidance embeddings that are identity in Flux2.
+    """
+    sd = dict(state_dict)
+    def pop_mod(prefix: str):
+        w = sd.pop(f"{prefix}.lin.weight", None)
+        b = sd.pop(f"{prefix}.lin.bias", None)
+        if w is None:
+            w = sd.pop(f"{prefix}.linear.weight", None)
+            b = sd.pop(f"{prefix}.linear.bias", None) if b is None else b
+        return w, b
+
+    img_mod_w, img_mod_b = pop_mod("double_stream_modulation_img")
+    txt_mod_w, txt_mod_b = pop_mod("double_stream_modulation_txt")
+    single_mod_w, single_mod_b = pop_mod("single_stream_modulation")
+
+    if img_mod_w is not None:
+        for i in range(params.depth):
+            sd[f"double_blocks.{i}.img_mod.lin.weight"] = img_mod_w
+            if img_mod_b is not None:
+                sd[f"double_blocks.{i}.img_mod.lin.bias"] = img_mod_b
+    if txt_mod_w is not None:
+        for i in range(params.depth):
+            sd[f"double_blocks.{i}.txt_mod.lin.weight"] = txt_mod_w
+            if txt_mod_b is not None:
+                sd[f"double_blocks.{i}.txt_mod.lin.bias"] = txt_mod_b
+    if single_mod_w is not None:
+        for i in range(params.depth_single_blocks):
+            sd[f"single_blocks.{i}.modulation.lin.weight"] = single_mod_w
+            if single_mod_b is not None:
+                sd[f"single_blocks.{i}.modulation.lin.bias"] = single_mod_b
+
+    # Remove unused inputs from Flux2 that are identity for us.
+    for unused in (
+        "double_stream_modulation_img.lin.weight",
+        "double_stream_modulation_img.lin.bias",
+        "double_stream_modulation_txt.lin.weight",
+        "double_stream_modulation_txt.lin.bias",
+        "single_stream_modulation.lin.weight",
+        "single_stream_modulation.lin.bias",
+        "double_stream_modulation_img.linear.weight",
+        "double_stream_modulation_img.linear.bias",
+        "double_stream_modulation_txt.linear.weight",
+        "double_stream_modulation_txt.linear.bias",
+        "single_stream_modulation.linear.weight",
+        "single_stream_modulation.linear.bias",
+        "guidance_in.in_layer.weight",
+        "guidance_in.in_layer.bias",
+        "guidance_in.out_layer.weight",
+        "guidance_in.out_layer.bias",
+    ):
+        sd.pop(unused, None)
+    return sd
+
+
+def preprocess_flux_state_dict(state_dict: dict) -> dict:
+    return convert_diffusers_to_flux.convert_state_dict(state_dict)
+
+
+def load_flow_model(
+    name: str,
+    model_filename,
+    device: str | torch.device = "cuda",
+    verbose: bool = True,
+    preprocess_sd=preprocess_flux_state_dict,
+) -> Flux:
     # Loading Flux
     config = configs[name]
 
@@ -698,7 +945,7 @@ def load_flow_model(name: str, model_filename, device: str | torch.device = "cud
 
     # print(f"Loading checkpoint: {ckpt_path}")
     from mmgp import offload
-    offload.load_model_data(model, model_filename )
+    offload.load_model_data(model, model_filename, preprocess_sd=preprocess_sd)
 
     # # load_sft doesn't support torch.device
     # sd = load_sft(ckpt_path, device=str(device))
@@ -724,12 +971,12 @@ def load_t5(device: str | torch.device = "cuda", text_encoder_filename = None, m
 
 
 def load_clip(device: str | torch.device = "cuda") -> HFEmbedder:
-    return HFEmbedder("ckpts/clip_vit_large_patch14", "", max_length=77, torch_dtype=torch.bfloat16, is_clip  =True).to(device)
+    return HFEmbedder( fl.locate_folder("clip_vit_large_patch14"), "", max_length=77, torch_dtype=torch.bfloat16, is_clip  =True).to(device)
 
 
 def load_ae(name: str, device: str | torch.device = "cuda") -> AutoEncoder:
     config = configs[name]
-    ckpt_path = str(get_checkpoint_path(config.repo_id, config.repo_ae, "FLUX_AE"))
+    ckpt_path = str(get_checkpoint_path(config.repo_id, fl.locate_file("flux_vae.safetensors"), "FLUX_AE"))
 
     # Loading the autoencoder
     with torch.device("meta"):
@@ -759,5 +1006,32 @@ def optionally_expand_state_dict(model: torch.nn.Module, state_dict: dict) -> di
                 state_dict[name] = expanded_state_dict_weight
 
     return state_dict
+
+
+class Flux2TransformerShared:
+    """
+    Convenience wrapper to instantiate the shared Flux2 transformer with explicit defaults.
+    """
+
+    def __new__(cls, **kwargs):
+        from diffusers.models.transformers.transformer_flux2 import Flux2Transformer2DModel
+
+        defaults = dict(
+            patch_size=1,
+            in_channels=128,
+            out_channels=None,
+            num_layers=8,
+            num_single_layers=48,
+            attention_head_dim=128,
+            num_attention_heads=48,
+            joint_attention_dim=15360,
+            timestep_guidance_channels=256,
+            mlp_ratio=3.0,
+            axes_dims_rope=(32, 32, 32, 32),
+            rope_theta=2000,
+            eps=1e-6,
+        )
+        defaults.update(kwargs)
+        return Flux2Transformer2DModel(**defaults)
 
 

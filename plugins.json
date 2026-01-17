@@ -1,0 +1,44 @@
+[
+  {
+    "name": "File Gallery",
+    "author": "Tophness",
+    "version": "1.0.1",
+    "description": "Adds a Gallery tab that allows you to view metadata of all files in your output folders, join video frames, and more.",
+    "url": "https://github.com/Tophness/wan2gp-gallery.git"
+  },
+  {
+    "name": "Lora Multipliers UI",
+    "author": "Tophness",
+    "version": "1.0.0",
+    "description": "Dynamically set lora multipliers with a fast, JavaScript-powered UI.",
+    "url": "https://github.com/Tophness/wan2gp-lora-multipliers-ui.git"
+  },
+  {
+    "name": "Lora Manager",
+    "author": "Tophness and Kovacs3d",
+    "version": "2.5.3",
+    "description": "Manage your lora files, view their CivitAi metadata, assign prompts to them, browse CivitAI, send loras and prompts to generator.",
+    "url": "https://github.com/Tophness/wan2gp-lora-manager.git"
+  },
+  {
+    "name": "Training",
+    "author": "Tophness",
+    "version": "1.1.6",
+    "description": "Integrates a Kohya-ss Musubi Tuner training tab directly into Wan2GP",
+    "url": "https://github.com/Tophness/wan2gp-training.git"
+  },
+  {
+    "name": "HideUI",
+    "author": "MrKuenning",
+    "version": "1.0.0",
+    "description": "A plugin for WAN2GP to allow toggling UI elements.",
+    "url": "https://github.com/MrKuenning/Wan2GP-HideUI.git"
+  },
+  {
+    "name": "FlashVSR",
+    "author": "Hakaze",
+    "version": "1.0.2",
+    "description": "AI-powered 4x video upscaling using FlashVSR models with Sparse SageAttention.",
+    "url": "https://github.com/Hakaze/wan2gp-flashvsr.git"
+  }
+]

@@ -1,14 +1,13 @@
 {
     "model": {
-        "name": "Flux 1 Krea Dev 12B",
+        "name": "Flux 1 Dev Krea 12B",
         "architecture": "flux",
         "description": "Cutting-edge output quality, with a focus on aesthetic photography..",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1-krea-dev_bf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1-krea-dev_quanto_bf16_int8.safetensors"
         ],
-        "image_outputs": true,
-        "flux-model": "flux-dev"
+        "image_outputs": true
     },
     "prompt": "draw a hat",
     "resolution": "1280x720",

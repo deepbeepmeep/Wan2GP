@@ -20,7 +20,7 @@ from shared.utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps)
 from shared.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from shared.utils.loras_mutipliers import update_loras_slists
-
+from shared.utils import files_locator as fl
 class DTT2V:
 
 
@@ -52,7 +52,7 @@ class DTT2V:
             dtype=config.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=os.path.join(checkpoint_dir, config.t5_tokenizer),
+            tokenizer_path=fl.locate_folder(config.t5_tokenizer),
             shard_fn= None)
         self.model_def = model_def
         self.image_outputs = model_def.get("image_outputs", False)
@@ -61,7 +61,7 @@ class DTT2V:
         self.patch_size = config.patch_size 
 
         self.vae = WanVAE(
-            vae_pth=os.path.join(checkpoint_dir, config.vae_checkpoint), dtype= VAE_dtype,
+            vae_pth= fl.locate_file(config.vae_checkpoint.replace(".pth", ".safetensors")), dtype= VAE_dtype,
             device=self.device)
 
         logging.info(f"Creating WanModel from {model_filename[-1]}")
@@ -86,6 +86,8 @@ class DTT2V:
             save_quantized_model(self.model, model_type, model_filename[0], dtype, base_config_file)
 
         self.scheduler = FlowUniPCMultistepScheduler()
+
+        self.model.apply_post_init_changes()
 
     @property
     def do_classifier_free_guidance(self) -> bool:
@@ -365,7 +367,7 @@ class DTT2V:
                 timestep[:, valid_interval_start:predix_video_latent_length] = timestep_for_noised_condition
             kwrags.update({
                 "t" : timestep,
-                "current_step" : i,                 
+                "current_step_no" : i,                 
                 })
 
             # with torch.autocast(device_type="cuda"):                

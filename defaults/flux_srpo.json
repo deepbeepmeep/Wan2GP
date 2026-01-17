@@ -1,0 +1,14 @@
+{
+    "model": {
+        "name": "Flux 1 Dev SRPO 12B",
+        "architecture": "flux",
+        "description": "By fine-tuning the FLUX.1.dev model with optimized denoising and online reward adjustment, SRPO improves its human-evaluated realism and aesthetic quality by over 3x.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1-srpo-dev_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1-srpo-dev_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "draw a hat",
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

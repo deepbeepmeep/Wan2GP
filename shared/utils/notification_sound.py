@@ -1,12 +1,15 @@
-"""Add commentMore actions
-Notification sounds for Wan2GP video generation application
-Pure Python audio notification system with multiple backend support
+"""Notification sounds for Wan2GP video generation application.
+
+Pure Python audio notification system with multiple backend support.
+Set WAN2GP_DISABLE_AUDIO=1 on headless servers to skip pygame/sounddevice initialization.
+Set WAN2GP_FORCE_AUDIO=1 to bypass the automatic device detection when audio hardware is available.
 """
 
 import os
 import sys
 import threading
-import time
+from pathlib import Path
+
 import numpy as np
 
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
@@ -15,6 +18,81 @@ _cached_waveforms = {}
 _sample_rate = 44100
 _mixer_initialized = False
 _mixer_lock = threading.Lock()
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _env_flag(name):
+    value = os.environ.get(name, "")
+    return value.strip().lower() in _TRUE_VALUES
+
+
+_FORCE_AUDIO_BACKENDS = _env_flag("WAN2GP_FORCE_AUDIO")
+_DISABLE_AUDIO_BACKENDS = _env_flag("WAN2GP_DISABLE_AUDIO")
+_audio_support_cache = None
+_audio_support_reason = None
+_audio_backends_failed = False
+_last_beep_notice = None
+
+
+def _linux_audio_available():
+    cards_path = Path("/proc/asound/cards")
+    if not cards_path.exists():
+        return False, "/proc/asound/cards is missing (no ALSA devices)"
+    try:
+        cards_content = cards_path.read_text(errors="ignore")
+    except (OSError, UnicodeDecodeError):
+        cards_content = ""
+    if not cards_content.strip():
+        return False, "ALSA reports no soundcards (/proc/asound/cards is empty)"
+    if "no soundcards" in cards_content.lower():
+        return False, "ALSA reports no soundcards (/proc/asound/cards)"
+
+    snd_path = Path("/dev/snd")
+    if not snd_path.exists():
+        return False, "/dev/snd is not available"
+    try:
+        device_names = [entry.name for entry in snd_path.iterdir()]
+    except PermissionError:
+        return False, "no permission to inspect /dev/snd"
+    pcm_like = [
+        name
+        for name in device_names
+        if name.startswith(("pcm", "controlC", "hwC", "midiC"))
+    ]
+    if not pcm_like:
+        return False, "no ALSA pcm/control devices exposed under /dev/snd"
+    return True, None
+
+
+def _detect_audio_support():
+    if _FORCE_AUDIO_BACKENDS:
+        return True, None
+    if _DISABLE_AUDIO_BACKENDS:
+        return False, "disabled via WAN2GP_DISABLE_AUDIO"
+    if sys.platform.startswith("linux"):
+        return _linux_audio_available()
+    return True, None
+
+
+def _should_try_audio_backends():
+    global _audio_support_cache, _audio_support_reason
+    if _audio_backends_failed and not _FORCE_AUDIO_BACKENDS:
+        return False
+    if _audio_support_cache is None:
+        _audio_support_cache, _audio_support_reason = _detect_audio_support()
+    return _audio_support_cache
+
+
+def _terminal_beep(reason=None):
+    global _last_beep_notice
+    message = "Audio notification fallback: using terminal beep."
+    if reason:
+        message = f"Audio notification fallback: {reason}; using terminal beep."
+    if message != _last_beep_notice:
+        print(message)
+        _last_beep_notice = message
+    sys.stdout.write("\a")
+    sys.stdout.flush()
 
 def _generate_notification_beep(volume=50, sample_rate=_sample_rate):
     """Generate pleasant C major chord notification sound"""
@@ -206,6 +284,11 @@ def play_notification_sound(volume=50):
     if len(audio_data) == 0:
         return
 
+    if not _should_try_audio_backends():
+        reason = _audio_support_reason or "audio backends unavailable"
+        _terminal_beep(reason)
+        return
+
     audio_backends = [play_audio_with_pygame, play_audio_with_sounddevice, play_audio_with_winsound]
     for backend in audio_backends:
         try:
@@ -214,8 +297,9 @@ def play_notification_sound(volume=50):
         except Exception:
             continue
 
-    print("All audio backends failed, using terminal beep")
-    print("\a")
+    global _audio_backends_failed
+    _audio_backends_failed = True
+    _terminal_beep("all audio backends failed")
 
 def play_notification_async(volume=50):
     """Play notification sound asynchronously (non-blocking)"""

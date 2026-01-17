@@ -1,0 +1,20 @@
+{
+  "model": {
+    "name": "Wan2.1 Text2video Nexus 1.3B",
+    "architecture": "t2v_1.3B",
+    "description": "The Nexus text2video finetune model is an enhanced small model. The 1.3B Nexus finetune adds a major enhancement to the wan2.1 - 1.3b text2video model. Built on CausVid 1.3b",
+    "URLs": [
+      "https://huggingface.co/MDMNexus/Nexus.v1/resolve/main/wan2.1_t2v_1.3b.nexus.B-SMOOTHED.build.1.safetensors"
+    ],
+    "auto_quantize": false,
+	"profile_dirs": [""]
+  },
+  "prompt": "scene: \"traditional Japanese dojo, wooden floor, shoji screens, serene yet intense atmosphere\", subjects: \"samurai on left and medieval knight on right engaged in fierce duel, medium close-up, slightly low angle\", samurai: \"traditional black kimono, white sash, raised katana held with perfect hands, poised to strike, swift precise movement\", knight: \"medieval armour, silver helmet with red plume, holding broadsword in defensive stance, perfect hands gripping hilt\", combat: \"dynamic clash of blades, swift controlled movements, clear separation of weapons, realistic metallic sheen, intense duel energy\", camera: \"medium close-up, slightly low angle, cinematic framing\", lighting: \"natural light highlighting katana blade and knight armour reflections\", style: \"photorealistic, traditional, cinematic, nothing modern\", environment: \"polished wooden dojo floor, shoji screens diffusing soft light\", quality: \"high detail, crisp edges on weapons, clean silhouettes\", neg: \"blurry weapons, fused blades, melted shapes, extra limbs, modern items, text, watermark\".",
+  "resolution": "832x480",
+  "video_length": 81,
+  "seed": -1,  
+  "num_inference_steps": 6,
+  "guidance_scale": 1,
+  "flow_shift": 5,
+  "repeat_generation": 1
+}

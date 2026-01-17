@@ -10,6 +10,7 @@ import PIL.ImageOps
 from torchvision.transforms.functional import normalize
 from typing import Union, Optional
 from models.hyvideo.data_kits.face_align import AlignImage
+from shared.utils import files_locator as fl 
 
 
 def _img2tensor(img: np.ndarray, bgr2rgb: bool = True) -> torch.Tensor:
@@ -53,7 +54,7 @@ def _pad_to_square(img: np.ndarray, pad_color: int = 255) -> np.ndarray:
 
 class FaceProcessor:
     def __init__(self):
-        self.align_instance = AlignImage("cuda", det_path="ckpts/det_align/detface.pt")
+        self.align_instance = AlignImage("cuda", det_path= fl.locate_file("det_align/detface.pt"))
         self.align_instance.facedet.model.to("cpu")
 
 

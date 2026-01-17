@@ -1,0 +1,24 @@
+{
+	"model":
+	{
+		"name": "Wan2.2 Image2video Enhanced Lightning v2 14B",
+		"architecture" : "i2v_2_2",
+		"description": "This custom version of WAN 2.2 I2V accelerated with Lightning has been updated to deliver better prompt comprehension and improved handling of camera angles and cinematic movements. It provides more accurate scene interpretation, smoother transitions, and enhanced control over dynamic.",
+		"URLs": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan22EnhancedLightning_v2I2VFP8HIGH.safetensors"
+		],
+		"URLs2": [
+			"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan22EnhancedLightning_v2I2VFP8LOW.safetensors"
+		],
+		"author": "https://civitai.com/models/2053259",
+		"profile_dirs": [""]
+	},
+	"guidance_phases": 2,	
+	"switch_threshold" : 900,
+	"guidance_scale" : 1,
+	"guidance2_scale" : 1,
+	"flow_shift" : 5,
+	"num_inference_steps": 4,
+	"multi_prompts_gen_type": 2,
+	"prompt": "(at 0 seconds: wide frontal shot of a man standing in front of an open fridge, cinematic lighting, subtle ambient kitchen reflections, the fridge contents visible, camera static).\n(at 1 second: medium shot from the front as he opens the fridge fully, reaches for a can, slight zoom-in to emphasize the action, cinematic framing).\n(at 2 seconds: camera shifts to a side medium shot, tracking him as he lifts the can to his mouth, fluid movement, maintaining lighting and reflections).\n(at 3 seconds: camera starts a smooth 360-degree orbit around the man, following him as he drinks from the can, motion fluid, background slightly blurred for cinematic effect).\n(at 4 seconds: close-up on his face and upper body while drinking, orbit continues subtly, fridge reflections accentuating realism, cinematic polish).\n(at 5 seconds: final wide shot as he lowers the can, camera completes orbit to original angle, showcasing the kitchen space, lighting, and dynamic movement)."
+}

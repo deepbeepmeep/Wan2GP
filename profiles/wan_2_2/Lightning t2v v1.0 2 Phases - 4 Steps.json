@@ -1,0 +1,14 @@
+{
+    "num_inference_steps": 4,
+    "guidance_scale": 1,
+    "guidance2_scale": 1,
+    "model_switch_phase": 1,	
+    "switch_threshold": 876,
+    "guidance_phases": 2,
+    "flow_shift": 3,
+ 	"activated_loras": [
+		"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_HIGH_fp16.safetensors",
+		"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2-Lightning_T2V-v1.1-A14B-4steps-lora_LOW_fp16.safetensors"
+	],
+	"loras_multipliers": "1;0 0;1"
+}

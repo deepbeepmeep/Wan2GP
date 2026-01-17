@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Motion Designer</title>
+    <!-- MOTION_DESIGNER_STYLE_INLINE -->
+</head>
+<body>
+    <div class="app-shell">
+        <header class="app-header">
+            <div>
+                <p class="subtitle">
+                    Define Object Trajectories, Preview the animation and Export a Motion Mask Video.
+                </p>
+            </div>
+            <div class="header-actions">
+                <div id="modeSwitcher" class="mode-switcher">
+                    <div class="mode-switcher-buttons" role="group" aria-label="Editor mode selection">
+                        <button id="modeClassicBtn" type="button" class="mode-option" data-mode="classic">
+                            Vace
+                        </button>
+                        <button id="modeCutDragBtn" type="button" class="mode-option active" data-mode="cut_drag">
+                            i2v TTM
+                        </button>
+                        <button id="modeTrajectoryBtn" type="button" class="mode-option" data-mode="trajectory">
+                            Wan-Move
+                        </button>
+                    </div>
+                </div>
+                <div class="header-status">
+                    <span id="statusBadge" class="badge muted">Drop a scene to get started</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="workspace">
+            <section class="controls-column">
+                <div class="panel collapsible expanded" data-panel="scene" data-fixed="true">
+                    <div class="panel-header">
+                        <span>Scene Settings</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="hidden-upload">
+                            <label class="field-label">Image / video frame</label>
+                            <input id="sourceChooser" type="file" accept="image/*,video/*" />
+                        </div>
+                        <div class="multi-field dimensions">
+                            <label>
+                                Width
+                                <input id="targetWidthInput" type="number" min="128" max="4096" value="832" />
+                            </label>
+                            <label>
+                                Height
+                                <input id="targetHeightInput" type="number" min="128" max="4096" value="480" />
+                            </label>
+                            <button id="applyResolutionBtn" class="primary">Update</button>
+                        </div>
+                        <label class="field-label">Fit mode</label>
+                        <select id="fitModeSelect">
+                            <option value="cover">Scale &amp; Crop (cover)</option>
+                            <option value="contain">Fit &amp; Pad (contain)</option>
+                        </select>
+                        <div class="multi-field compact">
+                            <label>
+                                FPS
+                                <input id="sceneFpsInput" type="number" min="1" max="120" value="16" />
+                            </label>
+                            <label>
+                                Total frames
+                                <input id="sceneFrameCountInput" type="number" min="1" max="2000" value="81" />
+                            </label>
+                        </div>
+                        <div id="classicOutlineControl" class="classic-outline-control is-hidden">
+                            <label class="field-label">Contour Width</label>
+                            <div class="range-field">
+                                <input id="classicOutlineSlider" type="range" min="0.5" max="10" step="0.5" value="1" />
+                                <span id="classicOutlineValue" class="range-value">1px</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel collapsible expanded" data-panel="object" data-fixed="true">
+                    <div class="panel-header">
+                        <span>Object Animation</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="multi-field compact">
+                            <label>
+                                Start frame
+                                <input id="startFrameInput" type="number" min="0" value="0" />
+                            </label>
+                            <label>
+                                End frame
+                                <input id="endFrameInput" type="number" min="0" value="81" />
+                            </label>
+                        </div>
+                        <label class="checkbox inline">
+                            <input type="checkbox" id="hideOutsideRangeToggle" checked />
+                            <span>Hide object outside this frame range</span>
+                        </label>
+                        <div class="multi-field compact">
+                            <label>
+                                Scale start
+                                <input id="scaleStartInput" type="number" min="0.1" max="3" step="0.05" value="1" />
+                            </label>
+                            <label>
+                                Scale end
+                                <input id="scaleEndInput" type="number" min="0.1" max="3" step="0.05" value="1" />
+                            </label>
+                        </div>
+                        <div class="multi-field compact">
+                            <label>
+                                Rotation start (deg)
+                                <input id="rotationStartInput" type="number" min="-360" max="360" step="1" value="0" />
+                            </label>
+                            <label>
+                                Rotation end (deg)
+                                <input id="rotationEndInput" type="number" min="-360" max="360" step="1" value="0" />
+                            </label>
+                        </div>
+                        <label class="field-label">Trajectory tension</label>
+                        <div class="range-field">
+                            <input id="tensionInput" type="range" min="0" max="1" step="0.05" value="0" />
+                            <span id="tensionValue" class="range-value">0</span>
+                        </div>
+                        <p class="fine-print">Increase the tension to bend the path smoothly between nodes.</p>
+                        <label class="field-label">Trajectory speed profile</label>
+                        <select id="speedModeSelect">
+                            <option value="none" selected>None</option>
+                            <option value="accelerate">Accelerate</option>
+                            <option value="decelerate">Decelerate</option>
+                            <option value="accelerate-decelerate">Accelerate → Decelerate</option>
+                            <option value="decelerate-accelerate">Decelerate → Accelerate</option>
+                        </select>
+                        <label id="speedRatioLabel" class="field-label">Acceleration factor</label>
+                        <div id="speedRatioRow" class="range-field">
+                            <input id="speedRatioInput" type="range" min="1" max="100" step="1" value="1" />
+                            <span id="speedRatioValue" class="range-value">1x</span>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+
+            <section class="canvas-column">
+                <div class="canvas-card">
+                    <div class="canvas-toolbar">
+                        <table class="toolbar-table">
+                            <tr>
+                                <td class="timeline-cell">
+                                    <span class="label">Timeline</span>
+                                    <input id="timelineSlider" type="range" min="0" max="1" step="0.001" value="0" />
+                                </td>
+                                <td class="hint-cell">
+                                    <p class="toolbar-hint">
+                                        Left Click to Draw Shapes and Trajectories. Right Click Exits the Current Mode.
+                                    </p>
+                                </td>
+                                <td class="buttons-cell">
+                                    <div class="toolbar-buttons">
+                                        <button id="previewModeBtn" class="ghost">Preview Mask</button>
+                                        <button id="playPauseBtn" class="ghost">Play</button>
+                                        <label class="checkbox inline">
+                                            <input type="checkbox" id="loopToggle" checked />
+                                            <span>Loop</span>
+                                        </label>
+                                    </div>
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                    <div class="canvas-wrapper">
+                        <canvas id="editorCanvas" width="960" height="540"></canvas>
+                        <div id="canvasPlaceholder" class="canvas-placeholder">
+                            <a id="canvasUploadBtn" class="upload-link" href="#">Upload an Image</a>
+                        </div>
+                    </div>
+                    <div id="canvasFooter" class="canvas-footer">
+                        <div class="footer-row footer-row-primary">
+                            <div class="active-object-chip">
+                                <div class="active-object-label">
+                                    <span>Active Object No:</span>
+                                    <strong id="activeObjectLabel">None</strong>
+                                </div>
+                                <label class="shape-selector">
+                                    Shape
+                                    <select id="shapeModeSelect">
+                                        <option value="rectangle">Rectangle</option>
+                                        <option value="polygon">Polygon</option>
+                                        <option value="circle">Circle</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="footer-context">
+                                <div id="contextButtonGroup">
+                                    <button id="contextDeleteBtn" class="ghost danger" disabled>Delete</button>
+                                    <button id="contextResetBtn" class="ghost" disabled>Reset</button>
+                                    <button id="contextUndoBtn" class="ghost" disabled>Undo</button>
+                                </div>
+                            </div>
+                            <div class="footer-unload">
+                                <button id="unloadSceneBtn" class="ghost danger">Unload</button>
+                            </div>
+                        </div>
+                        <div class="footer-row footer-row-secondary">
+                            <div class="export-inline-buttons">
+                                <button id="sendToWangpBtn" class="primary">Send to Video Generator</button>
+                                <button id="backgroundToggleBtn" class="ghost">Set Default Background</button>
+                                <input id="backgroundFileInput" type="file" accept="image/*" style="display:none" />
+                                <button id="saveDefinitionBtn" class="ghost">Save Definition</button>
+                                <button id="loadDefinitionBtn" class="ghost">Load Definition</button>
+                                <input id="definitionFileInput" type="file" accept="application/json" style="display:none" />
+                                <button id="downloadMaskBtn" style="display:none" class="ghost">Download mask video</button>
+                                <button id="downloadBackgroundBtn" style="display:none" class="ghost">Download background image</button>
+                                <button id="themeToggleBtn" class="ghost">Dark Mode</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <div id="exportOverlay" class="export-overlay hidden">
+        <div class="modal">
+            <h3>Rendering Video Motion Mask...</h3>
+            <div class="progress">
+                <div id="exportProgressBar"></div>
+            </div>
+            <p id="exportLabel">Preparing...</p>
+            <button id="cancelExportBtn" class="ghost">Cancel</button>
+        </div>
+    </div>
+
+    <div id="unloadOverlay" class="confirm-overlay hidden">
+        <div class="modal">
+            <h3>Unload current scene?</h3>
+            <p class="fine-print">This will reset all polygons and trajectories. You can load another image afterwards.</p>
+            <div class="button-row">
+                <button id="confirmUnloadBtn" class="ghost danger">Unload</button>
+                <button id="cancelUnloadBtn" class="ghost">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MOTION_DESIGNER_SCRIPT_INLINE -->
+</body>
+</html>

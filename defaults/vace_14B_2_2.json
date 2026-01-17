@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "Wan2.2 Vace 14B",
+        "architecture": "vace_14B_2_2",
+        "modules": [
+            "vace_14B"
+        ],
+        "description": "There is so far only PARTIAL support of Vace 2.1 which is currently used.",
+        "URLs": "t2v_2_2",
+        "URLs2": "t2v_2_2"
+    },
+	"guidance_phases": 2,	
+    "guidance_scale": 1,
+    "guidance2_scale": 1,
+    "flow_shift": 2,
+	"switch_threshold" : 875	
+}

@@ -1,0 +1,12 @@
+{
+
+    "activated_loras": [
+        "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/loras_accelerators/Wan2.1_I2V_14B_FusionX_LoRA.safetensors"
+	],
+	"loras_multipliers": "1",
+	"num_inference_steps": 10,
+    "guidance_phases": 1,
+    "guidance_scale": 1,	
+    "alt_guidance_scale": 1,
+	"audio_guidance_scale": 1	
+}

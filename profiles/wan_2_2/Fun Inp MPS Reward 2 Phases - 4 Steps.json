@@ -1,0 +1,14 @@
+{
+    "num_inference_steps": 4,
+    "guidance_scale": 1,
+    "guidance2_scale": 1,
+    "model_switch_phase": 1,	
+    "switch_threshold": 876,
+    "guidance_phases": 2,
+    "flow_shift": 3,
+ 	"activated_loras": [
+		"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2-Fun-A14B-InP-high-noise-MPS.safetensors",
+		"https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/loras_accelerators/Wan2.2-Fun-A14B-InP-low-noise-MPS.safetensors"
+	],
+	"loras_multipliers": "1;0 0;1"
+}

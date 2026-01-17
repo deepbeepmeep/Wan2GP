@@ -1,0 +1,19 @@
+{
+    "model": {
+        "name": "Flux 1 DreamOmni2 12B",
+        "architecture": "flux_dev_kontext_dreamomni2",
+        "description": "DreamOmni2 is a Multimodal Instruction-based Editing and Generation Model",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1_kontext_dev_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux1_kontext_dev_quanto_bf16_int8.safetensors"
+        ],
+		"preload_URLs": [ "https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux_dreamomni2_edit_lora.safetensors",
+						"https://huggingface.co/DeepBeepMeep/Flux/resolve/main/flux_dreamomni2_gen_lora.safetensors"
+						]
+    },
+	"prompt": "In the scene, the character from the first image stands on the left, and the character from the second image stands on the right. They are shaking hands against the backdrop of a spaceship interior.",
+    "resolution": "1280x720",
+    "batch_size": 1
+}
+
+	

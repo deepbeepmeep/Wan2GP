@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Qwen Image Layered 20B",
+        "architecture": "qwen_image_layered_20B",
+        "description": "Qwen Image Layered decomposes an input image into multiple RGBA layers for inherently editable outputs.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_layered_20B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/qwen_image_layered_20B_quanto_bf16_int8.safetensors"
+        ],
+        "attention": {
+            "<89": "sdpa"
+        },
+        "image_outputs": true
+    },
+    "prompt": "decompose the image into layers",
+    "resolution": "1024x1024",
+    "batch_size": 4
+}

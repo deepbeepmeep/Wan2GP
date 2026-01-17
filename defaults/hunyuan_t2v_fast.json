@@ -1,8 +1,9 @@
 {
   "model": {
-    "name": "Hunyuan Video FastHunyuan 720p 13B",
+    "name": "Hunyuan Video Text2video 720p FastHunyuan 13B",
     "architecture": "hunyuan",
     "description": "Fast Hunyuan is an accelerated HunyuanVideo model. It can sample high quality videos with 6 diffusion steps.",
+	"settings_dir": [ "" ],
     "URLs": [
       "https://huggingface.co/DeepBeepMeep/HunyuanVideo/resolve/main/fast_hunyuan_video_720_quanto_int8.safetensors"
     ],

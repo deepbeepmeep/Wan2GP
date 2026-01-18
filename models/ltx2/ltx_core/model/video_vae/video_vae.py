@@ -645,8 +645,9 @@ class VideoDecoder(nn.Module):
 
         if tiling_config is not None and tiling_config.temporal_config is not None:
             cfg = tiling_config.temporal_config
-            tile_size = cfg.tile_size_in_frames // self.video_downscale_factors.time
-            overlap = cfg.tile_overlap_in_frames // self.video_downscale_factors.time
+            tile_size = _pixel_frames_to_latent_frames(cfg.tile_size_in_frames, self.video_downscale_factors.time)
+            overlap = _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, self.video_downscale_factors.time)
+            overlap = min(overlap, max(tile_size - 1, 0))
             splitters[2] = split_in_temporal(tile_size, overlap)
             mappers[2] = to_mapping_operation(map_temporal_slice, self.video_downscale_factors.time)
 
@@ -962,6 +963,14 @@ def _default_intervals(length: int) -> DimensionIntervals:
     return DEFAULT_SPLIT_OPERATION(length)
 
 
+def _pixel_frames_to_latent_frames(frames: int, scale: int) -> int:
+    frames = int(frames)
+    if frames <= 0:
+        return 0
+    scale = max(1, int(scale))
+    return (frames - 1 + scale - 1) // scale + 1
+
+
 def _build_temporal_intervals(
     length: int,
     tiling_config: TilingConfig | None,
@@ -974,8 +983,8 @@ def _build_temporal_intervals(
     ):
         return _default_intervals(length)
     cfg = tiling_config.temporal_config
-    tile_size = max(1, cfg.tile_size_in_frames // scale)
-    overlap = max(0, cfg.tile_overlap_in_frames // scale)
+    tile_size = max(1, _pixel_frames_to_latent_frames(cfg.tile_size_in_frames, scale))
+    overlap = max(0, _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, scale))
     overlap = min(overlap, max(tile_size - 1, 0))
     return split_in_temporal(tile_size, overlap)(length)
 
@@ -1140,8 +1149,15 @@ def get_video_chunks_number(num_frames: int, tiling_config: TilingConfig | None 
     if not tiling_config or not tiling_config.temporal_config:
         return 1
     cfg = tiling_config.temporal_config
-    frame_stride = cfg.tile_size_in_frames - cfg.tile_overlap_in_frames
-    return (num_frames - 1 + frame_stride - 1) // frame_stride
+    scale = VIDEO_SCALE_FACTORS.time
+    latent_frames = _pixel_frames_to_latent_frames(num_frames, scale)
+    tile_size = _pixel_frames_to_latent_frames(cfg.tile_size_in_frames, scale)
+    overlap = _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, scale)
+    overlap = min(overlap, max(tile_size - 1, 0))
+    if latent_frames <= tile_size:
+        return 1
+    intervals = split_in_temporal(tile_size, overlap)(latent_frames)
+    return len(intervals.starts)
 
 
 def split_in_spatial(size: int, overlap: int) -> SplitOperation:

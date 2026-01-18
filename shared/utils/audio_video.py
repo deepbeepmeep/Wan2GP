@@ -263,27 +263,26 @@ def save_video(tensor,
     error = None
     for _ in range(retry):
         try:
-            if torch.is_tensor(tensor):
-                # Preprocess tensor
-                tensor = tensor.clamp(min(value_range), max(value_range))
-                tensor = torch.stack([
-                    torchvision.utils.make_grid(u, nrow=nrow, normalize=normalize, value_range=value_range)
-                    for u in tensor.unbind(2)
-                ], dim=1).permute(1, 2, 3, 0)
-                tensor = (tensor * 255).type(torch.uint8).cpu()
-                arrays = tensor.numpy()
-            else:
-                arrays = tensor
-
             # Write video (silence ffmpeg logs)
             writer = imageio.get_writer(cache_file, fps=fps, ffmpeg_log_level='error', **codec_params)
-            for frame in arrays:
-                writer.append_data(frame)
-        
-            writer.close()
+            try:
+                if torch.is_tensor(tensor):
+                    # Stream frames to avoid materializing the full video on CPU.
+                    for u in tensor.unbind(2):
+                        u = u.clamp(min(value_range), max(value_range))
+                        grid = torchvision.utils.make_grid(
+                            u, nrow=nrow, normalize=normalize, value_range=value_range
+                        )
+                        frame = grid.mul(255).type(torch.uint8).permute(1, 2, 0).cpu().numpy()
+                        writer.append_data(frame)
+                else:
+                    for frame in tensor:
+                        writer.append_data(frame)
+            finally:
+                writer.close()
 
             return cache_file
-            
+
         except Exception as e:
             error = e
             print(f"error saving {save_file}: {e}")

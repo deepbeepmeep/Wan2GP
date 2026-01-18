@@ -105,8 +105,17 @@ class model_factory:
                 torch_device,
                 preprocess_sd=preprocess_flux_state_dict,
             )
-            from .modules.text_encoder_mistral import Mistral3SmallEmbedder
-            self.mistral = Mistral3SmallEmbedder( model_spec = text_encoder_filename)
+            text_encoder_type = model_def.get("text_encoder_type", "mistral3")
+            if text_encoder_type == "qwen3":
+                from .modules.text_encoder_qwen3 import Qwen3Embedder
+                tokenizer_path = model_def.get("text_encoder_folder")
+                self.mistral = Qwen3Embedder(
+                    model_spec=text_encoder_filename,
+                    tokenizer_path=tokenizer_path,
+                )
+            else:
+                from .modules.text_encoder_mistral import Mistral3SmallEmbedder
+                self.mistral = Mistral3SmallEmbedder(model_spec=text_encoder_filename)
     
             with torch.device("meta"):
                 self.vae  = AutoencoderKLFlux2(AutoEncoderParamsFlux2())

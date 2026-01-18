@@ -85,7 +85,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.6.16"
-WanGP_version = "10.40"
+WanGP_version = "10.41"
 settings_version = 2.43
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -8503,13 +8503,6 @@ custom_resolutions = None
 def get_resolution_choices(current_resolution_choice, model_resolutions= None):
     global custom_resolutions
 
-    max_pixels_1080p = 1920 * 1088
-    def is_above_1080p(resolution_str):
-        try:
-            width, height = map(int, resolution_str.split("x"))
-        except Exception:
-            return False
-        return width * height > max_pixels_1080p
 
     resolution_file = "resolutions.json"
     if model_resolutions is not None:
@@ -8541,23 +8534,25 @@ def get_resolution_choices(current_resolution_choice, model_resolutions= None):
     else:
         resolution_choices = custom_resolutions
     if resolution_choices == None:
-        resolution_choices=[
-            # 4K
-            ("3840x2176 (16:9)", "3840x2176"),
-            ("2176x3840 (9:16)", "2176x3840"),
-            ("3840x1664 (21:9)", "3840x1664"),
-            ("1664x3840 (9:21)", "1664x3840"),
-            # 1440p
-            ("2560x1440 (16:9)", "2560x1440"),
-            ("1440x2560 (9:16)", "1440x2560"),
-            ("1920x1440 (4:3)", "1920x1440"),
-            ("1440x1920 (3:4)", "1440x1920"),
-            ("2160x1440 (3:2)", "2160x1440"),
-            ("1440x2160 (2:3)", "1440x2160"),
-            ("1440x1440 (1:1)", "1440x1440"),
-            ("2688x1152 (21:9)", "2688x1152"),
-            ("1152x2688 (9:21)", "1152x2688"),
-            # 1080p
+        resolution_choices=[]
+        if server_config.get("enable_4k_resolutions", 0) == 1:
+            resolution_choices=[
+                # 4K
+                ("3840x2176 (16:9)", "3840x2176"),
+                ("2176x3840 (9:16)", "2176x3840"),
+                ("3840x1664 (21:9)", "3840x1664"),
+                ("1664x3840 (9:21)", "1664x3840"),
+                # 1440p
+                ("2560x1440 (16:9)", "2560x1440"),
+                ("1440x2560 (9:16)", "1440x2560"),
+                ("1920x1440 (4:3)", "1920x1440"),
+                ("1440x1920 (3:4)", "1440x1920"),
+                ("2160x1440 (3:2)", "2160x1440"),
+                ("1440x2160 (2:3)", "1440x2160"),
+                ("1440x1440 (1:1)", "1440x1440"),
+                ("2688x1152 (21:9)", "2688x1152"),
+                ("1152x2688 (9:21)", "1152x2688"),]
+        resolution_choices += [# 1080p
             ("1920x1088 (16:9)", "1920x1088"),
             ("1088x1920 (9:16)", "1088x1920"),
             ("1920x832 (21:9)", "1920x832"),
@@ -8583,11 +8578,6 @@ def get_resolution_choices(current_resolution_choice, model_resolutions= None):
             ("512x512 (1:1)", "512x512"),
         ]
 
-    allow_4k_resolutions = server_config.get("enable_4k_resolutions", 0) == 1
-    if model_resolutions is None and not allow_4k_resolutions:
-        filtered_choices = [choice for choice in resolution_choices if not is_above_1080p(choice[1])]
-        if filtered_choices:
-            resolution_choices = filtered_choices
 
     if current_resolution_choice is not None:
         found = False
@@ -8597,10 +8587,7 @@ def get_resolution_choices(current_resolution_choice, model_resolutions= None):
                 break
         if not found:
             if model_resolutions is None:
-                if allow_4k_resolutions or not is_above_1080p(current_resolution_choice):
-                    resolution_choices.append( (current_resolution_choice, current_resolution_choice ))
-                elif len(resolution_choices) > 0:
-                    current_resolution_choice = resolution_choices[0][1]
+                resolution_choices.append( (current_resolution_choice, current_resolution_choice ))
             else:
                 if len(resolution_choices) > 0:
                     current_resolution_choice = resolution_choices[0][1]

@@ -1,10 +1,25 @@
 import os
 import torch
 from PIL import Image
+from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
 
 def test_flux2(base_model_type):
-    return base_model_type in ["flux2_dev", "pi_flux2"]
+    return base_model_type in ["flux2_dev", "pi_flux2", "flux2_klein_4b", "flux2_klein_9b"]
+
+
+def get_text_encoder_name(base_model_type, text_encoder_quantization):
+    if base_model_type == "flux2_klein_4b":
+        if text_encoder_quantization == "int8":
+            return "qwen3_quanto_bf16_int8.safetensors"
+        return "qwen3_bf16.safetensors"
+    if base_model_type == "flux2_klein_9b":
+        if text_encoder_quantization == "int8":
+            return "qwen3_8b_quanto_bf16_int8.safetensors"
+        return "qwen3_8b_bf16.safetensors"
+    if text_encoder_quantization == "int8":
+        return "mistral3_small_quanto_bf16_int8.safetensors" if test_flux2(base_model_type) else "T5_xxl_1.1_enc_quanto_bf16_int8.safetensors"
+    return "mistral3_small_bf16.safetensors" if test_flux2(base_model_type) else "T5_xxl_1.1_enc_bf16.safetensors"
 
 
 class family_handler():
@@ -14,6 +29,8 @@ class family_handler():
             "flux",
             "flux2_dev",
             "pi_flux2",
+            "flux2_klein_4b",
+            "flux2_klein_9b",
             "flux_chroma",
             "flux_chroma_radiance",
             "flux_dev_kontext",
@@ -36,16 +53,21 @@ class family_handler():
             "flux_dev_kontext_dreamomni2": "flux",
             "flux2_dev": "flux",
             "pi_flux2": "flux",
+            "flux2_klein_4b": "flux",
+            "flux2_klein_9b": "flux",
         }
 
         models_comp_map = {
-                    "flux": ["flux2_dev", "pi_flux2", "flux_chroma", "flux_chroma_radiance", "flux_dev_kontext", "flux_dev_umo", "flux_dev_uso", "flux_schnell", "flux_dev_kontext_dreamomni2" ]
+                    "flux": ["flux2_dev", "pi_flux2", "flux2_klein_4b", "flux2_klein_9b", "flux_chroma", "flux_chroma_radiance", "flux_dev_kontext", "flux_dev_umo", "flux_dev_uso", "flux_schnell", "flux_dev_kontext_dreamomni2" ]
                     }
         return models_eqv_map, models_comp_map
     @staticmethod
     def query_model_def(base_model_type, model_def):
         flux_model = "flux-dev" if base_model_type == "flux" else base_model_type.replace("_", "-")
         pi_flux2 = flux_model == "pi-flux2"
+        flux2_klein_4b = base_model_type == "flux2_klein_4b"
+        flux2_klein_9b = base_model_type == "flux2_klein_9b"
+        flux2_klein = flux2_klein_4b or flux2_klein_9b
         flux2 = flux_model.startswith("flux2") or pi_flux2
         flux_schnell = flux_model == "flux-schnell"
         flux_chroma = flux_model == "flux-chroma"
@@ -61,11 +83,30 @@ class family_handler():
             "flux-model": flux_model,
         }
         if flux2:
-            text_encoder_folder = "mistral3small"
-            extra_model_def["text_encoder_URLs"] = [
-                build_hf_url("DeepBeepMeep/Flux2", text_encoder_folder, "mistral3_small_bf16.safetensors"),
-                build_hf_url("DeepBeepMeep/Flux2", text_encoder_folder, "mistral3_small_quanto_bf16_int8.safetensors"),
-            ]
+            if flux2_klein:
+                if flux2_klein_4b:
+                    text_encoder_folder = "Qwen3"
+                    text_encoder_repo = "DeepBeepMeep/Z-Image"
+                    text_encoder_urls = [
+                        build_hf_url(text_encoder_repo, text_encoder_folder, "qwen3_bf16.safetensors"),
+                        build_hf_url(text_encoder_repo, text_encoder_folder, "qwen3_quanto_bf16_int8.safetensors"),
+                    ]
+                else:
+                    text_encoder_folder = "qwen3_8b"
+                    text_encoder_repo = "DeepBeepMeep/Flux2"
+                    text_encoder_urls = [
+                        build_hf_url(text_encoder_repo, text_encoder_folder, "qwen3_8b_bf16.safetensors"),
+                        build_hf_url(text_encoder_repo, text_encoder_folder, "qwen3_8b_quanto_bf16_int8.safetensors"),
+                    ]
+                extra_model_def["text_encoder_type"] = "qwen3"
+                extra_model_def["text_encoder_URLs"] = text_encoder_urls
+            else:
+                text_encoder_folder = "mistral3small"
+                extra_model_def["text_encoder_URLs"] = [
+                    build_hf_url("DeepBeepMeep/Flux2", text_encoder_folder, "mistral3_small_bf16.safetensors"),
+                    build_hf_url("DeepBeepMeep/Flux2", text_encoder_folder, "mistral3_small_quanto_bf16_int8.safetensors"),
+                ]
+                extra_model_def["text_encoder_type"] = "mistral3"
             extra_model_def["text_encoder_folder"] = text_encoder_folder
         else:
             text_encoder_folder = "T5_xxl_1.1"
@@ -74,12 +115,15 @@ class family_handler():
                 build_hf_url("DeepBeepMeep/LTX_Video", text_encoder_folder, "T5_xxl_1.1_enc_quanto_bf16_int8.safetensors"),
             ]
             extra_model_def["text_encoder_folder"] = text_encoder_folder
-        extra_model_def["profiles_dir"] = [] if (flux_schnell or flux2) else  ["flux"] 
+        if flux2_klein:
+            extra_model_def["profiles_dir"] = ["flux2_klein_4b"] if flux2_klein_4b else ["flux2_klein_9b"]
+        else:
+            extra_model_def["profiles_dir"] = [] if (flux_schnell or flux2) else ["flux"]
         if flux_chroma or flux_chroma_radiance:
             extra_model_def["guidance_max_phases"] = 1
         if flux_chroma_radiance:
             extra_model_def["radiance"] = True
-        elif not flux_schnell:
+        elif not flux_schnell and not flux2_klein:
             extra_model_def["embedded_guidance"] = True
         if flux_uso :
             extra_model_def["any_image_refs_relative_size"] = True
@@ -203,16 +247,59 @@ class family_handler():
             default=os.path.join("loras", "flux2"),
             help="Path to a directory that contains flux2 images Loras"
         )
+        parser.add_argument(
+            "--lora-dir-flux2-klein-4b",
+            type=str,
+            default=os.path.join("loras", "flux2_klein_4b"),
+            help="Path to a directory that contains Flux 2 Klein 4B Loras"
+        )
+        parser.add_argument(
+            "--lora-dir-flux2-klein-9b",
+            type=str,
+            default=os.path.join("loras", "flux2_klein_9b"),
+            help="Path to a directory that contains Flux 2 Klein 9B Loras"
+        )
 
     @staticmethod
     def get_lora_dir(base_model_type, args):
+        if base_model_type == "flux2_klein_4b":
+            return args.lora_dir_flux2_klein_4b
+        if base_model_type == "flux2_klein_9b":
+            return args.lora_dir_flux2_klein_9b
         if test_flux2(base_model_type):
             return args.lora_dir_flux2
         return args.lora_dir_flux
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
-        if test_flux2(base_model_type):
+        if base_model_type in ["flux2_klein_4b", "flux2_klein_9b"]:
+            if base_model_type == "flux2_klein_4b":
+                text_encoder_folder = "Qwen3"
+                text_encoder_repo = "DeepBeepMeep/Z-Image"
+            else:
+                text_encoder_folder = "qwen3_8b"
+                text_encoder_repo = "DeepBeepMeep/Flux2"
+            text_encoder_name = get_text_encoder_name(base_model_type, None)
+
+            tokenizer_files = ["config.json", "generation_config.json", text_encoder_name, "added_tokens.json", "chat_template.jinja", "merges.txt", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"]
+            if base_model_type == "flux2_klein_4b":
+                tokenizer_files.append("qwen3_quanto_bf16_int8.safetensors")
+            if base_model_type == "flux2_klein_9b":
+                tokenizer_files.append("qwen3_8b_quanto_bf16_int8.safetensors")
+
+            ret = [
+                {
+                    "repoId": text_encoder_repo,
+                    "sourceFolderList": [text_encoder_folder],
+                    "fileList": [tokenizer_files],
+                },
+                {
+                    "repoId": "DeepBeepMeep/Flux2",
+                    "sourceFolderList": [""],
+                    "fileList": [["flux2_vae.safetensors"]],
+                },
+            ]
+        elif test_flux2(base_model_type):
             ret = [
                 {
                 "repoId": "DeepBeepMeep/Flux2",
@@ -223,8 +310,6 @@ class family_handler():
                 ],
                 }
             ]
-
-
         else:
             ret = [
                 {  
@@ -267,6 +352,15 @@ class family_handler():
     @staticmethod
     def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, text_encoder_filename = None):
         from .flux_main  import model_factory
+        if not text_encoder_filename:
+            text_encoder_folder = model_def.get("text_encoder_folder")
+            text_encoder_name = get_text_encoder_name(base_model_type, text_encoder_quantization)
+            if base_model_type in ["flux2_klein_4b", "flux2_klein_9b"] and text_encoder_folder:
+                text_encoder_filename = fl.locate_file(os.path.join(text_encoder_folder, text_encoder_name))
+            elif text_encoder_folder:
+                text_encoder_filename = fl.locate_file(os.path.join(text_encoder_folder, text_encoder_name))
+            else:
+                text_encoder_filename = fl.locate_file(text_encoder_name)
 
         flux_model = model_factory(
             checkpoint_dir="ckpts",
@@ -321,6 +415,7 @@ class family_handler():
         flux_kontext = flux_model == "flux-dev-kontext"
         flux_kontext_dreamomni2 = flux_model == "flux-dev-kontext-dreamomni2"
         flux2 = flux_model.startswith("flux2")
+        flux2_klein = base_model_type in ["flux2_klein_4b", "flux2_klein_9b"]
 
         ui_defaults.update({
             "embedded_guidance_scale":  2.5,
@@ -328,11 +423,13 @@ class family_handler():
 
         if flux2:
             ui_defaults.update({
-                "embedded_guidance_scale": 4.0,
+                "embedded_guidance_scale": 1.0 if flux2_klein else 4.0,
                 "denoising_strength": 1.0,
                 "masking_strength": 0.25,
                 "remove_background_images_ref" : 0,
             })
+            if flux2_klein:
+                ui_defaults["num_inference_steps"] = 4
 
         if flux_kontext or flux_uso or flux_kontext_dreamomni2:
             ui_defaults.update({

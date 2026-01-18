@@ -61,6 +61,19 @@ _NVFP4_KERNEL_CHECKED = False
 _NVFP4_KERNEL_BACKEND = None
 _NVFP4_ACT_SCALE_CACHE = {}
 
+_NVFP4_SPLIT_FIELDS = {
+    "weight": 0,
+    "bias": 0,
+    "weight_scale": 0,
+    "weight_scale_2": 0,
+    "input_scale": 0,
+    "input_global_scale": 0,
+    "alpha": 0,
+    "input_absmax": 0,
+    "weight_global_scale": 0,
+    "output_scale": 0,
+}
+
 _NVFP4_BACKEND = os.environ.get("WGP_NVFP4_BACKEND", _NVFP4_BACKEND_AUTO).strip().lower()
 _NVFP4_BACKEND = _NVFP4_BACKEND_LIGHTX2V
 
@@ -77,6 +90,41 @@ def _normalize_nvfp4_backend(name):
     if norm in ("off", "none", "fallback", "disable", "disabled"):
         return "fallback"
     return norm
+
+
+def _split_or_share_nvfp4_scale(src, *, dim, split_sizes, context):
+    if src is None or not torch.is_tensor(src):
+        return None
+    total = sum(split_sizes)
+    if src.numel() == 1:
+        return [src] * len(split_sizes)
+    if src.dim() > dim and src.size(dim) == total:
+        return torch.split(src, split_sizes, dim=dim)
+    if src.ndim > 1 and src.size(1) == total:
+        return torch.split(src, split_sizes, dim=1)
+    return [src] * len(split_sizes)
+
+
+def split_fused_weights(state_dict, fused_split_map, quantization_map=None, allowed_bases=None, default_dtype=None, verboseLevel=1):
+    from mmgp import offload
+    return offload.sd_split_linear(
+        state_dict,
+        fused_split_map,
+        split_fields=dict(_NVFP4_SPLIT_FIELDS),
+        split_handlers={
+            "weight_scale": _split_or_share_nvfp4_scale,
+            "weight_scale_2": _split_or_share_nvfp4_scale,
+            "input_scale": _split_or_share_nvfp4_scale,
+            "input_global_scale": _split_or_share_nvfp4_scale,
+            "alpha": _split_or_share_nvfp4_scale,
+            "input_absmax": _split_or_share_nvfp4_scale,
+            "weight_global_scale": _split_or_share_nvfp4_scale,
+            "output_scale": _split_or_share_nvfp4_scale,
+        },
+        verboseLevel=verboseLevel,
+        allowed_bases=allowed_bases,
+        return_split_bases=True,
+    )
 
 
 _NVFP4_BACKEND = _normalize_nvfp4_backend(_NVFP4_BACKEND)

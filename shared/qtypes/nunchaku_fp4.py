@@ -73,6 +73,19 @@ def make_nunchaku_splitter(split_map):
     return _split
 
 
+def split_fused_weights(state_dict, fused_split_map, quantization_map=None, allowed_bases=None, default_dtype=None, verboseLevel=1):
+    from mmgp import offload
+    split_kwargs = get_nunchaku_split_kwargs()
+    return offload.sd_split_linear(
+        state_dict,
+        fused_split_map,
+        verboseLevel=verboseLevel,
+        allowed_bases=allowed_bases,
+        return_split_bases=True,
+        **split_kwargs,
+    )
+
+
 def _install_nunchaku_shim(candidate_root):
     candidate_pkg = candidate_root / "nunchaku"
     if not candidate_pkg.exists():

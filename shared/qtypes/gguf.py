@@ -288,6 +288,43 @@ class GGUFSourceTensor(torch.Tensor):
         torch.utils.swap_tensors(self, data)
 
 
+def _split_gguf_tensor(src, *, dim, split_sizes, context):
+    if not torch.is_tensor(src):
+        return None
+    tensor_type = getattr(src, "tensor_type", None)
+    if tensor_type is None:
+        return None
+    tensor_shape = getattr(src, "tensor_shape", None) or src.shape
+    total = sum(split_sizes)
+    if dim >= len(tensor_shape) or tensor_shape[dim] != total:
+        return None
+    chunks = torch.split(src, split_sizes, dim=dim)
+    out = []
+    for chunk, size in zip(chunks, split_sizes):
+        new_shape = list(tensor_shape)
+        new_shape[dim] = size
+        wrapped = GGUFSourceTensor.wrap(chunk, tensor_type=tensor_type, tensor_shape=tuple(new_shape))
+        if hasattr(src, "_gguf_bias_orig_dtype"):
+            wrapped._gguf_bias_orig_dtype = getattr(src, "_gguf_bias_orig_dtype")
+        if hasattr(src, "_gguf_bias_orig_tensor_type"):
+            wrapped._gguf_bias_orig_tensor_type = getattr(src, "_gguf_bias_orig_tensor_type")
+        out.append(wrapped)
+    return out
+
+
+def split_fused_weights(state_dict, fused_split_map, quantization_map=None, allowed_bases=None, default_dtype=None, verboseLevel=1):
+    from mmgp import offload
+    return offload.sd_split_linear(
+        state_dict,
+        fused_split_map,
+        split_fields={"weight": 0, "bias": 0},
+        split_handlers={"weight": _split_gguf_tensor, "bias": _split_gguf_tensor},
+        verboseLevel=verboseLevel,
+        allowed_bases=allowed_bases,
+        return_split_bases=True,
+    )
+
+
 def _is_gguf_qtype(qtype_obj):
     if gguf is None:
         return False

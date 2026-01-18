@@ -279,13 +279,8 @@ class family_handler():
             else:
                 text_encoder_folder = "qwen3_8b"
                 text_encoder_repo = "DeepBeepMeep/Flux2"
-            text_encoder_name = get_text_encoder_name(base_model_type, None)
 
-            tokenizer_files = ["config.json", "generation_config.json", text_encoder_name, "added_tokens.json", "chat_template.jinja", "merges.txt", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"]
-            if base_model_type == "flux2_klein_4b":
-                tokenizer_files.append("qwen3_quanto_bf16_int8.safetensors")
-            if base_model_type == "flux2_klein_9b":
-                tokenizer_files.append("qwen3_8b_quanto_bf16_int8.safetensors")
+            tokenizer_files = ["config.json", "generation_config.json", "added_tokens.json", "chat_template.jinja", "merges.txt", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"]
 
             ret = [
                 {
@@ -352,15 +347,6 @@ class family_handler():
     @staticmethod
     def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, text_encoder_filename = None):
         from .flux_main  import model_factory
-        if not text_encoder_filename:
-            text_encoder_folder = model_def.get("text_encoder_folder")
-            text_encoder_name = get_text_encoder_name(base_model_type, text_encoder_quantization)
-            if base_model_type in ["flux2_klein_4b", "flux2_klein_9b"] and text_encoder_folder:
-                text_encoder_filename = fl.locate_file(os.path.join(text_encoder_folder, text_encoder_name))
-            elif text_encoder_folder:
-                text_encoder_filename = fl.locate_file(os.path.join(text_encoder_folder, text_encoder_name))
-            else:
-                text_encoder_filename = fl.locate_file(text_encoder_name)
 
         flux_model = model_factory(
             checkpoint_dir="ckpts",

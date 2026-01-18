@@ -20,6 +20,8 @@ def conv_state_dict(sd: dict) -> dict:
     if "x_embedder.weight" not in sd and "model.diffusion_model.x_embedder.weight" not in sd:
         return sd
 
+    from shared.qtypes.gguf import GGUFSourceTensor
+
     inverse_replace = {
         "final_layer.": "all_final_layer.2-1.",
         "x_embedder.": "all_x_embedder.2-1.",
@@ -37,13 +39,23 @@ def conv_state_dict(sd: dict) -> dict:
         if key.endswith(".attention.qkv.weight"):
             base = key[: -len(".attention.qkv.weight")]
 
-            total_dim = tensor.shape[0]
+            orig_shape = getattr(tensor, "tensor_shape", None)
+            total_dim = orig_shape[0] if orig_shape is not None else tensor.shape[0]
             if total_dim % 3 != 0:
                 raise ValueError(
                     f"{key}: qkv first dimension ({total_dim}) not divisible by 3"
                 )
             d = total_dim // 3
-            q, k_w, v = torch.split(tensor, d, dim=0)
+            if isinstance(tensor, GGUFSourceTensor) or getattr(tensor, "tensor_type", None) is not None:
+                chunks = torch.split(tensor, d, dim=0)
+                tensor_type = getattr(tensor, "tensor_type", None)
+                tensor_shape = (d, orig_shape[1]) if orig_shape is not None else (d, tensor.shape[1])
+                q, k_w, v = [
+                    GGUFSourceTensor.wrap(chunk, tensor_type=tensor_type, tensor_shape=tensor_shape)
+                    for chunk in chunks
+                ]
+            else:
+                q, k_w, v = torch.split(tensor, d, dim=0)
 
             out_sd[base + ".attention.to_q.weight"] = q
             out_sd[base + ".attention.to_k.weight"] = k_w

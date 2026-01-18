@@ -903,7 +903,7 @@ class QLinearGGUF(QModuleMixin, torch.nn.Linear):
             self.weight = torch.nn.Parameter(gguf_weight, requires_grad=False)
 
         if bias is not None:
-            self.bias = torch.nn.Parameter(bias)
+            self.bias = torch.nn.Parameter(bias, requires_grad=False)
 
         if torch.is_tensor(weight_raw):
             scale_device = weight_raw.device

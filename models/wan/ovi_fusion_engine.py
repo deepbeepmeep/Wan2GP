@@ -128,8 +128,7 @@ class OviFusionEngine:
         logging.info(f"OVI Fusion Engine initialized, GPU VRAM allocated: {torch.cuda.memory_allocated(device)/1e9:.2f} GB, reserved: {torch.cuda.memory_reserved(device)/1e9:.2f} GB")
 
 
-
-    @torch.inference_mode()
+    @torch.no_grad()
     def generate(self,
                     input_prompt, 
                     image_start=None,

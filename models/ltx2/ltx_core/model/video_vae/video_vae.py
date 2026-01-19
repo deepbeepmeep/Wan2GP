@@ -724,11 +724,8 @@ class VideoDecoder(nn.Module):
                 total_frames=total_frames,
             )
             if chunk_device != blend_device:
-                buffer_cpu = buffer.to(device=blend_device)
-                curr_weights_cpu = curr_weights.to(device=blend_device)
-                del buffer, curr_weights
-                buffer = buffer_cpu
-                curr_weights = curr_weights_cpu
+                buffer = buffer.to(device=blend_device)
+                curr_weights = curr_weights.to(device=blend_device)
 
             # Blend with previous temporal chunk if it exists
             if previous_chunk is not None:

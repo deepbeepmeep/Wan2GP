@@ -133,7 +133,7 @@ class model_factory:
         # Tokenizer
         text_encoder_folder = model_def.get("text_encoder_folder")
         if text_encoder_folder:
-            tokenizer_path = fl.locate_folder(text_encoder_folder)
+            tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
         else:
             tokenizer_path = os.path.dirname(text_encoder_filename)
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)

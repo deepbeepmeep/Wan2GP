@@ -406,7 +406,7 @@ class Inference(object):
 
         text_encoder_folder = model_def.get("text_encoder_folder")
         if text_encoder_folder:
-            tokenizer_path = fl.locate_folder(text_encoder_folder)
+            tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
         elif text_encoder_filepath:
             tokenizer_path = os.path.dirname(text_encoder_filepath)
         else:

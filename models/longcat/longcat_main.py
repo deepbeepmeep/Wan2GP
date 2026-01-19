@@ -22,6 +22,7 @@ from .modules.autoencoder_kl_wan import AutoencoderKLWan
 from .modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
 from .audio_process.wav2vec2 import Wav2Vec2ModelWrapper
 from ..qwen.convert_diffusers_qwen_vae import convert_state_dict
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 
 def _load_json_config(path):
@@ -94,6 +95,7 @@ class LongCatModel:
             tokenizer_path=tokenizer_path,
             shard_fn=None,
         )
+        self.text_encoder_cache = TextEncoderCache()
 
         transformer_config_path = (
             "models/longcat/configs/longcat_avatar.json"
@@ -260,16 +262,25 @@ class LongCatModel:
     ):
         device = device or self.device
         dtype = dtype or self.dtype
+        def encode_fn(prompts):
+            ids, mask = self.text_encoder.tokenizer(
+                prompts,
+                return_mask=True,
+                add_special_tokens=True,
+            )
+            ids = ids.to(device)
+            mask = mask.to(device)
+            prompt_embeds = self.text_encoder.model(ids, mask).to(dtype)
+            return list(zip(prompt_embeds, mask))
         prompt_list = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt_list)
-        ids, mask = self.text_encoder.tokenizer(
+        prompt_contexts = self.text_encoder_cache.encode(
+            encode_fn,
             prompt_list,
-            return_mask=True,
-            add_special_tokens=True,
+            device=device,
         )
-        ids = ids.to(device)
-        mask = mask.to(device)
-        prompt_embeds = self.text_encoder.model(ids, mask).to(dtype)
+        prompt_embeds = torch.stack([ctx[0] for ctx in prompt_contexts], dim=0)
+        mask = torch.stack([ctx[1] for ctx in prompt_contexts], dim=0)
         seq_len = prompt_embeds.shape[1]
         prompt_embeds = prompt_embeds.unsqueeze(1)
         if num_videos_per_prompt > 1:
@@ -283,14 +294,13 @@ class LongCatModel:
             neg_list = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
             if len(neg_list) == 1 and batch_size > 1:
                 neg_list = neg_list * batch_size
-            ids, neg_mask = self.text_encoder.tokenizer(
+            neg_contexts = self.text_encoder_cache.encode(
+                encode_fn,
                 neg_list,
-                return_mask=True,
-                add_special_tokens=True,
+                device=device,
             )
-            ids = ids.to(device)
-            neg_mask = neg_mask.to(device)
-            neg_embeds = self.text_encoder.model(ids, neg_mask).to(dtype)
+            neg_embeds = torch.stack([ctx[0] for ctx in neg_contexts], dim=0)
+            neg_mask = torch.stack([ctx[1] for ctx in neg_contexts], dim=0)
             neg_embeds = neg_embeds.unsqueeze(1)
             if num_videos_per_prompt > 1:
                 neg_embeds = neg_embeds.repeat(1, num_videos_per_prompt, 1, 1)

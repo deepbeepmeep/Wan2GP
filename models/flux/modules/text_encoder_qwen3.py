@@ -31,8 +31,6 @@ class Qwen3Embedder(nn.Module):
         )
 
         tokenizer_root = tokenizer_path or os.path.dirname(file_path)
-        if tokenizer_root and not os.path.isabs(tokenizer_root):
-            tokenizer_root = fl.locate_folder(tokenizer_root)
         tokenizer_subdir = os.path.join(tokenizer_root, "tokenizer")
         if os.path.isdir(tokenizer_subdir):
             tokenizer_root = tokenizer_subdir

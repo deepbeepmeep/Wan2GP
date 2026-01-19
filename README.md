@@ -26,7 +26,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image,
 
 ## 🔥 Latest Updates : 
 
-### January 17th 2026: WanGP v10.41, The Cost Saver
+### January 19th 2026: WanGP v10.41, The Cost Saver
 *GPUs are expensive, RAM is expensive, SSD are expensive, sadly we live now in a GPU & RAM poor.*
 
 WanGP comes again to the rescue:
@@ -44,7 +44,12 @@ WanGP comes again to the rescue:
 
 - **Flux 2 Klein 4B & 9B**: try these distilled models as fast as Z_Image if not faster but with out of the box image edition capabiltities
 
-*update 10.41*: added Flux 2 klein
+- **RAM Optimizations for multi minutes Videos**: processing, saving, spatial & Temporal upsampling very long videos should require much less RAM. 
+
+- **Text Encoder Cache**: if you are using a Text prompt already used recently with the current model, it will be taken straight from a cache. The cache is optimized to consume little RAM. It wont work with certain models such as Qwen where the Text Pormpt is combined internally with an Image.
+
+*update 10.41*: added Flux 2 klein\
+*update 10.42*: added RAM optimizations & Text Encoder Cache 
 
 ### January 15th 2026: WanGP v10.30, The Need for Speed ...
 

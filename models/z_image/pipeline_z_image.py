@@ -31,6 +31,7 @@ from .unified_sampler import UnifiedSampler
 from .pipeline_output import ZImagePipelineOutput
 from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
 from shared.utils.loras_mutipliers import update_loras_slists
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -218,6 +219,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             2 ** (len(self.vae.config.block_out_channels) - 1) if hasattr(self, "vae") and self.vae is not None else 8
         )
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
+        self.text_encoder_cache = TextEncoderCache()
 
     def encode_prompt(
         self,
@@ -278,41 +280,37 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         if isinstance(prompt, str):
             prompt = [prompt]
 
-        for i, prompt_item in enumerate(prompt):
-            messages = [
-                {"role": "user", "content": prompt_item},
-            ]
-            prompt_item = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=True,
+        def encode_fn(prompts):
+            formatted_prompts = []
+            for prompt_item in prompts:
+                messages = [
+                    {"role": "user", "content": prompt_item},
+                ]
+                formatted_prompts.append(
+                    self.tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        enable_thinking=True,
+                    )
+                )
+            text_inputs = self.tokenizer(
+                formatted_prompts,
+                padding="max_length",
+                max_length=max_sequence_length,
+                truncation=True,
+                return_tensors="pt",
             )
-            prompt[i] = prompt_item
+            text_input_ids = text_inputs.input_ids.to(device)
+            prompt_masks = text_inputs.attention_mask.to(device).bool()
+            prompt_embeds = self.text_encoder(input_ids=text_input_ids, attention_mask=prompt_masks, output_hidden_states=True).hidden_states[-2]
+            embeddings_list = []
+            for i in range(len(prompt_embeds)):
+                embeddings_list.append(prompt_embeds[i][prompt_masks[i]])
+            return embeddings_list
 
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=max_sequence_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-
-        text_input_ids = text_inputs.input_ids.to(device)
-        prompt_masks = text_inputs.attention_mask.to(device).bool()
-
-        prompt_embeds = self.text_encoder(
-            input_ids=text_input_ids,
-            attention_mask=prompt_masks,
-            output_hidden_states=True,
-        ).hidden_states[-2]
-
-        embeddings_list = []
-
-        for i in range(len(prompt_embeds)):
-            embeddings_list.append(prompt_embeds[i][prompt_masks[i]])
-
-        return embeddings_list
+        cache_keys = [(max_sequence_length, p) for p in prompt]
+        return self.text_encoder_cache.encode(encode_fn, prompt, device=device, cache_keys=cache_keys)
 
     def prepare_latents(
         self,

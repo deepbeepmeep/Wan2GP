@@ -26,7 +26,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image,
 
 ## 🔥 Latest Updates : 
 
-### January 19th 2026: WanGP v10.41, The Cost Saver
+### January 19th 2026: WanGP v10.42, The Cost Saver
 *GPUs are expensive, RAM is expensive, SSD are expensive, sadly we live now in a GPU & RAM poor.*
 
 WanGP comes again to the rescue:

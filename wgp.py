@@ -6257,7 +6257,8 @@ def generate_video(
                 if film_grain_intensity> 0:
                     from postprocessing.film_grain import add_film_grain
                     sample = add_film_grain(sample, film_grain_intensity, film_grain_saturation) 
-                if audio_only or is_image:
+                mmaudio_enabled, mmaudio_mode, mmaudio_persistence, mmaudio_model_name, mmaudio_model_path = get_mmaudio_settings(server_config)
+				if audio_only or is_image:
                     output_video_frames = None
                     output_frame_count = None
                     any_mmaudio = False
@@ -6286,7 +6287,6 @@ def generate_video(
                 else:
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt)).strip()}.{extension}"
                 video_path = os.path.join(save_path, file_name)
-                mmaudio_enabled, mmaudio_mode, mmaudio_persistence, mmaudio_model_name, mmaudio_model_path = get_mmaudio_settings(server_config)
 
                 if BGRA_frames is not None:
                     from models.wan.alpha.utils import write_zip_file

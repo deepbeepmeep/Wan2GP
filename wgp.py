@@ -6258,7 +6258,7 @@ def generate_video(
                     from postprocessing.film_grain import add_film_grain
                     sample = add_film_grain(sample, film_grain_intensity, film_grain_saturation) 
                 mmaudio_enabled, mmaudio_mode, mmaudio_persistence, mmaudio_model_name, mmaudio_model_path = get_mmaudio_settings(server_config)
-				if audio_only or is_image:
+                if audio_only or is_image:
                     output_video_frames = None
                     output_frame_count = None
                     any_mmaudio = False

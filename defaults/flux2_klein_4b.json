@@ -4,7 +4,7 @@
         "architecture": "flux2_klein_4b",
         "description": "FLUX.2 Klein 4B is a compact rectified flow transformer for image generation and editing.",
         "URLs": [
-            "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-4b_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-4b.safetensors",
             "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-4b_quanto_bf16_int8.safetensors"
         ],
         "image_outputs": true,

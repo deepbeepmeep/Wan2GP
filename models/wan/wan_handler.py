@@ -306,6 +306,7 @@ class family_handler():
                         "show_label" : False,
                 }
                 extra_model_def["all_image_refs_are_background_ref"] = True
+                extra_model_def["no_background_removal"] = True
                 extra_model_def["parent_model_type"] = "i2v_2_2"
 
 

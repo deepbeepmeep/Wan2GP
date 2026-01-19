@@ -46,7 +46,7 @@ WanGP comes again to the rescue:
 
 - **RAM Optimizations for multi minutes Videos**: processing, saving, spatial & Temporal upsampling very long videos should require much less RAM. 
 
-- **Text Encoder Cache**: if you are using a Text prompt already used recently with the current model, it will be taken straight from a cache. The cache is optimized to consume little RAM. It wont work with certain models such as Qwen where the Text Pormpt is combined internally with an Image.
+- **Text Encoder Cache**: if you are asking a Text prompt already used recently with the current model, it will be taken straight from a cache. The cache is optimized to consume little RAM. It wont work with certain models such as Qwen where the Text Prompt is combined internally with an Image.
 
 *update 10.41*: added Flux 2 klein\
 *update 10.42*: added RAM optimizations & Text Encoder Cache 

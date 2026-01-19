@@ -1,0 +1,15 @@
+{
+    "model": {
+        "name": "Flux 2 Dev NVFP4 32B",
+        "architecture": "flux2_dev",
+        "description": "NVFP4-quantized Flux 2 Dev checkpoint (mixed).",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux2-dev-nvfp4-mixed.safetensors"
+        ]
+    },
+    "prompt": "draw a hat on top of a hat inside a hat",
+    "resolution": "1024x1024",
+    "batch_size": 1,
+    "embedded_guidance_scale": 4,
+    "sampling_steps": 30
+}

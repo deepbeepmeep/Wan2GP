@@ -34,48 +34,20 @@ def conv_state_dict(sd: dict) -> dict:
     for key, tensor in sd.items():
         key = key.replace("model.diffusion_model.", "")
         
-        if key.endswith(".attention.qkv.weight"):
-            base = key[: -len(".attention.qkv.weight")]
-
-            total_dim = tensor.shape[0]
-            if total_dim % 3 != 0:
-                raise ValueError(
-                    f"{key}: qkv first dimension ({total_dim}) not divisible by 3"
-                )
-            d = total_dim // 3
-            q, k_w, v = torch.split(tensor, d, dim=0)
-
-            out_sd[base + ".attention.to_q.weight"] = q
-            out_sd[base + ".attention.to_k.weight"] = k_w
-            out_sd[base + ".attention.to_v.weight"] = v
-            continue
-
         new_key = key
-        for comfy_sub, orig_sub in inverse_replace.items():
-            new_key = new_key.replace(comfy_sub, orig_sub)
+        for ori_sub, orig_sub in inverse_replace.items():
+            new_key = new_key.replace(ori_sub, orig_sub)
         out_sd[new_key] = tensor
 
-    to_add = {}
-    for key, tensor in out_sd.items():
-        if key.endswith(".attention.to_out.0.weight"):
-            prefix = key[: -len(".attention.to_out.0.weight")]
-            bias_key = prefix + ".attention.to_out.0.bias"
-            if bias_key not in out_sd:
-                to_add[bias_key] = torch.zeros(tensor.shape[0], dtype=tensor.dtype)
-
-    out_sd.update(to_add)
     return out_sd
 
 
 _ZIMAGE_FUSED_SPLIT_MAP = {
     "attention.to_qkv": {"mapped_modules": ("attention.to_q", "attention.to_k", "attention.to_v")},
+    "attention.qkv": {"mapped_modules": ("attention.to_q", "attention.to_k", "attention.to_v")},
     "feed_forward.net.0.proj": {"mapped_modules": ("feed_forward.w3", "feed_forward.w1")},
     "feed_forward.net.2": {"mapped_modules": ("feed_forward.w2",)},
 }
-
-
-from shared.qtypes import nunchaku_int4 as _nunchaku_int4
-_split_nunchaku_fused = _nunchaku_int4.make_nunchaku_splitter(_ZIMAGE_FUSED_SPLIT_MAP)
 
 
 class model_factory:
@@ -111,13 +83,12 @@ class model_factory:
 
         default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", f"{base_model_type}.json")
 
-        def preprocess_sd(state_dict, verboseLevel=1):
-            state_dict = conv_state_dict(state_dict)
-            return _split_nunchaku_fused(state_dict, verboseLevel=verboseLevel)
+        def preprocess_sd(state_dict):
+            return conv_state_dict(state_dict)
 
         model_class = ZImageTransformer2DModel
 
-        kwargs_light= { "writable_tensors": False, "preprocess_sd": preprocess_sd }
+        kwargs_light= { "writable_tensors": False, "preprocess_sd": preprocess_sd, "fused_split_map": _ZIMAGE_FUSED_SPLIT_MAP }
         # model_filename contains all files to load (transformer + modules merged by loader)
         import json
         import accelerate
@@ -160,12 +131,16 @@ class model_factory:
         text_encoder = offload.fast_load_transformers_model( text_encoder_filename, writable_tensors=True, modelClass=Qwen3ForCausalLM,)
 
         # Tokenizer
-        tokenizer_path = os.path.join(os.path.dirname(text_encoder_filename))
+        text_encoder_folder = model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
+        else:
+            tokenizer_path = os.path.dirname(text_encoder_filename)
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
         # VAE
         vae_filename = fl.locate_file("ZImageTurbo_VAE_bf16.safetensors")
-        vae_config_path = os.path.join(os.path.dirname(vae_filename), "ZImageTurbo_VAE_bf16_config.json") 
+        vae_config_path = fl.locate_file("ZImageTurbo_VAE_bf16_config.json") 
 
         vae = offload.fast_load_transformers_model(
             vae_filename,

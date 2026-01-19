@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Flux 2 Klein 4B",
+        "architecture": "flux2_klein_4b",
+        "description": "FLUX.2 Klein 4B is a compact rectified flow transformer for image generation and editing.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-4b.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-4b_quanto_bf16_int8.safetensors"
+        ],
+        "image_outputs": true,
+        "no_negative_prompt": true
+    },
+    "prompt": "a cozy reading nook with warm sunlight, soft textiles, and a cup of tea on a wooden side table",
+    "resolution": "1024x1024",
+    "batch_size": 1,
+    "embedded_guidance_scale": 1,
+    "num_inference_steps": 4
+}

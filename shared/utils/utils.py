@@ -244,6 +244,8 @@ def convert_tensor_to_image(t, frame_no = 0, mask_levels = False):
         t = t[:, frame_no] 
     if t.shape[0]== 1:
         t = t.expand(3,-1,-1)
+    if t.dtype == torch.uint8:
+        return Image.fromarray(t.permute(1, 2, 0).cpu().numpy())
     if mask_levels:
         return Image.fromarray(t.clone().mul_(255).permute(1,2,0).to(torch.uint8).cpu().numpy())
     else:

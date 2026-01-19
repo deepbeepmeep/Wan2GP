@@ -15,6 +15,7 @@ from .encoders.av_encoder import (
 )
 from .encoders.base_encoder import (
     GemmaTextEncoderModelBase,
+    build_gemma_text_encoder,
     encode_text,
     postprocess_text_embeddings,
     resolve_text_connectors,
@@ -33,6 +34,7 @@ __all__ = [
     "AVGemmaTextEncoderModelConfigurator",
     "GEMMA_TEXT_ENCODER_KEY_OPS",
     "GemmaTextEncoderModelBase",
+    "build_gemma_text_encoder",
     "GemmaTextEncoderModel",
     "GemmaTextEncoderModelConfigurator",
     "GemmaTextEmbeddingsConnectorModel",

@@ -1,20 +1,43 @@
 import os
 import torch
 from shared.utils import files_locator as fl
+from shared.utils.hf import build_hf_url
 
-
+_GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
-_GEMMA_MERGED_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
+_GEMMA_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
 _SPATIAL_UPSCALER_FILENAME = "ltx-2-spatial-upscaler-x2-1.0.safetensors"
 _DISTILLED_LORA_FILENAME = "ltx-2-19b-distilled-lora-384.safetensors"
+_VIDEO_VAE_FILENAME = "ltx-2-19b_vae.safetensors"
+_AUDIO_VAE_FILENAME = "ltx-2-19b_audio_vae.safetensors"
+_VOCODER_FILENAME = "ltx-2-19b_vocoder.safetensors"
+_TEXT_EMBEDDING_PROJECTION_FILENAME = "ltx-2-19b_text_embedding_projection.safetensors"
+_DEV_EMBEDDINGS_CONNECTOR_FILENAME = "ltx-2-19b-dev_embeddings_connector.safetensors"
+_DISTILLED_EMBEDDINGS_CONNECTOR_FILENAME = "ltx-2-19b-distilled_embeddings_connector.safetensors"
 
 
-def get_text_encoder_name(text_encoder_quantization):
-    text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_MERGED_FILENAME}"
-    if text_encoder_quantization == "int8":
-        text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_QUANTO_FILENAME}"
-    return fl.locate_file(text_encoder_filename, True)
+def _get_embeddings_connector_filename(model_def):
+    pipeline_kind = (model_def or {}).get("ltx2_pipeline", "two_stage")
+    if pipeline_kind == "distilled":
+        return _DISTILLED_EMBEDDINGS_CONNECTOR_FILENAME
+    return _DEV_EMBEDDINGS_CONNECTOR_FILENAME
+
+
+def _get_multi_file_names(model_def):
+    return {
+        "video_vae": _VIDEO_VAE_FILENAME,
+        "audio_vae": _AUDIO_VAE_FILENAME,
+        "vocoder": _VOCODER_FILENAME,
+        "text_embedding_projection": _TEXT_EMBEDDING_PROJECTION_FILENAME,
+        "text_embeddings_connector": _get_embeddings_connector_filename(model_def),
+    }
+
+
+def _resolve_multi_file_paths(model_def):
+    return {key: fl.locate_file(name) for key, name in _get_multi_file_names(model_def).items()}
+
+
 
 
 class family_handler:
@@ -34,11 +57,18 @@ class family_handler:
     def query_family_infos():
         return {"ltx2": (40, "LTX-2")}
 
-
     @staticmethod
     def query_model_def(base_model_type, model_def):
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
+
+        distilled = pipeline_kind == "distilled"
+
         extra_model_def = {
+            "text_encoder_folder": _GEMMA_FOLDER,
+            "text_encoder_URLs": [
+                build_hf_url("DeepBeepMeep/LTX-2", _GEMMA_FOLDER, _GEMMA_FILENAME),
+                build_hf_url("DeepBeepMeep/LTX-2", _GEMMA_FOLDER, _GEMMA_QUANTO_FILENAME),
+            ],
             "dtype": "bf16",
             "fps": 24,
             "frames_minimum": 17,
@@ -50,16 +80,18 @@ class family_handler:
             "audio_prompt_choices": True,
             "one_speaker_only": True,
             "audio_guide_label": "Audio Prompt (Soundtrack)",
-            "audio_scale_name": "Audio Strength (if Audio Prompt provided)",
+            "audio_scale_name": "Prompt Audio Strength",
             "audio_prompt_type_sources": {
-                "selection": ["", "A"],
+                "selection": ["", "A", "K"],
                 "labels": {
                     "": "Generate Video & Soundtrack based on Text Prompt",
                     "A": "Generate Video based on Soundtrack and Text Prompt",
+                    "K": "Generate Video based on Control Video + its Audio Track and Text Prompt",
                 },
                 "show_label": False,
             },
             "audio_guide_window_slicing": True,
+            "output_audio_is_input_audio": True,
             "custom_denoising_strength": True,
             "profiles_dir": ["ltx2_19B"],
         }
@@ -88,18 +120,16 @@ class family_handler:
             "window_step": 4,
             "window_default": 241,
         }
-        if pipeline_kind == "distilled":
+        if distilled:
             extra_model_def.update(
                 {
                     "lock_inference_steps": True,
                     "no_negative_prompt": True,
-                    "guidance_max_phases": 0,
                 }
             )
-        else:
-            extra_model_def["guidance_max_phases"] = 2
-            extra_model_def["virtual_higher_phases"] = True
-            extra_model_def["lock_guidance_phases"] = True
+        extra_model_def["guidance_max_phases"] = 2
+        extra_model_def["visible_phases"] = 0 if distilled else 1
+        extra_model_def["lock_guidance_phases"] = True
         return extra_model_def
 
     @staticmethod
@@ -126,12 +156,11 @@ class family_handler:
         return 64
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = get_text_encoder_name(text_encoder_quantization)
+    def query_model_files(computeList, base_model_type, model_def=None):
         gemma_files = [
             "added_tokens.json",
             "chat_template.json",
-            "config.json",
+            "config_light.json",
             "generation_config.json",
             "preprocessor_config.json",
             "processor_config.json",
@@ -139,13 +168,18 @@ class family_handler:
             "tokenizer.json",
             "tokenizer.model",
             "tokenizer_config.json",
-        ] + computeList(text_encoder_filename)
+        ] 
+
+        file_list = [_SPATIAL_UPSCALER_FILENAME] 
+        for name in _get_multi_file_names(model_def).values():
+            if name not in file_list:
+                file_list.append(name)
 
         download_def = [
             {
                 "repoId": "DeepBeepMeep/LTX-2",
                 "sourceFolderList": [""],
-                "fileList": [[_SPATIAL_UPSCALER_FILENAME] + computeList(model_filename)],
+                "fileList": [file_list],
             },
             {
                 "repoId": "DeepBeepMeep/LTX-2",
@@ -176,10 +210,14 @@ class family_handler:
         mixed_precision_transformer=False,
         save_quantized=False,
         submodel_no_list=None,
-        override_text_encoder=None,
+        text_encoder_filename=None,
         **kwargs,
     ):
         from .ltx2 import LTX2
+
+        checkpoint_paths = _resolve_multi_file_paths(model_def)
+        transformer_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
+        checkpoint_paths["transformer"] = transformer_path
 
         ltx2_model = LTX2(
             model_filename=model_filename,
@@ -188,8 +226,9 @@ class family_handler:
             model_def=model_def,
             dtype=dtype,
             VAE_dtype=VAE_dtype,
-            override_text_encoder=override_text_encoder,
-            text_encoder_filepath = get_text_encoder_name(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filename=text_encoder_filename,
+            text_encoder_filepath = model_def.get("text_encoder_folder", os.path.dirname(text_encoder_filename)),
+            checkpoint_paths=checkpoint_paths,
         )
 
         pipe = {
@@ -234,6 +273,7 @@ class family_handler:
                 "sliding_window_overlap": 17,
                 "denoising_strength": 1.0,
                 "masking_strength": 0,
+                "audio_prompt_type": "",
             }
         )
         ui_defaults.setdefault("audio_scale", 1.0)

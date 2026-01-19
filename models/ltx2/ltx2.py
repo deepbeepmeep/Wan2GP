@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import types
@@ -5,11 +6,31 @@ from typing import Callable, Iterator
 
 import torch
 import torchaudio
-
+from accelerate import init_empty_weights
 from shared.utils import files_locator as fl
 
 from .ltx_core.conditioning import AudioConditionByLatent
-from .ltx_core.model.audio_vae import AudioProcessor
+from .ltx_core.model.audio_vae import (
+    VOCODER_COMFY_KEYS_FILTER,
+    AudioDecoderConfigurator,
+    AudioEncoderConfigurator,
+    AudioProcessor,
+    VocoderConfigurator,
+)
+from .ltx_core.model.transformer import (
+    LTXV_MODEL_COMFY_RENAMING_MAP,
+    LTXModelConfigurator,
+    X0Model,
+)
+from .ltx_core.model.upsampler import LatentUpsamplerConfigurator
+from .ltx_core.model.video_vae import VideoDecoderConfigurator, VideoEncoderConfigurator
+from .ltx_core.text_encoders.gemma import (
+    GemmaTextEmbeddingsConnectorModelConfigurator,
+    TEXT_EMBEDDING_PROJECTION_KEY_OPS,
+    TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS,
+    build_gemma_text_encoder,
+)
+from .ltx_core.text_encoders.gemma.feature_extractor import GemmaFeaturesExtractorProjLinear
 from .ltx_core.model.video_vae import SpatialTilingConfig, TemporalTilingConfig, TilingConfig
 from .ltx_core.types import AudioLatentShape, VideoPixelShape
 from .ltx_pipelines.distilled import DistilledPipeline
@@ -22,12 +43,133 @@ _SPATIAL_UPSCALER_FILENAME = "ltx-2-spatial-upscaler-x2-1.0.safetensors"
 LTX2_USE_FP32_ROPE_FREQS = True #False
 
 
+def _normalize_config(config_value):
+    if isinstance(config_value, dict):
+        return config_value
+    if isinstance(config_value, (bytes, bytearray, memoryview)):
+        try:
+            config_value = bytes(config_value).decode("utf-8")
+        except Exception:
+            return {}
+    if isinstance(config_value, str):
+        try:
+            return json.loads(config_value)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _load_config_from_checkpoint(path):
+    from mmgp import safetensors2
+
+    if isinstance(path, (list, tuple)):
+        if not path:
+            return {}
+        path = path[0]
+    if not path:
+        return {}
+    _, metadata = safetensors2.load_metadata_state_dict(path)
+    if not metadata:
+        return {}
+    return _normalize_config(metadata.get("config"))
+
+
+def _strip_model_prefix(key: str) -> str:
+    if key.startswith("model."):
+        return key[len("model.") :]
+    return key
+
+
+def _apply_sd_ops(state_dict: dict, quantization_map: dict | None, sd_ops):
+    if sd_ops is not None:
+        has_match = False
+        for key in state_dict.keys():
+            key = _strip_model_prefix(key)
+            if sd_ops.apply_to_key(key) is not None:
+                has_match = True
+                break
+        if not has_match:
+            new_sd = {_strip_model_prefix(k): v for k, v in state_dict.items()}
+            new_qm = {}
+            if quantization_map:
+                new_qm = {_strip_model_prefix(k): v for k, v in quantization_map.items()}
+            return new_sd, new_qm
+
+    new_sd = {}
+    for key, value in state_dict.items():
+        key = _strip_model_prefix(key)
+        if sd_ops is None:
+            new_sd[key] = value
+            continue
+        else:
+            new_key = sd_ops.apply_to_key(key)
+            if new_key is None:
+                continue
+            new_pairs = sd_ops.apply_to_key_value(new_key, value)
+        for pair in new_pairs:
+            new_sd[pair.new_key] = pair.new_value
+
+    new_qm = {}
+    if quantization_map:
+        for key, value in quantization_map.items():
+            key = _strip_model_prefix(key)
+            if sd_ops is None:
+                new_key = key
+            else:
+                new_key = sd_ops.apply_to_key(key)
+                if new_key is None:
+                    continue
+            new_qm[new_key] = value
+    return new_sd, new_qm
+
+
+def _make_sd_postprocess(sd_ops):
+    def postprocess(state_dict, quantization_map):
+        return _apply_sd_ops(state_dict, quantization_map, sd_ops)
+
+    return postprocess
+
+
+def _split_vae_state_dict(state_dict: dict, prefix: str):
+    new_sd = {}
+    for key, value in state_dict.items():
+        key = _strip_model_prefix(key)
+        if key.startswith(prefix):
+            key = key[len(prefix) :]
+        elif key.startswith(("encoder.", "decoder.", "per_channel_statistics.")):
+            key = key
+        else:
+            continue
+        if key.startswith("per_channel_statistics."):
+            suffix = key[len("per_channel_statistics.") :]
+            new_sd[f"encoder.per_channel_statistics.{suffix}"] = value.clone()
+            new_sd[f"decoder.per_channel_statistics.{suffix}"] = value.clone()
+        else:
+            new_sd[key] = value
+
+    return new_sd, {}
+
+
+def _make_vae_postprocess(prefix: str):
+    def postprocess(state_dict, quantization_map):
+        return _split_vae_state_dict(state_dict, prefix)
+
+    return postprocess
+
+
 class _AudioVAEWrapper(torch.nn.Module):
     def __init__(self, decoder: torch.nn.Module) -> None:
         super().__init__()
         per_stats = getattr(decoder, "per_channel_statistics", None)
         if per_stats is not None:
             self.per_channel_statistics = per_stats
+        self.decoder = decoder
+
+
+class _VAEContainer(torch.nn.Module):
+    def __init__(self, encoder: torch.nn.Module, decoder: torch.nn.Module) -> None:
+        super().__init__()
+        self.encoder = encoder
         self.decoder = decoder
 
 
@@ -44,42 +186,16 @@ class LTX2SuperModel(torch.nn.Module):
         super().__init__()
         object.__setattr__(self, "_ltx2", ltx2_model)
 
-        transformer = getattr(ltx2_model, "model", None)
-        if transformer is not None:
-            velocity_model = getattr(transformer, "velocity_model", transformer)
-            self.velocity_model = velocity_model
-            split_map = getattr(transformer, "split_linear_modules_map", None)
-            if split_map is not None:
-                self.split_linear_modules_map = split_map
+        transformer = ltx2_model.model
+        velocity_model = getattr(transformer, "velocity_model", transformer)
+        self.velocity_model = velocity_model
+        split_map = getattr(transformer, "split_linear_modules_map", None)
+        if split_map is not None:
+            self.split_linear_modules_map = split_map
 
-        feature_extractor = getattr(ltx2_model, "text_embedding_projection", None)
-        text_connectors = getattr(ltx2_model, "_text_connectors", None) or {}
-        if feature_extractor is None:
-            feature_extractor = text_connectors.get("feature_extractor_linear")
-        if feature_extractor is not None:
-            self.text_embedding_projection = feature_extractor
-
-        connectors_model = getattr(ltx2_model, "text_embeddings_connector", None)
-        video_connector = None
-        audio_connector = None
-        if connectors_model is not None:
-            video_connector = getattr(connectors_model, "video_embeddings_connector", None)
-            audio_connector = getattr(connectors_model, "audio_embeddings_connector", None)
-        if video_connector is None:
-            video_connector = text_connectors.get("embeddings_connector")
-        if audio_connector is None:
-            audio_connector = text_connectors.get("audio_embeddings_connector")
-        if video_connector is None or audio_connector is None:
-            text_encoder = getattr(ltx2_model, "text_encoder", None)
-            if text_encoder is not None:
-                if video_connector is None:
-                    video_connector = getattr(text_encoder, "embeddings_connector", None)
-                if audio_connector is None:
-                    audio_connector = getattr(text_encoder, "audio_embeddings_connector", None)
-        if video_connector is not None:
-            self.video_embeddings_connector = video_connector
-        if audio_connector is not None:
-            self.audio_embeddings_connector = audio_connector
+        self.text_embedding_projection = ltx2_model.text_embedding_projection
+        self.video_embeddings_connector = ltx2_model.video_embeddings_connector
+        self.audio_embeddings_connector = ltx2_model.audio_embeddings_connector
 
     @property
     def _interrupt(self) -> bool:
@@ -281,8 +397,9 @@ def _collect_video_chunks(
     if not chunks:
         return None
     frames = torch.cat(chunks, dim=0)
-    frames = frames.to(dtype=torch.float32).div_(127.5).sub_(1.0)
-    return frames.permute(3, 0, 1, 2).contiguous()
+    return frames.permute(3, 0, 1, 2)
+    # frames = frames.to(dtype=torch.float32).div_(127.5).sub_(1.0)
+    # return frames.permute(3, 0, 1, 2).contiguous()
 
 
 class LTX2:
@@ -294,8 +411,9 @@ class LTX2:
         model_def: dict,
         dtype: torch.dtype = torch.bfloat16,
         VAE_dtype: torch.dtype = torch.float32,
-        override_text_encoder: str | None = None,
+        text_encoder_filename: str | None = None,
         text_encoder_filepath = None,
+        checkpoint_paths: dict | None = None,
     ) -> None:
         self.device = torch.device("cuda")
         self.dtype = dtype
@@ -311,114 +429,160 @@ class LTX2:
         if isinstance(model_filename, (list, tuple)):
             if not model_filename:
                 raise ValueError("Missing LTX-2 checkpoint path.")
-            checkpoint_path = model_filename[0]
+            transformer_path = list(model_filename)
         else:
-            checkpoint_path = model_filename
+            transformer_path = model_filename
+        component_paths = checkpoint_paths or {}
+        if component_paths:
+            transformer_path = component_paths.get("transformer")
+            if not transformer_path:
+                raise ValueError("Missing transformer path in checkpoint_paths.")
 
-        gemma_root = text_encoder_filepath
+        gemma_root = text_encoder_filepath if text_encoder_filename is None else text_encoder_filename
+        if not gemma_root:
+            raise ValueError("Missing Gemma text encoder path.")
         spatial_upsampler_path = fl.locate_file(_SPATIAL_UPSCALER_FILENAME)
 
-        # Keep internal FP8 off by default; mmgp handles quantization transparently.
-        fp8transformer = bool(model_def.get("ltx2_internal_fp8", False))
-        if fp8transformer:
-            fp8transformer = "fp8" in os.path.basename(checkpoint_path).lower()
+        # Internal FP8 handling is disabled; mmgp manages quantization/dtypes.
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
+
+        pipeline_models = self._init_models(
+            transformer_path=transformer_path,
+            component_paths=component_paths,
+            gemma_root=gemma_root,
+            spatial_upsampler_path=spatial_upsampler_path,
+        )
 
         if pipeline_kind == "distilled":
             self.pipeline = DistilledPipeline(
-                checkpoint_path=checkpoint_path,
-                gemma_root=gemma_root,
-                spatial_upsampler_path=spatial_upsampler_path,
-                loras=[],
                 device=self.device,
-                fp8transformer=fp8transformer,
-                model_device=torch.device("cpu"),
+                models=pipeline_models,
             )
-            self._cache_distilled_models()
         else:
             self.pipeline = TI2VidTwoStagesPipeline(
-                checkpoint_path=checkpoint_path,
-                distilled_lora=[],
-                spatial_upsampler_path=spatial_upsampler_path,
-                gemma_root=gemma_root,
-                loras=[],
                 device=self.device,
-                fp8transformer=fp8transformer,
-                model_device=torch.device("cpu"),
+                stage_1_models=pipeline_models,
+                stage_2_models=pipeline_models,
             )
-            self._cache_two_stage_models()
-
-    def _cache_distilled_models(self) -> None:
-        ledger = self.pipeline.model_ledger
-        self.text_encoder = ledger.text_encoder()
-        self.text_embedding_projection = ledger.text_embedding_projection()
-        self.text_embeddings_connector = ledger.text_embeddings_connector()
-        self.video_embeddings_connector = self.text_embeddings_connector.video_embeddings_connector
-        self.audio_embeddings_connector = self.text_embeddings_connector.audio_embeddings_connector
-        self.video_encoder = ledger.video_encoder()
-        self.audio_encoder = ledger.audio_encoder()
-        self.video_decoder = ledger.video_decoder()
-        self.audio_decoder = ledger.audio_decoder()
-        self.vocoder = ledger.vocoder()
-        self.spatial_upsampler = ledger.spatial_upsampler()
-        self.model = ledger.transformer()
-        self.model2 = None
-
-        ledger.text_encoder = lambda: self.text_encoder
-        ledger.text_embedding_projection = lambda: self.text_embedding_projection
-        ledger.text_embeddings_connector = lambda: self.text_embeddings_connector
-        ledger.video_encoder = lambda: self.video_encoder
-        ledger.audio_encoder = lambda: self.audio_encoder
-        ledger.video_decoder = lambda: self.video_decoder
-        ledger.audio_decoder = lambda: self.audio_decoder
-        ledger.vocoder = lambda: self.vocoder
-        ledger.spatial_upsampler = lambda: self.spatial_upsampler
-        ledger.transformer = lambda: self.model
-        ledger.release_shared_state()
         self._build_diffuser_model()
 
-    def _cache_two_stage_models(self) -> None:
-        ledger_1 = self.pipeline.stage_1_model_ledger
-        ledger_2 = self.pipeline.stage_2_model_ledger
+    def _init_models(
+        self,
+        transformer_path,
+        component_paths: dict,
+        gemma_root: str,
+        spatial_upsampler_path: str,
+    ):
+        from mmgp import offload as mmgp_offload
 
-        self.text_encoder = ledger_1.text_encoder()
-        self.text_embedding_projection = ledger_1.text_embedding_projection()
-        self.text_embeddings_connector = ledger_1.text_embeddings_connector()
-        self.video_embeddings_connector = self.text_embeddings_connector.video_embeddings_connector
-        self.audio_embeddings_connector = self.text_embeddings_connector.audio_embeddings_connector
-        self.video_encoder = ledger_1.video_encoder()
-        self.audio_encoder = ledger_1.audio_encoder()
-        self.video_decoder = ledger_1.video_decoder()
-        self.audio_decoder = ledger_1.audio_decoder()
-        self.vocoder = ledger_1.vocoder()
-        self.spatial_upsampler = ledger_2.spatial_upsampler()
-        self.model = ledger_1.transformer()
+        base_config = _load_config_from_checkpoint(transformer_path)
+        if not base_config:
+            raise ValueError("Missing config in transformer checkpoint.")
+
+        def _component_path(key: str):
+            if component_paths:
+                path = component_paths.get(key)
+                if not path:
+                    raise ValueError(f"Missing '{key}' path in checkpoint_paths.")
+                return path
+            return transformer_path
+
+        def _component_config(path):
+            config = _load_config_from_checkpoint(path)
+            return config or base_config
+
+        def _load_component(model, path, sd_ops=None, postprocess=None):
+            if postprocess is None and sd_ops is not None:
+                postprocess = _make_sd_postprocess(sd_ops)
+            mmgp_offload.load_model_data(
+                model,
+                path,
+                postprocess_sd=postprocess,
+                default_dtype=self.dtype,
+                ignore_missing_keys=False,
+            )
+            model.eval().requires_grad_(False)
+            return model
+
+        transformer_sd_ops = LTXV_MODEL_COMFY_RENAMING_MAP
+        with init_empty_weights():
+            velocity_model = LTXModelConfigurator.from_config(base_config)
+        velocity_model = _load_component(velocity_model, transformer_path, transformer_sd_ops)
+        transformer = X0Model(velocity_model)
+        transformer.eval().requires_grad_(False)
+        VAE_URLs = self.model_def.get("VAE_URLs", None)
+        video_vae_path =  fl.locate_file(VAE_URLs[0]) if VAE_URLs is not None and len(VAE_URLs) else _component_path("video_vae")
+        video_config = _component_config(video_vae_path)
+        with init_empty_weights():
+            video_encoder = VideoEncoderConfigurator.from_config(video_config)
+            video_decoder = VideoDecoderConfigurator.from_config(video_config)
+            video_vae = _VAEContainer(video_encoder, video_decoder)
+        video_vae = _load_component(video_vae, video_vae_path, postprocess=_make_vae_postprocess("vae."))
+        video_encoder = video_vae.encoder
+        video_decoder = video_vae.decoder
+
+        audio_vae_path = _component_path("audio_vae")
+        audio_config = _component_config(audio_vae_path)
+        with init_empty_weights():
+            audio_encoder = AudioEncoderConfigurator.from_config(audio_config)
+            audio_decoder = AudioDecoderConfigurator.from_config(audio_config)
+            audio_vae = _VAEContainer(audio_encoder, audio_decoder)
+        audio_vae = _load_component(audio_vae, audio_vae_path, postprocess=_make_vae_postprocess("audio_vae."))
+        audio_encoder = audio_vae.encoder
+        audio_decoder = audio_vae.decoder
+
+        vocoder_path = _component_path("vocoder")
+        vocoder_config = _component_config(vocoder_path)
+        with init_empty_weights():
+            vocoder = VocoderConfigurator.from_config(vocoder_config)
+        vocoder = _load_component(vocoder, vocoder_path, VOCODER_COMFY_KEYS_FILTER)
+
+        text_projection_path = _component_path("text_embedding_projection")
+        text_projection_config = _component_config(text_projection_path)
+        with init_empty_weights():
+            text_embedding_projection = GemmaFeaturesExtractorProjLinear.from_config(text_projection_config)
+        text_embedding_projection = _load_component( text_embedding_projection, text_projection_path, TEXT_EMBEDDING_PROJECTION_KEY_OPS )
+
+        text_connector_path = _component_path("text_embeddings_connector")
+        text_connector_config = _component_config(text_connector_path)
+        with init_empty_weights():
+            text_embeddings_connector = GemmaTextEmbeddingsConnectorModelConfigurator.from_config(text_connector_config)
+        text_embeddings_connector = _load_component( text_embeddings_connector, text_connector_path, TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS )
+
+        text_encoder = build_gemma_text_encoder(gemma_root, default_dtype=self.dtype)
+        text_encoder.eval().requires_grad_(False)
+
+        upsampler_config = _load_config_from_checkpoint(spatial_upsampler_path)
+        with init_empty_weights():
+            spatial_upsampler = LatentUpsamplerConfigurator.from_config(upsampler_config)
+        spatial_upsampler = _load_component(spatial_upsampler, spatial_upsampler_path, None)
+
+        self.text_encoder = text_encoder
+        self.text_embedding_projection = text_embedding_projection
+        self.text_embeddings_connector = text_embeddings_connector
+        self.video_embeddings_connector = text_embeddings_connector.video_embeddings_connector
+        self.audio_embeddings_connector = text_embeddings_connector.audio_embeddings_connector
+        self.video_encoder = video_encoder
+        self.video_decoder = video_decoder
+        self.audio_encoder = audio_encoder
+        self.audio_decoder = audio_decoder
+        self.vocoder = vocoder
+        self.spatial_upsampler = spatial_upsampler
+        self.model = transformer
         self.model2 = None
 
-        ledger_1.text_encoder = lambda: self.text_encoder
-        ledger_1.text_embedding_projection = lambda: self.text_embedding_projection
-        ledger_1.text_embeddings_connector = lambda: self.text_embeddings_connector
-        ledger_1.video_encoder = lambda: self.video_encoder
-        ledger_1.audio_encoder = lambda: self.audio_encoder
-        ledger_1.video_decoder = lambda: self.video_decoder
-        ledger_1.audio_decoder = lambda: self.audio_decoder
-        ledger_1.vocoder = lambda: self.vocoder
-        ledger_1.transformer = lambda: self.model
-
-        ledger_2.text_encoder = lambda: self.text_encoder
-        ledger_2.text_embedding_projection = lambda: self.text_embedding_projection
-        ledger_2.text_embeddings_connector = lambda: self.text_embeddings_connector
-        ledger_2.video_encoder = lambda: self.video_encoder
-        ledger_2.audio_encoder = lambda: self.audio_encoder
-        ledger_2.video_decoder = lambda: self.video_decoder
-        ledger_2.audio_decoder = lambda: self.audio_decoder
-        ledger_2.vocoder = lambda: self.vocoder
-        ledger_2.spatial_upsampler = lambda: self.spatial_upsampler
-        ledger_2.transformer = lambda: self.model
-        ledger_1.release_shared_state()
-        if ledger_2 is not ledger_1:
-            ledger_2.release_shared_state()
-        self._build_diffuser_model()
+        return types.SimpleNamespace(
+            text_encoder=self.text_encoder,
+            text_embedding_projection=self.text_embedding_projection,
+            text_embeddings_connector=self.text_embeddings_connector,
+            video_encoder=self.video_encoder,
+            video_decoder=self.video_decoder,
+            audio_encoder=self.audio_encoder,
+            audio_decoder=self.audio_decoder,
+            vocoder=self.vocoder,
+            spatial_upsampler=self.spatial_upsampler,
+            transformer=self.model,
+        )
 
     def _detach_text_encoder_connectors(self) -> None:
         text_encoder = getattr(self, "text_encoder", None)
@@ -666,8 +830,9 @@ class LTX2:
         text_connectors = getattr(self, "_text_connectors", None)
 
         audio_conditionings = None
-        audio_guide = kwargs.get("audio_guide")
-        if audio_guide:
+        input_waveform = kwargs.get("input_waveform")
+        input_waveform_sample_rate = kwargs.get("input_waveform_sample_rate")
+        if input_waveform is not None:
             audio_scale = kwargs.get("audio_scale")
             if audio_scale is None:
                 audio_scale = 1.0
@@ -675,9 +840,7 @@ class LTX2:
             if audio_strength > 0.0:
                 if self._interrupt:
                     return None
-                if not os.path.isfile(audio_guide):
-                    raise FileNotFoundError(f"Audio guide '{audio_guide}' not found.")
-                waveform, waveform_sample_rate = torchaudio.load(audio_guide)
+                waveform, waveform_sample_rate =  torch.from_numpy(input_waveform), input_waveform_sample_rate
                 if self._interrupt:
                     return None
                 if waveform.ndim == 1:

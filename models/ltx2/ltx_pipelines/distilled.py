@@ -38,6 +38,7 @@ from .utils.helpers import (
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
 from shared.utils.loras_mutipliers import update_loras_slists
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 device = get_device()
 
@@ -51,31 +52,46 @@ class DistilledPipeline:
 
     def __init__(
         self,
-        checkpoint_path: str,
-        gemma_root: str,
-        spatial_upsampler_path: str,
-        loras: list[LoraPathStrengthAndSDOps],
+        checkpoint_path: str | None = None,
+        gemma_root: str | None = None,
+        spatial_upsampler_path: str | None = None,
+        loras: list[LoraPathStrengthAndSDOps] | None = None,
         device: torch.device = device,
         fp8transformer: bool = False,
         model_device: torch.device | None = None,
+        models: object | None = None,
     ):
         self.device = device
         self.dtype = torch.bfloat16
+        self.models = models
 
-        self.model_ledger = ModelLedger(
-            dtype=self.dtype,
-            device=model_device or device,
-            checkpoint_path=checkpoint_path,
-            spatial_upsampler_path=spatial_upsampler_path,
-            gemma_root_path=gemma_root,
-            loras=loras,
-            fp8transformer=fp8transformer,
-        )
+        if self.models is None:
+            if checkpoint_path is None or gemma_root is None or spatial_upsampler_path is None:
+                raise ValueError("checkpoint_path, gemma_root, and spatial_upsampler_path are required.")
+            self.model_ledger = ModelLedger(
+                dtype=self.dtype,
+                device=model_device or device,
+                checkpoint_path=checkpoint_path,
+                spatial_upsampler_path=spatial_upsampler_path,
+                gemma_root_path=gemma_root,
+                loras=loras or [],
+                fp8transformer=fp8transformer,
+            )
+        else:
+            self.model_ledger = None
 
         self.pipeline_components = PipelineComponents(
             dtype=self.dtype,
             device=device,
         )
+        self.text_encoder_cache = TextEncoderCache()
+
+    def _get_model(self, name: str):
+        if self.models is not None:
+            return getattr(self.models, name)
+        if self.model_ledger is None:
+            raise ValueError(f"Missing model source for '{name}'.")
+        return getattr(self.model_ledger, name)()
 
     def __call__(
         self,
@@ -107,27 +123,28 @@ class DistilledPipeline:
         stepper = EulerDiffusionStep()
         dtype = torch.bfloat16
 
-        text_encoder = self.model_ledger.text_encoder()
+        text_encoder = self._get_model("text_encoder")
         if enhance_prompt:
             prompt = generate_enhanced_prompt(text_encoder, prompt, images[0][0] if len(images) > 0 else None)
-        raw_contexts = encode_text(text_encoder, prompts=[prompt])
         feature_extractor, video_connector, audio_connector = resolve_text_connectors(
             text_encoder, text_connectors
         )
+        encode_fn = lambda prompts: postprocess_text_embeddings(
+            encode_text(text_encoder, prompts=prompts),
+            feature_extractor,
+            video_connector,
+            audio_connector,
+        )
+        contexts = self.text_encoder_cache.encode(encode_fn, [prompt], device=self.device, parallel=True)
 
         torch.cuda.synchronize()
         del text_encoder
         cleanup_memory()
-        video_context, audio_context = postprocess_text_embeddings(
-            raw_contexts,
-            feature_extractor,
-            video_connector,
-            audio_connector,
-        )[0]
+        video_context, audio_context = contexts[0]
 
         # Stage 1: Initial low resolution video generation.
-        video_encoder = self.model_ledger.video_encoder()
-        transformer = self.model_ledger.transformer()
+        video_encoder = self._get_model("video_encoder")
+        transformer = self._get_model("transformer")
         bind_interrupt_check(transformer, interrupt_check)
         # DISTILLED_SIGMA_VALUES = [0.421875, 0]
         stage_1_sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
@@ -230,7 +247,9 @@ class DistilledPipeline:
 
         # Stage 2: Upsample and refine the video at higher resolution with distilled LORA.
         upscaled_video_latent = upsample_video(
-            latent=video_state.latent[:1], video_encoder=video_encoder, upsampler=self.model_ledger.spatial_upsampler()
+            latent=video_state.latent[:1],
+            video_encoder=video_encoder,
+            upsampler=self._get_model("spatial_upsampler"),
         )
 
         torch.cuda.synchronize()
@@ -306,9 +325,9 @@ class DistilledPipeline:
         latent_slice = None
         if return_latent_slice is not None:
             latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
-        decoded_video = vae_decode_video(video_state.latent, self.model_ledger.video_decoder(), tiling_config)
+        decoded_video = vae_decode_video(video_state.latent, self._get_model("video_decoder"), tiling_config)
         decoded_audio = vae_decode_audio(
-            audio_state.latent, self.model_ledger.audio_decoder(), self.model_ledger.vocoder()
+            audio_state.latent, self._get_model("audio_decoder"), self._get_model("vocoder")
         )
         if latent_slice is not None:
             return decoded_video, decoded_audio, latent_slice

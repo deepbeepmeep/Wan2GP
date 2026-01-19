@@ -1,14 +1,7 @@
 import os
 import torch
 import gradio as gr
-from shared.utils import files_locator as fl 
-
-
-def get_qwen_text_encoder_filename(text_encoder_quantization):
-    text_encoder_filename = "Qwen2.5-VL-7B-Instruct/Qwen2.5-VL-7B-Instruct_bf16.safetensors"
-    if text_encoder_quantization =="int8":
-        text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8") 
-    return fl.locate_file(text_encoder_filename, True)
+from shared.utils.hf import build_hf_url
 
 class family_handler():
     @staticmethod
@@ -22,6 +15,12 @@ class family_handler():
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": ["qwen"],
         }
+        text_encoder_folder = "Qwen2.5-VL-7B-Instruct"
+        extra_model_def["text_encoder_URLs"] = [
+            build_hf_url("DeepBeepMeep/Qwen_image", text_encoder_folder, "Qwen2.5-VL-7B-Instruct_bf16.safetensors"),
+            build_hf_url("DeepBeepMeep/Qwen_image", text_encoder_folder, "Qwen2.5-VL-7B-Instruct_quanto_bf16_int8.safetensors"),
+        ]
+        extra_model_def["text_encoder_folder"] = text_encoder_folder
 
         extra_model_def["vae_upsampler"] = [1,2]
 
@@ -112,15 +111,14 @@ class family_handler():
         return args.lora_dir_qwen
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = get_qwen_text_encoder_filename(text_encoder_quantization)    
+    def query_model_files(computeList, base_model_type, model_def=None):
         vae_files = ["qwen_vae.safetensors", "qwen_vae_config.json"]
         if base_model_type in ["qwen_image_layered_20B"]:
             vae_files.append("qwen_image_layered_vae_bf16.safetensors")
         download_def = [{  
             "repoId" : "DeepBeepMeep/Qwen_image", 
             "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
-            "fileList" : [ vae_files, ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"] + computeList(text_encoder_filename)  ]
+            "fileList" : [ vae_files, ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"]  ]
             }]
 
         download_def  += [{
@@ -131,7 +129,7 @@ class family_handler():
         return download_def
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None, VAE_upsampling = None, **kwargs):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, text_encoder_filename = None, VAE_upsampling = None, **kwargs):
         from .qwen_main import model_factory
         from mmgp import offload
 
@@ -141,7 +139,7 @@ class family_handler():
             model_type = model_type, 
             model_def = model_def,
             base_model_type=base_model_type,
-            text_encoder_filename= get_qwen_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filename=text_encoder_filename,
             quantizeTransformer = quantizeTransformer,
             dtype = dtype,
             VAE_dtype = VAE_dtype, 

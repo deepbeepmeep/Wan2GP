@@ -9,8 +9,12 @@ from .RIFE_HDv3 import Model
 def get_frame(frames, frame_no):
     if frame_no >= frames.shape[1]:
         return None
-    frame = (frames[:, frame_no] + 1) /2
-    frame = frame.clip(0., 1.)
+    frame = frames[:, frame_no]
+    if frame.dtype == torch.uint8:
+        frame = frame.float().div_(255.0)
+    else:
+        frame = (frame + 1) / 2
+        frame = frame.clip(0., 1.)
     return frame
 
 def add_frame(frames, frame, h, w):
@@ -107,6 +111,7 @@ def process_frames(model, device, frames, exp):
 
 def temporal_interpolation(model_path, frames, exp, device ="cuda"):
 
+    input_was_uint8 = frames.dtype == torch.uint8
     model = Model()
     model.load_model(model_path, -1, device=device)
 
@@ -114,6 +119,8 @@ def temporal_interpolation(model_path, frames, exp, device ="cuda"):
     model.to(device=device)
 
     with torch.no_grad():    
-        output = process_frames(model, device, frames.float(), exp)
+        output = process_frames(model, device, frames, exp)
 
+    if input_was_uint8:
+        output = output.add_(1.0).mul_(127.5).clamp_(0, 255).to(torch.uint8)
     return output

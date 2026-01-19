@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Flux 2 Klein 9B",
+        "architecture": "flux2_klein_9b",
+        "description": "FLUX.2 Klein 9B is a balanced rectified flow transformer for image generation and editing.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-9b.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-9b_quanto_bf16_int8.safetensors"
+        ],
+        "image_outputs": true,
+        "no_negative_prompt": true
+    },
+    "prompt": "a glass greenhouse filled with lush tropical plants, misty air, and dappled light",
+    "resolution": "1024x1024",
+    "batch_size": 1,
+    "embedded_guidance_scale": 1,
+    "num_inference_steps": 4
+}

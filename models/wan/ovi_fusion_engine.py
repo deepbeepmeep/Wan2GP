@@ -96,12 +96,17 @@ class OviFusionEngine:
         vae_model_audio.requires_grad_(False).eval()
         self.audio_vae = vae_model_audio.bfloat16()
         # Load T5 text model
+        text_encoder_folder = model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = fl.locate_folder(text_encoder_folder)
+        else:
+            tokenizer_path = os.path.dirname(text_encoder_filename)
         self.text_encoder = T5EncoderModel(
             text_len=512,
             dtype=torch.bfloat16,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=fl.locate_folder("umt5-xxl"),
+            tokenizer_path=tokenizer_path,
             shard_fn= None)
         
 

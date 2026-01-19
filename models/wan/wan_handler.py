@@ -6,7 +6,7 @@ import numpy as np
 import gradio as gr
 import cv2
 from PIL import Image
-from shared.utils import files_locator as fl 
+from shared.utils.hf import build_hf_url
 
 def test_vace(base_model_type):
     return base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B", "vace_ditto_14B"]     
@@ -183,19 +183,17 @@ class family_handler():
             skip_steps_cache.coefficients = coefficients
 
     @staticmethod
-    def get_wan_text_encoder_filename(text_encoder_quantization):
-        text_encoder_filename =  "umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors"
-        if text_encoder_quantization =="int8":
-            text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_int8") 
-        return  fl.locate_file(text_encoder_filename, True)
-
-    @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {}
         if "URLs2" in model_def:
             extra_model_def["no_steps_skipping"] = True
             extra_model_def["compile"] = ["transformer","transformer2"]
-            
+        text_encoder_folder = "umt5-xxl"
+        extra_model_def["text_encoder_URLs"] = [
+            build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-bf16.safetensors"),
+            build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-quanto_int8.safetensors"),
+        ]
+        extra_model_def["text_encoder_folder"] = text_encoder_folder
         extra_model_def["i2v_class"] = i2v =  test_class_i2v(base_model_type)
         extra_model_def["t2v_class"] = t2v =  test_class_t2v(base_model_type)
         extra_model_def["multitalk_class"] = multitalk = test_multitalk(base_model_type)
@@ -308,6 +306,7 @@ class family_handler():
                         "show_label" : False,
                 }
                 extra_model_def["all_image_refs_are_background_ref"] = True
+                extra_model_def["no_background_removal"] = True
                 extra_model_def["parent_model_type"] = "i2v_2_2"
 
 
@@ -675,17 +674,17 @@ class family_handler():
         return latent_rgb_factors, latent_rgb_factors_bias
     
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = family_handler.get_wan_text_encoder_filename(text_encoder_quantization)
-
+    def query_model_files(computeList, base_model_type, model_def=None):
         if test_wan_5B(base_model_type):
             wan_files = []
         else:
-            wan_files = ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]
+            wan_files = ["Wan2.1_VAE.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]
+            if base_model_type in ["fantasy"]:
+                wan_files.append("fantasy_proj_model.safetensors")
         download_def  = [{
             "repoId" : "DeepBeepMeep/Wan2.1", 
             "sourceFolderList" :  ["xlm-roberta-large", "umt5-xxl", ""  ],
-            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , wan_files +  computeList(model_filename)  ]   
+            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"], wan_files ]   
         }]
 
         if base_model_type == "scail":
@@ -747,7 +746,7 @@ class family_handler():
 
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, override_text_encoder = None, VAE_upsampling = None, **kwargs):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, text_encoder_filename = None, VAE_upsampling = None, **kwargs):
         from .configs import WAN_CONFIGS
 
         if test_class_i2v(base_model_type):
@@ -764,7 +763,7 @@ class family_handler():
             model_type = model_type,        
             model_def = model_def,
             base_model_type=base_model_type,
-            text_encoder_filename= family_handler.get_wan_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filename= text_encoder_filename,
             quantizeTransformer = quantizeTransformer,
             dtype = dtype,
             VAE_dtype = VAE_dtype, 
@@ -981,6 +980,11 @@ class family_handler():
             ui_defaults.update({
                 "sliding_window_size": 81, 
                 "sliding_window_overlap" : 4,
+            })
+            
+        if test_wan_5B(base_model_type):
+            ui_defaults.update({
+                "sliding_window_size": 121, 
             })
 
         if base_model_type in ["i2v_2_2"]:

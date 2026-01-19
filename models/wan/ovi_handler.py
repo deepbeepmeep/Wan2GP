@@ -4,7 +4,7 @@ from typing import Any, Dict, Tuple
 
 import torch
 
-from shared.utils import files_locator as fl
+from shared.utils.hf import build_hf_url
 
 
 class family_handler:
@@ -31,16 +31,15 @@ class family_handler:
         return wan_family_handler.register_lora_cli_args(parser)
 
     @staticmethod
-    def get_wan_text_encoder_filename(text_encoder_quantization):
-        text_encoder_filename =  "umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors"
-        if text_encoder_quantization =="int8":
-            text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_int8") 
-        return  fl.locate_file(text_encoder_filename, True)
-
-    @staticmethod
     def query_model_def(base_model_type: str, model_def: Dict[str, Any]):
+        text_encoder_folder = "umt5-xxl"
         cfg = {
             "wan_5B_class": True,
+            "text_encoder_URLs": [
+                build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-bf16.safetensors"),
+                build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-quanto_int8.safetensors"),
+            ],
+            "text_encoder_folder": text_encoder_folder,
             "profiles_dir": ["wan_2_2_ovi"],
             "group": "wan2_2",
             "fps": 24,
@@ -68,10 +67,10 @@ class family_handler:
         return cfg
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_def=None):
 
         from .wan_handler import family_handler
-        download_def = family_handler.query_model_files(computeList, "ti2v_2_2", model_filename, text_encoder_quantization)
+        download_def = family_handler.query_model_files(computeList, "ti2v_2_2", model_def)
         if not isinstance(download_def, list):
             download_def = [download_def]
         download_def  += [{
@@ -101,7 +100,7 @@ class family_handler:
         mixed_precision_transformer=False,
         save_quantized=False,
         submodel_no_list=None,
-        override_text_encoder=None,
+        text_encoder_filename=None,
     ):
         from .ovi_fusion_engine import OviFusionEngine 
 
@@ -112,7 +111,7 @@ class family_handler:
             checkpoint_dir=checkpoint_dir,
             model_def=model_def,
             model_filename = model_filename, 
-            text_encoder_filename = family_handler.get_wan_text_encoder_filename(text_encoder_quantization),
+            text_encoder_filename = text_encoder_filename,
             dtype=dtype,
         )
 

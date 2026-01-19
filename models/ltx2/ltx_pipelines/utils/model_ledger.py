@@ -97,7 +97,7 @@ class ModelLedger:
         self,
         dtype: torch.dtype,
         device: torch.device,
-        checkpoint_path: str | None = None,
+        checkpoint_path: str | list[str] | tuple[str, ...] | dict[str, str] | None = None,
         gemma_root_path: str | None = None,
         spatial_upsampler_path: str | None = None,
         loras: LoraPathStrengthAndSDOps | None = None,
@@ -118,13 +118,22 @@ class ModelLedger:
         self._shared_state_dict = shared_state_dict
         self._shared_quantization_map = shared_quantization_map
         self._shared_config = shared_config
-        if self.checkpoint_path is not None and self._shared_state_dict is None:
+        self._component_paths = checkpoint_path if isinstance(checkpoint_path, dict) else None
+        if self.checkpoint_path is not None and self._shared_state_dict is None and self._component_paths is None:
             (
                 self._shared_state_dict,
                 self._shared_quantization_map,
                 self._shared_config,
             ) = self._load_checkpoint_state(self.checkpoint_path)
         self.build_model_builders()
+
+    def _get_component_path(self, component: str) -> str | list[str] | tuple[str, ...]:
+        if self._component_paths is None:
+            raise ValueError("Component paths are not available for this ledger.")
+        path = self._component_paths.get(component)
+        if not path:
+            raise ValueError(f"Missing '{component}' path for multi-file ledger.")
+        return path
 
     def _load_checkpoint_state(self, checkpoint_path: str | list[str] | tuple[str, ...]):
         from mmgp import safetensors2
@@ -155,7 +164,7 @@ class ModelLedger:
         return state_dict, quantization_map, config
 
     def build_model_builders(self) -> None:
-        if self.checkpoint_path is not None:
+        if self.checkpoint_path is not None and self._component_paths is None:
             self.transformer_builder = Builder(
                 model_path=self.checkpoint_path,
                 model_class_configurator=LTXModelConfigurator,
@@ -260,6 +269,83 @@ class ModelLedger:
                     shared_config=self._shared_config,
                     copy_shared_state_dict=True,
                     consume_shared_state_dict=True,
+                )
+
+        if self._component_paths is not None:
+            transformer_path = self._get_component_path("transformer")
+            video_vae_path = self._get_component_path("video_vae")
+            audio_vae_path = self._get_component_path("audio_vae")
+            vocoder_path = self._get_component_path("vocoder")
+            text_projection_path = self._get_component_path("text_embedding_projection")
+            text_connector_path = self._get_component_path("text_embeddings_connector")
+
+            self.transformer_builder = Builder(
+                model_path=transformer_path,
+                model_class_configurator=LTXModelConfigurator,
+                model_sd_ops=LTXV_MODEL_COMFY_RENAMING_MAP,
+                loras=tuple(self.loras),
+                registry=self.registry,
+            )
+
+            self.vae_decoder_builder = Builder(
+                model_path=video_vae_path,
+                model_class_configurator=VideoDecoderConfigurator,
+                model_sd_ops=VAE_DECODER_COMFY_KEYS_FILTER,
+                registry=self.registry,
+            )
+
+            self.vae_encoder_builder = Builder(
+                model_path=video_vae_path,
+                model_class_configurator=VideoEncoderConfigurator,
+                model_sd_ops=VAE_ENCODER_COMFY_KEYS_FILTER,
+                registry=self.registry,
+            )
+
+            self.audio_decoder_builder = Builder(
+                model_path=audio_vae_path,
+                model_class_configurator=AudioDecoderConfigurator,
+                model_sd_ops=AUDIO_VAE_DECODER_COMFY_KEYS_FILTER,
+                registry=self.registry,
+            )
+
+            self.audio_encoder_builder = Builder(
+                model_path=audio_vae_path,
+                model_class_configurator=AudioEncoderConfigurator,
+                model_sd_ops=AUDIO_VAE_ENCODER_COMFY_KEYS_FILTER,
+                registry=self.registry,
+            )
+
+            self.vocoder_builder = Builder(
+                model_path=vocoder_path,
+                model_class_configurator=VocoderConfigurator,
+                model_sd_ops=VOCODER_COMFY_KEYS_FILTER,
+                registry=self.registry,
+            )
+
+            if self.gemma_root_path is not None:
+                empty_text_sd = {}
+                empty_text_config = {}
+                self.text_encoder_builder = Builder(
+                    model_path=transformer_path,
+                    model_class_configurator=GemmaTextEncoderModelConfigurator,
+                    model_sd_ops=GEMMA_TEXT_ENCODER_KEY_OPS,
+                    registry=self.registry,
+                    module_ops=module_ops_from_gemma_root(self.gemma_root_path),
+                    shared_state_dict=empty_text_sd,
+                    shared_config=empty_text_config,
+                    ignore_missing_keys=True,
+                )
+                self.text_embedding_projection_builder = Builder(
+                    model_path=text_projection_path,
+                    model_class_configurator=GemmaFeaturesExtractorProjLinear,
+                    model_sd_ops=TEXT_EMBEDDING_PROJECTION_KEY_OPS,
+                    registry=self.registry,
+                )
+                self.text_embeddings_connector_builder = Builder(
+                    model_path=text_connector_path,
+                    model_class_configurator=GemmaTextEmbeddingsConnectorModelConfigurator,
+                    model_sd_ops=TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS,
+                    registry=self.registry,
                 )
 
         if self.spatial_upsampler_path is not None:

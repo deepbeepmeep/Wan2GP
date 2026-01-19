@@ -38,6 +38,7 @@ from .utils.helpers import (
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
 from shared.utils.loras_mutipliers import update_loras_slists
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 device = get_device()
 
@@ -85,6 +86,7 @@ class ICLoraPipeline:
             device=device,
         )
         self.device = device
+        self.text_encoder_cache = TextEncoderCache()
 
     @torch.inference_mode()
     def __call__(
@@ -121,20 +123,26 @@ class ICLoraPipeline:
             prompt = generate_enhanced_prompt(
                 text_encoder, prompt, images[0][0] if len(images) > 0 else None, seed=seed
             )
-        raw_contexts = encode_text(text_encoder, prompts=[prompt])
         feature_extractor, video_connector, audio_connector = resolve_text_connectors(
             text_encoder, text_connectors
+        )
+        encode_fn = lambda prompts: postprocess_text_embeddings(
+            encode_text(text_encoder, prompts=prompts),
+            feature_extractor,
+            video_connector,
+            audio_connector,
+        )
+        contexts = self.text_encoder_cache.encode(
+            encode_fn,
+            [prompt],
+            device=self.device,
+            parallel=True,
         )
 
         torch.cuda.synchronize()
         del text_encoder
         cleanup_memory()
-        video_context, audio_context = postprocess_text_embeddings(
-            raw_contexts,
-            feature_extractor,
-            video_connector,
-            audio_connector,
-        )[0]
+        video_context, audio_context = contexts[0]
 
         # Stage 1: Initial low resolution video generation.
         video_encoder = self.stage_1_model_ledger.video_encoder()

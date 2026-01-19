@@ -101,6 +101,8 @@ class VideoLatentTools(LatentTools):
             assert initial_latent.shape == self.target_shape.to_torch_shape(), (
                 f"Latent shape {initial_latent.shape} does not match target shape {self.target_shape.to_torch_shape()}"
             )
+            if initial_latent.device != device or initial_latent.dtype != dtype:
+                initial_latent = initial_latent.to(device=device, dtype=dtype)
         else:
             initial_latent = torch.zeros(
                 *self.target_shape.to_torch_shape(),
@@ -157,6 +159,8 @@ class AudioLatentTools(LatentTools):
             assert initial_latent.shape == self.target_shape.to_torch_shape(), (
                 f"Latent shape {initial_latent.shape} does not match target shape {self.target_shape.to_torch_shape()}"
             )
+            if initial_latent.device != device or initial_latent.dtype != dtype:
+                initial_latent = initial_latent.to(device=device, dtype=dtype)
         else:
             initial_latent = torch.zeros(
                 *self.target_shape.to_torch_shape(),

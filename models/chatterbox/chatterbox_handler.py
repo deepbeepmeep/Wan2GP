@@ -88,7 +88,7 @@ class family_handler:
         return extra_model_def
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_def=None):
         mandatory_files = [
             "ve.safetensors",
             "t3_mtl23ls_v2.safetensors",
@@ -117,7 +117,7 @@ class family_handler:
         mixed_precision_transformer=False,
         save_quantized=False,
         submodel_no_list=None,
-        override_text_encoder = None,
+        text_encoder_filename = None,
     ):
         from .pipeline import ChatterboxPipeline
 

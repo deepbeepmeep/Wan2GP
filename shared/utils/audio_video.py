@@ -263,27 +263,46 @@ def save_video(tensor,
     error = None
     for _ in range(retry):
         try:
-            if torch.is_tensor(tensor):
-                # Preprocess tensor
-                tensor = tensor.clamp(min(value_range), max(value_range))
-                tensor = torch.stack([
-                    torchvision.utils.make_grid(u, nrow=nrow, normalize=normalize, value_range=value_range)
-                    for u in tensor.unbind(2)
-                ], dim=1).permute(1, 2, 3, 0)
-                tensor = (tensor * 255).type(torch.uint8).cpu()
-                arrays = tensor.numpy()
-            else:
-                arrays = tensor
-
             # Write video (silence ffmpeg logs)
             writer = imageio.get_writer(cache_file, fps=fps, ffmpeg_log_level='error', **codec_params)
-            for frame in arrays:
-                writer.append_data(frame)
-        
-            writer.close()
+            try:
+                if torch.is_tensor(tensor):
+                    # Stream frames to avoid materializing the full video on CPU.
+                    if tensor.dtype == torch.uint8 and tensor.ndim == 5 and tensor.shape[0] == 1 and nrow == 1:
+                        frames = tensor[0].permute(1, 2, 3, 0)
+                        for frame in frames:
+                            writer.append_data(frame.cpu().numpy())
+                    else:
+                        if tensor.dtype == torch.uint8:
+                            tensor = tensor.float().div_(127.5).sub_(1.0)
+                        for u in tensor.unbind(2):
+                            u = u.clamp(min(value_range), max(value_range))
+                            grid = torchvision.utils.make_grid(
+                                u, nrow=nrow, normalize=normalize, value_range=value_range
+                            )
+                            frame = grid.mul(255).type(torch.uint8).permute(1, 2, 0).cpu().numpy()
+                            writer.append_data(frame)
+                elif isinstance(tensor, (list, tuple)) and tensor and torch.is_tensor(tensor[0]):
+                    for chunk in tensor:
+                        if chunk is None:
+                            continue
+                        if chunk.ndim == 4:
+                            if chunk.shape[-1] in (1, 3, 4):
+                                frames = chunk
+                            else:
+                                frames = chunk.permute(1, 2, 3, 0)
+                            for frame in frames:
+                                writer.append_data(frame.cpu().numpy())
+                        else:
+                            writer.append_data(chunk)
+                else:
+                    for frame in tensor:
+                        writer.append_data(frame)
+            finally:
+                writer.close()
 
             return cache_file
-            
+
         except Exception as e:
             error = e
             print(f"error saving {save_file}: {e}")

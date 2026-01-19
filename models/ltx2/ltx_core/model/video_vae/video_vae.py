@@ -431,6 +431,7 @@ class VideoDecoder(nn.Module):
         norm_layer: NormLayerType = NormLayerType.PIXEL_NORM,
         causal: bool = False,
         timestep_conditioning: bool = False,
+        temporal_chunk_on_gpu: bool = True,
         decoder_spatial_padding_mode: PaddingModeType = PaddingModeType.REFLECT,
     ):
         super().__init__()
@@ -450,6 +451,7 @@ class VideoDecoder(nn.Module):
         out_channels = out_channels * patch_size**2
         self.causal = causal
         self.timestep_conditioning = timestep_conditioning
+        self.temporal_chunk_on_gpu = temporal_chunk_on_gpu
         self._norm_num_groups = self._DEFAULT_NORM_NUM_GROUPS
 
         # Per-channel statistics for denormalizing latents
@@ -458,6 +460,8 @@ class VideoDecoder(nn.Module):
         # Noise and timestep parameters for decoder conditioning
         self.decode_noise_scale = 0.025
         self.decode_timestep = 0.05
+        self._mask_cache: dict[tuple[int, torch.device, torch.dtype], tuple[torch.Tensor, torch.Tensor]] = {}
+        self._mask_cache_limit = 512
 
         # Compute initial feature_channels by going through blocks in reverse
         # This determines the channel width at the start of the decoder
@@ -641,8 +645,9 @@ class VideoDecoder(nn.Module):
 
         if tiling_config is not None and tiling_config.temporal_config is not None:
             cfg = tiling_config.temporal_config
-            tile_size = cfg.tile_size_in_frames // self.video_downscale_factors.time
-            overlap = cfg.tile_overlap_in_frames // self.video_downscale_factors.time
+            tile_size = _pixel_frames_to_latent_frames(cfg.tile_size_in_frames, self.video_downscale_factors.time)
+            overlap = _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, self.video_downscale_factors.time)
+            overlap = min(overlap, max(tile_size - 1, 0))
             splitters[2] = split_in_temporal(tile_size, overlap)
             mappers[2] = to_mapping_operation(map_temporal_slice, self.video_downscale_factors.time)
 
@@ -675,10 +680,13 @@ class VideoDecoder(nn.Module):
 
         temporal_groups = self._group_tiles_by_temporal_slice(tiles)
 
-        # Accumulate tiles on CPU to avoid VRAM spikes from large temporal buffers.
-        accumulation_device = latent.device
-        if accumulation_device.type == "cuda":
-            accumulation_device = torch.device("cpu")
+        blend_device = latent.device
+        if blend_device.type == "cuda":
+            blend_device = torch.device("cpu")
+
+        chunk_device = blend_device
+        if self.temporal_chunk_on_gpu and latent.device.type == "cuda":
+            chunk_device = latent.device
 
         # State for temporal overlap handling
         previous_chunk = None
@@ -702,7 +710,7 @@ class VideoDecoder(nn.Module):
 
             buffer = torch.zeros(
                 temporal_tile_buffer_shape.to_torch_shape(),
-                device=accumulation_device,
+                device=chunk_device,
                 dtype=latent.dtype,
             )
 
@@ -715,6 +723,9 @@ class VideoDecoder(nn.Module):
                 temporal_slice=curr_temporal_slice,
                 total_frames=total_frames,
             )
+            if chunk_device != blend_device:
+                buffer = buffer.to(device=blend_device)
+                curr_weights = curr_weights.to(device=blend_device)
 
             # Blend with previous temporal chunk if it exists
             if previous_chunk is not None:
@@ -738,9 +749,10 @@ class VideoDecoder(nn.Module):
                     ]
 
                 # Yield the non-overlapping part of the previous chunk
-                previous_weights = previous_weights.clamp(min=1e-8)
+                previous_weights = previous_weights.clamp_(min=1e-8)
                 yield_len = curr_temporal_slice.start - previous_temporal_slice.start
-                yield (previous_chunk / previous_weights)[:, :, :yield_len, :, :]
+                previous_chunk[:, :, :yield_len] /= previous_weights[:, :, :yield_len]
+                yield previous_chunk[:, :, :yield_len]
 
             # Update state for next iteration
             previous_chunk = buffer
@@ -749,8 +761,10 @@ class VideoDecoder(nn.Module):
 
         # Yield any remaining chunk
         if previous_chunk is not None:
-            previous_weights = previous_weights.clamp(min=1e-8)
-            yield previous_chunk / previous_weights
+            previous_weights = previous_weights.clamp_(min=1e-8)
+            previous_chunk /= previous_weights
+            previous_weights = None
+            yield previous_chunk
 
     def _group_tiles_by_temporal_slice(self, tiles: List[Tile]) -> List[List[Tile]]:
         """Group tiles by their temporal output slice."""
@@ -782,6 +796,28 @@ class VideoDecoder(nn.Module):
         stop = total_frames if temporal_slice.stop is None else temporal_slice.stop
         return slice(start, stop, temporal_slice.step)
 
+    def _prepare_mask_1d(
+        self,
+        mask: torch.Tensor | None,
+        length: int | None,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        if mask is None:
+            return None
+        cache_key = (id(mask), device, dtype)
+        cached = self._mask_cache.get(cache_key)
+        if cached is None or cached[0] is not mask or cached[1].numel() != mask.numel():
+            if self._mask_cache_limit > 0 and len(self._mask_cache) >= self._mask_cache_limit:
+                self._mask_cache.clear()
+            converted = mask.to(device=device, dtype=dtype)
+            self._mask_cache[cache_key] = (mask, converted)
+        else:
+            converted = cached[1]
+        if length is not None and converted.numel() > length:
+            return converted[:length]
+        return converted
+
     def _accumulate_temporal_group_into_buffer(
         self,
         group_tiles: List[Tile],
@@ -797,11 +833,14 @@ class VideoDecoder(nn.Module):
         The buffer is local to the group and always starts at time 0; temporal coordinates
         are rebased by subtracting temporal_slice.start.
         """
-        weights = torch.zeros_like(buffer)
+        weights = torch.zeros(
+            (1, 1, buffer.shape[2], buffer.shape[3], buffer.shape[4]),
+            device=buffer.device,
+            dtype=buffer.dtype,
+        )
 
         for tile in group_tiles:
             decoded_tile = self.forward(latent[tile.in_coords], timestep, generator)
-            mask = tile.blend_mask.to(device=buffer.device, dtype=buffer.dtype)
             tile_temporal_slice = self._normalize_temporal_slice(tile.out_coords[2], total_frames)
             temporal_offset = tile_temporal_slice.start - temporal_slice.start
             # Use the tile's output coordinate length, not the decoded tile's length,
@@ -822,14 +861,73 @@ class VideoDecoder(nn.Module):
 
             # Slice decoded_tile and mask to match the actual length we're writing
             decoded_slice = decoded_tile[:, :, :actual_temporal_len, :, :]
+            mask_t = self._prepare_mask_1d(
+                tile.masks_1d[2],
+                actual_temporal_len,
+                decoded_slice.device,
+                decoded_slice.dtype,
+            )
+            mask_h = self._prepare_mask_1d(
+                tile.masks_1d[3],
+                decoded_slice.shape[3],
+                decoded_slice.device,
+                decoded_slice.dtype,
+            )
+            mask_w = self._prepare_mask_1d(
+                tile.masks_1d[4],
+                decoded_slice.shape[4],
+                decoded_slice.device,
+                decoded_slice.dtype,
+            )
+            if mask_t is not None:
+                decoded_slice *= mask_t.view(1, 1, -1, 1, 1)
+            if mask_h is not None:
+                decoded_slice *= mask_h.view(1, 1, 1, -1, 1)
+            if mask_w is not None:
+                decoded_slice *= mask_w.view(1, 1, 1, 1, -1)
             if decoded_slice.device != buffer.device or decoded_slice.dtype != buffer.dtype:
                 decoded_slice = decoded_slice.to(device=buffer.device, dtype=buffer.dtype)
+            decoded_h = decoded_slice.shape[3]
+            decoded_w = decoded_slice.shape[4]
             del decoded_tile
-            mask_slice = mask[:, :, :actual_temporal_len, :, :] if mask.shape[2] > 1 else mask
 
-            buffer[chunk_coords] += decoded_slice * mask_slice
-            weights[chunk_coords] += mask_slice
+            buffer[chunk_coords] += decoded_slice
+            del decoded_slice
 
+            if mask_t is not None and (mask_t.device != buffer.device or mask_t.dtype != buffer.dtype):
+                mask_t = self._prepare_mask_1d(tile.masks_1d[2], actual_temporal_len, buffer.device, buffer.dtype)
+            if mask_h is not None and (mask_h.device != buffer.device or mask_h.dtype != buffer.dtype):
+                mask_h = self._prepare_mask_1d(tile.masks_1d[3], decoded_h, buffer.device, buffer.dtype)
+            if mask_w is not None and (mask_w.device != buffer.device or mask_w.dtype != buffer.dtype):
+                mask_w = self._prepare_mask_1d(tile.masks_1d[4], decoded_w, buffer.device, buffer.dtype)
+
+            weights_slice = weights[chunk_coords]
+            if mask_h is not None and mask_w is not None:
+                mask_hw = mask_h.view(-1, 1) * mask_w.view(1, -1)
+                if mask_t is None:
+                    weights_slice += mask_hw.view(1, 1, 1, mask_hw.shape[0], mask_hw.shape[1])
+                elif mask_t.numel() == 1:
+                    weights_slice += mask_hw.view(1, 1, 1, mask_hw.shape[0], mask_hw.shape[1]) * mask_t
+                else:
+                    for t_idx in range(actual_temporal_len):
+                        weights_slice[:, :, t_idx, :, :] += mask_t[t_idx] * mask_hw
+                del mask_hw
+            else:
+                if mask_t is None:
+                    if mask_h is None and mask_w is None:
+                        weights_slice += 1
+                    elif mask_h is not None:
+                        weights_slice += mask_h.view(1, 1, 1, -1, 1)
+                    else:
+                        weights_slice += mask_w.view(1, 1, 1, 1, -1)
+                else:
+                    if mask_h is not None:
+                        weights_slice += mask_t.view(1, 1, -1, 1, 1) * mask_h.view(1, 1, 1, -1, 1)
+                    elif mask_w is not None:
+                        weights_slice += mask_t.view(1, 1, -1, 1, 1) * mask_w.view(1, 1, 1, 1, -1)
+                    else:
+                        weights_slice += mask_t.view(1, 1, -1, 1, 1)
+            del mask_t, mask_h, mask_w
         return weights
 
 
@@ -849,7 +947,7 @@ def decode_video(
     """
 
     def convert_to_uint8(frames: torch.Tensor) -> torch.Tensor:
-        frames = (((frames + 1.0) / 2.0).clamp(0.0, 1.0) * 255.0).to(torch.uint8)
+        frames = frames.add_(1.0).mul_(127.5).clamp_(0.0, 255.0).to(torch.uint8)
         frames = rearrange(frames[0], "c f h w -> f h w c")
         return frames
 
@@ -865,6 +963,14 @@ def _default_intervals(length: int) -> DimensionIntervals:
     return DEFAULT_SPLIT_OPERATION(length)
 
 
+def _pixel_frames_to_latent_frames(frames: int, scale: int) -> int:
+    frames = int(frames)
+    if frames <= 0:
+        return 0
+    scale = max(1, int(scale))
+    return (frames - 1 + scale - 1) // scale + 1
+
+
 def _build_temporal_intervals(
     length: int,
     tiling_config: TilingConfig | None,
@@ -877,8 +983,8 @@ def _build_temporal_intervals(
     ):
         return _default_intervals(length)
     cfg = tiling_config.temporal_config
-    tile_size = max(1, cfg.tile_size_in_frames // scale)
-    overlap = max(0, cfg.tile_overlap_in_frames // scale)
+    tile_size = max(1, _pixel_frames_to_latent_frames(cfg.tile_size_in_frames, scale))
+    overlap = max(0, _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, scale))
     overlap = min(overlap, max(tile_size - 1, 0))
     return split_in_temporal(tile_size, overlap)(length)
 
@@ -1043,8 +1149,15 @@ def get_video_chunks_number(num_frames: int, tiling_config: TilingConfig | None 
     if not tiling_config or not tiling_config.temporal_config:
         return 1
     cfg = tiling_config.temporal_config
-    frame_stride = cfg.tile_size_in_frames - cfg.tile_overlap_in_frames
-    return (num_frames - 1 + frame_stride - 1) // frame_stride
+    scale = VIDEO_SCALE_FACTORS.time
+    latent_frames = _pixel_frames_to_latent_frames(num_frames, scale)
+    tile_size = _pixel_frames_to_latent_frames(cfg.tile_size_in_frames, scale)
+    overlap = _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, scale)
+    overlap = min(overlap, max(tile_size - 1, 0))
+    if latent_frames <= tile_size:
+        return 1
+    intervals = split_in_temporal(tile_size, overlap)(latent_frames)
+    return len(intervals.starts)
 
 
 def split_in_spatial(size: int, overlap: int) -> SplitOperation:

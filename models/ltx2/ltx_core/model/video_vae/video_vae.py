@@ -752,9 +752,10 @@ class VideoDecoder(nn.Module):
                     ]
 
                 # Yield the non-overlapping part of the previous chunk
-                previous_weights = previous_weights.clamp(min=1e-8)
+                previous_weights = previous_weights.clamp_(min=1e-8)
                 yield_len = curr_temporal_slice.start - previous_temporal_slice.start
-                yield (previous_chunk / previous_weights)[:, :, :yield_len, :, :]
+                previous_chunk[:, :, :yield_len] /= previous_weights[:, :, :yield_len]
+                yield previous_chunk[:, :, :yield_len]
 
             # Update state for next iteration
             previous_chunk = buffer
@@ -763,8 +764,10 @@ class VideoDecoder(nn.Module):
 
         # Yield any remaining chunk
         if previous_chunk is not None:
-            previous_weights = previous_weights.clamp(min=1e-8)
-            yield previous_chunk / previous_weights
+            previous_weights = previous_weights.clamp_(min=1e-8)
+            previous_chunk /= previous_weights
+            previous_weights = None
+            yield previous_chunk
 
     def _group_tiles_by_temporal_slice(self, tiles: List[Tile]) -> List[List[Tile]]:
         """Group tiles by their temporal output slice."""
@@ -947,7 +950,7 @@ def decode_video(
     """
 
     def convert_to_uint8(frames: torch.Tensor) -> torch.Tensor:
-        frames = (((frames + 1.0) / 2.0).clamp(0.0, 1.0) * 255.0).to(torch.uint8)
+        frames = frames.add_(1.0).mul_(127.5).clamp_(0.0, 255.0).to(torch.uint8)
         frames = rearrange(frames[0], "c f h w -> f h w c")
         return frames
 

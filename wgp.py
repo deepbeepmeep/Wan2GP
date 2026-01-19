@@ -4503,6 +4503,7 @@ def preprocess_video(height, width, video_in, max_frames, start_frame=0, fit_can
 
     if len(frames_list) == 0:
         return None
+    frames_list = list(frames_list)
 
     if fit_canvas == None or fit_crop:
         new_height = height
@@ -4519,26 +4520,33 @@ def preprocess_video(height, width, video_in, max_frames, start_frame=0, fit_can
         new_height = (int(frame_height * scale) // block_size) * block_size
         new_width = (int(frame_width * scale) // block_size) * block_size
 
-    processed_frames_list = []
-    for frame in frames_list:
-        frame = Image.fromarray(np.clip(frame.cpu().numpy(), 0, 255).astype(np.uint8))
-        if fit_crop:
-            frame  = rescale_and_crop(frame, new_width, new_height)
+    def resize_frame(frame):
+        if torch.is_tensor(frame):
+            arr = frame.cpu().numpy()
         else:
-            frame = frame.resize((new_width,new_height), resample=Image.Resampling.LANCZOS) 
-        processed_frames_list.append(frame)
+            arr = np.asarray(frame)
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        img = Image.fromarray(arr)
+        if fit_crop:
+            img = rescale_and_crop(img, new_width, new_height)
+        else:
+            img = img.resize((new_width, new_height), resample=Image.Resampling.LANCZOS)
+        return torch.from_numpy(np.array(img))
 
-    np_frames = [np.array(frame) for frame in processed_frames_list]
+    frames_list = process_images_multithread(
+        resize_frame,
+        frames_list,
+        "upsample",
+        wrap_in_list=False,
+        max_workers=get_default_workers(),
+        in_place=True,
+    )
 
     # from preprocessing.dwpose.pose import save_one_video
-    # save_one_video("test.mp4", np_frames, fps=8, quality=8, macro_block_size=None)
+    # save_one_video("test.mp4", frames_list, fps=8, quality=8, macro_block_size=None)
 
-    torch_frames = []
-    for np_frame in np_frames:
-        torch_frame = torch.from_numpy(np_frame)
-        torch_frames.append(torch_frame)
-
-    return torch.stack(torch_frames) 
+    return torch.stack(frames_list) 
 
  
 def parse_keep_frames_video_guide(keep_frames, video_length):
@@ -4593,6 +4601,13 @@ def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling
     elif temporal_upsampling == "rife4":
         exp = 2
     output_fps = fps
+    if exp == 0:
+        return sample, previous_last_frame, output_fps
+    if previous_last_frame is not None and previous_last_frame.dtype != sample.dtype:
+        if sample.dtype == torch.uint8:
+            previous_last_frame = _video_tensor_to_uint8_chunk_inplace(previous_last_frame)
+        else:
+            previous_last_frame = previous_last_frame.float().div_(127.5).sub_(1.0)
     if exp > 0: 
         from postprocessing.rife.inference import temporal_interpolation
         if previous_last_frame != None:
@@ -4628,8 +4643,22 @@ def perform_spatial_upsampling(sample, spatial_upsampling):
     h = int(h)
     w = int(w)
     frames_to_upsample = [sample[:, i] for i in range( sample.shape[1]) ] 
-    def upsample_frames(frame):
-        return resize_lanczos(frame, h, w, method).unsqueeze(1)
+    if sample.dtype == torch.uint8:
+        resample = Image.Resampling.LANCZOS if method is None else method
+        def upsample_frames(frame):
+            np_frame = frame.permute(1, 2, 0).cpu().numpy()
+            if np_frame.shape[2] == 1:
+                np_frame = np_frame[:, :, 0]
+            img = Image.fromarray(np_frame)
+            img = img.resize((w, h), resample=resample)
+            out = np.array(img)
+            if out.ndim == 2:
+                out = out[:, :, None]
+            out = torch.from_numpy(out).permute(2, 0, 1).to(torch.uint8)
+            return out.unsqueeze(1)
+    else:
+        def upsample_frames(frame):
+            return resize_lanczos(frame, h, w, method).unsqueeze(1)
     sample = torch.cat(process_images_multithread(upsample_frames, frames_to_upsample, "upsample", wrap_in_list = False, max_workers=get_default_workers(), in_place=True), dim=1)
     frames_to_upsample = None
     return sample 
@@ -4722,7 +4751,7 @@ def edit_video(
         if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 or film_grain_intensity > 0:                
             send_cmd("progress", [0, get_latest_status(state,"Upsampling" if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 else "Adding Film Grain"  )])
             sample = get_resampled_video(video_source, 0, max_source_video_frames, fps)
-            sample = sample.float().div_(127.5).sub_(1.).permute(-1,0,1,2)
+            sample = sample.permute(-1,0,1,2)
             frames_count = sample.shape[1] 
 
         output_fps  = round(fps)
@@ -5141,6 +5170,14 @@ def custom_preprocess_video_with_mask(model_handler, base_model_type, pre_video_
     #     if any_mask: masked_frames = masks[0] * pad_frames + masks
 
     return video_guide_processed, video_guide_processed2, video_mask_processed, video_mask_processed2 
+
+def _video_tensor_to_uint8_chunk_inplace(sample, value_range=(-1, 1)):
+    if sample.dtype == torch.uint8:
+        return sample
+    min_val, max_val = value_range
+    sample = sample.clamp_(min_val, max_val)
+    sample = sample.sub_(min_val).mul_(255.0 / (max_val - min_val)).to(torch.uint8)
+    return sample
 
 def generate_video(
     task,
@@ -5633,7 +5670,9 @@ def generate_video(
         prefix_video = pre_video_frame = None
         source_video_overlap_frames_count = 0 # number of frames overalapped in source video for first window
         source_video_frames_count = 0  # number of frames to use in source video (processing starts source_video_overlap_frames_count frames before )
-        frames_already_processed = None
+        frames_already_processed = []
+        frames_already_processed_count = 0
+        frames_already_processed_tensor = None
         overlapped_latents = None
         context_scale = None
         window_no = 0
@@ -5699,11 +5738,11 @@ def generate_video(
                 else:
                     prefix_video  = preprocess_video(width=width, height=height,video_in=video_source, max_frames= parsed_keep_frames_video_source , start_frame = 0, fit_canvas= sample_fit_canvas, fit_crop = fit_crop, target_fps = fps, block_size = block_size )
                     prefix_video  = prefix_video.permute(3, 0, 1, 2)
-                    prefix_video  = prefix_video.float().div_(127.5).sub_(1.) # c, f, h, w
+
                     if fit_crop or "L" in image_prompt_type: refresh_preview["video_source"] = convert_tensor_to_image(prefix_video, 0) 
 
                     new_height, new_width = prefix_video.shape[-2:]                    
-                    pre_video_guide =  prefix_video[:, -reuse_frames:]
+                    pre_video_guide =  prefix_video[:, -reuse_frames:].float().div_(127.5).sub_(1.) # c, f, h, w                    
                 pre_video_frame = convert_tensor_to_image(prefix_video[:, -1])
                 source_video_overlap_frames_count = pre_video_guide.shape[1]
                 source_video_frames_count = prefix_video.shape[1]
@@ -5982,6 +6021,9 @@ def generate_video(
             try:
                 input_video_for_model = pre_video_guide
                 prefix_frames_count = source_video_overlap_frames_count if window_no <= 1 else reuse_frames
+                prefix_video_for_model = prefix_video
+                if prefix_video is not None and prefix_video.dtype == torch.uint8:
+                    prefix_video_for_model = prefix_video.float().div_(127.5).sub_(1.0)
                 samples = wan_model.generate(
                     input_prompt = prompt,
                     image_start = image_start_tensor,  
@@ -6062,7 +6104,7 @@ def generate_video(
                     offloadobj = offloadobj,
                     set_header_text= set_header_text,
                     pre_video_frame = pre_video_frame,
-                    prefix_video = prefix_video,
+                    prefix_video = prefix_video_for_model,
                     original_input_ref_images = original_image_refs[nb_frames_positions:] if original_image_refs is not None else [],
                     image_refs_relative_size = image_refs_relative_size,
                     outpainting_dims = outpainting_dims,
@@ -6112,7 +6154,7 @@ def generate_video(
                 send_cmd("error", new_error)
                 clear_status(state)
                 return
-
+            src_video = src_video2 = src_mask = src_mask2 = None
             if skip_steps_cache != None :
                 skip_steps_cache.previous_residual = None
                 skip_steps_cache.previous_modulated_input = None
@@ -6142,11 +6184,6 @@ def generate_video(
             gc.collect()
             torch.cuda.empty_cache()
 
-            # time_flag = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss")
-            # save_prompt = "_in_" + original_prompts[0]
-            # file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(save_prompt[:50]).strip()}.mp4"
-            # sample = samples.cpu()
-            # cache_video( tensor=sample[None].clone(), save_file=os.path.join(save_path, file_name), fps=16, nrow=1, normalize=True, value_range=(-1, 1))
             if samples == None:
                 abort = True
                 state["prompt"] = ""
@@ -6163,7 +6200,6 @@ def generate_video(
                 if gen.get("extra_windows",0) > 0:
                     sliding_window = True 
                 if sliding_window :
-                    # guide_start_frame = guide_end_frame
                     guide_start_frame += current_video_length
                     if discard_last_frames > 0:
                         sample = sample[: , :-discard_last_frames]
@@ -6175,15 +6211,24 @@ def generate_video(
                         pre_video_guide =  sample[:,max_source_video_frames :].clone()
                     else:
                         pre_video_guide =  sample[:, -reuse_frames:].clone()
-
+                    if pre_video_guide.dtype == torch.uint8:
+                        pre_video_guide =  pre_video_guide.float().div_(127.5).sub_(1.0)
+                if not (audio_only or is_image):                    
+                    sample = _video_tensor_to_uint8_chunk_inplace(sample)
 
                 if prefix_video != None and window_no == 1 :
+                    if prefix_video.dtype != sample.dtype:
+                        if sample.dtype == torch.uint8:
+                            prefix_video = _video_tensor_to_uint8_chunk_inplace(prefix_video)
+                        elif prefix_video.dtype == torch.uint8:
+                            prefix_video = prefix_video.float().div_(127.5).sub_(1.0)
                     if prefix_video.shape[1] > 1:
                         # remove sliding window overlapped frames at the beginning of the generation
                         sample = torch.cat([ prefix_video, sample[: , source_video_overlap_frames_count:]], dim = 1)
                     else:
                         # remove source video overlapped frames at the beginning of the generation if there is only a start frame
                         sample = torch.cat([ prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
+                    prefix_video = None
                     guide_start_frame -= source_video_overlap_frames_count 
                     if generated_audio is not None:
                         generated_audio = truncate_audio( generated_audio, source_video_overlap_frames_count, 0, fps, output_audio_sampling_rate,)
@@ -6212,13 +6257,17 @@ def generate_video(
                 if film_grain_intensity> 0:
                     from postprocessing.film_grain import add_film_grain
                     sample = add_film_grain(sample, film_grain_intensity, film_grain_saturation) 
-                if sliding_window :
-                    if frames_already_processed == None:
-                        frames_already_processed = sample
-                    else:
-                        sample = torch.cat([frames_already_processed, sample], dim=1)
-                    frames_already_processed = sample
-
+                if audio_only or is_image:
+                    output_video_frames = None
+                    output_frame_count = None
+                    any_mmaudio = False
+                else:
+                    frames_already_processed.append(sample)
+                    frames_already_processed_count += sample.shape[1]
+                    output_video_frames = frames_already_processed
+                    output_frame_count = frames_already_processed_count
+                    sample = None
+                    any_mmaudio = MMAudio_setting != 0 and mmaudio_enabled and output_frame_count >= fps
                 time_flag = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss")
                 save_prompt = original_prompts[0]
                 if audio_only:
@@ -6238,7 +6287,7 @@ def generate_video(
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt)).strip()}.{extension}"
                 video_path = os.path.join(save_path, file_name)
                 mmaudio_enabled, mmaudio_mode, mmaudio_persistence, mmaudio_model_name, mmaudio_model_path = get_mmaudio_settings(server_config)
-                any_mmaudio = MMAudio_setting != 0 and mmaudio_enabled and sample.shape[1] >=fps
+
                 if BGRA_frames is not None:
                     from models.wan.alpha.utils import write_zip_file
                     write_zip_file(os.path.splitext(video_path)[0] + ".zip", BGRA_frames)
@@ -6259,7 +6308,7 @@ def generate_video(
                 elif len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0 or output_new_audio_filepath is not None or any_mmaudio or output_new_audio_data is not None or audio_source is not None:
                     video_path = os.path.join(save_path, file_name)
                     save_path_tmp = video_path.rsplit('.', 1)[0] + f"_tmp.{container}"
-                    save_video( tensor=sample[None], save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None), container=container)
+                    save_video( tensor=output_video_frames, save_file=save_path_tmp, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type = server_config.get("video_output_codec", None), container=container)
                     output_new_audio_temp_filepath = None
                     new_audio_added_from_audio_start =  reset_control_aligment or full_generated_audio is not None # if not beginning of audio will be skipped
                     source_audio_duration = source_video_frames_count / fps
@@ -6267,7 +6316,7 @@ def generate_video(
                         send_cmd("progress", [0, get_latest_status(state,"MMAudio Soundtrack Generation")])
                         from postprocessing.mmaudio.mmaudio import video_to_audio
                         output_new_audio_filepath = output_new_audio_temp_filepath = get_available_filename(save_path, f"tmp{time_flag}.wav" )
-                        video_to_audio(save_path_tmp, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= sample.shape[1] /fps, save_path = output_new_audio_filepath, persistent_models = mmaudio_persistence == MMAUDIO_PERSIST_RAM, audio_file_only = True, verboseLevel = verbose_level, model_name = mmaudio_model_name, model_path = mmaudio_model_path)
+                        video_to_audio(save_path_tmp, prompt = MMAudio_prompt, negative_prompt = MMAudio_neg_prompt, seed = seed, num_steps = 25, cfg_strength = 4.5, duration= output_frame_count / fps, save_path = output_new_audio_filepath, persistent_models = mmaudio_persistence == MMAUDIO_PERSIST_RAM, audio_file_only = True, verboseLevel = verbose_level, model_name = mmaudio_model_name, model_path = mmaudio_model_path)
                         new_audio_added_from_audio_start =  False
                     elif audio_source is not None:
                         output_new_audio_filepath = audio_source
@@ -6295,7 +6344,7 @@ def generate_video(
                     if output_new_audio_temp_filepath is not None: os.remove(output_new_audio_temp_filepath)
 
                 else:
-                    save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None), container= container)
+                    save_video( tensor=output_video_frames, save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None), container= container)
 
                 end_time = time.time()
 

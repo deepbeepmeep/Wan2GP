@@ -397,8 +397,9 @@ def _collect_video_chunks(
     if not chunks:
         return None
     frames = torch.cat(chunks, dim=0)
-    frames = frames.to(dtype=torch.float32).div_(127.5).sub_(1.0)
-    return frames.permute(3, 0, 1, 2).contiguous()
+    return frames.permute(3, 0, 1, 2)
+    # frames = frames.to(dtype=torch.float32).div_(127.5).sub_(1.0)
+    # return frames.permute(3, 0, 1, 2).contiguous()
 
 
 class LTX2:

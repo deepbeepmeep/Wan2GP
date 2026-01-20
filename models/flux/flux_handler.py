@@ -1,5 +1,6 @@
 import os
 import torch
+import gradio as gr
 from PIL import Image
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
@@ -64,7 +65,8 @@ class family_handler():
     @staticmethod
     def query_model_def(base_model_type, model_def):
         flux_model = "flux-dev" if base_model_type == "flux" else base_model_type.replace("_", "-")
-        pi_flux2 = flux_model == "pi-flux2"
+        flux_dev = base_model_type == "flux"
+        pi_flux2 = base_model_type == "pi_flux2"
         flux2_klein_4b = base_model_type == "flux2_klein_4b"
         flux2_klein_9b = base_model_type == "flux2_klein_9b"
         flux2_klein = flux2_klein_4b or flux2_klein_9b
@@ -81,7 +83,35 @@ class family_handler():
             "image_outputs" : True,
             "no_negative_prompt" : flux2 or not (flux_chroma or flux_chroma_radiance),
             "flux-model": flux_model,
+            "flux2": flux2,
         }
+        supports_inpaint = flux_kontext or flux_schnell or flux_dev or flux2
+        if supports_inpaint:
+            extra_model_def["inpaint_support"] = True
+            if not pi_flux2:
+                lanpaint_choices = [
+                    ("LanPaint (2 steps): ~2x slower, easy task", 2),
+                    ("LanPaint (5 steps): ~5x slower, medium task", 3),
+                    ("LanPaint (10 steps): ~10x slower, hard task", 4),
+                    ("LanPaint (15 steps): ~15x slower, very hard task", 5),
+                ]
+                if flux_dev or flux_schnell:
+                    choices = lanpaint_choices
+                    default_mode = 2
+                    extra_model_def["inpaint_video_prompt_type"] = "VA"
+                    extra_model_def["image_video_prompt_type"] = ""
+                else:
+                    choices = [("Masked Denoising : Inpainted area may reuse some content that has been masked", 0)] + lanpaint_choices
+                    default_mode = 0
+                extra_model_def["model_modes"] = {
+                    "choices": choices,
+                    "default": default_mode,
+                    "label": "Inpainting Method",
+                    "image_modes": [2],
+                }
+            extra_model_def["inpaint_color"] = "FF0000"
+            extra_model_def["video_guide_outpainting"] = [1,2]
+
         if flux2:
             if flux2_klein:
                 if flux2_klein_4b:
@@ -137,7 +167,6 @@ class family_handler():
             }
         
         if flux_kontext or flux_kontext_dreamomni2 or flux2:
-            extra_model_def["inpaint_support"] = flux_kontext
             extra_model_def["image_ref_choices"] = {
                 "choices": [
                     ("None", ""),
@@ -179,12 +208,9 @@ class family_handler():
                     "visible": True,
                 }
 
-            # extra_model_def["guide_inpaint_color"] = 0
-            # extra_model_def["video_guide_outpainting"] = [1,2]
 
         if pi_flux2:
             extra_model_def["piflow"] = True
-            extra_model_def["inpaint_support"] = True
 
         extra_model_def["fit_into_canvas_image_refs"] = 0
 
@@ -429,3 +455,27 @@ class family_handler():
             })
         
 
+    @staticmethod
+    def validate_generative_settings(base_model_type, model_def, inputs):
+        model_mode = inputs.get("model_mode")
+        model_mode_int = None
+        if model_mode is not None:
+            try:
+                model_mode_int = int(model_mode)
+            except (TypeError, ValueError):
+                model_mode_int = None
+        if model_mode_int in (2, 3, 4, 5):
+            denoising_strength = inputs.get("denoising_strength", 1)
+            masking_strength = inputs.get("masking_strength", 1)
+            if denoising_strength != 1 or masking_strength != 1:
+                gr.Info("LanPaint forces Denoising Strength and Masking Strength to 1; non-1 values will be ignored.")
+
+
+    @staticmethod
+    def custom_prompt_preprocess(prompt, video_guide_outpainting, model_mode, **kwargs):
+        if model_mode == 0:
+            # from wgp import get_outpainting_dims
+            if len(video_guide_outpainting) and not video_guide_outpainting.startswith("#") and video_guide_outpainting != "0 0 0 0":
+                if not prompt.endswith("."): prompt += "."
+                prompt += "Remove the red paddings on the sides and show what's behind them."
+        return prompt  

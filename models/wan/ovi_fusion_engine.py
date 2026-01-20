@@ -129,7 +129,7 @@ class OviFusionEngine:
 
 
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def generate(self,
                     input_prompt, 
                     image_start=None,

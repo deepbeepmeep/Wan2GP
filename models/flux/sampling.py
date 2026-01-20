@@ -541,6 +541,10 @@ def denoise(
     img_msk_rebuilt = None,
     denoising_strength = 1,
     masking_strength = 1,
+    model_mode = None,
+    height: int | None = None,
+    width: int | None = None,
+    vae_scale_factor: int = 8,
     preview_meta = None,
     original_image_latents = None,
     # pi-Flow settings
@@ -566,8 +570,59 @@ def denoise(
     piflow_sigmas = piflow_sigmas_dst = piflow_m_vals = None
     
     morph, first_step = False, 0
+    model_mode_int = None
+    if model_mode is not None:
+        try:
+            model_mode_int = int(model_mode)
+        except (TypeError, ValueError):
+            model_mode_int = None
+    lanpaint_proc = None
+    lanpaint_mask = None
+    true_cfg_scale = 1.0 if real_guidance_scale is None else real_guidance_scale
     if img_msk_latents is not None:
-        if original_image_latents is None: original_image_latents= img_cond_seq.clone() 
+        if not is_piflow and model_mode_int in (2, 3, 4, 5):
+            if img_cond_seq is not None:
+                if img_cond_seq_ids is not None and img_cond_seq_ids.shape[-1] == 4:
+                    first_t = img_cond_seq_ids[:, :1, 0]
+                    first_mask = img_cond_seq_ids[..., 0] == first_t
+                    if original_image_latents is None:
+                        original_image_latents = img_cond_seq[first_mask].view(
+                            img_cond_seq.shape[0], -1, img_cond_seq.shape[-1]
+                        ).clone()
+                    keep_mask = ~first_mask
+                    if keep_mask.any():
+                        img_cond_seq = img_cond_seq[keep_mask].view(
+                            img_cond_seq.shape[0], -1, img_cond_seq.shape[-1]
+                        )
+                        img_cond_seq_ids = img_cond_seq_ids[keep_mask].view(
+                            img_cond_seq_ids.shape[0], -1, img_cond_seq_ids.shape[-1]
+                        )
+                    else:
+                        img_cond_seq = None
+                        img_cond_seq_ids = None
+                else:
+                    base_len = img.shape[1]
+                    if original_image_latents is None:
+                        original_image_latents = img_cond_seq[:, :base_len].clone()
+                    if img_cond_seq.shape[1] <= base_len:
+                        img_cond_seq = None
+                        img_cond_seq_ids = None
+                    else:
+                        img_cond_seq = img_cond_seq[:, base_len:]
+                        if img_cond_seq_ids is not None:
+                            img_cond_seq_ids = img_cond_seq_ids[:, base_len:]
+            from shared.inpainting.lanpaint import LanPaint
+            lanpaint_steps = {2: 2, 3: 5, 4: 10, 5: 15}.get(model_mode_int, 5)
+            lanpaint_proc = LanPaint(NSteps=lanpaint_steps)
+            denoising_strength = 1.0
+            masking_strength = 1.0
+            if img_msk_latents.shape[-1] != img.shape[-1]:
+                lanpaint_mask = img_msk_latents.expand(img.shape[0], img.shape[1], img.shape[2]).contiguous()
+            else:
+                lanpaint_mask = img_msk_latents
+            lanpaint_proc is not None 
+        if original_image_latents is None and img_cond_seq is not None:
+            original_image_latents = img_cond_seq.clone()
         randn = torch.randn_like(original_image_latents)
         if denoising_strength < 1.:
             first_step = int(len(timesteps[:-1]) * (1. - denoising_strength))
@@ -612,53 +667,86 @@ def denoise(
             img  = original_image_latents  * (1.0 - latent_noise_factor) + img * latent_noise_factor 
 
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
-        img_input = img
-        img_input_ids = img_ids
-        if img_cond is not None:
-            img_input = torch.cat((img, img_cond), dim=-1)
-        if img_cond_seq is not None:
-            img_input = torch.cat((img_input, img_cond_seq), dim=1)
-            img_input_ids = torch.cat((img_input_ids, img_cond_seq_ids), dim=1)
-        if not joint_pass or real_guidance_scale == 1:
-            pred = model(
-                img=img_input,
-                img_ids=img_input_ids,
-                txt_list=[txt],
-                txt_ids_list=[txt_ids],
-                y_list=[vec],
-                timesteps=t_vec,
-                guidance=guidance_vec,
-                **kwargs
-            )[0]
-            if pred == None: return None
-            if real_guidance_scale> 1:
-                neg_pred = model(
+
+        def run_model(latents, cfg_scale):
+            img_input = latents
+            img_input_ids = img_ids
+            if img_cond is not None:
+                img_input = torch.cat((img_input, img_cond), dim=-1)
+            if img_cond_seq is not None:
+                img_input = torch.cat((img_input, img_cond_seq), dim=1)
+                img_input_ids = torch.cat((img_input_ids, img_cond_seq_ids), dim=1)
+            if not joint_pass or cfg_scale == 1:
+                noise_pred = model(
                     img=img_input,
                     img_ids=img_input_ids,
-                    txt_list=[neg_txt],
-                    txt_ids_list=[neg_txt_ids],
-                    y_list=[neg_vec],
+                    txt_list=[txt],
+                    txt_ids_list=[txt_ids],
+                    y_list=[vec],
                     timesteps=t_vec,
                     guidance=guidance_vec,
                     **kwargs
                 )[0]
-                if neg_pred == None: return None
-        else:
-            pred, neg_pred = model(
-                img=img_input,
-                img_ids=img_input_ids,
-                txt_list=[txt, neg_txt],
-                txt_ids_list=[txt_ids, neg_txt_ids],
-                y_list=[vec, neg_vec],
-                timesteps=t_vec,
-                guidance=guidance_vec,
-                **kwargs
+                if noise_pred == None:
+                    return None, None
+                neg_noise_pred = None
+                if cfg_scale > 1:
+                    neg_noise_pred = model(
+                        img=img_input,
+                        img_ids=img_input_ids,
+                        txt_list=[neg_txt],
+                        txt_ids_list=[neg_txt_ids],
+                        y_list=[neg_vec],
+                        timesteps=t_vec,
+                        guidance=guidance_vec,
+                        **kwargs
+                    )[0]
+                    if neg_noise_pred == None:
+                        return None, None
+            else:
+                noise_pred, neg_noise_pred = model(
+                    img=img_input,
+                    img_ids=img_input_ids,
+                    txt_list=[txt, neg_txt],
+                    txt_ids_list=[txt_ids, neg_txt_ids],
+                    y_list=[vec, neg_vec],
+                    timesteps=t_vec,
+                    guidance=guidance_vec,
+                    **kwargs
+                )
+                if noise_pred == None:
+                    return None, None
+            return noise_pred, neg_noise_pred
+
+        def cfg_predictions(noise_pred, neg_noise_pred, cfg_scale, t):
+            if cfg_scale > 1:
+                return neg_noise_pred + cfg_scale * (noise_pred - neg_noise_pred)
+            return noise_pred
+
+        if lanpaint_proc is not None and height is not None and width is not None and i < updated_num_steps - 1:
+            img = lanpaint_proc(
+                run_model,
+                cfg_predictions,
+                true_cfg_scale,
+                1.0,
+                img,
+                original_image_latents,
+                randn,
+                t_vec,
+                lanpaint_mask,
+                height=height,
+                width=width,
+                vae_scale_factor=vae_scale_factor,
             )
-            if pred == None: return None
+            if img is None:
+                return None
+
+        pred, neg_pred = run_model(img, true_cfg_scale)
+        if pred == None: return None
 
         if is_piflow and isinstance(pred, dict):
-            if real_guidance_scale > 1:
-                pred = {k: neg_pred[k] + real_guidance_scale * (pred[k] - neg_pred[k]) for k in pred}
+            if true_cfg_scale > 1:
+                pred = {k: neg_pred[k] + true_cfg_scale * (pred[k] - neg_pred[k]) for k in pred}
 
             patch_size = getattr(model, "piflow_patch_size", 2)
             img_packed = rearrange(
@@ -700,8 +788,8 @@ def denoise(
             img_packed = _pack_latent_piflux2(img_unpacked, patch_size=patch_size)
             img = rearrange(img_packed, "b c h w -> b (h w) c").to(img.dtype)
         else:
-            if real_guidance_scale > 1:
-                pred = neg_pred + real_guidance_scale * (pred - neg_pred)
+            if true_cfg_scale > 1:
+                pred = cfg_predictions(pred, neg_pred, true_cfg_scale, t_vec)
 
             step_size = t_prev - t_curr
             if final_step_size_scale is not None and i == len(timesteps) - 2:

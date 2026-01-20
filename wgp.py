@@ -33,7 +33,7 @@ import numpy as np
 import importlib
 from shared.utils import notification_sound
 from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_loras_multipliers
-from shared.utils.utils import convert_tensor_to_image, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask
+from shared.utils.utils import convert_tensor_to_image, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, to_rgb_tensor
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_frame_location, get_outpainting_full_area_dimensions
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files,  save_video, save_image
@@ -360,7 +360,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
     
     inputs["state"] =  state
     inputs["model_type"] = model_type
-    inputs.pop("lset_name")
+    inputs.pop("lset_name", None)
     if inputs == None:
         gr.Warning("Internal state error: Could not retrieve inputs for the model.")
         queue = gen.get("queue", [])
@@ -4234,7 +4234,8 @@ def get_preprocessor(process_type, inpaint_color):
             }
         anno_ins = lambda img: FlowVisAnnotator(cfg_dict).forward(img)
     elif process_type=="inpaint":
-        anno_ins = lambda img :  len(img) * [inpaint_color]
+        color = tuple(int(v) for v in inpaint_color.view(-1).tolist())
+        anno_ins = lambda img :  len(img) * [color]
     elif process_type == None or process_type in ["raw", "identity"]:
         anno_ins = lambda img : img
     else:
@@ -4316,7 +4317,9 @@ def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,
         box = [xmin, ymin, xmax, ymax]
         box = [int(x) for x in box]
         return box
-    inpaint_color = int(inpaint_color)
+    inpaint_color = parse_guide_inpaint_color(inpaint_color)
+    inpaint_color = to_rgb_tensor(inpaint_color, device="cpu", dtype=torch.uint8)
+    inpaint_color_np = tuple(int(v) for v in inpaint_color.view(-1).tolist())
     pad_frames = 0
     if start_frame < 0:
         pad_frames= -start_frame
@@ -4447,6 +4450,10 @@ def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,
     masked_frames = []
     masks = []
     for frame_no, (processed_img, processed_img_outside, mask) in enumerate(zip(proc_list, proc_list_outside, proc_mask)):
+        if isinstance(processed_img, (list, tuple)):
+            processed_img = np.full((height, width, 3), processed_img, dtype=np.uint8)
+        if isinstance(processed_img_outside, (list, tuple)):
+            processed_img_outside = np.full((height, width, 3), processed_img_outside, dtype=np.uint8)
         if any_mask :
             masked_frame = np.where(mask[..., None], processed_img, processed_img_outside)
             if process_outside_mask != None:
@@ -4462,15 +4469,16 @@ def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,
         else:
             masked_frame = processed_img
 
-        if isinstance(masked_frame, int):
-            masked_frame= np.full( (height, width, 3), inpaint_color, dtype= np.uint8)
+        if isinstance(masked_frame, (int, float, np.integer)) or (isinstance(masked_frame, (list, tuple)) and len(masked_frame) == 3):
+            masked_frame= np.full( (height, width, 3), inpaint_color_np, dtype= np.uint8)
 
         masked_frame = torch.from_numpy(masked_frame)
         if masked_frame.shape[-1] == 1:
             masked_frame =  masked_frame.repeat(1,1,3).to(torch.uint8)
 
         if outpainting_dims != None:
-            full_frame= torch.full( (final_height, final_width, masked_frame.shape[-1]),  inpaint_color, dtype= torch.uint8, device= masked_frame.device)
+            color = inpaint_color.to(masked_frame.device).view(1, 1, 3)
+            full_frame = color.expand(final_height, final_width, masked_frame.shape[-1]).clone()
             full_frame[margin_top:margin_top+height, margin_left:margin_left+width] = masked_frame
             masked_frame = full_frame 
 
@@ -5032,6 +5040,28 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, overri
 def get_outpainting_dims(video_guide_outpainting):
     return None if video_guide_outpainting== None or len(video_guide_outpainting) == 0 or video_guide_outpainting == "0 0 0 0" or video_guide_outpainting.startswith("#") else [int(v) for v in video_guide_outpainting.split(" ")] 
 
+def parse_guide_inpaint_color(value):
+    if isinstance(value, str):
+        cleaned = value.strip()
+        hex_value = cleaned[1:] if cleaned.startswith("#") else cleaned
+        if len(hex_value) == 6 and all(c in "0123456789abcdefABCDEF" for c in hex_value):
+            return tuple(int(hex_value[i:i+2], 16) for i in (0, 2, 4))
+        if cleaned.lower().startswith("rgb"):
+            cleaned = cleaned[3:]
+        for ch in "()[]{}":
+            cleaned = cleaned.replace(ch, "")
+        cleaned = cleaned.replace(",", " ")
+        parts = [p for p in cleaned.split() if p]
+        if len(parts) == 3:
+            try:
+                return tuple(max(0, min(255, int(round(float(p))))) for p in parts)
+            except ValueError:
+                return 127.5
+        return 127.5
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        return tuple(max(0, min(255, int(round(float(p))))) for p in value)
+    return value
+
 def truncate_audio(generated_audio, trim_video_frames_beginning, trim_video_frames_end, video_fps, audio_sampling_rate):
     samples_per_frame = audio_sampling_rate / video_fps
     start = int(trim_video_frames_beginning * samples_per_frame)
@@ -5474,6 +5504,9 @@ def generate_video(
     # VAE Tiling
     device_mem_capacity = torch.cuda.get_device_properties(None).total_memory / 1048576
     guide_inpaint_color = model_def.get("guide_inpaint_color", 127.5)
+    if image_mode==2:
+        guide_inpaint_color = model_def.get("inpaint_color", guide_inpaint_color)
+    guide_inpaint_color = parse_guide_inpaint_color(guide_inpaint_color)
     extract_guide_from_window_start = model_def.get("extract_guide_from_window_start", False) 
     hunyuan_custom = "hunyuan_video_custom" in model_filename
     hunyuan_custom_edit =  hunyuan_custom and "edit" in model_filename
@@ -5703,6 +5736,7 @@ def generate_video(
                 prompts = enhanced_prompts            
                 abort = gen.get("abort", False)
 
+ 
         while not abort:
             enable_RIFLEx = RIFLEx_setting == 0 and current_video_length > (6* get_model_fps(base_model_type)+1) or RIFLEx_setting == 1
             prompt =  prompts[window_no] if window_no < len(prompts) else prompts[-1]
@@ -5728,6 +5762,8 @@ def generate_video(
                 return_latent_slice = slice(- max(1, (reuse_frames + discard_last_frames ) // latent_size) , None if discard_last_frames == 0 else -(discard_last_frames // latent_size) )
             refresh_preview  = {"image_guide" : image_guide, "image_mask" : image_mask} if image_mode >= 1 else {}
 
+            if hasattr(model_handler, "custom_prompt_preprocess"):
+                prompt = model_handler.custom_prompt_preprocess(**locals())
             image_start_tensor = image_end_tensor = None
             if window_no == 1 and (video_source is not None or image_start is not None):
                 if image_start is not None:
@@ -6257,6 +6293,7 @@ def generate_video(
                 if film_grain_intensity> 0:
                     from postprocessing.film_grain import add_film_grain
                     sample = add_film_grain(sample, film_grain_intensity, film_grain_saturation) 
+                mmaudio_enabled, mmaudio_mode, mmaudio_persistence, mmaudio_model_name, mmaudio_model_path = get_mmaudio_settings(server_config)
                 if audio_only or is_image:
                     output_video_frames = None
                     output_frame_count = None
@@ -6286,7 +6323,6 @@ def generate_video(
                 else:
                     file_name = f"{time_flag}_seed{seed}_{sanitize_file_name(truncate_for_filesystem(save_prompt)).strip()}.{extension}"
                 video_path = os.path.join(save_path, file_name)
-                mmaudio_enabled, mmaudio_mode, mmaudio_persistence, mmaudio_model_name, mmaudio_model_path = get_mmaudio_settings(server_config)
 
                 if BGRA_frames is not None:
                     from models.wan.alpha.utils import write_zip_file
@@ -7930,7 +7966,7 @@ def switch_image_mode(state):
         if model_cache is None:
             inpaint_cache[model_type] = model_cache ={}
         video_prompt_inpaint_mode = model_def.get("inpaint_video_prompt_type", "VAG")
-        video_prompt_image_mode = "KI"
+        video_prompt_image_mode = model_def.get("image_video_prompt_type", "KI")
         old_video_prompt_type = video_prompt_type
         if image_mode == 1:
             model_cache[2] = video_prompt_type
@@ -8980,7 +9016,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 input_video_strength = gr.Slider(0, 1, value=ui_get("input_video_strength", 1.0), step=0.01, label=input_video_strength_label, visible =  len(input_video_strength_label) and any_letters(image_prompt_type_value, "SVL"), show_reset_button= False)
                 image_end_row, image_end, image_end_extra = get_image_gallery(label= get_image_end_label(ui_get("multi_prompts_gen_type")), value = ui_defaults.get("image_end", None), visible= any_letters(image_prompt_type_value, "SVL") and ("E" in image_prompt_type_value)     ) 
                 if model_mode_choices is None or image_mode_value not in model_modes_visibility:
-                    model_mode = gr.Dropdown(value=None, label="model mode", visible=False, allow_custom_value= True)
+                    model_mode = gr.Dropdown(value=None, label="model mode", visible=False) #, allow_custom_value= False
                 else:
                     model_mode_value = get_default_value(model_mode_choices["choices"], ui_get("model_mode", None), model_mode_choices["default"] )
                     model_mode = gr.Dropdown(choices=model_mode_choices["choices"], value=model_mode_value, label=model_mode_choices["label"],  visible=True)                        

@@ -85,7 +85,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.0"
-WanGP_version = "10.42"
+WanGP_version = "10.43"
 settings_version = 2.43
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -598,11 +598,17 @@ def validate_settings(state, model_type, single_prompt, inputs):
     video_guide_outpainting = inputs["video_guide_outpainting"]
     spatial_upsampling = inputs["spatial_upsampling"]
     motion_amplitude = inputs["motion_amplitude"]
+    model_mode = inputs["model_mode"]
     medium = "Videos" if image_mode == 0 else "Images"
 
     if image_start is not None and not isinstance(image_start, list): image_start = [image_start]
     outpainting_dims = get_outpainting_dims(video_guide_outpainting)
 
+    model_modes_visibility = [0,1,2]
+    model_mode_choices = model_def.get("model_modes", None)
+    if model_mode_choices is not None: model_modes_visibility= model_mode_choices.get("image_modes", model_modes_visibility)
+    if model_mode is not None and image_mode not in model_modes_visibility:
+        model_mode = None
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
 
@@ -909,6 +915,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
         "skip_steps_cache_type": skip_steps_cache_type,
         "model_switch_phase": model_switch_phase,
         "motion_amplitude": motion_amplitude,
+        "model_mode": model_mode,
     } 
     return override_inputs, prompts, image_start, image_end
 
@@ -9015,11 +9022,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 input_video_strength_label = model_def.get("input_video_strength", "")
                 input_video_strength = gr.Slider(0, 1, value=ui_get("input_video_strength", 1.0), step=0.01, label=input_video_strength_label, visible =  len(input_video_strength_label) and any_letters(image_prompt_type_value, "SVL"), show_reset_button= False)
                 image_end_row, image_end, image_end_extra = get_image_gallery(label= get_image_end_label(ui_get("multi_prompts_gen_type")), value = ui_defaults.get("image_end", None), visible= any_letters(image_prompt_type_value, "SVL") and ("E" in image_prompt_type_value)     ) 
-                if model_mode_choices is None or image_mode_value not in model_modes_visibility:
-                    model_mode = gr.Dropdown(value=None, label="model mode", visible=False) #, allow_custom_value= False
+                if model_mode_choices is None:
+                    model_mode = gr.Dropdown(value=None, label="model mode", visible=False)
                 else:
                     model_mode_value = get_default_value(model_mode_choices["choices"], ui_get("model_mode", None), model_mode_choices["default"] )
-                    model_mode = gr.Dropdown(choices=model_mode_choices["choices"], value=model_mode_value, label=model_mode_choices["label"],  visible=True)                        
+                    model_mode = gr.Dropdown(choices=model_mode_choices["choices"], value=model_mode_value, label=model_mode_choices["label"],  visible=image_mode_value in model_modes_visibility)                        
                 keep_frames_video_source = gr.Text(value=ui_get("keep_frames_video_source") , visible= len(filter_letters(image_prompt_type_value, "VL"))>0 , scale = 2, label= "Truncate Video beyond this number of resampled Frames (empty=Keep All, negative truncates from End)" ) 
 
             any_control_video = any_control_image = False

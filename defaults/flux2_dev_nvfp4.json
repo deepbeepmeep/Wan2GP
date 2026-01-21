@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Flux 2 Dev NVFP4",
+        "name": "Flux 2 Dev NVFP4 32B",
         "architecture": "flux2_dev",
         "description": "NVFP4-quantized Flux 2 Dev checkpoint (mixed).",
         "URLs": [

@@ -10,6 +10,7 @@ from optimum.quanto.tensor.qtype import qtype as _quanto_qtype, qtypes as _quant
 
 
 HANDLER_NAME = "fp8"
+HANDLER_PRIORITY = 10
 
 _SCALED_FP8_E4M3_QTYPE_NAME = "scaled_float8_e4m3fn"
 _SCALED_FP8_E5M2_QTYPE_NAME = "scaled_float8_e5m2"
@@ -49,6 +50,14 @@ _FP8_MM_SUPPORT = {
 _FP8_MM_PROBED = False
 _SCALED_FP8_DEFAULT_DTYPE = None
 
+_SCALED_FP8_SPLIT_FIELDS = {
+    "weight": 0,
+    "bias": 0,
+    "scale_weight": 0,
+    "weight_scale": 0,
+}
+_SCALED_FP8_SHARE_FIELDS = ("input_scale", "output_scale")
+
 def _is_float8_dtype(dtype):
     return dtype in _SCALED_FP8_QTYPE_BY_DTYPE
 
@@ -72,6 +81,36 @@ def _normalize_default_dtype(dtype):
     if dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
         return _SCALED_FP8_DEFAULT_DTYPE or torch.bfloat16
     return dtype
+
+
+def _split_fp8_scale(src, *, dim, split_sizes, context):
+    if src is None or not torch.is_tensor(src):
+        return None
+    total = sum(split_sizes)
+    if src.numel() == 1:
+        return [src] * len(split_sizes)
+    if src.dim() > dim and src.size(dim) == total:
+        return torch.split(src, split_sizes, dim=dim)
+    if src.ndim > 1 and src.size(1) == total:
+        return torch.split(src, split_sizes, dim=1)
+    return [src] * len(split_sizes)
+
+
+def split_fused_weights(state_dict, fused_split_map, quantization_map=None, allowed_bases=None, default_dtype=None, verboseLevel=1):
+    from mmgp import offload
+    return offload.sd_split_linear(
+        state_dict,
+        fused_split_map,
+        split_fields=dict(_SCALED_FP8_SPLIT_FIELDS),
+        share_fields=_SCALED_FP8_SHARE_FIELDS,
+        split_handlers={
+            "scale_weight": _split_fp8_scale,
+            "weight_scale": _split_fp8_scale,
+        },
+        verboseLevel=verboseLevel,
+        allowed_bases=allowed_bases,
+        return_split_bases=True,
+    )
 
 
 
@@ -198,6 +237,26 @@ class ScaledFP8WeightTensor(QTensor):
         self._scale = scale
         self._scaled_mm_static_ok = _scaled_mm_static_ok(self._data, self._scale)
         self._set_linear_impl()
+
+    def __repr__(self):
+        cls_name = self.__class__.__name__
+        try:
+            shape = tuple(self.shape)
+        except Exception:
+            shape = "<?>"
+        try:
+            dtype = str(self.dtype).replace("torch.", "")
+        except Exception:
+            dtype = "<?>"
+        try:
+            device = str(self.device)
+        except Exception:
+            device = "<?>"
+        qtype = getattr(self, "_qtype", None)
+        qtype_name = getattr(qtype, "name", None) or str(qtype) if qtype is not None else "<?>"
+        return f"{cls_name}(shape={shape}, dtype={dtype}, device={device}, qtype={qtype_name})"
+
+    __str__ = __repr__
 
     def _set_linear_impl(self):
         if self._scaled_mm_static_ok and _scaled_mm_available(self._data.dtype):

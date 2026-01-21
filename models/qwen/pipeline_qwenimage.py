@@ -28,6 +28,7 @@ from .autoencoder_kl_qwenimage import AutoencoderKLQwenImage
 from diffusers import FlowMatchEulerDiscreteScheduler
 from PIL import Image
 from shared.utils.utils import calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 XLA_AVAILABLE = False
 
@@ -183,6 +184,7 @@ class QwenImagePipeline(): #DiffusionPipeline
         # by the patch size. So the vae scale factor is multiplied by the patch size to account for this
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
         self.tokenizer_max_length = 1024
+        self.text_encoder_cache = TextEncoderCache()
         if processor is not None:
             # self.prompt_template_encode = "<|im_start|>system\nDescribe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{}<|im_end|>\n<|im_start|>assistant\n"
             self.prompt_template_encode = "<|im_start|>system\nDescribe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
@@ -214,7 +216,6 @@ class QwenImagePipeline(): #DiffusionPipeline
 
         template = self.prompt_template_encode
         drop_idx = self.prompt_template_encode_start_idx
-        txt = [template.format(e) for e in prompt]
 
         if self.processor is not None and image is not None and len(image) > 0:
             img_prompt_template = "Picture {}: <|vision_start|><|image_pad|><|vision_end|>"
@@ -239,29 +240,29 @@ class QwenImagePipeline(): #DiffusionPipeline
                 return_tensors="pt",
             ).to(device)
 
-            outputs = self.text_encoder(
-                input_ids=model_inputs.input_ids,
-                attention_mask=model_inputs.attention_mask,
-                pixel_values=model_inputs.pixel_values,
-                image_grid_thw=model_inputs.image_grid_thw,
-                output_hidden_states=True,
-            )
+            outputs = self.text_encoder(input_ids=model_inputs.input_ids, attention_mask=model_inputs.attention_mask, pixel_values=model_inputs.pixel_values, image_grid_thw=model_inputs.image_grid_thw, output_hidden_states=True)
             hidden_states = outputs.hidden_states[-1]
             split_hidden_states = self._extract_masked_hidden(hidden_states, model_inputs.attention_mask)
+            split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
+            attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
         else:
-            txt_tokens = self.tokenizer(
-                txt, max_length=self.tokenizer_max_length + drop_idx, padding=True, truncation=True, return_tensors="pt"
-            ).to(device)
-            encoder_hidden_states = self.text_encoder(
-                input_ids=txt_tokens.input_ids,
-                attention_mask=txt_tokens.attention_mask,
-                output_hidden_states=True,
-            )
-            hidden_states = encoder_hidden_states.hidden_states[-1]
-            split_hidden_states = self._extract_masked_hidden(hidden_states, txt_tokens.attention_mask)
-            
-        split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
-        attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
+            def encode_fn(prompts):
+                txt = [template.format(p) for p in prompts]
+                txt_tokens = self.tokenizer(
+                    txt,
+                    max_length=self.tokenizer_max_length + drop_idx,
+                    padding=True,
+                    truncation=True,
+                    return_tensors="pt",
+                ).to(device)
+                hidden_states = self.text_encoder(input_ids=txt_tokens.input_ids, attention_mask=txt_tokens.attention_mask, output_hidden_states=True).hidden_states[-1]
+                split_hidden_states = self._extract_masked_hidden(hidden_states, txt_tokens.attention_mask)
+                split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
+                attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
+                return list(zip(split_hidden_states, attn_mask_list))
+            contexts = self.text_encoder_cache.encode(encode_fn, prompt, device=device)
+            split_hidden_states = [ctx[0] for ctx in contexts]
+            attn_mask_list = [ctx[1] for ctx in contexts]
         max_seq_len = max([e.size(0) for e in split_hidden_states])
         prompt_embeds = torch.stack(
             [torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))]) for u in split_hidden_states]
@@ -658,8 +659,14 @@ class QwenImagePipeline(): #DiffusionPipeline
             returning a tuple, the first element is a list with the generated images.
         """
 
-        lora_inpaint = image_mask is not None and model_mode == 1
-        lanpaint_enabled = image_mask is not None and model_mode == 2
+        model_mode_int = None
+        if model_mode is not None:
+            try:
+                model_mode_int = int(model_mode)
+            except (TypeError, ValueError):
+                model_mode_int = None
+        lora_inpaint = image_mask is not None and model_mode_int == 1
+        lanpaint_enabled = image_mask is not None and model_mode_int in (2, 3, 4, 5)
 
         kwargs = {'pipeline': pipeline, 'callback': callback}
         if callback != None:
@@ -818,6 +825,8 @@ class QwenImagePipeline(): #DiffusionPipeline
                 (1, vae_height // self.vae_scale_factor // 2, vae_width // self.vae_scale_factor // 2)
                 for vae_width, vae_height in vae_image_sizes
             ]
+            if lanpaint_enabled:
+                condition_shapes = condition_shapes[1:]
             img_shapes = [output_shapes + condition_shapes] * effective_batch_size
         else:
             output_shape = (1, height // self.vae_scale_factor // 2, width // self.vae_scale_factor // 2)
@@ -859,9 +868,16 @@ class QwenImagePipeline(): #DiffusionPipeline
         if image_mask_latents is not None:
             original_image_latents =  image_latents[:, :latents.shape[1]].clone() 
             if lanpaint_enabled:
+                if image_latents.shape[1]==latents.shape[1]:
+                    image_latents = None
+                else:
+                    image_latents = image_latents[:, latents.shape[1]:] 
+
                 from shared.inpainting.lanpaint import LanPaint
-                lanpaint_proc = LanPaint()
+                lanpaint_steps = {2: 2, 3: 5, 4: 10, 5: 15}.get(model_mode_int, 5)
+                lanpaint_proc = LanPaint(NSteps=lanpaint_steps)
                 denoising_strength = 1.
+                masking_strength = 1.
             randn = torch.randn_like(original_image_latents)
             if denoising_strength < 1.:
                 first_step = int(len(timesteps) * (1. - denoising_strength))
@@ -962,7 +978,7 @@ class QwenImagePipeline(): #DiffusionPipeline
                 return noise_pred
 
 
-            if lanpaint_proc is not None and i<=updated_num_steps-1:
+            if lanpaint_proc is not None and i < updated_num_steps - 1:
                 latents = lanpaint_proc(denoise, cfg_predictions, true_cfg_scale, 1., latents, original_image_latents, randn, t/1000, image_mask_latents, height=height , width= width, vae_scale_factor= 8)
                 if latents is None: return None
 
@@ -975,8 +991,9 @@ class QwenImagePipeline(): #DiffusionPipeline
             noise_pred = None
 
             if image_mask_latents is not None and i < masked_steps:
-                if lanpaint_proc is not None:
-                    latents  =  original_image_latents * (1-image_mask_latents)  + image_mask_latents * latents
+                if lanpaint_proc is None :
+                    pass
+                    # latents  =  original_image_latents * (1-image_mask_latents)  + image_mask_latents * latents
                 else:
                     next_t = timesteps[i+1] if i<len(timesteps)-1 else 0
                     latent_noise_factor = next_t / 1000
@@ -1025,15 +1042,15 @@ class QwenImagePipeline(): #DiffusionPipeline
                 )
                 latents_to_decode = latents_to_decode / latents_std + latents_mean
                 output_image = self.vae.decode(latents_to_decode, return_dict=False)[0][:, :, 0]
-
-            if (
-                num_layers == 1
-                and image_mask_rebuilt is not None
-                and not lora_inpaint
-                and self.vae.upsampling_set is None
-                and masking_strength == 1
-            ):
-                output_image = vae_images[0].squeeze(2) * (1 - image_mask_rebuilt) + output_image.to(vae_images[0]  ) * image_mask_rebuilt 
+            # looks worse
+            # if (
+            #     num_layers == 1
+            #     and image_mask_rebuilt is not None
+            #     and not lora_inpaint
+            #     and self.vae.upsampling_set is None
+            #     and masking_strength == 10
+            # ):
+            #     output_image = vae_images[0].squeeze(2) * (1 - image_mask_rebuilt) + output_image.to(vae_images[0]  ) * image_mask_rebuilt 
 
 
         return output_image

@@ -217,7 +217,12 @@ class LTXV:
 
         text_encoder = offload.fast_load_transformers_model(text_encoder_filepath)
         patchifier = SymmetricPatchifier(patch_size=1)
-        tokenizer = T5Tokenizer.from_pretrained(fl.locate_folder("T5_xxl_1.1"))
+        text_encoder_folder = self.model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = fl.locate_folder(text_encoder_folder)
+        else:
+            tokenizer_path = os.path.dirname(text_encoder_filepath)
+        tokenizer = T5Tokenizer.from_pretrained(tokenizer_path)
 
         enhance_prompt = False
         prompt_enhancer_image_caption_model = None

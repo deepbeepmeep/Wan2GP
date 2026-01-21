@@ -41,6 +41,7 @@ from .utils.helpers import (
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
 from shared.utils.loras_mutipliers import update_loras_slists
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 device = get_device()
 
@@ -99,6 +100,7 @@ class TI2VidTwoStagesPipeline:
             dtype=self.dtype,
             device=device,
         )
+        self.text_encoder_cache = TextEncoderCache()
 
     def _get_stage_model(self, stage: int, name: str):
         if stage == 1:
@@ -156,9 +158,20 @@ class TI2VidTwoStagesPipeline:
                 text_encoder, prompt, images[0][0] if len(images) > 0 else None, seed=seed
             )
         # Codex: needs to return only the text embeddings from the text encoder for all the prompts
-        raw_contexts = encode_text(text_encoder, prompts=[prompt, negative_prompt])
         feature_extractor, video_connector, audio_connector = resolve_text_connectors(
             text_encoder, text_connectors
+        )
+        encode_fn = lambda prompts: postprocess_text_embeddings(
+            encode_text(text_encoder, prompts=prompts),
+            feature_extractor,
+            video_connector,
+            audio_connector,
+        )
+        contexts = self.text_encoder_cache.encode(
+            encode_fn,
+            [prompt, negative_prompt],
+            device=self.device,
+            parallel=True,
         )
 
         torch.cuda.synchronize()
@@ -167,12 +180,7 @@ class TI2VidTwoStagesPipeline:
         # Codex: now that the text encoder has been released, compute the text_embedding_projection,
         # audio_embeddings_connector, video_embeddings_connector in order to get v_context_p, a_context_p
         # and v_context_n, a_context_n
-        context_p, context_n = postprocess_text_embeddings(
-            raw_contexts,
-            feature_extractor,
-            video_connector,
-            audio_connector,
-        )
+        context_p, context_n = contexts
         v_context_p, a_context_p = context_p
         v_context_n, a_context_n = context_n
 

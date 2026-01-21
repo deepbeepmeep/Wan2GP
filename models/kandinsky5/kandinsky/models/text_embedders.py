@@ -11,6 +11,7 @@ from transformers import (
 from .utils import freeze
 from mmgp import offload
 import torchvision.transforms.functional as F
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 
 class ClipTextEmbedder:
@@ -224,12 +225,51 @@ class Kandinsky5TextEmbedder:
         self.embedder = Qwen2_5_VLTextEmbedder(conf.qwen, device, quantized_qwen, text_token_padding)
         self.clip_embedder = ClipTextEmbedder(conf.clip, device)
         self.conf = conf
+        self.text_encoder_cache = TextEncoderCache()
 
     def encode(self, texts, images=None, type_of_content="image"):
-        text_embeds, cu_seqlens, attention_mask = self.embedder(texts, images=images, type_of_content=type_of_content)
-        pooled_embed = self.clip_embedder(texts)
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(torch.bool)
+        if isinstance(texts, str):
+            texts = [texts]
+        if images is not None:
+            text_embeds, cu_seqlens, attention_mask = self.embedder(texts, images=images, type_of_content=type_of_content)
+            pooled_embed = self.clip_embedder(texts)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(torch.bool)
+            return {"text_embeds": text_embeds, "pooled_embed": pooled_embed}, cu_seqlens, attention_mask
+
+        def encode_fn(prompts):
+            text_embeds, cu_seqlens, attention_mask = self.embedder(prompts, images=None, type_of_content=type_of_content)
+            pooled_embed = self.clip_embedder(prompts)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(torch.bool)
+                return [
+                    {"text_embeds": text_embeds[i : i + 1], "pooled_embed": pooled_embed[i : i + 1], "attention_mask": attention_mask[i : i + 1]}
+                    for i in range(text_embeds.shape[0])
+                ]
+            lengths = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+            split_embeds = torch.split(text_embeds.squeeze(0), lengths, dim=0)
+            return [
+                {"text_embeds": emb.unsqueeze(0), "pooled_embed": pooled_embed[i : i + 1], "attention_mask": None}
+                for i, emb in enumerate(split_embeds)
+            ]
+
+        cache_keys = [(type_of_content, text) for text in texts]
+        contexts = self.text_encoder_cache.encode(encode_fn, texts, device=self.embedder.model.device, cache_keys=cache_keys)
+        if contexts and contexts[0]["attention_mask"] is None:
+            text_embeds = torch.cat([ctx["text_embeds"] for ctx in contexts], dim=1)
+            pooled_embed = torch.cat([ctx["pooled_embed"] for ctx in contexts], dim=0)
+            lengths = [ctx["text_embeds"].shape[1] for ctx in contexts]
+            cu = [0]
+            for length in lengths:
+                cu.append(cu[-1] + length)
+            cu_seqlens = torch.tensor(cu, dtype=torch.int32)
+            attention_mask = None
+        else:
+            text_embeds = torch.cat([ctx["text_embeds"] for ctx in contexts], dim=0)
+            pooled_embed = torch.cat([ctx["pooled_embed"] for ctx in contexts], dim=0)
+            attention_mask = torch.cat([ctx["attention_mask"] for ctx in contexts], dim=0)
+            seq_len = text_embeds.shape[1]
+            cu_seqlens = torch.tensor([0, seq_len], dtype=torch.int32)
         return {"text_embeds": text_embeds, "pooled_embed": pooled_embed}, cu_seqlens, attention_mask
 
     def to(self, device):

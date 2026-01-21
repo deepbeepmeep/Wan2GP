@@ -16,6 +16,7 @@ from shared.utils import files_locator as fl
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2VLProcessor
 from .modules.autoencoder_flux2 import AutoencoderKLFlux2, AutoEncoderParamsFlux2
 from shared.qtypes import nunchaku_int4 as _nunchaku_int4
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 from .util import load_ae, load_clip, load_flow_model, load_t5, preprocess_flux_state_dict
 from .flux2_adapter import (
@@ -94,6 +95,7 @@ class model_factory:
         self.name = model_def.get("flux-model", "flux-dev")
         self.is_piflux2 = self.name == "pi-flux2"
         self.is_flux2 = self.name.startswith("flux2") or self.is_piflux2
+        self.text_encoder_cache = TextEncoderCache()
 
         # model_filename = ["c:/temp/flux1-schnell.safetensors"] 
         source = model_def.get("source", None)
@@ -105,8 +107,19 @@ class model_factory:
                 torch_device,
                 preprocess_sd=preprocess_flux_state_dict,
             )
-            from .modules.text_encoder_mistral import Mistral3SmallEmbedder
-            self.mistral = Mistral3SmallEmbedder( model_spec = text_encoder_filename)
+            text_encoder_type = model_def.get("text_encoder_type", "mistral3")
+            if text_encoder_type == "qwen3":
+                from .modules.text_encoder_qwen3 import Qwen3Embedder
+                text_encoder_folder = model_def.get("text_encoder_folder")
+                tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
+
+                self.mistral = Qwen3Embedder(
+                    model_spec=text_encoder_filename,
+                    tokenizer_path=tokenizer_path,
+                )
+            else:
+                from .modules.text_encoder_mistral import Mistral3SmallEmbedder
+                self.mistral = Mistral3SmallEmbedder(model_spec=text_encoder_filename)
     
             with torch.device("meta"):
                 self.vae  = AutoencoderKLFlux2(AutoEncoderParamsFlux2())
@@ -257,6 +270,14 @@ class model_factory:
                 return None
             device="cuda"
             flux2 = self.is_flux2
+            model_mode = bbargs.get("model_mode", None)
+            model_mode_int = None
+            if model_mode is not None:
+                try:
+                    model_mode_int = int(model_mode)
+                except (TypeError, ValueError):
+                    model_mode_int = None
+            lanpaint_enabled = model_mode_int in (2, 3, 4, 5)
             if flux2:
                 guide_scale = 1.0
             if self.guidance_max_phases < 1: guide_scale = 1
@@ -274,14 +295,13 @@ class model_factory:
                 generator = torch.Generator(device="cuda").manual_seed(seed)
                 randn = torch.randn(shape, generator=generator, dtype=torch.bfloat16, device="cuda")
                 img, img_ids = batched_prc_img(randn)                
-                ctx = self.mistral([input_prompt]).to(torch.bfloat16)
-                txt_embeds, txt_ids = batched_prc_txt(ctx)
+                encode_fn = lambda prompts: list(zip(*batched_prc_txt(self.mistral(prompts).to(torch.bfloat16))))
+                txt_embeds, txt_ids = self.text_encoder_cache.encode(encode_fn, [input_prompt], device=self.device)[0]
                 txt_embeds, txt_ids = txt_embeds.expand(batch_size, -1, -1), txt_ids.expand(batch_size, -1, -1)
                 vec = torch.zeros(batch_size, 1, device=device, dtype=self.dtype)
                 inp = { "img": img, "img_ids": img_ids, "txt": txt_embeds.to(device), "txt_ids": txt_ids.to(device), "vec": vec }
                 if guide_scale != 1:
-                    ctx = self.mistral([n_prompt]).to(torch.bfloat16)
-                    txt_embeds, txt_ids = batched_prc_txt(ctx)
+                    txt_embeds, txt_ids = self.text_encoder_cache.encode(encode_fn, [n_prompt], device=self.device)[0]
                     txt_embeds, txt_ids = txt_embeds.expand(batch_size, -1, -1), txt_ids.expand(batch_size, -1, -1)
                     inp.update({ "neg_txt": txt_embeds.to(device), "neg_txt_ids": txt_ids.to(device), "neg_vec": vec })
 
@@ -380,9 +400,28 @@ class model_factory:
                         noise_channels=noise_channels,
                     )
 
-                inp.update(prepare_prompt(self.t5, self.clip, batch_size, input_prompt))
+                encode_fn = lambda prompts: [prepare_prompt(self.t5, self.clip, 1, prompt, device=device) for prompt in prompts]
+                prompt_list = [input_prompt] if isinstance(input_prompt, str) else input_prompt
+                prompt_bs = len(prompt_list) if batch_size == 1 and not isinstance(input_prompt, str) else batch_size
+                prompt_contexts = self.text_encoder_cache.encode(encode_fn, prompt_list, device=device)
+                txt = torch.cat([ctx["txt"] for ctx in prompt_contexts], dim=0)
+                vec = torch.cat([ctx["vec"] for ctx in prompt_contexts], dim=0)
+                if txt.shape[0] == 1 and prompt_bs > 1:
+                    txt = txt.repeat(prompt_bs, 1, 1)
+                    vec = vec.repeat(prompt_bs, 1)
+                txt_ids = torch.zeros(prompt_bs, txt.shape[1], 3, device=device)
+                inp.update({"txt": txt.to(device), "txt_ids": txt_ids.to(device), "vec": vec.to(device)})
                 if guide_scale != 1:
-                    inp.update(prepare_prompt(self.t5, self.clip, batch_size, n_prompt, neg = True, device=device))
+                    neg_list = [n_prompt] if isinstance(n_prompt, str) else n_prompt
+                    neg_bs = len(neg_list) if batch_size == 1 and not isinstance(n_prompt, str) else batch_size
+                    neg_contexts = self.text_encoder_cache.encode(encode_fn, neg_list, device=device)
+                    neg_txt = torch.cat([ctx["txt"] for ctx in neg_contexts], dim=0)
+                    neg_vec = torch.cat([ctx["vec"] for ctx in neg_contexts], dim=0)
+                    if neg_txt.shape[0] == 1 and neg_bs > 1:
+                        neg_txt = neg_txt.repeat(neg_bs, 1, 1)
+                        neg_vec = neg_vec.repeat(neg_bs, 1)
+                    neg_txt_ids = torch.zeros(neg_bs, neg_txt.shape[1], 3, device=device)
+                    inp.update({"neg_txt": neg_txt.to(device), "neg_txt_ids": neg_txt_ids.to(device), "neg_vec": neg_vec.to(device)})
 
                 timesteps = get_schedule(sampling_steps, inp["img"].shape[1], shift=(self.name != "flux-schnell"))
 
@@ -417,6 +456,10 @@ class model_factory:
                 joint_pass=joint_pass,
                 denoising_strength=denoising_strength,
                 masking_strength=masking_strength,
+                model_mode=model_mode,
+                height=height,
+                width=width,
+                vae_scale_factor=8,
             )
             if x==None: return None
             # decode latents to pixel space
@@ -425,10 +468,17 @@ class model_factory:
                 with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     x = self.vae.decode(x)
 
-            if image_mask is not None and masking_strength == 1 and not flux2:
-                img_msk_rebuilt = inp["img_msk_rebuilt"]
-                img= input_frames.squeeze(1).unsqueeze(0) # convert_image_to_tensor(image_guide) 
-                x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt 
+            img_msk_rebuilt = inp.get("img_msk_rebuilt") if isinstance(inp, dict) else None
+            if img_msk_rebuilt is not None and (lanpaint_enabled or (masking_strength == 1 and not flux2)):
+                img = None
+                if input_frames is not None:
+                    img = input_frames.squeeze(1).unsqueeze(0)
+                elif input_ref_images is not None and len(input_ref_images) > 0:
+                    img = convert_image_to_tensor(
+                        input_ref_images[0].resize((width, height), resample=Image.Resampling.LANCZOS)
+                    ).unsqueeze(0)
+                if img is not None:
+                    x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt
 
             x = x.clamp(-1, 1)
             x = x.transpose(0, 1)

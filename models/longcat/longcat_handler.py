@@ -1,13 +1,6 @@
 import os
 import torch
-from shared.utils import files_locator as fl
-
-
-def get_longcat_text_encoder_filename(text_encoder_quantization):
-    text_encoder_filename = "umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors"
-    if text_encoder_quantization == "int8":
-        text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_int8")
-    return fl.locate_file(text_encoder_filename, True)
+from shared.utils.hf import build_hf_url
 
 
 class family_handler:
@@ -64,6 +57,12 @@ class family_handler:
                 ("Distill", "distill"),
             ],
         }
+        text_encoder_folder = "umt5-xxl"
+        extra_model_def["text_encoder_URLs"] = [
+            build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-bf16.safetensors"),
+            build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-quanto_int8.safetensors"),
+        ]
+        extra_model_def["text_encoder_folder"] = text_encoder_folder
 
         if base_model_type == "longcat_video":
             extra_model_def.update(
@@ -104,15 +103,13 @@ class family_handler:
         return get_rgb_factors("wan")
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
-        text_encoder_filename = get_longcat_text_encoder_filename(text_encoder_quantization)
+    def query_model_files(computeList, base_model_type, model_def=None):
         download_def = [
             {
                 "repoId": "DeepBeepMeep/Wan2.1",
                 "sourceFolderList": ["umt5-xxl", "chinese-wav2vec2-base"],
                 "fileList": [
-                    ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"]
-                    + computeList(text_encoder_filename),
+                    ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"],
                     [
                         "config.json",
                         "preprocessor_config.json",
@@ -155,9 +152,7 @@ class family_handler:
             model_type=model_type,
             model_def=model_def,
             base_model_type=base_model_type,
-            text_encoder_filename=get_longcat_text_encoder_filename(text_encoder_quantization)
-            if text_encoder_filename is None
-            else text_encoder_filename,
+            text_encoder_filename=text_encoder_filename,
             quantizeTransformer=quantizeTransformer,
             dtype=dtype,
             VAE_dtype=VAE_dtype,
@@ -183,7 +178,7 @@ class family_handler:
                 "num_inference_steps": 50,
                 "audio_guidance_scale": 4.0,
                 "sliding_window_overlap": 13,
-                
+                "sliding_window_size": 93,                 
             }
         )
         if base_model_type == "longcat_video":

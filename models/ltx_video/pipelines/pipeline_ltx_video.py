@@ -23,6 +23,7 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
 )
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 from ..models.autoencoders.causal_video_autoencoder import (
     CausalVideoAutoencoder,
@@ -346,6 +347,7 @@ class LTXVideoPipeline(DiffusionPipeline):
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
 
         self.allowed_inference_steps = allowed_inference_steps
+        self.text_encoder_cache = TextEncoderCache()
 
     def mask_text_embeddings(self, emb, mask):
         if emb.shape[0] == 1:
@@ -411,14 +413,11 @@ class LTXVideoPipeline(DiffusionPipeline):
         max_length = (
             text_encoder_max_tokens  # TPU supports only lengths multiple of 128
         )
-        if prompt_embeds is None:
-            assert (
-                self.text_encoder is not None
-            ), "You should provide either prompt_embeds or self.text_encoder should not be None,"
-            text_enc_device = next(self.text_encoder.parameters()).device
-            prompt = self._text_preprocessing(prompt)
+        text_enc_device = next(self.text_encoder.parameters()).device
+        emit_warning = True
+        def encode_fn(prompts):
             text_inputs = self.tokenizer(
-                prompt,
+                prompts,
                 padding="max_length",
                 max_length=max_length,
                 truncation=True,
@@ -426,29 +425,36 @@ class LTXVideoPipeline(DiffusionPipeline):
                 return_tensors="pt",
             )
             text_input_ids = text_inputs.input_ids
-            untruncated_ids = self.tokenizer(
-                prompt, padding="longest", return_tensors="pt"
-            ).input_ids
-
-            if untruncated_ids.shape[-1] >= text_input_ids.shape[
-                -1
-            ] and not torch.equal(text_input_ids, untruncated_ids):
-                removed_text = self.tokenizer.batch_decode(
-                    untruncated_ids[:, max_length - 1 : -1]
-                )
-                logger.warning(
-                    "The following part of your input was truncated because CLIP can only handle sequences up to"
-                    f" {max_length} tokens: {removed_text}"
-                )
-
+            if emit_warning:
+                untruncated_ids = self.tokenizer(
+                    prompts, padding="longest", return_tensors="pt"
+                ).input_ids
+                if untruncated_ids.shape[-1] >= text_input_ids.shape[
+                    -1
+                ] and not torch.equal(text_input_ids, untruncated_ids):
+                    removed_text = self.tokenizer.batch_decode(
+                        untruncated_ids[:, max_length - 1 : -1]
+                    )
+                    logger.warning(
+                        "The following part of your input was truncated because CLIP can only handle sequences up to"
+                        f" {max_length} tokens: {removed_text}"
+                    )
             prompt_attention_mask = text_inputs.attention_mask
             prompt_attention_mask = prompt_attention_mask.to(text_enc_device)
             prompt_attention_mask = prompt_attention_mask.to(device)
-
-            prompt_embeds = self.text_encoder(
-                text_input_ids.to(text_enc_device), attention_mask=prompt_attention_mask
+            prompt_embeds = self.text_encoder(text_input_ids.to(text_enc_device), attention_mask=prompt_attention_mask)[0]
+            return list(zip(prompt_embeds, prompt_attention_mask))
+        if prompt_embeds is None:
+            assert (
+                self.text_encoder is not None
+            ), "You should provide either prompt_embeds or self.text_encoder should not be None,"
+            prompt_list = self._text_preprocessing(prompt)
+            cache_keys = [(max_length, p) for p in prompt_list]
+            prompt_contexts = self.text_encoder_cache.encode(
+                encode_fn, prompt_list, device=device, cache_keys=cache_keys
             )
-            prompt_embeds = prompt_embeds[0]
+            prompt_embeds = torch.stack([ctx[0] for ctx in prompt_contexts], dim=0)
+            prompt_attention_mask = torch.stack([ctx[1] for ctx in prompt_contexts], dim=0)
 
         if self.text_encoder is not None:
             dtype = self.text_encoder.dtype
@@ -475,25 +481,13 @@ class LTXVideoPipeline(DiffusionPipeline):
             uncond_tokens = self._text_preprocessing(negative_prompt)
             uncond_tokens = uncond_tokens * batch_size
             max_length = prompt_embeds.shape[1]
-            uncond_input = self.tokenizer(
-                uncond_tokens,
-                padding="max_length",
-                max_length=max_length,
-                truncation=True,
-                return_attention_mask=True,
-                add_special_tokens=True,
-                return_tensors="pt",
+            emit_warning = False
+            cache_keys = [(max_length, token) for token in uncond_tokens]
+            negative_contexts = self.text_encoder_cache.encode(
+                encode_fn, uncond_tokens, device=device, cache_keys=cache_keys
             )
-            negative_prompt_attention_mask = uncond_input.attention_mask
-            negative_prompt_attention_mask = negative_prompt_attention_mask.to(
-                text_enc_device
-            )
-
-            negative_prompt_embeds = self.text_encoder(
-                uncond_input.input_ids.to(text_enc_device),
-                attention_mask=negative_prompt_attention_mask,
-            )
-            negative_prompt_embeds = negative_prompt_embeds[0]
+            negative_prompt_embeds = torch.stack([ctx[0] for ctx in negative_contexts], dim=0)
+            negative_prompt_attention_mask = torch.stack([ctx[1] for ctx in negative_contexts], dim=0)
 
         if do_classifier_free_guidance:
             # duplicate unconditional embeddings for each generation per prompt, using mps friendly method

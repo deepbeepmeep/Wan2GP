@@ -645,8 +645,9 @@ class VideoDecoder(nn.Module):
 
         if tiling_config is not None and tiling_config.temporal_config is not None:
             cfg = tiling_config.temporal_config
-            tile_size = cfg.tile_size_in_frames // self.video_downscale_factors.time
-            overlap = cfg.tile_overlap_in_frames // self.video_downscale_factors.time
+            tile_size = _pixel_frames_to_latent_frames(cfg.tile_size_in_frames, self.video_downscale_factors.time)
+            overlap = _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, self.video_downscale_factors.time)
+            overlap = min(overlap, max(tile_size - 1, 0))
             splitters[2] = split_in_temporal(tile_size, overlap)
             mappers[2] = to_mapping_operation(map_temporal_slice, self.video_downscale_factors.time)
 
@@ -723,11 +724,8 @@ class VideoDecoder(nn.Module):
                 total_frames=total_frames,
             )
             if chunk_device != blend_device:
-                buffer_cpu = buffer.to(device=blend_device)
-                curr_weights_cpu = curr_weights.to(device=blend_device)
-                del buffer, curr_weights
-                buffer = buffer_cpu
-                curr_weights = curr_weights_cpu
+                buffer = buffer.to(device=blend_device)
+                curr_weights = curr_weights.to(device=blend_device)
 
             # Blend with previous temporal chunk if it exists
             if previous_chunk is not None:
@@ -751,9 +749,10 @@ class VideoDecoder(nn.Module):
                     ]
 
                 # Yield the non-overlapping part of the previous chunk
-                previous_weights = previous_weights.clamp(min=1e-8)
+                previous_weights = previous_weights.clamp_(min=1e-8)
                 yield_len = curr_temporal_slice.start - previous_temporal_slice.start
-                yield (previous_chunk / previous_weights)[:, :, :yield_len, :, :]
+                previous_chunk[:, :, :yield_len] /= previous_weights[:, :, :yield_len]
+                yield previous_chunk[:, :, :yield_len]
 
             # Update state for next iteration
             previous_chunk = buffer
@@ -762,8 +761,10 @@ class VideoDecoder(nn.Module):
 
         # Yield any remaining chunk
         if previous_chunk is not None:
-            previous_weights = previous_weights.clamp(min=1e-8)
-            yield previous_chunk / previous_weights
+            previous_weights = previous_weights.clamp_(min=1e-8)
+            previous_chunk /= previous_weights
+            previous_weights = None
+            yield previous_chunk
 
     def _group_tiles_by_temporal_slice(self, tiles: List[Tile]) -> List[List[Tile]]:
         """Group tiles by their temporal output slice."""
@@ -946,7 +947,7 @@ def decode_video(
     """
 
     def convert_to_uint8(frames: torch.Tensor) -> torch.Tensor:
-        frames = (((frames + 1.0) / 2.0).clamp(0.0, 1.0) * 255.0).to(torch.uint8)
+        frames = frames.add_(1.0).mul_(127.5).clamp_(0.0, 255.0).to(torch.uint8)
         frames = rearrange(frames[0], "c f h w -> f h w c")
         return frames
 
@@ -962,6 +963,14 @@ def _default_intervals(length: int) -> DimensionIntervals:
     return DEFAULT_SPLIT_OPERATION(length)
 
 
+def _pixel_frames_to_latent_frames(frames: int, scale: int) -> int:
+    frames = int(frames)
+    if frames <= 0:
+        return 0
+    scale = max(1, int(scale))
+    return (frames - 1 + scale - 1) // scale + 1
+
+
 def _build_temporal_intervals(
     length: int,
     tiling_config: TilingConfig | None,
@@ -974,8 +983,8 @@ def _build_temporal_intervals(
     ):
         return _default_intervals(length)
     cfg = tiling_config.temporal_config
-    tile_size = max(1, cfg.tile_size_in_frames // scale)
-    overlap = max(0, cfg.tile_overlap_in_frames // scale)
+    tile_size = max(1, _pixel_frames_to_latent_frames(cfg.tile_size_in_frames, scale))
+    overlap = max(0, _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, scale))
     overlap = min(overlap, max(tile_size - 1, 0))
     return split_in_temporal(tile_size, overlap)(length)
 
@@ -1140,8 +1149,15 @@ def get_video_chunks_number(num_frames: int, tiling_config: TilingConfig | None 
     if not tiling_config or not tiling_config.temporal_config:
         return 1
     cfg = tiling_config.temporal_config
-    frame_stride = cfg.tile_size_in_frames - cfg.tile_overlap_in_frames
-    return (num_frames - 1 + frame_stride - 1) // frame_stride
+    scale = VIDEO_SCALE_FACTORS.time
+    latent_frames = _pixel_frames_to_latent_frames(num_frames, scale)
+    tile_size = _pixel_frames_to_latent_frames(cfg.tile_size_in_frames, scale)
+    overlap = _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, scale)
+    overlap = min(overlap, max(tile_size - 1, 0))
+    if latent_frames <= tile_size:
+        return 1
+    intervals = split_in_temporal(tile_size, overlap)(latent_frames)
+    return len(intervals.starts)
 
 
 def split_in_spatial(size: int, overlap: int) -> SplitOperation:

@@ -1,6 +1,7 @@
 import os
 import torch
 from shared.utils import files_locator as fl
+from shared.utils.hf import build_hf_url
 
 _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
@@ -57,14 +58,6 @@ class family_handler:
         return {"ltx2": (40, "LTX-2")}
 
     @staticmethod
-    def get_text_encoder_filename(text_encoder_quantization):
-        text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_FILENAME}"
-        if text_encoder_quantization == "int8":
-            text_encoder_filename = f"{_GEMMA_FOLDER}/{_GEMMA_QUANTO_FILENAME}"
-        return fl.locate_file(text_encoder_filename, True)
-
-
-    @staticmethod
     def query_model_def(base_model_type, model_def):
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
 
@@ -72,7 +65,10 @@ class family_handler:
 
         extra_model_def = {
             "text_encoder_folder": _GEMMA_FOLDER,
-            "text_encoder_URLs": [ _GEMMA_FOLDER_URL + _GEMMA_FILENAME, _GEMMA_FOLDER_URL + _GEMMA_QUANTO_FILENAME],
+            "text_encoder_URLs": [
+                build_hf_url("DeepBeepMeep/LTX-2", _GEMMA_FOLDER, _GEMMA_FILENAME),
+                build_hf_url("DeepBeepMeep/LTX-2", _GEMMA_FOLDER, _GEMMA_QUANTO_FILENAME),
+            ],
             "dtype": "bf16",
             "fps": 24,
             "frames_minimum": 17,
@@ -86,14 +82,16 @@ class family_handler:
             "audio_guide_label": "Audio Prompt (Soundtrack)",
             "audio_scale_name": "Prompt Audio Strength",
             "audio_prompt_type_sources": {
-                "selection": ["", "A"],
+                "selection": ["", "A", "K"],
                 "labels": {
                     "": "Generate Video & Soundtrack based on Text Prompt",
                     "A": "Generate Video based on Soundtrack and Text Prompt",
+                    "K": "Generate Video based on Control Video + its Audio Track and Text Prompt",
                 },
                 "show_label": False,
             },
             "audio_guide_window_slicing": True,
+            "output_audio_is_input_audio": True,
             "custom_denoising_strength": True,
             "profiles_dir": ["ltx2_19B"],
         }
@@ -158,7 +156,7 @@ class family_handler:
         return 64
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization, model_def=None):
+    def query_model_files(computeList, base_model_type, model_def=None):
         gemma_files = [
             "added_tokens.json",
             "chat_template.json",
@@ -172,7 +170,7 @@ class family_handler:
             "tokenizer_config.json",
         ] 
 
-        file_list = [_SPATIAL_UPSCALER_FILENAME] + computeList(model_filename)
+        file_list = [_SPATIAL_UPSCALER_FILENAME] 
         for name in _get_multi_file_names(model_def).values():
             if name not in file_list:
                 file_list.append(name)

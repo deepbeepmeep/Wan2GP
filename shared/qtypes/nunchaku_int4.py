@@ -13,6 +13,7 @@ from optimum.quanto.tensor.qtype import qtype as _quanto_qtype, qtypes as _quant
 
 
 HANDLER_NAME = "nunchaku_int4"
+HANDLER_PRIORITY = 2
 
 _NUNCHAKU_INT4_QTYPE_NAME = "nunchaku_int4"
 if _NUNCHAKU_INT4_QTYPE_NAME not in _quanto_qtypes:
@@ -70,6 +71,19 @@ def make_nunchaku_splitter(split_map):
             **split_kwargs,
         )
     return _split
+
+
+def split_fused_weights(state_dict, fused_split_map, quantization_map=None, allowed_bases=None, default_dtype=None, verboseLevel=1):
+    from mmgp import offload
+    split_kwargs = get_nunchaku_split_kwargs()
+    return offload.sd_split_linear(
+        state_dict,
+        fused_split_map,
+        verboseLevel=verboseLevel,
+        allowed_bases=allowed_bases,
+        return_split_bases=True,
+        **split_kwargs,
+    )
 
 
 def _install_nunchaku_shim(candidate_root):

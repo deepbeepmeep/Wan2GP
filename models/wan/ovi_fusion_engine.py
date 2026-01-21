@@ -96,12 +96,17 @@ class OviFusionEngine:
         vae_model_audio.requires_grad_(False).eval()
         self.audio_vae = vae_model_audio.bfloat16()
         # Load T5 text model
+        text_encoder_folder = model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = fl.locate_folder(text_encoder_folder)
+        else:
+            tokenizer_path = os.path.dirname(text_encoder_filename)
         self.text_encoder = T5EncoderModel(
             text_len=512,
             dtype=torch.bfloat16,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=fl.locate_folder("umt5-xxl"),
+            tokenizer_path=tokenizer_path,
             shard_fn= None)
         
 
@@ -123,8 +128,7 @@ class OviFusionEngine:
         logging.info(f"OVI Fusion Engine initialized, GPU VRAM allocated: {torch.cuda.memory_allocated(device)/1e9:.2f} GB, reserved: {torch.cuda.memory_reserved(device)/1e9:.2f} GB")
 
 
-
-    @torch.inference_mode()
+    @torch.no_grad()
     def generate(self,
                     input_prompt, 
                     image_start=None,

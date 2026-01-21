@@ -912,9 +912,9 @@ def validate_settings(state, model_type, single_prompt, inputs):
     inputs.update(override_inputs)
     if hasattr(model_handler, "validate_generative_settings"):
         error = model_handler.validate_generative_settings(model_type, model_def, inputs)
-    if error is not None and len(error) > 0:
-        gr.Info(error)
-        return ret()
+        if error is not None and len(error) > 0:
+            gr.Info(error)
+            return ret()
     return inputs, prompts, image_start, image_end
 
 

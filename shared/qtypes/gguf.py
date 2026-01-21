@@ -214,7 +214,7 @@ def load_gguf_state_dict(
         for name, bias in list(state_dict.items()):
             if not name.endswith(".bias") or not torch.is_tensor(bias):
                 continue
-            weight_name = name[:-5] + "weight"
+            weight_name = name[:-5] + ".weight"
             weight = state_dict.get(weight_name)
             target_dtype = None
             weight_type = getattr(weight, "tensor_type", None) if torch.is_tensor(weight) else None

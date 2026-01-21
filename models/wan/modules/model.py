@@ -916,6 +916,8 @@ class WanModel(ModelMixin, ConfigMixin):
                     if k.endswith(endfix):
                         v = v.to(dtype)
                         break
+            if k.startswith("patch_embedding_pose."):
+                k = k.replace("patch_embedding_pose.", "pose_patch_embedding.", 1)
             if not k.startswith("vae."):
                 new_sd[k] = v
         return new_sd

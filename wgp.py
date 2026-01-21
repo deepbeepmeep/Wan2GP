@@ -84,7 +84,7 @@ AUTOSAVE_PATH = AUTOSAVE_FILENAME
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.7.0"
+target_mmgp_version = "3.7.1"
 WanGP_version = "10.43"
 settings_version = 2.43
 max_source_video_frames = 3000
@@ -425,9 +425,9 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         queue= gen.get("queue", [])
         return update_queue_data(queue), gr.update(open=True) if new_prompts_count > 1 else gr.update()
 
-    override_inputs, prompts, image_start, image_end = validate_settings(state, model_type, False, inputs)
+    inputs, prompts, image_start, image_end = validate_settings(state, model_type, False, inputs)
 
-    if override_inputs is None:
+    if inputs is None:
         return ret()
 
     multi_prompts_gen_type = inputs["multi_prompts_gen_type"]
@@ -475,23 +475,20 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
                 image_end = [None] * len(prompts)
 
             for single_prompt, start, end in zip(prompts, image_start, image_end) :
-                override_inputs.update({
+                inputs.update({
                     "prompt" : single_prompt,
                     "image_start": start,
                     "image_end" : end,
                 })
-                inputs.update(override_inputs) 
                 add_video_task(**inputs)
         else:
             for single_prompt in prompts :
-                override_inputs["prompt"] = single_prompt 
-                inputs.update(override_inputs) 
+                inputs["prompt"] = single_prompt 
                 add_video_task(**inputs)
         new_prompts_count = len(prompts)
     else:
         new_prompts_count = 1
-        override_inputs["prompt"] = "\n".join(prompts)
-        inputs.update(override_inputs) 
+        inputs["prompt"] = "\n".join(prompts)
         add_video_task(**inputs)
     new_prompts_count += gen.get("prompts_max",0)
     gen["prompts_max"] = new_prompts_count
@@ -511,11 +508,6 @@ def validate_settings(state, model_type, single_prompt, inputs):
 
     model_filename = get_model_filename(model_type)  
 
-    if hasattr(model_handler, "validate_generative_settings"):
-        error = model_handler.validate_generative_settings(model_type, model_def, inputs)
-        if error is not None and len(error) > 0:
-            gr.Info(error)
-            return ret()
 
     if inputs.get("cfg_star_switch", 0) != 0 and inputs.get("apg_switch", 0) != 0:
         gr.Info("Adaptive Progressive Guidance and Classifier Free Guidance Star can not be set at the same time")
@@ -917,7 +909,13 @@ def validate_settings(state, model_type, single_prompt, inputs):
         "motion_amplitude": motion_amplitude,
         "model_mode": model_mode,
     } 
-    return override_inputs, prompts, image_start, image_end
+    inputs.update(override_inputs)
+    if hasattr(model_handler, "validate_generative_settings"):
+        error = model_handler.validate_generative_settings(model_type, model_def, inputs)
+    if error is not None and len(error) > 0:
+        gr.Info(error)
+        return ret()
+    return inputs, prompts, image_start, image_end
 
 
 def get_preview_images(inputs):
@@ -5712,7 +5710,7 @@ def generate_video(
         source_video_frames_count = 0  # number of frames to use in source video (processing starts source_video_overlap_frames_count frames before )
         frames_already_processed = []
         frames_already_processed_count = 0
-        frames_already_processed_tensor = None
+        output_new_audio_filepath = None
         overlapped_latents = None
         context_scale = None
         window_no = 0

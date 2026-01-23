@@ -4,16 +4,11 @@
         "architecture": "heartmula_oss_3b",
         "description": "HeartMuLa open music generation conditioned on lyrics and tags.",
         "URLs": [
-            "heartmula_oss_3b_bf16.safetensors",
-            "heartmula_oss_3b_quanto_bf16_int8.safetensors"
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/heartmula_oss_3b_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/heartmula_oss_3b_quanto_bf16_int8.safetensors"
         ]
     },
 	"prompt": "[Verse]\nMorning light through the window pane\nI hum a tune to chase the rain\nSteady steps on a quiet street\nHeart and rhythm, gentle beat",
 	"alt_prompt": "piano,happy,wedding",
-	"negative_prompt": "",
-	"audio_prompt_type": "",
-	"repeat_generation": 1,
-	"video_length": 0,
-	"num_inference_steps": 0,
 	"temperature": 1.0
 }

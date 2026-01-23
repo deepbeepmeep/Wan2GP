@@ -1,0 +1,14 @@
+{
+    "model": {
+        "name": "TTS Qwen3 CustomVoice(12Hz) 1.7B",
+        "architecture": "qwen3_tts_customvoice",
+        "description": "Qwen3 CustomVoice with fixed speaker presets and optional instruction control.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_customvoice_bf16.safetensors"
+        ]
+    },
+    "prompt": "The lights are already on, so we can start whenever you are ready.",
+    "alt_prompt": "calm, friendly, slightly husky",
+    "model_mode": "serena",
+    "duration_seconds": 30
+}

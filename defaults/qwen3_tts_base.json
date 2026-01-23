@@ -1,0 +1,13 @@
+{
+    "model": {
+        "name": "TTS Qwen3 Base (12Hz) 1.7B",
+        "architecture": "qwen3_tts_base",
+        "description": "Qwen3 Base voice clone model with reference audio.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_base_bf16.safetensors"
+        ]
+    },
+    "prompt": "I checked the schedule twice, and everything lines up.",
+    "alt_prompt": "",
+    "duration_seconds": 30
+}

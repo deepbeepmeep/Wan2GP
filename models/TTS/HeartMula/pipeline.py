@@ -100,6 +100,7 @@ class HeartMuLaPipeline:
         )
         self.version = version
         self._interrupt = False
+        self._early_stop = False
 
         self._parallel_number = 8 + 1
         self._muq_dim = 512
@@ -217,6 +218,12 @@ class HeartMuLaPipeline:
     def _abort_requested(self) -> bool:
         return bool(self._interrupt)
 
+    def _early_stop_requested(self) -> bool:
+        return bool(self._early_stop)
+
+    def request_early_stop(self) -> None:
+        self._early_stop = True
+
     def _read_text_or_file(self, value: str, label: str) -> str:
         if os.path.isfile(value):
             with open(value, encoding="utf-8") as fp:
@@ -319,6 +326,7 @@ class HeartMuLaPipeline:
             if curr_token is None:
                 return None
             frames.append(curr_token[0:1,])
+            early_stop_now = self._early_stop_requested()
 
             def _pad_audio_token(token: torch.Tensor):
                 padded_token = (
@@ -348,39 +356,42 @@ class HeartMuLaPipeline:
                     progress_unit="seconds",
                 )
 
-            for i in tqdm(range(max_audio_frames)):
-                if self._abort_requested():
-                    return None
-                curr_token, curr_token_mask = _pad_audio_token(curr_token)
-                curr_token = self.mula.generate_frame(
-                    tokens=curr_token,
-                    tokens_mask=curr_token_mask,
-                    input_pos=prompt_pos[..., -1:] + i + 1,
-                    temperature=temperature,
-                    topk=topk,
-                    cfg_scale=cfg_scale,
-                    continuous_segments=None,
-                    starts=None,
-                )
-                if curr_token is None:
-                    return None
-                if torch.any(curr_token[0:1, :] >= self.gen_config.audio_eos_id):
-                    break
-                frames.append(curr_token[0:1,])
-                if i % 10 == 0 and callback is not None:
-                    generated_ms = len(frames) * frame_duration_ms
-                    generated_seconds_int = min(
-                        progress_total_seconds,
-                        generated_ms // 1000,
+            if not early_stop_now:
+                for i in tqdm(range(max_audio_frames)):
+                    if self._abort_requested():
+                        return None
+                    curr_token, curr_token_mask = _pad_audio_token(curr_token)
+                    curr_token = self.mula.generate_frame(
+                        tokens=curr_token,
+                        tokens_mask=curr_token_mask,
+                        input_pos=prompt_pos[..., -1:] + i + 1,
+                        temperature=temperature,
+                        topk=topk,
+                        cfg_scale=cfg_scale,
+                        continuous_segments=None,
+                        starts=None,
                     )
-                    callback(
-                        step_idx=generated_seconds_int - 1,
-                        override_num_inference_steps=progress_total_seconds,
-                        denoising_extra=(
-                            f"{generated_seconds_int}s/{progress_total_seconds}s"
-                        ),
-                        progress_unit="second",
-                    )
+                    if curr_token is None:
+                        return None
+                    if torch.any(curr_token[0:1, :] >= self.gen_config.audio_eos_id):
+                        break
+                    frames.append(curr_token[0:1,])
+                    if self._early_stop_requested():
+                        break
+                    if i % 10 == 0 and callback is not None:
+                        generated_ms = len(frames) * frame_duration_ms
+                        generated_seconds_int = min(
+                            progress_total_seconds,
+                            generated_ms // 1000,
+                        )
+                        callback(
+                            step_idx=generated_seconds_int - 1,
+                            override_num_inference_steps=progress_total_seconds,
+                            denoising_extra=(
+                                f"{generated_seconds_int}s/{progress_total_seconds}s"
+                            ),
+                            progress_unit="second",
+                        )
             frames = torch.stack(frames).permute(1, 2, 0).squeeze(0)
             return {"frames": frames}
         finally:
@@ -419,6 +430,7 @@ class HeartMuLaPipeline:
         **kwargs,
     ):
         self._interrupt = False
+        self._early_stop = False
         seed = kwargs.get("seed")
         if seed is not None:
             try:

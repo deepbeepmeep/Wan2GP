@@ -4,6 +4,7 @@ import gradio as gr
 import torch
 
 from shared.utils import files_locator as fl
+from .qwen3 import defs as qwen3_defs
 
 
 _FALLBACK_SUPPORTED_LANGUAGES = {
@@ -87,6 +88,7 @@ def _get_chatterbox_model_def():
         },
         "any_audio_prompt": True,
         "chatterbox_controls": True,
+        "text_prompt_enhancer_instructions": qwen3_defs.TTS_MONOLOGUE_PROMPT,
     }
 
 
@@ -98,6 +100,7 @@ def _get_heartmula_model_def():
         "guidance_max_phases": 0,
         "no_negative_prompt": True,
         "image_prompt_types_allowed": "",
+        "supports_early_stop": True,
         "profiles_dir": ["heartmula_oss_3b"],
         "alt_prompt": {
             "label": "Keywords / Tags",
@@ -276,7 +279,12 @@ def _get_yue_download_def(model_def):
 class family_handler:
     @staticmethod
     def query_supported_types():
-        return ["chatterbox", "heartmula_oss_3b", "yue"]
+        return [
+            "chatterbox",
+            "heartmula_oss_3b",
+            "yue",
+            *list(qwen3_defs.QWEN3_TTS_VARIANTS),
+        ]
 
     @staticmethod
     def query_family_maps():
@@ -309,6 +317,8 @@ class family_handler:
             return _get_heartmula_model_def()
         if base_model_type == "yue":
             return _get_yue_model_def(model_def)
+        if base_model_type in qwen3_defs.QWEN3_TTS_VARIANTS:
+            return qwen3_defs.get_qwen3_model_def(base_model_type)
         return _get_chatterbox_model_def()
 
     @staticmethod
@@ -317,6 +327,8 @@ class family_handler:
             return _get_heartmula_download_def()
         if base_model_type == "yue":
             return _get_yue_download_def(model_def or {})
+        if base_model_type in qwen3_defs.QWEN3_TTS_VARIANTS:
+            return qwen3_defs.get_qwen3_download_def(base_model_type)
         return _get_chatterbox_download_def()
 
     @staticmethod
@@ -413,6 +425,33 @@ class family_handler:
             }
             return pipeline, pipe
 
+        if base_model_type in qwen3_defs.QWEN3_TTS_VARIANTS:
+            from .qwen3.pipeline import Qwen3TTSPipeline
+
+            weights_candidate = None
+            if isinstance(model_filename, (list, tuple)):
+                if len(model_filename) > 0:
+                    weights_candidate = model_filename[0]
+            else:
+                weights_candidate = model_filename
+            weights_path = None
+            if weights_candidate:
+                weights_path = fl.locate_file(weights_candidate, error_if_none=False)
+                if weights_path is None:
+                    weights_path = weights_candidate
+
+            pipeline = Qwen3TTSPipeline(
+                model_weights_path=weights_path,
+                base_model_type=base_model_type,
+                ckpt_root=ckpt_root,
+                device=torch.device("cpu"),
+            )
+
+            pipe = {"transformer": pipeline.model}
+            if getattr(pipeline, "speech_tokenizer", None) is not None:
+                pipe["speech_tokenizer"] = pipeline.speech_tokenizer.model
+            return pipeline, pipe
+
         from .chatterbox.pipeline import ChatterboxPipeline
 
         pipeline = ChatterboxPipeline(ckpt_root=ckpt_root, device="cpu")
@@ -437,6 +476,22 @@ class family_handler:
             defaults = {
                 "audio_prompt_type": "",
             }
+        elif base_model_type == "qwen3_tts_customvoice":
+            speakers = qwen3_defs.get_qwen3_speakers(base_model_type)
+            defaults = {
+                "audio_prompt_type": "",
+                "model_mode": speakers[0] if speakers else "",
+            }
+        elif base_model_type == "qwen3_tts_voicedesign":
+            defaults = {
+                "audio_prompt_type": "",
+                "model_mode": "auto",
+            }
+        elif base_model_type == "qwen3_tts_base":
+            defaults = {
+                "audio_prompt_type": "A",
+                "model_mode": "auto",
+            }
         else:
             defaults = {
                 "audio_prompt_type": "A",
@@ -459,9 +514,7 @@ class family_handler:
                     "num_inference_steps": 0,
                     "negative_prompt": "",
                     "temperature": 1.0,
-	                "multi_prompts_gen_type": 2,
-	                "override_profile": 3.5,
-
+	                "multi_prompts_gen_type": 2
                 }
             )
             return
@@ -476,6 +529,59 @@ class family_handler:
                     "negative_prompt": "",
                     "temperature": 1.0,
 	                "multi_prompts_gen_type": 2,
+                }
+            )
+            return
+
+        if base_model_type == "qwen3_tts_customvoice":
+            speakers = qwen3_defs.get_qwen3_speakers(base_model_type)
+            default_speaker = speakers[0] if speakers else ""
+            ui_defaults.update(
+                {
+                    "audio_prompt_type": "",
+                    "model_mode": default_speaker,
+                    "alt_prompt": "",
+                    "duration_seconds": qwen3_defs.get_qwen3_duration_default(),
+                    "repeat_generation": 1,
+                    "video_length": 0,
+                    "num_inference_steps": 0,
+                    "negative_prompt": "",
+                    "temperature": 0.9,
+                    "multi_prompts_gen_type": 2,
+                }
+            )
+            return
+
+        if base_model_type == "qwen3_tts_voicedesign":
+            ui_defaults.update(
+                {
+                    "audio_prompt_type": "",
+                    "model_mode": "auto",
+                    "alt_prompt": "young female, warm tone, clear articulation",
+                    "duration_seconds": qwen3_defs.get_qwen3_duration_default(),
+                    "repeat_generation": 1,
+                    "video_length": 0,
+                    "num_inference_steps": 0,
+                    "negative_prompt": "",
+                    "temperature": 0.9,
+                    "multi_prompts_gen_type": 2,
+                }
+            )
+            return
+
+        if base_model_type == "qwen3_tts_base":
+            ui_defaults.update(
+                {
+                    "audio_prompt_type": "A",
+                    "model_mode": "auto",
+                    "alt_prompt": "",
+                    "duration_seconds": qwen3_defs.get_qwen3_duration_default(),
+                    "repeat_generation": 1,
+                    "video_length": 0,
+                    "num_inference_steps": 0,
+                    "negative_prompt": "",
+                    "temperature": 0.9,
+                    "multi_prompts_gen_type": 2,
                 }
             )
             return
@@ -528,6 +634,29 @@ class family_handler:
             else:
                 if inputs.get("audio_guide") is not None or inputs.get("audio_guide2") is not None:
                     return "Yue base model does not support audio prompts. Please use Yue ICL."
+            return None
+
+        if base_model_type == "qwen3_tts_customvoice":
+            if one_prompt is None or len(str(one_prompt).strip()) == 0:
+                return "Prompt text cannot be empty for Qwen3 CustomVoice."
+            speaker = inputs.get("model_mode", "")
+            if not speaker:
+                return "Please select a speaker for Qwen3 CustomVoice."
+            speakers = qwen3_defs.get_qwen3_speakers(base_model_type)
+            if speaker.lower() not in speakers:
+                return f"Unsupported speaker '{speaker}'."
+            return None
+
+        if base_model_type == "qwen3_tts_voicedesign":
+            if one_prompt is None or len(str(one_prompt).strip()) == 0:
+                return "Prompt text cannot be empty for Qwen3 VoiceDesign."
+            return None
+
+        if base_model_type == "qwen3_tts_base":
+            if one_prompt is None or len(str(one_prompt).strip()) == 0:
+                return "Prompt text cannot be empty for Qwen3 Base voice clone."
+            if inputs.get("audio_guide") is None:
+                return "Qwen3 Base requires a reference audio clip."
             return None
 
         if len(one_prompt) > 300:

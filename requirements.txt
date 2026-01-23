@@ -59,9 +59,9 @@ pydantic==2.10.6
 # Math & modeling
 torchdiffeq>=0.2.5
 tensordict>=0.6.1
-mmgp==3.7.1
+mmgp==3.7.2
 peft==0.15.0
-vector-quantize-pytorch==1.27.15
+vector-quantize-pytorch
 matplotlib
 gguf==0.17.1
 

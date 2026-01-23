@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "pi-FLUX.2 Dev NVFP 32B",
+        "name": "pi-FLUX.2 Dev NVFP4 32B",
         "architecture": "pi_flux2",
         "description": "pi-FLUX.2 using the NVFP4 Flux 2 Dev checkpoint.",
         "URLs": "flux2_dev_nvfp4",

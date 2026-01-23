@@ -99,6 +99,25 @@ def truncate_for_filesystem(s, max_bytes=None):
 def get_default_workers():
     return os.cpu_count()/ 2
 
+def to_rgb_tensor(value, device="cpu", dtype=torch.float):
+    if isinstance(value, torch.Tensor):
+        tensor = value.to(device=device, dtype=dtype)
+    else:
+        if isinstance(value, (list, tuple, np.ndarray)):
+            vals = value
+        else:
+            vals = [value, value, value]
+        tensor = torch.tensor(vals, device=device, dtype=dtype)
+    if tensor.numel() == 1:
+        tensor = tensor.repeat(3)
+    elif tensor.numel() != 3:
+        tensor = tensor.flatten()
+        if tensor.numel() < 3:
+            tensor = tensor.repeat(3)[:3]
+        else:
+            tensor = tensor[:3]
+    return tensor.view(3, 1, 1)
+
 def process_images_multithread(image_processor, items, process_type, wrap_in_list = True, max_workers: int = os.cpu_count()/ 2, in_place = False) :
     if not items:
        return []    
@@ -374,7 +393,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
     return output_list, output_mask_list
 
 def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, return_mask = False, return_image = False):
-    inpaint_color = canvas_tf_bg / 127.5 - 1
+    inpaint_color = to_rgb_tensor(canvas_tf_bg, device=device, dtype=torch.float) / 127.5 - 1
 
     ref_width, ref_height = ref_img.size
     if (ref_height, ref_width) == image_size and outpainting_dims  == None:
@@ -403,10 +422,10 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
         ref_img = ref_img.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
         ref_img = TF.to_tensor(ref_img).sub_(0.5).div_(0.5).unsqueeze(1)
         if outpainting_dims != None:
-            canvas = torch.full((3, 1, final_height, final_width), inpaint_color, dtype= torch.float, device=device) # [-1, 1]
+            canvas = inpaint_color.expand(3, 1, final_height, final_width).clone()
             canvas[:, :, margin_top + top:margin_top + top + new_height, margin_left + left:margin_left + left + new_width] = ref_img 
         else:
-            canvas = torch.full((3, 1, canvas_height, canvas_width), inpaint_color, dtype= torch.float, device=device) # [-1, 1]
+            canvas = inpaint_color.expand(3, 1, canvas_height, canvas_width).clone()
             canvas[:, :, top:top + new_height, left:left + new_width] = ref_img 
         ref_img = canvas
         canvas = None
@@ -425,7 +444,8 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
 
 def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, device ="cpu"):
     src_videos, src_masks = [], []
-    inpaint_color_compressed = guide_inpaint_color/127.5 - 1
+    inpaint_color_compressed = to_rgb_tensor(guide_inpaint_color, device=device, dtype=torch.float) / 127.5 - 1
+    inpaint_color_compressed = inpaint_color_compressed.unsqueeze(1)
     prepend_count = pre_video_guide.shape[1] if pre_video_guide is not None else 0
     for guide_no, (cur_video_guide, cur_video_mask) in enumerate(zip(video_guides, video_masks)):
         src_video, src_mask = cur_video_guide, cur_video_mask
@@ -436,9 +456,10 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
 
         if any_guide_padding:
             if src_video is None:
-                src_video = torch.full( (3, current_video_length, *image_size ), inpaint_color_compressed, dtype = torch.float, device= device)
+                src_video = inpaint_color_compressed.expand(3, current_video_length, *image_size).clone()
             elif src_video.shape[1] < current_video_length:
-                src_video = torch.cat([src_video, torch.full( (3, current_video_length - src_video.shape[1], *src_video.shape[-2:]  ), inpaint_color_compressed, dtype = src_video.dtype, device= src_video.device) ], dim=1)
+                pad = inpaint_color_compressed.to(src_video.device).expand(3, current_video_length - src_video.shape[1], *src_video.shape[-2:]).clone()
+                src_video = torch.cat([src_video, pad], dim=1)
         elif src_video is not None:
             new_num_frames = (src_video.shape[1] - 1) // latent_size * latent_size + 1 
             if new_num_frames < src_video.shape[1]:
@@ -457,7 +478,7 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
             for k, keep in enumerate(keep_video_guide_frames):
                 if not keep:
                     pos = prepend_count + k
-                    src_video[:, pos:pos+1] = inpaint_color_compressed
+                    src_video[:, pos:pos+1] = inpaint_color_compressed.to(src_video.device)
                     if any_mask: src_mask[:, pos:pos+1] = 1
 
             for k, frame in enumerate(inject_frames):

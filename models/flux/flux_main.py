@@ -270,6 +270,14 @@ class model_factory:
                 return None
             device="cuda"
             flux2 = self.is_flux2
+            model_mode = bbargs.get("model_mode", None)
+            model_mode_int = None
+            if model_mode is not None:
+                try:
+                    model_mode_int = int(model_mode)
+                except (TypeError, ValueError):
+                    model_mode_int = None
+            lanpaint_enabled = model_mode_int in (2, 3, 4, 5)
             if flux2:
                 guide_scale = 1.0
             if self.guidance_max_phases < 1: guide_scale = 1
@@ -448,6 +456,10 @@ class model_factory:
                 joint_pass=joint_pass,
                 denoising_strength=denoising_strength,
                 masking_strength=masking_strength,
+                model_mode=model_mode,
+                height=height,
+                width=width,
+                vae_scale_factor=8,
             )
             if x==None: return None
             # decode latents to pixel space
@@ -456,10 +468,17 @@ class model_factory:
                 with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     x = self.vae.decode(x)
 
-            if image_mask is not None and masking_strength == 1 and not flux2:
-                img_msk_rebuilt = inp["img_msk_rebuilt"]
-                img= input_frames.squeeze(1).unsqueeze(0) # convert_image_to_tensor(image_guide) 
-                x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt 
+            img_msk_rebuilt = inp.get("img_msk_rebuilt") if isinstance(inp, dict) else None
+            if img_msk_rebuilt is not None and (lanpaint_enabled or (masking_strength == 1 and not flux2)):
+                img = None
+                if input_frames is not None:
+                    img = input_frames.squeeze(1).unsqueeze(0)
+                elif input_ref_images is not None and len(input_ref_images) > 0:
+                    img = convert_image_to_tensor(
+                        input_ref_images[0].resize((width, height), resample=Image.Resampling.LANCZOS)
+                    ).unsqueeze(0)
+                if img is not None:
+                    x = img * (1 - img_msk_rebuilt) + x.to(img) * img_msk_rebuilt
 
             x = x.clamp(-1, 1)
             x = x.transpose(0, 1)

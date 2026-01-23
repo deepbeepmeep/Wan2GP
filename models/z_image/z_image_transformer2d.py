@@ -386,6 +386,23 @@ class RopeEmbedder:
 
 
 class ZImageTransformer2DModel(nn.Module):
+    def preprocess_loras(self, model_type, sd):
+        first = next(iter(sd), None)
+        if first is None:
+            return sd
+
+        if ".default." not in first and ".lora." not in first:
+            return sd
+
+        new_sd = {}
+        for k, v in sd.items():
+            if ".default." in k:
+                k = k.replace(".default.", ".")
+            if ".lora." in k:
+                k = k.replace(".lora.", ".lora_")
+            new_sd[k] = v
+        return new_sd
+
     def __init__(
         self,
         # Control-specific parameters (optional)

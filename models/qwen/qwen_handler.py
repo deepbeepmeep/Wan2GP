@@ -35,6 +35,23 @@ class family_handler():
             extra_model_def["vae_upsampler"] = [1]
             extra_model_def["sample_solvers"] = [("Default", "default")]
 
+        if base_model_type in ["qwen_image_20B"]:
+            extra_model_def["inpaint_support"] = True
+            extra_model_def["inpaint_video_prompt_type"] = "VA"
+            extra_model_def["image_video_prompt_type"] = ""            
+            extra_model_def["video_guide_outpainting"] = [2]
+            extra_model_def["model_modes"] = {
+                        "choices": [
+                            ("LanPaint (2 steps): ~2x slower, easy task", 2),
+                            ("LanPaint (5 steps): ~5x slower, medium task", 3),
+                            ("LanPaint (10 steps): ~10x slower, hard task", 4),
+                            ("LanPaint (15 steps): ~15x slower, very hard task", 5),
+                            ],
+                        "default": 2,
+                        "label" : "Inpainting Method",
+                        "image_modes" : [2],
+            }
+
         if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             extra_model_def["inpaint_support"] = True
             if base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
@@ -54,12 +71,16 @@ class family_handler():
                         "choices": [
                             ("Lora Inpainting: Inpainted area completely unrelated to masked content", 1),
                             ("Masked Denoising : Inpainted area may reuse some content that has been masked", 0),
-                            ("LanPaint : High Quality Inpainting but up x5 slower", 2),
+                            ("LanPaint (2 steps): ~2x slower, easy task", 2),
+                            ("LanPaint (5 steps): ~5x slower, medium task", 3),
+                            ("LanPaint (10 steps): ~10x slower, hard task", 4),
+                            ("LanPaint (15 steps): ~15x slower, very hard task", 5),
                             ],
                         "default": 1,
                         "label" : "Inpainting Method",
                         "image_modes" : [2],
             }
+            extra_model_def["inpaint_color"] = "FF0000"
 
         if base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             extra_model_def["guide_preprocessing"] = {
@@ -187,21 +208,37 @@ class family_handler():
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
-        if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
+        if base_model_type in ["qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
             model_mode = inputs["model_mode"]
-            denoising_strength= inputs["denoising_strength"]
-            video_guide_outpainting= inputs["video_guide_outpainting"]
-            from wgp import get_outpainting_dims
-            outpainting_dims = get_outpainting_dims(video_guide_outpainting)
+            denoising_strength = inputs["denoising_strength"]
+            masking_strength = inputs["masking_strength"]
+            model_mode_int = None
+            if model_mode is not None:
+                try:
+                    model_mode_int = int(model_mode)
+                except (TypeError, ValueError):
+                    model_mode_int = None
 
-            if denoising_strength < 1 and model_mode != 0:
+            if model_mode_int in (2, 3, 4, 5):
+                if denoising_strength != 1 or masking_strength != 1:
+                    gr.Info("LanPaint forces Denoising Strength and Masking Strength to 1; non-1 values will be ignored.")
+            elif denoising_strength < 1 and model_mode_int != 0:
                 gr.Info("Denoising Strength will be ignored if Masked Denoising is not used")
-            if outpainting_dims is not None and model_mode != 1 :
-                return "Outpainting is supported only with Lora Inpainting"
+
         if base_model_type in ["qwen_image_layered_20B"]:
             if inputs.get("image_guide") is None:
                 return "Qwen Image Layered requires a Control Image."
-            
+
+    @staticmethod
+    def custom_prompt_preprocess(prompt, video_guide_outpainting, model_mode, **kwargs):
+        if model_mode == 0:
+            # from wgp import get_outpainting_dims
+            if len(video_guide_outpainting) and not video_guide_outpainting.startswith("#") and video_guide_outpainting != "0 0 0 0":
+                if not prompt.endswith("."): prompt += "."
+                prompt += "Remove the red paddings on the sides and show what's behind them."
+        return prompt  
+
+
     @staticmethod
     def get_rgb_factors(base_model_type ):
         from shared.RGB_factors import get_rgb_factors

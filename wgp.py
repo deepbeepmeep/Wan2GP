@@ -912,9 +912,9 @@ def validate_settings(state, model_type, single_prompt, inputs):
     inputs.update(override_inputs)
     if hasattr(model_handler, "validate_generative_settings"):
         error = model_handler.validate_generative_settings(model_type, model_def, inputs)
-    if error is not None and len(error) > 0:
-        gr.Info(error)
-        return ret()
+        if error is not None and len(error) > 0:
+            gr.Info(error)
+            return ret()
     return inputs, prompts, image_start, image_end
 
 
@@ -5891,7 +5891,6 @@ def generate_video(
         source_video_frames_count = 0  # number of frames to use in source video (processing starts source_video_overlap_frames_count frames before )
         frames_already_processed = []
         frames_already_processed_count = 0
-        output_new_audio_filepath = None
         overlapped_latents = None
         context_scale = None
         window_no = 0
@@ -6395,11 +6394,12 @@ def generate_video(
                     overlapped_latents = samples.get("latent_slice", None)
                     BGRA_frames = samples.get("BGRA_frames", None)
                     generated_audio = samples.get("audio", generated_audio)
-                    if generated_audio is not None and model_def.get("output_audio_is_input_audio", False) and output_new_audio_filepath is not None:  
-                        generated_audio = None
-                    else:
-                        output_new_audio_filepath = None
-                        output_audio_sampling_rate =  samples.get("audio_sampling_rate", audio_sampling_rate)
+                    if generated_audio is not None:
+                        if model_def.get("output_audio_is_input_audio", False) and output_new_audio_filepath is not None:  
+                            generated_audio = None
+                        else:
+                            output_new_audio_filepath = None
+                            output_audio_sampling_rate =  samples.get("audio_sampling_rate", audio_sampling_rate)
                     post_decode_pre_trim = samples.get("post_decode_pre_trim", 0) 
                     samples = samples.get("x", None)
 
@@ -6558,7 +6558,8 @@ def generate_video(
                         new_audio_tracks = [output_new_audio_filepath]
                     else:
                         new_audio_tracks = control_audio_tracks
-
+                    if generated_audio is not None: output_new_audio_filepath = None
+                     
                     combine_and_concatenate_video_with_audio_tracks(
                         video_path,
                         save_path_tmp,

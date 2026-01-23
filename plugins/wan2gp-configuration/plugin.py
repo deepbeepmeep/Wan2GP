@@ -187,6 +187,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         value=mmaudio_persistence_default,
                         label="MMAudio Model Persistence"
                     )
+                    self.rife_version_choice = gr.Dropdown(
+                        choices=[("RIFE HDv3 (default)", "v3"), ("RIFE v4.26 (latest)", "v4")],
+                        value=self.server_config.get("rife_version", "v3"),
+                        label="RIFE Temporal Upsampling Model",
+                        interactive=not self.args.lock_config
+                    )
 
                 with gr.Tab("Outputs"):
                     self.video_output_codec_choice = gr.Dropdown(choices=[("x265 CRF 28 (Balanced)", 'libx265_28'), ("x264 Level 8 (Balanced)", 'libx264_8'), ("x265 CRF 8 (High Quality)", 'libx265_8'), ("x264 Level 10 (High Quality)", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], value=self.server_config.get("video_output_codec", "libx264_8"), label="Video Codec")
@@ -222,7 +228,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.text_encoder_quantization_choice, self.VAE_precision_choice, self.compile_choice,
             self.depth_anything_v2_variant_choice, self.vae_config_choice, self.boost_choice,
             self.profile_choice, self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
-            self.enhancer_enabled_choice, self.enhancer_mode_choice, self.mmaudio_mode_choice, self.mmaudio_persistence_choice,
+            self.enhancer_enabled_choice, self.enhancer_mode_choice, self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.rife_version_choice,
             self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice,
@@ -271,7 +277,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             text_encoder_quantization_choice, VAE_precision_choice, compile_choice,
             depth_anything_v2_variant_choice, vae_config_choice, boost_choice,
             profile_choice, preload_in_VRAM_choice, max_reserved_loras_choice,
-            enhancer_enabled_choice, enhancer_mode_choice, mmaudio_mode_choice, mmaudio_persistence_choice,
+            enhancer_enabled_choice, enhancer_mode_choice, mmaudio_mode_choice, mmaudio_persistence_choice, rife_version_choice,
             video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice,
@@ -300,6 +306,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "fit_canvas": fit_canvas_choice, "enhancer_enabled": enhancer_enabled_choice,
             "enhancer_mode": enhancer_mode_choice, "mmaudio_mode": mmaudio_mode_choice,
             "mmaudio_persistence": mmaudio_persistence_choice, "mmaudio_enabled": mmaudio_enabled_choice,
+            "rife_version": rife_version_choice,
             "preload_in_VRAM": preload_in_VRAM_choice, "depth_anything_v2_variant": depth_anything_v2_variant_choice,
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
@@ -336,7 +343,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "attention_mode", "vae_config", "boost", "save_path", "image_save_path",
             "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
-            "mmaudio_persistence", "mmaudio_enabled",
+            "mmaudio_persistence", "mmaudio_enabled", "rife_version",
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "checkpoints_paths",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
@@ -359,6 +366,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("transformer_dtype_policy", new_server_config["transformer_dtype_policy"])
         self.set_global("transformer_types", new_server_config["transformer_types"])
         self.set_global("reload_needed", needs_reload)
+        self.server_config.update(new_server_config)
 
         if "enhancer_enabled" in changes or "enhancer_mode" in changes:
             self.set_global("prompt_enhancer_image_caption_model", None)

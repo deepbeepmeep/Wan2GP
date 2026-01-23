@@ -1,5 +1,6 @@
 {
 	"prompt": "",
+	"alt_prompt": "",
 	"multi_prompts_gen_type": 0,
 	"image_mode":0,
 	"image_prompt_type": "",
@@ -24,6 +25,7 @@
 	"resolution": "832x480",
 	"batch_size": 1,
 	"video_length": 81,
+	"duration_seconds": 0,
 	"force_fps": "",
 	"num_inference_steps": 30,
 	"seed": -1,

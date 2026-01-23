@@ -32,13 +32,21 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
     def _ensure_bin_dir_on_path():
         current_path = os.environ.get("PATH", "")
         path_parts = current_path.split(os.pathsep) if current_path else []
-        dirs_to_add = []
-        # Add ffmpeg_bins and repo root to PATH
+
+        def _normalize(p: str) -> str:
+            p = os.path.normpath(p)
+            return os.path.normcase(p) if os.name == "nt" else p
+
+        prioritized = []
+        seen = set()
         for d in [bin_dir, repo_root]:
-            if str(d) not in path_parts:
-                dirs_to_add.append(str(d))
-        if dirs_to_add:
-            os.environ["PATH"] = os.pathsep.join(dirs_to_add + path_parts)
+            key = _normalize(str(d))
+            if key not in seen:
+                prioritized.append(str(d))
+                seen.add(key)
+
+        filtered = [p for p in path_parts if _normalize(p) not in seen]
+        os.environ["PATH"] = os.pathsep.join(prioritized + filtered)
 
     def _ensure_library_path():
         if os.name == "nt":
@@ -73,6 +81,10 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
     def _binary_exists(name: str) -> bool:
         return _resolve_path(name) is not None
 
+    def _local_binary_exists(name: str) -> bool:
+        candidate = bin_dir / _candidate_name(name)
+        return candidate.exists()
+
     def _libs_present() -> bool:
         if os.name == "nt":
             return True
@@ -93,8 +105,12 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
         if ffplay_path:
             os.environ["FFPLAY_BINARY"] = str(ffplay_path)
 
-    missing = [binary for binary in required_binaries if not _binary_exists(binary)]
-    libs_ok = _libs_present()
+    if os.name == "nt":
+        missing = [binary for binary in required_binaries if not _local_binary_exists(binary)]
+        libs_ok = True
+    else:
+        missing = [binary for binary in required_binaries if not _binary_exists(binary)]
+        libs_ok = _libs_present()
     if not missing and libs_ok:
         _set_env_vars()
         return
@@ -218,9 +234,14 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
         print(f"Failed to download FFmpeg binaries automatically: {exc}")
         return
 
-    if not all(_binary_exists(binary) for binary in required_binaries):
-        print("FFmpeg binaries are still missing after download; please install them manually.")
-        return
+    if os.name == "nt":
+        if not all(_local_binary_exists(binary) for binary in required_binaries):
+            print("FFmpeg binaries are still missing after download; please install them manually.")
+            return
+    else:
+        if not all(_binary_exists(binary) for binary in required_binaries):
+            print("FFmpeg binaries are still missing after download; please install them manually.")
+            return
 
     _ensure_bin_dir_on_path()
     _ensure_library_path()

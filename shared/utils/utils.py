@@ -445,6 +445,7 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
 def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, device ="cpu"):
     src_videos, src_masks = [], []
     inpaint_color_compressed = to_rgb_tensor(guide_inpaint_color, device=device, dtype=torch.float) / 127.5 - 1
+    inpaint_color_compressed = inpaint_color_compressed.unsqueeze(1)
     prepend_count = pre_video_guide.shape[1] if pre_video_guide is not None else 0
     for guide_no, (cur_video_guide, cur_video_mask) in enumerate(zip(video_guides, video_masks)):
         src_video, src_mask = cur_video_guide, cur_video_mask

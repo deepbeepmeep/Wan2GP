@@ -318,7 +318,7 @@ These kernels will offer optimized INT4 / FP4 dequantization.
 **Please Note FP4 support is hardware dependent and will work only with RTX 50xx / sm120+ GPUs**
 
 
-### Light2xv NVP4 Kernels Wheels for Windows / Python 3.10 / Pytorch 2.9.1 / Cuda 13.8 (RTX 50xx / sm120+ only !)
+### Light2xv NVP4 Kernels Wheels for Windows / Python 3.10 / Pytorch 2.9.1 / Cuda 12.8 (RTX 50xx / sm120+ only !)
 - Windows
    ```
   pip install https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.1+torch2.9.1-cp39-abi3-win_amd64.whl

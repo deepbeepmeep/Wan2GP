@@ -44,6 +44,8 @@ insightface @ https://github.com/deepbeepmeep/insightface/raw/refs/heads/master/
 insightface==0.7.3 ; sys_platform == "linux"
 facexlib==0.3.0
 taichi
+vector_quantize_pytorch==1.27.19 
+
 # chumpy wheel hosted on GitHub to avoid sdist build isolation issue
 chumpy @ https://github.com/deepbeepmeep/chumpy/releases/download/v0.71/chumpy-0.71-py3-none-any.whl
 smplfitter @ https://github.com/deepbeepmeep/smplfitter/releases/download/v0.2.10/smplfitter-0.2.10-py3-none-any.whl
@@ -59,6 +61,7 @@ torchdiffeq>=0.2.5
 tensordict>=0.6.1
 mmgp==3.7.1
 peft==0.15.0
+vector-quantize-pytorch==1.27.15
 matplotlib
 gguf==0.17.1
 

@@ -234,7 +234,7 @@ class family_handler():
         return download_def 
 
     @staticmethod
-    def load_model(model_filename, model_type = None,  base_model_type = None, model_def = None, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, text_encoder_filename = None):
+    def load_model(model_filename, model_type = None,  base_model_type = None, model_def = None, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, text_encoder_filename = None, **kwargs):
         from .hunyuan import HunyuanVideoSampler
         from mmgp import offload
 

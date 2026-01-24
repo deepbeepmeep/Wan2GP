@@ -5565,12 +5565,6 @@ def generate_video(
         send_cmd("status", "Model loaded")
         reload_needed=  False
     if args.test:
-        skip_gemma_save = os.environ.get("WAN2GP_SKIP_GEMMA_SAVE", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
         send_cmd("info", "Test mode: model loaded, skipping generation.")
         return
     overridden_attention = get_overridden_attention(model_type)

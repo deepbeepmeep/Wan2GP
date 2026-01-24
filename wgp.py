@@ -85,8 +85,8 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.2"
-WanGP_version = "10.50"
-settings_version = 2.43
+WanGP_version = "10.51"
+settings_version = 2.44
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -5479,6 +5479,7 @@ def generate_video(
     pace,
     exaggeration,
     temperature,
+    top_k,
     output_filename,
     state,
     model_type,
@@ -6244,6 +6245,10 @@ def generate_video(
                 extra_generate_kwargs = {}
                 if audio_only and duration_def is not None:
                     extra_generate_kwargs["duration_seconds"] = duration_seconds
+                if audio_only and model_def.get("guidance_max_phases", 0) >= 1:
+                    extra_generate_kwargs["cfg_scale"] = guidance_scale
+                if audio_only and model_def.get("top_k_slider", False):
+                    extra_generate_kwargs["top_k"] = top_k
                 samples = wan_model.generate(
                     input_prompt = prompt,
                     alt_prompt = alt_prompt,
@@ -7595,6 +7600,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += [ "pace", "exaggeration", "temperature"]
     if model_def.get("duration_slider", None) is None:
         pop += ["duration_seconds"]
+    if not model_def.get("top_k_slider", False):
+        pop += ["top_k"]
 
     if "force_fps" in inputs and len(inputs["force_fps"])== 0:
         pop += ["force_fps"]
@@ -8327,6 +8334,7 @@ def save_inputs(
             pace,
             exaggeration,
             temperature,
+            top_k,
             output_filename,
             mode,
             state,
@@ -9743,7 +9751,32 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             alt_guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("alt_guidance_scale"), step=0.5, label= alt_guidance_type if any_alt_guidance else "" , visible=any_alt_guidance, show_reset_button= False )
 
                         with gr.Row(visible=audio_only) as temperature_row:
-                            temperature = gr.Slider( 0.1, 1.5, value=ui_get("temperature"), step=0.01, label="Temperature", show_reset_button= False)
+                            temperature = gr.Slider(0.1, 1.5, value=ui_get("temperature"), step=0.01, label="Temperature", show_reset_button=False)
+
+                        top_k_visible = audio_only and model_def.get("top_k_slider", False)
+                        top_k_min = 0
+                        top_k_max = 100
+                        top_k_step = 1
+                        top_k_default = 50
+                        top_k_label = "Top-k"
+                        top_k_value = ui_get("top_k", top_k_default)
+                        try:
+                            top_k_value = int(top_k_value)
+                        except Exception:
+                            top_k_value = int(top_k_default)
+                        if top_k_value < top_k_min:
+                            top_k_value = top_k_min
+                        elif top_k_value > top_k_max:
+                            top_k_value = top_k_max
+                        with gr.Row(visible=top_k_visible) as top_k_row:
+                            top_k = gr.Slider(
+                                top_k_min,
+                                top_k_max,
+                                value=top_k_value,
+                                step=top_k_step,
+                                label=top_k_label,
+                                show_reset_button=False,
+                            )
 
                         sample_solver_choices = model_def.get("sample_solvers", None)
                         any_flow_shift = model_def.get("flow_shift", False) 
@@ -10243,7 +10276,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_eject_audio_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
-                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, number_frames_row, negative_prompt_row, chatter_row] +\
+                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, top_k_row, number_frames_row, negative_prompt_row, chatter_row] +\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

@@ -20,7 +20,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         super().__init__()
         self.name = PlugIn_Name
         self.version = "1.0.0"
-        self.description = PlugIn_Name
+        self.description = "Sample Source Code to Design Plugins"
+        self.uninstallable = False
 
     def setup_ui(self):
         self.request_global("get_current_model_settings")

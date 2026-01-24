@@ -55,7 +55,6 @@ SYSTEM_PLUGINS = [
     "wan2gp-video-mask-creator",
     "wan2gp-motion-designer",
     "wan2gp-guides",
-    "wan2gp-downloads",
     "wan2gp-configuration",
     "wan2gp-plugin-manager",
     "wan2gp-about",
@@ -81,6 +80,7 @@ class WAN2GPPlugin:
         self.name = self.__class__.__name__
         self.version = "1.0.0"
         self.description = "No description provided."
+        self.uninstallable = True
         self._component_requests: List[str] = []
         self._global_requests: List[str] = []
         self._insert_after_requests: List[InsertAfterRequest] = []
@@ -164,7 +164,15 @@ class PluginManager:
         for dir_name in self.discover_plugins():
             plugin_path = os.path.join(self.plugins_dir, dir_name)
             is_system = dir_name in SYSTEM_PLUGINS
-            info = {'id': dir_name, 'name': dir_name, 'version': 'N/A', 'description': 'No description provided.', 'path': plugin_path, 'system': is_system}
+            info = {
+                'id': dir_name,
+                'name': dir_name,
+                'version': 'N/A',
+                'description': 'No description provided.',
+                'path': plugin_path,
+                'system': is_system,
+                'uninstallable': True,
+            }
             try:
                 module = importlib.import_module(f"{dir_name}.plugin")
                 for name, obj in inspect.getmembers(module, inspect.isclass):
@@ -173,6 +181,7 @@ class PluginManager:
                         info['name'] = instance.name
                         info['version'] = instance.version
                         info['description'] = instance.description
+                        info['uninstallable'] = bool(getattr(instance, 'uninstallable', True))
                         break
             except Exception as e:
                 print(f"Could not load metadata for plugin {dir_name}: {e}")
@@ -188,12 +197,25 @@ class PluginManager:
         else:
             raise
 
+    def _is_plugin_uninstallable(self, plugin_id: str) -> bool:
+        if plugin_id in SYSTEM_PLUGINS:
+            return False
+        try:
+            for info in self.get_plugins_info():
+                if info.get('id') == plugin_id:
+                    return bool(info.get('uninstallable', True))
+        except Exception:
+            pass
+        return True
+
     def uninstall_plugin(self, plugin_id: str):
         if not plugin_id:
             return "[Error] No plugin selected for uninstallation."
         
         if plugin_id in SYSTEM_PLUGINS:
             return f"[Error] Cannot uninstall system plugin '{plugin_id}'."
+        if not self._is_plugin_uninstallable(plugin_id):
+            return f"[Error] Cannot uninstall protected plugin '{plugin_id}'."
 
         target_dir = os.path.join(self.plugins_dir, plugin_id)
         if not os.path.isdir(target_dir):

@@ -312,6 +312,12 @@ class Qwen3TTSPipeline:
             "temperature": float(temperature),
             "stopping_criteria": stopping,
         }
+        top_k = kwargs.get("top_k", None)
+        if top_k is not None:
+            try:
+                gen_kwargs["top_k"] = int(top_k)
+            except (TypeError, ValueError):
+                pass
 
         try:
             if self.base_model_type == "qwen3_tts_customvoice":

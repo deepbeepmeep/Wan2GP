@@ -97,7 +97,7 @@ def _get_heartmula_model_def():
         "audio_only": True,
         "image_outputs": False,
         "sliding_window": False,
-        "guidance_max_phases": 0,
+        "guidance_max_phases": 1,
         "no_negative_prompt": True,
         "image_prompt_types_allowed": "",
         "supports_early_stop": True,
@@ -128,11 +128,13 @@ def _get_heartmula_model_def():
             "increment": 0.1,
             "default": 120,
         },
+        "top_k_slider": True,
         "heartmula_cfg_scale": 1.5,
         "heartmula_topk": 50,
         "heartmula_max_audio_length_ms": 120000,
         "heartmula_codec_guidance_scale": 1.25,
         "heartmula_codec_steps": 10,
+        "heartmula_codec_version": "",
         "compile": False, #["transformer", "transformer2"]
     }
 
@@ -198,16 +200,19 @@ def _get_chatterbox_download_def():
     }
 
 
-def _get_heartmula_download_def():
+def _get_heartmula_download_def(model_def):
+    codec_version = (model_def or {}).get("heartmula_codec_version", "")
+    codec_suffix = f"_{codec_version}" if codec_version else ""
+    repo_id = "DeepBeepMeep/HeartMuLa" if codec_version else "DeepBeepMeep/TTS"
     gen_files = [
         "gen_config.json",
         "tokenizer.json",
-        "codec_config.json",
-        "HeartMula_codec.safetensors",
+        f"codec_config{codec_suffix}.json",
+        f"HeartMula_codec{codec_suffix}.safetensors",
     ]
     return [
         {
-            "repoId": "DeepBeepMeep/TTS",
+            "repoId": repo_id,
             "sourceFolderList": ["HeartMula"],
             "fileList": [gen_files],
         },
@@ -324,7 +329,7 @@ class family_handler:
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
         if base_model_type == "heartmula_oss_3b":
-            return _get_heartmula_download_def()
+            return _get_heartmula_download_def(model_def or {})
         if base_model_type == "yue":
             return _get_yue_download_def(model_def or {})
         if base_model_type in qwen3_defs.QWEN3_TTS_VARIANTS:
@@ -378,6 +383,7 @@ class family_handler:
                 codec_guidance_scale=model_def.get(
                     "heartmula_codec_guidance_scale", 1.25
                 ),
+                codec_version=model_def.get("heartmula_codec_version", ""),
             )
           
             pipeline.mula.decoder[0].layers._compile_me = False
@@ -499,6 +505,15 @@ class family_handler:
             }
         for key, value in defaults.items():
             ui_defaults.setdefault(key, value)
+        if settings_version < 2.44:
+            if base_model_type == "heartmula_oss_3b":
+                ui_defaults["guidance_scale"] = model_def.get("heartmula_cfg_scale", 1.5)
+                ui_defaults["top_k"] = model_def.get("heartmula_topk", 50)
+            elif base_model_type in qwen3_defs.QWEN3_TTS_VARIANTS:
+                if model_def.get("top_k_slider", False):
+                    ui_defaults["top_k"] = 50
+            elif base_model_type != "yue":
+                ui_defaults["guidance_scale"] = 1.0
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
@@ -514,6 +529,8 @@ class family_handler:
                     "num_inference_steps": 0,
                     "negative_prompt": "",
                     "temperature": 1.0,
+                    "guidance_scale": model_def.get("heartmula_cfg_scale", 1.5),
+                    "top_k": model_def.get("heartmula_topk", 50),
 	                "multi_prompts_gen_type": 2
                 }
             )
@@ -547,6 +564,7 @@ class family_handler:
                     "num_inference_steps": 0,
                     "negative_prompt": "",
                     "temperature": 0.9,
+                    "top_k": 50,
                     "multi_prompts_gen_type": 2,
                 }
             )
@@ -564,6 +582,7 @@ class family_handler:
                     "num_inference_steps": 0,
                     "negative_prompt": "",
                     "temperature": 0.9,
+                    "top_k": 50,
                     "multi_prompts_gen_type": 2,
                 }
             )
@@ -581,6 +600,7 @@ class family_handler:
                     "num_inference_steps": 0,
                     "negative_prompt": "",
                     "temperature": 0.9,
+                    "top_k": 50,
                     "multi_prompts_gen_type": 2,
                 }
             )
@@ -597,6 +617,7 @@ class family_handler:
                 "exaggeration": 0.5,
                 "temperature": 0.8,
                 "pace": 0.5,
+                "guidance_scale": 1.0,
 	            "multi_prompts_gen_type": 2,
             }
         )

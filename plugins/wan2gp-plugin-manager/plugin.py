@@ -221,6 +221,17 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                 margin-left: 8px;
                 white-space: nowrap;
             }
+            .plugin-bundled-badge {
+                font-size: 0.85em;
+                font-weight: 600;
+                color: var(--text-color-secondary);
+                background-color: var(--background-fill-primary);
+                padding: 2px 8px;
+                border-radius: 4px;
+                margin-left: 8px;
+                border: 1px solid var(--border-color-primary);
+                white-space: nowrap;
+            }
             .plugin-item.update-available {
                 border-left: 4px solid var(--color-accent);
             }
@@ -241,6 +252,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             for plugin in user_plugins:
                 plugin_id = plugin['id']
                 checked = "checked" if plugin_id in enabled_user_plugins else ""
+                uninstallable = plugin.get('uninstallable', True)
                 
                 update_notice_html = ''
                 item_update_class = ''
@@ -250,6 +262,19 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                     if remote_version > local_version:
                         update_notice_html = f'<span class="update-available-notice">v{remote_version} update available</span>'
                         item_update_class = 'update-available'
+
+                bundled_badge_html = ''
+                if not uninstallable:
+                    bundled_badge_html = '<span class="plugin-bundled-badge" title="Bundled plugin, cannot be uninstalled">Bundled</span>'
+
+                actions_html = ""
+                if uninstallable:
+                    actions_html = """
+                        <button class="plugin-action-btn" onclick="handlePluginAction(this, 'update')">Update</button>
+                        <button class="plugin-action-btn" onclick="handlePluginAction(this, 'reinstall')">Reinstall</button>
+                        <button class="plugin-action-btn" onclick="handlePluginAction(this, 'uninstall')">Uninstall</button>
+                    """
+                actions_container_html = f'<div class="plugin-item-actions">{actions_html}</div>' if actions_html else ""
                 
                 user_items_html += f"""
                 <div class="plugin-item {item_update_class}" data-plugin-id="{plugin_id}" draggable="true">
@@ -259,16 +284,13 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                             <div class="plugin-header">
                                 <span class="name">{plugin['name']}</span>
                                 {update_notice_html}
+                                {bundled_badge_html}
                             </div>
                             <span class="version">version {plugin['version']} (id: {plugin['id']})</span>
                             <span class="description">{plugin.get('description', 'No description provided.')}</span>
                         </div>
                     </div>
-                    <div class="plugin-item-actions">
-                        <button class="plugin-action-btn" onclick="handlePluginAction(this, 'update')">Update</button>
-                        <button class="plugin-action-btn" onclick="handlePluginAction(this, 'reinstall')">Reinstall</button>
-                        <button class="plugin-action-btn" onclick="handlePluginAction(this, 'uninstall')">Uninstall</button>
-                    </div>
+                    {actions_container_html}
                 </div>
                 """
             user_html = f'<div id="user-plugin-list">{user_items_html}</div>'

@@ -14,6 +14,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self.name = "Models Manager"
         self.version = "1.0.0"
         self.description = "Inspect and manage installed model dependencies"
+        self.uninstallable = False
         self._node_map = {}
         self._tree_data = []
         self._model_files = {}

@@ -506,7 +506,7 @@ class MultiHeadAttention(nn.Module):
             device.type == "cuda"
             and dtype in (torch.float16, torch.bfloat16)
             and self.head_dim <= 256
-        )
+        ) and False #disabled flash
         kv_ready = self.kv_cache is not None and self.cache_enabled
         self._flash_kv_ready = (
             flash_ok and self._flash_attn is not None and kv_ready

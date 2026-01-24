@@ -390,7 +390,7 @@ class HeartMuLaPipeline:
                             denoising_extra=(
                                 f"{generated_seconds_int}s/{progress_total_seconds}s"
                             ),
-                            progress_unit="second",
+                            progress_unit="seconds",
                         )
             frames = torch.stack(frames).permute(1, 2, 0).squeeze(0)
             return {"frames": frames}

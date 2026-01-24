@@ -9614,6 +9614,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         value=ui_get("alt_prompt", ""),
                         lines=alt_prompt_lines,
                         placeholder=alt_prompt_placeholder,
+                        visible=True,
                     )
             else:
                 with gr.Row(visible=False) as alt_prompt_row:

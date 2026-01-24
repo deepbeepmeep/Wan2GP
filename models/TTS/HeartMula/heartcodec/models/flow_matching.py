@@ -78,7 +78,7 @@ class FlowMatching(nn.Module):
         codes = self.vq_embed.get_codes_from_indices(codes_bestrq_emb.transpose(1, 2))
         codes_summed = codes.sum(dim=0)
         project_out = self.vq_embed.project_out
-        quantized_feature_emb = project_out(codes_summed)
+        quantized_feature_emb = project_out(codes_summed.to(project_out.weight.dtype))
         quantized_feature_emb = self.cond_feature_emb(quantized_feature_emb)
         quantized_feature_emb = F.interpolate(
             quantized_feature_emb.permute(0, 2, 1), scale_factor=2, mode="nearest"

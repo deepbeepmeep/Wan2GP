@@ -6400,6 +6400,8 @@ def generate_video(
                         else:
                             output_new_audio_filepath = None
                             output_audio_sampling_rate =  samples.get("audio_sampling_rate", audio_sampling_rate)
+                    else:
+                        output_audio_sampling_rate =  samples.get("audio_sampling_rate", audio_sampling_rate)
                     post_decode_pre_trim = samples.get("post_decode_pre_trim", 0) 
                     samples = samples.get("x", None)
 

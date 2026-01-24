@@ -203,7 +203,7 @@ def _get_chatterbox_download_def():
 def _get_heartmula_download_def(model_def):
     codec_version = (model_def or {}).get("heartmula_codec_version", "")
     codec_suffix = f"_{codec_version}" if codec_version else ""
-    repo_id = "DeepBeepMeep/HeartMuLa" if codec_version else "DeepBeepMeep/TTS"
+    repo_id = "DeepBeepMeep/TTS"
     gen_files = [
         "gen_config.json",
         "tokenizer.json",

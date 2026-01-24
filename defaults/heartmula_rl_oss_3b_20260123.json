@@ -4,8 +4,8 @@
         "architecture": "heartmula_oss_3b",
         "description": "HeartMuLa RL OSS 3B checkpoint (20260123) with updated codec support. This version should be better at following instructions thanks to a reinforced learning training.",
         "URLs": [
-            "https://huggingface.co/DeepBeepMeep/HeartMuLa/resolve/main/heartmula_rl_oss_3b_20260123_bf16.safetensors",
-            "https://huggingface.co/DeepBeepMeep/HeartMuLa/resolve/main/heartmula_rl_oss_3b_20260123_quanto_bf16_int8.safetensors"
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/heartmula_rl_oss_3b_20260123_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/heartmula_rl_oss_3b_20260123_quanto_bf16_int8.safetensors"
         ],
         "heartmula_codec_version": "20260123"
     },

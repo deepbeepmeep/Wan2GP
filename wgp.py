@@ -9623,19 +9623,37 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 exaggeration = gr.Slider( 0.25, 2.0, value=ui_get("exaggeration"), step=0.01, label="Emotion Exaggeration (0.5 = Neutral)", show_reset_button= False)
                 pace = gr.Slider( 0.2, 1, value=ui_get("pace"), step=0.01, label="Pace", show_reset_button= False)
             duration_def = model_def.get("duration_slider", None)
+            duration_visible = audio_only and duration_def is not None
             if duration_def is None:
-                duration_seconds = gr.Number(value=0, visible=False)
+                duration_min = 0
+                duration_max = 1
+                duration_step = 1
+                duration_default = 0
+                duration_label = "Duration"
             else:
+                duration_min = duration_def.get("min", 30)
+                duration_max = duration_def.get("max", 240)
+                duration_step = duration_def.get("increment", 1)
                 duration_default = duration_def.get("default", 120)
-                with gr.Row(visible=audio_only) as duration_row:
-                    duration_seconds = gr.Slider(
-                        duration_def.get("min", 30),
-                        duration_def.get("max", 240),
-                        value=ui_get("duration_seconds", duration_default),
-                        step=duration_def.get("increment", 1),
-                        label=duration_def.get("label", "Duration"),
-                        show_reset_button=False,
-                    )
+                duration_label = duration_def.get("label", "Duration")
+            duration_value = ui_get("duration_seconds", duration_default)
+            try:
+                duration_value = float(duration_value)
+            except Exception:
+                duration_value = duration_default
+            if duration_value < duration_min:
+                duration_value = duration_min
+            elif duration_value > duration_max:
+                duration_value = duration_max
+            duration_seconds = gr.Slider(
+                duration_min,
+                duration_max,
+                value=duration_value,
+                step=duration_step,
+                label=duration_label,
+                visible=duration_visible,
+                show_reset_button=False,
+            )
 
             with gr.Row(visible=not audio_only) as resolution_row:
                 fit_canvas = server_config.get("fit_canvas", 0)

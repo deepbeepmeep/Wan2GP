@@ -3709,6 +3709,7 @@ def refresh_gallery(state): #, msg
     queue = gen.get("queue", [])
     abort_interactive = not gen.get("abort", False)
     early_stop_interactive = not gen.get("early_stop", False)
+    early_stop_visible = False
 
     if gen.pop("refresh_tab", False):
         if last_was_audio: 
@@ -3719,7 +3720,7 @@ def refresh_gallery(state): #, msg
         output_tabs = [gr.update(), gr.update()]
 
     if not in_progress or len(queue) == 0:
-        return *output_tabs, gr.Gallery(value = file_list) if last_was_audio else gr.Gallery(selected_index=choice, value = file_list), gr.update() if last_was_audio else choice, *pack_audio_gallery_state(audio_file_list, audio_choice), gr.HTML("", visible= False),  gr.Button(visible=True), gr.Button(visible=False), gr.Row(visible=False), gr.Row(visible=False), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(interactive=  early_stop_interactive), gr.Button(visible= False)
+        return *output_tabs, gr.Gallery(value = file_list) if last_was_audio else gr.Gallery(selected_index=choice, value = file_list), gr.update() if last_was_audio else choice, *pack_audio_gallery_state(audio_file_list, audio_choice), gr.HTML("", visible= False),  gr.Button(visible=True), gr.Button(visible=False), gr.Row(visible=False), gr.Row(visible=False), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(interactive=  early_stop_interactive, visible= early_stop_visible), gr.Button(visible= False)
     else:
         output_tabs = [gr.update(), gr.update()]
         task = queue[0]
@@ -3730,6 +3731,7 @@ def refresh_gallery(state): #, msg
         base_model_type = get_base_model_type(model_type)
         model_def = get_model_def(model_type) 
         onemorewindow_visible = test_any_sliding_window(base_model_type) and params.get("image_mode",0) == 0 and (not params.get("mode","").startswith("edit_")) and not model_def.get("preprocess_all", False)
+        early_stop_visible = bool(model_def.get("supports_early_stop", False))
         enhanced = False
         if prompt.startswith("!enhanced!\n"):
             enhanced = True
@@ -3787,7 +3789,7 @@ def refresh_gallery(state): #, msg
         else:
             choice = max(0, choice)
                     
-        return *output_tabs, gr.Gallery(value = file_list) if last_was_audio else gr.Gallery(selected_index=choice, value = file_list), gr.update() if last_was_audio else choice, *pack_audio_gallery_state(audio_file_list, audio_choice), html_output, gr.Button(visible=False), gr.Button(visible=True), gr.Row(visible=True), gr.Row(visible= gen_buttons_visible), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(interactive=  early_stop_interactive), gr.Button(visible= onemorewindow_visible)
+        return *output_tabs, gr.Gallery(value = file_list) if last_was_audio else gr.Gallery(selected_index=choice, value = file_list), gr.update() if last_was_audio else choice, *pack_audio_gallery_state(audio_file_list, audio_choice), html_output, gr.Button(visible=False), gr.Button(visible=True), gr.Row(visible=True), gr.Row(visible= gen_buttons_visible), update_queue_data(queue), gr.Button(interactive=  abort_interactive), gr.Button(interactive=  early_stop_interactive, visible= early_stop_visible), gr.Button(visible= onemorewindow_visible)
 
 
 
@@ -3813,7 +3815,7 @@ def finalize_generation(state):
     gen_in_progress = False
     gen["early_stop"] = False
     gen["early_stop_forwarded"] = False
-    return gallery_tabs, 1 if last_was_audio else 0, gr.update() if last_was_audio else gr.Gallery(selected_index=choice),  *pack_audio_gallery_state(audio_file_list, audio_choice), gr.Button(interactive=  True), gr.Button(interactive=  True), gr.Button(visible= True), gr.Button(visible= False), gr.Column(visible= False), gr.HTML(visible= False, value="")
+    return gallery_tabs, 1 if last_was_audio else 0, gr.update() if last_was_audio else gr.Gallery(selected_index=choice),  *pack_audio_gallery_state(audio_file_list, audio_choice), gr.Button(interactive=  True), gr.Button(interactive=  True, visible= False), gr.Button(visible= True), gr.Button(visible= False), gr.Column(visible= False), gr.HTML(visible= False, value="")
 
 def get_default_video_info():
     return "Please Select an Video / Image"    

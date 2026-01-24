@@ -1,0 +1,14 @@
+{
+  "architectures": [
+    "HeartMuLa"
+  ],
+  "audio_num_codebooks": 8,
+  "audio_vocab_size": 8197,
+  "backbone_flavor": "llama-3B",
+  "decoder_flavor": "llama-300M",
+  "model_type": "heartmula",
+  "muq_dim": 512,
+  "text_vocab_size": 128256,
+  "torch_dtype": "float32",
+  "transformers_version": "4.45.1"
+}

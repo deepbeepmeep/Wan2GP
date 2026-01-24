@@ -334,7 +334,7 @@ These kernels will offer optimized INT4 / FP4 dequantization.
 ### Nunchaku INT4/FP4 Kernels Wheels for Python 3.10   
 - Windows (Pytorch 2.7.1 / Cuda 12.8) 
    ```
-pip install https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nunchaku/nunchaku-1.2.0+torch2.7-cp310-cp310-win_amd64.whl
+   pip install https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nunchaku/nunchaku-1.2.0+torch2.7-cp310-cp310-win_amd64.whl
    ```
 - Windows (Pytorch 2.9.1 / Cuda 13)
    ```
@@ -345,7 +345,7 @@ pip install https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nun
    ```
   pip install https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nunchaku/nunchaku-1.2.0+torch2.7-cp310-cp310-linux_x86_64.whl
    ```
-- Windows (Pytorch 2.9.1 / Cuda 13)
+- Linux (Pytorch 2.9.1 / Cuda 13)
    ```
   pip install https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nunchaku/nunchaku-1.2.0+torch2.9-cp310-cp310-linux_x86_64.whl
    ```

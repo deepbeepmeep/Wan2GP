@@ -101,6 +101,7 @@ class family_handler:
         save_quantized=False,
         submodel_no_list=None,
         text_encoder_filename=None,
+        **kwargs        
     ):
         from .ovi_fusion_engine import OviFusionEngine 
 

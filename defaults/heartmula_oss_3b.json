@@ -1,0 +1,14 @@
+{
+    "model": {
+        "name": "TTS HeartMuLa OSS 3B",
+        "architecture": "heartmula_oss_3b",
+        "description": "HeartMuLa open music generation conditioned on lyrics and tags.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/heartmula_oss_3b_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/heartmula_oss_3b_quanto_bf16_int8.safetensors"
+        ]
+    },
+	"prompt": "[Verse]\nMorning light through the window pane\nI hum a tune to chase the rain\nSteady steps on a quiet street\nHeart and rhythm, gentle beat",
+	"alt_prompt": "piano,happy,wedding",
+	"temperature": 1.0
+}

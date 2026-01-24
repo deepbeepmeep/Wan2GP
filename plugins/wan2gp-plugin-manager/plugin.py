@@ -279,7 +279,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         with gr.Blocks() as plugin_blocks:
             with gr.Row(equal_height=False, variant='panel'):
                 with gr.Column(scale=2, min_width=600):
-                    gr.Markdown("### Installed Plugins (Drag to reorder tabs)")
+                    gr.Markdown("### Plugins Available Locally (Drag to reorder tabs)")
                     self.plugins_html_display = gr.HTML()
                     with gr.Row(elem_classes="save-buttons-container"):
                         self.save_plugins_button = gr.Button("Save", variant="secondary", size="sm", scale=0, elem_classes="stylish-save-btn")

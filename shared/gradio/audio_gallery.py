@@ -6,6 +6,17 @@ import json
 import uuid
 
 
+def _get_selected_idx(audio_infos, selected_idx):
+    selected_idx = int(selected_idx) if selected_idx is not None else 0
+    if selected_idx >= len(audio_infos):
+        selected_idx = len(audio_infos) -1
+    elif selected_idx < 0:
+        selected_idx = 0
+    if len(audio_infos) == 0:
+        selected_idx = -1
+    return selected_idx
+
+
 class AudioGallery:
     """
     A custom Gradio component that displays an audio gallery with thumbnails.
@@ -19,7 +30,7 @@ class AudioGallery:
         update_only: If True, only render the inner HTML/Audio (internal use)
     """
 
-    def __init__(self, audio_paths=None, selected_index=0, max_thumbnails=10, height=400, label="Audio Gallery", update_only=False):
+    def __init__(self, audio_paths=None, selected_index=-1, max_thumbnails=10, height=400, label="Audio Gallery", update_only=False):
         self.audio_paths = audio_paths or []
         self.selected_index = selected_index
         self.max_thumbnails = max_thumbnails
@@ -204,8 +215,8 @@ AG.tryInstall();
         else:
             selected_idx = 0
 
-        if not audio_infos or selected_idx >= len(audio_infos) or selected_idx < 0:
-            selected_idx = 0
+        selected_idx = _get_selected_idx(audio_infos, selected_idx)
+
 
         # Trigger id to notify the frontend to refresh (observed via MutationObserver on HTML rerender)
         refresh_id = str(uuid.uuid4())
@@ -295,7 +306,7 @@ AG.tryInstall();
             self.refresh_trigger.change(
                 fn=self._refresh_gallery,
                 inputs=[self.refresh_trigger, self.state_paths, self.state_selected],
-                outputs=[self.audio_player, self.gallery_html],
+                outputs=[self.audio_player, self.gallery_html, self.state_selected],
                 show_progress="hidden",
             )
 
@@ -329,25 +340,23 @@ AG.tryInstall();
     def _refresh_gallery(self, refresh_id, paths_json, selected_idx):
         """Refresh gallery based on state (programmatic)."""
         if not refresh_id:
-            return self._render_from_state(paths_json, selected_idx)[:2]
+            return self._render_from_state(paths_json, selected_idx)[:2], selected_idx
 
         try:
             paths = json.loads(paths_json) if paths_json else []
             audio_infos = self._process_audio_paths(paths)
 
             if not audio_infos:
-                return None, self._create_gallery_html([], 0)
+                return None, self._create_gallery_html([], 0), -1
 
-            selected_idx = int(selected_idx) if selected_idx is not None else 0
-            if selected_idx >= len(audio_infos) or selected_idx < 0:
-                selected_idx = 0
+            selected_idx = _get_selected_idx(audio_infos, selected_idx)
 
             selected_path = audio_infos[selected_idx]["path"]
             gallery_html_content = self._create_gallery_html(audio_infos, selected_idx)
 
-            return selected_path, gallery_html_content
+            return selected_path, gallery_html_content, selected_idx
         except Exception:
-            return None, self._create_gallery_html([], 0)
+            return None, self._create_gallery_html([], 0), -1
 
     def _get_audio_duration(self, audio_path):
         """Get audio duration in seconds. Returns formatted string."""
@@ -638,10 +647,7 @@ AG.tryInstall();
             if not audio_infos:
                 return None, self._create_gallery_html([], 0), paths_json, 0, ""
 
-            selected_idx = int(selected_idx) if selected_idx is not None else 0
-            if selected_idx >= len(audio_infos) or selected_idx < 0:
-                selected_idx = 0
-
+            selected_idx = _get_selected_idx(audio_infos, selected_idx)
             selected_path = audio_infos[selected_idx]["path"]
             gallery_html_content = self._create_gallery_html(audio_infos, selected_idx)
 

@@ -15,7 +15,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("server_config_filename")
         self.request_global("attention_mode")
         self.request_global("compile")
-        self.request_global("default_profile")
+        self.request_global("default_profile_video")
+        self.request_global("default_profile_image")
+        self.request_global("default_profile_audio")
         self.request_global("vae_config")
         self.request_global("boost")
         self.request_global("preload_model_policy")
@@ -29,6 +31,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("memory_profile_choices")
         self.request_global("save_path")
         self.request_global("image_save_path")
+        self.request_global("audio_save_path")
         self.request_global("quit_application")
         self.request_global("release_model")
         self.request_global("get_sorted_dropdown")
@@ -154,7 +157,21 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.depth_anything_v2_variant_choice = gr.Dropdown(choices=[("Large (more precise, slower)", "vitl"), ("Big (less precise, faster)", "vitb")], value=self.server_config.get("depth_anything_v2_variant", "vitl"), label="Depth Anything v2 VACE Preprocessor")
                     self.vae_config_choice = gr.Dropdown(choices=[("Auto", 0), ("Disabled (fastest, high VRAM)", 1), ("256x256 Tiles (for >=8GB VRAM)", 2), ("128x128 Tiles (for >=6GB VRAM)", 3)], value=self.vae_config, label="VAE Tiling (to reduce VRAM usage)")
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
-                    self.profile_choice = gr.Dropdown(choices=self.memory_profile_choices, value=self.default_profile, label="Memory Profile (Advanced)")
+                    self.video_profile_choice = gr.Dropdown(
+                        choices=self.memory_profile_choices,
+                        value=self.default_profile_video,
+                        label="Default Memory Profile (Video)",
+                    )
+                    self.image_profile_choice = gr.Dropdown(
+                        choices=self.memory_profile_choices,
+                        value=self.default_profile_image,
+                        label="Default Memory Profile (Image)",
+                    )
+                    self.audio_profile_choice = gr.Dropdown(
+                        choices=self.memory_profile_choices,
+                        value=self.default_profile_audio,
+                        label="Default Memory Profile (Audio)",
+                    )
                     self.preload_in_VRAM_choice = gr.Slider(0, 40000, value=self.server_config.get("preload_in_VRAM", 0), step=100, label="VRAM (MB) for Preloaded Models (0=profile default)")
                     self.max_reserved_loras_choice = gr.Slider(
                         -1,
@@ -187,6 +204,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         value=mmaudio_persistence_default,
                         label="MMAudio Model Persistence"
                     )
+                    self.rife_version_choice = gr.Dropdown(
+                        choices=[("RIFE HDv3 (default)", "v3"), ("RIFE v4.26 (latest)", "v4")],
+                        value=self.server_config.get("rife_version", "v3"),
+                        label="RIFE Temporal Upsampling Model",
+                        interactive=not self.args.lock_config
+                    )
 
                 with gr.Tab("Outputs"):
                     self.video_output_codec_choice = gr.Dropdown(choices=[("x265 CRF 28 (Balanced)", 'libx265_28'), ("x264 Level 8 (Balanced)", 'libx264_8'), ("x265 CRF 8 (High Quality)", 'libx265_8'), ("x264 Level 10 (High Quality)", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], value=self.server_config.get("video_output_codec", "libx264_8"), label="Video Codec")
@@ -203,6 +226,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     self.video_save_path_choice = gr.Textbox(label="Video Output Folder (requires restart)", value=self.save_path)
                     self.image_save_path_choice = gr.Textbox(label="Image Output Folder (requires restart)", value=self.image_save_path)
+                    self.audio_save_path_choice = gr.Textbox(label="Audio Output Folder (requires restart)", value=self.audio_save_path)
 
                 with gr.Tab("Notifications"):
                     self.notification_sound_enabled_choice = gr.Dropdown(choices=[("On", 1), ("Off", 0)], value=self.server_config.get("notification_sound_enabled", 0), label="Notification Sound")
@@ -221,11 +245,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.VAE_precision_choice, self.compile_choice,
             self.depth_anything_v2_variant_choice, self.vae_config_choice, self.boost_choice,
-            self.profile_choice, self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
-            self.enhancer_enabled_choice, self.enhancer_mode_choice, self.mmaudio_mode_choice, self.mmaudio_persistence_choice,
+            self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice,
+            self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
+            self.enhancer_enabled_choice, self.enhancer_mode_choice, self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.rife_version_choice,
             self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
-            self.video_save_path_choice, self.image_save_path_choice,
+            self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
             self.notification_sound_enabled_choice, self.notification_sound_volume_choice,
             self.resolution
         ]
@@ -270,11 +295,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, VAE_precision_choice, compile_choice,
             depth_anything_v2_variant_choice, vae_config_choice, boost_choice,
-            profile_choice, preload_in_VRAM_choice, max_reserved_loras_choice,
-            enhancer_enabled_choice, enhancer_mode_choice, mmaudio_mode_choice, mmaudio_persistence_choice,
+            video_profile_choice, image_profile_choice, audio_profile_choice,
+            preload_in_VRAM_choice, max_reserved_loras_choice,
+            enhancer_enabled_choice, enhancer_mode_choice, mmaudio_mode_choice, mmaudio_persistence_choice, rife_version_choice,
             video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice,
             metadata_choice, embed_source_images_choice,
-            save_path_choice, image_save_path_choice,
+            save_path_choice, image_save_path_choice, audio_save_path_choice,
             notification_sound_enabled_choice, notification_sound_volume_choice,
             last_resolution_choice
         ) = args
@@ -291,7 +317,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
         new_server_config = {
             "attention_mode": attention_choice, "transformer_types": transformer_types_choices,
             "text_encoder_quantization": text_encoder_quantization_choice, "save_path": save_path_choice,
-            "image_save_path": image_save_path_choice, "compile": compile_choice, "profile": profile_choice,
+            "image_save_path": image_save_path_choice, "audio_save_path": audio_save_path_choice,
+            "compile": compile_choice, "profile": video_profile_choice,
+            "video_profile": video_profile_choice, "image_profile": image_profile_choice, "audio_profile": audio_profile_choice,
             "vae_config": vae_config_choice, "vae_precision": VAE_precision_choice,
             "mixed_precision": mixed_precision_choice, "metadata_type": metadata_choice,
             "transformer_quantization": quantization_choice, "transformer_dtype_policy": transformer_dtype_policy_choice,
@@ -300,6 +328,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "fit_canvas": fit_canvas_choice, "enhancer_enabled": enhancer_enabled_choice,
             "enhancer_mode": enhancer_mode_choice, "mmaudio_mode": mmaudio_mode_choice,
             "mmaudio_persistence": mmaudio_persistence_choice, "mmaudio_enabled": mmaudio_enabled_choice,
+            "rife_version": rife_version_choice,
             "preload_in_VRAM": preload_in_VRAM_choice, "depth_anything_v2_variant": depth_anything_v2_variant_choice,
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
@@ -333,10 +362,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
         changes = [k for k, v in new_server_config.items() if v != old_server_config.get(k)]
 
         no_reload_keys = [
-            "attention_mode", "vae_config", "boost", "save_path", "image_save_path",
+            "attention_mode", "vae_config", "boost", "save_path", "image_save_path", "audio_save_path",
             "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
-            "mmaudio_persistence", "mmaudio_enabled",
+            "mmaudio_persistence", "mmaudio_enabled", "rife_version",
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "checkpoints_paths",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
@@ -348,17 +377,22 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("three_levels_hierarchy", new_server_config["model_hierarchy_type"] == 1)
         self.set_global("attention_mode", new_server_config["attention_mode"])
         self.set_global("default_profile", new_server_config["profile"])
+        self.set_global("default_profile_video", new_server_config["video_profile"])
+        self.set_global("default_profile_image", new_server_config["image_profile"])
+        self.set_global("default_profile_audio", new_server_config["audio_profile"])
         self.set_global("compile", new_server_config["compile"])
         self.set_global("text_encoder_quantization", new_server_config["text_encoder_quantization"])
         self.set_global("vae_config", new_server_config["vae_config"])
         self.set_global("boost", new_server_config["boost"])
         self.set_global("save_path", new_server_config["save_path"])
         self.set_global("image_save_path", new_server_config["image_save_path"])
+        self.set_global("audio_save_path", new_server_config["audio_save_path"])
         self.set_global("preload_model_policy", new_server_config["preload_model_policy"])
         self.set_global("transformer_quantization", new_server_config["transformer_quantization"])
         self.set_global("transformer_dtype_policy", new_server_config["transformer_dtype_policy"])
         self.set_global("transformer_types", new_server_config["transformer_types"])
         self.set_global("reload_needed", needs_reload)
+        self.server_config.update(new_server_config)
 
         if "enhancer_enabled" in changes or "enhancer_mode" in changes:
             self.set_global("prompt_enhancer_image_caption_model", None)

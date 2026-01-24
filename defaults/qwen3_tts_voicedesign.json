@@ -1,0 +1,14 @@
+{
+    "model": {
+        "name": "TTS Qwen3 VoiceDesign (12Hz) 1.7B",
+        "architecture": "qwen3_tts_voicedesign",
+        "description": "Qwen3 VoiceDesign with natural language voice instructions.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_voicedesign_bf16.safetensors"
+        ]
+    },
+    "prompt": "I wish you a good day. Please keep the door closed. I am afraid AI haters are going to come in. Oh I am so afraid !",
+    "alt_prompt": "Male speaks in an incredulous tone, but with a hint of panic beginning to creep into your voice.",
+    "model_mode": "auto",
+    "duration_seconds": 30
+}

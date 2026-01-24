@@ -26,6 +26,21 @@ WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image,
 
 ## 🔥 Latest Updates : 
 
+### January 23th 2026: WanGP v10.50, Music for your Hearts
+
+WanGP Special *TTS* (Text To Speech) Release:
+
+- **Heart Mula**: *Suno* quality song with lyrics on your local PC. You can generate up to 4 min of music.
+
+- **Qwen 3 TTS**: you can either do *Voice Cloning*, *Generate a Custom Voice based on a Prompt* or use a *Predefined Voice*
+
+- **TTS Features**:
+   - **Early stop** : you can abort a gen, while still keeping what has been generated (will work only for TTS models which are *Autoregressive Models*, no need to ask that for Image/Video gens which are *Diffusion Models*)
+   - **Specialized Prompt Enhancers**: if you enter the prompt in Heart Mula *"a song about AI generation"*, *WanGP Prompt Enhancer* will generate the corresponding masterpiece for you. Likewise you can enhance "A speech about AI generation" when using Qwen3 TTS or ChatterBox.
+   - **Custom Output folder for Audio Gens**: you can now choose a different folder for the *Audio Outputs*
+   - **Default Memory Profile for Audio Models**: TTS models can get very slow if you use profile 4 (being autoregressive models, they will need to load all the layers one per one to generate one single audio token then rinse & repeat). On the other hand, they dont't need as much VRAM, so you can now define a more agressive profile (3+ for instance)
+
+
 ### January 20th 2026: WanGP v10.43, The Cost Saver
 *GPUs are expensive, RAM is expensive, SSD are expensive, sadly we live now in a GPU & RAM poor.*
 

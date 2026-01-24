@@ -98,7 +98,7 @@ class family_handler():
         return family_handler.query_model_files(computeList, base_model_type,  model_def)
     
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, text_encoder_filename = None):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, text_encoder_filename = None, **kwargs):
         from .configs import WAN_CONFIGS
         cfg = WAN_CONFIGS['t2v-14B']
         from . import DTT2V

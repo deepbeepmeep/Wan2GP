@@ -1,0 +1,12 @@
+{
+  "do_sample": true,
+  "repetition_penalty": 1.05,
+  "temperature": 0.9,
+  "top_p": 1.0,
+  "top_k": 50,
+  "subtalker_dosample": true,
+  "subtalker_temperature": 0.9,
+  "subtalker_top_p": 1.0,
+  "subtalker_top_k": 50,
+  "max_new_tokens": 8192
+}

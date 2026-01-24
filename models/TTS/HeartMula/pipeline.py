@@ -174,6 +174,8 @@ class HeartMuLaPipeline:
             codec_config = HeartCodecConfig(**json.load(fp))
         with init_empty_weights():
             self.codec = HeartCodec(codec_config)
+        self.codec._offload_hooks = ["detokenize"]
+
         self.codec._model_dtype = self.VAE_dtype
         offload.load_model_data(
             self.codec,

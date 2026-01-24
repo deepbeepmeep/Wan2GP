@@ -65,13 +65,6 @@ class HeartCodec(PreTrainedModel):
     ):
         if abort_signal and abort_signal():
             return None
-        mm_manager = getattr(self, "_mm_manager", None)
-        mm_id = getattr(self, "_mm_id", None)
-        if mm_manager is None or mm_id is None:
-            mm_manager = getattr(self.flow_matching, "_mm_manager", None)
-            mm_id = getattr(self.flow_matching, "_mm_id", None)
-        if mm_manager is not None and mm_id is not None:
-            mm_manager.ensure_model_loaded(mm_id)
         codes = codes.unsqueeze(0).to(self.device)
         first_latent = torch.randn(
             codes.shape[0], int(duration * 25), 256, dtype=self.dtype
@@ -102,6 +95,10 @@ class HeartCodec(PreTrainedModel):
             codes = codes[:, :, 0:len_codes]
         latent_length = int(duration * 25)
         latent_list = []
+        restore = False
+        if self.flow_matching.vq_embed.layers[0]._codebook.embed.device.type=="cpu":
+            self.flow_matching.vq_embed.layers.to("cuda")
+            restore = True
 
         for sinx in range(0, codes.shape[-1] - hop_samples + 1, hop_samples):
             if abort_signal and abort_signal():
@@ -154,6 +151,9 @@ class HeartCodec(PreTrainedModel):
                 if latents is None:
                     return None
                 latent_list.append(latents)
+
+        if restore:
+            self.flow_matching.vq_embed.layers.to("cpu")
 
         latent_list[0] = latent_list[0][:, first_latent_length:, :]
         min_samples = int(duration * self.sample_rate)

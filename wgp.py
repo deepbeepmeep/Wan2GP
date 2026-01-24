@@ -2145,7 +2145,7 @@ if not Path(config_load_filename).is_file():
         "model_hierarchy_type": 1,
         "mmaudio_mode": 0,
         "mmaudio_persistence": 1,
-        "rife_version": "v3",
+        "rife_version": "v4",
         "audio_save_path": "outputs",
     }
 
@@ -2766,7 +2766,7 @@ if not "embed_source_images" in server_config: server_config["embed_source_image
 if not "enable_4k_resolutions" in server_config: server_config["enable_4k_resolutions"]= 0
 if not "max_reserved_loras" in server_config: server_config["max_reserved_loras"]= -1
 if not "image_output_codec" in server_config: server_config["image_output_codec"]= "jpeg_95"
-if not "rife_version" in server_config: server_config["rife_version"] = "v3"
+if not "rife_version" in server_config: server_config["rife_version"] = "v4"
 
 preload_model_policy = server_config.get("preload_model_policy", []) 
 
@@ -4760,7 +4760,7 @@ def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling
     output_fps = fps
     if exp == 0:
         return sample, previous_last_frame, output_fps
-    rife_version = server_config.get("rife_version", "v3")
+    rife_version = server_config.get("rife_version", "v4")
     rife_model_path = None
     if rife_version == "v4":
         rife_model_path = fl.locate_file(RIFE_V4_FILENAME)

@@ -206,7 +206,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     self.rife_version_choice = gr.Dropdown(
                         choices=[("RIFE HDv3 (default)", "v3"), ("RIFE v4.26 (latest)", "v4")],
-                        value=self.server_config.get("rife_version", "v3"),
+                        value=self.server_config.get("rife_version", "v4"),
                         label="RIFE Temporal Upsampling Model",
                         interactive=not self.args.lock_config
                     )

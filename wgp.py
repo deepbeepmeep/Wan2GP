@@ -119,7 +119,7 @@ for handler in _HANDLER_MODULES:
 from shared.qtypes import gguf as gguf_handler
 offload.register_file_extension("gguf", gguf_handler)
 
-
+# from mmgp import quanto_int8_inject 
 
 def set_wgp_global(variable_name: str, new_value: any) -> str:
     if variable_name not in globals():
@@ -9708,11 +9708,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     current_video_length = video_length_locked if video_length_locked is not None else ui_get("video_length", 81 if get_model_family(base_model_type)=="wan" else 97)
 
                     computed_fps = get_computed_fps(ui_get("force_fps"), base_model_type , ui_defaults.get("video_guide", None), ui_defaults.get("video_source", None))
-                    video_length = gr.Slider(min_frames, get_max_frames(737 if test_any_sliding_window(base_model_type) else 337), value=current_video_length, 
+                    video_length = gr.Slider(0 if audio_only else min_frames, get_max_frames(737 if test_any_sliding_window(base_model_type) else 337), value=current_video_length, 
                          step=frames_step, label=compute_video_length_label(computed_fps, current_video_length, video_length_locked) , visible = True, interactive= video_length_locked is None, show_reset_button= False)
 
             with gr.Row(visible = not lock_inference_steps) as inference_steps_row:                                       
-                num_inference_steps = gr.Slider(1, 100, value=ui_get("num_inference_steps"), step=1, label="Number of Inference Steps", visible = True, show_reset_button= False)
+                num_inference_steps = gr.Slider(0 if audio_only else 1, 100, value=ui_get("num_inference_steps"), step=1, label="Number of Inference Steps", visible = True, show_reset_button= False)
 
 
             show_advanced = gr.Checkbox(label="Advanced Mode", value=advanced_ui)

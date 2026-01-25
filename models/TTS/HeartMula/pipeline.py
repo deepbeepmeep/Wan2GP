@@ -48,6 +48,18 @@ def _resolve_codec_names(codec_version: Optional[str]) -> tuple[str, str]:
     return f"HeartMula_codec{suffix}.safetensors", f"codec_config{suffix}.json"
 
 
+def _strip_heartmula_rope_cache(state_dict):
+    remove_keys = (
+        "backbone.layers.0.attn.pos_embeddings.theta",
+        "backbone.layers.0.attn.pos_embeddings.cache",
+        "decoder.layers.0.attn.pos_embeddings.theta",
+        "decoder.layers.0.attn.pos_embeddings.cache",
+    )
+    for key in remove_keys:
+        state_dict.pop(key, None)
+    return state_dict
+
+
 @dataclass
 class HeartMuLaGenConfig:
     text_bos_id: int = 128000
@@ -143,6 +155,7 @@ class HeartMuLaPipeline:
             str(mula_weights_path),
             default_dtype=None,
             writable_tensors=False,
+            preprocess_sd=_strip_heartmula_rope_cache,
         )
 
         decoder = self.mula.decoder

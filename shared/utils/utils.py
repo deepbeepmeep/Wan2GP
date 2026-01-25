@@ -394,6 +394,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
 
 def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, return_mask = False, return_image = False):
     inpaint_color = to_rgb_tensor(canvas_tf_bg, device=device, dtype=torch.float) / 127.5 - 1
+    inpaint_color = inpaint_color.unsqueeze(1)
 
     ref_width, ref_height = ref_img.size
     if (ref_height, ref_width) == image_size and outpainting_dims  == None:

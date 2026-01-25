@@ -11,10 +11,6 @@ from mmgp import quant_router
 class modelsManagerPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
-        self.name = "Models Manager"
-        self.version = "1.0.0"
-        self.description = "Inspect and manage installed model dependencies"
-        self.uninstallable = False
         self._node_map = {}
         self._tree_data = []
         self._model_files = {}

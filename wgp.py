@@ -85,7 +85,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.2"
-WanGP_version = "10.51"
+WanGP_version = "10.52"
 settings_version = 2.44
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2023,6 +2023,21 @@ def _parse_args():
         type=str,
         default="",
         help="Override output directory for CLI processing (use with --process)"
+    )
+    parser.add_argument(
+        "--refresh-catalog",
+        action="store_true",
+        help="Refresh local plugin metadata for installed external plugins"
+    )
+    parser.add_argument(
+        "--refresh-full-catalog",
+        action="store_true",
+        help="Refresh local plugin metadata for all catalog plugins"
+    )
+    parser.add_argument(
+        "--merge-catalog",
+        action="store_true",
+        help="Merge plugins_local.json into plugins.json and remove plugins_local.json"
     )
 
     args = parser.parse_args()
@@ -11213,6 +11228,27 @@ def create_ui():
         return main
 
 if __name__ == "__main__":
+    if args.merge_catalog:
+        manager = PluginManager()
+        print(manager.merge_local_catalog())
+        sys.exit(0)
+
+    if args.refresh_catalog or args.refresh_full_catalog:
+        manager = PluginManager()
+        installed_only = not args.refresh_full_catalog
+        result = manager.refresh_catalog(installed_only=installed_only, use_remote=False)
+        checked = result.get("checked", 0)
+        updates_available = result.get("updates_available", 0)
+        scope = "installed plugins" if installed_only else "catalog plugins"
+        if updates_available <= 0:
+            message = "No Plugin Update is available"
+        elif updates_available == 1:
+            message = "One Plugin Update is available"
+        else:
+            message = f"{updates_available} Plugin Updates are available"
+        print(f"[Plugins] Checked {checked} {scope}. {message}.")
+        sys.exit(0)
+
     app = WAN2GPApplication()
 
     # CLI Queue Processing Mode

@@ -1,12 +1,8 @@
 import gradio as gr
-from shared.utils.plugins import WAN2GPPlugin
-import os
 import json
 import traceback
-from wgp import quit_application
-import requests
-
-COMMUNITY_PLUGINS_URL = "https://github.com/deepbeepmeep/Wan2GP/raw/refs/heads/main/plugins.json"
+from wgp import quit_application, WanGP_version
+from shared.utils.plugins import WAN2GPPlugin, compare_release_metadata, is_wangp_compatible, plugin_id_from_url
 
 class PluginManagerUIPlugin(WAN2GPPlugin):
     def __init__(self):
@@ -31,9 +27,17 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
     def _get_js_script_html(self):
         js_code = """
             () => {
+                function pluginRoot() {
+                    if (window.gradioApp) {
+                        return window.gradioApp();
+                    }
+                    const app = document.querySelector('gradio-app');
+                    return app ? (app.shadowRoot || app) : document;
+                }
+
                 function updateGradioInput(elem_id, value) {
-                    const gradio_app = document.querySelector('gradio-app') || document;
-                    const input = gradio_app.querySelector(`#${elem_id} textarea`);
+                    const root = pluginRoot();
+                    const input = root.querySelector(`#${elem_id} textarea, #${elem_id} input`);
                     if (input) {
                         input.value = value;
                         input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -43,14 +47,22 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                 }
 
                 function makeSortable() {
-                    const userPluginList = document.querySelector('#user-plugin-list');
+                    const root = pluginRoot();
+                    const userPluginList = root.querySelector('#user-plugin-list');
                     if (!userPluginList) return;
+                    if (userPluginList.dataset.sortableBound === '1') return;
+                    userPluginList.dataset.sortableBound = '1';
 
                     let draggedItem = null;
 
                     userPluginList.addEventListener('dragstart', e => {
                         draggedItem = e.target.closest('.plugin-item');
                         if (!draggedItem) return;
+                        draggedItem.classList.add('dragging');
+                        if (e.dataTransfer) {
+                            e.dataTransfer.effectAllowed = 'move';
+                            e.dataTransfer.setData('text/plain', draggedItem.dataset.pluginId || '');
+                        }
                         setTimeout(() => {
                             if (draggedItem) draggedItem.style.opacity = '0.5';
                         }, 0);
@@ -60,6 +72,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                         setTimeout(() => {
                              if (draggedItem) {
                                 draggedItem.style.opacity = '1';
+                                draggedItem.classList.remove('dragging');
                                 draggedItem = null;
                              }
                         }, 0);
@@ -67,14 +80,22 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
 
                     userPluginList.addEventListener('dragover', e => {
                         e.preventDefault();
+                        if (e.dataTransfer) {
+                            e.dataTransfer.dropEffect = 'move';
+                        }
                         const afterElement = getDragAfterElement(userPluginList, e.clientY);
                         if (draggedItem) {
+                            if (afterElement === draggedItem) return;
                             if (afterElement == null) {
                                 userPluginList.appendChild(draggedItem);
                             } else {
                                 userPluginList.insertBefore(draggedItem, afterElement);
                             }
                         }
+                    });
+
+                    userPluginList.addEventListener('drop', e => {
+                        e.preventDefault();
                     });
 
                     function getDragAfterElement(container, y) {
@@ -91,6 +112,25 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                     }
                 }
                 
+                function observeUserPluginList() {
+                    const root = pluginRoot();
+                    if (!root) {
+                        setTimeout(observeUserPluginList, 400);
+                        return;
+                    }
+                    if (root.dataset.pluginSortableObserver === '1') {
+                        makeSortable();
+                        return;
+                    }
+                    root.dataset.pluginSortableObserver = '1';
+                    const observer = new MutationObserver(() => {
+                        makeSortable();
+                    });
+                    observer.observe(root, { childList: true, subtree: true });
+                    makeSortable();
+                }
+                
+                setTimeout(observeUserPluginList, 200);
                 setTimeout(makeSortable, 500);
 
                 window.handlePluginAction = function(button, action) {
@@ -106,7 +146,8 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                 };
 
                 window.handleSave = function(restart) {
-                    const user_container = document.querySelector('#user-plugin-list');
+                    const root = pluginRoot();
+                    const user_container = root.querySelector('#user-plugin-list');
                     if (!user_container) return;
                     
                     const user_plugins = user_container.querySelectorAll('.plugin-item');
@@ -125,13 +166,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         if hasattr(self, '_community_plugins_cache') and self._community_plugins_cache is not None:
             return self._community_plugins_cache
         try:
-            response = requests.get(COMMUNITY_PLUGINS_URL, timeout=10)
-            response.raise_for_status()
-            plugins = response.json()
-            self._community_plugins_cache = {
-                p.get('url', '').split('/')[-1].replace('.git', ''): p
-                for p in plugins if p.get('url')
-            }
+            self._community_plugins_cache = self.app.plugin_manager.get_merged_catalog_entries(use_remote=True)
             return self._community_plugins_cache
         except Exception as e:
             print(f"[PluginManager] Could not fetch community plugins info: {e}")
@@ -142,10 +177,22 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         try:
             installed_plugin_ids = {p['id'] for p in self.app.plugin_manager.get_plugins_info()}
             remote_plugins = self._get_community_plugins_info()
+            base_entries = self.app.plugin_manager.load_catalog_entries(use_remote=False)
+            base_ids = {
+                plugin_id_from_url(entry.get('url', ''))
+                for entry in base_entries
+                if entry.get('url')
+            }
             community_plugins = [
                 p for plugin_id, p in remote_plugins.items()
                 if plugin_id not in installed_plugin_ids
             ]
+            community_plugins.sort(
+                key=lambda p: (
+                    plugin_id_from_url(p.get('url', '')) not in base_ids,
+                    (p.get('name') or '').lower()
+                )
+            )
 
         except Exception as e:
             gr.Warning(f"Could not process community plugins list: {e}")
@@ -157,15 +204,27 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         items_html = ""
         for plugin in community_plugins:
             name = plugin.get('name')
-            author = plugin.get('author')
+            author = plugin.get('author') or "Unknown"
             version = plugin.get('version', 'N/A')
-            description = plugin.get('description')
+            description = plugin.get('description') or "No description provided."
             url = plugin.get('url')
+            wan2gp_version = plugin.get('wan2gp_version') or plugin.get('wangp_version', '')
 
-            if not all([name, author, description, url]):
+            if not url:
                 continue
+            if not name:
+                name = plugin_id_from_url(url) or "Unknown Plugin"
             
             safe_url = url.replace("'", "\\'")
+            incompatible = not is_wangp_compatible(wan2gp_version, WanGP_version)
+            incompat_html = ""
+            if incompatible and wan2gp_version:
+                incompat_html = (
+                    f"<span class='plugin-incompatible-badge' "
+                    f"title='Requires WanGP v{wan2gp_version}+'>"
+                    f"Requires WanGP v{wan2gp_version}+"
+                    "</span>"
+                )
 
             items_html += f"""
             <div class="plugin-item">
@@ -173,6 +232,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                     <div class="plugin-header">
                         <span class="name">{name}</span>
                         <span class="version">version {version} by {author}</span>
+                        {incompat_html}
                     </div>
                     <span class="description">{description}</span>
                 </div>
@@ -188,7 +248,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         plugins_info = self.app.plugin_manager.get_plugins_info()
         enabled_user_plugins = self.server_config.get("enabled_plugins", [])
         all_user_plugins_info = [p for p in plugins_info if not p.get('system')]
-        remote_plugins_info = self._get_community_plugins_info()
+        remote_plugins_info = self.app.plugin_manager.get_merged_catalog_entries(use_remote=False)
         
         css = """
         <style>
@@ -210,7 +270,8 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             .plugin-enable-checkbox:checked { background-color: var(--color-accent); border-color: var(--color-accent); }
             .plugin-enable-checkbox:checked::after { content: '✔'; position: absolute; color: white; font-size: 16px; font-weight: bold; top: 50%; left: 50%; transform: translate(-50%, -50%); }
             .save-buttons-container { justify-content: flex-start; margin-top: 20px !important; gap: 12px; }
-            .stylish-save-btn { font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif !important; font-weight: 600 !important; font-size: 1.05em !important; padding: 10px 20px !important; }
+            .stylish-save-btn { font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif !important; font-weight: 600 !important; font-size: 1.05em !important; padding: 10px 20px !important; white-space: nowrap; }
+            .plugin-instruction { font-size: 0.95em; color: var(--text-color-secondary); margin-bottom: 6px; }
             .update-available-notice {
                 font-size: 0.9em;
                 font-weight: 600;
@@ -232,12 +293,27 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                 border: 1px solid var(--border-color-primary);
                 white-space: nowrap;
             }
+            .plugin-incompatible-badge {
+                font-size: 0.85em;
+                font-weight: 600;
+                color: var(--color-error, #b91c1c);
+                background-color: rgba(185, 28, 28, 0.1);
+                padding: 2px 8px;
+                border-radius: 4px;
+                margin-left: 8px;
+                border: 1px solid rgba(185, 28, 28, 0.35);
+                white-space: nowrap;
+            }
             .plugin-item.update-available {
                 border-left: 4px solid var(--color-accent);
+            }
+            .plugin-item.incompatible {
+                border-left: 4px solid var(--color-error, #b91c1c);
             }
         </style>
         """
 
+        instruction_html = "<div class='plugin-instruction'>Please Select the Plugins you want to enable</div>"
         if not all_user_plugins_info:
             user_html = "<p style='text-align:center; color: var(--text-color-secondary);'>No user-installed plugins found.</p>"
         else:
@@ -253,19 +329,34 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                 plugin_id = plugin['id']
                 checked = "checked" if plugin_id in enabled_user_plugins else ""
                 uninstallable = plugin.get('uninstallable', True)
+                author = plugin.get('author') or "Unknown"
                 
                 update_notice_html = ''
-                item_update_class = ''
-                if plugin_id in remote_plugins_info:
-                    remote_version = remote_plugins_info[plugin_id].get('version', '0.0.0')
-                    local_version = plugin.get('version', '0.0.0')
-                    if remote_version > local_version:
-                        update_notice_html = f'<span class="update-available-notice">v{remote_version} update available</span>'
-                        item_update_class = 'update-available'
+                item_classes = []
+                if uninstallable and plugin_id in remote_plugins_info:
+                    remote_entry = remote_plugins_info[plugin_id]
+                    if compare_release_metadata(remote_entry, plugin) > 0:
+                        remote_version = remote_entry.get('version') or remote_entry.get('date') or "unknown"
+                        update_notice_html = (
+                            f'<span class="update-available-notice">New version {remote_version} is available !</span>'
+                        )
+                        item_classes.append('update-available')
 
                 bundled_badge_html = ''
                 if not uninstallable:
                     bundled_badge_html = '<span class="plugin-bundled-badge" title="Bundled plugin, cannot be uninstalled">Bundled</span>'
+
+                wan2gp_version = plugin.get('wan2gp_version') or plugin.get('wangp_version', '')
+                incompatible = not is_wangp_compatible(wan2gp_version, WanGP_version)
+                incompat_html = ''
+                if incompatible and wan2gp_version:
+                    incompat_html = (
+                        f"<span class='plugin-incompatible-badge' "
+                        f"title='Requires WanGP v{wan2gp_version}+'>"
+                        f"Requires WanGP v{wan2gp_version}+"
+                        "</span>"
+                    )
+                    item_classes.append('incompatible')
 
                 actions_html = ""
                 if uninstallable:
@@ -277,7 +368,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                 actions_container_html = f'<div class="plugin-item-actions">{actions_html}</div>' if actions_html else ""
                 
                 user_items_html += f"""
-                <div class="plugin-item {item_update_class}" data-plugin-id="{plugin_id}" draggable="true">
+                <div class="plugin-item {' '.join(item_classes)}" data-plugin-id="{plugin_id}" draggable="true">
                     <div class="plugin-info-container">
                         <input type="checkbox" class="plugin-enable-checkbox" {checked}>
                         <div class="plugin-item-info">
@@ -285,8 +376,9 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                                 <span class="name">{plugin['name']}</span>
                                 {update_notice_html}
                                 {bundled_badge_html}
+                                {incompat_html}
                             </div>
-                            <span class="version">version {plugin['version']} (id: {plugin['id']})</span>
+                            <span class="version">version {plugin['version']} by {author} (id: {plugin['id']})</span>
                             <span class="description">{plugin.get('description', 'No description provided.')}</span>
                         </div>
                     </div>
@@ -295,7 +387,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                 """
             user_html = f'<div id="user-plugin-list">{user_items_html}</div>'
 
-        return f"{css}<div class='plugin-list'>{user_html}</div>"
+        return f"{css}<div class='plugin-list'>{instruction_html}{user_html}</div>"
 
     def create_plugin_manager_ui(self):
         with gr.Blocks() as plugin_blocks:
@@ -306,6 +398,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                     with gr.Row(elem_classes="save-buttons-container"):
                         self.save_plugins_button = gr.Button("Save", variant="secondary", size="sm", scale=0, elem_classes="stylish-save-btn")
                         self.save_and_restart_button = gr.Button("Save and Restart", variant="primary", size="sm", scale=0, elem_classes="stylish-save-btn")
+                        self.refresh_catalog_button = gr.Button("Check for Updates", variant="secondary", size="sm", scale=0, elem_classes="stylish-save-btn")
                 with gr.Column(scale=2, min_width=300):
                     gr.Markdown("### Discover & Install")
                     
@@ -332,6 +425,12 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         
         self.save_plugins_button.click(fn=None, js="handleSave(false)")
         self.save_and_restart_button.click(fn=None, js="handleSave(true)")
+        self.refresh_catalog_button.click(
+            fn=self._refresh_catalog,
+            inputs=[],
+            outputs=[self.plugins_html_display, self.community_plugins_html],
+            show_progress="full"
+        )
 
         self.save_action_input.change(
             fn=self._handle_save_action,
@@ -365,9 +464,42 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         community_html = self._build_community_plugins_html()
         return gr.update(value=installed_html), gr.update(value=community_html)
 
+    def _refresh_catalog(self, progress=gr.Progress()):
+        self.app.plugin_manager.refresh_catalog(installed_only=True, use_remote=False)
+        if hasattr(self, '_community_plugins_cache'):
+            del self._community_plugins_cache
+        updates_available = self._count_available_updates()
+        if updates_available <= 0:
+            gr.Info("No Plugin Update is available")
+        elif updates_available == 1:
+            gr.Info("One Plugin Update is available")
+        else:
+            gr.Info(f"{updates_available} Plugin Updates are available")
+        return self._build_plugins_html(), self._build_community_plugins_html()
+
+    def _count_available_updates(self) -> int:
+        try:
+            plugins_info = self.app.plugin_manager.get_plugins_info()
+            remote_plugins_info = self.app.plugin_manager.get_merged_catalog_entries(use_remote=False)
+            count = 0
+            for plugin in plugins_info:
+                if plugin.get('system'):
+                    continue
+                if not plugin.get('uninstallable', True):
+                    continue
+                plugin_id = plugin.get('id')
+                if not plugin_id or plugin_id not in remote_plugins_info:
+                    continue
+                remote_entry = remote_plugins_info[plugin_id]
+                if compare_release_metadata(remote_entry, plugin) > 0:
+                    count += 1
+            return count
+        except Exception:
+            return 0
+
     def _enable_plugin_after_install(self, url: str):
         try:
-            plugin_id = url.split('/')[-1].replace('.git', '')
+            plugin_id = plugin_id_from_url(url)
             enabled_plugins = self.server_config.get("enabled_plugins", [])
             if plugin_id not in enabled_plugins:
                 enabled_plugins.append(plugin_id)
@@ -415,6 +547,11 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
             was_enabled = self._enable_plugin_after_install(url)
             if was_enabled:
                 result_message = result_message.replace("Please enable it", "It has been auto-enabled")
+            plugin_id = plugin_id_from_url(url)
+            if plugin_id:
+                self.app.plugin_manager.record_plugin_metadata(plugin_id, url=url)
+            if hasattr(self, '_community_plugins_cache'):
+                del self._community_plugins_cache
             gr.Info(result_message)
         else:
             gr.Warning(result_message)

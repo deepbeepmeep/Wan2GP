@@ -18,10 +18,6 @@ def release_GPU(state):
 class ConfigTabPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
-        self.name = PlugIn_Name
-        self.version = "1.0.0"
-        self.description = "Sample Source Code to Design Plugins"
-        self.uninstallable = False
 
     def setup_ui(self):
         self.request_global("get_current_model_settings")

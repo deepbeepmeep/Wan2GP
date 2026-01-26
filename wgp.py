@@ -594,6 +594,10 @@ def validate_settings(state, model_type, single_prompt, inputs):
     medium = "Videos" if image_mode == 0 else "Images"
 
     if image_start is not None and not isinstance(image_start, list): image_start = [image_start]
+    outpainting_modes = model_def.get("video_guide_outpainting", [])
+    if image_mode not in outpainting_modes: 
+        video_guide_outpainting = ""
+
     outpainting_dims = get_outpainting_dims(video_guide_outpainting)
 
     model_modes_visibility = [0,1,2]
@@ -908,6 +912,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
         "model_switch_phase": model_switch_phase,
         "motion_amplitude": motion_amplitude,
         "model_mode": model_mode,
+        "video_guide_outpainting": video_guide_outpainting,
     } 
     inputs.update(override_inputs)
     if hasattr(model_handler, "validate_generative_settings"):

@@ -119,7 +119,7 @@ for handler in _HANDLER_MODULES:
 from shared.qtypes import gguf as gguf_handler
 offload.register_file_extension("gguf", gguf_handler)
 
-# from mmgp import quanto_int8_inject 
+from mmgp import quanto_int8_inject 
 
 def set_wgp_global(variable_name: str, new_value: any) -> str:
     if variable_name not in globals():
@@ -648,7 +648,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
         gr.Info("You must enable a Control Video to use the Control Video Audio Track as an audio prompt")
         return ret()
 
-    if ("B" in audio_prompt_type or "X" in audio_prompt_type) and not audio_only and not model_def.get("one_speaker_only", False):
+    if ("B" in audio_prompt_type or "X" in audio_prompt_type) and not model_def.get("one_speaker_only", False):
         from models.wan.multitalk.multitalk import parse_speakers_locations
         speakers_bboxes, error = parse_speakers_locations(speakers_locations)
         if len(error) > 0:

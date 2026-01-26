@@ -1,12 +1,12 @@
 [
   {
-    "name": "File Gallery 2",
+    "name": "File Gallery",
     "author": "Tophness and Neires",
     "version": "2.0.1",
     "description": "Adds a Gallery tab that allows you to view metadata of all files in your output folders, join video frames with a single click, and more",
     "date": "",
     "wan2gp_version": "",
-    "url": "https://github.com/neires/wan2gp-gallery"
+    "url": "https://github.com/Tophness/wan2gp-gallery"
   },
   {
     "name": "FlashVSR",

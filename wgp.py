@@ -119,7 +119,7 @@ for handler in _HANDLER_MODULES:
 from shared.qtypes import gguf as gguf_handler
 offload.register_file_extension("gguf", gguf_handler)
 
-from mmgp import quanto_int8_inject 
+# from mmgp import quanto_int8_inject 
 
 def set_wgp_global(variable_name: str, new_value: any) -> str:
     if variable_name not in globals():

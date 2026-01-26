@@ -320,11 +320,12 @@ AG.tryInstall();
             audio_infos = self._process_audio_paths(paths)
 
             if not audio_infos:
-                return None, self._create_gallery_html([], 0), paths_json, 0, ""
+                return None, self._create_gallery_html([], 0), paths_json, -1, ""
 
             new_index = int(click_value)
             if 0 <= new_index < len(audio_infos):
                 selected_path = audio_infos[new_index]["path"]
+                if not os.path.exists(selected_path): selected_path = None
                 return (
                     selected_path,
                     self._create_gallery_html(audio_infos, new_index),
@@ -397,19 +398,25 @@ AG.tryInstall();
         secs = int(seconds % 60)
         return f"{mins}:{secs:02d}"
 
-    def _get_file_info(self, audio_path):
+    def _get_file_info(self, audio_path, not_found=False):
         """Get file information: basename, date/time, duration."""
         p = Path(audio_path)
         basename = p.name
 
-        # Get modification time
-        mtime = os.path.getmtime(audio_path)
-        dt = datetime.fromtimestamp(mtime)
-        date_str = dt.strftime("%Y-%m-%d")
-        time_str = dt.strftime("%H:%M:%S")
+        if not_found:
+            mtime = ""
+            date_str = "Deleted"
+            time_str = "00:00:00"
+            duration = "0:00"
+        else:
+            # Get modification time
+            mtime = os.path.getmtime(audio_path)
+            dt = datetime.fromtimestamp(mtime)
+            date_str = dt.strftime("%Y-%m-%d")
+            time_str = dt.strftime("%H:%M:%S")
 
-        # Get duration
-        duration = self._get_audio_duration(audio_path)
+            # Get duration
+            duration = self._get_audio_duration(audio_path)
 
         return {
             "basename": basename,
@@ -633,6 +640,8 @@ AG.tryInstall();
                 try:
                     if os.path.exists(path):
                         audio_infos.append(self._get_file_info(path))
+                    else:
+                        audio_infos.append(self._get_file_info(path, True))                        
                 except Exception:
                     continue
             audio_infos = audio_infos[: self.max_thumbnails]
@@ -645,12 +654,13 @@ AG.tryInstall();
             audio_infos = self._process_audio_paths(paths)
 
             if not audio_infos:
-                return None, self._create_gallery_html([], 0), paths_json, 0, ""
+                return None, self._create_gallery_html([], 0), paths_json, -1, ""
 
             selected_idx = _get_selected_idx(audio_infos, selected_idx)
-            selected_path = audio_infos[selected_idx]["path"]
+            selected_path = audio_infos[selected_idx]["path"] 
+            if not os.path.exists(selected_path): selected_path = None
             gallery_html_content = self._create_gallery_html(audio_infos, selected_idx)
 
             return selected_path, gallery_html_content, paths_json, selected_idx, ""
         except Exception:
-            return None, self._create_gallery_html([], 0), paths_json, 0, ""
+            return None, self._create_gallery_html([], 0), paths_json, -1, ""

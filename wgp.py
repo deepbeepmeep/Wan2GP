@@ -11330,6 +11330,33 @@ if __name__ == "__main__":
 
     # Normal Gradio mode continues below...
     atexit.register(autosave_queue)
+
+    STARTUP_LOCK_FILE = "startup.lock"
+    globals()["SAFE_MODE"] = False
+
+    if os.path.exists(STARTUP_LOCK_FILE):
+        print("\n" + "!"*10)
+        print("DETECTED FAILED PREVIOUS STARTUP. ENTERING SAFE MODE.")
+        print("All user plugins are disabled to allow the server to start.")
+        print("!"*10 + "\n")
+        globals()["SAFE_MODE"] = True
+
+    try:
+        with open(STARTUP_LOCK_FILE, "w") as f:
+            f.write(str(time.time()))
+    except Exception as e:
+        print(f"Warning: Could not create startup lock file: {e}")
+
+    def mark_startup_success():
+        time.sleep(30)
+        if os.path.exists(STARTUP_LOCK_FILE):
+            try:
+                os.remove(STARTUP_LOCK_FILE)
+            except:
+                pass
+
+    threading.Thread(target=mark_startup_success, daemon=True).start()
+
     download_ffmpeg()
     # threading.Thread(target=runner, daemon=True).start()
     os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"

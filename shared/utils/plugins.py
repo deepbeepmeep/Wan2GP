@@ -1094,9 +1094,13 @@ class PluginManager:
                 discovered.append(item)
         return sorted(discovered)
 
-    def load_plugins_from_directory(self, enabled_user_plugins: List[str]) -> None:
+    def load_plugins_from_directory(self, enabled_user_plugins: List[str], safe_mode: bool = False) -> None:
         self.custom_js_snippets = []
-        plugins_to_load = SYSTEM_PLUGINS + [p for p in enabled_user_plugins if p not in SYSTEM_PLUGINS]
+        if safe_mode:
+            print("[Safe Mode] User plugins are disabled. Only system plugins will be loaded.")
+            plugins_to_load = SYSTEM_PLUGINS
+        else:
+            plugins_to_load = SYSTEM_PLUGINS + [p for p in enabled_user_plugins if p not in SYSTEM_PLUGINS]
 
         for plugin_dir_name in self.discover_plugins():
             if plugin_dir_name not in plugins_to_load:
@@ -1246,8 +1250,11 @@ class WAN2GPApplication:
     def initialize_plugins(self, wgp_globals: dict):
         if not hasattr(self, 'plugin_manager'):
             return
-        
-        auto_install_and_enable_default_plugins(self.plugin_manager, wgp_globals)
+
+        safe_mode = wgp_globals.get("SAFE_MODE", False)
+
+        if not safe_mode:
+            auto_install_and_enable_default_plugins(self.plugin_manager, wgp_globals)
         
         server_config = wgp_globals.get("server_config")
         server_config_filename = wgp_globals.get("server_config_filename", "")
@@ -1258,7 +1265,8 @@ class WAN2GPApplication:
         self.plugin_manager.cleanup_pending_deletions()
 
         self.enabled_plugins = server_config.get("enabled_plugins", [])
-        self.plugin_manager.load_plugins_from_directory(self.enabled_plugins)
+
+        self.plugin_manager.load_plugins_from_directory(self.enabled_plugins, safe_mode=safe_mode)
         self.plugin_manager.inject_globals(wgp_globals)
 
     def setup_ui_tabs(self, main_tabs_component: gr.Tabs, state_component: gr.State, set_save_form_event):

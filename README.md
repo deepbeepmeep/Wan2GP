@@ -26,7 +26,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image,
 
 ## 🔥 Latest Updates : 
 
-### January 25th 2026: WanGP v10.51, Music for your Hearts
+### January 26th 2026: WanGP v10.53, Music for your Hearts
 
 WanGP Special *TTS* (Text To Speech) Release:
 
@@ -40,8 +40,14 @@ WanGP Special *TTS* (Text To Speech) Release:
    - **Custom Output folder for Audio Gens**: you can now choose a different folder for the *Audio Outputs*
    - **Default Memory Profile for Audio Models**: TTS models can get very slow if you use profile 4 (being autoregressive models, they will need to load all the layers one per one to generate one single audio token then rinse & repeat). On the other hand, they dont't need as much VRAM, so you can now define a more agressive profile (3+ for instance)
 
+- **Various Improvements**:
+   - Video /Audio Galleries now support deletions of gens done outside WanGP
+   - added *MP3 support* for audio outputs
+   - *Check for Updates* button for *Plugins* to see in a glance if any of your plugin can be updated
+
 *update 10.51*: new Heart Mula Finetune better at following instructions, Extra settings (cfg, top k) for TTS models, Rife v4\
-*update 10.52*: updated plugin list and added version tracking
+*update 10.52*: updated plugin list and added version tracking\
+*update 10.53*: video/audio gallery now support deletions
 
 ### January 20th 2026: WanGP v10.43, The Cost Saver
 *GPUs are expensive, RAM is expensive, SSD are expensive, sadly we live now in a GPU & RAM poor.*

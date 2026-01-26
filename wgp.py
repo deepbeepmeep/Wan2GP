@@ -37,7 +37,7 @@ from shared.utils.utils import convert_tensor_to_image, save_image, get_video_in
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_frame_location, get_outpainting_full_area_dimensions
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files,  save_video, save_image
-from shared.utils.audio_video import save_image_metadata, read_image_metadata, extract_audio_track_to_wav, write_wav_file
+from shared.utils.audio_video import save_image_metadata, read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension
 from shared.utils.audio_metadata import save_audio_metadata, read_audio_metadata
 from shared.utils.video_metadata import save_video_metadata
 from shared.match_archi import match_nvidia_architecture
@@ -85,7 +85,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.2"
-WanGP_version = "10.52"
+WanGP_version = "10.53"
 settings_version = 2.44
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -3942,7 +3942,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
     gen = get_gen_info(state)
     if source=="video":
         if current_gallery_tab != 0:
-            return [gr.update()] * 7
+            return [gr.update()] * 9
         file_list, file_settings_list = get_file_list(state, input_file_list)
         data=  event_data._data
         if data!=None and isinstance(data, dict):
@@ -3956,7 +3956,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
         files, settings_list = file_list, file_settings_list
     else:
         if current_gallery_tab != 1:
-            return [gr.update()] * 7
+            return [gr.update()] * 9
         audio_file_list, audio_file_settings_list = get_file_list(state, unpack_audio_list(audio_files_paths), audio_files= True)
         if audio_file_selected >= 0:
             choice = audio_file_selected
@@ -6474,7 +6474,8 @@ def generate_video(
                 time_flag = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss")
                 save_prompt = original_prompts[0]
                 if audio_only:
-                    extension = "wav"
+                    audio_codec = server_config.get("audio_stand_alone_output_codec", "wav")
+                    extension = get_audio_codec_extension(audio_codec)
                     output_dir = audio_save_path
                 elif is_image:
                     extension = "jpg"
@@ -6499,7 +6500,7 @@ def generate_video(
                     BGRA_frames = None 
                 if audio_only:
                     audio_path = os.path.join(output_dir, file_name)
-                    write_wav_file(audio_path, sample.squeeze(0), output_audio_sampling_rate)
+                    audio_path = save_audio_file(audio_path, sample.squeeze(0), output_audio_sampling_rate, audio_codec)
                     video_path = audio_path
                 elif is_image:
                     image_path = os.path.join(output_dir, file_name)

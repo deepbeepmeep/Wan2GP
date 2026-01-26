@@ -214,7 +214,21 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 with gr.Tab("Outputs"):
                     self.video_output_codec_choice = gr.Dropdown(choices=[("x265 CRF 28 (Balanced)", 'libx265_28'), ("x264 Level 8 (Balanced)", 'libx264_8'), ("x265 CRF 8 (High Quality)", 'libx265_8'), ("x264 Level 10 (High Quality)", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], value=self.server_config.get("video_output_codec", "libx264_8"), label="Video Codec")
                     self.image_output_codec_choice = gr.Dropdown(choices=[("JPEG Q85", 'jpeg_85'), ("WEBP Q85", 'webp_85'), ("JPEG Q95", 'jpeg_95'), ("WEBP Q95", 'webp_95'), ("WEBP Lossless", 'webp_lossless'), ("PNG Lossless", 'png')], value=self.server_config.get("image_output_codec", "jpeg_95"), label="Image Codec")
-                    self.audio_output_codec_choice = gr.Dropdown(choices=[("AAC 128 kbit", 'aac_128')], value=self.server_config.get("audio_output_codec", "aac_128"), visible=False, label="Audio Codec to use")
+                    self.audio_output_codec_choice = gr.Dropdown(choices=[("AAC 128 kbit", 'aac_128')], value=self.server_config.get("audio_output_codec", "aac_128"), visible=True, label="Audio Codec to use for mp4 container")
+                    audio_standalone_default = self.server_config.get("audio_stand_alone_output_codec", "wav")
+                    if audio_standalone_default == "mp3":
+                        audio_standalone_default = "mp3_192"
+                    self.audio_stand_alone_output_codec_choice = gr.Dropdown(
+                        choices=[
+                            ("WAV (Lossless)", "wav"),
+                            ("MP3 128 kbps", "mp3_128"),
+                            ("MP3 192 kbps", "mp3_192"),
+                            ("MP3 320 kbps", "mp3_320"),
+                        ],
+                        value=audio_standalone_default,
+                        visible=True,
+                        label="Audio Codec to use for standalone audio files",
+                    )
                     self.metadata_choice = gr.Dropdown(
                         choices=[("Export JSON files", "json"), ("Embed metadata in file (Exif/tag)", "metadata"), ("None", "none")],
                         value=self.server_config.get("metadata_type", "metadata"), label="Metadata Handling"
@@ -248,7 +262,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice,
             self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
             self.enhancer_enabled_choice, self.enhancer_mode_choice, self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.rife_version_choice,
-            self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice,
+            self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
             self.notification_sound_enabled_choice, self.notification_sound_volume_choice,
@@ -298,7 +312,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             video_profile_choice, image_profile_choice, audio_profile_choice,
             preload_in_VRAM_choice, max_reserved_loras_choice,
             enhancer_enabled_choice, enhancer_mode_choice, mmaudio_mode_choice, mmaudio_persistence_choice, rife_version_choice,
-            video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice,
+            video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice,
             notification_sound_enabled_choice, notification_sound_volume_choice,
@@ -337,6 +351,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "max_reserved_loras": max_reserved_loras_choice,
             "video_output_codec": video_output_codec_choice, "image_output_codec": image_output_codec_choice,
             "audio_output_codec": audio_output_codec_choice,
+            "audio_stand_alone_output_codec": audio_stand_alone_output_codec_choice,
             "model_hierarchy_type": model_hierarchy_type_choice,
             "checkpoints_paths": checkpoints_paths,
             "queue_color_scheme": queue_color_scheme_choice,
@@ -367,7 +382,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled", "rife_version",
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
-            "embed_source_images", "image_output_codec", "audio_output_codec", "checkpoints_paths",
+            "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
         ]
 

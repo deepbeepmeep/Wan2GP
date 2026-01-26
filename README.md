@@ -47,7 +47,7 @@ WanGP Special *TTS* (Text To Speech) Release:
 
 *update 10.51*: new Heart Mula Finetune better at following instructions, Extra settings (cfg, top k) for TTS models, Rife v4\
 *update 10.52*: updated plugin list and added version tracking\
-*update 10.53*: video/audio gallery now support deletions
+*update 10.53*: video/audio galleries now support deletions
 
 ### January 20th 2026: WanGP v10.43, The Cost Saver
 *GPUs are expensive, RAM is expensive, SSD are expensive, sadly we live now in a GPU & RAM poor.*

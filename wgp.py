@@ -3713,6 +3713,26 @@ def unpack_audio_list(packed_audio_file_list):
 def refresh_gallery(state): #, msg
     gen = get_gen_info(state)
 
+    for list_key, settings_key, sel_key in [("file_list", "file_settings_list", "selected"), ("audio_file_list", "audio_file_settings_list", "audio_selected")]:
+        f_list = gen.get(list_key)
+        if f_list:
+            s_list = gen.get(settings_key, [])
+            new_f, new_s = [], []
+            changed = False
+            for i, f in enumerate(f_list):
+                if os.path.exists(f):
+                    new_f.append(f)
+                    new_s.append(s_list[i] if i < len(s_list) else None)
+                else:
+                    changed = True
+            
+            if changed:
+                gen[list_key] = new_f
+                gen[settings_key] = new_s
+                current_sel = gen.get(sel_key, 0)
+                if current_sel >= len(new_f):
+                    gen[sel_key] = max(0, len(new_f) - 1)
+
     # gen["last_msg"] = msg
     file_list = gen.get("file_list", None)      
     choice = gen.get("selected",0)
@@ -3968,6 +3988,9 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             pass 
         configs = settings_list[choice]
         file_name = files[choice]
+        if not os.path.exists(file_name):
+             visible = False
+             return choice if source=="video" else gr.update(), get_default_video_info(), gr.update(visible=visible) , gr.update(visible=visible), gr.update(visible=visible), gr.update(visible=visible) , gr.update(visible=visible) 
         values = [  os.path.basename(file_name)]
         labels = [ "File Name"]
         misc_values= []

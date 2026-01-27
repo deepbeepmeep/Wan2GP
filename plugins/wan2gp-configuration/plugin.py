@@ -135,7 +135,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         interactive=not self.args.lock_config
                     )
                     self.loras_root_choice = gr.Textbox(
-                        label="Lora Root Folder",
+                        label="Loras Root Folder",
                         value=self.server_config.get("loras_root", "loras"),
                         interactive=not self.args.lock_config
                     )

@@ -26,7 +26,7 @@ audio-separator==0.36.1
 pyannote.audio==3.3.2
 
 # UI & interaction
-gradio==5.29.0
+gradio==6.4.0 # 5.29.0
 dashscope
 loguru
 s3tokenizer

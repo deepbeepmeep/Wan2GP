@@ -260,41 +260,41 @@ class family_handler():
         return {"flux":(100, "Flux 1"), "flux2":(101, "Flux 2")}
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-flux",
             type=str,
-            default=os.path.join("loras", "flux"),
-            help="Path to a directory that contains flux images Loras"
+            default=None,
+            help=f"Path to a directory that contains flux images Loras (default: {os.path.join(lora_root, 'flux')})"
         )
         parser.add_argument(
             "--lora-dir-flux2",
             type=str,
-            default=os.path.join("loras", "flux2"),
-            help="Path to a directory that contains flux2 images Loras"
+            default=None,
+            help=f"Path to a directory that contains flux2 images Loras (default: {os.path.join(lora_root, 'flux2')})"
         )
         parser.add_argument(
             "--lora-dir-flux2-klein-4b",
             type=str,
-            default=os.path.join("loras", "flux2_klein_4b"),
-            help="Path to a directory that contains Flux 2 Klein 4B Loras"
+            default=None,
+            help=f"Path to a directory that contains Flux 2 Klein 4B Loras (default: {os.path.join(lora_root, 'flux2_klein_4b')})"
         )
         parser.add_argument(
             "--lora-dir-flux2-klein-9b",
             type=str,
-            default=os.path.join("loras", "flux2_klein_9b"),
-            help="Path to a directory that contains Flux 2 Klein 9B Loras"
+            default=None,
+            help=f"Path to a directory that contains Flux 2 Klein 9B Loras (default: {os.path.join(lora_root, 'flux2_klein_9b')})"
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
+    def get_lora_dir(base_model_type, args, lora_root):
         if base_model_type == "flux2_klein_4b":
-            return args.lora_dir_flux2_klein_4b
+            return getattr(args, "lora_dir_flux2_klein_4b", None) or os.path.join(lora_root, "flux2_klein_4b")
         if base_model_type == "flux2_klein_9b":
-            return args.lora_dir_flux2_klein_9b
+            return getattr(args, "lora_dir_flux2_klein_9b", None) or os.path.join(lora_root, "flux2_klein_9b")
         if test_flux2(base_model_type):
-            return args.lora_dir_flux2
-        return args.lora_dir_flux
+            return getattr(args, "lora_dir_flux2", None) or os.path.join(lora_root, "flux2")
+        return getattr(args, "lora_dir_flux", None) or os.path.join(lora_root, "flux")
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

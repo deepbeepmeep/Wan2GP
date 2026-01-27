@@ -85,7 +85,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.2"
-WanGP_version = "10.53"
+WanGP_version = "10.54"
 settings_version = 2.44
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1700,8 +1700,9 @@ def update_generation_status(html_content):
         return gr.update(value=html_content)
 
 family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.TTS.tts_handler"]
+DEFAULT_LORA_ROOT = "loras"
 
-def register_family_lora_args(parser):
+def register_family_lora_args(parser, lora_root):
     registered_families = set()
     for path in family_handlers:
         handler = importlib.import_module(path).family_handler
@@ -1710,7 +1711,7 @@ def register_family_lora_args(parser):
         if family_key in registered_families:
             continue
         if hasattr(handler, "register_lora_cli_args"):
-            handler.register_lora_cli_args(parser)
+            handler.register_lora_cli_args(parser, lora_root)
         registered_families.add(family_key)
 
 def _parse_args():
@@ -1791,8 +1792,14 @@ def _parse_args():
         help="Allow inputting multiple images with image to video"
     )
 
+    parser.add_argument(
+        "--loras",
+        type=str,
+        default="",
+        help="Root folder for LoRAs (default: loras)"
+    )
 
-    register_family_lora_args(parser)
+    register_family_lora_args(parser, DEFAULT_LORA_ROOT)
 
     parser.add_argument(
         "--check-loras",
@@ -2059,7 +2066,15 @@ def get_lora_dir(model_type):
     if get_dir is None:
         raise Exception("loras unknown")
 
-    lora_dir = get_dir(base_model_type, args)
+    cli_lora_root = getattr(args, "loras", "")
+    if isinstance(cli_lora_root, str):
+        cli_lora_root = cli_lora_root.strip()
+    config_lora_root = None
+    if "server_config" in globals():
+        config_lora_root = server_config.get("loras_root", DEFAULT_LORA_ROOT)
+    lora_root = cli_lora_root or config_lora_root or DEFAULT_LORA_ROOT
+
+    lora_dir = get_dir(base_model_type, args, lora_root)
     if lora_dir is None:
         raise Exception("loras unknown")
     if os.path.isfile(lora_dir):
@@ -2161,11 +2176,15 @@ if not Path(config_load_filename).is_file():
         "preload_model_policy": [],
         "UI_theme": "default",
         "checkpoints_paths": fl.default_checkpoints_paths,
+        "loras_root": DEFAULT_LORA_ROOT,
 		"queue_color_scheme": "pastel",
         "model_hierarchy_type": 1,
         "mmaudio_mode": 0,
         "mmaudio_persistence": 1,
         "rife_version": "v4",
+        "prompt_enhancer_temperature": 0.6,
+        "prompt_enhancer_top_p": 0.9,
+        "prompt_enhancer_randomize_seed": True,
         "audio_save_path": "outputs",
     }
 
@@ -2789,6 +2808,10 @@ if not "image_output_codec" in server_config: server_config["image_output_codec"
 if not "audio_output_codec" in server_config: server_config["audio_output_codec"]= "aac_128"
 if not "audio_stand_alone_output_codec" in server_config: server_config["audio_stand_alone_output_codec"]= "wav"
 if not "rife_version" in server_config: server_config["rife_version"] = "v4"
+if "loras_root" not in server_config: server_config["loras_root"] = DEFAULT_LORA_ROOT
+if "prompt_enhancer_temperature" not in server_config: server_config["prompt_enhancer_temperature"] = 0.6
+if "prompt_enhancer_top_p" not in server_config: server_config["prompt_enhancer_top_p"] = 0.9
+if "prompt_enhancer_randomize_seed" not in server_config: server_config["prompt_enhancer_randomize_seed"] = True
 
 preload_model_policy = server_config.get("preload_model_policy", []) 
 
@@ -5113,8 +5136,14 @@ def process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image
     if len(original_prompts) == 0 and not "T" in prompt_enhancer:
         return None
     else:
-        from shared.utils.utils import seed_everything
-        seed = seed_everything(seed)
+        import secrets
+        enhancer_temperature = server_config.get("prompt_enhancer_temperature", 0.6)
+        enhancer_top_p = server_config.get("prompt_enhancer_top_p", 0.9)
+        randomize_seed = server_config.get("prompt_enhancer_randomize_seed", True)
+        if randomize_seed:
+            enhancer_seed = secrets.randbits(32)
+        else:
+            enhancer_seed = seed if seed is not None and seed >= 0 else 0
         # for i, original_prompt in enumerate(original_prompts):
         prompts = generate_cinematic_prompt(
             prompt_enhancer_image_caption_model,
@@ -5127,6 +5156,10 @@ def process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image
             text_prompt = audio_only,
             max_new_tokens=text_encoder_max_tokens,
             prompt_enhancer_instructions = prompt_enhancer_instructions,
+            do_sample = True,
+            temperature = enhancer_temperature,
+            top_p = enhancer_top_p,
+            seed = enhancer_seed,
         )
         return prompts
 

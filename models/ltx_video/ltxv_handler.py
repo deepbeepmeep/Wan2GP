@@ -63,17 +63,17 @@ class family_handler():
         return {"ltxv":(30, "LTX Video")}
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-ltxv",
             type=str,
-            default=os.path.join("loras", "ltxv"),
-            help="Path to a directory that contains LTX Videos Loras"
+            default=None,
+            help=f"Path to a directory that contains LTX Videos Loras (default: {os.path.join(lora_root, 'ltxv')})"
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
-        return args.lora_dir_ltxv
+    def get_lora_dir(base_model_type, args, lora_root):
+        return getattr(args, "lora_dir_ltxv", None) or os.path.join(lora_root, "ltxv")
 
     @staticmethod
     def get_vae_block_size(base_model_type):

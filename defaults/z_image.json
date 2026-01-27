@@ -2,7 +2,7 @@
     "model": {
         "name": "Z-Image Turbo 6B",
         "architecture": "z_image",
-        "description": "Z-Image Turbo text-to-image model.",
+        "description": "Z-Image is a powerful and highly efficient image generation model with 6B parameters. Z Image Turbe is a distilled version of Z-Image that matches or exceeds leading competitors with only 8 NFEs.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/Z-Image/resolve/main/ZImageTurbo_bf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/Z-Image/resolve/main/ZImageTurbo_quanto_bf16_int8.safetensors"

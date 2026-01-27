@@ -119,17 +119,17 @@ class family_handler():
         return {"qwen":(110, "Qwen")}
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-qwen",
             type=str,
-            default=os.path.join("loras", "qwen"),
-            help="Path to a directory that contains qwen images Loras"
+            default=None,
+            help=f"Path to a directory that contains qwen images Loras (default: {os.path.join(lora_root, 'qwen')})"
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
-        return args.lora_dir_qwen
+    def get_lora_dir(base_model_type, args, lora_root):
+        return getattr(args, "lora_dir_qwen", None) or os.path.join(lora_root, "qwen")
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

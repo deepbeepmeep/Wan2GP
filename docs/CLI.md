@@ -124,6 +124,7 @@ python wgp.py --process queue.zip --output-dir ./out --attention sage2
 ## Lora Configuration
 
 ```bash
+--loras PATH                 # Root folder for all LoRA subfolders (default: loras)
 --lora-dir PATH              # Path to Wan t2v loras directory
 --lora-dir-i2v PATH          # Path to Wan i2v loras directory
 --lora-dir-hunyuan PATH      # Path to Hunyuan t2v loras directory
@@ -133,6 +134,10 @@ python wgp.py --process queue.zip --output-dir ./out --attention sage2
 --lora-preset PRESET         # Load lora preset file (.lset) on startup
 --check-loras                # Filter incompatible loras (slower startup)
 ```
+
+Notes:
+- `--loras` sets the root folder used by all LoRA subfolders (e.g. `loras/wan`, `loras/flux`, etc.).
+- Specific `--lora-dir-*` flags override the root for that family only.
 
 ## Generation Settings
 
@@ -298,8 +303,8 @@ Create and share lora configurations:
 # Load specific preset
 python wgp.py --lora-preset anime_style.lset
 
-# With custom lora directory
-python wgp.py --lora-preset mystyle.lset --lora-dir /shared/loras
+# With custom lora root
+python wgp.py --loras /shared/loras --lora-preset mystyle.lset
 ```
 
 ## Environment Variables

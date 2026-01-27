@@ -304,17 +304,17 @@ class family_handler:
         return {"tts": (200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-tts",
             type=str,
-            default=os.path.join("loras", "tts"),
-            help="Path to a directory that contains TTS settings",
+            default=None,
+            help=f"Path to a directory that contains TTS settings (default: {os.path.join(lora_root, 'tts')})",
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
-        return args.lora_dir_tts
+    def get_lora_dir(base_model_type, args, lora_root):
+        return getattr(args, "lora_dir_tts", None) or os.path.join(lora_root, "tts")
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

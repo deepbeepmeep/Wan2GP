@@ -424,6 +424,7 @@ class ZImageTransformer2DModel(nn.Module):
         norm_eps=1e-5,
         qk_norm=True,
         cap_feat_dim=2560,
+        siglip_feat_dim=None,
         rope_theta=256.0,
         t_scale=1000.0,
         axes_dims=[32, 48, 48],

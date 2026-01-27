@@ -21,25 +21,25 @@ class family_handler:
         return {"longcat": (60, "LongCat")}
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-longcat",
             type=str,
-            default=os.path.join("loras", "longcat"),
-            help="Path to a directory that contains LongCat Video LoRAs",
+            default=None,
+            help=f"Path to a directory that contains LongCat Video LoRAs (default: {os.path.join(lora_root, 'longcat')})",
         )
         parser.add_argument(
             "--lora-dir-longcat-avatar",
             type=str,
-            default=os.path.join("loras", "longcat_avatar"),
-            help="Path to a directory that contains LongCat Avatar LoRAs",
+            default=None,
+            help=f"Path to a directory that contains LongCat Avatar LoRAs (default: {os.path.join(lora_root, 'longcat_avatar')})",
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
+    def get_lora_dir(base_model_type, args, lora_root):
         if base_model_type == "longcat_avatar":
-            return args.lora_dir_longcat_avatar
-        return args.lora_dir_longcat
+            return getattr(args, "lora_dir_longcat_avatar", None) or os.path.join(lora_root, "longcat_avatar")
+        return getattr(args, "lora_dir_longcat", None) or os.path.join(lora_root, "longcat")
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

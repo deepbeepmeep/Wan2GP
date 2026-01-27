@@ -493,7 +493,8 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         self._guidance_scale = guidance_scale
         kwargs = {}
         NAG = None
-        if NAG_scale > 1:
+        # NAG is only safe without CFG; skip it when guidance > 1.
+        if NAG_scale > 1 and guidance_scale <= 1:
             NAG = { "scale": NAG_scale, "tau": NAG_tau, "alpha": NAG_alpha, }
 
         dtype = (
@@ -544,6 +545,19 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 max_sequence_length=max_sequence_length,
                 lora_scale=lora_scale,
             )
+        # Ensure CFG prompt lengths match to avoid RoPE shape mismatches.
+        if self.do_classifier_free_guidance and isinstance(prompt_embeds, list) and isinstance(negative_prompt_embeds, list):
+            for i in range(min(len(prompt_embeds), len(negative_prompt_embeds))):
+                pos = prompt_embeds[i]
+                neg = negative_prompt_embeds[i]
+                if pos is None or neg is None:
+                    continue
+                if neg.shape[0] < pos.shape[0]:
+                    pad_len = pos.shape[0] - neg.shape[0]
+                    neg = torch.cat([neg, neg[-1:].repeat(pad_len, 1)], dim=0)
+                elif neg.shape[0] > pos.shape[0]:
+                    neg = neg[: pos.shape[0]]
+                negative_prompt_embeds[i] = neg
         neg_embeds_list = negative_prompt_embeds if isinstance(negative_prompt_embeds, list) else []
         if NAG is not None and len(neg_embeds_list) > 0:
             NAG["neg_feats"] = neg_embeds_list[0]

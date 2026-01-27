@@ -26,7 +26,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image,
 
 ## 🔥 Latest Updates : 
 
-### January 26th 2026: WanGP v10.53, Music for your Hearts
+### January 27th 2026: WanGP v10.54, Music for your Hearts
 
 WanGP Special *TTS* (Text To Speech) Release:
 
@@ -40,14 +40,19 @@ WanGP Special *TTS* (Text To Speech) Release:
    - **Custom Output folder for Audio Gens**: you can now choose a different folder for the *Audio Outputs*
    - **Default Memory Profile for Audio Models**: TTS models can get very slow if you use profile 4 (being autoregressive models, they will need to load all the layers one per one to generate one single audio token then rinse & repeat). On the other hand, they dont't need as much VRAM, so you can now define a more agressive profile (3+ for instance)
 
+- **Z Image Base**: try it if you are into the *Z Image* hype but it will be probably useless for you unless you are a researcher and / or want to build a finetune out of it. This model requires from 35 to 50 steps (4x to 6x slower than *Z Image turbo*) and cfg > 1 (an additional 2x slower) and there is no *Reinforcement Learning* so Output Images wont be as good. The plus side is a higher diversity and *Native Negative Prompt* (versus Z Image virtual Negative Prompt using *NAG*) 
+
 - **Various Improvements**:
    - Video /Audio Galleries now support deletions of gens done outside WanGP
    - added *MP3 support* for audio outputs
    - *Check for Updates* button for *Plugins* to see in a glance if any of your plugin can be updated
+   - *Prompt Enhancer generates* a different enhanced prompt each timee you click on it. You can define in the config tab its gen parameters (top k, temperature)
+   - New *Root Loras* folder can be defined in the config Tab. Useful if you have multiple WanGP instances or want to store easily all your loras in a different hard drive 
 
 *update 10.51*: new Heart Mula Finetune better at following instructions, Extra settings (cfg, top k) for TTS models, Rife v4\
 *update 10.52*: updated plugin list and added version tracking\
-*update 10.53*: video/audio galleries now support deletions
+*update 10.53*: video/audio galleries now support deletions\
+*update 10.54*: added Z Image Omnibase, prompt enhancers improvements, configurable loras root folder
 
 ### January 20th 2026: WanGP v10.43, The Cost Saver
 *GPUs are expensive, RAM is expensive, SSD are expensive, sadly we live now in a GPU & RAM poor.*

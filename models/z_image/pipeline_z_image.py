@@ -64,6 +64,12 @@ EXAMPLE_DOC_STRING = """
         ```
 """
 
+# Default negative prompt for Z-Image when user input is empty.
+DEFAULT_NEGATIVE_PROMPT = (
+    "low quality, worst quality, blurry, pixelated, noisy, artifacts, watermark, text, logo, "
+    "bad anatomy, bad hands, extra limbs"
+)
+
 
 # Copied from diffusers.pipelines.flux.pipeline_flux.calculate_shift
 def calculate_shift(
@@ -246,9 +252,20 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
 
         if do_classifier_free_guidance:
             if negative_prompt is None:
-                negative_prompt = ["" for _ in prompt]
+                negative_prompt = [DEFAULT_NEGATIVE_PROMPT for _ in prompt]
+            elif isinstance(negative_prompt, str):
+                negative_prompt = (
+                    [DEFAULT_NEGATIVE_PROMPT for _ in prompt]
+                    if not negative_prompt.strip()
+                    else [negative_prompt]
+                )
             else:
-                negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+                # Keep list behavior but fill empty items when lengths match.
+                if len(negative_prompt) == len(prompt):
+                    negative_prompt = [
+                        DEFAULT_NEGATIVE_PROMPT if (p is None or (isinstance(p, str) and not p.strip())) else p
+                        for p in negative_prompt
+                    ]
             assert len(prompt) == len(negative_prompt)
             negative_prompt_embeds = self._encode_prompt(
                 prompt=negative_prompt,
@@ -545,19 +562,6 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 max_sequence_length=max_sequence_length,
                 lora_scale=lora_scale,
             )
-        # Ensure CFG prompt lengths match to avoid RoPE shape mismatches.
-        if self.do_classifier_free_guidance and isinstance(prompt_embeds, list) and isinstance(negative_prompt_embeds, list):
-            for i in range(min(len(prompt_embeds), len(negative_prompt_embeds))):
-                pos = prompt_embeds[i]
-                neg = negative_prompt_embeds[i]
-                if pos is None or neg is None:
-                    continue
-                if neg.shape[0] < pos.shape[0]:
-                    pad_len = pos.shape[0] - neg.shape[0]
-                    neg = torch.cat([neg, neg[-1:].repeat(pad_len, 1)], dim=0)
-                elif neg.shape[0] > pos.shape[0]:
-                    neg = neg[: pos.shape[0]]
-                negative_prompt_embeds[i] = neg
         neg_embeds_list = negative_prompt_embeds if isinstance(negative_prompt_embeds, list) else []
         if NAG is not None and len(neg_embeds_list) > 0:
             NAG["neg_feats"] = neg_embeds_list[0]

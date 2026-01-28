@@ -1,4 +1,4 @@
-name: Build WanGP Portable
+name: Build WanGP Portable Sage Attention
 
 on:
   workflow_dispatch:

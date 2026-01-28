@@ -377,6 +377,7 @@ class Flux(nn.Module):
         pipeline =None,
         siglip_embedding = None,
         siglip_embedding_ids = None,
+        NAG: dict | None = None,
     ) -> Tensor:
 
         sz = len(txt_list)
@@ -430,6 +431,7 @@ class Flux(nn.Module):
             txt_ids_list = [torch.cat((siglip_embedding_ids, txt_id) , dim=1) for txt_id in txt_ids_list]
 
         pe_list = [self.pe_embedder(torch.cat((txt_ids, img_ids), dim=1)) for txt_ids in txt_ids_list] 
+        txt_len = txt_list[0].shape[1] if len(txt_list) > 0 else 0
 
         if self.is_flux2:
             double_vec_list = [ ( self.double_stream_modulation_img(base_vec_list[i]), self.double_stream_modulation_txt(base_vec_list[i]), ) for i in range(sz) ]
@@ -444,7 +446,7 @@ class Flux(nn.Module):
             if pipeline._interrupt:
                 return [None] * sz
             for img, txt, pe, vec in zip(img_list, txt_list, pe_list, vec_list):
-                img[...], txt[...] = block(img=img, txt=txt, vec=vec, pe=pe)
+                img[...], txt[...] = block(img=img, txt=txt, vec=vec, pe=pe, NAG=NAG)
                 img = txt = pe = vec= None
 
         img_list = [torch.cat((txt, img), 1) for txt, img in zip(txt_list, img_list)]
@@ -463,7 +465,7 @@ class Flux(nn.Module):
             if pipeline._interrupt:
                 return [None] * sz
             for img, pe, vec in zip(img_list, pe_list, vec_list):
-                img[...]= block(x=img, vec=vec, pe=pe)
+                img[...]= block(x=img, vec=vec, pe=pe, txt_len=txt_len, NAG=NAG)
                 img = pe = vec = None
         img_list = [img[:, txt.shape[1] : txt.shape[1] + img_len, ...] for img, txt in zip(img_list, txt_list)]
 

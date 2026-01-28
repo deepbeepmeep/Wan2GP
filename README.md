@@ -5,7 +5,7 @@
 <b>WanGP by DeepBeepMeep : The best Open Source Video Generative Models Accessible to the GPU Poor</b>
 </p>
 
-WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image, LongCat, Kandinsky and LTX Video models with:
+WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, Z-Image, LongCat, Kandinsky, LTX 1 & 2, Qwen3 TTS, Chatterbox, HearMula, ... with:
 - Low VRAM requirements (as low as 6 GB of VRAM is sufficient for certain models)
 - Support for old Nvidia GPUs (RTX 10XX, 20xx, ...)
 - Support for AMD GPUs Radeon RX 76XX, 77XX, 78XX & 79XX, instructions in the Installation Section Below.
@@ -17,9 +17,9 @@ WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image,
 - Plenty of ready to use Plug Ins: Gallery Browser, Upscaler, Models/Checkpoints Manager, CivitAI browser and downloader, ...
 - Loras Support to customize each model
 - Queuing system : make your shopping list of videos to generate and come back later
-- Headless mode: launch the generation of multiple image / videos using a command line
+- Headless mode: launch the generation of multiple image / videos / audio files using a command line
 
-**Discord Server to get Help from Other Users and show your Best Videos:** https://discord.gg/g7efUW9jGV
+**Discord Server to get Help from the WanGP Community and show your Best Gens:** https://discord.gg/g7efUW9jGV
 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 

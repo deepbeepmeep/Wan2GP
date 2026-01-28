@@ -18,7 +18,7 @@ from transformers.generation import StoppingCriteria, StoppingCriteriaList
 from mmgp import offload
 from shared.utils import files_locator as fl
 
-from . import defs as qwen3_defs
+from .. import qwen3_handler as qwen3_defs
 from .core.models.configuration_qwen3_tts import Qwen3TTSConfig
 from .core.models.modeling_qwen3_tts import Qwen3TTSForConditionalGeneration
 from .core.models.processing_qwen3_tts import Qwen3TTSProcessor

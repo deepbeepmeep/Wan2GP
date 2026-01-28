@@ -6,9 +6,7 @@
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-9b.safetensors",
             "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-9b_quanto_bf16_int8.safetensors"
-        ],
-        "image_outputs": true,
-        "no_negative_prompt": true
+        ]
     },
     "prompt": "a glass greenhouse filled with lush tropical plants, misty air, and dappled light",
     "resolution": "1024x1024",

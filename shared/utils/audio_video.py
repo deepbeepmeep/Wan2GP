@@ -92,28 +92,12 @@ def save_audio_file(path, audio_data, sample_rate, codec_key="wav"):
     return path
 
 
-def extract_audio_track_to_wav(video_path, output_dir, suffix=""):
+def extract_audio_track_to_wav(video_path, output_path):
     if not video_path:
         return None
-    try:
-        video_path = os.fspath(video_path)
-    except TypeError:
-        return None
-    try:
-        import ffmpeg
-    except Exception:
-        return None
-    output_dir = output_dir or os.path.dirname(video_path) or "."
-    output_path = get_available_filename(output_dir, video_path, suffix=suffix, force_extension=".wav")
-    try:
-        (
-            ffmpeg.input(video_path)
-            .output(output_path, **{"map": "0:a:0", "acodec": "pcm_s16le"})
-            .overwrite_output()
-            .run(quiet=True)
-        )
-    except Exception:
-        return None
+    video_path = os.fspath(video_path)
+    import ffmpeg
+    ffmpeg.input(video_path).output(output_path, **{"map": "0:a:0", "acodec": "pcm_s16le"}).overwrite_output().run(quiet=True)
     return output_path
 
 

@@ -5717,9 +5717,10 @@ def generate_video(
         control_audio_tracks, _  = extract_audio_tracks(video_guide)
     if "K" in audio_prompt_type and video_guide is not None:
         try:
-            audio_guide = extract_audio_track_to_wav(video_guide, save_path, suffix="_control_audio")
+            audio_guide = extract_audio_track_to_wav(video_guide, get_available_filename(save_path, video_guide, suffix="_control_audio", force_extension=".wav"))
             temp_filenames_list.append(audio_guide)
-        except:
+        except Exception as e:
+            print(f"Unable to extract Audio track from Control Video:{e}")
             audio_guide = None
         audio_guide2 = None
     if video_source is not None:

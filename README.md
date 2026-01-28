@@ -34,7 +34,7 @@ WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image,
 
 ## 🔥 Latest Updates : 
 
-### January 27th 2026: WanGP v10.55, Music for your Hearts
+### January 28th 2026: WanGP v10.55, Music for your Hearts
 
 WanGP Special *TTS* (Text To Speech) Release:
 
@@ -58,7 +58,7 @@ Note that Z Image Base is very sensitive to the *Attention Mode*: it is not comp
    - *Check for Updates* button for *Plugins* to see in a glance if any of your plugin can be updated
    - *Prompt Enhancer* generates a different enhanced prompt each timee you click on it. You can define in the config tab its gen parameters (top k, temperature)
    - New *Root Loras* folder can be defined in the config Tab. Useful if you have multiple WanGP instances or want to store easily all your loras in a different hard drive 
-   - added new setting *Attention Mode Override" in the *Misc* tab
+   - added new setting *Attention Mode Override* in the *Misc* tab
    - Experimental: allowed changing *Configuration* during a *Generation*
 
 *update 10.51*: new Heart Mula Finetune better at following instructions, Extra settings (cfg, top k) for TTS models, Rife v4\

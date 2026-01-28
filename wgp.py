@@ -11383,8 +11383,8 @@ if __name__ == "__main__":
         globals()["SAFE_MODE"] = True
 
     try:
-        with open(STARTUP_LOCK_FILE, "w") as f:
-            f.write(str(time.time()))
+        with open(STARTUP_LOCK_FILE, "w"):
+            pass
     except Exception as e:
         print(f"Warning: Could not create startup lock file: {e}")
 

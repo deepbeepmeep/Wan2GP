@@ -205,6 +205,7 @@ def get_qwen3_model_def(base_model_type: str) -> dict:
         "supports_early_stop": True,
         "profiles_dir": [base_model_type],
         "duration_slider": dict(QWEN3_TTS_DURATION_SLIDER),
+        "top_k_slider": True,
         "text_prompt_enhancer_instructions": TTS_MONOLOGUE_PROMPT,
         "compile": False,
     }

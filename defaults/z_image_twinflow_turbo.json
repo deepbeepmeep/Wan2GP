@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "TwinFlow Z-Image Turbo",
+        "name": "TwinFlow Z-Image Turbo 6B",
         "architecture": "z_image",
         "description": "TwinFlow is a distilled Z-Image Turbo Finetune optimized for 1 to 4 steps Image Generations.",
         "unified_solver": true,

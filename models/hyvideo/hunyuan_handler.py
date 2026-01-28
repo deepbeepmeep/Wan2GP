@@ -165,36 +165,35 @@ class family_handler():
         return {"hunyuan":(20, "Hunyuan Video"), "hunyuan_1_5":(21, "Hunyuan Video 1.5")}
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-hunyuan",
             type=str,
-            default=os.path.join("loras", "hunyuan"),
-            help="Path to a directory that contains Hunyuan Video t2v Loras"
+            default=None,
+            help=f"Path to a directory that contains Hunyuan Video t2v Loras (default: {os.path.join(lora_root, 'hunyuan')})"
         )
         parser.add_argument(
             "--lora-dir-hunyuan-i2v",
             type=str,
-            default=os.path.join("loras", "hunyuan_i2v"),
-            help="Path to a directory that contains Hunyuan Video i2v Loras"
+            default=None,
+            help=f"Path to a directory that contains Hunyuan Video i2v Loras (default: {os.path.join(lora_root, 'hunyuan_i2v')})"
         )
         parser.add_argument(
             "--lora-dir-hunyuan-1-5",
             type=str,
-            default=os.path.join("loras", "hunyuan_1_5"),
-            help="Path to a directory that contains Hunyuan Video 1.5 Loras"
+            default=None,
+            help=f"Path to a directory that contains Hunyuan Video 1.5 Loras (default: {os.path.join(lora_root, 'hunyuan_1_5')})"
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
+    def get_lora_dir(base_model_type, args, lora_root):
         if test_hunyuan_1_5(base_model_type):
-            return args.lora_dir_hunyuan_1_5
+            return getattr(args, "lora_dir_hunyuan_1_5", None) or os.path.join(lora_root, "hunyuan_1_5")
             
         elif "i2v" in base_model_type:
-            return args.lora_dir_hunyuan_i2v
+            return getattr(args, "lora_dir_hunyuan_i2v", None) or os.path.join(lora_root, "hunyuan_i2v")
 
-        root_lora_dir = args.lora_dir_hunyuan
-        return root_lora_dir
+        return getattr(args, "lora_dir_hunyuan", None) or os.path.join(lora_root, "hunyuan")
 
     @staticmethod
     def get_rgb_factors(base_model_type ):

@@ -89,45 +89,45 @@ class family_handler():
         return {"wan":(0, "Wan2.1"), "wan2_2":(1, "Wan2.2") }
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-i2v",
             type=str,
-            default=os.path.join("loras", "wan_i2v"),
-            help="Path to a directory that contains Wan i2v Loras "
+            default=None,
+            help=f"Path to a directory that contains Wan i2v Loras (default: {os.path.join(lora_root, 'wan_i2v')})"
         )
         parser.add_argument(
             "--lora-dir",
             type=str,
-            default=os.path.join("loras", "wan"),
-            help="Path to a directory that contains Wan t2v Loras"
+            default=None,
+            help=f"Path to a directory that contains Wan t2v Loras (default: {os.path.join(lora_root, 'wan')})"
         )
         parser.add_argument(
             "--lora-dir-wan-1-3b",
             type=str,
-            default=os.path.join("loras", "wan_1.3B"),
-            help="Path to a directory that contains Wan 1.3B Loras"
+            default=None,
+            help=f"Path to a directory that contains Wan 1.3B Loras (default: {os.path.join(lora_root, 'wan_1.3B')})"
         )
         parser.add_argument(
             "--lora-dir-wan-5b",
             type=str,
-            default=os.path.join("loras", "wan_5B"),
-            help="Path to a directory that contains Wan 5B Loras"
+            default=None,
+            help=f"Path to a directory that contains Wan 5B Loras (default: {os.path.join(lora_root, 'wan_5B')})"
         )
         parser.add_argument(
             "--lora-dir-wan-i2v",
             type=str,
-            default=os.path.join("loras", "wan_i2v"),
-            help="Path to a directory that contains Wan i2v Loras"
+            default=None,
+            help=f"Path to a directory that contains Wan i2v Loras (default: {os.path.join(lora_root, 'wan_i2v')})"
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
+    def get_lora_dir(base_model_type, args, lora_root):
         i2v = test_class_i2v(base_model_type) and not test_i2v_2_2(base_model_type)
-        wan_dir = getattr(args, "lora_dir_wan", None) or getattr(args, "lora_dir", None) or os.path.join("loras", "wan")
-        wan_i2v_dir = getattr(args, "lora_dir_wan_i2v", None) or getattr(args, "lora_dir_i2v", None) or os.path.join("loras", "wan_i2v")
-        wan_1_3b_dir = getattr(args, "lora_dir_wan_1_3b", None) or os.path.join("loras", "wan_1.3B")
-        wan_5b_dir = getattr(args, "lora_dir_wan_5b", None) or os.path.join("loras", "wan_5B")
+        wan_dir = getattr(args, "lora_dir_wan", None) or getattr(args, "lora_dir", None) or os.path.join(lora_root, "wan")
+        wan_i2v_dir = getattr(args, "lora_dir_wan_i2v", None) or getattr(args, "lora_dir_i2v", None) or os.path.join(lora_root, "wan_i2v")
+        wan_1_3b_dir = getattr(args, "lora_dir_wan_1_3b", None) or os.path.join(lora_root, "wan_1.3B")
+        wan_5b_dir = getattr(args, "lora_dir_wan_5b", None) or os.path.join(lora_root, "wan_5B")
 
         if i2v:
             return wan_i2v_dir

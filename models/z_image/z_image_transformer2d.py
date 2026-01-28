@@ -424,6 +424,7 @@ class ZImageTransformer2DModel(nn.Module):
         norm_eps=1e-5,
         qk_norm=True,
         cap_feat_dim=2560,
+        siglip_feat_dim=None,
         rope_theta=256.0,
         t_scale=1000.0,
         axes_dims=[32, 48, 48],
@@ -1013,12 +1014,9 @@ class ZImageTransformer2DModel(nn.Module):
         x_embedder = self.all_x_embedder[f"{patch_size}-{f_patch_size}"]
         embedded_x_list = []
         cap_embedded_list = []
-        x_seqlen = None
-        cap_seqlen = None
-        x_freqs_cis = None
-        cap_freqs_cis = None
         cap_ori_len_ref = None
         cap_pad_mask_ref = None
+        per_sample_kwargs = []
 
         for i,(x,cap_feats) in enumerate(zip(x_list, cap_feats_list)):
             bsz = x.shape[0]
@@ -1026,13 +1024,13 @@ class ZImageTransformer2DModel(nn.Module):
 
             # Store x_size from first sample (all should be same shape)
             if i==0:
-                x_seqlen = len(x_patches[0])
-                cap_seqlen = len(cap_out[0])
-                x_freqs_cis = self.rope_embedder(torch.cat(x_pos_ids[:1], dim=0))
-                cap_freqs_cis = self.rope_embedder(torch.cat(cap_pos_ids[:1], dim=0))
                 x_size = x_i_size
                 cap_ori_len_ref = len(cap_feats)
                 cap_pad_mask_ref = cap_inner_pad_mask[0]
+            x_seqlen = len(x_patches[0])
+            cap_seqlen = len(cap_out[0])
+            x_freqs_cis = self.rope_embedder(torch.cat(x_pos_ids[:1], dim=0)).unsqueeze(0)
+            cap_freqs_cis = self.rope_embedder(torch.cat(cap_pos_ids[:1], dim=0)).unsqueeze(0)
             # Embed x
             # x_patches = 
             x_embedded = x_embedder(torch.stack(x_patches))
@@ -1042,14 +1040,20 @@ class ZImageTransformer2DModel(nn.Module):
             cap_embedded = self.cap_embedder(torch.stack(cap_out))
             cap_embedded[torch.stack(cap_inner_pad_mask)] = self.cap_pad_token
             cap_embedded_list.append(cap_embedded)
+            per_sample_kwargs.append(
+                {
+                    "x_seqlen": x_seqlen,
+                    "cap_seqlen": cap_seqlen,
+                    "x_freqs": x_freqs_cis,
+                    "cap_freqs": cap_freqs_cis,
+                    "x_attn_mask": torch.ones((1, x_seqlen), dtype=torch.bool, device=device),
+                    "cap_attn_mask": torch.ones((1, cap_seqlen), dtype=torch.bool, device=device),
+                }
+            )
             x = cap_feats = None
 
         # Match t_embedder output dtype
         adaln_input = t.type_as(embedded_x_list[0])[:1]  # Same timestep for all samples
-
-        # Prepare attention masks and freqs
-        x_attn_mask = torch.ones((1, x_seqlen), dtype=torch.bool, device=device)
-        x_freqs_i = x_freqs_cis.unsqueeze(0)
 
         # Control processing - compute hints with batch dimension [num_samples, seq, dim]
         refiner_hints_tuple_list = []  # List of tensors with batch dim, one per layer
@@ -1061,12 +1065,12 @@ class ZImageTransformer2DModel(nn.Module):
         if control_V2:
             # Control v2.0 refiner - process all samples together (no duplication)
             # Stack all embedded_x into batch: [num_samples, seq, dim]
-            kwargs = dict(
-                attn_mask=x_attn_mask,
-                freqs_cis=x_freqs_i, 
-                adaln_input=adaln_input,
-            )                
             for i,(x_batch,cap_embedded_ref, control_ctx_input) in enumerate(zip(embedded_x_list, cap_embedded_list, control_context_list)):
+                kwargs = dict(
+                    attn_mask=per_sample_kwargs[i]["x_attn_mask"],
+                    freqs_cis=per_sample_kwargs[i]["x_freqs"],
+                    adaln_input=adaln_input,
+                )
 
                 # Pass all samples at once - hints will have shape [num_samples, seq, dim] each #ctrl_ctx_tensor,
                 refiner_hints_kwargs, refiner_hints_tuple, ctrl_seqlens = self.prepare_forward_control_2_0_refiner(
@@ -1085,7 +1089,11 @@ class ZImageTransformer2DModel(nn.Module):
         # Noise refiner
         for layer in self.noise_refiner:
             for i, x_i in enumerate(embedded_x_list):
-                kwargs = dict(attn_mask=x_attn_mask, freqs_cis=x_freqs_i, adaln_input=adaln_input)
+                kwargs = dict(
+                    attn_mask=per_sample_kwargs[i]["x_attn_mask"],
+                    freqs_cis=per_sample_kwargs[i]["x_freqs"],
+                    adaln_input=adaln_input,
+                )
                 if control_V2:  # v2 control
                     # kwargs["hints"] = refiner_hints_tuple_list[i]
                     kwargs["hints"] = refiner_hints_tuple_list[i]
@@ -1105,13 +1113,11 @@ class ZImageTransformer2DModel(nn.Module):
                 hints = hints_kwargs = None
 
         # Context refiner
-        cap_attn_mask = torch.ones((1, cap_seqlen), dtype=torch.bool, device=device)
-        cap_freqs_i = cap_freqs_cis.unsqueeze(0)
-
         # NAG: prepare negative caption embedding once (it is static w.r.t. timestep).
         NAG_index = -1
         nag_enabled = NAG is not None
         if nag_enabled:
+            nag_kwargs = per_sample_kwargs[0]
             neg_feats = NAG["neg_feats"]
             NAG_index = 0
             if len(neg_feats) < cap_ori_len_ref:
@@ -1119,54 +1125,93 @@ class ZImageTransformer2DModel(nn.Module):
                 neg_feats = torch.cat([neg_feats, neg_feats[-1:].repeat(pad_len, 1)], dim=0)
             elif len(neg_feats) > cap_ori_len_ref:
                 neg_feats = neg_feats[:cap_ori_len_ref]
-            pad_len = cap_seqlen - len(neg_feats)
+            pad_len = nag_kwargs["cap_seqlen"] - len(neg_feats)
             if pad_len > 0:
                 neg_feats = torch.cat([neg_feats, neg_feats[-1:].repeat(pad_len, 1)], dim=0)
             neg_cap_embedded = self.cap_embedder(neg_feats.unsqueeze(0)).type_as(cap_embedded_list[0])
             neg_cap_embedded[cap_pad_mask_ref.unsqueeze(0)] = self.cap_pad_token
             for layer in self.context_refiner:
-                neg_cap_embedded = layer(neg_cap_embedded, attn_mask=cap_attn_mask, freqs_cis=cap_freqs_i)
+                neg_cap_embedded = layer(
+                    neg_cap_embedded,
+                    attn_mask=nag_kwargs["cap_attn_mask"],
+                    freqs_cis=nag_kwargs["cap_freqs"],
+                )
             NAG["cap_embed_len"] = neg_cap_embedded.shape[1]
             neg_feats =  None
 
         for layer in self.context_refiner:
             for i, cap_i in enumerate(cap_embedded_list):
-                cap_embedded_list[i] = layer( cap_i, attn_mask=cap_attn_mask, freqs_cis=cap_freqs_i)
+                cap_embedded_list[i] = layer(
+                    cap_i,
+                    attn_mask=per_sample_kwargs[i]["cap_attn_mask"],
+                    freqs_cis=per_sample_kwargs[i]["cap_freqs"],
+                )
                 cap_i = None
 
         # Create unified (x + cap) for each sample
         unified_list = []
+        unified_freqs_list = []
+        unified_attn_masks = []
+        control_seqlens = []
         for i,(embedded_x, cap_embedded) in enumerate(zip(embedded_x_list, cap_embedded_list)):
-            unified_list.append(torch.cat([embedded_x, cap_embedded] + ([neg_cap_embedded.expand(len(cap_embedded), -1, -1)] if i==NAG_index else []), dim=1))
+            is_nag = nag_enabled and i == NAG_index
+            unified_list.append(
+                torch.cat(
+                    [embedded_x, cap_embedded]
+                    + ([neg_cap_embedded.expand(len(cap_embedded), -1, -1)] if is_nag else []),
+                    dim=1,
+                )
+            )
             embedded_x_list[i] = None
         neg_cap_embedded = None
-        unified_freqs_i = torch.cat([x_freqs_i, cap_freqs_i] + ([cap_freqs_i] if nag_enabled else []) , dim=1)
-        unified_seqlen = x_seqlen + cap_seqlen 
-        control_seqlen = unified_seqlen
-        if nag_enabled: unified_seqlen +=  cap_seqlen
-        unified_attn_mask = torch.ones((1, unified_seqlen), dtype=torch.bool, device=device)
+        for i in range(num_noise_samples):
+            is_nag = nag_enabled and i == NAG_index
+            x_freqs_i = per_sample_kwargs[i]["x_freqs"]
+            cap_freqs_i = per_sample_kwargs[i]["cap_freqs"]
+            unified_freqs_i = torch.cat([x_freqs_i, cap_freqs_i] + ([cap_freqs_i] if is_nag else []), dim=1)
+            unified_freqs_list.append(unified_freqs_i)
+            control_seqlen = per_sample_kwargs[i]["x_seqlen"] + per_sample_kwargs[i]["cap_seqlen"]
+            control_seqlens.append(control_seqlen)
+            unified_seqlen = control_seqlen + (per_sample_kwargs[i]["cap_seqlen"] if is_nag else 0)
+            unified_attn_masks.append(torch.ones((1, unified_seqlen), dtype=torch.bool, device=device))
         hints_list = []
         hints_kwargs_list = []
 
         # Compute control hints for main layers
         if any_control:
             cap_embedded_ref = cap_embedded_list[0]
-            control_kwargs = dict(
-                attn_mask=unified_attn_mask[:, :control_seqlen],
-                freqs_cis=unified_freqs_i[:, :control_seqlen],
-                adaln_input=adaln_input.expand(num_noise_samples, -1),
-            )
+            adaln_input_expanded = adaln_input.expand(num_noise_samples, -1)
             if control_V2:
                 # Control v2.0 
-                for unified_batch, ctrl_ctx_tensor, ctrl_seqlens in zip(unified_list, ctrl_ctx_tensor_list, ctrl_seqlens_list):
-                    hints_kwargs, hints_tuple = self.prepare_forward_control_2_0_layers( unified_batch[:, :control_seqlen], cap_embedded_ref , ctrl_ctx_tensor, ctrl_seqlens, control_kwargs )
+                for i, (unified_batch, ctrl_ctx_tensor, ctrl_seqlens) in enumerate(zip(unified_list, ctrl_ctx_tensor_list, ctrl_seqlens_list)):
+                    control_kwargs = dict(
+                        attn_mask=unified_attn_masks[i][:, :control_seqlens[i]],
+                        freqs_cis=unified_freqs_list[i][:, :control_seqlens[i]],
+                        adaln_input=adaln_input_expanded,
+                    )
+                    hints_kwargs, hints_tuple = self.prepare_forward_control_2_0_layers(
+                        unified_batch[:, :control_seqlens[i]], cap_embedded_ref, ctrl_ctx_tensor, ctrl_seqlens, control_kwargs
+                    )
                     hints_kwargs_list.append(hints_kwargs)
                     hints_list.append([hints_tuple])
                     unified_batch = ctrl_ctx_tensor = ctrl_seqlens = None
             else:
                 # Control v1.0 
-                for unified_batch, ctrl_ctx_tensor in zip(unified_list, control_context_list):
-                    hints_kwargs, hints_tuple = self.prepare_forward_control_1_0( unified_batch[:, :control_seqlen], cap_embedded_ref, ctrl_ctx_tensor, control_kwargs, t=adaln_input, patch_size=patch_size, f_patch_size=f_patch_size)
+                for i, (unified_batch, ctrl_ctx_tensor) in enumerate(zip(unified_list, control_context_list)):
+                    control_kwargs = dict(
+                        attn_mask=unified_attn_masks[i][:, :control_seqlens[i]],
+                        freqs_cis=unified_freqs_list[i][:, :control_seqlens[i]],
+                        adaln_input=adaln_input_expanded,
+                    )
+                    hints_kwargs, hints_tuple = self.prepare_forward_control_1_0(
+                        unified_batch[:, :control_seqlens[i]],
+                        cap_embedded_ref,
+                        ctrl_ctx_tensor,
+                        control_kwargs,
+                        t=adaln_input,
+                        patch_size=patch_size,
+                        f_patch_size=f_patch_size,
+                    )
                     hints_kwargs_list.append(hints_kwargs)
                     hints_list.append([hints_tuple])
                     unified_batch = ctrl_ctx_tensor = None
@@ -1187,7 +1232,13 @@ class ZImageTransformer2DModel(nn.Module):
                 if hints is not None:
                     kwargs.update(dict(hints= hints, hints_kwargs = hints_kwargs, context_scale = control_context_scale))
                 if NAG_index == i: kwargs["NAG"]= NAG
-                unified_list[i] = layer(unified_i, attn_mask=unified_attn_mask, freqs_cis=unified_freqs_i, adaln_input=adaln_input, **kwargs)
+                unified_list[i] = layer(
+                    unified_i,
+                    attn_mask=unified_attn_masks[i],
+                    freqs_cis=unified_freqs_list[i],
+                    adaln_input=adaln_input,
+                    **kwargs,
+                )
                 unified_i = hints = kwargs = hints_kwargs = None
 
         # Final layer and unpatchify
@@ -1195,7 +1246,7 @@ class ZImageTransformer2DModel(nn.Module):
         final_layer = self.all_final_layer[f"{patch_size}-{f_patch_size}"]
         for i in range(num_noise_samples):
             final_out = final_layer(unified_list[i], adaln_input)
-            final_out = final_out[:, :x_seqlen]
+            final_out = final_out[:, :per_sample_kwargs[i]["x_seqlen"]]
             unpatchified = self.unpatchify(final_out, x_size, patch_size, f_patch_size)
             output_list.append(unpatchified)
             final_out = None

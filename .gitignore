@@ -45,3 +45,4 @@ loras_i2v/
 settings/
 
 wgp_config.json
+plugins_local.json

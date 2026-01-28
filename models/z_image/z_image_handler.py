@@ -6,9 +6,11 @@ from shared.utils.hf import build_hf_url
 class family_handler:
     @staticmethod
     def query_model_def(base_model_type, model_def):
+        z_image_base = base_model_type == "z_image_base"
+        guidance_max_phases = 1 if z_image_base else 0
         extra_model_def = {
             "image_outputs": True,
-            "guidance_max_phases": 0,
+            "guidance_max_phases": guidance_max_phases,
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [],
         }
@@ -38,6 +40,7 @@ class family_handler:
                 "selection":[ "", "A", "NA"],
                 "visible": False, 
             }
+            extra_model_def["parent_model_type"] = "z_image_control"
 
             extra_model_def["inpaint_support"] = True
             extra_model_def["inpaint_video_prompt_type"]= "VA"
@@ -49,18 +52,21 @@ class family_handler:
             #     "label": "Reference Image for Inpainting",
             #     "visible": True,
             # }
+         
+        extra_model_def["flow_shift"] = z_image_base
         extra_model_def["NAG"] = base_model_type in ["z_image"]
         return extra_model_def
 
     @staticmethod
     def query_supported_types():
-        return ["z_image", "z_image_control", "z_image_control2", "z_image_control2_1"]
+        return ["z_image", "z_image_base", "z_image_control", "z_image_control2", "z_image_control2_1"]
 
     @staticmethod
     def query_family_maps():
 
         models_eqv_map = {
             "z_image_control2_1" : "z_image_control2",
+            "z_image_base": "z_image",
         }
 
         models_comp_map = {}
@@ -76,17 +82,17 @@ class family_handler:
         return {"z_image": (120, "Z-Image") }
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-z-image",
             type=str,
-            default=os.path.join("loras", "z_image"),
-            help="Path to a directory that contains z image settings"
+            default=None,
+            help=f"Path to a directory that contains z image settings (default: {os.path.join(lora_root, 'z_image')})"
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
-        return args.lora_dir_z_image
+    def get_lora_dir(base_model_type, args, lora_root):
+        return getattr(args, "lora_dir_z_image", None) or os.path.join(lora_root, "z_image")
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
@@ -152,20 +158,31 @@ class family_handler:
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
-        ui_defaults.update(
-            {
-                "guidance_scale": 0.0,
-                "num_inference_steps": ui_defaults.get("num_inference_steps", 9),
-                "NAG_scale": ui_defaults.get("NAG_scale", 1.0),
-                "NAG_tau": ui_defaults.get("NAG_tau", 3.5),
-                "NAG_alpha": ui_defaults.get("NAG_alpha", 0.5),
-            }
-        )
+        z_image_base = base_model_type == "z_image_base" 
 
-        # Add control defaults for z_image_control and z_image_control2
-        if base_model_type in ["z_image_control", "z_image_control2", "z_image_control2_1"]:
+        if z_image_base:
+            ui_defaults.update(
+            {
+                "guidance_scale": 4,
+                "num_inference_steps": 30 ,    
+                "flow_shift": 6.0,
+            }
+            )
+        else:
             ui_defaults.update(
                 {
-                    "control_net_weight":  0.75,
+                    "guidance_scale": 0,
+                    "num_inference_steps": 8,    
+                    "NAG_scale": 1.0,
+                    "NAG_tau": 3.5,
+                    "NAG_alpha": 0.5,
                 }
             )
+
+            # Add control defaults for z_image_control and z_image_control2
+            if base_model_type in ["z_image_control", "z_image_control2", "z_image_control2_1"]:
+                ui_defaults.update(
+                    {
+                        "control_net_weight":  0.75,
+                    }
+                )

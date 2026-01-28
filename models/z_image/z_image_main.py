@@ -214,7 +214,8 @@ class model_factory:
         elif not sample_solver:
             sample_solver = "default"
 
-        guide_scale = 0
+        if self.model_def.get("guidance_max_phases", 0) < 1:
+            guide_scale = 0
 
         images = self.pipeline(
             prompt=input_prompt,

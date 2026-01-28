@@ -100,46 +100,46 @@ class family_handler:
         }
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-kandinsky5",
             type=str,
-            default=os.path.join("loras", "kandinsky5"),
-            help="Base path for Kandinsky 5 loras (per-architecture subfolders are used).",
+            default=None,
+            help=f"Base path for Kandinsky 5 loras (per-architecture subfolders are used). Default: {os.path.join(lora_root, 'kandinsky5')}.",
         )
         parser.add_argument(
             "--lora-dir-k5-lite-t2v",
             type=str,
-            default=os.path.join("loras", "k5_lite_t2v"),
-            help="Path to a directory that contains Kandinsky 5 Lite T2V loras.",
+            default=None,
+            help=f"Path to a directory that contains Kandinsky 5 Lite T2V loras (default: {os.path.join(lora_root, 'k5_lite_t2v')}).",
         )
         parser.add_argument(
             "--lora-dir-k5-lite-i2v",
             type=str,
-            default=os.path.join("loras", "k5_lite_i2v"),
-            help="Path to a directory that contains Kandinsky 5 Lite I2V loras.",
+            default=None,
+            help=f"Path to a directory that contains Kandinsky 5 Lite I2V loras (default: {os.path.join(lora_root, 'k5_lite_i2v')}).",
         )
         parser.add_argument(
             "--lora-dir-k5-pro-t2v",
             type=str,
-            default=os.path.join("loras", "k5_pro_t2v"),
-            help="Path to a directory that contains Kandinsky 5 Pro T2V loras.",
+            default=None,
+            help=f"Path to a directory that contains Kandinsky 5 Pro T2V loras (default: {os.path.join(lora_root, 'k5_pro_t2v')}).",
         )
         parser.add_argument(
             "--lora-dir-k5-pro-i2v",
             type=str,
-            default=os.path.join("loras", "k5_pro_i2v"),
-            help="Path to a directory that contains Kandinsky 5 Pro I2V loras.",
+            default=None,
+            help=f"Path to a directory that contains Kandinsky 5 Pro I2V loras (default: {os.path.join(lora_root, 'k5_pro_i2v')}).",
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
-        base_dir = getattr(args, "lora_dir_kandinsky5", None) or os.path.join("loras", "kandinsky5")
+    def get_lora_dir(base_model_type, args, lora_root):
+        base_dir = getattr(args, "lora_dir_kandinsky5", None) or os.path.join(lora_root, "kandinsky5")
         per_arch = {
-            "k5_lite_t2v": getattr(args, "lora_dir_k5_lite_t2v", None) or os.path.join("loras", "k5_lite_t2v"),
-            "k5_lite_i2v": getattr(args, "lora_dir_k5_lite_i2v", None) or os.path.join("loras", "k5_lite_i2v"),
-            "k5_pro_t2v": getattr(args, "lora_dir_k5_pro_t2v", None) or os.path.join("loras", "k5_pro_t2v"),
-            "k5_pro_i2v": getattr(args, "lora_dir_k5_pro_i2v", None) or os.path.join("loras", "k5_pro_i2v"),
+            "k5_lite_t2v": getattr(args, "lora_dir_k5_lite_t2v", None) or os.path.join(lora_root, "k5_lite_t2v"),
+            "k5_lite_i2v": getattr(args, "lora_dir_k5_lite_i2v", None) or os.path.join(lora_root, "k5_lite_i2v"),
+            "k5_pro_t2v": getattr(args, "lora_dir_k5_pro_t2v", None) or os.path.join(lora_root, "k5_pro_t2v"),
+            "k5_pro_i2v": getattr(args, "lora_dir_k5_pro_i2v", None) or os.path.join(lora_root, "k5_pro_i2v"),
         }
         if base_model_type in per_arch:
             return per_arch[base_model_type]

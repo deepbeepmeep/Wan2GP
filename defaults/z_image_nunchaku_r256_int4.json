@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Z-Image Turbo Nunchaku INT4 (r256)",
+        "name": "Z-Image Turbo Nunchaku INT4 (r256) 6B",
         "architecture": "z_image",
         "description": "Nunchaku SVDQ INT4 weights for Z-Image Turbo. For full speed, the nunchaku kernels must be installed.",
         "URLs": [

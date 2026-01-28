@@ -65,6 +65,12 @@ class ChatterboxPipeline:
 
         language_id = model_mode
         cfg_weight = pace
+        cfg_override = bkwargs.get("cfg_scale", None)
+        if cfg_override is not None:
+            try:
+                cfg_weight = float(cfg_override)
+            except (TypeError, ValueError):
+                pass
         if language_id:
             language_id = language_id.lower()
             if language_id not in SUPPORTED_LANGUAGES:

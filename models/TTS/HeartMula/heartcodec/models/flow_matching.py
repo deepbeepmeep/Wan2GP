@@ -67,16 +67,6 @@ class FlowMatching(nn.Module):
     ):
         if abort_signal and abort_signal():
             return None
-        mm_manager = getattr(self, "_mm_manager", None)
-        mm_id = getattr(self, "_mm_id", None)
-        if mm_manager is None or mm_id is None:
-            mm_manager = getattr(self.vq_embed, "_mm_manager", None)
-            mm_id = getattr(self.vq_embed, "_mm_id", None)
-        if mm_manager is None or mm_id is None:
-            mm_manager = getattr(self.estimator, "_mm_manager", None)
-            mm_id = getattr(self.estimator, "_mm_id", None)
-        if mm_manager is not None and mm_id is not None:
-            mm_manager.ensure_model_loaded(mm_id)
         codes_bestrq_emb = codes[0]
 
         batch_size = codes_bestrq_emb.shape[0]
@@ -88,34 +78,13 @@ class FlowMatching(nn.Module):
         codes = self.vq_embed.get_codes_from_indices(codes_bestrq_emb.transpose(1, 2))
         codes_summed = codes.sum(dim=0)
         project_out = self.vq_embed.project_out
-        proj_manager = getattr(project_out, "_mm_manager", None)
-        proj_id = getattr(project_out, "_mm_id", None)
-        if proj_manager is not None and proj_id is not None:
-            proj_manager.ensure_model_loaded(proj_id)
-        proj_weight = getattr(project_out, "weight", None)
-        if proj_weight is not None:
-            if (
-                codes_summed.device != proj_weight.device
-                or codes_summed.dtype != proj_weight.dtype
-            ):
-                codes_summed = codes_summed.to(
-                    device=proj_weight.device, dtype=proj_weight.dtype
-                )
-        quantized_feature_emb = project_out(codes_summed)
-        cond_param = next(self.cond_feature_emb.parameters(), None)
-        cond_device = (
-            cond_param.device if cond_param is not None else quantized_feature_emb.device
-        )
-        if quantized_feature_emb.device != cond_device:
-            quantized_feature_emb = quantized_feature_emb.to(cond_device)
+        quantized_feature_emb = project_out(codes_summed.to(project_out.weight.dtype))
         quantized_feature_emb = self.cond_feature_emb(quantized_feature_emb)
         quantized_feature_emb = F.interpolate(
             quantized_feature_emb.permute(0, 2, 1), scale_factor=2, mode="nearest"
         ).permute(0, 2, 1)
 
         device = quantized_feature_emb.device
-        if true_latents.device != device:
-            true_latents = true_latents.to(device)
         dtype = true_latents.dtype
         num_frames = quantized_feature_emb.shape[1]
         latents = torch.randn(

@@ -1,6 +1,7 @@
 import struct
 from typing import Optional
 import json
+import os
 
 def write_wav_text_chunk(in_path: str, out_path: str, text: str,
                          fourcc: bytes = b'json', encoding: str = 'utf-8') -> None:
@@ -96,8 +97,61 @@ def read_wav_text_chunk(path: str, fourcc: bytes = b'json', encoding: str = 'utf
 
     return None
 
+def _write_mp3_text_tag(path: str, text: str, tag_key: str = "WanGP") -> None:
+    try:
+        from mutagen.id3 import ID3, ID3NoHeaderError, TXXX
+    except Exception as exc:
+        raise RuntimeError("mutagen is required for mp3 metadata") from exc
+    try:
+        tag = ID3(path)
+    except ID3NoHeaderError:
+        tag = ID3()
+    for key in list(tag.keys()):
+        frame = tag.get(key)
+        if isinstance(frame, TXXX) and frame.desc == tag_key:
+            del tag[key]
+    tag.add(TXXX(encoding=3, desc=tag_key, text=[text]))
+    tag.save(path)
+
+
+def _read_mp3_text_tag(path: str, tag_key: str = "WanGP") -> Optional[str]:
+    try:
+        from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, COMM
+    except Exception:
+        return None
+    try:
+        tag = ID3(path)
+    except ID3NoHeaderError:
+        return None
+    for frame in tag.getall("TXXX"):
+        if isinstance(frame, TXXX) and frame.desc == tag_key:
+            if frame.text:
+                return frame.text[0]
+    for frame in tag.getall("COMM"):
+        if isinstance(frame, COMM) and frame.desc == tag_key:
+            return frame.text[0] if frame.text else None
+    return None
+
+
 def save_audio_metadata(path, configs):
-    write_wav_text_chunk(path, path, json.dumps(configs))
+    ext = os.path.splitext(path)[1].lower()
+    payload = json.dumps(configs)
+    if ext == ".mp3":
+        _write_mp3_text_tag(path, payload)
+    elif ext == ".wav":
+        write_wav_text_chunk(path, path, payload)
+    else:
+        raise ValueError(f"Unsupported audio metadata format: {ext}")
+
 
 def read_audio_metadata(path):
-    return  json.loads(read_wav_text_chunk(path))
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".mp3":
+        raw = _read_mp3_text_tag(path)
+    elif ext == ".wav":
+        raw = read_wav_text_chunk(path)
+    else:
+        return None
+    if not raw:
+        return None
+    return json.loads(raw)

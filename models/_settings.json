@@ -41,6 +41,7 @@
 	"embedded_guidance_scale": 6.0,
 	"alt_guidance_scale": 6.0,
 	"temperature": 0.8,
+	"top_k": 50,
 	"sample_solver": "",
 	"flow_shift":3,
 	"control_net_weight": 1,

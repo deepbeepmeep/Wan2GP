@@ -40,6 +40,26 @@ def _resolve_paths(
     )
 
 
+def _resolve_codec_names(codec_version: Optional[str]) -> tuple[str, str]:
+    if codec_version:
+        suffix = f"_{codec_version}"
+    else:
+        suffix = ""
+    return f"HeartMula_codec{suffix}.safetensors", f"codec_config{suffix}.json"
+
+
+def _strip_heartmula_rope_cache(state_dict):
+    remove_keys = (
+        "backbone.layers.0.attn.pos_embeddings.theta",
+        "backbone.layers.0.attn.pos_embeddings.cache",
+        "decoder.layers.0.attn.pos_embeddings.theta",
+        "decoder.layers.0.attn.pos_embeddings.cache",
+    )
+    for key in remove_keys:
+        state_dict.pop(key, None)
+    return state_dict
+
+
 @dataclass
 class HeartMuLaGenConfig:
     text_bos_id: int = 128000
@@ -79,6 +99,7 @@ class HeartMuLaPipeline:
         max_audio_length_ms: int = 120000,
         codec_steps: int = 10,
         codec_guidance_scale: float = 1.25,
+        codec_version: str = "",
         VAE_dtype = torch.float32,
     ):
         self.device = torch.device("cpu")
@@ -92,6 +113,7 @@ class HeartMuLaPipeline:
         self.max_audio_length_ms = max_audio_length_ms
         self.codec_steps = codec_steps
         self.codec_guidance_scale = codec_guidance_scale
+        self.codec_version = codec_version
         self.heartmula_weights_path = heartmula_weights_path
         self.VAE_dtype = VAE_dtype
 
@@ -133,6 +155,7 @@ class HeartMuLaPipeline:
             str(mula_weights_path),
             default_dtype=None,
             writable_tensors=False,
+            preprocess_sd=_strip_heartmula_rope_cache,
         )
 
         decoder = self.mula.decoder
@@ -146,25 +169,26 @@ class HeartMuLaPipeline:
         first_param = next(self.mula.parameters(), None)
         if first_param is not None:
             self.mula_dtype = first_param.dtype
+        codec_weights_name, codec_config_name = _resolve_codec_names(self.codec_version)
         codec_weights_path = fl.locate_file(
-            os.path.join("HeartMula", "HeartMula_codec.safetensors"), error_if_none=False
+            os.path.join("HeartMula", codec_weights_name), error_if_none=False
         )
         codec_weights_path = (
             Path(codec_weights_path)
             if codec_weights_path
-            else Path(codec_path) / "HeartMula_codec.safetensors"
+            else Path(codec_path) / codec_weights_name
         )
         if not codec_weights_path.is_file():
             raise FileNotFoundError(
                 f"Expected HeartCodec weights at {codec_weights_path} but not found."
             )
         codec_config_path = fl.locate_file(
-            os.path.join("HeartMula", "codec_config.json"), error_if_none=False
+            os.path.join("HeartMula", codec_config_name), error_if_none=False
         )
         codec_config_path = (
             Path(codec_config_path)
             if codec_config_path
-            else Path(codec_path) / "codec_config.json"
+            else Path(codec_path) / codec_config_name
         )
         if not codec_config_path.is_file():
             raise FileNotFoundError(
@@ -174,6 +198,8 @@ class HeartMuLaPipeline:
             codec_config = HeartCodecConfig(**json.load(fp))
         with init_empty_weights():
             self.codec = HeartCodec(codec_config)
+        self.codec._offload_hooks = ["detokenize"]
+
         self.codec._model_dtype = self.VAE_dtype
         offload.load_model_data(
             self.codec,
@@ -468,7 +494,13 @@ class HeartMuLaPipeline:
             raise ValueError("Keywords prompt cannot be empty for HeartMuLa generation.")
 
         cfg_scale = float(kwargs.get("cfg_scale", self.cfg_scale))
-        topk = int(kwargs.get("topk", self.topk))
+        topk_value = kwargs.get("topk", None)
+        if topk_value is None:
+            topk_value = kwargs.get("top_k", self.topk)
+        try:
+            topk = int(topk_value)
+        except (TypeError, ValueError):
+            topk = int(self.topk)
         duration_seconds = kwargs.get("duration_seconds", None)
         if duration_seconds is not None:
             try:

@@ -139,17 +139,17 @@ class family_handler:
         return get_rgb_factors("ltx2")
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-ltx2",
             type=str,
-            default=os.path.join("loras", "ltx2"),
-            help="Path to a directory that contains LTX-2 LoRAs",
+            default=None,
+            help=f"Path to a directory that contains LTX-2 LoRAs (default: {os.path.join(lora_root, 'ltx2')})",
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
-        return args.lora_dir_ltx2
+    def get_lora_dir(base_model_type, args, lora_root):
+        return getattr(args, "lora_dir_ltx2", None) or os.path.join(lora_root, "ltx2")
 
     @staticmethod
     def get_vae_block_size(base_model_type):

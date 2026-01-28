@@ -1,5 +1,6 @@
 import logging
 from typing import Union, List, Optional
+from contextlib import nullcontext
 
 import torch
 from PIL import Image
@@ -158,6 +159,11 @@ def generate_cinematic_prompt(
     text_prompt = False,
     max_new_tokens: int = 256,
     prompt_enhancer_instructions = None,
+    do_sample: bool = True,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    top_k: Optional[int] = None,
+    seed: Optional[int] = None,
 ) -> List[str]:
     prompts = [prompt] if isinstance(prompt, str) else prompt
 
@@ -170,6 +176,11 @@ def generate_cinematic_prompt(
             prompts,
             max_new_tokens,
             prompt_enhancer_instructions,
+            do_sample,
+            temperature,
+            top_p,
+            top_k,
+            seed,
         )
     else:
         if prompt_enhancer_instructions is None:
@@ -184,6 +195,11 @@ def generate_cinematic_prompt(
             images,
             max_new_tokens,
             prompt_enhancer_instructions,
+            do_sample,
+            temperature,
+            top_p,
+            top_k,
+            seed,
         )
 
     return prompts
@@ -203,6 +219,11 @@ def _generate_t2v_prompt(
     prompts: List[str],
     max_new_tokens: int,
     system_prompt: str,
+    do_sample: bool,
+    temperature: Optional[float],
+    top_p: Optional[float],
+    top_k: Optional[int],
+    seed: Optional[int],
 ) -> List[str]:
     messages = [
         [
@@ -220,11 +241,24 @@ def _generate_t2v_prompt(
     ]
 
     out_prompts = []
-    for text in texts:
+    for idx, text in enumerate(texts):
         model_inputs = prompt_enhancer_tokenizer(text, return_tensors="pt").to(
             prompt_enhancer_model.device
         )
-        out_prompts.append(_generate_and_decode_prompts(prompt_enhancer_model, prompt_enhancer_tokenizer, model_inputs, max_new_tokens)[0])
+        prompt_seed = None if seed is None else int(seed) + idx
+        out_prompts.append(
+            _generate_and_decode_prompts(
+                prompt_enhancer_model,
+                prompt_enhancer_tokenizer,
+                model_inputs,
+                max_new_tokens,
+                do_sample=do_sample,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                seed=prompt_seed,
+            )[0]
+        )
 
     return out_prompts
 
@@ -237,6 +271,11 @@ def _generate_i2v_prompt(
     first_frames: List[Image.Image],
     max_new_tokens: int,
     system_prompt: str,
+    do_sample: bool,
+    temperature: Optional[float],
+    top_p: Optional[float],
+    top_k: Optional[int],
+    seed: Optional[int],
 ) -> List[str]:
     image_captions = _generate_image_captions(
         image_caption_model, image_caption_processor, first_frames
@@ -258,11 +297,24 @@ def _generate_i2v_prompt(
         for m in messages
     ]
     out_prompts = []
-    for text in texts:
+    for idx, text in enumerate(texts):
         model_inputs = prompt_enhancer_tokenizer(text, return_tensors="pt").to(
             prompt_enhancer_model.device
         )
-        out_prompts.append(_generate_and_decode_prompts(prompt_enhancer_model, prompt_enhancer_tokenizer, model_inputs, max_new_tokens)[0])
+        prompt_seed = None if seed is None else int(seed) + idx
+        out_prompts.append(
+            _generate_and_decode_prompts(
+                prompt_enhancer_model,
+                prompt_enhancer_tokenizer,
+                model_inputs,
+                max_new_tokens,
+                do_sample=do_sample,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                seed=prompt_seed,
+            )[0]
+        )
 
     return out_prompts
 
@@ -291,11 +343,43 @@ def _generate_image_captions(
 
 
 def _generate_and_decode_prompts(
-    prompt_enhancer_model, prompt_enhancer_tokenizer, model_inputs, max_new_tokens: int
+    prompt_enhancer_model,
+    prompt_enhancer_tokenizer,
+    model_inputs,
+    max_new_tokens: int,
+    do_sample: bool = True,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    top_k: Optional[int] = None,
+    seed: Optional[int] = None,
 ) -> List[str]:
-    with torch.inference_mode():
+    device = getattr(prompt_enhancer_model, "device", None)
+    if seed is None:
+        rng_context = nullcontext()
+    else:
+        devices = []
+        if isinstance(device, torch.device) and device.type == "cuda":
+            devices = [device.index or 0]
+        rng_context = torch.random.fork_rng(devices=devices) if devices else torch.random.fork_rng()
+    with rng_context, torch.inference_mode():
+        if seed is not None:
+            torch.manual_seed(int(seed))
+            if isinstance(device, torch.device) and device.type == "cuda":
+                with torch.cuda.device(device):
+                    torch.cuda.manual_seed(int(seed))
+        gen_kwargs = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+        }
+        if temperature is not None:
+            gen_kwargs["temperature"] = float(temperature)
+        if top_p is not None:
+            gen_kwargs["top_p"] = float(top_p)
+        if top_k is not None:
+            gen_kwargs["top_k"] = int(top_k)
         outputs = prompt_enhancer_model.generate(
-            **model_inputs,  max_new_tokens=max_new_tokens
+            **model_inputs,
+            **gen_kwargs,
         )
         generated_ids = [
             output_ids[len(input_ids) :]

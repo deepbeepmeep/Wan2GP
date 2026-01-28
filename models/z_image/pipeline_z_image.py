@@ -64,6 +64,12 @@ EXAMPLE_DOC_STRING = """
         ```
 """
 
+# Default negative prompt for Z-Image when user input is empty.
+DEFAULT_NEGATIVE_PROMPT = (
+    "low quality, worst quality, blurry, pixelated, noisy, artifacts, watermark, text, logo, "
+    "bad anatomy, bad hands, extra limbs"
+)
+
 
 # Copied from diffusers.pipelines.flux.pipeline_flux.calculate_shift
 def calculate_shift(
@@ -246,9 +252,20 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
 
         if do_classifier_free_guidance:
             if negative_prompt is None:
-                negative_prompt = ["" for _ in prompt]
+                negative_prompt = [DEFAULT_NEGATIVE_PROMPT for _ in prompt]
+            elif isinstance(negative_prompt, str):
+                negative_prompt = (
+                    [DEFAULT_NEGATIVE_PROMPT for _ in prompt]
+                    if not negative_prompt.strip()
+                    else [negative_prompt]
+                )
             else:
-                negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+                # Keep list behavior but fill empty items when lengths match.
+                if len(negative_prompt) == len(prompt):
+                    negative_prompt = [
+                        DEFAULT_NEGATIVE_PROMPT if (p is None or (isinstance(p, str) and not p.strip())) else p
+                        for p in negative_prompt
+                    ]
             assert len(prompt) == len(negative_prompt)
             negative_prompt_embeds = self._encode_prompt(
                 prompt=negative_prompt,
@@ -493,7 +510,8 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         self._guidance_scale = guidance_scale
         kwargs = {}
         NAG = None
-        if NAG_scale > 1:
+        # NAG is only safe without CFG; skip it when guidance > 1.
+        if NAG_scale > 1 and guidance_scale <= 1:
             NAG = { "scale": NAG_scale, "tau": NAG_tau, "alpha": NAG_alpha, }
 
         dtype = (

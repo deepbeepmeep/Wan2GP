@@ -78,6 +78,7 @@ from collections import defaultdict
 # dynamo.config.recompile_limit = 2000   # default is 256
 # dynamo.config.accumulated_recompile_limit = 2000  # or whatever limit you want
 
+STARTUP_LOCK_FILE = "startup.lock"
 global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 AUTOSAVE_PATH = AUTOSAVE_FILENAME
@@ -1529,6 +1530,7 @@ def show_countdown_info_from_state(current_value: int):
     return current_value
 quitting_app = False
 def autosave_queue():
+    clear_startup_lock()
     global quitting_app
     quitting_app = True
     global global_queue_ref
@@ -11241,6 +11243,13 @@ def create_ui():
             stats_app.setup_events(main, state)
         return main
 
+def clear_startup_lock():
+    if os.path.exists(STARTUP_LOCK_FILE):
+        try:
+            os.remove(STARTUP_LOCK_FILE)
+        except:
+            pass
+
 if __name__ == "__main__":
     if args.merge_catalog:
         manager = PluginManager()
@@ -11364,7 +11373,6 @@ if __name__ == "__main__":
     # Normal Gradio mode continues below...
     atexit.register(autosave_queue)
 
-    STARTUP_LOCK_FILE = "startup.lock"
     globals()["SAFE_MODE"] = False
 
     if os.path.exists(STARTUP_LOCK_FILE):
@@ -11382,11 +11390,7 @@ if __name__ == "__main__":
 
     def mark_startup_success():
         time.sleep(30)
-        if os.path.exists(STARTUP_LOCK_FILE):
-            try:
-                os.remove(STARTUP_LOCK_FILE)
-            except:
-                pass
+        clear_startup_lock()
 
     threading.Thread(target=mark_startup_success, daemon=True).start()
 

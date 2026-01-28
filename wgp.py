@@ -85,7 +85,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.2"
-WanGP_version = "10.54"
+WanGP_version = "10.55"
 settings_version = 2.44
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -5481,6 +5481,7 @@ def generate_video(
     prompt_enhancer,
     min_frames_if_references,
     override_profile,
+    override_attention,
     pace,
     exaggeration,
     temperature,
@@ -5573,7 +5574,7 @@ def generate_video(
     if args.test:
         send_cmd("info", "Test mode: model loaded, skipping generation.")
         return
-    overridden_attention = get_overridden_attention(model_type)
+    overridden_attention = override_attention if len(override_attention) else get_overridden_attention(model_type)
     # if overridden_attention is not None and overridden_attention !=  attention_mode: print(f"Attention mode has been overriden to {overridden_attention} for model type '{model_type}'")
     attn = overridden_attention if overridden_attention is not None else attention_mode
     if attn == "auto":
@@ -8357,6 +8358,7 @@ def save_inputs(
             prompt_enhancer,
             min_frames_if_references,
             override_profile,
+            override_attention,            
             pace,
             exaggeration,
             temperature,
@@ -9023,6 +9025,22 @@ memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: at least 64 GB of RAM
                             ("Profile 4, LowRAM_LowVRAM (Recommended): at least 32 GB of RAM and 12 GB of VRAM, if you have little VRAM or want to generate longer videos",4),
                             ("Profile 4+, LowRAM_LowVRAM+: at least 32 GB of RAM and 12 GB of VRAM, variant of Profile 4, slightly slower but needs less VRAM",4.5),
                             ("Profile 5, VerylowRAM_LowVRAM (Fail safe): at least 24 GB of RAM and 10 GB of VRAM, if you don't have much it won't be fast but maybe it will work",5)]
+
+def check_attn(mode):
+    if mode not in attention_modes_installed: return " (NOT INSTALLED)"
+    if mode not in attention_modes_supported: return " (NOT SUPPORTED)"
+    return ""
+
+attention_modes_choices= [
+    ("Auto: Best available (sage2 > sage > sdpa)", "auto"),
+    ("sdpa: Default, always available", "sdpa"),
+    (f'flash{check_attn("flash")}: High quality, requires manual install', "flash"),
+    (f'xformers{check_attn("xformers")}: Good quality, less VRAM, requires manual install', "xformers"),
+    (f'sage{check_attn("sage")}: ~30% faster, requires manual install', "sage"),
+    (f'sage2/sage2++{check_attn("sage2")}: ~40% faster, requires manual install', "sage2"),
+] + ([(f'radial{check_attn("radial")}: Experimental, may be faster, requires manual install', "radial")] if args.betatest else []) + [
+    (f'sage3{check_attn("sage3")}: >50% faster, may have quality trade-offs, requires manual install', "sage3"),
+]
 
 def detect_auto_save_form(state, evt:gr.SelectData):
     last_tab_id = state.get("last_tab_id", 0)
@@ -10145,6 +10163,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         choices=[("Default Memory Profile", -1)] + memory_profile_choices,
                         value=ui_get("override_profile"),
                         label=f"Override Memory Profile"
+                    )
+
+                    gr.Markdown("<B>You can set a different Attention Mode to improve the quality / compatibility<B>")
+                    override_attention = gr.Dropdown(
+                        choices=[("Default Attention Mode", "")] + attention_modes_choices,
+                        value=ui_get("override_attention"),
+                        label=f"Override Attention Mode"
                     )
 
                     with gr.Column():

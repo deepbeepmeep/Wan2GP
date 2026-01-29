@@ -785,6 +785,15 @@ class family_handler():
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
         if ui_defaults.get("sample_solver", "") == "": 
             ui_defaults["sample_solver"] = "unipc"
+        
+        if "enable_self_refine" not in ui_defaults:
+            ui_defaults["enable_self_refine"] = False
+        if "pnp_f_uncertainty" not in ui_defaults:
+            ui_defaults["pnp_f_uncertainty"] = 0.2
+        if "pnp_p_norm" not in ui_defaults:
+            ui_defaults["pnp_p_norm"] = 1
+        if "pnp_certain_percentage" not in ui_defaults:
+            ui_defaults["pnp_certain_percentage"] = 0.999
 
         if settings_version < 2.24:
             if (model_def.get("multiple_submodels", False) or ui_defaults.get("switch_threshold", 0) > 0) and ui_defaults.get("guidance_phases",0)<2:

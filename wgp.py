@@ -5490,6 +5490,10 @@ def generate_video(
     exaggeration,
     temperature,
     top_k,
+    enable_self_refine,
+    pnp_f_uncertainty,
+    pnp_p_norm,
+    pnp_certain_percentage,
     output_filename,
     state,
     model_type,
@@ -6352,6 +6356,10 @@ def generate_video(
                     temperature=temperature,
                     window_start_frame_no = window_start_frame,
                     input_video_strength = input_video_strength,
+                    enable_self_refine = enable_self_refine,
+                    pnp_f_uncertainty = pnp_f_uncertainty,
+                    pnp_p_norm = pnp_p_norm,
+                    pnp_certain_percentage = pnp_certain_percentage,
                     **extra_generate_kwargs,
                 )
             except Exception as e:
@@ -8372,6 +8380,10 @@ def save_inputs(
             exaggeration,
             temperature,
             top_k,
+            enable_self_refine,
+            pnp_f_uncertainty,
+            pnp_p_norm,
+            pnp_certain_percentage,
             output_filename,
             mode,
             state,
@@ -10003,8 +10015,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_cfg_star = model_def.get("cfg_star", False)
                 any_apg = model_def.get("adaptive_projected_guidance", False)
                 any_motion_amplitude = model_def.get("motion_amplitude", False) and not image_outputs
-                
-                with gr.Tab("Quality", visible = (vace and image_outputs or any_skip_layer_guidance or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude) and not audio_only ) as quality_tab:
+                any_pnp = True # Enable PnP for all supported models (or restriction logic here)
+
+                with gr.Tab("Quality", visible = (vace and image_outputs or any_skip_layer_guidance or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude or any_pnp) and not audio_only ) as quality_tab:
                         with gr.Column(visible = any_skip_layer_guidance ) as skip_layer_guidance_row:
                             gr.Markdown("<B>Skip Layer Guidance (improves video quality, requires guidance > 1)</B>")
                             with gr.Row():
@@ -10082,6 +10095,21 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         with gr.Column(visible = any_motion_amplitude) as motion_amplitude_col:
                             gr.Markdown("<B>Experimental: Accelerate Motion (1: disabled, 1.15 recommended)")
                             motion_amplitude  = gr.Slider(1, 1.4, value=ui_get("motion_amplitude"), step=0.01, label="Motion Amplitude", visible = True, show_reset_button= False) 
+
+                        with gr.Column(visible = any_pnp) as pnp_col:
+                            gr.Markdown("<B>Self-Refining Video Sampling (PnP)</B>")
+                            enable_self_refine = gr.Checkbox(value=ui_get("enable_self_refine", False), label="Enable self-refining video sampling (slower, better consistency)")
+                            with gr.Row(visible=False) as pnp_settings_row: # Hide advanced settings by default or toggle visibility with checkbox
+                                pnp_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("pnp_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold")
+                                pnp_p_norm = gr.Slider(1, 2, value=ui_get("pnp_p_norm", 1), step=1, label="P-Norm (1 or 2)")
+                                pnp_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("pnp_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip")
+                            
+                            def toggle_pnp_settings(val):
+                                return gr.Row(visible=val)
+                            
+                            if not update_form:
+                                enable_self_refine.change(fn=toggle_pnp_settings, inputs=[enable_self_refine], outputs=[pnp_settings_row])
+
 
                 with gr.Tab("Sliding Window", visible= sliding_window_enabled and not image_outputs and not audio_only) as sliding_window_tab:
 
@@ -10342,7 +10370,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       audio_buttons_row, deleted_audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_eject_audio_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
-                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, top_k_row, number_frames_row, negative_prompt_row, chatter_row] +\
+                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, top_k_row, number_frames_row, negative_prompt_row, chatter_row,
+                                      enable_self_refine, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage] +\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

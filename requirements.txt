@@ -10,6 +10,7 @@ einops
 sentencepiece
 open_clip_torch>=2.29.0
 numpy==2.1.2
+num2words==0.5.14
 
 # Video & media
 moviepy==1.0.3

@@ -2,6 +2,7 @@
 import gc
 import logging
 import math
+import copy
 import os
 import random
 import sys
@@ -1143,10 +1144,7 @@ class WanAny2V:
         # PnP Setup
         pnp_handler = None
         if enable_self_refine:
-            if sample_solver not in ['euler', 'unipc']: # Basic support for now, ideally restrict to FlowMatch compliant solvers
-                 print(f"Warning: Self-refining video sampling (PnP) works best with 'euler' solver. Current solver: {sample_solver}")
-            
-            # Default plan from paper/code
+             # Default plan from paper/code
             stochastic_plan = [
                 {"start": 1, "end": 5, "steps": 3},
                 {"start": 6, "end": 13, "steps": 1},
@@ -1404,6 +1402,9 @@ class WanAny2V:
                  pass
 
             # Calculate sigma/sigma_next for PnP step
+            current_sigma = t.item() / 1000.0
+            next_sigma = (0. if i == len(timesteps)-1 else timesteps[i+1].item()) / 1000.0
+
             if sample_solver == "euler":
                 dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
                 sig_t = t / 1000.0
@@ -1454,123 +1455,146 @@ class WanAny2V:
 
             if pnp_handler and m_steps > 1 and not pnp_handler.certain_flag:
                 # We need to iterate.
-                # The first noise_pred is already capturing "ii=0". 
-                # BUT we need to process the result through PnP handler to update buffer.
+                # Setup scheduler state for rewinding
+                scheduler_orig_state = None
+                if sample_solver != "euler":
+                     try:
+                        scheduler_orig_state = copy.deepcopy(sample_scheduler)
+                     except Exception as e:
+                        print(f"Warning: Could not deepcopy scheduler: {e}. PnP may not work correctly with {sample_solver}.")
                 
                 # Step 0 (Initial)
+                latents_next_0 = None
+                pred_original_sample_0 = None
+                
                 if sample_solver == "euler":
                      # Simulate the step to get x_next and x0
-                     # noise_pred is vt.
-                     # sigma = sig_t
-                     current_sigma = t.item() / 1000.0
-                     next_sigma = (0. if i == len(timesteps)-1 else timesteps[i+1].item()) / 1000.0
-                     
-                     # Check if we need to re-run for ii=0? No, noise_pred is fresh.
-                     latents_next = pnp_handler.process_step(latents, noise_pred, current_sigma, next_sigma)
-                     
-                     # If we found certainty, we might stop?
-                     if pnp_handler.certain_flag:
-                         latents = latents_next
-                         # Loop finishes
-                     else:
-                         # Loop for ii = 1 to m_steps
-                         for ii in range(1, m_steps):
-                             # Perturb
-                             # latents (x_t) = perturb(latents (from buffer), buffer_latents, sigma)
-                             # Wait, ref code: 
-                             # latents = (1.0 - sigma) * buffer[-1][1] + sigma * noise
-                             # buffer[-1][1] is x0_pred.
-                             # So we reconstruct x_t from x0_pred adding fresh noise.
-                             latents_perturbed = pnp_handler.perturb_latents(latents, pnp_handler.buffer[-1][1], current_sigma, generator=seed_g, device=self.device)
-                             
-                             # Recalculate noise_pred
-                             # We need to construct input
-                             if extended_input_dim > 0:
-                                 l_in = torch.cat([latents_perturbed, extended_latents.expand(*expand_shape)], dim=extended_input_dim)
-                             else:
-                                 l_in = latents_perturbed
-                             
-                             # Forward pass (Standard)
-                             # We assume standard args from `gen_args` 
-                             # We need to update `x` in gen_args
-                             # gen_args was constructed earlier.
-                             
-                             # We need to handling guidance again if we re-run.
-                             # This is tricky because `gen_args` construction (lines 1181-1246) depends on model type.
-                             # We can update `gen_args['x']` ?
-                             
-                             # Let's try to update gen_args inplace
-                             if "x" in gen_args:
-                                 if isinstance(gen_args["x"], list):
-                                     # replace all latent inputs?
-                                     # Guidance typically inputs [latents, latents] or [latents, latents, latents]
-                                     # We should replace all with `l_in`
-                                     count = len(gen_args["x"])
-                                     gen_args["x"] = [l_in] * count
-                                 else:
-                                     # Should not happen based on code?
-                                     pass
-                             
-                             # Call model
-                             # We can reuse the `trans` call logic?
-                             # Reuse:
-                             if joint_pass and any_guidance:
-                                ret_vals = trans( **gen_args , **kwargs)
-                             else:
-                                size = len(gen_args["x"]) if any_guidance else 1 
-                                ret_vals = [None] * size
-                                for x_id in range(size):
-                                    sub_gen_args = {k : [v[x_id]] for k, v in gen_args.items() }
-                                    ret_vals[x_id] = trans( **sub_gen_args, x_id= x_id , **kwargs)[0]
-                             
-                             # Combine noise
-                             # Reuse logic lines 1317-1330... copy paste is risky.
-                             # But `ret_values` in original code is overwritten.
-                             # We need to replicate the CFG logic.
-                             
-                             # Simplified CFG for PnP (assuming standard usage):
-                             if not any_guidance:
-                                n_pred = ret_vals[0]
-                             else:
-                                 # We need to handle at least standard CFG
-                                 # Most models fall into `else` block at 1310
-                                 if not (phantom or fantasy or steadydancer or multitalk):
-                                     n_cond, n_uncond = ret_vals
-                                     # CFG Star / APG might be active... 
-                                     # For PnP iteration, maybe simple CFG is enough? 
-                                     # Reference code uses standard CFG.
-                                     # Let's try to use the same logic if possible or simplify.
-                                     n_pred = n_uncond + guide_scale * (n_cond - n_uncond)
-                                 else:
-                                     # Fallback for complex models: just use the first result or skip (PnP maybe shouldn't run)
-                                     # For now, let's assume standard model if PnP is on.
-                                     # Or just disable PnP for complex models in UI/Check.
-                                     if phantom:
-                                         pos_it, pos_i, neg = ret_vals
-                                         guide_scale_img= 5.0
-                                         guide_scale_text= guide_scale
-                                         n_pred = neg + guide_scale_img * (pos_i - neg) + guide_scale_text * (pos_it - pos_i)
-                                     else:
-                                         # Default fallback
-                                         n_pred = ret_vals[0]
-
-                             # Step
-                             latents_next = pnp_handler.process_step(latents_perturbed, n_pred, current_sigma, next_sigma)
-                             
-                             if pnp_handler.certain_flag:
-                                 break # break inner loop
-                         
-                         latents = latents_next # Final result of annealing
-                
-                else: 
-                    # If not Euler, we can't easily do PnP with the current logic that relies on `sigma` math from reference.
-                    # Fallback to standard step
-                    latents = sample_scheduler.step(
+                     pass
+                else:
+                    # Non-Euler initial step
+                    # We are essentially "peeking" the next step to see if we need to refine.
+                    # BUT `sample_scheduler.step` advances state.
+                    # We will restore it if we loop.
+                    step_output = sample_scheduler.step(
                         noise_pred[:, :, :target_shape[1]],
                         t,
                         latents,
-                        **scheduler_kwargs)[0]
-            else:
+                        **scheduler_kwargs)
+                    latents_next_0 = step_output.prev_sample
+                    # Try to get pred_original_sample from output if available, else calc
+                    if hasattr(step_output, 'pred_original_sample') and step_output.pred_original_sample is not None:
+                        pred_original_sample_0 = step_output.pred_original_sample
+                
+                # Process Step 0 through PnP handler
+                latents_next = pnp_handler.process_step(
+                    latents, noise_pred, current_sigma, next_sigma, 
+                    latents_next=latents_next_0, pred_original_sample=pred_original_sample_0
+                )
+                     
+                # If we found certainty, we might stop?
+                if pnp_handler.certain_flag:
+                     latents = latents_next
+                     # If non-euler and we stepped, we are good.
+                     # If euler, latents_next is calculated inside process_step (via formula).
+                     # Loop finishes
+                else:
+                     # Loop for ii = 1 to m_steps
+                     for ii in range(1, m_steps):
+                         
+                         if sample_solver != "euler" and scheduler_orig_state is not None:
+                            # Restore scheduler state for the 'rewind'
+                             # sample_scheduler = copy.deepcopy(scheduler_orig_state) # This rebinds the name, but the object might be used elsewhere? 
+                             # `sample_scheduler` is a local var or instance var? `sample_scheduler` comes from `self.scheduler` typically or passed in?
+                             # In `generate` it is a local var `sample_scheduler`.
+                             # BUT `any2video` methods line 1121 `sample_scheduler` comes from `self.scheduler` usually? No it's likely passed or `self.scheduler`. 
+                             # line 474: `sample_scheduler = self.scheduler`.
+                             # So re-assigning it is fine for the local scope.
+                             sample_scheduler = copy.deepcopy(scheduler_orig_state)
+                             
+                         # Perturb
+                         # latents (x_t) = perturb(latents (from buffer), buffer_latents, sigma)
+                         latents_perturbed = pnp_handler.perturb_latents(latents, pnp_handler.buffer[-1][1], current_sigma, generator=seed_g, device=self.device)
+                         
+                         # Recalculate noise_pred
+                         # We need to construct input
+                         if extended_input_dim > 0:
+                             l_in = torch.cat([latents_perturbed, extended_latents.expand(*expand_shape)], dim=extended_input_dim)
+                         else:
+                             l_in = latents_perturbed
+                         
+                         # Call model (same simplified logic as before)
+                         if joint_pass and any_guidance:
+                            ret_vals = trans( **gen_args , **kwargs)
+                         else:
+                            # Use simplified single pass if guidance logic is too complex to reconstruct perfectly properly here
+                            # But wait, `gen_args` might have multiple inputs [latent, latent]
+                            # We must update `gen_args` 'x' values.
+                            if "x" in gen_args:
+                                 if isinstance(gen_args["x"], list):
+                                     count = len(gen_args["x"])
+                                     # Assuming all inputs are the latent (e.g. cond/uncond/text)
+                                     gen_args["x"] = [l_in] * count
+                            
+                            size = len(gen_args["x"]) if any_guidance else 1 
+                            ret_vals = [None] * size
+                            for x_id in range(size):
+                                sub_gen_args = {k : [v[x_id]] for k, v in gen_args.items() }
+                                ret_vals[x_id] = trans( **sub_gen_args, x_id= x_id , **kwargs)[0]
+                         
+                         # Combine noise
+                         if not any_guidance:
+                            n_pred = ret_vals[0]
+                         else:
+                             # Simplified CFG logic again
+                             if not (phantom or fantasy or steadydancer or multitalk):
+                                 n_cond, n_uncond = ret_vals
+                                 n_pred = n_uncond + guide_scale * (n_cond - n_uncond)
+                             else:
+                                 # Fallback
+                                 n_pred = ret_vals[0]
+
+                         # Step
+                         latents_next_loop = None
+                         pred_original_sample_loop = None
+                         
+                         if sample_solver != "euler":
+                             step_output = sample_scheduler.step(
+                                n_pred[:, :, :target_shape[1]],
+                                t,
+                                latents_perturbed, # We perturb the input latent
+                                **scheduler_kwargs)
+                             latents_next_loop = step_output.prev_sample
+                             if hasattr(step_output, 'pred_original_sample') and step_output.pred_original_sample is not None:
+                                pred_original_sample_loop = step_output.pred_original_sample
+
+                         latents_next = pnp_handler.process_step(
+                             latents_perturbed, n_pred, current_sigma, next_sigma,
+                             latents_next=latents_next_loop, pred_original_sample=pred_original_sample_loop
+                         )
+                         
+                         if pnp_handler.certain_flag:
+                             break # break inner loop
+                     
+                     latents = latents_next # Final result of annealing
+                     
+                     # If we finished the loop and used non-euler scheduler, the scheduler state `sample_scheduler` 
+                     # is now in the state AFTER the last step calculation.
+                     # Since we deepcopied, we are fine?
+                     # Wait. If we are in the main loop `for i, t in enumerate(tqdm(timesteps)):`
+                     # The scheduler state needs to be correct for the NEXT iteration `i+1`.
+                     # If we restored state `sample_scheduler = copy.deepcopy(scheduler_orig_state)`
+                     # And then called `step()`, the state advanced ONCE.
+                     # So it is ready for `i+1`.
+                     # Correct.
+            
+            else: 
+                # Fallback to standard step if PnP logic didn't trigger refinement or m_steps=1
+                # If m_steps=1 (implicit in block above?), checking `m_steps>1`.
+                # If m_steps == 1, we still need to take the step!
+                # My logic above: `if pnp_handler and m_steps > 1 ... else ...`
+                # If m_steps=1, we DO NOT enter the block. So we fall through to here.
+                # BUT if `pnp_handler` is None, we also fall through.
+                
                 # Standard Step
                 if sample_solver == "euler":
                     dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])

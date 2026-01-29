@@ -39,7 +39,7 @@ class PnPHandler:
         self.buffer = [None]
         self.certain_flag = False
 
-    def process_step(self, latents, noise_pred, sigma, sigma_next, generator=None, device=None):
+    def process_step(self, latents, noise_pred, sigma, sigma_next, generator=None, device=None, latents_next=None, pred_original_sample=None):
         """
         Returns (latents_next, buffer_updated)
         """
@@ -52,8 +52,11 @@ class PnPHandler:
         # latents_next = latents + (sigma_next - sigma) * noise_pred
         # This matches Flow Matching if sigma is time t.
         
-        pred_original_sample = latents - sigma * noise_pred
-        latents_next = latents + (sigma_next - sigma) * noise_pred
+        if pred_original_sample is None:
+            pred_original_sample = latents - sigma * noise_pred
+        
+        if latents_next is None:
+            latents_next = latents + (sigma_next - sigma) * noise_pred
 
         if self.buffer[-1] is not None:
             # Calculate uncertainty

@@ -13,8 +13,7 @@
     "audio_prompt_type": "",
     "audio_scale": 0.5,
     "duration_seconds": 20,
-    "num_inference_steps": 30,
+    "num_inference_steps": 60,
     "guidance_scale": 7.0,
-    "temperature": 1.0,
     "scheduler_type": "euler"
 }

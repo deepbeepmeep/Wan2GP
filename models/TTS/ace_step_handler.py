@@ -103,7 +103,7 @@ class family_handler:
                 "selection": ["", "A"],
                 "labels": {
                     "": "No Source Audio",
-                    "A": "Remix Audio (need to provide original lyrics and set a Audio Prompt strenght)",
+                    "A": "Remix Audio (need to provide original lyrics and set a Audio Prompt strength)",
                 },
                 "default": "",
                 "label": "Source Audio Mode",

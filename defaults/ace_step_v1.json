@@ -2,7 +2,7 @@
     "model": {
         "name": "TTS ACE-Step v1 3.5B",
         "architecture": "ace_step_v1",
-        "description": "ACE-Step v1 3.5B text-to-music generator with optional lyric conditioning.",
+        "description": "ACE-Step, a fast open-source foundation diffusion based model for music generation that overcomes key limitations of existing approaches and achieves state-of-the-art performance.", 
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/ace_step_v1_transformer_bf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/ace_step_v1_transformer_quanto_bf16_int8.safetensors"

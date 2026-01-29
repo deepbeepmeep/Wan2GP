@@ -69,7 +69,7 @@ Note that Z Image Base is very sensitive to the *Attention Mode*: it is not comp
 *update 10.52*: updated plugin list and added version tracking\
 *update 10.53*: video/audio galleries now support deletions\
 *update 10.54*: added Z Image Base, prompt enhancers improvements, configurable loras root folder\
-*update 10.55*: blocked Sage with Z Image on RTX30xx and added override attention mode settings, allowed changing config during generation
+*update 10.55*: blocked Sage with Z Image on RTX30xx and added override attention mode settings, allowed changing config during generation\
 *update 10.56*: added NAG for Flux 1/2 & Ace Step v1
 
 ### January 20th 2026: WanGP v10.43, The Cost Saver

@@ -20,6 +20,8 @@ def _get_yue_model_def(model_def):
         "sliding_window": False,
         "guidance_max_phases": 0,
         "no_negative_prompt": True,
+        "inference_steps": False,
+        "temperature": True,
         "image_prompt_types_allowed": "",
         "profiles_dir": ["yue"],
         "alt_prompt": {

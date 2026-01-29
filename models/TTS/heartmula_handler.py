@@ -4,6 +4,7 @@ import torch
 
 from shared.utils import files_locator as fl
 
+from .prompt_enhancers import HEARTMULA_LYRIC_PROMPT
 
 HEARTMULA_VERSION = "3B"
 
@@ -15,6 +16,8 @@ def _get_heartmula_model_def():
         "sliding_window": False,
         "guidance_max_phases": 1,
         "no_negative_prompt": True,
+        "inference_steps": False,
+        "temperature": True,
         "image_prompt_types_allowed": "",
         "supports_early_stop": True,
         "profiles_dir": ["heartmula_oss_3b"],
@@ -23,20 +26,7 @@ def _get_heartmula_model_def():
             "placeholder": "piano,happy,wedding",
             "lines": 2,
         },
-        "text_prompt_enhancer_instructions": (
-            "You are a lyric-writing assistant. Generate a clean song lyric prompt "
-            "for a text-to-song model. Output only the lyric text with optional "
-            "section headers in square brackets (e.g., [Verse], [Chorus], [Bridge], "
-            "[Intro], [Outro]). Do not include explanations, bullet lists, or tags. "
-            "Keep a consistent theme, POV, and rhyme or rhythm where natural. Use "
-            "short lines that are easy to sing.\n\n"
-            "Example:\n"
-            "[Verse]\n"
-            "Morning light through the window pane\n"
-            "I hum a tune to chase the rain\n"
-            "Steady steps on a quiet street\n"
-            "Heart and rhythm, gentle beat\n"
-        ),
+        "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
         "duration_slider": {
             "label": "Duration of the Song (in seconds)",
             "min": 30,
@@ -94,15 +84,15 @@ class family_handler:
     @staticmethod
     def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
-            "--lora-dir-tts",
+            "--lora-heart_mula",
             type=str,
             default=None,
-            help=f"Path to a directory that contains TTS settings (default: {os.path.join(lora_root, 'tts')})",
+            help=f"Path to a directory that contains Heart Mula settings (default: {os.path.join(lora_root, 'heart_mula')})",
         )
 
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_tts", None) or os.path.join(lora_root, "tts")
+        return getattr(args, "lora_heart_mula", None) or os.path.join(lora_root, "heart_mula")
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

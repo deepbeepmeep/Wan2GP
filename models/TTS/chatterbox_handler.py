@@ -4,6 +4,8 @@ import gradio as gr
 
 from shared.utils import files_locator as fl
 
+from .prompt_enhancers import TTS_MONOLOGUE_PROMPT
+
 
 _FALLBACK_SUPPORTED_LANGUAGES = {
     "ar": "Arabic",
@@ -31,23 +33,6 @@ _FALLBACK_SUPPORTED_LANGUAGES = {
     "zh": "Chinese",
 }
 
-TTS_MONOLOGUE_PROMPT = (
-    "You are a speechwriting assistant. Generate a single-speaker monologue "
-    "for a text-to-speech model based on the user prompt. Output only the "
-    "monologue text. Do not include explanations, bullet lists, or stage "
-    "directions. Keep a consistent tone and point of view. Use natural, "
-    "spoken sentences with clear punctuation for pauses. Aim for a short "
-    "monologue (4-8 sentences) unless the prompt asks for a different length.\n\n"
-    "Example:\n"
-    "I never thought a small town would teach me so much about patience. "
-    "Every morning the same faces pass the bakery window, and I know their "
-    "stories without a word. The bell over the door rings, the coffee steams, "
-    "and time slows down just enough to breathe. Some days I miss the noise of "
-    "the city, but most days I am grateful for the quiet. It lets me hear "
-    "myself think, and that has become its own kind of music."
-)
-
-
 def _get_supported_languages() -> dict:
     try:
         from .chatterbox.mtl_tts import SUPPORTED_LANGUAGES
@@ -71,6 +56,8 @@ def _get_chatterbox_model_def():
         "sliding_window": False,
         "guidance_max_phases": 0,
         "no_negative_prompt": True,
+        "inference_steps": False,
+        "temperature": True,
         "image_prompt_types_allowed": "",
         "profiles_dir": ["chatterbox"],
         "audio_guide_label": "Voice to Replicate",
@@ -122,15 +109,15 @@ class family_handler:
     @staticmethod
     def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
-            "--lora-dir-tts",
+            "--lora-dir-chatterbox",
             type=str,
             default=None,
-            help=f"Path to a directory that contains TTS settings (default: {os.path.join(lora_root, 'tts')})",
+            help=f"Path to a directory that contains chatterbox settings (default: {os.path.join(lora_root, 'chatterbox')})",
         )
 
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_tts", None) or os.path.join(lora_root, "tts")
+        return getattr(args, "lora_dir_chatterbox", None) or os.path.join(lora_root, "chatterbox")
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

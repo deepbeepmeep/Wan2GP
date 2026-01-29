@@ -34,11 +34,13 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 ## 🔥 Latest Updates : 
 
-### January 28th 2026: WanGP v10.55, Music for your Hearts
+### January 29th 2026: WanGP v10.56, Music for your Hearts
 
 WanGP Special *TTS* (Text To Speech) Release:
 
 - **Heart Mula**: *Suno* quality song with lyrics on your local PC. You can generate up to 4 min of music.
+
+- **Ace Step v1**: while waiting for *Ace Step v1.5* (which should be released very soon), enjoy this oldie (2025!) but goodie song generatpr as an appetizer. Ace Step v1 is a very fast Song generator. It is a *Diffusion* based, so dont hesitate to turn on Profile 4 to go as low as 4B VRAM while remaining fast.
 
 - **Qwen 3 TTS**: you can either do *Voice Cloning*, *Generate a Custom Voice based on a Prompt* or use a *Predefined Voice*
 
@@ -51,6 +53,8 @@ WanGP Special *TTS* (Text To Speech) Release:
 - **Z Image Base**: try it if you are into the *Z Image* hype but it will be probably useless for you unless you are a researcher and / or want to build a finetune out of it. This model requires from 35 to 50 steps (4x to 6x slower than *Z Image turbo*) and cfg > 1 (an additional 2x slower) and there is no *Reinforcement Learning* so Output Images wont be as good. The plus side is a higher diversity and *Native Negative Prompt* (versus Z Image virtual Negative Prompt using *NAG*).
 
 Note that Z Image Base is very sensitive to the *Attention Mode*: it is not compatible with *Sage 1* as it produces black frames. So I have disabled Sage for RTX 30xx. Also there are reports it produces some vertical banding artifacts with *Sage 2*
+
+- **Flux 1/2 NAG** : *Flux 2 Klein* is your new best friend but you miss *Negative Prompts*, *NAG* support for Distilled models will make you best buddies forever as NAG simulates Negative prompts.
 
 - **Various Improvements**:
    - Video /Audio Galleries now support deletions of gens done outside WanGP
@@ -66,6 +70,7 @@ Note that Z Image Base is very sensitive to the *Attention Mode*: it is not comp
 *update 10.53*: video/audio galleries now support deletions\
 *update 10.54*: added Z Image Base, prompt enhancers improvements, configurable loras root folder\
 *update 10.55*: blocked Sage with Z Image on RTX30xx and added override attention mode settings, allowed changing config during generation
+*update 10.56*: added NAG for Flux 1/2 & Ace Step v1
 
 ### January 20th 2026: WanGP v10.43, The Cost Saver
 *GPUs are expensive, RAM is expensive, SSD are expensive, sadly we live now in a GPU & RAM poor.*

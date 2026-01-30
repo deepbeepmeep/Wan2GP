@@ -11376,11 +11376,45 @@ if __name__ == "__main__":
     globals()["SAFE_MODE"] = False
 
     if os.path.exists(STARTUP_LOCK_FILE):
-        print("\n" + "!"*10)
-        print("DETECTED FAILED PREVIOUS STARTUP. ENTERING SAFE MODE.")
-        print("All user plugins are disabled to allow the server to start.")
-        print("!"*10 + "\n")
-        globals()["SAFE_MODE"] = True
+        print("\n" + "!"*60)
+        print("DETECTED FAILED PREVIOUS STARTUP.")
+        print("Waiting 2 seconds...")
+        print("Press 'c' to CANCEL Safe Mode and force normal startup.")
+        if os.name != 'nt':
+            print("(On Linux/Mac, type 'c' and press Enter)")
+        print("!"*60 + "\n")
+        cancel_safe_mode = False
+        start_wait = time.time()
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                while msvcrt.kbhit():
+                    msvcrt.getwch()
+                
+                while time.time() - start_wait < 2:
+                    if msvcrt.kbhit():
+                        if msvcrt.getwch().lower() == 'c':
+                            cancel_safe_mode = True
+                            break
+                    time.sleep(0.05)
+            else:
+                import select
+                while time.time() - start_wait < 2:
+                    r, _, _ = select.select([sys.stdin], [], [], 0.1)
+                    if r:
+                        line = sys.stdin.readline()
+                        if 'c' in line.lower():
+                            cancel_safe_mode = True
+                            break
+        except Exception as e:
+            print(f"Warning: Input detection failed: {e}")
+
+        if cancel_safe_mode:
+            print("\nSAFE MODE CANCELLED. Proceeding with normal startup.")
+            globals()["SAFE_MODE"] = False
+        else:
+            print("\nENTERING SAFE MODE. User plugins disabled.")
+            globals()["SAFE_MODE"] = True
 
     try:
         with open(STARTUP_LOCK_FILE, "w"):

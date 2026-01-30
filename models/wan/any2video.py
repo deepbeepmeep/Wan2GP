@@ -468,7 +468,7 @@ class WanAny2V:
         motion_amplitude = 1.,
         window_start_frame_no = 0,
         enable_self_refine = False,
-        pnp_f_uncertainty = 0.2,
+        pnp_f_uncertainty = 0.0,
         pnp_p_norm = 1,
         pnp_certain_percentage = 0.999,
         **bbargs

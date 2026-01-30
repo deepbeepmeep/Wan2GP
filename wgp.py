@@ -10100,7 +10100,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             gr.Markdown("<B>Self-Refining Video Sampling (PnP)</B>")
                             enable_self_refine = gr.Checkbox(value=ui_get("enable_self_refine", False), label="Enable self-refining video sampling (slower, better consistency)")
                             with gr.Row(visible=False) as pnp_settings_row: # Hide advanced settings by default or toggle visibility with checkbox
-                                pnp_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("pnp_f_uncertainty", 0.2), step=0.01, label="Uncertainty Threshold")
+                                pnp_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("pnp_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold")
                                 pnp_p_norm = gr.Slider(1, 2, value=ui_get("pnp_p_norm", 1), step=1, label="P-Norm (1 or 2)")
                                 pnp_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("pnp_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip")
                             

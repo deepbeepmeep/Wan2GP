@@ -1,8 +1,8 @@
 {
     "model": {
-        "name": "TTS Qwen3 VoiceDesign (12Hz) 1.7B",
+        "name": "TTS Qwen3 Voice Design (12Hz) 1.7B",
         "architecture": "qwen3_tts_voicedesign",
-        "description": "Qwen3 VoiceDesign with natural language voice instructions.",
+        "description": "Qwen3 Voice Design with natural language voice instructions.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_voicedesign_bf16.safetensors"
         ]

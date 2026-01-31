@@ -85,7 +85,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.2"
-WanGP_version = "10.54"
+WanGP_version = "10.56"
 settings_version = 2.44
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1699,7 +1699,7 @@ def update_generation_status(html_content):
     if(html_content):
         return gr.update(value=html_content)
 
-family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.TTS.tts_handler"]
+family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.TTS.ace_step_handler", "models.TTS.chatterbox_handler", "models.TTS.qwen3_handler", "models.TTS.yue_handler", "models.TTS.heartmula_handler"]
 DEFAULT_LORA_ROOT = "loras"
 
 def register_family_lora_args(parser, lora_root):
@@ -4102,7 +4102,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 video_length_summary = None
                 video_length_label = ""
                 original_fps = 0
-                video_num_inference_steps = None
+                video_num_inference_steps = configs.get("num_inference_steps", None)
             else:
                 video_length = configs.get("video_length", 0)
                 original_fps= int(video_length/frames_count*fps)
@@ -4234,8 +4234,12 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if alt_guidance_type is not None and video_alt_guidance_scale is not None:
                 values += [video_alt_guidance_scale]
                 labels += [alt_guidance_type]
-            values += [video_flow_shift, video_num_inference_steps]
-            labels += ["Shift Scale", "Num Inference steps"]
+            if model_def.get("flow_shift", False):
+                values += [video_flow_shift]
+                labels += ["Shift Scale"]
+            if model_def.get("inference_steps", True) and video_num_inference_steps is not None:
+                values += [video_num_inference_steps]
+                labels += ["Num Inference steps"]
             video_negative_prompt = configs.get("negative_prompt", "")
             if len(video_negative_prompt) > 0:
                 values += [video_negative_prompt]
@@ -5481,6 +5485,7 @@ def generate_video(
     prompt_enhancer,
     min_frames_if_references,
     override_profile,
+    override_attention,
     pace,
     exaggeration,
     temperature,
@@ -5573,7 +5578,7 @@ def generate_video(
     if args.test:
         send_cmd("info", "Test mode: model loaded, skipping generation.")
         return
-    overridden_attention = get_overridden_attention(model_type)
+    overridden_attention = override_attention if len(override_attention) else get_overridden_attention(model_type)
     # if overridden_attention is not None and overridden_attention !=  attention_mode: print(f"Attention mode has been overriden to {overridden_attention} for model type '{model_type}'")
     attn = overridden_attention if overridden_attention is not None else attention_mode
     if attn == "auto":
@@ -6306,6 +6311,7 @@ def generate_video(
                     input_waveform_sample_rate=input_waveform_sample_rate,
                     audio_guide=audio_guide,
                     audio_guide2=audio_guide2,
+                    audio_prompt_type=audio_prompt_type,
                     audio_proj= audio_proj_split,
                     audio_scale= audio_scale,
                     audio_context_lens= audio_context_lens,
@@ -7609,6 +7615,10 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["duration_seconds"]
     if not model_def.get("top_k_slider", False):
         pop += ["top_k"]
+    if not model_def.get("temperature", True):
+        pop += ["temperature"]
+    if not model_def.get("inference_steps", True):
+        pop += ["num_inference_steps"]
 
     if "force_fps" in inputs and len(inputs["force_fps"])== 0:
         pop += ["force_fps"]
@@ -8357,6 +8367,7 @@ def save_inputs(
             prompt_enhancer,
             min_frames_if_references,
             override_profile,
+            override_attention,            
             pace,
             exaggeration,
             temperature,
@@ -9024,6 +9035,22 @@ memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: at least 64 GB of RAM
                             ("Profile 4+, LowRAM_LowVRAM+: at least 32 GB of RAM and 12 GB of VRAM, variant of Profile 4, slightly slower but needs less VRAM",4.5),
                             ("Profile 5, VerylowRAM_LowVRAM (Fail safe): at least 24 GB of RAM and 10 GB of VRAM, if you don't have much it won't be fast but maybe it will work",5)]
 
+def check_attn(mode):
+    if mode not in attention_modes_installed: return " (NOT INSTALLED)"
+    if mode not in attention_modes_supported: return " (NOT SUPPORTED)"
+    return ""
+
+attention_modes_choices= [
+    ("Auto: Best available (sage2 > sage > sdpa)", "auto"),
+    ("sdpa: Default, always available", "sdpa"),
+    (f'flash{check_attn("flash")}: High quality, requires manual install', "flash"),
+    (f'xformers{check_attn("xformers")}: Good quality, less VRAM, requires manual install', "xformers"),
+    (f'sage{check_attn("sage")}: ~30% faster, requires manual install', "sage"),
+    (f'sage2/sage2++{check_attn("sage2")}: ~40% faster, requires manual install', "sage2"),
+] + ([(f'radial{check_attn("radial")}: Experimental, may be faster, requires manual install', "radial")] if args.betatest else []) + [
+    (f'sage3{check_attn("sage3")}: >50% faster, may have quality trade-offs, requires manual install', "sage3"),
+]
+
 def detect_auto_save_form(state, evt:gr.SelectData):
     last_tab_id = state.get("last_tab_id", 0)
     state["last_tab_id"] = new_tab_id = evt.index
@@ -9173,7 +9200,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             base_model_family = get_model_family(base_model_type)
             diffusion_forcing = "diffusion_forcing" in model_filename 
             ltxv = "ltxv" in model_filename 
-            lock_inference_steps = model_def.get("lock_inference_steps", False) or audio_only
+            inference_steps_enabled = model_def.get("inference_steps", True)
+            lock_inference_steps = model_def.get("lock_inference_steps", False) or (audio_only and not inference_steps_enabled)
             any_tea_cache = model_def.get("tea_cache", False)
             any_mag_cache = model_def.get("mag_cache", False)
             recammaster = base_model_type in ["recam_1.3B"]
@@ -9776,7 +9804,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             embedded_guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("embedded_guidance_scale"), step=0.5, label="Embedded Guidance Scale", visible=any_embedded_guidance, show_reset_button= False )
                             alt_guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("alt_guidance_scale"), step=0.5, label= alt_guidance_type if any_alt_guidance else "" , visible=any_alt_guidance, show_reset_button= False )
 
-                        with gr.Row(visible=audio_only) as temperature_row:
+                        temperature_visible = audio_only and model_def.get("temperature", True)
+                        with gr.Row(visible=temperature_visible) as temperature_row:
                             temperature = gr.Slider(0.1, 1.5, value=ui_get("temperature"), step=0.01, label="Temperature", show_reset_button=False)
 
                         top_k_visible = audio_only and model_def.get("top_k_slider", False)
@@ -10145,6 +10174,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         choices=[("Default Memory Profile", -1)] + memory_profile_choices,
                         value=ui_get("override_profile"),
                         label=f"Override Memory Profile"
+                    )
+
+                    gr.Markdown("<B>You can set a different Attention Mode to improve the quality / compatibility<B>")
+                    override_attention = gr.Dropdown(
+                        choices=[("Default Attention Mode", "")] + attention_modes_choices,
+                        value=ui_get("override_attention"),
+                        label=f"Override Attention Mode"
                     )
 
                     with gr.Column():

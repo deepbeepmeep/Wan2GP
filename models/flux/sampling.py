@@ -532,6 +532,7 @@ def denoise(
     img_cond_seq_ids: Tensor | None = None,
     siglip_embedding = None,
     siglip_embedding_ids = None,
+    NAG: dict | None = None,
     callback=None,
     pipeline=None,
     loras_slists=None,
@@ -560,6 +561,8 @@ def denoise(
         "siglip_embedding": siglip_embedding,   
         "siglip_embedding_ids": siglip_embedding_ids,
     }
+    if NAG is not None:
+        kwargs["NAG"] = NAG
 
     if callback != None:
         callback(-1, None, True)

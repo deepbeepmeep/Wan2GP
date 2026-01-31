@@ -5,7 +5,7 @@
 <b>WanGP by DeepBeepMeep : The best Open Source Video Generative Models Accessible to the GPU Poor</b>
 </p>
 
-WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image, LongCat, Kandinsky and LTX Video models with:
+WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, Z-Image, LongCat, Kandinsky, LTX 1 & 2, Qwen3 TTS, Chatterbox, HearMula, ... with:
 - Low VRAM requirements (as low as 6 GB of VRAM is sufficient for certain models)
 - Support for old Nvidia GPUs (RTX 10XX, 20xx, ...)
 - Support for AMD GPUs Radeon RX 76XX, 77XX, 78XX & 79XX, instructions in the Installation Section Below.
@@ -17,9 +17,9 @@ WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image,
 - Plenty of ready to use Plug Ins: Gallery Browser, Upscaler, Models/Checkpoints Manager, CivitAI browser and downloader, ...
 - Loras Support to customize each model
 - Queuing system : make your shopping list of videos to generate and come back later
-- Headless mode: launch the generation of multiple image / videos using a command line
+- Headless mode: launch the generation of multiple image / videos / audio files using a command line
 
-**Discord Server to get Help from Other Users and show your Best Videos:** https://discord.gg/g7efUW9jGV
+**Discord Server to get Help from the WanGP Community and show your Best Gens:** https://discord.gg/g7efUW9jGV
 
 **Follow DeepBeepMeep on Twitter/X to get the Latest News**: https://x.com/deepbeepmeep
 
@@ -34,11 +34,13 @@ WanGP supports the Wan (and derived models), Hunyuan Video, Flux, Qwen, Z-Image,
 
 ## 🔥 Latest Updates : 
 
-### January 27th 2026: WanGP v10.54, Music for your Hearts
+### January 29th 2026: WanGP v10.56, Music for your Hearts
 
 WanGP Special *TTS* (Text To Speech) Release:
 
 - **Heart Mula**: *Suno* quality song with lyrics on your local PC. You can generate up to 4 min of music.
+
+- **Ace Step v1**: while waiting for *Ace Step v1.5* (which should be released very soon), enjoy this oldie (2025!) but goodie song generatpr as an appetizer. Ace Step v1 is a very fast Song generator. It is a *Diffusion* based, so dont hesitate to turn on Profile 4 to go as low as 4B VRAM while remaining fast.
 
 - **Qwen 3 TTS**: you can either do *Voice Cloning*, *Generate a Custom Voice based on a Prompt* or use a *Predefined Voice*
 
@@ -48,7 +50,11 @@ WanGP Special *TTS* (Text To Speech) Release:
    - **Custom Output folder for Audio Gens**: you can now choose a different folder for the *Audio Outputs*
    - **Default Memory Profile for Audio Models**: TTS models can get very slow if you use profile 4 (being autoregressive models, they will need to load all the layers one per one to generate one single audio token then rinse & repeat). On the other hand, they dont't need as much VRAM, so you can now define a more agressive profile (3+ for instance)
 
-- **Z Image Base**: try it if you are into the *Z Image* hype but it will be probably useless for you unless you are a researcher and / or want to build a finetune out of it. This model requires from 35 to 50 steps (4x to 6x slower than *Z Image turbo*) and cfg > 1 (an additional 2x slower) and there is no *Reinforcement Learning* so Output Images wont be as good. The plus side is a higher diversity and *Native Negative Prompt* (versus Z Image virtual Negative Prompt using *NAG*) 
+- **Z Image Base**: try it if you are into the *Z Image* hype but it will be probably useless for you unless you are a researcher and / or want to build a finetune out of it. This model requires from 35 to 50 steps (4x to 6x slower than *Z Image turbo*) and cfg > 1 (an additional 2x slower) and there is no *Reinforcement Learning* so Output Images wont be as good. The plus side is a higher diversity and *Native Negative Prompt* (versus Z Image virtual Negative Prompt using *NAG*).
+
+Note that Z Image Base is very sensitive to the *Attention Mode*: it is not compatible with *Sage 1* as it produces black frames. So I have disabled Sage for RTX 30xx. Also there are reports it produces some vertical banding artifacts with *Sage 2*
+
+- **Flux 1/2 NAG** : *Flux 2 Klein* is your new best friend but you miss *Negative Prompts*, *NAG* support for Distilled models will make you best buddies forever as NAG simulates Negative prompts.
 
 - **Various Improvements**:
    - Video /Audio Galleries now support deletions of gens done outside WanGP
@@ -56,11 +62,15 @@ WanGP Special *TTS* (Text To Speech) Release:
    - *Check for Updates* button for *Plugins* to see in a glance if any of your plugin can be updated
    - *Prompt Enhancer* generates a different enhanced prompt each timee you click on it. You can define in the config tab its gen parameters (top k, temperature)
    - New *Root Loras* folder can be defined in the config Tab. Useful if you have multiple WanGP instances or want to store easily all your loras in a different hard drive 
+   - added new setting *Attention Mode Override* in the *Misc* tab
+   - Experimental: allowed changing *Configuration* during a *Generation*
 
 *update 10.51*: new Heart Mula Finetune better at following instructions, Extra settings (cfg, top k) for TTS models, Rife v4\
 *update 10.52*: updated plugin list and added version tracking\
 *update 10.53*: video/audio galleries now support deletions\
-*update 10.54*: added Z Image Omnibase, prompt enhancers improvements, configurable loras root folder
+*update 10.54*: added Z Image Base, prompt enhancers improvements, configurable loras root folder\
+*update 10.55*: blocked Sage with Z Image on RTX30xx and added override attention mode settings, allowed changing config during generation\
+*update 10.56*: added NAG for Flux 1/2 & Ace Step v1
 
 ### January 20th 2026: WanGP v10.43, The Cost Saver
 *GPUs are expensive, RAM is expensive, SSD are expensive, sadly we live now in a GPU & RAM poor.*

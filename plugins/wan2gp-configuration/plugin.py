@@ -29,6 +29,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("attention_modes_supported")
         self.request_global("displayed_model_types")
         self.request_global("memory_profile_choices")
+        self.request_global("attention_modes_choices")
         self.request_global("save_path")
         self.request_global("image_save_path")
         self.request_global("audio_save_path")
@@ -87,22 +88,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         interactive=not self.args.lock_config
                     )
 
-                    def check_attn(mode):
-                        if mode not in self.attention_modes_installed: return " (NOT INSTALLED)"
-                        if mode not in self.attention_modes_supported: return " (NOT SUPPORTED)"
-                        return ""
-
                     self.attention_choice = gr.Dropdown(
-                        choices=[
-                            ("Auto: Best available (sage2 > sage > sdpa)", "auto"),
-                            ("sdpa: Default, always available", "sdpa"),
-                            (f'flash{check_attn("flash")}: High quality, requires manual install', "flash"),
-                            (f'xformers{check_attn("xformers")}: Good quality, less VRAM, requires manual install', "xformers"),
-                            (f'sage{check_attn("sage")}: ~30% faster, requires manual install', "sage"),
-                            (f'sage2/sage2++{check_attn("sage2")}: ~40% faster, requires manual install', "sage2"),
-                        ] + ([(f'radial{check_attn("radial")}: Experimental, may be faster, requires manual install', "radial")] if self.args.betatest else []) + [
-                            (f'sage3{check_attn("sage3")}: >50% faster, may have quality trade-offs, requires manual install', "sage3"),
-                        ],
+                        choices=self.attention_modes_choices,
                         value=self.attention_mode, label="Attention Type", interactive=not self.args.lock_config
                     )
                     self.preload_model_policy_choice = gr.CheckboxGroup(
@@ -323,8 +310,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         return [self.release_RAM_btn]
 
     def _save_changes(self, state, *args):
-        if self.is_generation_in_progress():
-            return "<div style='color:red; text-align:center;'>Unable to change config when a generation is in progress.</div>", *[gr.update()]*5
+        gen_in_progress = self.is_generation_in_progress()
+        # return "<div style='color:red; text-align:center;'>Unable to change config when a generation is in progress.</div>", *[gr.update()]*5
 
         if self.args.lock_config:
             return "<div style='color:red; text-align:center;'>Configuration is locked by command-line arguments.</div>", *[gr.update()]*5
@@ -459,9 +446,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
         
         model_family_update, model_base_type_update, model_choice_update = self.generate_dropdown_model_list(model_type)
         header_update = self.generate_header(model_type, compile=new_server_config["compile"], attention_mode=new_server_config["attention_mode"])
-        
-        return (
-            "<div style='color:green; text-align:center;'>The new configuration has been succesfully applied.</div>",
+
+        if gen_in_progress:
+            msg = "<div style='color:green; text-align:center;'>The new configuration has been succesfully applied. Some of the Settings will be only effective when you will start another Generation</div>"
+        else:
+            msg = "<div style='color:green; text-align:center;'>The new configuration has been succesfully applied.</div>"
+
+        return (msg
+            ,
             header_update,
             model_family_update,
             model_base_type_update,

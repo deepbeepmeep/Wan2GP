@@ -81,10 +81,25 @@ class family_handler():
 
         extra_model_def = {
             "image_outputs" : True,
-            "no_negative_prompt" : flux2 or not (flux_chroma or flux_chroma_radiance),
+            "no_negative_prompt" :  flux_chroma or flux_chroma_radiance,
             "flux-model": flux_model,
             "flux2": flux2,
         }
+        nag_supported = base_model_type in [
+            "flux_schnell",
+            "flux_dev_kontext",
+            "flux_dev_umo",
+            "flux_dev_uso",
+            "flux_dev_kontext_dreamomni2",
+            "pi_flux2",
+            "flux2_dev",
+            "flux",
+            "flux2_klein_4b",
+            "flux2_klein_9b",
+        ]
+        if nag_supported:
+            extra_model_def["NAG"] = True
+            extra_model_def["no_negative_prompt"] = False
         supports_inpaint = flux_kontext or flux_schnell or flux_dev or flux2
         if supports_inpaint:
             extra_model_def["inpaint_support"] = True

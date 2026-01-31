@@ -26,6 +26,8 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>Lightricks</B> for their super fast LTX Video models (https://github.com/Lightricks/LTX-Video)")
         gr.Markdown("- <B>Resemble.AI</B> for the incredible ChatterBox (https://github.com/resemble-ai/chatterbox)")
         gr.Markdown("- <B>HeartMuLa Team</B> for the open music generation models (https://github.com/HeartMuLa/heartlib)")
+        gr.Markdown("- <B>ACE-Step Team</B> for the ACE-Step music generation model (https://github.com/ace-step/ACE-Step)")
+        gr.Markdown("- <B>Alibaba Qwen Team</B> for Qwen 3 TTS (https://github.com/QwenLM/Qwen3-TTS)")
         gr.Markdown("- <B>Remade_AI</B> : for their awesome Loras collection (https://huggingface.co/Remade-AI)")
         gr.Markdown("- <B>ByteDance</B> : for their great Wan and Flux extensions Lynx (https://github.com/bytedance/lynx), UMO (https://github.com/bytedance/UMO), USO (https://github.com/bytedance/USO) ")
         gr.Markdown("- <B>Hugging Face</B> for providing hosting for the models and developing must have open source libraries such as Tranformers, Diffusers, Accelerate and Gradio (https://huggingface.co/)")

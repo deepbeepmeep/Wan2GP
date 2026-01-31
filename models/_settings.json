@@ -81,6 +81,7 @@
 	"RIFLEx_setting": 0,
 	"force_fps": "",
 	"override_profile": -1,
+	"override_attention": "",
 	"output_filename": "",
 	"activated_loras": [],
 	"loras_multipliers": "",	

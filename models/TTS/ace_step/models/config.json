@@ -1,0 +1,23 @@
+{
+    "_class_name": "Transformer2DModel",
+    "_diffusers_version": "0.27.2",
+    "in_channels": 8,
+    "num_layers": 24,
+    "inner_dim": 2560,
+    "attention_head_dim": 128,
+    "num_attention_heads": 20,
+    "mlp_ratio": 2.5,
+    "out_channels": 8,
+    "max_position": 32768,
+    "rope_theta": 1000000.0,
+    "speaker_embedding_dim": 512,
+    "text_embedding_dim": 768,
+    "ssl_encoder_depths": [8, 8],
+    "ssl_names": ["mert", "m-hubert"],
+    "ssl_latent_dims": [1024, 768],
+    "patch_size": [16, 1],
+    "max_height": 16,
+    "max_width": 32768,
+    "lyric_encoder_vocab_size": 6693,
+    "lyric_hidden_size": 1024
+}

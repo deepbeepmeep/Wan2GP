@@ -1198,9 +1198,6 @@ class PluginManager:
         all_insert_requests: List[InsertAfterRequest] = []
 
         for plugin_id, plugin in self.plugins.items():
-            if plugin._setup_complete:
-                continue
-
             try:
                 for comp_id in plugin.component_requests:
                     if comp_id in all_components and (not hasattr(plugin, comp_id) or getattr(plugin, comp_id) is None):
@@ -1218,8 +1215,6 @@ class PluginManager:
                 if insert_requests:
                     all_insert_requests.extend(insert_requests)
                     plugin._insert_after_requests.clear()
-                
-                plugin._setup_complete = True
                 
             except Exception as e:
                 print(f"[PluginManager] ERROR in post_ui_setup for {plugin_id}: {str(e)}")

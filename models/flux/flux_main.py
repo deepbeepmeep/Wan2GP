@@ -147,7 +147,11 @@ class model_factory:
         if self.name == 'flux-dev-uso':
             siglip_path =  fl.locate_folder("siglip-so400m-patch14-384")
             siglip_processor = SiglipImageProcessor.from_pretrained(siglip_path)
-            siglip_model = SiglipVisionModel.from_pretrained(siglip_path)
+            siglip_model = offload.fast_load_transformers_model(
+                fl.locate_file(os.path.join("siglip-so400m-patch14-384", "model.safetensors")),
+                modelClass=SiglipVisionModel,
+                defaultConfigPath=fl.locate_file(os.path.join("siglip-so400m-patch14-384", "vision_config.json")),
+            )
             siglip_model.eval().to("cpu")
             if len(model_filename) > 1:
                 from .modules.layers import SigLIPMultiFeatProjModel                

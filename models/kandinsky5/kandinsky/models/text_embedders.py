@@ -16,8 +16,10 @@ from shared.utils.text_encoder_cache import TextEncoderCache
 
 class ClipTextEmbedder:
     def __init__(self, conf, device):
-        self.model = CLIPTextModel.from_pretrained(conf.checkpoint_path).to(device)
-        self.model = freeze(self.model)
+        self.model= offload.fast_load_transformers_model( os.path.join(conf.checkpoint_path,"model.safetensors"), modelClass=CLIPTextModel, ignore_unused_weights= True,  forcedConfigPath = os.path.join(conf.checkpoint_path, "text_config.json"))
+        self.model.final_layer_norm = self.model.text_model.final_layer_norm
+        self.model.eval()
+        # self.model = freeze(self.model)
         self.tokenizer = CLIPTokenizer.from_pretrained(conf.checkpoint_path)
         self.max_length = conf.max_length
 

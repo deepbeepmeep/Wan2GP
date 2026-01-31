@@ -357,7 +357,7 @@ class family_handler():
                 "repoId" : "DeepBeepMeep/HunyuanVideo", 
                 "sourceFolderList" :  [  "clip_vit_large_patch14",   ],
                 "fileList" :[ 
-                                ["config.json", "merges.txt", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"],
+                                ["text_config.json", "merges.txt", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"],
                                 ]
                 },
                 {  
@@ -371,7 +371,7 @@ class family_handler():
                     {  
                     "repoId" : "DeepBeepMeep/Flux", 
                     "sourceFolderList" :  ["siglip-so400m-patch14-384"],
-                    "fileList" : [ ["config.json", "preprocessor_config.json", "model.safetensors"] ]   
+                    "fileList" : [ ["vision_config.json", "preprocessor_config.json", "model.safetensors"] ]   
                     }]
 
 

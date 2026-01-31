@@ -185,6 +185,7 @@ class ICLoraPipeline:
                 callback=callback,
                 preview_tools=preview_tools,
                 pass_no=1,
+                transformer=transformer,
             )
 
         stage_1_output_shape = VideoPixelShape(
@@ -286,6 +287,7 @@ class ICLoraPipeline:
                 callback=callback,
                 preview_tools=preview_tools,
                 pass_no=2,
+                transformer=transformer,
             )
 
         stage_2_output_shape = VideoPixelShape(batch=1, frames=num_frames, width=width, height=height, fps=frame_rate)

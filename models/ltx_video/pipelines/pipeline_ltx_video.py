@@ -38,7 +38,7 @@ from ..models.transformers.symmetric_patchifier import Patchifier
 from ..models.transformers.transformer3d import Transformer3DModel
 from ..schedulers.rf import TimestepShifter
 from ..utils.skip_layer_strategy import SkipLayerStrategy
-from ..utils.prompt_enhance_utils import generate_cinematic_prompt
+from shared.prompt_enhancer.prompt_enhance_utils import generate_cinematic_prompt
 from ..models.autoencoders.latent_upsampler import LatentUpsampler
 from ..models.autoencoders.vae_encode import (
     un_normalize_latents,

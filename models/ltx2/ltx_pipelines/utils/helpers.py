@@ -393,6 +393,7 @@ def euler_denoising_loop(
     callback: Callable[..., None] | None = None,
     preview_tools: VideoLatentTools | None = None,
     pass_no: int = 0,
+    transformer=None,
 ) -> tuple[LatentState | None, LatentState | None]:
     """
     Perform the joint audio-video denoising loop over a diffusion schedule.
@@ -428,6 +429,9 @@ def euler_denoising_loop(
     for step_idx, _ in enumerate(tqdm(sigmas[:-1])):
         if interrupt_check is not None and interrupt_check():
             return None, None
+
+        offload.set_step_no_for_lora(transformer, step_idx)
+
         denoised_video, denoised_audio = denoise_fn(video_state, audio_state, sigmas, step_idx)
         if denoised_video is None and denoised_audio is None:
             return None, None

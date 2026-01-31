@@ -185,6 +185,7 @@ class DistilledPipeline:
                 callback=callback,
                 preview_tools=preview_tools,
                 pass_no=pass_no,
+                transformer=transformer,
             )
 
         stage_1_output_shape = VideoPixelShape(

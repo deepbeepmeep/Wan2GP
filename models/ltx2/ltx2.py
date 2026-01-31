@@ -60,7 +60,7 @@ def _normalize_config(config_value):
 
 
 def _load_config_from_checkpoint(path):
-    from mmgp import safetensors2
+    from mmgp import quant_router
 
     if isinstance(path, (list, tuple)):
         if not path:
@@ -68,7 +68,7 @@ def _load_config_from_checkpoint(path):
         path = path[0]
     if not path:
         return {}
-    _, metadata = safetensors2.load_metadata_state_dict(path)
+    _, metadata = quant_router.load_metadata_state_dict(path)
     if not metadata:
         return {}
     return _normalize_config(metadata.get("config"))

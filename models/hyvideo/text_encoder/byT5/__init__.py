@@ -176,6 +176,7 @@ def load_byt5_and_byt5_tokenizer(
     byt5_text_encoder = T5ForConditionalGeneration.from_pretrained(
         byt5_name,
         cache_dir=huggingface_cache_dir,
+        tie_word_embeddings=False,
     ).get_encoder()
 
     # byt5_text_encoder = T5EncoderModel.from_pretrained(

@@ -241,7 +241,7 @@ pip install torch==2.10.0 torchvision torchaudio --index-url https://download.py
 pip install -r requirements.txt
 ```
 
-If kep the same conda environement / python version, you will have as well to uninstall / reinstall *Sage Attention*, *Triton*, *Flash Attention* (if installed)  otherwise you will get some errors when launching the app since they were compiled for an earlier version of Pytorch.
+If kept the same conda environement / python version, you will have as well to uninstall / reinstall *Sage Attention*, *Triton*, *Flash Attention* (if installed) otherwise you will get some errors when launching the app since these libraries were compiled for an earlier version of Pytorch. Check the **[Installation Guide](docs/INSTALLATION.md)** -
 
 if you get some error messages related to git, you may try the following (beware this will overwrite local changes made to the source code of WanGP):
 ```bash

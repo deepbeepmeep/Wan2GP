@@ -3377,7 +3377,9 @@ def setup_prompt_enhancer(pipe, kwargs):
 
             prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained(fl.locate_folder("llama-joycaption-beta-one-hf-llava"))
         prompt_enhancer_llm_model.generation_config.pad_token = prompt_enhancer_llm_tokenizer.eos_token
-        prompt_enhancer_llm_model.generation_config.pad_token_id = prompt_enhancer_llm_model.generation_config.eos_token_id[0]
+        if prompt_enhancer_llm_model.generation_config.pad_token_id is None:
+            eos_token_id = prompt_enhancer_llm_model.generation_config.eos_token_id
+            prompt_enhancer_llm_model.generation_config.pad_token_id = eos_token_id [0] if isinstance(eos_token_id,list) else eos_token_id 
         prompt_enhancer_llm_model.eval()
         
         pipe["prompt_enhancer_llm_model"] = prompt_enhancer_llm_model

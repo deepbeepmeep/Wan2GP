@@ -208,7 +208,7 @@ pip install -r requirements.txt
 ```bash
 git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
-conda create -n wan2gp python=3.11.9
+conda create -n wan2gp python=3.11.14
 conda activate wan2gp
 pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
@@ -240,6 +240,8 @@ conda activate wan2gp
 pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
+
+If kep the same conda environement / python version, you will have as well to uninstall / reinstall *Sage Attention*, *Triton*, *Flash Attention* (if installed)  otherwise you will get some errors when launching the app since they were compiled for an earlier version of Pytorch.
 
 if you get some error messages related to git, you may try the following (beware this will overwrite local changes made to the source code of WanGP):
 ```bash

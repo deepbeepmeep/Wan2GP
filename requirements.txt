@@ -1,6 +1,6 @@
 # Core AI stack
 diffusers==0.36.0
-transformers==5.0.0 #4.53.1
+transformers==4.54.0 #4.53.1
 tokenizers>=0.20.3
 accelerate>=1.1.1
 tqdm
@@ -64,8 +64,8 @@ pydantic==2.10.6
 # Math & modeling
 torchdiffeq>=0.2.5
 tensordict>=0.6.1
-mmgp==3.7.2
-peft==0.18.1 # 0.15.0
+mmgp==3.7.3
+peft==0.17.0 # 0.15.0
 vector-quantize-pytorch
 matplotlib
 gguf==0.17.1

@@ -33,6 +33,24 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### February 1st 2026: WanGP v10.60, Upgrade Time !
+
+- **LTX 2 Base Tweaks**: new *Quality* features if you found the base model was too fast :
+   - New *Modality Guidance* should improve audio / video (lipsync...) according to *LTX2 team* (beware first *denoising phase* will be 50% slower when used that is if modality guidance> 1)
+   - *CFG star*, *Adaptive Project Guidance* should improve quality and better prompt adherence
+   - *Skip Layer Guidance*: skipping layer 29 during phase may or may not improve quality
+Note that these features are only triggered during first phase of denoising because second phase is distilled denoising no matter what (even on the non distilled model)
+
+
+- **Flux Klein 4B & 9B Base Models**: *Z Image* has its *base model* in WanGP, so it was fair that *Flux Klein* would have its base model too. Base Models require more steps (up 50) and guidance > 1 but are good starting points for finetunes
+
+The real novelty about this new release is that is has been tested and tuned to work with more recent versions of *Python, Pytorch & Cuda*.
+My end goal is to have everbody upgrade to **Python 3.11, Pytorch 2.10, Cuda 13/13.1**.
+Once we are all there it will be much easier to provide precompiled kernels for *Nunchaku* *NVPF4*, *Sage Attention*, *Flash Attention*, ...
+So please follow the *manual upgrade instructions below* (no Pinokio auto upgrade for the moment) and let me know on Discord if it works with all generations of GPUs (starting from RTX10xx to RTX50xx).
+You will find the kernels for this new setup in the **guides/INSTALLATION.md**.
+
+**Note that PyTorch 2.10 represents at last a decent upgrade, no memory leak when switching models (pytorch 2.8) and bad perfs / VRAM peaks with VAE decoding (pytorch 2.9).**
 
 ### January 29th 2026: WanGP v10.56, Music for your Hearts
 
@@ -176,13 +194,23 @@ Get started instantly with [Pinokio App](https://pinokio.computer/)\
 It is recommended to use in Pinokio the Community Scripts *wan2gp* or *wan2gp-amd* by **Morpheus** rather than the official Pinokio install.
 
 
-**Manual installation:**
+**Manual installation: (old python 3.10, to be deprecated)**
 ```bash
 git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
 conda create -n wan2gp python=3.10.9
 conda activate wan2gp
 pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+pip install -r requirements.txt
+```
+
+**Manual installation: (new python 3.11 setup)**
+```bash
+git clone https://github.com/deepbeepmeep/Wan2GP.git
+cd Wan2GP
+conda create -n wan2gp python=3.11.9
+conda activate wan2gp
+pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
 
@@ -193,12 +221,23 @@ python wgp.py
 
 First time using WanGP ? Just check the *Guides* tab, and you will find a selection of recommended models to use.
 
-**Update the application:**
+**Update the application (stay in the old pyton / pytorch version):**
 If using Pinokio use Pinokio to update otherwise:
 Get in the directory where WanGP is installed and:
 ```bash
 git pull
 conda activate wan2gp
+pip install -r requirements.txt
+```
+
+**Update the application (upgrade from python 3.10 to 3.11):**
+Get in the directory where WanGP is installed and:
+```bash
+git pull
+conda uninstall -n wan2gp --all   ### this will delete the old cuda environment but you could decide it too keep it and create a new conda env with a new name and switch between them
+conda create -n wan2gp python=3.11.9
+conda activate wan2gp
+pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
 

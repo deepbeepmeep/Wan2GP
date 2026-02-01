@@ -282,8 +282,6 @@ class model_factory:
                 except (TypeError, ValueError):
                     model_mode_int = None
             lanpaint_enabled = model_mode_int in (2, 3, 4, 5)
-            if flux2:
-                guide_scale = 1.0
             if self.guidance_max_phases < 1: guide_scale = 1
             if n_prompt is None or len(n_prompt) == 0: n_prompt = "low quality, ugly, unfinished, out of focus, deformed, disfigure, blurry, smudged, restricted palette, flat colors"
             nag_scale = bbargs.get("NAG_scale", 1.0)

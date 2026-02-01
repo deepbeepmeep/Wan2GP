@@ -130,7 +130,7 @@ pip install -r requirements.txt
 ## Installation for 50XX Only Python 3.11, PyTorch 2.10.0 Cuda 13. for NVFP4 optimized kernels
 #### Create Python 3.11 environment using Conda
 ```
-conda create -n wan2gp python=3.11.9
+conda create -n wan2gp python=3.11.14
 ```
 #### Windows Install PyTorch 2.10.0 with CUDA 13.0 for RTX 50XX Only
 ```

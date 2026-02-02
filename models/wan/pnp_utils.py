@@ -1,4 +1,5 @@
 import torch
+import copy
 from diffusers.utils.torch_utils import randn_tensor
 
 class PnPHandler:
@@ -98,3 +99,210 @@ class PnPHandler:
         # The reference code uses this formula. We should probably stick to it if we assume sigma is correct.
         
         return (1.0 - sigma) * buffer_latent + sigma * noise
+
+    def run_refinement_loop(self, 
+                            latents, 
+                            noise_pred, 
+                            current_sigma, 
+                            next_sigma, 
+                            m_steps, 
+                            denoise_func, 
+                            step_func, 
+                            clone_func=None, 
+                            restore_func=None, 
+                            generator=None, 
+                            device=None):
+        """
+        Executes the PnP refinement loop.
+        
+        Args:
+            latents: Current latents.
+            noise_pred: Initial noise prediction.
+            current_sigma: Current sigma (t/1000).
+            next_sigma: Next sigma (t_next/1000).
+            m_steps: Number of annealing steps.
+            denoise_func: Callable(latents) -> noise_pred.
+            step_func: Callable(noise_pred, latents) -> (latents_next, pred_original_sample). 
+                       Should handle scheduler step.
+            clone_func: Callable() -> scheduler_state (optional, for state restoration).
+            restore_func: Callable(scheduler_state) -> None (optional).
+            generator: Torch generator.
+            device: Torch device.
+            
+        Returns:
+            latents_next: The refined next latents.
+        """
+        
+        # Save initial state if needed
+        scheduler_state = None
+        if clone_func:
+            scheduler_state = clone_func()
+
+        # Step 0 (Initial)
+        latents_next_0, pred_original_sample_0 = step_func(noise_pred, latents)
+        
+        latents_next = self.process_step(
+            latents, noise_pred, current_sigma, next_sigma, 
+            latents_next=latents_next_0, pred_original_sample=pred_original_sample_0
+        )
+        
+        if self.certain_flag:
+            return latents_next
+
+        # Refinement Loop
+        for ii in range(1, m_steps):
+            if restore_func and scheduler_state is not None:
+                restore_func(scheduler_state)
+            
+            # Perturb
+            latents_perturbed = self.perturb_latents(
+                latents, self.buffer[-1][1], current_sigma, generator=generator, device=device
+            )
+            
+            # Denoise
+            n_pred = denoise_func(latents_perturbed)
+            
+            # Step
+            latents_next_loop, pred_original_sample_loop = step_func(n_pred, latents_perturbed)
+            
+            # Refine
+            latents_next = self.process_step(
+                latents_perturbed, n_pred, current_sigma, next_sigma,
+                latents_next=latents_next_loop, pred_original_sample=pred_original_sample_loop
+            )
+            
+            if self.certain_flag:
+                break
+                
+        return latents_next
+
+    def step(self, step_index, latents, noise_pred, context):
+        """
+        Processes a single generation step, deciding whether to perform PnP refinement
+        or a standard step based on the provided context.
+        """
+        # Unpack context
+        trans = context.get('trans')
+        gen_args = context.get('gen_args')
+        kwargs = context.get('kwargs')
+        t = context.get('t')
+        timesteps = context.get('timesteps')
+        sample_solver = context.get('sample_solver')
+        sample_scheduler = context.get('sample_scheduler')
+        scheduler_kwargs = context.get('scheduler_kwargs')
+        extended_input_dim = context.get('extended_input_dim')
+        extended_latents = context.get('extended_latents')
+        expand_shape = context.get('expand_shape')
+        target_shape = context.get('target_shape')
+        joint_pass = context.get('joint_pass')
+        any_guidance = context.get('any_guidance')
+        phantom = context.get('phantom')
+        fantasy = context.get('fantasy')
+        steadydancer = context.get('steadydancer')
+        multitalk = context.get('multitalk')
+        guide_scale = context.get('guide_scale')
+        seed_g = context.get('seed_g')
+        num_timesteps = context.get('self').num_timesteps if context.get('self') else 1000
+        
+        # Calculate sigma for PnP
+        current_sigma = t.item() / 1000.0
+        next_sigma = (0. if step_index == len(timesteps)-1 else timesteps[step_index+1].item()) / 1000.0
+        
+        m_steps = self.get_anneal_steps(step_index)
+        
+        # Euler DT calculation if needed
+        dt = None
+        if sample_solver == "euler":
+            dt_raw = timesteps[step_index] if step_index == len(timesteps)-1 else (timesteps[step_index] - timesteps[step_index + 1])
+            dt = dt_raw.item() / num_timesteps
+
+        if m_steps > 1 and not self.certain_flag:
+            # PnP logic
+            def denoise_func(latents_in):
+                if extended_input_dim > 0:
+                    l_in_func = torch.cat([latents_in, extended_latents.expand(*expand_shape)], dim=extended_input_dim)
+                else:
+                    l_in_func = latents_in
+                
+                if "x" in gen_args:
+                     if isinstance(gen_args["x"], list):
+                         gen_args["x"] = [l_in_func] * len(gen_args["x"])
+                
+                if joint_pass and any_guidance:
+                    ret_vals = trans(**gen_args, **kwargs)
+                else:
+                    size = len(gen_args["x"]) if any_guidance else 1
+                    ret_vals = [None] * size
+                    for x_id in range(size):
+                        sub_gen_args = {k : [v[x_id]] for k, v in gen_args.items() }
+                        ret_vals[x_id] = trans( **sub_gen_args, x_id= x_id , **kwargs)[0]
+                
+                if not any_guidance:
+                    n_pred_func = ret_vals[0]
+                else:
+                     if not (phantom or fantasy or steadydancer or multitalk):
+                         n_cond, n_uncond = ret_vals
+                         n_pred_func = n_uncond + guide_scale * (n_cond - n_uncond)
+                     else:
+                         n_pred_func = ret_vals[0]
+                return n_pred_func
+
+            def step_func(n_pred_in, latents_in):
+                if sample_solver == "euler":
+                     latents_next_out = latents_in - n_pred_in * dt
+                     pred_original_sample_out = latents_in - (t.item()/1000.0) * n_pred_in
+                else:
+                     nonlocal sample_scheduler
+                     step_out = sample_scheduler.step(n_pred_in[:, :, :target_shape[1]], t, latents_in, **scheduler_kwargs)
+                     latents_next_out = step_out.prev_sample
+                     if hasattr(step_out, 'pred_original_sample'):
+                         pred_original_sample_out = step_out.pred_original_sample
+                return latents_next_out, pred_original_sample_out
+
+            def clone_func():
+                if sample_solver != "euler":
+                    return copy.deepcopy(sample_scheduler)
+                return None
+
+            def restore_func(saved_state):
+                nonlocal sample_scheduler
+                if saved_state:
+                     sample_scheduler = copy.deepcopy(saved_state)
+
+            latents = self.run_refinement_loop(
+                latents=latents,
+                noise_pred=noise_pred,
+                current_sigma=current_sigma,
+                next_sigma=next_sigma,
+                m_steps=m_steps,
+                denoise_func=denoise_func,
+                step_func=step_func,
+                clone_func=clone_func,
+                restore_func=restore_func,
+                generator=seed_g,
+                device=latents.device
+            )
+        else:
+            # Standard logic
+            if sample_solver == "euler":
+                latents = latents - noise_pred * dt
+            else:
+                latents = sample_scheduler.step(
+                    noise_pred[:, :, :target_shape[1]],
+                    t,
+                    latents,
+                    **scheduler_kwargs)[0]
+        
+        return latents, sample_scheduler
+
+def create_pnp_handler(enable_self_refine, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage):
+    if not enable_self_refine:
+        return None
+    
+    # Default plan from paper/code
+    stochastic_plan = [
+        {"start": 1, "end": 5, "steps": 3},
+        {"start": 6, "end": 13, "steps": 1},
+    ]
+    from .pnp_utils import PnPHandler
+    return PnPHandler(stochastic_plan, ths_uncertainty=pnp_f_uncertainty, p_norm=pnp_p_norm, certain_percentage=pnp_certain_percentage)

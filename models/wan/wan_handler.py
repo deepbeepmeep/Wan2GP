@@ -277,6 +277,8 @@ class family_handler():
                             ("lcm + ltx", "lcm"), ]
         })
 
+        extra_model_def["self_refiner"] = base_model_type in ["t2v_2_2", "i2v_2_2", "i2v", "t2v", "flf2v_720p"]
+
         if i2v:
             extra_model_def["motion_amplitude"] = True
  
@@ -786,15 +788,6 @@ class family_handler():
         if ui_defaults.get("sample_solver", "") == "": 
             ui_defaults["sample_solver"] = "unipc"
         
-        if "enable_self_refine" not in ui_defaults:
-            ui_defaults["enable_self_refine"] = False
-        if "pnp_f_uncertainty" not in ui_defaults:
-            ui_defaults["pnp_f_uncertainty"] = 0.2
-        if "pnp_p_norm" not in ui_defaults:
-            ui_defaults["pnp_p_norm"] = 1
-        if "pnp_certain_percentage" not in ui_defaults:
-            ui_defaults["pnp_certain_percentage"] = 0.999
-
         if settings_version < 2.24:
             if (model_def.get("multiple_submodels", False) or ui_defaults.get("switch_threshold", 0) > 0) and ui_defaults.get("guidance_phases",0)<2:
                 ui_defaults["guidance_phases"] = 2
@@ -869,6 +862,12 @@ class family_handler():
                 "sliding_window_size": 81, 
                 "sliding_window_overlap" : 4,
             })
+
+        if model_def.get("self_refiner",False) and settings_version < 2.46:
+            ui_defaults["self_refiner_setting"] = 0
+            ui_defaults["self_refiner_plan"] = ""
+            # ui_defaults["self_refiner_f_uncertainty"] = 0.2
+            # ui_defaults["self_refiner_certain_percentage"] = 0.999
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):

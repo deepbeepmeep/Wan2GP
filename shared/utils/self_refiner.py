@@ -2,6 +2,47 @@ import torch
 import copy
 from diffusers.utils.torch_utils import randn_tensor
 
+def is_int_string(s: str) -> bool:
+    try:
+        int(s)
+        return True
+    except ValueError:
+        return False
+    
+def normalize_self_refiner_plan(plan_str):
+    entries = []
+    for chunk in plan_str.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" not in chunk:
+            return "", "Self-refine plan entries must be in 'start-end:steps' format."
+        range_part, steps_part = chunk.split(":", 1)
+        range_part = range_part.strip()
+        steps_part = steps_part.strip()
+        if not steps_part:
+            return "", "Self-refine plan entries must include a step count."
+        if "-" in range_part:
+            start_s, end_s = range_part.split("-", 1)
+        else:
+            start_s = end_s = range_part
+        start_s = start_s.strip()
+        if not is_int_string(start_s):
+            return "", "Self-refine plan start position must be an integer."
+        end_s = end_s.strip()
+        if not is_int_string(end_s):
+            return "", "Self-refine plan end position must be an integer."
+        if not is_int_string(steps_part):
+            return "", "Self-refine plan steps part must be an integer."
+        
+        entries.append({
+            "start": int(start_s),
+            "end": int(end_s),
+            "steps": int(steps_part),
+        })
+    plan = entries
+    return plan, ""
+
 class PnPHandler:
     def __init__(self, stochastic_plan, ths_uncertainty=0.0, p_norm=1, certain_percentage=0.999):
         self.stochastic_step_map = self._build_stochastic_step_map(stochastic_plan)
@@ -176,7 +217,7 @@ class PnPHandler:
                 
         return latents_next
 
-    def step(self, step_index, latents, noise_pred, context):
+    def step(self, step_index, latents, noise_pred, context, diablecfg):
         """
         Processes a single generation step, deciding whether to perform PnP refinement
         or a standard step based on the provided context.
@@ -196,10 +237,6 @@ class PnPHandler:
         target_shape = context.get('target_shape')
         joint_pass = context.get('joint_pass')
         any_guidance = context.get('any_guidance')
-        phantom = context.get('phantom')
-        fantasy = context.get('fantasy')
-        steadydancer = context.get('steadydancer')
-        multitalk = context.get('multitalk')
         guide_scale = context.get('guide_scale')
         seed_g = context.get('seed_g')
         num_timesteps = context.get('self').num_timesteps if context.get('self') else 1000
@@ -240,7 +277,7 @@ class PnPHandler:
                 if not any_guidance:
                     n_pred_func = ret_vals[0]
                 else:
-                     if not (phantom or fantasy or steadydancer or multitalk):
+                     if not diablecfg:
                          n_cond, n_uncond = ret_vals
                          n_pred_func = n_uncond + guide_scale * (n_cond - n_uncond)
                      else:
@@ -305,14 +342,14 @@ class PnPHandler:
         
         return latents, sample_scheduler
 
-def create_pnp_handler(enable_self_refine, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage):
-    if not enable_self_refine:
-        return None
-    
-    # Default plan from paper/code
-    stochastic_plan = [
-        {"start": 1, "end": 5, "steps": 3},
-        {"start": 6, "end": 13, "steps": 1},
-    ]
-    from .pnp_utils import PnPHandler
+def create_self_refiner_handler(pnp_plan, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage):
+    if len(pnp_plan):
+        stochastic_plan, error = normalize_self_refiner_plan(pnp_plan)
+    else:
+        # Default plan from paper/code
+        stochastic_plan = [
+            {"start": 1, "end": 5, "steps": 3},
+            {"start": 6, "end": 13, "steps": 1},
+        ]
+
     return PnPHandler(stochastic_plan, ths_uncertainty=pnp_f_uncertainty, p_norm=pnp_p_norm, certain_percentage=pnp_certain_percentage)

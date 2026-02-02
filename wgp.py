@@ -86,7 +86,7 @@ CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.2"
 WanGP_version = "10.56"
-settings_version = 2.44
+settings_version = 2.46
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -590,6 +590,8 @@ def validate_settings(state, model_type, single_prompt, inputs):
     video_guide_outpainting = inputs["video_guide_outpainting"]
     spatial_upsampling = inputs["spatial_upsampling"]
     motion_amplitude = inputs["motion_amplitude"]
+    self_refiner_setting = inputs["self_refiner_setting"]
+    self_refiner_plan = inputs["self_refiner_plan"]
     model_mode = inputs["model_mode"]
     medium = "Videos" if image_mode == 0 else "Images"
 
@@ -607,6 +609,12 @@ def validate_settings(state, model_type, single_prompt, inputs):
         model_mode = None
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
+    if self_refiner_setting != 0 and len(self_refiner_plan):
+        from shared.utils.self_refiner import normalize_self_refiner_plan 
+        _, error = normalize_self_refiner_plan(self_refiner_plan)
+        if len(error):
+            gr.Info(error)
+            return ret()
 
     if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
     if "vae" in spatial_upsampling:
@@ -4248,6 +4256,13 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if video_NAG_scale is not None and video_NAG_scale > 1: 
                 values += [video_NAG_scale]
                 labels += ["NAG Scale"]      
+            video_self_refiner_setting = configs.get("self_refiner_setting", 0)
+            if video_self_refiner_setting > 0:  
+                video_self_refiner_plan = configs.get('self_refiner_plan','')
+                if len(video_self_refiner_plan)==0: video_self_refiner_plan ='<default>'
+                # values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}', Uncertainty={configs.get('self_refiner_f_uncertainty',0.2)}, Certain Percentage='{configs.get('self_refiner_certain_percentage', 0.999)} "]
+                values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}'"]
+                labels += ["Self Refiner"]      
             video_apg_switch = configs.get("apg_switch", None)
             if video_apg_switch is not None and video_apg_switch != 0: 
                 values += ["on"]
@@ -5490,10 +5505,10 @@ def generate_video(
     exaggeration,
     temperature,
     top_k,
-    enable_self_refine,
-    pnp_f_uncertainty,
-    pnp_p_norm,
-    pnp_certain_percentage,
+    self_refiner_setting,
+    self_refiner_plan,
+    self_refiner_f_uncertainty,
+    self_refiner_certain_percentage,
     output_filename,
     state,
     model_type,
@@ -6356,10 +6371,10 @@ def generate_video(
                     temperature=temperature,
                     window_start_frame_no = window_start_frame,
                     input_video_strength = input_video_strength,
-                    enable_self_refine = enable_self_refine,
-                    pnp_f_uncertainty = pnp_f_uncertainty,
-                    pnp_p_norm = pnp_p_norm,
-                    pnp_certain_percentage = pnp_certain_percentage,
+                    self_refiner_setting = self_refiner_setting,
+                    self_refiner_plan=self_refiner_plan,
+                    self_refiner_f_uncertainty = self_refiner_f_uncertainty,
+                    self_refiner_certain_percentage = self_refiner_certain_percentage,
                     **extra_generate_kwargs,
                 )
             except Exception as e:
@@ -7672,6 +7687,10 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if not len(model_def.get("control_net_weight_alt_name", "")) >0:
         pop += ["control_net_weight_alt"]
 
+    if not model_def.get("self_refiner", False):
+        # pop += ["self_refiner_setting", "self_refiner_f_uncertainty", "self_refiner_plan", "self_refiner_certain_percentage"]
+        pop += ["self_refiner_setting", "self_refiner_plan"]
+
     if model_def.get("audio_scale_name", None) is None:
         pop += ["audio_scale"]
 
@@ -8380,10 +8399,10 @@ def save_inputs(
             exaggeration,
             temperature,
             top_k,
-            enable_self_refine,
-            pnp_f_uncertainty,
-            pnp_p_norm,
-            pnp_certain_percentage,
+            self_refiner_setting,
+            self_refiner_plan,            
+            # self_refiner_f_uncertainty,
+            # self_refiner_certain_percentage,
             output_filename,
             mode,
             state,
@@ -10096,20 +10115,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             gr.Markdown("<B>Experimental: Accelerate Motion (1: disabled, 1.15 recommended)")
                             motion_amplitude  = gr.Slider(1, 1.4, value=ui_get("motion_amplitude"), step=0.01, label="Motion Amplitude", visible = True, show_reset_button= False) 
 
-                        with gr.Column(visible = any_pnp) as pnp_col:
-                            gr.Markdown("<B>Self-Refining Video Sampling (PnP)</B>")
-                            enable_self_refine = gr.Checkbox(value=ui_get("enable_self_refine", False), label="Enable self-refining video sampling (slower, better consistency)")
-                            with gr.Row(visible=False) as pnp_settings_row: # Hide advanced settings by default or toggle visibility with checkbox
-                                pnp_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("pnp_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold")
-                                pnp_p_norm = gr.Slider(1, 2, value=ui_get("pnp_p_norm", 1), step=1, label="P-Norm (1 or 2)")
-                                pnp_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("pnp_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip")
+                        with gr.Column(visible = model_def.get("self_refiner", False)) as self_refiner_col:
+                            gr.Markdown("<B>Self-Refining Video Sampling (PnP) - should improve quality of Motion</B>")
+                            self_refiner_setting = gr.Dropdown( choices=[("Disabled", 0),("Enabled with P-Norm 1", 1), ("Enabled with P-Norm 2", 2), ], value=ui_get("self_refiner_setting", 0), scale = 1, label="Self Refiner", )
+                            self_refiner_plan = gr.Textbox( value=ui_get("self_refiner_plan", ""), label="P&P Plan (start-end:steps, comma-separated)", lines=1, placeholder="2-5:3,6-13:1" )
+                            # self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
+                            # self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
                             
-                            def toggle_pnp_settings(val):
-                                return gr.Row(visible=val)
-                            
-                            if not update_form:
-                                enable_self_refine.change(fn=toggle_pnp_settings, inputs=[enable_self_refine], outputs=[pnp_settings_row])
-
 
                 with gr.Tab("Sliding Window", visible= sliding_window_enabled and not image_outputs and not audio_only) as sliding_window_tab:
 
@@ -10371,7 +10383,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, top_k_row, number_frames_row, negative_prompt_row, chatter_row,
-                                      enable_self_refine, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage] +\
+                                      self_refiner_col]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

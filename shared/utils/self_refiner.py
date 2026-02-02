@@ -120,24 +120,14 @@ class PnPHandler:
             latents_next = certain_mask_float * self.buffer[-1][2] + (1.0 - certain_mask_float) * latents_next
             pred_original_sample = certain_mask_float * self.buffer[-1][1] + (1.0 - certain_mask_float) * pred_original_sample
             
-            # Pack for buffer
-            # we need to squeeze the mask back if we store it
             certain_mask_stored = certain_mask # keep bool
         else:
             certain_mask_stored = None
-
         self.buffer.append([certain_mask_stored, pred_original_sample, latents_next])
         return latents_next
 
     def perturb_latents(self, latents, buffer_latent, sigma, generator=None, device=None):
         noise = randn_tensor(latents.shape, generator=generator, device=device, dtype=latents.dtype)
-        # Re-noise: (1-sigma) * x0 + sigma * noise ?? 
-        # Ref code: latents = (1.0 - sigma) * buffer[-1][1] + sigma * noise
-        # This seems to assume x_t = (1-sigma)*x0 + sigma*noise? 
-        # Wait, Flow matching usually is x_t = t * x1 + (1-t) * x0. 
-        # If sigma is t, then x_sigma = sigma * x1 + (1-sigma) * x0.
-        # If we target noise (epsilon), it varies.
-        # The reference code uses this formula. We should probably stick to it if we assume sigma is correct.
         
         return (1.0 - sigma) * buffer_latent + sigma * noise
 
@@ -153,26 +143,6 @@ class PnPHandler:
                             restore_func=None, 
                             generator=None, 
                             device=None):
-        """
-        Executes the PnP refinement loop.
-        
-        Args:
-            latents: Current latents.
-            noise_pred: Initial noise prediction.
-            current_sigma: Current sigma (t/1000).
-            next_sigma: Next sigma (t_next/1000).
-            m_steps: Number of annealing steps.
-            denoise_func: Callable(latents) -> noise_pred.
-            step_func: Callable(noise_pred, latents) -> (latents_next, pred_original_sample). 
-                       Should handle scheduler step.
-            clone_func: Callable() -> scheduler_state (optional, for state restoration).
-            restore_func: Callable(scheduler_state) -> None (optional).
-            generator: Torch generator.
-            device: Torch device.
-            
-        Returns:
-            latents_next: The refined next latents.
-        """
         
         # Save initial state if needed
         scheduler_state = None
@@ -217,95 +187,46 @@ class PnPHandler:
                 
         return latents_next
 
-    def step(self, step_index, latents, noise_pred, context, diablecfg):
-        """
-        Processes a single generation step, deciding whether to perform PnP refinement
-        or a standard step based on the provided context.
-        """
-        # Unpack context
-        trans = context.get('trans')
-        gen_args = context.get('gen_args')
-        kwargs = context.get('kwargs')
-        t = context.get('t')
-        timesteps = context.get('timesteps')
-        sample_solver = context.get('sample_solver')
-        sample_scheduler = context.get('sample_scheduler')
-        scheduler_kwargs = context.get('scheduler_kwargs')
-        extended_input_dim = context.get('extended_input_dim')
-        extended_latents = context.get('extended_latents')
-        expand_shape = context.get('expand_shape')
-        target_shape = context.get('target_shape')
-        joint_pass = context.get('joint_pass')
-        any_guidance = context.get('any_guidance')
-        guide_scale = context.get('guide_scale')
-        seed_g = context.get('seed_g')
-        num_timesteps = context.get('self').num_timesteps if context.get('self') else 1000
-        
+    def step(self, step_index, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_func):
+        # Reset per denoising step to avoid blending with stale buffers from prior timesteps.
+        self.reset_buffer()
         # Calculate sigma for PnP
         current_sigma = t.item() / 1000.0
         next_sigma = (0. if step_index == len(timesteps)-1 else timesteps[step_index+1].item()) / 1000.0
         
         m_steps = self.get_anneal_steps(step_index)
-        
-        # Euler DT calculation if needed
-        dt = None
-        if sample_solver == "euler":
-            dt_raw = timesteps[step_index] if step_index == len(timesteps)-1 else (timesteps[step_index] - timesteps[step_index + 1])
-            dt = dt_raw.item() / num_timesteps
 
         if m_steps > 1 and not self.certain_flag:
-            # PnP logic
-            def denoise_func(latents_in):
-                if extended_input_dim > 0:
-                    l_in_func = torch.cat([latents_in, extended_latents.expand(*expand_shape)], dim=extended_input_dim)
-                else:
-                    l_in_func = latents_in
-                
-                if "x" in gen_args:
-                     if isinstance(gen_args["x"], list):
-                         gen_args["x"] = [l_in_func] * len(gen_args["x"])
-                
-                if joint_pass and any_guidance:
-                    ret_vals = trans(**gen_args, **kwargs)
-                else:
-                    size = len(gen_args["x"]) if any_guidance else 1
-                    ret_vals = [None] * size
-                    for x_id in range(size):
-                        sub_gen_args = {k : [v[x_id]] for k, v in gen_args.items() }
-                        ret_vals[x_id] = trans( **sub_gen_args, x_id= x_id , **kwargs)[0]
-                
-                if not any_guidance:
-                    n_pred_func = ret_vals[0]
-                else:
-                     if not diablecfg:
-                         n_cond, n_uncond = ret_vals
-                         n_pred_func = n_uncond + guide_scale * (n_cond - n_uncond)
-                     else:
-                         n_pred_func = ret_vals[0]
-                return n_pred_func
+
+            def _get_prev_sample(step_out):
+                if hasattr(step_out, "prev_sample"):
+                    return step_out.prev_sample
+                if isinstance(step_out, (tuple, list)):
+                    return step_out[0]
+                return step_out
+
+            def _get_pred_original_sample(step_out, latents_in, n_pred_sliced):
+                if hasattr(step_out, "pred_original_sample"):
+                    return step_out.pred_original_sample
+                t_val = t.item() if torch.is_tensor(t) else float(t)
+                return latents_in - (t_val / 1000.0) * n_pred_sliced
 
             def step_func(n_pred_in, latents_in):
                 # Correct slicing: 
                 # [:, :channels] slices Dimension 1
                 # [:, :, :frames] slices Dimension 2
                 n_pred_sliced = n_pred_in[:, :latents_in.shape[1], :target_shape[1]]
-                
-                if sample_solver == "euler":
-                     latents_next_out = latents_in - n_pred_sliced * dt
-                     pred_original_sample_out = latents_in - (t.item()/1000.0) * n_pred_sliced
-                else:
-                     nonlocal sample_scheduler
-                     step_out = sample_scheduler.step(n_pred_sliced, t, latents_in, **scheduler_kwargs)
-                     latents_next_out = step_out.prev_sample
-                     if hasattr(step_out, 'pred_original_sample'):
-                         pred_original_sample_out = step_out.pred_original_sample
-                     else:
-                         # Fallback for solvers like UniPC that might not return pred_original_sample
-                         pred_original_sample_out = latents_in - (t.item()/1000.0) * n_pred_sliced
+
+                nonlocal sample_scheduler
+                step_out = sample_scheduler.step(n_pred_sliced, t, latents_in, **scheduler_kwargs)
+                latents_next_out = _get_prev_sample(step_out)
+                pred_original_sample_out = _get_pred_original_sample(step_out, latents_in, n_pred_sliced)
                 return latents_next_out, pred_original_sample_out
 
             def clone_func():
-                if sample_solver != "euler":
+                if sample_scheduler is None:
+                    return None
+                if getattr(sample_scheduler, "is_stateful", True):
                     return copy.deepcopy(sample_scheduler)
                 return None
 
@@ -331,14 +252,13 @@ class PnPHandler:
             # Standard logic
             # Correct slicing: [:, :channels, :frames]
             n_pred_sliced = noise_pred[:, :latents.shape[1], :target_shape[1]]
-            if sample_solver == "euler":
-                latents = latents - n_pred_sliced * dt
+            step_out = sample_scheduler.step( n_pred_sliced, t, latents, **scheduler_kwargs)
+            if hasattr(step_out, "prev_sample"):
+                latents = step_out.prev_sample
+            elif isinstance(step_out, (tuple, list)):
+                latents = step_out[0]
             else:
-                latents = sample_scheduler.step(
-                    n_pred_sliced,
-                    t,
-                    latents,
-                    **scheduler_kwargs)[0]
+                latents = step_out
         
         return latents, sample_scheduler
 

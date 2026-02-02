@@ -4278,9 +4278,9 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_self_refiner_setting = configs.get("self_refiner_setting", 0)
             if video_self_refiner_setting > 0:  
                 video_self_refiner_plan = configs.get('self_refiner_plan','')
-                if len(video_self_refiner_plan)==0: video_self_refiner_plan ='<default>'
-                # values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}', Uncertainty={configs.get('self_refiner_f_uncertainty',0.2)}, Certain Percentage='{configs.get('self_refiner_certain_percentage', 0.999)} "]
-                values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}'"]
+                if len(video_self_refiner_plan)==0: video_self_refiner_plan ='default'
+                values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}', Uncertainty={configs.get('self_refiner_f_uncertainty',0.2)}, Certain Percentage='{configs.get('self_refiner_certain_percentage', 0.999)} "]
+                # values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}'"]
                 labels += ["Self Refiner"]      
             video_apg_switch = configs.get("apg_switch", None)
             if video_apg_switch is not None and video_apg_switch != 0: 
@@ -5524,8 +5524,8 @@ def generate_video(
     top_k,
     self_refiner_setting,
     self_refiner_plan,
-    # self_refiner_f_uncertainty,
-    # self_refiner_certain_percentage,
+    self_refiner_f_uncertainty,
+    self_refiner_certain_percentage,
     output_filename,
     state,
     model_type,
@@ -6391,8 +6391,8 @@ def generate_video(
                     input_video_strength = input_video_strength,
                     self_refiner_setting = self_refiner_setting,
                     self_refiner_plan=self_refiner_plan,
-                    # self_refiner_f_uncertainty = self_refiner_f_uncertainty,
-                    # self_refiner_certain_percentage = self_refiner_certain_percentage,
+                    self_refiner_f_uncertainty = self_refiner_f_uncertainty,
+                    self_refiner_certain_percentage = self_refiner_certain_percentage,
                     **extra_generate_kwargs,
                 )
             except Exception as e:
@@ -7706,8 +7706,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["control_net_weight_alt"]
 
     if not model_def.get("self_refiner", False):
-        # pop += ["self_refiner_setting", "self_refiner_f_uncertainty", "self_refiner_plan", "self_refiner_certain_percentage"]
-        pop += ["self_refiner_setting", "self_refiner_plan"]
+        pop += ["self_refiner_setting", "self_refiner_f_uncertainty", "self_refiner_plan", "self_refiner_certain_percentage"]
+        # pop += ["self_refiner_setting", "self_refiner_plan"]
 
     if model_def.get("audio_scale_name", None) is None:
         pop += ["audio_scale"]
@@ -8419,8 +8419,8 @@ def save_inputs(
             top_k,
             self_refiner_setting,
             self_refiner_plan,            
-            # self_refiner_f_uncertainty,
-            # self_refiner_certain_percentage,
+            self_refiner_f_uncertainty,
+            self_refiner_certain_percentage,
             output_filename,
             mode,
             state,
@@ -10137,8 +10137,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             gr.Markdown("<B>Self-Refining Video Sampling (PnP) - should improve quality of Motion</B>")
                             self_refiner_setting = gr.Dropdown( choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2), ], value=ui_get("self_refiner_setting", 0), scale = 1, label="Self Refiner", )
                             self_refiner_plan = gr.Textbox( value=ui_get("self_refiner_plan", ""), label="P&P Plan (start-end:steps, comma-separated)", lines=1, placeholder="2-5:3,6-13:1" )
-                            # self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
-                            # self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
+                            with gr.Row():
+                                self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.1), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
+                                self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
                             
 
                 with gr.Tab("Sliding Window", visible= sliding_window_enabled and not image_outputs and not audio_only) as sliding_window_tab:

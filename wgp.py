@@ -5524,8 +5524,8 @@ def generate_video(
     top_k,
     self_refiner_setting,
     self_refiner_plan,
-    self_refiner_f_uncertainty,
-    self_refiner_certain_percentage,
+    # self_refiner_f_uncertainty,
+    # self_refiner_certain_percentage,
     output_filename,
     state,
     model_type,
@@ -6391,8 +6391,8 @@ def generate_video(
                     input_video_strength = input_video_strength,
                     self_refiner_setting = self_refiner_setting,
                     self_refiner_plan=self_refiner_plan,
-                    self_refiner_f_uncertainty = self_refiner_f_uncertainty,
-                    self_refiner_certain_percentage = self_refiner_certain_percentage,
+                    # self_refiner_f_uncertainty = self_refiner_f_uncertainty,
+                    # self_refiner_certain_percentage = self_refiner_certain_percentage,
                     **extra_generate_kwargs,
                 )
             except Exception as e:

@@ -150,12 +150,15 @@ pip install -r requirements.txt
 ```
 ## Optional
 
-### Flash Attention
+### Flash Attention Windows
 
-#### Windows
+#### Pytorch 2.7.1
 ```
 pip install https://github.com/Redtash1/Flash_Attention_2_Windows/releases/download/v2.7.0-v2.7.4/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl
 ```
+#### Pytorch 2.10 
+https://github.com/deepbeepmeep/kernels/releases/download/Flash2/flash_attn-2.8.3-cp311-cp311-win_amd64.whl
+
 
 
 # Linux Installation 

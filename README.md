@@ -237,25 +237,28 @@ pip install -r requirements.txt
 ```
 
 **Update the application (upgrade from python 3.10 to 3.11):**
+I recommend creating a new conda env for the Python 3.11 to avoid bad surprises. Let's call the new conda env *wangp* (instead of *wan2gp* the old name of this project)
 Get in the directory where WanGP is installed and:
 ```bash
 git pull
-conda uninstall -n wan2gp --all   ### this will delete the old cuda environment but you could decide it too keep it and create a new conda env with a new name and switch between them
-conda create -n wan2gp python=3.11.9
-conda activate wan2gp
+conda create -n wangp python=3.11.9
+conda activate wangp
 pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
 
-If kept the same conda environement / python version, you will have as well to uninstall / reinstall *Sage Attention*, *Triton*, *Flash Attention* (if installed) otherwise you will get some errors when launching the app since these libraries were compiled for an earlier version of Pytorch. Check the **[Installation Guide](docs/INSTALLATION.md)** -
+Once you are done you will have to reinstall *Sage Attention*, *Triton*, *Flash Attention* (if installed). Check the **[Installation Guide](docs/INSTALLATION.md)** -
 
 if you get some error messages related to git, you may try the following (beware this will overwrite local changes made to the source code of WanGP):
 ```bash
 git fetch origin && git reset --hard origin/main
-conda activate wan2gp
+conda activate wangp
 pip install -r requirements.txt
 ```
-
+When you have the confirmation it works well you can then delete the old conda env:
+```bash
+conda uninstall -n wan2gp --all  
+```
 **Run headless (batch processing):**
 
 Process saved queues without launching the web UI:

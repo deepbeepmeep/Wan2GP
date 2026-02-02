@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### February 1st 2026: WanGP v10.60, Upgrade Time !
+### February 1st 2026: WanGP v10.61, Upgrade Time !
 
 - **LTX 2 Base Tweaks**: new *Quality* features if you found the base model was too fast :
    - New *Modality Guidance* should improve audio / video (lipsync...) according to *LTX2 team* (beware first *denoising phase* will be 50% slower when used that is if modality guidance> 1)
@@ -47,10 +47,16 @@ Note that these features are only triggered during first phase of denoising beca
 The real novelty about this new release is that is has been tested and tuned to work with more recent versions of *Python, Pytorch & Cuda*.
 My end goal is to have everbody upgrade to **Python 3.11, Pytorch 2.10, Cuda 13/13.1**.
 Once we are all there it will be much easier to provide precompiled kernels for *Nunchaku* *NVPF4*, *Sage Attention*, *Flash Attention*, ...
-So please follow the *manual upgrade instructions below* (no Pinokio auto upgrade for the moment) and let me know on Discord if it works with all generations of GPUs (starting from RTX10xx to RTX50xx).
+So please follow the *manual upgrade instructions below* (no Pinokio auto upgrade for the moment) and let me know on Discord if it works with all generations of GPUs (starting from GTX10xx to RTX50xx).
 You will find the kernels for this new setup in the **guides/INSTALLATION.md**.
 
+- **Wan Motion Refiner**: You will have to thank **Steve Jabz* (*Tophness*) for this one as he has been a big sponsor of the *Self Refiner* and did some extensive study to show me its beauty. The *Self Refiner* should improve the quality of the motion (find it in the *Quality Tab*). It relies on a *Refiner Plan* which indicate which steps should be refined for instance: "2-5:3" (default plan suits well for *light2xv* 4 steps) means steps 2-3 will be refined 3 times (that is 3 denoising attempts will be made to improve each of them, so if the self refiner is used the gen will be up to 3x slower). For the moment the *Self Refiner* is enabled only on Wan t2v & i2v. If you are happy with it, we will support more models.
+
+
 **Note that PyTorch 2.10 represents at last a decent upgrade, no memory leak when switching models (pytorch 2.8) and bad perfs / VRAM peaks with VAE decoding (pytorch 2.9).**
+
+*Update*: It seems GTX10xx doesnt support Cuda 13.0. Dont't worry I will keep WanGP compatibility with Pytorch 2.7.1 / Cuda 12.8.\
+*Update 10.61*: added Self Refiner
 
 ### January 29th 2026: WanGP v10.56, Music for your Hearts
 

@@ -2,7 +2,6 @@
 import gc
 import logging
 import math
-import copy
 import os
 import random
 import sys

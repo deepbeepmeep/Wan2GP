@@ -248,15 +248,23 @@ class PnPHandler:
                 return n_pred_func
 
             def step_func(n_pred_in, latents_in):
+                # Correct slicing: 
+                # [:, :channels] slices Dimension 1
+                # [:, :, :frames] slices Dimension 2
+                n_pred_sliced = n_pred_in[:, :latents_in.shape[1], :target_shape[1]]
+                
                 if sample_solver == "euler":
-                     latents_next_out = latents_in - n_pred_in * dt
-                     pred_original_sample_out = latents_in - (t.item()/1000.0) * n_pred_in
+                     latents_next_out = latents_in - n_pred_sliced * dt
+                     pred_original_sample_out = latents_in - (t.item()/1000.0) * n_pred_sliced
                 else:
                      nonlocal sample_scheduler
-                     step_out = sample_scheduler.step(n_pred_in[:, :, :target_shape[1]], t, latents_in, **scheduler_kwargs)
+                     step_out = sample_scheduler.step(n_pred_sliced, t, latents_in, **scheduler_kwargs)
                      latents_next_out = step_out.prev_sample
                      if hasattr(step_out, 'pred_original_sample'):
                          pred_original_sample_out = step_out.pred_original_sample
+                     else:
+                         # Fallback for solvers like UniPC that might not return pred_original_sample
+                         pred_original_sample_out = latents_in - (t.item()/1000.0) * n_pred_sliced
                 return latents_next_out, pred_original_sample_out
 
             def clone_func():
@@ -284,11 +292,13 @@ class PnPHandler:
             )
         else:
             # Standard logic
+            # Correct slicing: [:, :channels, :frames]
+            n_pred_sliced = noise_pred[:, :latents.shape[1], :target_shape[1]]
             if sample_solver == "euler":
-                latents = latents - noise_pred * dt
+                latents = latents - n_pred_sliced * dt
             else:
                 latents = sample_scheduler.step(
-                    noise_pred[:, :, :target_shape[1]],
+                    n_pred_sliced,
                     t,
                     latents,
                     **scheduler_kwargs)[0]

@@ -320,7 +320,7 @@ class RectifiedFlowScheduler(SchedulerMixin, ConfigMixin, TimestepShifter):
         """
         Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion
         process from the learned model outputs (most often the predicted noise).
-        z_{t_1} = z_t - \Delta_t * v
+        z_{t_1} = z_t - \\Delta_t * v
         The method finds the next timestep that is lower than the input timestep(s) and denoises the latents
         to that level. The input timestep(s) are not required to be one of the predefined timesteps.
 

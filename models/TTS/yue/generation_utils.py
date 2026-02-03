@@ -30,16 +30,25 @@ from transformers.cache_utils import (
     Cache,
     DynamicCache,
     EncoderDecoderCache,
-    OffloadedCache,
-    QuantizedCacheConfig,
     StaticCache,
 )
+try:
+    from transformers.cache_utils import QuantizedCacheConfig
+except ImportError:
+    QuantizedCacheConfig = None
+try:
+    from transformers.cache_utils import OffloadedCache
+except ImportError:
+    OffloadedCache = None
 from transformers.configuration_utils import PretrainedConfig
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.integrations.fsdp import is_fsdp_managed_module
 from transformers.modeling_outputs import CausalLMOutputWithPast, Seq2SeqLMOutput
 from transformers.pytorch_utils import isin_mps_friendly
-from transformers.tokenization_utils import ExtensionsTrie
+try:
+    from transformers.tokenization_utils import ExtensionsTrie
+except ImportError:
+    from transformers.tokenization_python import ExtensionsTrie
 from transformers.utils import (
     ModelOutput,
     is_accelerate_available,
@@ -48,24 +57,45 @@ from transformers.utils import (
     is_torchdynamo_compiling,
     logging,
 )
-from transformers.generation.beam_constraints import DisjunctiveConstraint, PhrasalConstraint
-from transformers.generation.beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
-from transformers.generation.candidate_generator import (
-    AssistedCandidateGenerator,
-    AssistedCandidateGeneratorDifferentTokenizers,
-    CandidateGenerator,
-    EarlyExitCandidateGenerator,
-    PromptLookupCandidateGenerator,
-    _crop_past_key_values,
-    _prepare_attention_mask,
-    _prepare_token_type_ids,
-)
-from transformers.generation.configuration_utils import (
-    NEED_SETUP_CACHE_CLASSES_MAPPING,
-    QUANT_BACKEND_CLASSES_MAPPING,
-    GenerationConfig,
-    GenerationMode,
-)
+try:
+    from transformers.generation.beam_constraints import DisjunctiveConstraint, PhrasalConstraint
+    from transformers.generation.beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
+except ModuleNotFoundError:
+    from .beam_constraints import DisjunctiveConstraint, PhrasalConstraint
+    from .beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
+try:
+    from transformers.generation.candidate_generator import (
+        AssistedCandidateGenerator,
+        AssistedCandidateGeneratorDifferentTokenizers,
+        CandidateGenerator,
+        EarlyExitCandidateGenerator,
+        PromptLookupCandidateGenerator,
+        _crop_past_key_values,
+        _prepare_attention_mask,
+        _prepare_token_type_ids,
+    )
+except ImportError:
+    from .candidate_generator import (
+        AssistedCandidateGenerator,
+        AssistedCandidateGeneratorDifferentTokenizers,
+        CandidateGenerator,
+        EarlyExitCandidateGenerator,
+        PromptLookupCandidateGenerator,
+        _crop_past_key_values,
+        _prepare_attention_mask,
+        _prepare_token_type_ids,
+    )
+try:
+    from transformers.generation.configuration_utils import (
+        NEED_SETUP_CACHE_CLASSES_MAPPING,
+        QUANT_BACKEND_CLASSES_MAPPING,
+        GenerationConfig,
+        GenerationMode,
+    )
+except ImportError:
+    from transformers.generation.configuration_utils import GenerationConfig, GenerationMode
+    NEED_SETUP_CACHE_CLASSES_MAPPING = {}
+    QUANT_BACKEND_CLASSES_MAPPING = {}
 from transformers.generation.logits_process import (
     EncoderNoRepeatNGramLogitsProcessor,
     EncoderRepetitionPenaltyLogitsProcessor,
@@ -1783,27 +1813,49 @@ class GenerationMixin:
                         "cache, please open an issue and tag @zucchini-nlp."
                     )
 
-                cache_config = (
-                    generation_config.cache_config
-                    if generation_config.cache_config is not None
-                    else QuantizedCacheConfig()
-                )
-                cache_class = QUANT_BACKEND_CLASSES_MAPPING[cache_config.backend]
-
-                if cache_config.backend == "quanto" and not is_optimum_quanto_available():
-                    raise ImportError(
-                        "You need to install optimum-quanto in order to use KV cache quantization with optimum-quanto backend. "
-                        "Please install it via  with `pip install optimum-quanto`"
+                if QuantizedCacheConfig is None:
+                    warnings.warn(
+                        "QuantizedCacheConfig is not available in this transformers build; falling back to DynamicCache.",
+                        UserWarning,
                     )
-                elif cache_config.backend == "HQQ" and not is_hqq_available():
-                    raise ImportError(
-                        "You need to install `HQQ` in order to use KV cache quantization with HQQ backend. "
-                        "Please install it via  with `pip install hqq`"
+                    model_kwargs[cache_name] = (
+                        DynamicCache()
+                        if not requires_cross_attention_cache
+                        else EncoderDecoderCache(DynamicCache(), DynamicCache())
                     )
+                else:
+                    cache_config = (
+                        generation_config.cache_config
+                        if generation_config.cache_config is not None
+                        else QuantizedCacheConfig()
+                    )
+                    cache_class = QUANT_BACKEND_CLASSES_MAPPING[cache_config.backend]
 
-                model_kwargs[cache_name] = cache_class(cache_config)
+                    if cache_config.backend == "quanto" and not is_optimum_quanto_available():
+                        raise ImportError(
+                            "You need to install optimum-quanto in order to use KV cache quantization with optimum-quanto backend. "
+                            "Please install it via  with `pip install optimum-quanto`"
+                        )
+                    elif cache_config.backend == "HQQ" and not is_hqq_available():
+                        raise ImportError(
+                            "You need to install `HQQ` in order to use KV cache quantization with HQQ backend. "
+                            "Please install it via  with `pip install hqq`"
+                        )
+
+                    model_kwargs[cache_name] = cache_class(cache_config)
             elif generation_config.cache_implementation == "offloaded":
-                model_kwargs[cache_name] = OffloadedCache()
+                if OffloadedCache is None:
+                    warnings.warn(
+                        "OffloadedCache is not available in this transformers build; falling back to DynamicCache.",
+                        UserWarning,
+                    )
+                    model_kwargs[cache_name] = (
+                        DynamicCache()
+                        if not requires_cross_attention_cache
+                        else EncoderDecoderCache(DynamicCache(), DynamicCache())
+                    )
+                else:
+                    model_kwargs[cache_name] = OffloadedCache()
 
         # Use DynamicCache() instance by default. This will avoid back and forth from legacy format that
         # keeps copying the cache thus using much more memory

@@ -1,6 +1,6 @@
 # Core AI stack
-diffusers==0.34.0
-transformers==4.53.1
+diffusers==0.36.0
+transformers==4.54.0 #4.53.1
 tokenizers>=0.20.3
 accelerate>=1.1.1
 tqdm
@@ -25,6 +25,7 @@ librosa==0.11.0
 speechbrain==1.0.3
 audio-separator==0.36.1
 pyannote.audio==3.3.2
+torchcodec
 
 # UI & interaction
 gradio==5.29.0
@@ -42,7 +43,9 @@ rembg[gpu]==2.0.65
 onnxruntime-gpu==1.22
 decord
 timm
-insightface @ https://github.com/deepbeepmeep/insightface/raw/refs/heads/master/wheels/insightface-0.7.3-cp310-cp310-win_amd64.whl ; sys_platform == "win32" and python_version == "3.10"
+insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insightface/insightface-0.7.3-cp310-cp310-win_amd64.whl ; sys_platform == "win32" and python_version == "3.10"
+insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insightface/insightface-0.7.3-cp311-cp311-win_amd64.whl ; sys_platform == "win32" and python_version == "3.11"
+insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insightface/insightface-0.7.3-cp312-cp312-win_amd64.whl ; sys_platform == "win32" and python_version == "3.12"
 insightface==0.7.3 ; sys_platform == "linux"
 facexlib==0.3.0
 taichi
@@ -61,8 +64,8 @@ pydantic==2.10.6
 # Math & modeling
 torchdiffeq>=0.2.5
 tensordict>=0.6.1
-mmgp==3.7.2
-peft==0.15.0
+mmgp==3.7.3
+peft==0.17.0 # 0.15.0
 vector-quantize-pytorch
 matplotlib
 gguf==0.17.1
@@ -80,5 +83,3 @@ stringzilla==4.0.14
 # transformers==4.46.3  # for llamallava pre-patch
 # rembg==2.0.65         # non-GPU fallback
 # huggingface_hub[hf_xet]  # slows down everything
-# num2words
-# spacy

@@ -102,6 +102,7 @@ class DistilledPipeline:
         num_frames: int,
         frame_rate: float,
         images: list[tuple[str, int, float]],
+        alt_guidance_scale: float = 1.0,
         video_conditioning: list[tuple[str, float]] | None = None,
         latent_conditioning_stage2: torch.Tensor | None = None,
         tiling_config: TilingConfig | None = None,
@@ -116,6 +117,7 @@ class DistilledPipeline:
         return_latent_slice: slice | None = None,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
+        alt_guidance_scale = 1.0
 
         generator = torch.Generator(device=self.device).manual_seed(seed)
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
@@ -179,12 +181,14 @@ class DistilledPipeline:
                     video_context=video_context,
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
+                    alt_guidance_scale=alt_guidance_scale,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
                 pass_no=pass_no,
+                transformer=transformer,
             )
 
         stage_1_output_shape = VideoPixelShape(

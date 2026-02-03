@@ -22,9 +22,17 @@ import math
 from shared.utils import files_locator as fl 
 
 def custom_init(device, wav2vec):    
-    audio_encoder = Wav2Vec2Model.from_pretrained(wav2vec, local_files_only=True).to(device)
+    from mmgp import offload
+    wav2vec_folder = wav2vec 
+    audio_encoder = offload.fast_load_transformers_model(
+        os.path.join(wav2vec_folder, "pytorch_model.bin"),
+        modelClass=Wav2Vec2Model,
+        defaultConfigPath=os.path.join(wav2vec_folder, "config.json"),
+    ).to(device)
     audio_encoder.feature_extractor._freeze_parameters()
-    wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec, local_files_only=True)
+    wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+        wav2vec_folder, local_files_only=True
+    )
     return wav2vec_feature_extractor, audio_encoder
 
 def loudness_norm(audio_array, sr=16000, lufs=-23):

@@ -127,6 +127,15 @@ class family_handler:
                     "no_negative_prompt": True,
                 }
             )
+        else:
+            extra_model_def.update(
+                {
+                    "adaptive_projected_guidance": True,
+                    "cfg_star": True,
+                    "skip_layer_guidance": True,
+                    "alt_guidance": "Modality Guidance",
+                }
+            )
         extra_model_def["guidance_max_phases"] = 2
         extra_model_def["visible_phases"] = 0 if distilled else 1
         extra_model_def["lock_guidance_phases"] = True
@@ -265,6 +274,15 @@ class family_handler:
                 }
             )
 
+        if settings_version < 2.45:
+            ui_defaults.update(
+                {
+                    "alt_guidance_scale": 1.0,
+                    "slg_layers": [29],
+                }
+            )
+                
+                
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update(
@@ -274,9 +292,12 @@ class family_handler:
                 "denoising_strength": 1.0,
                 "masking_strength": 0,
                 "audio_prompt_type": "",
-            }
+                "alt_guidance_scale": 1.0,
+                "slg_layers": [29],
+	            }
         )
         ui_defaults.setdefault("audio_scale", 1.0)
+        ui_defaults.setdefault("alt_guidance_scale", 1.0)
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
         if pipeline_kind != "distilled":
             ui_defaults.setdefault("guidance_phases", 2)

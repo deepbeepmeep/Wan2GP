@@ -42,7 +42,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("generate_header")
         self.request_global("generate_dropdown_model_list")
         self.request_global("get_unique_id")
-        self.request_global("enhancer_offloadobj")
+        self.request_global("reset_prompt_enhancer")
 
         self.request_component("header")
         self.request_component("model_family")
@@ -176,7 +176,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
                 with gr.Tab("Extensions"):
                     with gr.Group():
-                        self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 + LLama 3.2", 1), ("Florence 2 + Llama Joy (uncensored)", 2)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires 8-14GB extra download)")
+                        self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1), ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires 8-14GB extra download)")
                         self.enhancer_mode_choice = gr.Dropdown(choices=[("Automatic on Generation", 0), ("On-Demand Button Only", 1)], value=self.server_config.get("enhancer_mode", 0), label="Prompt Enhancer Usage")
                     with gr.Row():
                         self.prompt_enhancer_temperature_choice = gr.Slider(
@@ -434,13 +434,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.server_config.update(new_server_config)
 
         if "enhancer_enabled" in changes or "enhancer_mode" in changes:
-            self.set_global("prompt_enhancer_image_caption_model", None)
-            self.set_global("prompt_enhancer_image_caption_processor", None)
-            self.set_global("prompt_enhancer_llm_model", None)
-            self.set_global("prompt_enhancer_llm_tokenizer", None)
-            if self.enhancer_offloadobj:
-                self.enhancer_offloadobj.release()
-                self.set_global("enhancer_offloadobj", None)
+            self.reset_prompt_enhancer()
 
         model_type = state["model_type"]
         

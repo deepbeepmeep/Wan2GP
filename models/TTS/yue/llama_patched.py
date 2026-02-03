@@ -25,7 +25,10 @@ from torch import nn
 
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache, StaticCache
-from .generation_utils import GenerationMixin
+try:
+    from .generation_utils import GenerationMixin
+except Exception:
+    from transformers.generation.utils import GenerationMixin
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_outputs import (
@@ -39,14 +42,28 @@ from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
-from transformers.utils import (
-    LossKwargs,
-    add_code_sample_docstrings,
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
-    logging,
-    replace_return_docstrings,
-)
+try:
+    from transformers.utils import (
+        LossKwargs,
+        add_code_sample_docstrings,
+        add_start_docstrings,
+        add_start_docstrings_to_model_forward,
+        logging,
+        replace_return_docstrings,
+    )
+except ImportError:
+    from transformers.utils import (
+        add_code_sample_docstrings,
+        add_start_docstrings,
+        add_start_docstrings_to_model_forward,
+        logging,
+        replace_return_docstrings,
+    )
+
+    from typing import TypedDict
+
+    class LossKwargs(TypedDict, total=False):
+        pass
 from transformers.models.llama.configuration_llama import LlamaConfig
 
 
@@ -64,6 +81,12 @@ logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "meta-llama/Llama-2-7b-hf"
 _CONFIG_FOR_DOC = "LlamaConfig"
+
+try:
+    from transformers.modeling_utils import PreTrainedModel as _HFPreTrainedModel
+    _USES_TIED_WEIGHTS_MAPPING = hasattr(_HFPreTrainedModel, "get_expanded_tied_weights_keys")
+except Exception:
+    _USES_TIED_WEIGHTS_MAPPING = False
 
 
 class LlamaRMSNorm(nn.Module):
@@ -870,7 +893,10 @@ class KwargsForCausalLM(FlashAttentionKwargs, LossKwargs): ...
 
 
 class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
-    _tied_weights_keys = ["lm_head.weight"]
+    if _USES_TIED_WEIGHTS_MAPPING:
+        _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    else:
+        _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
 
     def __init__(self, config):

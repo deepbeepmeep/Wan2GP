@@ -84,9 +84,9 @@ AUTOSAVE_PATH = AUTOSAVE_FILENAME
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.7.2"
-WanGP_version = "10.56"
-settings_version = 2.44
+target_mmgp_version = "3.7.3"
+WanGP_version = "10.61"
+settings_version = 2.47
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -117,7 +117,7 @@ quant_router.unregister_handler(".fp8_quanto_bridge")
 for handler in _HANDLER_MODULES:
     quant_router.register_handler(handler)
 from shared.qtypes import gguf as gguf_handler
-offload.register_file_extension("gguf", gguf_handler)
+quant_router.register_file_extension("gguf", gguf_handler)
 
 # from mmgp import quanto_int8_inject 
 
@@ -590,6 +590,8 @@ def validate_settings(state, model_type, single_prompt, inputs):
     video_guide_outpainting = inputs["video_guide_outpainting"]
     spatial_upsampling = inputs["spatial_upsampling"]
     motion_amplitude = inputs["motion_amplitude"]
+    self_refiner_setting = inputs["self_refiner_setting"]
+    self_refiner_plan = inputs["self_refiner_plan"]
     model_mode = inputs["model_mode"]
     medium = "Videos" if image_mode == 0 else "Images"
 
@@ -607,6 +609,12 @@ def validate_settings(state, model_type, single_prompt, inputs):
         model_mode = None
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
+    if self_refiner_setting != 0 and len(self_refiner_plan):
+        from shared.utils.self_refiner import normalize_self_refiner_plan 
+        _, error = normalize_self_refiner_plan(self_refiner_plan)
+        if len(error):
+            gr.Info(error)
+            return ret()
 
     if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
     if "vae" in spatial_upsampling:
@@ -2273,13 +2281,6 @@ for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion
         print(f"Removing old version of model '{path}'. A new version of this model will be downloaded next time you use it.")
         os.remove( fl.locate_file(path))
 
-for f, s in [(fl.locate_file("Florence2/modeling_florence2.py", error_if_none= False), 127287)]:
-    try:
-        if os.path.isfile(f) and os.path.getsize(f) == s:
-            print(f"Removing old version of model '{f}'. A new version of this model will be downloaded next time you use it.")
-            os.remove(f)
-    except: pass
-
 models_def = {}
 
 
@@ -3069,7 +3070,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
             enhancer_def = {
                 "repoId" : "DeepBeepMeep/LTX_Video",
                 "sourceFolderList" : [ "Florence2", "Llama3_2"  ],
-                "fileList" : [ ["config.json", "configuration_florence2.py", "model.safetensors", "modeling_florence2.py", "preprocessor_config.json", "processing_florence2.py", "tokenizer.json", "tokenizer_config.json"],["config.json", "generation_config.json", "Llama3_2_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]  ]
+                "fileList" : [ ["config.json", "configuration_florence2.py", "model.safetensors", "preprocessor_config.json", "tokenizer.json", "tokenizer_config.json"],["config.json", "generation_config.json", "Llama3_2_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]  ]
             }
             process_files_def(**enhancer_def)
 
@@ -3077,7 +3078,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
             enhancer_def = {
                 "repoId" : "DeepBeepMeep/LTX_Video",
                 "sourceFolderList" : [ "Florence2", "llama-joycaption-beta-one-hf-llava"  ],
-                "fileList" : [ ["config.json", "configuration_florence2.py", "model.safetensors", "modeling_florence2.py", "preprocessor_config.json", "processing_florence2.py", "tokenizer.json", "tokenizer_config.json"],["config.json", "llama_joycaption_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]  ]
+                "fileList" : [ ["config.json", "configuration_florence2.py", "model.safetensors", "preprocessor_config.json", "tokenizer.json", "tokenizer_config.json"],["config.json", "llama_config.json", "llama_joycaption_quanto_bf16_int8.safetensors", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"]  ]
             }
             process_files_def(**enhancer_def)
 
@@ -3327,8 +3328,16 @@ def init_pipe(pipe, kwargs, profile):
 
     return mmgp_profile
 
+reset_prompt_enhancer_requested = False
 def reset_prompt_enhancer():
-    global prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer, enhancer_offloadobj
+    global reset_prompt_enhancer_requested
+    reset_prompt_enhancer_requested = True
+
+def reset_prompt_enhancer_if_requested():
+    global reset_prompt_enhancer_requested, prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer, enhancer_offloadobj
+    if not reset_prompt_enhancer_requested:
+        return
+    reset_prompt_enhancer_requested = False
     prompt_enhancer_image_caption_model = None
     prompt_enhancer_image_caption_processor = None
     prompt_enhancer_llm_model = None
@@ -3341,30 +3350,48 @@ def setup_prompt_enhancer(pipe, kwargs):
     global prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
     model_no = server_config.get("enhancer_enabled", 0) 
     if model_no != 0:
-        from transformers import ( AutoModelForCausalLM, AutoProcessor, AutoTokenizer, LlamaForCausalLM )
-        prompt_enhancer_image_caption_model = AutoModelForCausalLM.from_pretrained(fl.locate_folder("Florence2"), trust_remote_code=True)
-        prompt_enhancer_image_caption_processor = AutoProcessor.from_pretrained(fl.locate_folder("Florence2"), trust_remote_code=True)
+        from shared.prompt_enhancer import load_florence2
+        from transformers import AutoTokenizer
+        prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor = load_florence2(
+            fl.locate_folder("Florence2"),
+            attn_implementation="sdpa",
+        )
         pipe["prompt_enhancer_image_caption_model"] = prompt_enhancer_image_caption_model
         prompt_enhancer_image_caption_model._model_dtype = torch.float
-        # def preprocess_sd(sd, map):
-        #     new_sd ={}
-        #     for k, v in sd.items():
-        #         k = "model." + k.replace(".model.", ".")
-        #         if "lm_head.weight" in k: k = "lm_head.weight"
-        #         new_sd[k] = v
-        #     return new_sd, map
-        # prompt_enhancer_llm_model = offload.fast_load_transformers_model("c:/temp/joy/model-00001-of-00004.safetensors", modelClass= LlavaForConditionalGeneration, defaultConfigPath="ckpts/llama-joycaption-beta-one-hf-llava/config.json", preprocess_sd=preprocess_sd)
-        # offload.save_model(prompt_enhancer_llm_model, "joy_llava_quanto_int8.safetensors", do_quantize= True)
+        prompt_enhancer_image_caption_model.eval()
 
         if model_no == 1:
             budget = 5000
-            prompt_enhancer_llm_model = offload.fast_load_transformers_model( fl.locate_file("Llama3_2/Llama3_2_quanto_bf16_int8.safetensors"))
+            prompt_enhancer_llm_model = offload.fast_load_transformers_model(
+                fl.locate_file("Llama3_2/Llama3_2_quanto_bf16_int8.safetensors"),
+                defaultConfigPath=fl.locate_file("Llama3_2/config.json", error_if_none=False),
+                configKwargs={"attn_implementation": "sdpa", "hidden_act": "silu"},
+            )
+            prompt_enhancer_llm_model._validate_model_kwargs = lambda *_args, **_kwargs: None
+            prompt_enhancer_llm_model._offload_hooks = ["generate"]
             prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained(fl.locate_folder("Llama3_2"))
         else:
+            def preprocess_sd(sd, quant_map=None, tied_map=None):
+                rules = { "model.language_model": "model", "model.vision_tower": None, "model.multi_modal_projector": None, }
+                return tuple(offload.map_state_dict([sd, quant_map, tied_map], rules))
+
             budget = 10000
-            prompt_enhancer_llm_model = offload.fast_load_transformers_model(fl.locate_file("llama-joycaption-beta-one-hf-llava/llama_joycaption_quanto_bf16_int8.safetensors"))
+            prompt_enhancer_llm_model = offload.fast_load_transformers_model(
+                fl.locate_file("llama-joycaption-beta-one-hf-llava/llama_joycaption_quanto_bf16_int8.safetensors"),
+                forcedConfigPath=fl.locate_file("llama-joycaption-beta-one-hf-llava/llama_config.json", error_if_none=False),
+                configKwargs={"attn_implementation": "sdpa", "hidden_act": "silu"},
+                preprocess_sd=preprocess_sd,
+            )
+
             prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained(fl.locate_folder("llama-joycaption-beta-one-hf-llava"))
+        prompt_enhancer_llm_model.generation_config.pad_token = prompt_enhancer_llm_tokenizer.eos_token
+        if prompt_enhancer_llm_model.generation_config.pad_token_id is None:
+            eos_token_id = prompt_enhancer_llm_model.generation_config.eos_token_id
+            prompt_enhancer_llm_model.generation_config.pad_token_id = eos_token_id [0] if isinstance(eos_token_id,list) else eos_token_id 
+        prompt_enhancer_llm_model.eval()
+        
         pipe["prompt_enhancer_llm_model"] = prompt_enhancer_llm_model
+
         if not "budgets" in kwargs: kwargs["budgets"] = {}
         kwargs["budgets"]["prompt_enhancer_llm_model"] = budget 
     else:
@@ -4248,6 +4275,13 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if video_NAG_scale is not None and video_NAG_scale > 1: 
                 values += [video_NAG_scale]
                 labels += ["NAG Scale"]      
+            video_self_refiner_setting = configs.get("self_refiner_setting", 0)
+            if video_self_refiner_setting > 0:  
+                video_self_refiner_plan = configs.get('self_refiner_plan','')
+                if len(video_self_refiner_plan)==0: video_self_refiner_plan ='<default>'
+                # values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}', Uncertainty={configs.get('self_refiner_f_uncertainty',0.2)}, Certain Percentage='{configs.get('self_refiner_certain_percentage', 0.999)} "]
+                values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}'"]
+                labels += ["Self Refiner"]      
             video_apg_switch = configs.get("apg_switch", None)
             if video_apg_switch is not None and video_apg_switch != 0: 
                 values += ["on"]
@@ -5119,7 +5153,6 @@ class DynamicClass:
         """Alias for assign() - more dict-like"""
         return self.assign(**dict)
 
-
 def process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image_start, original_image_refs, is_image, audio_only, seed, prompt_enhancer_instructions = None ):
 
     prompt_enhancer_instructions = model_def.get("image_prompt_enhancer_instructions" if is_image else "video_prompt_enhancer_instructions", None)
@@ -5128,7 +5161,7 @@ def process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image
         prompt_enhancer_instructions = model_def.get("text_prompt_enhancer_instructions", prompt_enhancer_instructions)
         text_encoder_max_tokens = model_def.get("text_prompt_enhancer_max_tokens", text_encoder_max_tokens)
 
-    from models.ltx_video.utils.prompt_enhance_utils import generate_cinematic_prompt
+    from shared.prompt_enhancer.prompt_enhance_utils import generate_cinematic_prompt
     prompt_images = []
     if "I" in prompt_enhancer:
         if image_start != None:
@@ -5148,7 +5181,6 @@ def process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image
             enhancer_seed = secrets.randbits(32)
         else:
             enhancer_seed = seed if seed is not None and seed >= 0 else 0
-        # for i, original_prompt in enumerate(original_prompts):
         prompts = generate_cinematic_prompt(
             prompt_enhancer_image_caption_model,
             prompt_enhancer_image_caption_processor,
@@ -5215,6 +5247,7 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_
                 gr.Info("On Demand Prompt Enhancer supports only mutiple Start Images if their number matches the number of Text Prompts")
                 return gr.update(), gr.update()
  
+    reset_prompt_enhancer_if_requested()
     if enhancer_offloadobj is None:
         status = "Please Wait While Loading Prompt Enhancer"
         progress(0, status)
@@ -5239,7 +5272,6 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_
     seed = inputs["seed"]
     seed = set_seed(seed)
     enhanced_prompts = []
-
     for i, (one_prompt, one_image) in enumerate(zip(original_prompts, image_start)):
         start_images = [one_image] if one_image is not None else None
         status = f'Please Wait While Enhancing Prompt' if num_prompts==1 else f'Please Wait While Enhancing Prompt #{i+1}'
@@ -5490,6 +5522,10 @@ def generate_video(
     exaggeration,
     temperature,
     top_k,
+    self_refiner_setting,
+    self_refiner_plan,
+    # self_refiner_f_uncertainty,
+    # self_refiner_certain_percentage,
     output_filename,
     state,
     model_type,
@@ -5563,6 +5599,7 @@ def generate_video(
         if new_vae_upsampling: model_kwargs = {"VAE_upsampling": new_vae_upsampling}
     output_type = get_output_type_for_model(model_type, image_mode)
     profile = compute_profile(override_profile, output_type)
+    enhancer_mode = server_config.get("enhancer_mode", 0)
     if model_type != transformer_type or reload_needed or profile != loaded_profile:
         wan_model = None
         release_model()
@@ -5919,7 +5956,7 @@ def generate_video(
         cached_video_guide_processed = cached_video_mask_processed = cached_video_guide_processed2 = cached_video_mask_processed2 = None
         cached_video_video_start_frame = cached_video_video_end_frame = -1
         start_time = time.time()
-        if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0 and server_config.get("enhancer_mode", 0) == 0:
+        if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0 and enhancer_mode == 0:
             send_cmd("progress", [0, get_latest_status(state, "Enhancing Prompt")])
             enhanced_prompts = process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image_start, original_image_refs, is_image, audio_only, seed )
             if enhanced_prompts is not None:
@@ -6352,6 +6389,10 @@ def generate_video(
                     temperature=temperature,
                     window_start_frame_no = window_start_frame,
                     input_video_strength = input_video_strength,
+                    self_refiner_setting = self_refiner_setting,
+                    self_refiner_plan=self_refiner_plan,
+                    # self_refiner_f_uncertainty = self_refiner_f_uncertainty,
+                    # self_refiner_certain_percentage = self_refiner_certain_percentage,
                     **extra_generate_kwargs,
                 )
             except Exception as e:
@@ -6616,7 +6657,7 @@ def generate_video(
                 configs = prepare_inputs_dict("metadata", inputs, model_type)
                 if sliding_window: configs["window_no"] = window_no
                 configs["prompt"] = "\n".join(original_prompts)
-                if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0 and server_config.get("enhancer_mode", 0) != 1:
+                if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0 and enhancer_mode != 1:
                     configs["enhanced_prompt"] = "\n".join(prompts)
                 configs["generation_time"] = round(end_time-start_time)
                 # if sample_is_image: configs["is_image"] = True
@@ -7664,6 +7705,10 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     if not len(model_def.get("control_net_weight_alt_name", "")) >0:
         pop += ["control_net_weight_alt"]
 
+    if not model_def.get("self_refiner", False):
+        # pop += ["self_refiner_setting", "self_refiner_f_uncertainty", "self_refiner_plan", "self_refiner_certain_percentage"]
+        pop += ["self_refiner_setting", "self_refiner_plan"]
+
     if model_def.get("audio_scale_name", None) is None:
         pop += ["audio_scale"]
 
@@ -8372,6 +8417,10 @@ def save_inputs(
             exaggeration,
             temperature,
             top_k,
+            self_refiner_setting,
+            self_refiner_plan,            
+            # self_refiner_f_uncertainty,
+            # self_refiner_certain_percentage,
             output_filename,
             mode,
             state,
@@ -9884,7 +9933,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 label= "How to Process each Line of the Text Prompt"
                             )
 
-                with gr.Tab("Loras", visible= not audio_only) as loras_tab:
+                with gr.Tab("Loras", visible= not audio_only or model_def.get("enabled_audio_lora", False)) as loras_tab:
                     with gr.Column(visible = True): #as loras_column:
                         gr.Markdown("<B>Loras can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
                         loras, loras_choices = get_updated_loras_dropdown(loras, launch_loras)
@@ -10003,8 +10052,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_cfg_star = model_def.get("cfg_star", False)
                 any_apg = model_def.get("adaptive_projected_guidance", False)
                 any_motion_amplitude = model_def.get("motion_amplitude", False) and not image_outputs
-                
-                with gr.Tab("Quality", visible = (vace and image_outputs or any_skip_layer_guidance or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude) and not audio_only ) as quality_tab:
+                any_pnp = True # Enable PnP for all supported models (or restriction logic here)
+
+                with gr.Tab("Quality", visible = (vace and image_outputs or any_skip_layer_guidance or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude or any_pnp) and not audio_only ) as quality_tab:
                         with gr.Column(visible = any_skip_layer_guidance ) as skip_layer_guidance_row:
                             gr.Markdown("<B>Skip Layer Guidance (improves video quality, requires guidance > 1)</B>")
                             with gr.Row():
@@ -10082,6 +10132,14 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         with gr.Column(visible = any_motion_amplitude) as motion_amplitude_col:
                             gr.Markdown("<B>Experimental: Accelerate Motion (1: disabled, 1.15 recommended)")
                             motion_amplitude  = gr.Slider(1, 1.4, value=ui_get("motion_amplitude"), step=0.01, label="Motion Amplitude", visible = True, show_reset_button= False) 
+
+                        with gr.Column(visible = model_def.get("self_refiner", False)) as self_refiner_col:
+                            gr.Markdown("<B>Self-Refining Video Sampling (PnP) - should improve quality of Motion</B>")
+                            self_refiner_setting = gr.Dropdown( choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2), ], value=ui_get("self_refiner_setting", 0), scale = 1, label="Self Refiner", )
+                            self_refiner_plan = gr.Textbox( value=ui_get("self_refiner_plan", ""), label="P&P Plan (start-end:steps, comma-separated)", lines=1, placeholder="2-5:3,6-13:1" )
+                            # self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
+                            # self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
+                            
 
                 with gr.Tab("Sliding Window", visible= sliding_window_enabled and not image_outputs and not audio_only) as sliding_window_tab:
 
@@ -10342,7 +10400,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       audio_buttons_row, deleted_audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_eject_audio_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
-                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, top_k_row, number_frames_row, negative_prompt_row, chatter_row] +\
+                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, top_k_row, number_frames_row, negative_prompt_row, chatter_row,
+                                      self_refiner_col]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

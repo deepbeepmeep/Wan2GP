@@ -359,19 +359,25 @@ class LTXModel(torch.nn.Module):
         self,
         video_list: list[TransformerArgs | None],
         audio_list: list[TransformerArgs | None],
-        perturbations: BatchedPerturbationConfig,
+        perturbations: BatchedPerturbationConfig | list[BatchedPerturbationConfig] | None,
     ) -> tuple[list[TransformerArgs | None], list[TransformerArgs | None]]:
         """Process transformer blocks for joint-pass CFG."""
+        perturbations_list = perturbations if isinstance(perturbations, list) else None
+        if perturbations_list is not None and len(perturbations_list) != len(video_list):
+            raise ValueError("Perturbations list must match number of joint-pass conditions.")
         for block in self.transformer_blocks:
             if self.interrupt_check is not None and self.interrupt_check():
                 self.interrupted = True
                 return [None] * len(video_list), [None] * len(audio_list)
 
             for idx in range(len(video_list)):
+                condition_perturbations = (
+                    perturbations_list[idx] if perturbations_list is not None else perturbations
+                )
                 video_list[idx], audio_list[idx] = block(
                     video=video_list[idx],
                     audio=audio_list[idx],
-                    perturbations=perturbations,
+                    perturbations=condition_perturbations,
                 )
 
         return video_list, audio_list
@@ -400,7 +406,7 @@ class LTXModel(torch.nn.Module):
         self,
         video: Modality | list[Modality] | None,
         audio: Modality | list[Modality] | None,
-        perturbations: BatchedPerturbationConfig,
+        perturbations: BatchedPerturbationConfig | list[BatchedPerturbationConfig] | None,
     ) -> tuple[torch.Tensor | None | list[torch.Tensor | None], torch.Tensor | None | list[torch.Tensor | None]]:
         """
         Forward pass for LTX models.
@@ -419,6 +425,8 @@ class LTXModel(torch.nn.Module):
             audio_list = list(audio) if isinstance(audio, (list, tuple)) else [None] * len(video)
             if len(video_list) != len(audio_list):
                 raise ValueError("Joint-pass inputs must have the same number of video and audio entries.")
+            if isinstance(perturbations, list) and len(perturbations) != len(video_list):
+                raise ValueError("Perturbations list must match number of joint-pass conditions.")
 
             if self.model_type.is_video_enabled():
                 video_args_list = [
@@ -461,6 +469,11 @@ class LTXModel(torch.nn.Module):
                 for a_out in audio_out_list
             ]
             return vx_list, ax_list
+
+        if isinstance(perturbations, list):
+            if len(perturbations) != 1:
+                raise ValueError("Non-joint pass expects at most one perturbation config.")
+            perturbations = perturbations[0]
 
         video_args = self.video_args_preprocessor.prepare(video) if video is not None else None
         audio_args = self.audio_args_preprocessor.prepare(audio) if audio is not None else None
@@ -507,7 +520,7 @@ class LegacyX0Model(torch.nn.Module):
         self,
         video: Modality | list[Modality] | None,
         audio: Modality | list[Modality] | None,
-        perturbations: BatchedPerturbationConfig,
+        perturbations: BatchedPerturbationConfig | list[BatchedPerturbationConfig] | None,
         sigma: float,
     ) -> tuple[torch.Tensor | None | list[torch.Tensor | None], torch.Tensor | None | list[torch.Tensor | None]]:
         """
@@ -551,7 +564,7 @@ class X0Model(torch.nn.Module):
         self,
         video: Modality | list[Modality] | None,
         audio: Modality | list[Modality] | None,
-        perturbations: BatchedPerturbationConfig,
+        perturbations: BatchedPerturbationConfig | list[BatchedPerturbationConfig] | None,
     ) -> tuple[torch.Tensor | None | list[torch.Tensor | None], torch.Tensor | None | list[torch.Tensor | None]]:
         """
         Denoise the video and audio according to the sigma.

@@ -873,7 +873,7 @@ class MLPProj(torch.nn.Module):
         if hasattr(self, 'emb_pos'):
             bs, n, d = image_embeds.shape
             image_embeds = image_embeds.view(-1, 2 * n, d)
-            image_embeds = image_embeds + self.emb_pos
+            image_embeds = image_embeds.to(self.emb_pos.dtype) + self.emb_pos
         clip_extra_context_tokens = self.proj(image_embeds)
         return clip_extra_context_tokens
 

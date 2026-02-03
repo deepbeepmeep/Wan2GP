@@ -22,9 +22,9 @@ This guide covers installation for different GPU generations and operating syste
 
 This installation uses PyTorch 2.6.0, Cuda 12.6 for GTX 10XX - RTX 30XX & PyTorch 2.7.1, Cuda 12.8 for RTX 40XX - 50XX which are well-tested and stable.
 
-Unless you need absolutely to use Pytorch compilation (with RTX 50xx), it is not recommeneded to use PytTorch 2.8.0 as some System RAM memory leaks have been observed when switching models.
+It is not recommeneded to use neither PytTorch 2.8.0 as some System RAM memory leaks have been observed when switching models nor 2.9.0 which has some Convolution 3D perf issues (VAE VRAM requirements explode)
 
-If you want to use the NV FP4 optimized kernels for RTX 50xx, you will need PyTorch 2.9.1 with Cuda 13.0
+If you want to use the NV FP4 optimized kernels for RTX 50xx, you will need to upgrade to Python 3.11, PyTorch 2.10 with Cuda 13.0
 
 ## Download Repo and Setup Conda Environment
 
@@ -127,15 +127,18 @@ pip install https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-
 pip install -r requirements.txt
 ```
 
-## Installation for 50XX Only PyTorch 2.9.1 Cuda 13.. for NVFP4 optimized kernels
-
-#### Windows Install PyTorch 2.9.1 with CUDA 13.0 for RTX 50XX Only
+## Installation for 50XX Only Python 3.11, PyTorch 2.10.0 Cuda 13. for NVFP4 optimized kernels
+#### Create Python 3.11 environment using Conda
 ```
-pip install torch==2.9.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+conda create -n wan2gp python=3.11.14
+```
+#### Windows Install PyTorch 2.10.0 with CUDA 13.0 for RTX 50XX Only
+```
+pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 ```
 #### Windows Install Triton for RTX 50XX Only
 ```
-pip install -U "triton-windows<3.4"
+pip install -U triton-windows
 ```
 #### Windows Install Sage2 Attention for RTX 50XX Only
 ```
@@ -147,12 +150,15 @@ pip install -r requirements.txt
 ```
 ## Optional
 
-### Flash Attention
+### Flash Attention Windows
 
-#### Windows
+#### Pytorch 2.7.1
 ```
 pip install https://github.com/Redtash1/Flash_Attention_2_Windows/releases/download/v2.7.0-v2.7.4/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl
 ```
+#### Pytorch 2.10 
+https://github.com/deepbeepmeep/kernels/releases/download/Flash2/flash_attn-2.8.3-cp311-cp311-win_amd64.whl
+
 
 
 # Linux Installation 
@@ -318,34 +324,37 @@ These kernels will offer optimized INT4 / FP4 dequantization.
 **Please Note FP4 support is hardware dependent and will work only with RTX 50xx / sm120+ GPUs**
 
 
-### Light2xv NVP4 Kernels Wheels for Windows / Python 3.10 / Pytorch 2.9.1 / Cuda 13.8 (RTX 50xx / sm120+ only !)
+### Light2xv NVP4 Kernels Wheels for Python 3.11 / Pytorch 2.10 / Cuda 13 (RTX 50xx / sm120+ only !)
 - Windows
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.1+torch2.9.1-cp39-abi3-win_amd64.whl
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.2+torch2.10.0-cp311-abi3-win_amd64.whl
    ```
 
 - Linux
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.1+torch2.9.1cu130-cp39-abi3-linux_x86_64.whl
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.2+torch2.10.0-cp311-abi3-linux_x86_64.whl
    ```
 
 
 
-### Nunchaku INT4/FP4 Kernels Wheels for Python 3.10   
-- Windows (Pytorch 2.7.1 / Cuda 12.8) 
+### Nunchaku INT4/FP4 Kernels Wheels for Python 3.10 / Pytorch 2.7.1 / Cuda 12.8  
+- Windows () 
    ```
    pip install https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nunchaku/nunchaku-1.2.0+torch2.7-cp310-cp310-win_amd64.whl
    ```
-- Windows (Pytorch 2.9.1 / Cuda 13)
-   ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nunchaku/nunchaku-1.2.0+torch2.9-cp310-cp310-win_amd64.whl
-   ```
-
 - Linux (Pytorch 2.7.1 / Cuda 12.8) 
    ```
   pip install https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nunchaku/nunchaku-1.2.0+torch2.7-cp310-cp310-linux_x86_64.whl
    ```
-- Linux (Pytorch 2.9.1 / Cuda 13)
+
+### Nunchaku INT4/FP4 Kernels Wheels for Python 3.11 / Pytorch 2.10 / Cuda 13
+
+- Windows 
    ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nunchaku/nunchaku-1.2.0+torch2.9-cp310-cp310-linux_x86_64.whl
+  pip install https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp311-cp311-win_amd64.whl
+   ```
+
+- Linux 
+   ```
+  pip install https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp310-cp310-linux_x86_64.whl
    ```

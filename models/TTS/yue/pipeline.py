@@ -21,7 +21,7 @@ from mmgp import offload
 from shared.utils import files_locator as fl
 from .codecmanipulator import CodecManipulator
 from .mmtokenizer import _MMSentencePieceTokenizer
-from .llama_patched import LlamaForCausalLM
+from shared.llama_3_2.llama_patched import LlamaForCausalLM
 
 
 def _flash_attn_available() -> bool:

@@ -17,7 +17,10 @@ from typing import Callable, Tuple, List
 import numpy as np
 import torch.nn.functional as F
 from torch.nn import Conv1d
-from torch.nn.utils import weight_norm
+try:
+    from torch.nn.utils.parametrizations import weight_norm
+except ImportError:
+    from torch.nn.utils import weight_norm
 from torch.nn.utils.parametrize import remove_parametrizations as remove_weight_norm
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.loaders import FromOriginalModelMixin

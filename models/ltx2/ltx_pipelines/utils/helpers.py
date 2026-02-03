@@ -18,6 +18,12 @@ from ...ltx_core.conditioning import (
     VideoConditionByKeyframeIndex,
     VideoConditionByLatentIndex,
 )
+from ...ltx_core.guidance.perturbations import (
+    BatchedPerturbationConfig,
+    Perturbation,
+    PerturbationConfig,
+    PerturbationType,
+)
 from ...ltx_core.model.transformer import Modality, X0Model
 from ...ltx_core.model.video_vae import VideoEncoder, TilingConfig, encode_video as vae_encode_video
 from ...ltx_core.text_encoders.gemma import GemmaTextEncoderModelBase
@@ -393,6 +399,7 @@ def euler_denoising_loop(
     callback: Callable[..., None] | None = None,
     preview_tools: VideoLatentTools | None = None,
     pass_no: int = 0,
+    transformer=None,
 ) -> tuple[LatentState | None, LatentState | None]:
     """
     Perform the joint audio-video denoising loop over a diffusion schedule.
@@ -428,6 +435,9 @@ def euler_denoising_loop(
     for step_idx, _ in enumerate(tqdm(sigmas[:-1])):
         if interrupt_check is not None and interrupt_check():
             return None, None
+
+        offload.set_step_no_for_lora(transformer, step_idx)
+
         denoised_video, denoised_audio = denoise_fn(video_state, audio_state, sigmas, step_idx)
         if denoised_video is None and denoised_audio is None:
             return None, None
@@ -655,6 +665,54 @@ def modality_from_latent_state(
     )
 
 
+def _get_batch_size(video_state: LatentState | None, audio_state: LatentState | None) -> int:
+    if video_state is not None:
+        return int(video_state.latent.shape[0])
+    if audio_state is not None:
+        return int(audio_state.latent.shape[0])
+    return 1
+
+
+def _cross_attn_perturbations(batch_size: int) -> BatchedPerturbationConfig:
+    perts = [
+        PerturbationConfig(
+            [
+                Perturbation(PerturbationType.SKIP_A2V_CROSS_ATTN, None),
+                Perturbation(PerturbationType.SKIP_V2A_CROSS_ATTN, None),
+            ]
+        )
+        for _ in range(batch_size)
+    ]
+    return BatchedPerturbationConfig(perts)
+
+
+def _normalize_slg_layers(slg_layers) -> list[int] | None:
+    if slg_layers is None:
+        return None
+    if isinstance(slg_layers, (list, tuple)):
+        return [int(layer) for layer in slg_layers if str(layer).strip() != ""]
+    if isinstance(slg_layers, (int, float)):
+        return [int(slg_layers)]
+    if isinstance(slg_layers, str):
+        return [int(layer.strip()) for layer in slg_layers.split(",") if layer.strip()]
+    return None
+
+
+def _slg_perturbations(batch_size: int, slg_layers: list[int]) -> BatchedPerturbationConfig:
+    perts = [
+        PerturbationConfig(
+            [
+                Perturbation(PerturbationType.SKIP_VIDEO_SELF_ATTN, slg_layers),
+                Perturbation(PerturbationType.SKIP_AUDIO_SELF_ATTN, slg_layers),
+                Perturbation(PerturbationType.SKIP_A2V_CROSS_ATTN, slg_layers),
+                Perturbation(PerturbationType.SKIP_V2A_CROSS_ATTN, slg_layers),
+            ]
+        )
+        for _ in range(batch_size)
+    ]
+    return BatchedPerturbationConfig(perts)
+
+
 def timesteps_from_mask(
     denoise_mask: torch.Tensor, sigma: float | torch.Tensor, positions: torch.Tensor | None = None
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -704,7 +762,10 @@ def timesteps_from_mask(
 
 
 def simple_denoising_func(
-    video_context: torch.Tensor, audio_context: torch.Tensor, transformer: X0Model
+    video_context: torch.Tensor,
+    audio_context: torch.Tensor,
+    transformer: X0Model,
+    alt_guidance_scale: float = 1.0,
 ) -> DenoisingFunc:
     def simple_denoising_step(
         video_state: LatentState, audio_state: LatentState, sigmas: torch.Tensor, step_index: int
@@ -715,9 +776,38 @@ def simple_denoising_func(
 
         if transformer is not None:
             offload.set_step_no_for_lora(transformer, step_index)
-        denoised_video, denoised_audio = transformer(video=pos_video, audio=pos_audio, perturbations=None)
-        if denoised_video is None and denoised_audio is None:
+        use_alt = not math.isclose(alt_guidance_scale, 1.0)
+        if not use_alt:
+            denoised_video, denoised_audio = transformer(video=pos_video, audio=pos_audio, perturbations=None)
+            if denoised_video is None and denoised_audio is None:
+                return None, None
+            return denoised_video, denoised_audio
+
+        alt_video = modality_from_latent_state(video_state, video_context, sigma)
+        alt_audio = modality_from_latent_state(audio_state, audio_context, sigma)
+        batch_size = _get_batch_size(video_state, audio_state)
+        perturbations = [None, _cross_attn_perturbations(batch_size)]
+        denoised_video_list, denoised_audio_list = transformer(
+            video=[pos_video, alt_video],
+            audio=[pos_audio, alt_audio],
+            perturbations=perturbations,
+        )
+        if denoised_video_list is None and denoised_audio_list is None:
             return None, None
+        pos_denoised_video, alt_denoised_video = denoised_video_list
+        pos_denoised_audio, alt_denoised_audio = denoised_audio_list
+        if pos_denoised_video is None and pos_denoised_audio is None:
+            return None, None
+        denoised_video = pos_denoised_video
+        denoised_audio = pos_denoised_audio
+        if denoised_video is not None and alt_denoised_video is not None:
+            denoised_video = denoised_video + (alt_guidance_scale - 1.0) * (
+                pos_denoised_video - alt_denoised_video
+            )
+        if denoised_audio is not None and alt_denoised_audio is not None:
+            denoised_audio = denoised_audio + (alt_guidance_scale - 1.0) * (
+                pos_denoised_audio - alt_denoised_audio
+            )
         return denoised_video, denoised_audio
 
     return simple_denoising_step
@@ -730,6 +820,11 @@ def guider_denoising_func(
     a_context_p: torch.Tensor,
     a_context_n: torch.Tensor,
     transformer: X0Model,
+    alt_guidance_scale: float = 1.0,
+    slg_switch: int = 0,
+    slg_layers: list[int] | None = None,
+    slg_start: float = 0.0,
+    slg_end: float = 1.0,
 ) -> DenoisingFunc:
     def guider_denoising_step(
         video_state: LatentState, audio_state: LatentState, sigmas: torch.Tensor, step_index: int
@@ -740,23 +835,72 @@ def guider_denoising_func(
 
         if transformer is not None:
             offload.set_step_no_for_lora(transformer, step_index)
-        if guider.enabled():
-            neg_video = modality_from_latent_state(video_state, v_context_n, sigma)
-            neg_audio = modality_from_latent_state(audio_state, a_context_n, sigma)
+        use_cfg = guider.enabled()
+        use_alt = not math.isclose(alt_guidance_scale, 1.0)
+        if use_cfg or use_alt:
+            video_list = [pos_video]
+            audio_list = [pos_audio]
+            perturbations: list[BatchedPerturbationConfig | None] = [None]
+            neg_index = None
+            alt_index = None
+            if use_cfg:
+                neg_video = modality_from_latent_state(video_state, v_context_n, sigma)
+                neg_audio = modality_from_latent_state(audio_state, a_context_n, sigma)
+                neg_index = len(video_list)
+                video_list.append(neg_video)
+                audio_list.append(neg_audio)
+                batch_size = _get_batch_size(video_state, audio_state)
+                slg_layers_norm = _normalize_slg_layers(slg_layers)
+                use_slg = False
+                if slg_switch and slg_layers_norm:
+                    total_steps = max(len(sigmas) - 1, 1)
+                    start_step = int(slg_start * total_steps)
+                    end_step = int(slg_end * total_steps)
+                    use_slg = start_step <= step_index < end_step
+                perturbations.append(
+                    _slg_perturbations(batch_size, slg_layers_norm) if use_slg else None
+                )
+            if use_alt:
+                alt_video = modality_from_latent_state(video_state, v_context_p, sigma)
+                alt_audio = modality_from_latent_state(audio_state, a_context_p, sigma)
+                alt_index = len(video_list)
+                video_list.append(alt_video)
+                audio_list.append(alt_audio)
+                batch_size = _get_batch_size(video_state, audio_state)
+                perturbations.append(_cross_attn_perturbations(batch_size))
+
             denoised_video_list, denoised_audio_list = transformer(
-                video=[pos_video, neg_video],
-                audio=[pos_audio, neg_audio],
-                perturbations=None,
+                video=video_list,
+                audio=audio_list,
+                perturbations=perturbations,
             )
             if denoised_video_list is None and denoised_audio_list is None:
                 return None, None
-            denoised_video, neg_denoised_video = denoised_video_list
-            denoised_audio, neg_denoised_audio = denoised_audio_list
-            if denoised_video is None and denoised_audio is None:
+            pos_denoised_video = denoised_video_list[0]
+            pos_denoised_audio = denoised_audio_list[0]
+            neg_denoised_video = denoised_video_list[neg_index] if neg_index is not None else None
+            neg_denoised_audio = denoised_audio_list[neg_index] if neg_index is not None else None
+            if pos_denoised_video is None and pos_denoised_audio is None:
                 return None, None
 
-            denoised_video = denoised_video + guider.delta(denoised_video, neg_denoised_video)
-            denoised_audio = denoised_audio + guider.delta(denoised_audio, neg_denoised_audio)
+            denoised_video = pos_denoised_video
+            denoised_audio = pos_denoised_audio
+            if use_cfg and neg_index is not None:
+                if denoised_video is not None and neg_denoised_video is not None:
+                    denoised_video = denoised_video + guider.delta(denoised_video, neg_denoised_video)
+                if denoised_audio is not None and neg_denoised_audio is not None:
+                    denoised_audio = denoised_audio + guider.delta(denoised_audio, neg_denoised_audio)
+            if use_alt and alt_index is not None:
+                alt_denoised_video = denoised_video_list[alt_index]
+                alt_denoised_audio = denoised_audio_list[alt_index]
+                if denoised_video is not None and alt_denoised_video is not None:
+                    denoised_video = denoised_video + (alt_guidance_scale - 1.0) * (
+                        pos_denoised_video - alt_denoised_video
+                    )
+                if denoised_audio is not None and alt_denoised_audio is not None:
+                    denoised_audio = denoised_audio + (alt_guidance_scale - 1.0) * (
+                        pos_denoised_audio - alt_denoised_audio
+                    )
             neg_video = neg_audio = neg_denoised_video = neg_denoised_audio = None
         else:
             denoised_video, denoised_audio = transformer(video=pos_video, audio=pos_audio, perturbations=None)

@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterator
 import torch
 
 from ..ltx_core.components.diffusion_steps import EulerDiffusionStep
-from ..ltx_core.components.guiders import CFGGuider
+from ..ltx_core.components.guiders import CFGGuider, CFGStarRescalingGuider, LtxAPGGuider
 from ..ltx_core.components.noisers import GaussianNoiser
 from ..ltx_core.components.protocols import DiffusionStepProtocol
 from ..ltx_core.components.schedulers import LTX2Scheduler
@@ -81,6 +81,13 @@ class TI2VidOneStagePipeline:
         num_inference_steps: int,
         cfg_guidance_scale: float,
         images: list[tuple[str, int, float]],
+        cfg_star_switch: int = 0,
+        apg_switch: int = 0,
+        slg_switch: int = 0,
+        slg_layers: list[int] | None = None,
+        slg_start: float = 0.0,
+        slg_end: float = 1.0,
+        alt_guidance_scale: float = 1.0,
         enhance_prompt: bool = False,
         audio_conditionings: list | None = None,
         callback: Callable[..., None] | None = None,
@@ -96,7 +103,12 @@ class TI2VidOneStagePipeline:
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
         stepper = EulerDiffusionStep()
-        cfg_guider = CFGGuider(cfg_guidance_scale)
+        if apg_switch:
+            cfg_guider = LtxAPGGuider(cfg_guidance_scale)
+        elif cfg_star_switch:
+            cfg_guider = CFGStarRescalingGuider(cfg_guidance_scale)
+        else:
+            cfg_guider = CFGGuider(cfg_guidance_scale)
         dtype = torch.bfloat16
 
         text_encoder = self.model_ledger.text_encoder()
@@ -165,12 +177,18 @@ class TI2VidOneStagePipeline:
                     a_context_p,
                     a_context_n,
                     transformer=transformer,  # noqa: F821
+                    alt_guidance_scale=alt_guidance_scale,
+                    slg_switch=slg_switch,
+                    slg_layers=slg_layers,
+                    slg_start=slg_start,
+                    slg_end=slg_end,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
                 pass_no=1,
+                transformer=transformer,
             )
 
         stage_1_output_shape = VideoPixelShape(batch=1, frames=num_frames, width=width, height=height, fps=frame_rate)

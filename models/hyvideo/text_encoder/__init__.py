@@ -189,26 +189,17 @@ class TextEncoder(nn.Module):
         else:
             raise ValueError(f"Unsupported text encoder type: {text_encoder_type}")
 
+        from mmgp import offload
         if "llm" in text_encoder_type:
-            from mmgp import offload
-            # forcedConfigPath=  None if "i2v" in text_encoder_type  else "ckpts/llava-llama-3-8b/config.json"
-            # self.model= offload.fast_load_transformers_model(self.model_path, modelPrefix="language_model" if forcedConfigPath != None else None,  forcedConfigPath=forcedConfigPath)
-
             if "i2v" in text_encoder_type:
                 self.model= offload.fast_load_transformers_model(self.model_path, modelClass= LlavaForConditionalGeneration)
             else:
                 self.model= offload.fast_load_transformers_model(self.model_path, modelPrefix="language_model", forcedConfigPath = fl.locate_file("llava-llama-3-8b/config.json"))
                 self.model.final_layer_norm = self.model.model.norm
-
-
         
         else:
-            self.model, self.model_path = load_text_encoder(
-                text_encoder_type=self.text_encoder_type,
-                text_encoder_precision=self.precision,
-                text_encoder_path=self.model_path,
-                device=device,
-            )
+            self.model= offload.fast_load_transformers_model(fl.locate_file("clip_vit_large_patch14/model.safetensors"), ignore_unused_weights= True, modelClass=CLIPTextModel, forcedConfigPath = fl.locate_file("clip_vit_large_patch14/text_config.json"))
+            self.model.final_layer_norm = self.model.text_model.final_layer_norm
 
         self.dtype = self.model.dtype
         self.device = self.model.device

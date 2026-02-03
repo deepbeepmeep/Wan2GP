@@ -10,8 +10,11 @@ class HFEmbedder(nn.Module):
         self.output_key = "pooler_output" if self.is_clip else "last_hidden_state"
 
         if is_clip:
+            from mmgp import offload
             self.tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(version, max_length=max_length)
-            self.hf_module: CLIPTextModel = CLIPTextModel.from_pretrained(version, **hf_kwargs)
+            self.hf_module= offload.fast_load_transformers_model(os.path.join(version, "model.safetensors"), ignore_unused_weights= True, modelClass=CLIPTextModel, forcedConfigPath = os.path.join(version, "text_config.json"))
+            # self.model.final_layer_norm = self.model.text_model.final_layer_norm
+            # self.hf_module: CLIPTextModel = CLIPTextModel.from_pretrained(version, **hf_kwargs)
         else:
             from mmgp import offload as offloadobj
             self.tokenizer: T5Tokenizer = T5Tokenizer.from_pretrained(os.path.dirname(text_encoder_filename),  max_length=max_length)

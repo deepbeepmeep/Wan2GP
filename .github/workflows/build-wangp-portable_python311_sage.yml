@@ -1,0 +1,160 @@
+name: Build WanGP Portable Sage Attention
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-portable:
+    runs-on: windows-latest
+    env:
+      PYTHON_VERSION: 3.11.9
+      TORCH_INDEX: https://download.pytorch.org/whl/cu130
+
+    steps:
+      # Checkout repo
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          
+      # Clone Wan2GP source publicly to include inside portable
+      - name: Clone Wan2GP source
+        shell: pwsh
+        run: |
+          mkdir WanGP-Portable
+          if (Test-Path Wan2GP) { Remove-Item -Recurse -Force Wan2GP }
+          git clone https://github.com/deepbeepmeep/Wan2GP.git WanGP-Portable\Wan2GP
+          Write-Host "✅ Cloned Wan2GP repository into portable workspace."
+          
+      # Extract version from wgp.py (Windows compatible)
+      - name: Read version from wgp.py
+        id: get_version
+        shell: pwsh
+        run: |
+          $content = Get-Content WanGP-Portable\Wan2GP\wgp.py -Raw
+          if ($content -match 'WanGP_version\s*=\s*"([^"]+)"') {
+            $version = $matches[1]
+            Write-Host "Found version: $version"
+            echo "version=$version" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "⚠️ WanGP_version not found in wgp.py"
+            echo "version=unknown" >> $env:GITHUB_OUTPUT
+          }
+
+      # Download Python Embedded
+      - name: Download Python Embedded
+        run: |
+          curl -L -o python-embed.zip https://www.python.org/ftp/python/${{ env.PYTHON_VERSION }}/python-${{ env.PYTHON_VERSION }}-embed-amd64.zip
+          mkdir python_embedded
+          tar -xf python-embed.zip -C python_embedded
+          
+          # Uncomment import site and add site-packages path
+          (Get-Content python_embedded\python311._pth) -replace '# import site','import site' | Set-Content python_embedded\python311._pth
+          Add-Content python_embedded\python311._pth "Lib\site-packages"
+          
+          # Create folders for packages
+          mkdir python_embedded\Lib\site-packages
+
+      # Clone python3 headers/libs and merge into embedded Python
+      - name: Add Include and Libs to Embedded Python
+        shell: pwsh
+        run: |
+          git clone https://github.com/axiomgraph/python311 python3-src
+
+          if (Test-Path python3-src\Include) {
+          Copy-Item python3-src\Include python_embedded\Include -Recurse -Force
+          Write-Host "✅ Copied Include folder."
+          } else {
+          Write-Host "⚠️ Include folder not found in python3 repo."
+          }
+
+          if (Test-Path python3-src\Libs) {
+          Copy-Item python3-src\Libs python_embedded\Libs -Recurse -Force
+          Write-Host "✅ Copied Libs folder."
+          } else {
+          Write-Host "⚠️ Libs folder not found in python3 repo."
+          }
+
+      # Install pip directly into Lib\site-packages
+      - name: Install pip
+        run: |
+          curl -L -o get-pip.py https://bootstrap.pypa.io/get-pip.py
+          python_embedded\python.exe get-pip.py
+          python_embedded\python.exe -m pip --version
+
+      # Install core dependencies (Torch, SageAttention)
+      - name: Install Torch
+        run: |
+          python_embedded\python.exe -m pip install --upgrade pip 
+          python_embedded\python.exe -m pip install torch==2.10.0 torchvision torchaudio --index-url ${{ env.TORCH_INDEX }}
+
+      # Install Triton for Windows (required for SageAttention)
+      - name: Install triton-windows
+        run: |
+          python_embedded\python.exe -m pip install triton-windows
+
+      # Install SageAttention 
+      - name: Install SageAttention
+        run: |
+          python_embedded\python.exe -m pip install https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl
+          
+      # Install FilterPy
+      - name: Install FilterPy
+        run: |
+          python_embedded\python.exe -m pip install https://www.piwheels.org/simple/filterpy/filterpy-1.4.5-py3-none-any.whl
+
+      # Install remaining requirements
+      - name: Install requirements
+        run: |
+          python_embedded\python.exe -m pip install --upgrade -r WanGP-Portable\Wan2GP\requirements.txt
+          
+      # Prepare portable folder and 7z package
+      - name: Prepare portable folder and package
+        shell: pwsh
+        run: |         
+          # Prefer Wan2GP's .bat files, fallback to mine root-level ones
+          $batFiles = @("Launch_WanGP.bat", "Update.bat")
+          foreach ($file in $batFiles) {
+            $wan2gpPath = "WanGP-Portable\Wan2GP\$file"
+            if (Test-Path $wan2gpPath) {
+              Copy-Item $wan2gpPath WanGP-Portable\
+              Write-Host "✅ Copied $file from Wan2GP source."
+            } elseif (Test-Path $file) {
+              Copy-Item $file WanGP-Portable\
+              Write-Host "✅ Copied fallback $file from root."
+            } else {
+              Write-Host "⚠️ $file not found anywhere, skipping."
+            }
+          }
+          robocopy python_embedded WanGP-Portable\python_embedded /E /COPYALL
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          7z a -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -ms=on -v2000m "WanGP-Portable_Python311_Cu13_Sage.7z" "WanGP-Portable\*" -xr!"__pycache__" -xr!"*.pyc" -xr!".gitignore"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    
+      # Create version-based tag
+      - name: Create tag
+        id: tag
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          $new_tag = "v$env:VERSION"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git fetch --tags
+          if (git tag -l $new_tag) {
+            Write-Host "Tag $new_tag already exists, skipping creation."
+          } else {
+            git tag $new_tag
+            git push origin $new_tag
+          }
+          echo "new_tag=$new_tag" >> $env:GITHUB_OUTPUT
+
+      - name: Create or Update Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.new_tag }}
+          files: WanGP-Portable_Python311_Cu13_Sage.7z.*
+          body: "For details, see the [README](https://github.com/deepbeepmeep/Wan2GP/blob/main/README.md)"
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

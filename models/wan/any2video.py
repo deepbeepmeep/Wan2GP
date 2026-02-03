@@ -1342,8 +1342,10 @@ class WanAny2V:
                 return noise_pred
 
             noise_pred = denoise_with_cfg_fn(latents) 
+            if noise_pred is None: return clear()
             if self_refiner_handler:
                 latents, sample_scheduler = self_refiner_handler.step(i, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_with_cfg_fn)
+                if latents is None: return clear()
             else:
                 latents = sample_scheduler.step( noise_pred[:, :, :target_shape[1]], t, latents, **scheduler_kwargs)[0]
 

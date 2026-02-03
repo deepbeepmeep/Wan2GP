@@ -86,7 +86,7 @@ CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.3"
 WanGP_version = "10.61"
-settings_version = 2.47
+settings_version = 2.49
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -610,8 +610,9 @@ def validate_settings(state, model_type, single_prompt, inputs):
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
     if self_refiner_setting != 0 and len(self_refiner_plan):
-        from shared.utils.self_refiner import normalize_self_refiner_plan 
-        _, error = normalize_self_refiner_plan(self_refiner_plan)
+        from shared.utils.self_refiner import normalize_self_refiner_plan
+        max_plans = model_def.get("self_refiner_max_plans", 1)
+        _, error = normalize_self_refiner_plan(self_refiner_plan, max_plans=max_plans)
         if len(error):
             gr.Info(error)
             return ret()
@@ -4226,11 +4227,11 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 alt = video_preprocesses_in
                 video_preprocesses_in = video_preprocesses_out
                 video_preprocesses_out = alt
-            if len(video_preprocesses_in) >0 :
+            if len(video_preprocesses_in) >0 and "V" in video_video_prompt_type:
                 values += [video_preprocesses_in]
                 labels += [ "Process Inside Mask" if any_mask else "Preprocessing"]
 
-            if len(video_preprocesses_out) >0 :
+            if len(video_preprocesses_out) >0 and "V" in video_video_prompt_type:
                 values += [video_preprocesses_out]
                 labels += [ "Process Outside Mask"]
             video_frames_positions = configs.get("frames_positions", "")
@@ -9857,30 +9858,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         with gr.Row(visible=temperature_visible) as temperature_row:
                             temperature = gr.Slider(0.1, 1.5, value=ui_get("temperature"), step=0.01, label="Temperature", show_reset_button=False)
 
-                        top_k_visible = audio_only and model_def.get("top_k_slider", False)
-                        top_k_min = 0
-                        top_k_max = 100
-                        top_k_step = 1
-                        top_k_default = 50
-                        top_k_label = "Top-k"
-                        top_k_value = ui_get("top_k", top_k_default)
-                        try:
-                            top_k_value = int(top_k_value)
-                        except Exception:
-                            top_k_value = int(top_k_default)
-                        if top_k_value < top_k_min:
-                            top_k_value = top_k_min
-                        elif top_k_value > top_k_max:
-                            top_k_value = top_k_max
-                        with gr.Row(visible=top_k_visible) as top_k_row:
-                            top_k = gr.Slider(
-                                top_k_min,
-                                top_k_max,
-                                value=top_k_value,
-                                step=top_k_step,
-                                label=top_k_label,
-                                show_reset_button=False,
-                            )
+                        with gr.Row(visible=audio_only and model_def.get("top_k_slider", False)) as top_k_row:
+                            top_k = gr.Slider( 1, 100, value=ui_get("top_k", 50), step=1, label="Top-k", show_reset_button=False, )
 
                         sample_solver_choices = model_def.get("sample_solvers", None)
                         any_flow_shift = model_def.get("flow_shift", False) 

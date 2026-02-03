@@ -5,7 +5,7 @@
 <b>WanGP by DeepBeepMeep : The best Open Source Video Generative Models Accessible to the GPU Poor</b>
 </p>
 
-WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, Z-Image, LongCat, Kandinsky, LTX 1 & 2, Qwen3 TTS, Chatterbox, HearMula, ... with:
+WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, Z-Image, LongCat, Kandinsky, LTXV, LTX-2, Qwen3 TTS, Chatterbox, HearMula, ... with:
 - Low VRAM requirements (as low as 6 GB of VRAM is sufficient for certain models)
 - Support for old Nvidia GPUs (RTX 10XX, 20xx, ...)
 - Support for AMD GPUs Radeon RX 76XX, 77XX, 78XX & 79XX, instructions in the Installation Section Below.
@@ -42,8 +42,8 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 ### February 1st 2026: WanGP v10.61, Upgrade Time !
 
-- **LTX 2 Base Tweaks**: new *Quality* features if you found the base model was too fast :
-   - New *Modality Guidance* should improve audio / video (lipsync...) according to *LTX2 team* (beware first *denoising phase* will be 50% slower when used that is if modality guidance> 1)
+- **LTX-2 Base Tweaks**: new *Quality* features if you found the base model was too fast :
+   - New *Modality Guidance* should improve audio / video (lipsync...) according to *LTX-2 team* (beware first *denoising phase* will be 50% slower when used that is if modality guidance> 1)
    - *CFG star*, *Adaptive Project Guidance* should improve quality and better prompt adherence
    - *Skip Layer Guidance*: skipping layer 29 during phase may or may not improve quality
 Note that these features are only triggered during first phase of denoising because second phase is distilled denoising no matter what (even on the non distilled model)
@@ -108,13 +108,13 @@ Note that Z Image Base is very sensitive to the *Attention Mode*: it is not comp
 
 WanGP comes again to the rescue:
 
-- **GGUF support**: as some of you know, I am not a big fan of this format because when used with image / video generative models we don't get any speed boost (matrices multiplications are still done at 16 bits), VRAM savings are small and quality is worse than with int8/fp8. Still gguf has one advantage: it consumes less RAM and harddrive space. So enjoy gguf support. I have added ready to use *Kijai gguf finetunes* for *LTX 2*.
+- **GGUF support**: as some of you know, I am not a big fan of this format because when used with image / video generative models we don't get any speed boost (matrices multiplications are still done at 16 bits), VRAM savings are small and quality is worse than with int8/fp8. Still gguf has one advantage: it consumes less RAM and harddrive space. So enjoy gguf support. I have added ready to use *Kijai gguf finetunes* for *LTX-2*.
 
 - **Models Manager PlugIn**: use this *Plugin* to identify how much space is taken by each *model* / *finetune* and delete the ones you no longer use. Try to avoid deleting shared files otherwise they will be downloaded again.  
 
-- **LTX 2 Dual Video & Audio Control**: you no longer need to extract the audio track of a *Control Video* if you want to use it as well to drive the video generation. New mode will allow you to use both motion and audio from Video Control.
+- **LTX-2 Dual Video & Audio Control**: you no longer need to extract the audio track of a *Control Video* if you want to use it as well to drive the video generation. New mode will allow you to use both motion and audio from Video Control.
 
-- **LTX 2 - Custom VAE URL**: some users have asked if they could use the old *Distiller VAE* instead of the new one. To do that, create a *finetune* def based on an existing model definition and save it in the *finetunes/* folder with this entry (check the *docs/FINETUNES.md* doc):
+- **LTX-2 - Custom VAE URL**: some users have asked if they could use the old *Distiller VAE* instead of the new one. To do that, create a *finetune* def based on an existing model definition and save it in the *finetunes/* folder with this entry (check the *docs/FINETUNES.md* doc):
 ```
 		"VAE_URLs": ["https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2-19b_vae_old.safetensors"]
 ```
@@ -133,52 +133,52 @@ WanGP comes again to the rescue:
 
 ### January 15th 2026: WanGP v10.30, The Need for Speed ...
 
-- **LTX Distilled VAE Upgrade**: *Kijai* has observed that the Distilled VAE produces images that were less sharp that the VAE of the Non Distilled model. I have used this as an opportunity to repackage all the LTX 2 checkpoints and reduce their overal HD footprint since they all share around 5GB. 
+- **LTX Distilled VAE Upgrade**: *Kijai* has observed that the Distilled VAE produces images that were less sharp that the VAE of the Non Distilled model. I have used this as an opportunity to repackage all the LTX-2 checkpoints and reduce their overal HD footprint since they all share around 5GB. 
 
 **So dont be surprised if the old checkpoints are deleted and new are downloaded !!!**.
 
-- **LTX2 Multi Passes Loras multipliers**: *LTX2* supports now loras multiplier that depend on the Pass No. For instance "1;0.5" means 1 will the strength for the first LTX2 pass and 0.5 will be the strength for the second pass.
+- **LTX-2 Multi Passes Loras multipliers**: *LTX-2* supports now loras multiplier that depend on the Pass No. For instance "1;0.5" means 1 will the strength for the first LTX-2 pass and 0.5 will be the strength for the second pass.
 
 - **New Profile 3.5**: here is the lost kid of *Profile 3* & *Profile 5*, you got tons of VRAM, but little RAM ? Profile 3.5 will be your new friend as it will no longer use Reserved RAM to accelerate transfers. Use Profile 3.5 only if you can fit entirely a *Diffusion / Transformer* model in VRAM, otherwise the gen may be much slower.
 
-- **NVFP4 Quantization for LTX 2 & Flux 2**: you will now be able to load *NV FP4* model checkpoints in WanGP. On top of *Wan NV4* which was added recently, we now have *LTX 2 (non distilled)* & *Flux 2* support. NV FP4 uses slightly less VRAM and up to 30% less RAM. 
+- **NVFP4 Quantization for LTX-2 & Flux 2**: you will now be able to load *NV FP4* model checkpoints in WanGP. On top of *Wan NV4* which was added recently, we now have *LTX-2 (non distilled)* & *Flux 2* support. NV FP4 uses slightly less VRAM and up to 30% less RAM. 
 
 To enjoy fully the NV FP4 checkpoints (**at least 30% faster gens**), you will need a RTX 50xx and to upgrade to *Pytorch 2.9.1 / Cuda 13* with the latest version of *lightx2v kernels* (check *docs/INSTALLATION.md*). To observe the speed gain, you have to make sure the workload is quite high (high res, long video).
 
 
 ### January 13th 2026: WanGP v10.24, When there is no VRAM left there is still some VRAM left ...
 
-- **LTX 2 - SUPER VRAM OPTIMIZATIONS**  
+- **LTX-2 - SUPER VRAM OPTIMIZATIONS**  
 
 *With WanGP 10.21 HD 720p Video Gens of 10s just need now 8GB of VRAM!*
 
 LTX Team said this video gen was for 4k. So I had no choice but to squeeze more VRAM with further optimizations.
 
-After much suffering I have managed to reduce by at least 1/3 the VRAM requirements of LTX 2, which means:
+After much suffering I have managed to reduce by at least 1/3 the VRAM requirements of LTX-2, which means:
   - 10s at 720p can be done with only 8GB of VRAM
   - 10s at 1080p with only 12 GB of VRAM
   - 20s at 1080p with only 16 GB of VRAM
-  - 10s at Full 4k (3840 x 2176 !!!) with 24 GB of VRAM.  However the bad news is LTX 2 video is not for 4K, as 4K outputs may give you nightmares ...
+  - 10s at Full 4k (3840 x 2176 !!!) with 24 GB of VRAM.  However the bad news is LTX-2 video is not for 4K, as 4K outputs may give you nightmares ...
 
 3K/4K resolutions will be available only if you enable them in the *Config* / *General* tab.
 
 - **Ic Loras support**: Use a *Control Video* to transfer *Pose*, *Depth*, *Canny Edges*. I have added some extra tweaks: with WanGP you can restrict the transfer to a *masked area*, define a *denoising strength* (how much the control video is going to be followed) and a *masking strength* (how much unmasked area is impacted) 
 
-- **Start Image Strength**: This new slider will appear below a *Start Image* or Source *Video*. If you set it to values lower than 1 you may to reduce the static image effect, you get sometime with LTX2 i2v
+- **Start Image Strength**: This new slider will appear below a *Start Image* or Source *Video*. If you set it to values lower than 1 you may to reduce the static image effect, you get sometime with LTX-2 i2v
  
-- **Custom Gemma Text Encoder for LTX 2**: As a practical case, the *Heretic* text encoder is now supported by WanGP. Check the *finetune* doc, but in short create a *finetune* that has a *text_encoder_URLS* key that contains a list of one or more file paths or URLs.  
+- **Custom Gemma Text Encoder for LTX-2**: As a practical case, the *Heretic* text encoder is now supported by WanGP. Check the *finetune* doc, but in short create a *finetune* that has a *text_encoder_URLS* key that contains a list of one or more file paths or URLs.  
 
-- **Experimental Auto Recovery Failed Lora Pin**: Some users (with usually PC with less than 64 GB of RAM) have reported Out Of Memory although a model seemed to load just fine when starting a gen with Loras. This is sometime related to WanGP attempting (and failing due to unsufficient reserved RAM) to pin the Loras to Reserved Memory for faster gen. I have experimented a recovery mode that should release sufficient ressources to continue the Video Gen. This may solve the oom crashes with *LTX2 Default (non distilled)* 
+- **Experimental Auto Recovery Failed Lora Pin**: Some users (with usually PC with less than 64 GB of RAM) have reported Out Of Memory although a model seemed to load just fine when starting a gen with Loras. This is sometime related to WanGP attempting (and failing due to unsufficient reserved RAM) to pin the Loras to Reserved Memory for faster gen. I have experimented a recovery mode that should release sufficient ressources to continue the Video Gen. This may solve the oom crashes with *LTX-2 Default (non distilled)* 
 
 - **Max Loras Pinned Slider**:  If the Auto Recovery Mode is still not sufficient, I have added a Slider at the bottom of the  *Configuration*  / *Performance* tab that you can use to prevent WanGP from Pinning Loras (to do so set it to 0). As if there is no loading attempt there wont be any crash...
 
 *update 10.21*: added slider Loras Max Pinning slider\
-*update 10.22*: added support for custom Ltx2 Text Encoder + Auto Recovery mode if Lora Pinning failed\
+*update 10.22*: added support for custom LTX-2 Text Encoder + Auto Recovery mode if Lora Pinning failed\
 *update 10.23*: Fixed text prompt ignore in profile 1 & 2 (this created random output videos)
 
 ### January 9st 2026: WanGP v10.11, Spoiled again
 
-- **LTX 2**: here is the long awaited *Ovi Challenger*, LTX-2 generates video and an audio soundtrack. As usual this WanGP version is *low VRAM*. You should be able to run it with as low as 10 GB of VRAM. If you have at least 24 GB of VRAM you will be able to generate 20s at 720p in a single window in only 2 minutes with the distilled model.  WanGP LTX 2 version supports on day one, *Start/End keyframes*, *Sliding-Window* / *Video Continuation* and *Generation Preview*. A *LTX 2 distilled* is part of the package for a very fast generation.
+- **LTX-2**: here is the long awaited *Ovi Challenger*, LTX-2 generates video and an audio soundtrack. As usual this WanGP version is *low VRAM*. You should be able to run it with as low as 10 GB of VRAM. If you have at least 24 GB of VRAM you will be able to generate 20s at 720p in a single window in only 2 minutes with the distilled model.  WanGP LTX-2 version supports on day one, *Start/End keyframes*, *Sliding-Window* / *Video Continuation* and *Generation Preview*. A *LTX-2 distilled* is part of the package for a very fast generation.
 
 With WanGP v10.11 you can now force your soundtrack, it works like *Multitalk* / *Avatar* except in theory it should work with any kind of sound (not just vocals). Thanks to *Kijai* for showing it was possible.
 
@@ -192,7 +192,7 @@ With WanGP v10.11 you can now force your soundtrack, it works like *Multitalk* /
 
 - **MMaudio NSFW**: for alternative audio background
 
-*update v10.11*: LTX 2, use your own soundtrack
+*update v10.11*: LTX-2, use your own soundtrack
 
 
 
@@ -244,25 +244,28 @@ pip install -r requirements.txt
 ```
 
 **Update the application (upgrade from python 3.10 to 3.11):**
+I recommend creating a new conda env for the Python 3.11 to avoid bad surprises. Let's call the new conda env *wangp* (instead of *wan2gp* the old name of this project)
 Get in the directory where WanGP is installed and:
 ```bash
 git pull
-conda uninstall -n wan2gp --all   ### this will delete the old cuda environment but you could decide it too keep it and create a new conda env with a new name and switch between them
-conda create -n wan2gp python=3.11.9
-conda activate wan2gp
+conda create -n wangp python=3.11.9
+conda activate wangp
 pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
 
-If kept the same conda environement / python version, you will have as well to uninstall / reinstall *Sage Attention*, *Triton*, *Flash Attention* (if installed) otherwise you will get some errors when launching the app since these libraries were compiled for an earlier version of Pytorch. Check the **[Installation Guide](docs/INSTALLATION.md)** -
+Once you are done you will have to reinstall *Sage Attention*, *Triton*, *Flash Attention* (if installed). Check the **[Installation Guide](docs/INSTALLATION.md)** -
 
 if you get some error messages related to git, you may try the following (beware this will overwrite local changes made to the source code of WanGP):
 ```bash
 git fetch origin && git reset --hard origin/main
-conda activate wan2gp
+conda activate wangp
 pip install -r requirements.txt
 ```
-
+When you have the confirmation it works well you can then delete the old conda env:
+```bash
+conda uninstall -n wan2gp --all  
+```
 **Run headless (batch processing):**
 
 Process saved queues without launching the web UI:

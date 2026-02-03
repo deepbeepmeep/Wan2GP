@@ -2211,6 +2211,15 @@ class Florence2LanguageForConditionalGeneration(Florence2LanguagePreTrainedModel
         encoder_outputs=None,
         **kwargs,
     ):
+        if past_key_values is not None and not isinstance(past_key_values, (tuple, list)):
+            if hasattr(past_key_values, "to_legacy_cache"):
+                past_key_values = past_key_values.to_legacy_cache()
+            if past_key_values is not None and len(past_key_values) == 0:
+                past_key_values = None
+        if past_key_values is not None and isinstance(past_key_values, (tuple, list)) and len(past_key_values) > 0:
+            first = past_key_values[0]
+            if isinstance(first, (tuple, list)) and len(first) > 0 and first[0] is None:
+                past_key_values = None
         # cut decoder_input_ids if past_key_values is used
         if past_key_values is not None:
             past_length = past_key_values[0][0].shape[2]
@@ -2813,8 +2822,11 @@ class Florence2ForConditionalGeneration(Florence2PreTrainedModel, GenerationMixi
         pixel_values=None,
         **kwargs
         ):
-
         attention_mask = None
+        if "attention_mask" in kwargs:
+            provided_mask = kwargs.pop("attention_mask")
+            if provided_mask is not None:
+                attention_mask = provided_mask
         if inputs_embeds is None:
             # 1. Extra the input embeddings
             if input_ids is not None:
@@ -2856,6 +2868,15 @@ class Florence2ForConditionalGeneration(Florence2PreTrainedModel, GenerationMixi
         encoder_outputs=None,
         **kwargs,
     ):
+        if past_key_values is not None and not isinstance(past_key_values, (tuple, list)):
+            if hasattr(past_key_values, "to_legacy_cache"):
+                past_key_values = past_key_values.to_legacy_cache()
+            if past_key_values is not None and len(past_key_values) == 0:
+                past_key_values = None
+        if past_key_values is not None and isinstance(past_key_values, (tuple, list)) and len(past_key_values) > 0:
+            first = past_key_values[0]
+            if isinstance(first, (tuple, list)) and len(first) > 0 and first[0] is None:
+                past_key_values = None
         # cut decoder_input_ids if past_key_values is used
         if past_key_values is not None:
             past_length = past_key_values[0][0].shape[2]

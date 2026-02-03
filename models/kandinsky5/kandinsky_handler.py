@@ -244,7 +244,7 @@ class family_handler:
                 "sourceFolderList": ["clip_vit_large_patch14", ""],
                 "fileList": [
                     [
-                        "config.json",
+                        "text_config.json",
                         "merges.txt",
                         "model.safetensors",
                         "preprocessor_config.json",

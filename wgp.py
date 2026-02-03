@@ -6845,116 +6845,135 @@ def process_tasks(state):
     gen["status"] = "Generating Video"
     gen["header_text"] = ""    
 
-    yield time.time(), time.time() 
-    prompt_no = 0
-    while len(queue) > 0:
-        paused_for_edit = False
-        while gen.get("queue_paused_for_edit", False):
-            if not paused_for_edit:
-                gr.Info("Queue Paused until Current Task Edition is Done")
-                gen["status"] = "Queue paused for editing..."
-                yield time.time(), time.time() 
-                paused_for_edit = True
-            time.sleep(0.5)
-        
-        if paused_for_edit:
-            gen["status"] = "Resuming queue processing..."
-            yield time.time(), time.time()
+    yield time.time(), time.time()
 
-        prompt_no += 1
-        gen["prompt_no"] = prompt_no
+    com_stream = AsyncStream()
+    send_cmd = com_stream.output_queue.push
 
-        task = None
-        with lock:
-            if len(queue) > 0:
-                task = queue[0]
+    def queue_worker_func():
+        prompt_no = 0
+        try:
+            while len(queue) > 0:
+                paused_for_edit = False
+                while gen.get("queue_paused_for_edit", False):
+                    if not paused_for_edit:
+                        send_cmd("info", "Queue Paused until Current Task Edition is Done")
+                        send_cmd("status", "Queue paused for editing...")
+                        send_cmd("output", None) 
+                        paused_for_edit = True
+                    time.sleep(0.5)
+                
+                if paused_for_edit:
+                    send_cmd("status", "Resuming queue processing...")
+                    send_cmd("output", None)
 
-        if task is None:
+                prompt_no += 1
+                gen["prompt_no"] = prompt_no
+
+                task = None
+                with lock:
+                    if len(queue) > 0:
+                        task = queue[0]
+
+                if task is None:
+                    break
+
+                task_id = task["id"] 
+                params = task['params']
+                for key in ["model_filename", "lset_name"]:
+                    params.pop(key, None)
+                
+                try:
+                    import inspect
+                    model_type = params.get('model_type')
+                    known_defaults = {
+                        'image_refs_relative_size': 50,
+                    }
+
+                    for arg_name, default_value in known_defaults.items():
+                        if arg_name not in params:
+                            print(f"Warning: Missing argument '{arg_name}' in loaded task. Applying default value: {default_value}")
+                            params[arg_name] = default_value
+                    if model_type:
+                        default_settings = get_default_settings(model_type)
+                        expected_args = inspect.signature(generate_video).parameters.keys()
+                        for arg_name in expected_args:
+                            if arg_name not in params and arg_name in default_settings:
+                                params[arg_name] = default_settings[arg_name]
+                    plugin_data = task.pop('plugin_data', {})
+
+                    generate_video(task, send_cmd, plugin_data=plugin_data,  **params)
+                    
+                except Exception as e:
+                    tb = traceback.format_exc().split('\n')[:-1] 
+                    print('\n'.join(tb))
+                    send_cmd("error", str(e))
+                    return
+
+                abort = gen.get("abort", False)
+                if abort:
+                    gen["abort"] = False
+                    send_cmd("status", "Video Generation Aborted")
+                    send_cmd("output", None)
+
+                gen["early_stop"] = False
+                gen["early_stop_forwarded"] = False
+
+                with lock:
+                    queue[:] = [item for item in queue if item['id'] != task_id]
+                update_global_queue_ref(queue)
+                
+        except Exception as e:
+            traceback.print_exc()
+            send_cmd("error", f"Queue worker crashed: {e}")
+        finally:
+            send_cmd("worker_exit", None)
+
+    async_run(queue_worker_func)
+
+    while True:
+        cmd, data = com_stream.output_queue.next()               
+        if cmd == "exit":
+            pass
+        elif cmd == "worker_exit":
             break
-
-        task_id = task["id"] 
-        params = task['params']
-        for key in ["model_filename", "lset_name"]:
-            params.pop(key, None)
-        com_stream = AsyncStream()
-        send_cmd = com_stream.output_queue.push
-        def generate_video_error_handler():
+        elif cmd == "info":
+            gr.Info(data)
+        elif cmd == "error": 
+            queue.clear()
+            gen["prompts_max"] = 0
+            gen["prompt"] = ""
+            gen["status_display"] = False
+            release_gen()
+            raise gr.Error(data, print_exception=False, duration=0)
+        elif cmd == "status":
+            gen["status"] = data
+        elif cmd == "output":
+            gen["preview"] = None
+            gen["refresh_tab"] = True
+            yield time.time(), time.time()
+        elif cmd == "progress":
+            gen["progress_args"] = data
+        elif cmd == "preview":
+            current_model_type = "unknown"
+            with lock:
+                if len(queue) > 0:
+                    current_model_type = queue[0]["params"].get("model_type")
+            
             try:
-                import inspect
-                model_type = params.get('model_type')
-                known_defaults = {
-                    'image_refs_relative_size': 50,
-                }
-
-                for arg_name, default_value in known_defaults.items():
-                    if arg_name not in params:
-                        print(f"Warning: Missing argument '{arg_name}' in loaded task. Applying default value: {default_value}")
-                        params[arg_name] = default_value
-                if model_type:
-                    default_settings = get_default_settings(model_type)
-                    expected_args = inspect.signature(generate_video).parameters.keys()
-                    for arg_name in expected_args:
-                        if arg_name not in params and arg_name in default_settings:
-                            params[arg_name] = default_settings[arg_name]
-                plugin_data = task.pop('plugin_data', {})
-                generate_video(task, send_cmd, plugin_data=plugin_data,  **params)
-            except Exception as e:
-                tb = traceback.format_exc().split('\n')[:-1] 
-                print('\n'.join(tb))
-                send_cmd("error",str(e))
-            finally:
-                send_cmd("exit", None)
-
-        async_run(generate_video_error_handler)
-
-        while True:
-            cmd, data = com_stream.output_queue.next()               
-            if cmd == "exit":
-                break
-            elif cmd == "info":
-                gr.Info(data)
-            elif cmd == "error": 
-                queue.clear()
-                gen["prompts_max"] = 0
-                gen["prompt"] = ""
-                gen["status_display"] =  False
-                release_gen()
-                raise gr.Error(data, print_exception= False, duration = 0)
-            elif cmd == "status":
-                gen["status"] = data
-            elif cmd == "output":
-                gen["preview"] = None
-                gen["refresh_tab"] = True
-                yield time.time() , time.time() 
-            elif cmd == "progress":
-                gen["progress_args"] = data
-            elif cmd == "preview":
                 torch.cuda.current_stream().synchronize()
-                preview= None if data== None else generate_preview(params["model_type"], data) 
+                preview = None if data is None else generate_preview(current_model_type, data) 
                 gen["preview"] = preview
                 yield time.time() , gr.Text()
-            else:
-                release_gen()
-                raise Exception(f"unknown command {cmd}")
-
-        abort = gen.get("abort", False)
-        if abort:
-            gen["abort"] = False
-            status = "Video Generation Aborted", "Video Generation Aborted"
-            yield time.time() , time.time() 
-            gen["status"] = status
-
-        gen["early_stop"] = False
-        gen["early_stop_forwarded"] = False
-
-        with lock:
-            queue[:] = [item for item in queue if item['id'] != task_id]
-        update_global_queue_ref(queue)
+            except Exception:
+                pass
+        else:
+            pass
 
     gen["prompts_max"] = 0
     gen["prompt"] = ""
     end_time = time.time()
-    if abort:
+    if gen.get("abort", False):
         status = f"Video generation was aborted. Total Generation Time: {format_time(end_time-start_time)}" 
     else:
         status = f"Total Generation Time: {format_time(end_time-start_time)}"

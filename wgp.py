@@ -78,6 +78,7 @@ from collections import defaultdict
 # dynamo.config.recompile_limit = 2000   # default is 256
 # dynamo.config.accumulated_recompile_limit = 2000  # or whatever limit you want
 
+STARTUP_LOCK_FILE = "startup.lock"
 global_queue_ref = []
 AUTOSAVE_FILENAME = "queue.zip"
 AUTOSAVE_PATH = AUTOSAVE_FILENAME
@@ -1537,6 +1538,7 @@ def show_countdown_info_from_state(current_value: int):
     return current_value
 quitting_app = False
 def autosave_queue():
+    clear_startup_lock()
     global quitting_app
     quitting_app = True
     global global_queue_ref
@@ -11337,6 +11339,13 @@ def create_ui():
             stats_app.setup_events(main, state)
         return main
 
+def clear_startup_lock():
+    if os.path.exists(STARTUP_LOCK_FILE):
+        try:
+            os.remove(STARTUP_LOCK_FILE)
+        except:
+            pass
+
 if __name__ == "__main__":
     if args.merge_catalog:
         manager = PluginManager()
@@ -11460,29 +11469,58 @@ if __name__ == "__main__":
     # Normal Gradio mode continues below...
     atexit.register(autosave_queue)
 
-    STARTUP_LOCK_FILE = "startup.lock"
     globals()["SAFE_MODE"] = False
 
     if os.path.exists(STARTUP_LOCK_FILE):
-        print("\n" + "!"*10)
-        print("DETECTED FAILED PREVIOUS STARTUP. ENTERING SAFE MODE.")
-        print("All user plugins are disabled to allow the server to start.")
-        print("!"*10 + "\n")
-        globals()["SAFE_MODE"] = True
+        print("\n" + "!"*60)
+        print("DETECTED FAILED PREVIOUS STARTUP.")
+        print("Waiting 2 seconds...")
+        print("Press 'c' to CANCEL Safe Mode and force normal startup.")
+        if os.name != 'nt':
+            print("(On Linux/Mac, type 'c' and press Enter)")
+        print("!"*60 + "\n")
+        cancel_safe_mode = False
+        start_wait = time.time()
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                while msvcrt.kbhit():
+                    msvcrt.getwch()
+                
+                while time.time() - start_wait < 2:
+                    if msvcrt.kbhit():
+                        if msvcrt.getwch().lower() == 'c':
+                            cancel_safe_mode = True
+                            break
+                    time.sleep(0.05)
+            else:
+                import select
+                while time.time() - start_wait < 2:
+                    r, _, _ = select.select([sys.stdin], [], [], 0.1)
+                    if r:
+                        line = sys.stdin.readline()
+                        if 'c' in line.lower():
+                            cancel_safe_mode = True
+                            break
+        except Exception as e:
+            print(f"Warning: Input detection failed: {e}")
+
+        if cancel_safe_mode:
+            print("\nSAFE MODE CANCELLED. Proceeding with normal startup.")
+            globals()["SAFE_MODE"] = False
+        else:
+            print("\nENTERING SAFE MODE. User plugins disabled.")
+            globals()["SAFE_MODE"] = True
 
     try:
-        with open(STARTUP_LOCK_FILE, "w") as f:
-            f.write(str(time.time()))
+        with open(STARTUP_LOCK_FILE, "w"):
+            pass
     except Exception as e:
         print(f"Warning: Could not create startup lock file: {e}")
 
     def mark_startup_success():
         time.sleep(30)
-        if os.path.exists(STARTUP_LOCK_FILE):
-            try:
-                os.remove(STARTUP_LOCK_FILE)
-            except:
-                pass
+        clear_startup_lock()
 
     threading.Thread(target=mark_startup_success, daemon=True).start()
 

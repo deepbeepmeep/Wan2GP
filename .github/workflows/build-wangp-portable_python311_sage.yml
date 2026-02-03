@@ -1,4 +1,4 @@
-name: Build WanGP Portable Sage Attention
+name: Build WanGP Portable Python 3.11 Sage Attention
 
 on:
   workflow_dispatch:

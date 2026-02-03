@@ -85,7 +85,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.3"
-WanGP_version = "10.61"
+WanGP_version = "10.70"
 settings_version = 2.49
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -1708,7 +1708,7 @@ def update_generation_status(html_content):
     if(html_content):
         return gr.update(value=html_content)
 
-family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.TTS.ace_step_handler", "models.TTS.chatterbox_handler", "models.TTS.qwen3_handler", "models.TTS.yue_handler", "models.TTS.heartmula_handler"]
+family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.TTS.ace_step_handler", "models.TTS.chatterbox_handler", "models.TTS.qwen3_handler", "models.TTS.yue_handler", "models.TTS.heartmula_handler", "models.TTS.kugelaudio_handler"]
 DEFAULT_LORA_ROOT = "loras"
 
 def register_family_lora_args(parser, lora_root):
@@ -4153,6 +4153,8 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_guidance3_scale = configs.get("guidance3_scale", None)
             video_audio_guidance_scale = configs.get("audio_guidance_scale", None)
             video_alt_guidance_scale = configs.get("alt_guidance_scale", None)
+            video_temperature = configs.get("temperature", None)
+            video_top_k = configs.get("top_k", None)
             video_switch_threshold = configs.get("switch_threshold", 0)
             video_switch_threshold2 = configs.get("switch_threshold2", 0)
             video_model_switch_phase = configs.get("model_switch_phase", 1)
@@ -4258,6 +4260,15 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels += ["Sampler Solver"]                                        
             values += [video_resolution, video_length_summary, video_seed, video_guidance_scale, video_audio_guidance_scale]
             labels += ["Resolution", video_length_label, "Seed", video_guidance_label, "Audio Guidance Scale"]
+            if model_def.get("temperature", True) and video_temperature is not None:
+                values += [video_temperature]
+                labels += ["Temperature"]
+            if model_def.get("top_k_slider", False) and video_top_k is not None:
+                values += [video_top_k]
+                labels += ["Top-k"]
+            if is_audio and model_def.get("pause_between_sentences", False):
+                values += [configs.get("pause_seconds", 0.0)]
+                labels += ["Pause (s)"]
             alt_guidance_type = model_def.get("alt_guidance", None)
             if alt_guidance_type is not None and video_alt_guidance_scale is not None:
                 values += [video_alt_guidance_scale]
@@ -5436,6 +5447,7 @@ def generate_video(
     resolution,
     video_length,
     duration_seconds,
+    pause_seconds,
     batch_size,
     seed,
     force_fps,
@@ -6266,7 +6278,7 @@ def generate_video(
 
             status = get_latest_status(state)
             gen["progress_status"] = status
-            progress_phase = "Generation Audio" if audio_only else "Encoding Prompt"
+            progress_phase = "Generating Audio" if audio_only else "Encoding Prompt"
             gen["progress_phase"] = (progress_phase , -1 )
             callback = build_callback(state, trans, send_cmd, status, num_inference_steps)
             progress_args = [0, merge_status_context(status, progress_phase )]
@@ -6291,13 +6303,6 @@ def generate_video(
                 prefix_video_for_model = prefix_video
                 if prefix_video is not None and prefix_video.dtype == torch.uint8:
                     prefix_video_for_model = prefix_video.float().div_(127.5).sub_(1.0)
-                extra_generate_kwargs = {}
-                if audio_only and duration_def is not None:
-                    extra_generate_kwargs["duration_seconds"] = duration_seconds
-                if audio_only and model_def.get("guidance_max_phases", 0) >= 1:
-                    extra_generate_kwargs["cfg_scale"] = guidance_scale
-                if audio_only and model_def.get("top_k_slider", False):
-                    extra_generate_kwargs["top_k"] = top_k
                 samples = wan_model.generate(
                     input_prompt = prompt,
                     alt_prompt = alt_prompt,
@@ -6394,7 +6399,9 @@ def generate_video(
                     self_refiner_plan=self_refiner_plan,
                     self_refiner_f_uncertainty = self_refiner_f_uncertainty,
                     self_refiner_certain_percentage = self_refiner_certain_percentage,
-                    **extra_generate_kwargs,
+                    duration_seconds=duration_seconds,
+                    pause_seconds=pause_seconds,
+                    top_k=top_k,
                 )
             except Exception as e:
                 if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:
@@ -7655,6 +7662,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += [ "pace", "exaggeration", "temperature"]
     if model_def.get("duration_slider", None) is None:
         pop += ["duration_seconds"]
+    if not model_def.get("pause_between_sentences", False):
+        pop += ["pause_seconds"]
     if not model_def.get("top_k_slider", False):
         pop += ["top_k"]
     if not model_def.get("temperature", True):
@@ -8331,6 +8340,7 @@ def save_inputs(
             resolution,
             video_length,
             duration_seconds,
+            pause_seconds,
             batch_size,
             seed,
             force_fps,
@@ -9854,12 +9864,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             embedded_guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("embedded_guidance_scale"), step=0.5, label="Embedded Guidance Scale", visible=any_embedded_guidance, show_reset_button= False )
                             alt_guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("alt_guidance_scale"), step=0.5, label= alt_guidance_type if any_alt_guidance else "" , visible=any_alt_guidance, show_reset_button= False )
 
-                        temperature_visible = audio_only and model_def.get("temperature", True)
+                        with gr.Row(visible=model_def.get("pause_between_sentences", False)) as pause_row:
+                            pause_seconds = gr.Slider(minimum=0.0, maximum=2.0,  value=ui_get("pause_seconds"), step=0.05, label="Pause between Multi Speakers sentences (seconds)", show_reset_button=False,)
+
+                        temperature_visible=audio_only and model_def.get("temperature", True)
                         with gr.Row(visible=temperature_visible) as temperature_row:
                             temperature = gr.Slider(0.1, 1.5, value=ui_get("temperature"), step=0.01, label="Temperature", show_reset_button=False)
 
                         with gr.Row(visible=audio_only and model_def.get("top_k_slider", False)) as top_k_row:
-                            top_k = gr.Slider( 1, 100, value=ui_get("top_k", 50), step=1, label="Top-k", show_reset_button=False, )
+                            top_k = gr.Slider( 0, 100, value=ui_get("top_k", 50), step=1, label="Top-k", show_reset_button=False,)
 
                         sample_solver_choices = model_def.get("sample_solvers", None)
                         any_flow_shift = model_def.get("flow_shift", False) 
@@ -10381,7 +10394,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, top_k_row, number_frames_row, negative_prompt_row, chatter_row,
-                                      self_refiner_col]+\
+                                      self_refiner_col, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

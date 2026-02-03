@@ -60,7 +60,7 @@ def _normalize_config(config_value):
 
 
 def _load_config_from_checkpoint(path):
-    from mmgp import safetensors2
+    from mmgp import quant_router
 
     if isinstance(path, (list, tuple)):
         if not path:
@@ -68,7 +68,7 @@ def _load_config_from_checkpoint(path):
         path = path[0]
     if not path:
         return {}
-    _, metadata = safetensors2.load_metadata_state_dict(path)
+    _, metadata = quant_router.load_metadata_state_dict(path)
     if not metadata:
         return {}
     return _normalize_config(metadata.get("config"))
@@ -644,6 +644,7 @@ class LTX2:
         image_end=None,
         sampling_steps: int = 40,
         guide_scale: float = 4.0,
+        alt_guide_scale: float = 1.0,
         frame_num: int = 121,
         height: int = 1024,
         width: int = 1536,
@@ -670,6 +671,12 @@ class LTX2:
         return_latent_slice = kwargs.get("return_latent_slice")
         video_prompt_type = kwargs.get("video_prompt_type") or ""
         denoising_strength = kwargs.get("denoising_strength")
+        cfg_star_switch = kwargs.get("cfg_star_switch", 0)
+        apg_switch = kwargs.get("apg_switch", 0)
+        slg_switch = kwargs.get("slg_switch", 0)
+        slg_layers = kwargs.get("slg_layers")
+        slg_start = kwargs.get("slg_start", 0.0)
+        slg_end = kwargs.get("slg_end", 1.0)
 
         def _get_frame_dim(video_tensor: torch.Tensor) -> int | None:
             if video_tensor.dim() < 2:
@@ -947,6 +954,13 @@ class LTX2:
                 frame_rate=float(fps),
                 num_inference_steps=int(sampling_steps),
                 cfg_guidance_scale=float(guide_scale),
+                cfg_star_switch=cfg_star_switch,
+                apg_switch=apg_switch,
+                slg_switch=slg_switch,
+                slg_layers=slg_layers,
+                slg_start=slg_start,
+                slg_end=slg_end,
+                alt_guidance_scale=float(alt_guide_scale),
                 images=images,
                 guiding_images=guiding_images or None,
                 images_stage2=images_stage2 if stage2_override else None,
@@ -972,6 +986,7 @@ class LTX2:
                 num_frames=int(frame_num),
                 frame_rate=float(fps),
                 images=images,
+                alt_guidance_scale=float(alt_guide_scale),
                 video_conditioning=video_conditioning,
                 latent_conditioning_stage2=latent_conditioning_stage2,
                 tiling_config=tiling_config,

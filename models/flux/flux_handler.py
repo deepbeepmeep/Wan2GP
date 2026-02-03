@@ -85,19 +85,9 @@ class family_handler():
             "flux-model": flux_model,
             "flux2": flux2,
         }
-        nag_supported = base_model_type in [
-            "flux_schnell",
-            "flux_dev_kontext",
-            "flux_dev_umo",
-            "flux_dev_uso",
-            "flux_dev_kontext_dreamomni2",
-            "pi_flux2",
-            "flux2_dev",
-            "flux",
-            "flux2_klein_4b",
-            "flux2_klein_9b",
-        ]
-        if nag_supported:
+        if flux_chroma or flux_chroma_radiance:
+            extra_model_def["guidance_max_phases"] = 1
+        else:
             extra_model_def["NAG"] = True
             extra_model_def["no_negative_prompt"] = False
         supports_inpaint = flux_kontext or flux_schnell or flux_dev or flux2
@@ -164,8 +154,6 @@ class family_handler():
             extra_model_def["profiles_dir"] = ["flux2_klein_4b"] if flux2_klein_4b else ["flux2_klein_9b"]
         else:
             extra_model_def["profiles_dir"] = [] if (flux_schnell or flux2) else ["flux"]
-        if flux_chroma or flux_chroma_radiance:
-            extra_model_def["guidance_max_phases"] = 1
         if flux_chroma_radiance:
             extra_model_def["radiance"] = True
         elif not flux_schnell and not flux2_klein:
@@ -357,7 +345,7 @@ class family_handler():
                 "repoId" : "DeepBeepMeep/HunyuanVideo", 
                 "sourceFolderList" :  [  "clip_vit_large_patch14",   ],
                 "fileList" :[ 
-                                ["config.json", "merges.txt", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"],
+                                ["text_config.json", "merges.txt", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"],
                                 ]
                 },
                 {  
@@ -371,7 +359,7 @@ class family_handler():
                     {  
                     "repoId" : "DeepBeepMeep/Flux", 
                     "sourceFolderList" :  ["siglip-so400m-patch14-384"],
-                    "fileList" : [ ["config.json", "preprocessor_config.json", "model.safetensors"] ]   
+                    "fileList" : [ ["vision_config.json", "preprocessor_config.json", "model.safetensors"] ]   
                     }]
 
 

@@ -99,11 +99,12 @@ class family_handler:
             "audio_guide_label": "Source Audio",
             "audio_scale_name": "Prompt Audio Strength",
             "audio_prompt_choices": True,
+            "enabled_audio_lora": True,
             "audio_prompt_type_sources": {
                 "selection": ["", "A"],
                 "labels": {
                     "": "No Source Audio",
-                    "A": "Remix Audio (need to provide original lyrics and set a Audio Prompt strength)",
+                    "A": "Remix Audio (need to provide original lyrics and set an Audio Prompt strength)",
                 },
                 "default": "",
                 "label": "Source Audio Mode",

@@ -328,7 +328,12 @@ def _generate_image_captions(
     image_caption_prompts = [system_prompt] * len(images)
     inputs = image_caption_processor(
         image_caption_prompts, images, return_tensors="pt"
-    ).to("cuda") #.to(image_caption_model.device)
+    ).to(image_caption_model.device)
+
+    bad_words_ids = None
+    bos_id = getattr(image_caption_processor.tokenizer, "bos_token_id", None)
+    if bos_id is not None:
+        bad_words_ids = [[int(bos_id)]]
 
     with torch.inference_mode():
         generated_ids = image_caption_model.generate(
@@ -337,6 +342,7 @@ def _generate_image_captions(
             max_new_tokens=1024,
             do_sample=False,
             num_beams=3,
+            bad_words_ids=bad_words_ids,
         )
 
     return image_caption_processor.batch_decode(generated_ids, skip_special_tokens=True)
@@ -353,7 +359,7 @@ def _generate_and_decode_prompts(
     top_k: Optional[int] = None,
     seed: Optional[int] = None,
 ) -> List[str]:
-    device = getattr(prompt_enhancer_model, "device", None)
+    device = "cuda"
     if seed is None:
         rng_context = nullcontext()
     else:

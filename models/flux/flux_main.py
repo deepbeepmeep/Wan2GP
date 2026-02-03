@@ -147,7 +147,11 @@ class model_factory:
         if self.name == 'flux-dev-uso':
             siglip_path =  fl.locate_folder("siglip-so400m-patch14-384")
             siglip_processor = SiglipImageProcessor.from_pretrained(siglip_path)
-            siglip_model = SiglipVisionModel.from_pretrained(siglip_path)
+            siglip_model = offload.fast_load_transformers_model(
+                fl.locate_file(os.path.join("siglip-so400m-patch14-384", "model.safetensors")),
+                modelClass=SiglipVisionModel,
+                defaultConfigPath=fl.locate_file(os.path.join("siglip-so400m-patch14-384", "vision_config.json")),
+            )
             siglip_model.eval().to("cpu")
             if len(model_filename) > 1:
                 from .modules.layers import SigLIPMultiFeatProjModel                
@@ -278,8 +282,6 @@ class model_factory:
                 except (TypeError, ValueError):
                     model_mode_int = None
             lanpaint_enabled = model_mode_int in (2, 3, 4, 5)
-            if flux2:
-                guide_scale = 1.0
             if self.guidance_max_phases < 1: guide_scale = 1
             if n_prompt is None or len(n_prompt) == 0: n_prompt = "low quality, ugly, unfinished, out of focus, deformed, disfigure, blurry, smudged, restricted palette, flat colors"
             nag_scale = bbargs.get("NAG_scale", 1.0)

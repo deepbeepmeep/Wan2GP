@@ -45,6 +45,7 @@ from .wanmove.trajectory import replace_feature, create_pos_feature_map
 from .alpha.utils import load_gauss_mask, apply_alpha_shift
 from shared.utils.audio_video import save_video
 from shared.utils.text_encoder_cache import TextEncoderCache
+from shared.utils.self_refiner import PnPHandler, create_self_refiner_handler
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
 
@@ -465,6 +466,12 @@ class WanAny2V:
         control_scale_alt = 1.,
         motion_amplitude = 1.,
         window_start_frame_no = 0,
+        enable_self_refine = False,
+        self_refiner_setting=0,
+        self_refiner_plan="",
+        self_refiner_f_uncertainty = 0.0,
+        self_refiner_p_norm = 1,
+        self_refiner_certain_percentage = 0.999,
         **bbargs
                 ):
         
@@ -1134,6 +1141,11 @@ class WanAny2V:
         torch.cuda.empty_cache()
         # denoising
         trans = self.model
+        if self_refiner_setting > 0:
+            self_refiner_handler = create_self_refiner_handler(self_refiner_plan, self_refiner_f_uncertainty, self_refiner_setting, self_refiner_certain_percentage)
+        else:
+            self_refiner_handler = None
+
         for i, t in enumerate(tqdm(timesteps)):
             guide_scale, guidance_switch_done, trans, denoising_extra = update_guidance(i, t, guide_scale, guide2_scale, guidance_switch_done, switch_threshold, trans, 2, denoising_extra)
             guide_scale, guidance_switch2_done, trans, denoising_extra = update_guidance(i, t, guide_scale, guide3_scale, guidance_switch2_done, switch2_threshold, trans, 3, denoising_extra)
@@ -1330,16 +1342,20 @@ class WanAny2V:
                     noise_pred = noise_pred_uncond + guide_scale * (noise_pred_text - noise_pred_uncond)            
             ret_values = noise_pred_uncond = noise_pred_cond = noise_pred_text = neg  = None
             
-            if sample_solver == "euler":
-                dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
-                dt = dt.item() / self.num_timesteps
-                latents = latents - noise_pred * dt
+
+            if self_refiner_handler:
+                latents, sample_scheduler = self_refiner_handler.step(i, latents, noise_pred, locals(), phantom or scail or steadydancer or fantasy)
             else:
-                latents = sample_scheduler.step(
-                    noise_pred[:, :, :target_shape[1]],
-                    t,
-                    latents,
-                    **scheduler_kwargs)[0]
+                if sample_solver == "euler":
+                    dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
+                    dt = dt.item() / self.num_timesteps
+                    latents = latents - noise_pred * dt
+                else:
+                    latents = sample_scheduler.step(
+                        noise_pred[:, :, :target_shape[1]],
+                        t,
+                        latents,
+                        **scheduler_kwargs)[0]
 
 
             if image_mask_latents is not None and i< masked_steps:

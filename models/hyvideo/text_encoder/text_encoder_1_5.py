@@ -101,9 +101,8 @@ def load_text_encoder(
 
     # text_encoder = AutoModel.from_pretrained(text_encoder_path, low_cpu_mem_usage=True)
     
-    if hasattr(text_encoder, 'language_model'):
-        text_encoder = text_encoder.language_model
-    text_encoder.final_layer_norm = text_encoder.norm
+    lm = getattr(text_encoder, "language_model", None) or getattr(getattr(text_encoder, "model", None), "language_model", None)
+    text_encoder.final_layer_norm = lm.norm if lm is not None else text_encoder.norm
     
     # from_pretrained will ensure that the model is in eval mode.
     # if text_encoder_precision is not None:

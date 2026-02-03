@@ -39,13 +39,6 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.utils import ModelOutput, auto_docstring, logging
 from transformers.utils.deprecation import deprecate_kwarg
-try:
-    from transformers.utils.generic import check_model_inputs
-except ImportError:
-    def check_model_inputs(*args, **kwargs):
-        def decorator(func):
-            return func
-        return decorator
 
 from .configuration_qwen3_tts_tokenizer_v2 import (
     Qwen3TTSTokenizerV2Config,
@@ -507,8 +500,7 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(Qwen3TTSTokenizerV2DecoderPreTr
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs()
-    @auto_docstring
+
     def forward(
         self,
         input_ids=None,

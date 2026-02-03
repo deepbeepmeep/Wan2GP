@@ -99,6 +99,7 @@ class ICLoraPipeline:
         frame_rate: float,
         images: list[tuple[str, int, float]],
         video_conditioning: list[tuple[str, float]],
+        alt_guidance_scale: float = 1.0,
         enhance_prompt: bool = False,
         audio_conditionings: list | None = None,
         tiling_config: TilingConfig | None = None,
@@ -110,6 +111,7 @@ class ICLoraPipeline:
         masking_strength: float | None = None,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
+        alt_guidance_scale = 1.0
 
         generator = torch.Generator(device=self.device).manual_seed(seed)
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
@@ -179,12 +181,14 @@ class ICLoraPipeline:
                     video_context=video_context,
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
+                    alt_guidance_scale=alt_guidance_scale,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
                 pass_no=1,
+                transformer=transformer,
             )
 
         stage_1_output_shape = VideoPixelShape(
@@ -280,12 +284,14 @@ class ICLoraPipeline:
                     video_context=video_context,
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
+                    alt_guidance_scale=alt_guidance_scale,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
                 pass_no=2,
+                transformer=transformer,
             )
 
         stage_2_output_shape = VideoPixelShape(batch=1, frames=num_frames, width=width, height=height, fps=frame_rate)

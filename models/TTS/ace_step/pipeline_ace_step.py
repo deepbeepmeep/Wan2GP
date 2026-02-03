@@ -16,6 +16,7 @@ from loguru import logger
 from tqdm import tqdm
 import json
 import math
+from shared.utils.loras_mutipliers import update_loras_slists
 
 # from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from .schedulers.scheduling_flow_match_euler_discrete import (
@@ -482,6 +483,7 @@ class ACEStepPipeline:
         n_avg=1,
         scheduler_type="euler",
         callback=None,
+        loras_slists = None,
     ):
 
         do_classifier_free_guidance = True
@@ -564,9 +566,12 @@ class ACEStepPipeline:
                 progress_unit="steps",
             )
 
+        update_loras_slists(self.ace_step_transformer, loras_slists, T_steps)
+
         for i, t in tqdm(enumerate(timesteps), total=T_steps):
             if self._should_abort():
                 return None
+            offload.set_step_no_for_lora(self.ace_step_transformer, i)
 
             if i < n_min:
                 continue
@@ -761,6 +766,7 @@ class ACEStepPipeline:
         ref_audio_strength=0.5,
         ref_latents=None,
         callback=None,
+        loras_slists = None,
     ):
 
         logger.info(
@@ -1110,10 +1116,12 @@ class ACEStepPipeline:
                 denoising_extra=f"0/{num_inference_steps} steps",
                 progress_unit="steps",
             )
+        update_loras_slists(self.ace_step_transformer, loras_slists, num_inference_steps)
 
         for i, t in tqdm(enumerate(timesteps), total=num_inference_steps):
             if self._should_abort():
                 return None
+            offload.set_step_no_for_lora(self.ace_step_transformer, i)
 
             if is_repaint:
                 if i < n_min:
@@ -1412,6 +1420,7 @@ class ACEStepPipeline:
         debug: bool = False,
         callback=None,
         return_audio: bool = False,
+        loras_slists = None,
     ):
 
         start_time = time.time()
@@ -1574,6 +1583,7 @@ class ACEStepPipeline:
                 n_avg=edit_n_avg,
                 scheduler_type=scheduler_type,
                 callback=callback,
+                loras_slists=loras_slists,
             )
         else:
             target_latents = self.text2music_diffusion_process(
@@ -1608,6 +1618,7 @@ class ACEStepPipeline:
                 ref_audio_strength=ref_audio_strength,
                 ref_latents=ref_latents,
                 callback=callback,
+                loras_slists=loras_slists,
             )
 
         if target_latents is None:
@@ -1815,4 +1826,5 @@ class ACEStepPipeline:
             debug=kwargs.get("debug", False),
             callback=callback,
             return_audio=True,
+            loras_slists=kwargs["loras_slists"],
         )

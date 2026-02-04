@@ -66,7 +66,7 @@ C:\Users\<username>\AppData\Local\Programs\Python\Python311\
 Download Git from [git-scm.com/downloads/windows](https://git-scm.com/install/windows) and install it. The default installation options are fine.
 
 
-## Install (Windows, using a Python `venv`)
+## Installation Steps (Windows, using a Python `venv`)
 > **Note:** The following commands are intended for use in the Windows Command Prompt (CMD).  
 > If you are using PowerShell, some commands (like comments and activating the virtual environment) may differ.
 

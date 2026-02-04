@@ -170,7 +170,7 @@ pip install ninja
 set FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE && python setup.py install
 ```
 
-- **SDPA** (default): Available by default in PyTorch on post-RDNA3 GPUs.
+- **SDPA Flash**: Available by default in PyTorch on post-RDNA2 GPUs via AOTriton.
 
 ## Running Wan2GP
 

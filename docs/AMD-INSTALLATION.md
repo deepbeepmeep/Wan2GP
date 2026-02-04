@@ -200,7 +200,7 @@ If `torch.cuda.is_available()` returns `False`:
 
 **"Could not find a version that satisfies the requirement":**
 - Double-check that you're using the correct `--index-url` for your GPU family. You can also try adding the `--pre` flag or replacing `/v2/` in the URL with `/v2/staging/`
-- Ensure you're using Python 3.11
+- Ensure you're using Python 3.11, and not 3.10
 - Try adding `--pre` flag if not already present
 
 **"No matching distribution found":**
@@ -209,12 +209,12 @@ If `torch.cuda.is_available()` returns `False`:
 
 ### Performance Issues
 
-- **Monitor VRAM usage** - Reduce batch size if running out of memory
-- **Close GPU-intensive apps** - Discord hardware acceleration, browsers, etc.
+- **Monitor VRAM usage** - Reduce batch size or resolution if running out of memory
+- **Close GPU-intensive apps** - Apps with hardware acceleration enabled (browsers, Discord etc.).
 
 ### Known Issues
 
-Windows packages are new and may be unstable!
+Windows packages are new and may be unstable.
 
 Known issues are tracked at: https://github.com/ROCm/TheRock/issues/808
 

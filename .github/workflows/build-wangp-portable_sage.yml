@@ -128,7 +128,7 @@ jobs:
           }
           robocopy python_embedded WanGP-Portable\python_embedded /E /COPYALL
           if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
-          7z a -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -ms=on -v2000m "WanGP-Portable.7z" "WanGP-Portable\*" -xr!"__pycache__" -xr!"*.pyc" -xr!".gitignore"
+          7z a -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -ms=on -v2000m "WanGP-Portable_python310_sage.7z" "WanGP-Portable\*" -xr!"__pycache__" -xr!"*.pyc" -xr!".gitignore"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     
       # Create version-based tag
@@ -154,7 +154,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tag.outputs.new_tag }}
-          files: WanGP-Portable.7z.*
+          files: WanGP-Portable_python310_sage.7z.*
           body: "For details, see the [README](https://github.com/deepbeepmeep/Wan2GP/blob/main/README.md)"
           fail_on_unmatched_files: false
         env:

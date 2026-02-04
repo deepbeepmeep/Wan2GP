@@ -223,7 +223,7 @@ Known issues are tracked at: https://github.com/ROCm/TheRock/issues/808
 ## Additional Resources
 
 - [TheRock GitHub Repository](https://github.com/ROCm/TheRock/)
-- [TheRock Releases Documentation](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)
+- [Releases Documentation](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)
 - [Supported GPU Architectures](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md)
-- [TheRock Roadmap](https://github.com/ROCm/TheRock/blob/main/ROADMAP.md)
+- [Roadmap](https://github.com/ROCm/TheRock/blob/main/ROADMAP.md)
 - [ROCm Documentation](https://rocm.docs.amd.com/)

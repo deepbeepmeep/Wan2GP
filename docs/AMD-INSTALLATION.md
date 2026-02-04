@@ -26,7 +26,7 @@ Based on [TheRock's official support matrix](https://github.com/ROCm/TheRock/blo
 * AMD RX 9070 (gfx1201)
 
 ### Also supported:
-* **gfx103X-dgpu**: (RDNA 2)
+**gfx103X-dgpu**: (RDNA 2)
 
 > **Note:** If your GPU is not listed above, it is not supported by TheRock on Windows. Support status and future updates can be found in the [official documentation](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md).
 

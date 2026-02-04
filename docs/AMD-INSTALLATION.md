@@ -47,20 +47,19 @@ Alternatively, you can use this direct link: [Python 3.11.9 (64-bit)](https://ww
 
 After installing, make sure `python --version` works in your terminal and returns `3.11.9`
 
-If not, you probably need to fix your PATH. Go to:
+If it doesn’t, you need to add Python to your PATH:
 
-* Windows + Pause/Break
-* Advanced System Settings
-* Environment Variables
-* Edit your `Path` under User Variables
-
-Example correct entries:
+* Press the Windows key, type Environment Variables, and select “Edit the system environment variables”.
+* In the System Properties window, click Environment Variables….
+* Under User variables, find Path, then click Edit → New and add the following entries (replace <username> with your Windows username):
 
 ```cmd
 C:\Users\<username>\AppData\Local\Programs\Python\Launcher\
 C:\Users\<username>\AppData\Local\Programs\Python\Python311\Scripts\
 C:\Users\<username>\AppData\Local\Programs\Python\Python311\
 ```
+
+> **Note:** If Python still doesn't show the correct version after updating PATH, try signing out and signing back in to Windows to apply the changes.
 
 ### Installing Git
 

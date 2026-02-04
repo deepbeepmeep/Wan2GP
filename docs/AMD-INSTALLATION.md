@@ -67,6 +67,9 @@ Download Git from [git-scm.com/downloads/windows](https://git-scm.com/install/wi
 
 
 ## Install (Windows, using a Python `venv`)
+> **Note:** This guide uses **Windows CMD**.  
+> If you are using PowerShell, some commands (like comments and activating the virtual environment) may differ.
+
 
 ### Step 1: Download and set up Wan2GP Environment
 

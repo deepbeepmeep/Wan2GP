@@ -65,6 +65,8 @@ import shutil
 import glob
 import cv2
 import html
+import uuid
+from gradio_rangeslider import RangeSlider
 from transformers.utils import logging
 logging.set_verbosity_error
 from tqdm import tqdm
@@ -610,12 +612,11 @@ def validate_settings(state, model_type, single_prompt, inputs):
         model_mode = None
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
-    if self_refiner_setting != 0 and len(self_refiner_plan):
-        from shared.utils.self_refiner import normalize_self_refiner_plan 
-        _, error = normalize_self_refiner_plan(self_refiner_plan)
-        if len(error):
-            gr.Info(error)
-            return ret()
+    if self_refiner_setting != 0:
+        if isinstance(self_refiner_plan, list):
+            pass
+        elif self_refiner_plan:
+             self_refiner_plan = []
 
     if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
     if "vae" in spatial_upsampling:
@@ -9150,6 +9151,36 @@ def download_lora(state, lora_url, progress=gr.Progress(track_tqdm=True),):
 def set_gallery_tab(state, evt:gr.SelectData):                
     return evt.index, "video" if evt.index == 0 else "audio"
 
+def ensure_refiner_list(plan_data):
+    if not isinstance(plan_data, list):
+        return []
+    for rule in plan_data:
+        if "id" not in rule:
+            rule["id"] = str(uuid.uuid4())
+    return plan_data
+
+def add_refiner_rule(current_rules, range_val, steps_val):
+    new_start, new_end = int(range_val[0]), int(range_val[1])
+    
+    if new_start >= new_end:
+         raise gr.Error(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
+
+    for rule in current_rules:
+        if new_start <= rule['end'] and new_end >= rule['start']:
+            raise gr.Error(f"Overlap detected! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
+
+    new_rule = {
+        "id": str(uuid.uuid4()),
+        "start": new_start,
+        "end": new_end,
+        "steps": int(steps_val)
+    }
+    updated_list = current_rules + [new_rule]
+    return sorted(updated_list, key=lambda x: x['start'])
+
+def remove_refiner_rule(current_rules, rule_id):
+    return [r for r in current_rules if r["id"] != rule_id]
+
 def generate_video_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_base_type_choice = None, model_choice = None, header = None, main = None, main_tabs= None, tab_id='generate', edit_tab=None, default_state=None):
     global inputs_names #, advanced
     plugin_data = gr.State({})
@@ -10137,8 +10168,38 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                         with gr.Column(visible = model_def.get("self_refiner", False)) as self_refiner_col:
                             gr.Markdown("<B>Self-Refining Video Sampling (PnP) - should improve quality of Motion</B>")
-                            self_refiner_setting = gr.Dropdown( choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2), ], value=ui_get("self_refiner_setting", 0), scale = 1, label="Self Refiner", )
-                            self_refiner_plan = gr.Textbox( value=ui_get("self_refiner_plan", ""), label="P&P Plan (start-end:steps, comma-separated)", lines=1, placeholder="2-5:3,6-13:1" )
+                            self_refiner_setting = gr.Dropdown(choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2)], value=ui_get("self_refiner_setting", 0), scale=1, label="Self Refiner")
+                            
+                            refiner_val = ensure_refiner_list(ui_get("self_refiner_plan", []))
+                            self_refiner_plan = refiner_val if update_form else gr.State(value=refiner_val)
+                            
+                            with gr.Group(visible=(update_form and ui_get("self_refiner_setting", 0) > 0)) as self_refiner_rules_ui:
+                                gr.Markdown("### Refiner Plan")
+                                
+                                with gr.Row(elem_id="refiner-input-row"):
+                                    refiner_range = RangeSlider(minimum=0, maximum=100, value=(0, 10), step=1, label="Step Range", info="Start - End", scale=3)
+                                    refiner_mult = gr.Slider(label="Iterations", value=3, minimum=1, maximum=5, step=1, scale=2)
+                                    refiner_add_btn = gr.Button("➕ Add", variant="primary", scale=0, min_width=100)
+                                
+                                if not update_form:
+                                    refiner_add_btn.click(fn=add_refiner_rule, inputs=[self_refiner_plan, refiner_range, refiner_mult], outputs=[self_refiner_plan])
+                                    self_refiner_setting.change(fn=lambda s: gr.update(visible=s > 0), inputs=[self_refiner_setting], outputs=[self_refiner_rules_ui])
+
+                                    @gr.render(inputs=self_refiner_plan)
+                                    def render_refiner_plans(plans):
+                                        if not plans:
+                                            gr.Markdown("<I style='color:grey; padding: 8px;'>No plans defined. Using defaults: Steps 2-5 (3x), Steps 6-13 (1x).</I>")
+                                            return
+                                        for plan in plans:
+                                            with gr.Row(elem_classes="rule-row"):
+                                                text_display = f"Steps **{plan['start']} - {plan['end']}** : **{plan['steps']}x** iterations"
+                                                gr.Markdown(text_display, elem_classes="rule-card")
+                                                gr.Button("✖", variant="stop", scale=0, elem_classes="delete-btn").click(
+                                                    fn=remove_refiner_rule, 
+                                                    inputs=[self_refiner_plan, gr.State(plan["id"])], 
+                                                    outputs=[self_refiner_plan]
+                                                )
+
                             # self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
                             # self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
                             

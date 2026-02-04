@@ -9,39 +9,22 @@ def is_int_string(s: str) -> bool:
     except ValueError:
         return False
     
-def normalize_self_refiner_plan(plan_str):
-    entries = []
-    for chunk in plan_str.split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if ":" not in chunk:
-            return "", "Self-refine plan entries must be in 'start-end:steps' format."
-        range_part, steps_part = chunk.split(":", 1)
-        range_part = range_part.strip()
-        steps_part = steps_part.strip()
-        if not steps_part:
-            return "", "Self-refine plan entries must include a step count."
-        if "-" in range_part:
-            start_s, end_s = range_part.split("-", 1)
-        else:
-            start_s = end_s = range_part
-        start_s = start_s.strip()
-        if not is_int_string(start_s):
-            return "", "Self-refine plan start position must be an integer."
-        end_s = end_s.strip()
-        if not is_int_string(end_s):
-            return "", "Self-refine plan end position must be an integer."
-        if not is_int_string(steps_part):
-            return "", "Self-refine plan steps part must be an integer."
-        
-        entries.append({
-            "start": int(start_s),
-            "end": int(end_s),
-            "steps": int(steps_part),
-        })
-    plan = entries
-    return plan, ""
+def normalize_self_refiner_plan(plan_input):
+    default_plan = [
+        {"start": 2, "end": 5, "steps": 3},
+        {"start": 6, "end": 13, "steps": 1}
+    ]
+    
+    if not plan_input:
+        return default_plan, ""
+
+    if isinstance(plan_input, list):
+        for entry in plan_input:
+            if not all(k in entry for k in ("start", "end", "steps")):
+                return [], "Self-refine plan entries must contain start, end, and steps."
+        return plan_input, ""
+    
+    return [], "Invalid plan format (expected list)."
 
 class PnPHandler:
     def __init__(self, stochastic_plan, ths_uncertainty=0.0, p_norm=1, certain_percentage=0.999):
@@ -343,13 +326,9 @@ class PnPHandler:
         return latents, sample_scheduler
 
 def create_self_refiner_handler(pnp_plan, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage):
-    if len(pnp_plan):
-        stochastic_plan, error = normalize_self_refiner_plan(pnp_plan)
-    else:
-        # Default plan from paper/code
-        stochastic_plan = [
-            {"start": 1, "end": 5, "steps": 3},
-            {"start": 6, "end": 13, "steps": 1},
-        ]
+    stochastic_plan, error = normalize_self_refiner_plan(pnp_plan)
+    if error:
+        print(f"Warning: Self-refiner plan error: {error}. Using defaults.")
+        stochastic_plan, _ = normalize_self_refiner_plan(None)
 
     return PnPHandler(stochastic_plan, ths_uncertainty=pnp_f_uncertainty, p_norm=pnp_p_norm, certain_percentage=pnp_certain_percentage)

@@ -185,6 +185,7 @@ For future sessions, activate the environment every time if it isn't already act
 ```cmd
 cd \path-to\Wan2GP
 wan2gp-env\Scripts\activate
+:: Add the AMD-specific environment variables mentioned below here
 python wgp.py
 ```
 

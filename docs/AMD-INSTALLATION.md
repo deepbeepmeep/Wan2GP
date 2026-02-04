@@ -99,31 +99,31 @@ wan2gp-env\Scripts\activate
 #### For gfx110X-all (RX 7900 XTX, RX 7800 XT, etc.):
 
 ```cmd
-pip install --pre torch torchaudio torchvision --index-url https://rocm.nightlies.amd.com/v2/gfx110X-all/
+pip install --pre torch torchaudio torchvision rocm[devel] --index-url https://rocm.nightlies.amd.com/v2/gfx110X-all/
 ```
 
 #### For gfx120X-all (RX 9060, RX 9070, etc.):
 
 ```cmd
-pip install --pre torch torchaudio torchvision --index-url https://rocm.nightlies.amd.com/v2/gfx120X-all/
+pip install --pre torch torchaudio torchvision rocm[devel] --index-url https://rocm.nightlies.amd.com/v2/gfx120X-all/
 ```
 
 #### For gfx1151 (Strix Halo iGPU):
 
 ```cmd
-pip install --pre torch torchaudio torchvision --index-url https://rocm.nightlies.amd.com/v2/gfx1151/
+pip install --pre torch torchaudio torchvision rocm[devel] --index-url https://rocm.nightlies.amd.com/v2/gfx1151/
 ```
 
 #### For gfx1150 (Radeon 890M - Strix Point):
 
 ```cmd
-pip install --pre torch torchaudio torchvision --index-url https://rocm.nightlies.amd.com/v2-staging/gfx1150/
+pip install --pre torch torchaudio torchvision rocm[devel] --index-url https://rocm.nightlies.amd.com/v2-staging/gfx1150/
 ```
 
 #### For gfx103X-dgpu (RDNA 2):
 
 ```cmd
-pip install --pre torch torchaudio torchvision --index-url https://rocm.nightlies.amd.com/v2-staging/gfx103X-dgpu/
+pip install --pre torch torchaudio torchvision rocm[devel] --index-url https://rocm.nightlies.amd.com/v2-staging/gfx103X-dgpu/
 ```
 
 This will automatically install the latest PyTorch, torchaudio, and torchvision wheels with ROCm support.
@@ -152,12 +152,16 @@ Device: AMD Radeon RX 9070 XT
 
 WanGP supports multiple attention implementations via [triton-windows](https://github.com/woct0rdho/triton-windows/).
 
-First, install `triton-windows` in your virtual environment.  
-If you have an older version of Triton installed, uninstall it first:
+First, install `triton-windows` in your virtual environment.
+If you have an older version of Triton installed, uninstall it first.
+ROCm SDK needs to be initialized.
+Visual Studio environment should also be activated.
 
 ```cmd
 pip uninstall triton
 pip install triton-windows
+rocm-sdk init
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
 ```
 
 ### Supported attention implementations

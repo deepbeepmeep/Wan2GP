@@ -1,0 +1,39 @@
+{
+    "components": {
+        "python": {
+            "3.10": { "ver": "3.10.9", "label": "Python 3.10.9 (Legacy)" },
+            "3.11": { "ver": "3.11.14", "label": "Python 3.11.14 (Recommended)" }
+        },
+        "torch": {
+            "cu126": { "label": "Torch 2.6.0 + CUDA 12.6", "cmd": "torch==2.6.0+cu126 torchvision==0.21.0+cu126 torchaudio==2.6.0+cu126 --index-url https://download.pytorch.org/whl/cu126" },
+            "cu128": { "label": "Torch 2.7.1 + CUDA 12.8", "cmd": "torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128" },
+            "cu130": { "label": "Torch 2.10.0 + CUDA 13.0", "cmd": "torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130" }
+        },
+        "triton": {
+            "v33": { "label": "Triton-Windows < 3.3", "cmd": "-U \"triton-windows<3.3\"" },
+            "v34": { "label": "Triton-Windows < 3.4", "cmd": "-U \"triton-windows<3.4\"" },
+            "latest": { "label": "Triton-Windows Latest", "cmd": "-U triton-windows" }
+        },
+        "sage": {
+            "v1": { "label": "Sage Attention 1.0.6", "cmd": "sageattention==1.0.6" },
+            "v211": { "label": "Sage Attention 2.1.1 (CUDA 12.6/Py3.10)", "cmd": "https://github.com/woct0rdho/SageAttention/releases/download/v2.1.1-windows/sageattention-2.1.1+cu126torch2.6.0-cp310-cp310-win_amd64.whl" },
+            "v220": { "label": "Sage Attention 2.2.0 (CUDA 12.8/Py3.10)", "cmd": "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows/sageattention-2.2.0+cu128torch2.7.1-cp310-cp310-win_amd64.whl" },
+            "v220_cu13": { "label": "Sage Attention 2.2.0 (CUDA 13.0/Py3.11)", "cmd": "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl" }
+        },
+        "flash": {
+            "v271": { "label": "Flash Attention 2.7.4 (CUDA 12.8/Py3.10)", "cmd": "https://github.com/Redtash1/Flash_Attention_2_Windows/releases/download/v2.7.0-v2.7.4/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl" },
+            "v210": { "label": "Flash Attention 2.8.3 (CUDA 13.0/Py3.11)", "cmd": "https://github.com/deepbeepmeep/kernels/releases/download/Flash2/flash_attn-2.8.3-cp311-cp311-win_amd64.whl" }
+        },
+        "kernels": {
+            "nunchaku": { "label": "Nunchaku INT4/FP4 (Py3.10)", "cmd": "https://github.com/deepbeepmeep/kernels/releases/download/v1.2.0_Nunchaku/nunchaku-1.2.0+torch2.7-cp310-cp310-win_amd64.whl" },
+            "light2xv": { "label": "Light2xv NVFP4 (Py3.11 - RTX 50xx Only)", "cmd": "https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.2+torch2.10.0-cp311-abi3-win_amd64.whl" }
+        }
+    },
+    "gpu_profiles": {
+        "GTX_10":      { "python": "3.10", "torch": "cu126", "triton": null,     "sage": null,       "flash": null,     "kernels": [] },
+        "RTX_20":         { "python": "3.10", "torch": "cu126", "triton": "v33",    "sage": "v1",       "flash": null,     "kernels": [] },
+        "RTX_30":         { "python": "3.10", "torch": "cu126", "triton": "v33",    "sage": "v211",     "flash": null,     "kernels": [] },
+        "RTX_40":         { "python": "3.10", "torch": "cu128", "triton": "v34",    "sage": "v220",     "flash": "v271",   "kernels": ["nunchaku"] },
+        "RTX_50":  { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210",   "kernels": ["light2xv"] }
+    }
+}

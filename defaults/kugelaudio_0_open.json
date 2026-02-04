@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "TTS KugelAudio 0 Open 7B",
+        "architecture": "kugelaudio_0_open",
+        "description": "KugelAudio open-source text-to-speech with optional voice cloning, based on an AR + diffusion architecture. You can create a dialogue between two people by providing two audio sources and by starting lines alternatively with'Speaker0: ' or 'Speaker1: '.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/kugelaudio_0_open_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/kugelaudio_0_open_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "prompt": "Hello! This is KugelAudio speaking in a clear, friendly voice.",
+    "audio_prompt_type": "",
+    "pause_seconds": 0.2,
+    "duration_seconds": 30,
+    "guidance_scale": 3.0,
+    "temperature": 1.0
+}

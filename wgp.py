@@ -86,8 +86,8 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.3"
-WanGP_version = "10.61"
-settings_version = 2.47
+WanGP_version = "10.70"
+settings_version = 2.49
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -611,8 +611,9 @@ def validate_settings(state, model_type, single_prompt, inputs):
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
     if self_refiner_setting != 0 and len(self_refiner_plan):
-        from shared.utils.self_refiner import normalize_self_refiner_plan 
-        _, error = normalize_self_refiner_plan(self_refiner_plan)
+        from shared.utils.self_refiner import normalize_self_refiner_plan
+        max_plans = model_def.get("self_refiner_max_plans", 1)
+        _, error = normalize_self_refiner_plan(self_refiner_plan, max_plans=max_plans)
         if len(error):
             gr.Info(error)
             return ret()
@@ -719,16 +720,17 @@ def validate_settings(state, model_type, single_prompt, inputs):
         if audio_guide == None:
             gr.Info("You must provide an Audio Source")
             return ret()
-        if "B" in audio_prompt_type:
-            if audio_guide2 == None:
-                gr.Info("You must provide a second Audio Source")
-                return ret()
-        else:
-            audio_guide2 = None
     else:
         audio_guide = None
+
+
+    if "B" in audio_prompt_type:
+        if audio_guide2 == None:
+            gr.Info("You must provide a second Audio Source")
+            return ret()
+    else:
         audio_guide2 = None
-        
+
     if model_type in ["vace_multitalk_14B"] and ("B" in audio_prompt_type or "X" in audio_prompt_type):
         if not "I" in video_prompt_type and not not "V" in video_prompt_type:
             gr.Info("To get good results with Multitalk and two people speaking, it is recommended to set a Reference Frame or a Control Video (potentially truncated) that contains the two people one on each side")
@@ -1709,7 +1711,7 @@ def update_generation_status(html_content):
     if(html_content):
         return gr.update(value=html_content)
 
-family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.TTS.ace_step_handler", "models.TTS.chatterbox_handler", "models.TTS.qwen3_handler", "models.TTS.yue_handler", "models.TTS.heartmula_handler"]
+family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.TTS.ace_step_handler", "models.TTS.chatterbox_handler", "models.TTS.qwen3_handler", "models.TTS.yue_handler", "models.TTS.heartmula_handler", "models.TTS.kugelaudio_handler"]
 DEFAULT_LORA_ROOT = "loras"
 
 def register_family_lora_args(parser, lora_root):
@@ -4154,6 +4156,8 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_guidance3_scale = configs.get("guidance3_scale", None)
             video_audio_guidance_scale = configs.get("audio_guidance_scale", None)
             video_alt_guidance_scale = configs.get("alt_guidance_scale", None)
+            video_temperature = configs.get("temperature", None)
+            video_top_k = configs.get("top_k", None)
             video_switch_threshold = configs.get("switch_threshold", 0)
             video_switch_threshold2 = configs.get("switch_threshold2", 0)
             video_model_switch_phase = configs.get("model_switch_phase", 1)
@@ -4228,11 +4232,11 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 alt = video_preprocesses_in
                 video_preprocesses_in = video_preprocesses_out
                 video_preprocesses_out = alt
-            if len(video_preprocesses_in) >0 :
+            if len(video_preprocesses_in) >0 and "V" in video_video_prompt_type:
                 values += [video_preprocesses_in]
                 labels += [ "Process Inside Mask" if any_mask else "Preprocessing"]
 
-            if len(video_preprocesses_out) >0 :
+            if len(video_preprocesses_out) >0 and "V" in video_video_prompt_type:
                 values += [video_preprocesses_out]
                 labels += [ "Process Outside Mask"]
             video_frames_positions = configs.get("frames_positions", "")
@@ -4259,6 +4263,15 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels += ["Sampler Solver"]                                        
             values += [video_resolution, video_length_summary, video_seed, video_guidance_scale, video_audio_guidance_scale]
             labels += ["Resolution", video_length_label, "Seed", video_guidance_label, "Audio Guidance Scale"]
+            if model_def.get("temperature", True) and video_temperature is not None:
+                values += [video_temperature]
+                labels += ["Temperature"]
+            if model_def.get("top_k_slider", False) and video_top_k is not None:
+                values += [video_top_k]
+                labels += ["Top-k"]
+            if is_audio and model_def.get("pause_between_sentences", False):
+                values += [configs.get("pause_seconds", 0.0)]
+                labels += ["Pause (s)"]
             alt_guidance_type = model_def.get("alt_guidance", None)
             if alt_guidance_type is not None and video_alt_guidance_scale is not None:
                 values += [video_alt_guidance_scale]
@@ -4280,9 +4293,9 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_self_refiner_setting = configs.get("self_refiner_setting", 0)
             if video_self_refiner_setting > 0:  
                 video_self_refiner_plan = configs.get('self_refiner_plan','')
-                if len(video_self_refiner_plan)==0: video_self_refiner_plan ='<default>'
-                # values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}', Uncertainty={configs.get('self_refiner_f_uncertainty',0.2)}, Certain Percentage='{configs.get('self_refiner_certain_percentage', 0.999)} "]
-                values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}'"]
+                if len(video_self_refiner_plan)==0: video_self_refiner_plan ='default'
+                values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}', Uncertainty={configs.get('self_refiner_f_uncertainty',0.2)}, Certain Percentage='{configs.get('self_refiner_certain_percentage', 0.999)} "]
+                # values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}'"]
                 labels += ["Self Refiner"]      
             video_apg_switch = configs.get("apg_switch", None)
             if video_apg_switch is not None and video_apg_switch != 0: 
@@ -4310,7 +4323,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels += ["Control Net Weights"]      
 
             audio_scale_name = model_def.get("audio_scale_name", "")
-            if len(audio_scale_name) > 0:
+            if len(audio_scale_name) > 0 and any_letters(video_audio_prompt_type,"AB"):
                 values += [configs.get("audio_scale", 1)]
                 labels += [audio_scale_name]
 
@@ -5437,6 +5450,7 @@ def generate_video(
     resolution,
     video_length,
     duration_seconds,
+    pause_seconds,
     batch_size,
     seed,
     force_fps,
@@ -5526,8 +5540,8 @@ def generate_video(
     top_k,
     self_refiner_setting,
     self_refiner_plan,
-    # self_refiner_f_uncertainty,
-    # self_refiner_certain_percentage,
+    self_refiner_f_uncertainty,
+    self_refiner_certain_percentage,
     output_filename,
     state,
     model_type,
@@ -6267,7 +6281,7 @@ def generate_video(
 
             status = get_latest_status(state)
             gen["progress_status"] = status
-            progress_phase = "Generation Audio" if audio_only else "Encoding Prompt"
+            progress_phase = "Generating Audio" if audio_only else "Encoding Prompt"
             gen["progress_phase"] = (progress_phase , -1 )
             callback = build_callback(state, trans, send_cmd, status, num_inference_steps)
             progress_args = [0, merge_status_context(status, progress_phase )]
@@ -6292,13 +6306,6 @@ def generate_video(
                 prefix_video_for_model = prefix_video
                 if prefix_video is not None and prefix_video.dtype == torch.uint8:
                     prefix_video_for_model = prefix_video.float().div_(127.5).sub_(1.0)
-                extra_generate_kwargs = {}
-                if audio_only and duration_def is not None:
-                    extra_generate_kwargs["duration_seconds"] = duration_seconds
-                if audio_only and model_def.get("guidance_max_phases", 0) >= 1:
-                    extra_generate_kwargs["cfg_scale"] = guidance_scale
-                if audio_only and model_def.get("top_k_slider", False):
-                    extra_generate_kwargs["top_k"] = top_k
                 samples = wan_model.generate(
                     input_prompt = prompt,
                     alt_prompt = alt_prompt,
@@ -6393,9 +6400,11 @@ def generate_video(
                     input_video_strength = input_video_strength,
                     self_refiner_setting = self_refiner_setting,
                     self_refiner_plan=self_refiner_plan,
-                    # self_refiner_f_uncertainty = self_refiner_f_uncertainty,
-                    # self_refiner_certain_percentage = self_refiner_certain_percentage,
-                    **extra_generate_kwargs,
+                    self_refiner_f_uncertainty = self_refiner_f_uncertainty,
+                    self_refiner_certain_percentage = self_refiner_certain_percentage,
+                    duration_seconds=duration_seconds,
+                    pause_seconds=pause_seconds,
+                    top_k=top_k,
                 )
             except Exception as e:
                 if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:
@@ -7656,6 +7665,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += [ "pace", "exaggeration", "temperature"]
     if model_def.get("duration_slider", None) is None:
         pop += ["duration_seconds"]
+    if not model_def.get("pause_between_sentences", False):
+        pop += ["pause_seconds"]
     if not model_def.get("top_k_slider", False):
         pop += ["top_k"]
     if not model_def.get("temperature", True):
@@ -7708,8 +7719,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["control_net_weight_alt"]
 
     if not model_def.get("self_refiner", False):
-        # pop += ["self_refiner_setting", "self_refiner_f_uncertainty", "self_refiner_plan", "self_refiner_certain_percentage"]
-        pop += ["self_refiner_setting", "self_refiner_plan"]
+        pop += ["self_refiner_setting", "self_refiner_f_uncertainty", "self_refiner_plan", "self_refiner_certain_percentage"]
+        # pop += ["self_refiner_setting", "self_refiner_plan"]
 
     if model_def.get("audio_scale_name", None) is None:
         pop += ["audio_scale"]
@@ -8332,6 +8343,7 @@ def save_inputs(
             resolution,
             video_length,
             duration_seconds,
+            pause_seconds,
             batch_size,
             seed,
             force_fps,
@@ -8421,8 +8433,8 @@ def save_inputs(
             top_k,
             self_refiner_setting,
             self_refiner_plan,            
-            # self_refiner_f_uncertainty,
-            # self_refiner_certain_percentage,
+            self_refiner_f_uncertainty,
+            self_refiner_certain_percentage,
             output_filename,
             mode,
             state,
@@ -9589,6 +9601,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             audio_prompt_type_sources_def = model_def.get("audio_prompt_type_sources", None)
             audio_prompt_type_value = ui_get("audio_prompt_type", "A" if any_audio_prompt and audio_prompt_type_sources_def is None else "")
             any_multi_speakers = False
+            any_audio_guide2 = False 
             if any_audio_prompt:
                 any_single_speaker = not model_def.get("multi_speakers_only", False)
                 any_multi_speakers = not model_def.get("one_speaker_only", False) and not audio_only
@@ -9617,6 +9630,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 audio_prompt_type_sources_labels = audio_prompt_type_sources_def.get("labels", {})
                 audio_prompt_type_sources_choices = []
                 for choice in selection:
+                    if "B" in choice: any_audio_guide2 = True
                     label = audio_prompt_type_sources_labels.get(choice, audio_prompt_type_sources_labels_all.get(choice, choice))
                     audio_prompt_type_sources_choices.append((label, choice))
                 if len(audio_prompt_type_sources_choices) == 0:
@@ -9643,7 +9657,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             with gr.Row(visible = any_audio_prompt and any_letters(audio_prompt_type_value,"AB") and not image_outputs) as audio_guide_row:
                 any_audio_guide = any_audio_prompt and not image_outputs
-                any_audio_guide2 = any_multi_speakers 
                 audio_guide = gr.Audio(value= ui_defaults.get("audio_guide", None), type="filepath", label= model_def.get("audio_guide_label","Voice to follow"), show_download_button= True, visible= any_audio_prompt and "A" in audio_prompt_type_value )
                 audio_guide2 = gr.Audio(value= ui_defaults.get("audio_guide2", None), type="filepath", label=model_def.get("audio_guide2_label","Voice to follow #2"), show_download_button= True, visible= any_audio_prompt and "B" in audio_prompt_type_value )
             custom_guide_def = model_def.get("custom_guide", None)
@@ -9855,34 +9868,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             embedded_guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("embedded_guidance_scale"), step=0.5, label="Embedded Guidance Scale", visible=any_embedded_guidance, show_reset_button= False )
                             alt_guidance_scale = gr.Slider(1.0, 20.0, value=ui_get("alt_guidance_scale"), step=0.5, label= alt_guidance_type if any_alt_guidance else "" , visible=any_alt_guidance, show_reset_button= False )
 
-                        temperature_visible = audio_only and model_def.get("temperature", True)
+                        with gr.Row(visible=model_def.get("pause_between_sentences", False)) as pause_row:
+                            pause_seconds = gr.Slider(minimum=0.0, maximum=2.0,  value=ui_get("pause_seconds"), step=0.05, label="Pause between Multi Speakers sentences (seconds)", show_reset_button=False,)
+
+                        temperature_visible=audio_only and model_def.get("temperature", True)
                         with gr.Row(visible=temperature_visible) as temperature_row:
                             temperature = gr.Slider(0.1, 1.5, value=ui_get("temperature"), step=0.01, label="Temperature", show_reset_button=False)
 
-                        top_k_visible = audio_only and model_def.get("top_k_slider", False)
-                        top_k_min = 0
-                        top_k_max = 100
-                        top_k_step = 1
-                        top_k_default = 50
-                        top_k_label = "Top-k"
-                        top_k_value = ui_get("top_k", top_k_default)
-                        try:
-                            top_k_value = int(top_k_value)
-                        except Exception:
-                            top_k_value = int(top_k_default)
-                        if top_k_value < top_k_min:
-                            top_k_value = top_k_min
-                        elif top_k_value > top_k_max:
-                            top_k_value = top_k_max
-                        with gr.Row(visible=top_k_visible) as top_k_row:
-                            top_k = gr.Slider(
-                                top_k_min,
-                                top_k_max,
-                                value=top_k_value,
-                                step=top_k_step,
-                                label=top_k_label,
-                                show_reset_button=False,
-                            )
+                        with gr.Row(visible=audio_only and model_def.get("top_k_slider", False)) as top_k_row:
+                            top_k = gr.Slider( 0, 100, value=ui_get("top_k", 50), step=1, label="Top-k", show_reset_button=False,)
 
                         sample_solver_choices = model_def.get("sample_solvers", None)
                         any_flow_shift = model_def.get("flow_shift", False) 
@@ -9904,7 +9898,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             control_net_weight = gr.Slider(0.0, 2.0, value=ui_get("control_net_weight"), step=0.01, label=f"{control_net_weight_name} Weight" + ("" if control_net_weight_size<=1 else " #1"), visible=control_net_weight_size >= 1, show_reset_button= False)
                             control_net_weight2 = gr.Slider(0.0, 2.0, value=ui_get("control_net_weight2"), step=0.01, label=f"{control_net_weight_name} Weight" + ("" if control_net_weight_size<=1 else " #2"), visible=control_net_weight_size >=2, show_reset_button= False)
                             control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_get("control_net_weight_alt"), step=0.01, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0, show_reset_button= False)
-                            audio_scale = gr.Slider(0.0, 2.0, value=ui_get("audio_scale", 1), step=0.01, label=audio_scale_name, visible=audio_scale_visible, show_reset_button= False)
+                            audio_scale = gr.Slider(0.0, 1.0, value=ui_get("audio_scale", 1), step=0.01, label=audio_scale_name, visible=audio_scale_visible, show_reset_button= False)
                         with gr.Row(visible = not (hunyuan_t2v or hunyuan_i2v or no_negative_prompt)) as negative_prompt_row:
                             negative_prompt = gr.Textbox(label="Negative Prompt (ignored if no Guidance that is if CFG = 1)", value=ui_get("negative_prompt")  )
                         with gr.Column(visible = model_def.get("NAG", False)) as NAG_col:
@@ -10139,8 +10133,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             gr.Markdown("<B>Self-Refining Video Sampling (PnP) - should improve quality of Motion</B>")
                             self_refiner_setting = gr.Dropdown( choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2), ], value=ui_get("self_refiner_setting", 0), scale = 1, label="Self Refiner", )
                             self_refiner_plan = gr.Textbox( value=ui_get("self_refiner_plan", ""), label="P&P Plan (start-end:steps, comma-separated)", lines=1, placeholder="2-5:3,6-13:1" )
-                            # self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
-                            # self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
+                            with gr.Row():
+                                self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.1), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
+                                self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
                             
 
                 with gr.Tab("Sliding Window", visible= sliding_window_enabled and not image_outputs and not audio_only) as sliding_window_tab:
@@ -10403,7 +10398,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, top_k_row, number_frames_row, negative_prompt_row, chatter_row,
-                                      self_refiner_col]+\
+                                      self_refiner_col, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

@@ -22,7 +22,7 @@ Based on [TheRock's official support matrix](https://github.com/ROCm/TheRock/blo
 ### **gfx1151** (RDNA 3.5 APU):
 * AMD Strix Halo APUs
 
-### **gfx1150** (RDNA 3.5 APU) 
+### **gfx1150** (RDNA 3.5 APU): 
 * AMD Radeon 890M (Ryzen AI 9 HX 370 - Strix Point)
 
 ### Also supported:

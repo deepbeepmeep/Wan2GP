@@ -1637,7 +1637,13 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
             lm_hints_25Hz = precomputed_lm_hints_25Hz[:, :src_latents.shape[1], :]
         else:
             if audio_codes is not None:
+                restore = False
+                if self.tokenizer.quantizer.layers[0].implicit_codebook.device.type=="cpu":
+                    self.tokenizer.quantizer.layers.to("cuda")
+                    restore = True
                 lm_hints_5Hz = self.tokenizer.quantizer.get_output_from_indices(audio_codes)
+                if restore:
+                    self.tokenizer.quantizer.layers.to("cpu")
             else:
                 lm_hints_5Hz, indices, llm_mask = self.tokenize(hidden_states, silence_latent, attention_mask)
             lm_hints_25Hz = self.detokenize(lm_hints_5Hz)

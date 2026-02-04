@@ -41,10 +41,11 @@ This installation uses PyTorch wheels built by TheRock.
 
 ### Installing Python
 
-Download Python 3.11 from [python.org/downloads/windows](https://www.python.org/downloads/windows/). Press Ctrl+F and search for "3.11.". 
+Download Python 3.11 from [python.org/downloads/windows](https://www.python.org/downloads/windows/). Press Ctrl+F and search for "3.11." to find the newest version available for installation.
+
 Alternatively, you can use this direct link: [Python 3.11.9 (64-bit)](https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe).
 
-After installing, make sure `python --version` works in your terminal and returns 3.11.x
+After installing, make sure `python --version` works in your terminal and returns `3.11.9`
 
 If not, you probably need to fix your PATH. Go to:
 
@@ -88,7 +89,7 @@ python -m venv wan2gp-env
 wan2gp-env\Scripts\activate
 ```
 
-> **Note:** If you have multiple versions of Python installed, use `py -3.11` instead of `python` to ensure the correct version is used.
+> **Note:** If you have multiple versions of Python installed, use `py -3.11 -m venv wan2gp-env` instead of `python -m venv wan2gp-env` to ensure the correct version is used.
 
 ### Step 2: Install ROCm/PyTorch by TheRock
 
@@ -160,7 +161,7 @@ pip install triton-windows
 
 ### Supported attention implementations
 
-- **Sageattention V1** (Requires the `.post26` wheel or newer):
+- **SageAttention V1** (Requires the `.post26` wheel or newer):
 
 ```cmd
 pip install "sageattention <2"

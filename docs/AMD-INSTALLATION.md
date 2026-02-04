@@ -67,7 +67,7 @@ Download Git from [git-scm.com/downloads/windows](https://git-scm.com/install/wi
 
 
 ## Install (Windows, using a Python `venv`)
-> **Note:** This guide uses **Windows CMD**.  
+> **Note:** The following commands are intended for use in the Windows Command Prompt (CMD).  
 > If you are using PowerShell, some commands (like comments and activating the virtual environment) may differ.
 
 
@@ -87,6 +87,8 @@ python -m venv wan2gp-env
 :: Activate the virtual environment
 wan2gp-env\Scripts\activate
 ```
+
+> **Note:** If you have multiple versions of Python installed, use `py -3.11` instead of `python` to ensure the correct version is used.
 
 ### Step 2: Install ROCm/PyTorch by TheRock
 

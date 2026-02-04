@@ -56,14 +56,14 @@ If not, you probably need to fix your PATH. Go to:
 Example correct entries:
 
 ```cmd
-C:\Users\YOURNAME\AppData\Local\Programs\Python\Launcher\
-C:\Users\YOURNAME\AppData\Local\Programs\Python\Python311\Scripts\
-C:\Users\YOURNAME\AppData\Local\Programs\Python\Python311\
+C:\Users\<username>\AppData\Local\Programs\Python\Launcher\
+C:\Users\<username>\AppData\Local\Programs\Python\Python311\Scripts\
+C:\Users\<username>\AppData\Local\Programs\Python\Python311\
 ```
 
 ### Installing Git
 
-Download Git from [git-scm.com/downloads/windows](https://git-scm.com/downloads/windows) and install it. The default installation options are fine.
+Download Git from [git-scm.com/downloads/windows](https://git-scm.com/install/windows) and install it. The default installation options are fine.
 
 
 ## Install (Windows, using a Python `venv`)

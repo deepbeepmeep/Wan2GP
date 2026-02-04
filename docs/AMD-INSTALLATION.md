@@ -28,7 +28,7 @@ Based on [TheRock's official support matrix](https://github.com/ROCm/TheRock/blo
 ### Also supported:
 * **gfx103X-dgpu**: (RDNA 2)
 
-**Note:** If your GPU is not listed above, it is not supported by TheRock on Windows. Support status and future updates can be found in the [official documentation](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md).
+> **Note:** If your GPU is not listed above, it is not supported by TheRock on Windows. Support status and future updates can be found in the [official documentation](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md).
 
 ## Requirements
 

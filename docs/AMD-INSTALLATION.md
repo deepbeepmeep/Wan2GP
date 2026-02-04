@@ -265,3 +265,5 @@ Known issues are tracked at: https://github.com/ROCm/TheRock/issues/808
 - [Supported GPU Architectures](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md)
 - [Roadmap](https://github.com/ROCm/TheRock/blob/main/ROADMAP.md)
 - [ROCm Documentation](https://rocm.docs.amd.com/)
+
+For additional troubleshooting guidance for Wan2GP, see [TROUBLESHOOTING.md](https://github.com/deepbeepmeep/Wan2GP/blob/main/docs/TROUBLESHOOTING.md).

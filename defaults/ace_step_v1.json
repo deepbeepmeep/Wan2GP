@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "TTS ACE-Step v1 3.5B",
+        "name": "TTS ACE-Step v1.0 3.5B",
         "architecture": "ace_step_v1",
         "description": "ACE-Step, a fast open-source foundation diffusion based model for music generation that overcomes key limitations of existing approaches and achieves state-of-the-art performance.", 
         "URLs": [

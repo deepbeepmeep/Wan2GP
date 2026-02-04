@@ -33,12 +33,16 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### February 3rd 2026: WanGP v10.70, Get Ready To Rumble
-- **LTX-2 Self Refiner**: WanGP exclusive *Self Refiner* has been added to *Distilled/Non Distilled* models, so hopefully this will improve the quality of our Video Gens.
+### February 4rd 2026: WanGP v10.70, Let's Get Ready To Rumble !
+*The competition between Open Source & Close Source has never been that hot !*
+
+- **Ace Step 1.5 Turbo**: this long waited open source project claims to have overthrown *Suno 5*. It lets you generate high multi minutes quality songs. It comes in four flavours: *Vanilla* (No Language Model Preprocessing, **4s Generation Time!!!**) & *3 levels of LM Preprocessing* for a higher Quality (and increasing VRAM requirements)
 
 - **Kugel Audio 0**: another *TTS* with *Voice Cloning*, this one claims to outperform *ElevenLabs* !!! The nice thing about Kugel Audio is that it can be used to create Dialogues between two cloned voices. Have Fun !
 
-- **Ace Step 1.5**: this long waited open source project claims to have overthrown *Suno 5*. It lets you generate high  multi minutes of quality songs.
+- **LTX-2 Self Refiner**: WanGP exclusive *Self Refiner* has been added to *Distilled/Non Distilled* models, so hopefully this will improve the quality of our Video Gens.
+
+
 
 ### February 1st 2026: WanGP v10.61, Upgrade Time !
 

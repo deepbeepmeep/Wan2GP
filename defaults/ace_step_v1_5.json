@@ -1,0 +1,23 @@
+{
+    "model": {
+        "name": "TTS ACE-Step v1.5 Turbo 2B",
+        "architecture": "ace_step_v1_5",
+        "description": "ACE-Step 1.5 Turbo (8 steps) without the 5Hz LM stage. Uses the DiT-only path for faster/leaner runs.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/ace_step_v1_5_transformer_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/ace_step_v1_5_transformer_quanto_bf16_int8.safetensors"
+        ],
+        "ace_step15_enable_lm": false,
+        "ace_step15_transformer_variant": "turbo",
+        "text_encoder_folder": "acestep-5Hz-lm-1.7B"
+    },
+    "prompt": "[Verse]\nNeon rain on the city line\nYou hum the tune and I fall in time\n[Chorus]\nHold me close and keep the time",
+    "alt_prompt": "Dreamy synth-pop with shimmering pads, soft vocals, and a slow dance groove.",
+    "audio_prompt_type": "",
+    "audio_scale": 0.5,
+    "duration_seconds": 20,
+    "num_inference_steps": 8,
+    "shift": 1.0,
+    "guidance_scale": 1.0,
+    "scheduler_type": "euler"
+}

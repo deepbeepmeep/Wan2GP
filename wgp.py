@@ -720,16 +720,17 @@ def validate_settings(state, model_type, single_prompt, inputs):
         if audio_guide == None:
             gr.Info("You must provide an Audio Source")
             return ret()
-        if "B" in audio_prompt_type:
-            if audio_guide2 == None:
-                gr.Info("You must provide a second Audio Source")
-                return ret()
-        else:
-            audio_guide2 = None
     else:
         audio_guide = None
+
+
+    if "B" in audio_prompt_type:
+        if audio_guide2 == None:
+            gr.Info("You must provide a second Audio Source")
+            return ret()
+    else:
         audio_guide2 = None
-        
+
     if model_type in ["vace_multitalk_14B"] and ("B" in audio_prompt_type or "X" in audio_prompt_type):
         if not "I" in video_prompt_type and not not "V" in video_prompt_type:
             gr.Info("To get good results with Multitalk and two people speaking, it is recommended to set a Reference Frame or a Control Video (potentially truncated) that contains the two people one on each side")
@@ -4322,7 +4323,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels += ["Control Net Weights"]      
 
             audio_scale_name = model_def.get("audio_scale_name", "")
-            if len(audio_scale_name) > 0:
+            if len(audio_scale_name) > 0 and any_letters(video_audio_prompt_type,"AB"):
                 values += [configs.get("audio_scale", 1)]
                 labels += [audio_scale_name]
 
@@ -9600,6 +9601,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             audio_prompt_type_sources_def = model_def.get("audio_prompt_type_sources", None)
             audio_prompt_type_value = ui_get("audio_prompt_type", "A" if any_audio_prompt and audio_prompt_type_sources_def is None else "")
             any_multi_speakers = False
+            any_audio_guide2 = False 
             if any_audio_prompt:
                 any_single_speaker = not model_def.get("multi_speakers_only", False)
                 any_multi_speakers = not model_def.get("one_speaker_only", False) and not audio_only
@@ -9628,6 +9630,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 audio_prompt_type_sources_labels = audio_prompt_type_sources_def.get("labels", {})
                 audio_prompt_type_sources_choices = []
                 for choice in selection:
+                    if "B" in choice: any_audio_guide2 = True
                     label = audio_prompt_type_sources_labels.get(choice, audio_prompt_type_sources_labels_all.get(choice, choice))
                     audio_prompt_type_sources_choices.append((label, choice))
                 if len(audio_prompt_type_sources_choices) == 0:
@@ -9654,7 +9657,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             with gr.Row(visible = any_audio_prompt and any_letters(audio_prompt_type_value,"AB") and not image_outputs) as audio_guide_row:
                 any_audio_guide = any_audio_prompt and not image_outputs
-                any_audio_guide2 = any_multi_speakers 
                 audio_guide = gr.Audio(value= ui_defaults.get("audio_guide", None), type="filepath", label= model_def.get("audio_guide_label","Voice to follow"), show_download_button= True, visible= any_audio_prompt and "A" in audio_prompt_type_value )
                 audio_guide2 = gr.Audio(value= ui_defaults.get("audio_guide2", None), type="filepath", label=model_def.get("audio_guide2_label","Voice to follow #2"), show_download_button= True, visible= any_audio_prompt and "B" in audio_prompt_type_value )
             custom_guide_def = model_def.get("custom_guide", None)
@@ -9896,7 +9898,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             control_net_weight = gr.Slider(0.0, 2.0, value=ui_get("control_net_weight"), step=0.01, label=f"{control_net_weight_name} Weight" + ("" if control_net_weight_size<=1 else " #1"), visible=control_net_weight_size >= 1, show_reset_button= False)
                             control_net_weight2 = gr.Slider(0.0, 2.0, value=ui_get("control_net_weight2"), step=0.01, label=f"{control_net_weight_name} Weight" + ("" if control_net_weight_size<=1 else " #2"), visible=control_net_weight_size >=2, show_reset_button= False)
                             control_net_weight_alt = gr.Slider(0.0, 2.0, value=ui_get("control_net_weight_alt"), step=0.01, label=control_net_weight_alt_name + " Weight", visible=len(control_net_weight_alt_name) >0, show_reset_button= False)
-                            audio_scale = gr.Slider(0.0, 2.0, value=ui_get("audio_scale", 1), step=0.01, label=audio_scale_name, visible=audio_scale_visible, show_reset_button= False)
+                            audio_scale = gr.Slider(0.0, 1.0, value=ui_get("audio_scale", 1), step=0.01, label=audio_scale_name, visible=audio_scale_visible, show_reset_button= False)
                         with gr.Row(visible = not (hunyuan_t2v or hunyuan_i2v or no_negative_prompt)) as negative_prompt_row:
                             negative_prompt = gr.Textbox(label="Negative Prompt (ignored if no Guidance that is if CFG = 1)", value=ui_get("negative_prompt")  )
                         with gr.Column(visible = model_def.get("NAG", False)) as NAG_col:

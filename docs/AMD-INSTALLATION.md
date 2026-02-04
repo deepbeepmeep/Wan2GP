@@ -188,6 +188,32 @@ wan2gp-env\Scripts\activate
 python wgp.py
 ```
 
+It is advised to set the following environment variables at the start of every new session (you can create a `.bat` file that activates your venv, sets these, then launches `wgp.py`):
+
+```cmd
+set ROCM_HOME=%ROCM_ROOT%
+set PATH=%ROCM_ROOT%\lib\llvm\bin;%ROCM_BIN%;%PATH%
+set CC=clang-cl
+set CXX=clang-cl
+set DISTUTILS_USE_SDK=1
+set FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
+set TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+```
+
+MIOpen (AMD's cuDNN equivalent) is not yet stable; it frequently causes OOMs, crashes the display driver, and significantly increases generation times. Currently, it is recommended to use fast mode by setting `set MIOPEN_FIND_MODE=FAST`, or to disable it entirely by editing `wgp.py` and adding the following line below `import torch` (line 51):
+
+```cmd
+torch.backends.cudnn.enabled = False
+```
+
+To verify that it is disabled, or to enable verbose logging, you can set:
+
+```cmd
+set MIOPEN_ENABLE_LOGGING=1
+set MIOPEN_ENABLE_LOGGING_CMD=1
+set MIOPEN_LOG_LEVEL=5
+```
+
 ## Troubleshooting
 
 ### GPU Not Detected

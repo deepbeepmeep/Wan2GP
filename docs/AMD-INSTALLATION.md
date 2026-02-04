@@ -172,7 +172,6 @@ pip install "sageattention <2"
 git clone https://github.com/Dao-AILab/flash-attention.git
 cd flash-attention
 pip install ninja
-# Install FlashAttention-2 with the Triton backend enabled
 set FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE && python setup.py install
 ```
 

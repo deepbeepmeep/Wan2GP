@@ -26,7 +26,7 @@ Based on [TheRock's official support matrix](https://github.com/ROCm/TheRock/blo
 * AMD Radeon 890M (Ryzen AI 9 HX 370 - Strix Point)
 
 ### Also supported:
-**gfx103X-dgpu**: (RDNA 2)
+### **gfx103X-dgpu**: (RDNA 2)
 
 <br>
 

@@ -15,7 +15,7 @@
     "alt_prompt": "Dreamy synth-pop with shimmering pads, soft vocals, and a slow dance groove.",
     "audio_prompt_type": "",
     "audio_scale": 0.5,
-    "duration_seconds": 120,
+    "duration_seconds": 60,
     "num_inference_steps": 8,
     "shift": 1.0,
     "guidance_scale": 1.0,

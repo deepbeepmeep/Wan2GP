@@ -438,7 +438,7 @@ class family_handler:
                     "temperature": 1.0,
                     "guidance_scale": 1.0,
                     "multi_prompts_gen_type": 2,
-                    "audio_scale": 1.0,
+                    "audio_scale": 0.5,
                 }
             )
             return

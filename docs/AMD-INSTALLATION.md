@@ -206,7 +206,13 @@ set FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
 set TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
 ```
 
-MIOpen (AMD's cuDNN equivalent) is not yet stable; it frequently causes OOMs, crashes the display driver, and significantly increases generation times. Currently, it is recommended to use fast mode by setting `set MIOPEN_FIND_MODE=FAST`, or to disable it entirely by editing `wgp.py` and adding the following line below `import torch` (line 51):
+MIOpen (AMD’s equivalent of NVIDIA’s cuDNN) is not yet fully stable on several architectures; it can cause out-of-memory errors (OOMs), crash the display driver, or significantly increase generation times. Currently, it is recommended to either use fast mode by setting:
+
+```cmd
+set MIOPEN_FIND_MODE=FAST
+```
+
+or to disable MIOpen entirely by editing `wgp.py` and adding the following line below `import torch` (around line 51):
 
 ```cmd
 torch.backends.cudnn.enabled = False

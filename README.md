@@ -8,7 +8,7 @@
 WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, Z-Image, LongCat, Kandinsky, LTXV, LTX-2, Qwen3 TTS, Chatterbox, HearMula, ... with:
 - Low VRAM requirements (as low as 6 GB of VRAM is sufficient for certain models)
 - Support for old Nvidia GPUs (RTX 10XX, 20xx, ...)
-- Support for AMD GPUs Radeon RX 76XX, 77XX, 78XX & 79XX, instructions in the Installation Section Below.
+- Support for AMD GPUs (RDNA 4, 3, 3.5, and 2) instructions in the Installation Section Below.
 - Very Fast on the latest GPUs
 - Easy to use Full Web based interface
 - Support for many checkpoint Quantized formats: int8, fp8, gguf, NV FP4, Nunchaku
@@ -303,7 +303,7 @@ For detailed installation instructions for different GPU generations:
 
 ### AMD
 For detailed installation instructions for different GPU generations:
-- **[Installation Guide](docs/AMD-INSTALLATION.md)** - Complete setup instructions for Radeon RX 76XX, 77XX, 78XX & 79XX
+- **[Installation Guide](docs/AMD-INSTALLATION.md)** - Complete setup instructions for RDNA 4, 3, 3.5, and 2
 
 ## 🎯 Usage
 

@@ -16,6 +16,7 @@ from transformers import AutoTokenizer, Qwen3ForCausalLM, Qwen3Model
 from diffusers import AutoencoderOobleck
 
 from mmgp import offload
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 from .models.ace_step15_hf import AceStepConditionGenerationModel
 
@@ -83,6 +84,7 @@ class ACEStep15Pipeline:
         lm_tokenizer_dir: str,
         silence_latent_path: str | None = None,
         enable_lm: bool = True,
+        ignore_lm_cache_seed: bool = True,
         device=None,
         dtype=torch.bfloat16,
     ):
@@ -106,12 +108,14 @@ class ACEStep15Pipeline:
         self.lm_weights_path = lm_weights_path
         self.lm_tokenizer_dir = lm_tokenizer_dir
         self.silence_latent_path = silence_latent_path
+        self.ignore_lm_cache_seed = bool(ignore_lm_cache_seed)
 
         self._interrupt = False
         self._early_stop = False
         self.loaded = False
 
         self._latent_hop_length = 1920
+        self.lm_code_cache = TextEncoderCache()
 
         self._load_models(transformer_weights_path, transformer_config_path, vae_weights_path, vae_config_path)
         self._init_lm_hint_modules()
@@ -417,7 +421,47 @@ class ACEStep15Pipeline:
     def _build_lyrics_prompt(self, lyrics, language):
         return "# Languages\n{}\n\n# Lyric\n{}<|endoftext|>".format(language, lyrics)
 
-    def _generate_audio_codes(
+    def _build_lm_cache_key(
+        self,
+        tags,
+        lyrics,
+        bpm,
+        duration,
+        keyscale,
+        timesignature,
+        min_tokens,
+        max_tokens,
+        temperature,
+        top_p,
+        top_k,
+        language,
+        negative_prompt,
+        cfg_scale,
+        seed_value,
+    ):
+        return (
+            "ace_step15_lm_codes_v1",
+            os.path.abspath(self.lm_weights_path) if self.lm_weights_path else "",
+            os.path.abspath(self.lm_tokenizer_dir) if self.lm_tokenizer_dir else "",
+            _DEFAULT_LM_INSTRUCTION,
+            str(tags or ""),
+            str(lyrics or ""),
+            int(bpm),
+            int(duration),
+            str(keyscale),
+            int(timesignature),
+            str(language or ""),
+            str(negative_prompt or ""),
+            float(cfg_scale),
+            float(temperature) if temperature is not None else None,
+            float(top_p) if top_p is not None else None,
+            int(top_k) if top_k is not None else None,
+            int(min_tokens),
+            int(max_tokens),
+            int(seed_value) if seed_value is not None else None,
+        )
+
+    def _generate_audio_codes_uncached(
         self,
         tags,
         lyrics,
@@ -568,6 +612,117 @@ class ACEStep15Pipeline:
             pad_val = audio_codes[-1]
             audio_codes.extend([pad_val] * (min_tokens - len(audio_codes)))
         return audio_codes[:max_tokens]
+
+    def _generate_audio_codes(
+        self,
+        tags,
+        lyrics,
+        bpm,
+        duration,
+        keyscale,
+        timesignature,
+        seed,
+        min_tokens,
+        max_tokens,
+        temperature,
+        top_p,
+        top_k,
+        language="",
+        negative_prompt="NO USER INPUT",
+        cfg_scale=None,
+        callback=None,
+    ):
+        if cfg_scale is None:
+            cfg_scale = 2.5
+
+        cache_seed = seed
+        if self.ignore_lm_cache_seed:
+            cache_seed = 0
+        use_cache = self.lm_code_cache is not None and (
+            (cache_seed is not None and cache_seed >= 0) or self.ignore_lm_cache_seed
+        )
+        if not use_cache:
+            return self._generate_audio_codes_uncached(
+                tags=tags,
+                lyrics=lyrics,
+                bpm=bpm,
+                duration=duration,
+                keyscale=keyscale,
+                timesignature=timesignature,
+                seed=seed,
+                min_tokens=min_tokens,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                language=language,
+                negative_prompt=negative_prompt,
+                cfg_scale=cfg_scale,
+                callback=callback,
+            )
+
+        effective_seed = cache_seed if cache_seed is not None and cache_seed >= 0 else seed
+        cache_key = self._build_lm_cache_key(
+            tags=tags,
+            lyrics=lyrics,
+            bpm=bpm,
+            duration=duration,
+            keyscale=keyscale,
+            timesignature=timesignature,
+            min_tokens=min_tokens,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            language=language,
+            negative_prompt=negative_prompt,
+            cfg_scale=cfg_scale,
+            seed_value=cache_seed if self.ignore_lm_cache_seed else seed,
+        )
+
+        def encode_fn(_prompts):
+            codes = self._generate_audio_codes_uncached(
+                tags=tags,
+                lyrics=lyrics,
+                bpm=bpm,
+                duration=duration,
+                keyscale=keyscale,
+                timesignature=timesignature,
+                seed=effective_seed,
+                min_tokens=min_tokens,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                language=language,
+                negative_prompt=negative_prompt,
+                cfg_scale=cfg_scale,
+                callback=callback,
+            )
+            if codes is None:
+                return [None]
+            return [torch.tensor(codes, dtype=torch.int32)]
+
+        cached = self.lm_code_cache.encode(
+            encode_fn,
+            "lm_codes",
+            device="cpu",
+            cache_keys=cache_key,
+        )[0]
+        if cached is None:
+            if hasattr(self.lm_code_cache, "_entries"):
+                self.lm_code_cache._entries.pop(cache_key, None)
+            return None
+        if callback is not None:
+            callback(
+                step_idx=0,
+                override_num_inference_steps=1,
+                denoising_extra="LM codes cached",
+                progress_unit="tokens",
+            )
+        if torch.is_tensor(cached):
+            return cached.tolist()
+        return list(cached)
 
     def _default_timbre_latents(self, length):
         if self.silence_latent is not None:

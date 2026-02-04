@@ -338,6 +338,7 @@ class family_handler:
             pre_text_tokenizer_dir = _get_model_path(model_def, "ace_step15_pre_text_tokenizer_dir", _ckpt_dir(text_encoder_2_folder))
 
             enable_lm = bool(_get_model_path(model_def, "ace_step15_enable_lm", False))
+            ignore_lm_cache_seed = bool(_get_model_path(model_def, "ace_step15_lm_cache_ignore_seed", True))
             lm_folder = _get_model_path(model_def, "text_encoder_folder", ACE_STEP15_LM_FOLDER)
             lm_weights = text_encoder_filename
             lm_tokenizer_dir = _get_model_path(model_def, "ace_step15_lm_tokenizer_dir", _ace_step15_lm_ckpt_dir(lm_folder))
@@ -354,6 +355,7 @@ class family_handler:
                 lm_tokenizer_dir=lm_tokenizer_dir,
                 silence_latent_path=silence_latent,
                 enable_lm=enable_lm,
+                ignore_lm_cache_seed=ignore_lm_cache_seed,
                 dtype=dtype or torch.bfloat16,
             )
 

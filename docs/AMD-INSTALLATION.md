@@ -13,17 +13,17 @@ Based on [TheRock's official support matrix](https://github.com/ROCm/TheRock/blo
 * AMD RX 7700S / Framework Laptop 16 (gfx1102)
 * AMD Radeon 780M Laptop iGPU (gfx1103)
 
-### **gfx1150** (RDNA 3.5 APU) 
-* AMD Radeon 890M (Ryzen AI 9 HX 370 - Strix Point)
-
-### **gfx1151** (RDNA 3.5 APU):
-* AMD Strix Halo APUs
-
 ### **gfx120X-all** (RDNA 4):
 * AMD RX 9060 XT (gfx1200)
 * AMD RX 9060 (gfx1200)
 * AMD RX 9070 XT (gfx1201)
 * AMD RX 9070 (gfx1201)
+
+### **gfx1151** (RDNA 3.5 APU):
+* AMD Strix Halo APUs
+
+### **gfx1150** (RDNA 3.5 APU) 
+* AMD Radeon 890M (Ryzen AI 9 HX 370 - Strix Point)
 
 ### Also supported:
 **gfx103X-dgpu**: (RDNA 2)
@@ -49,9 +49,9 @@ After installing, make sure `python --version` works in your terminal and return
 
 If it doesn’t, you need to add Python to your PATH:
 
-* Press the Windows key, type Environment Variables, and select “Edit the system environment variables”.
-* In the System Properties window, click Environment Variables….
-* Under User variables, find Path, then click Edit → New and add the following entries (replace <username> with your Windows username):
+* Press the `Windows` key, type `Environment Variables`, and select `Edit the system environment variables`.
+* In the `System Properties` window, click `Environment Variables…`.
+* Under `User variables`, find `Path`, then click `Edit` → `New` and add the following entries (replace `<username>` with your Windows username):
 
 ```cmd
 C:\Users\<username>\AppData\Local\Programs\Python\Launcher\

@@ -7,7 +7,8 @@
         "torch": {
             "cu126": { "label": "Torch 2.6.0 + CUDA 12.6", "cmd": "torch==2.6.0+cu126 torchvision==0.21.0+cu126 torchaudio==2.6.0+cu126 --index-url https://download.pytorch.org/whl/cu126" },
             "cu128": { "label": "Torch 2.7.1 + CUDA 12.8", "cmd": "torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128" },
-            "cu130": { "label": "Torch 2.10.0 + CUDA 13.0", "cmd": "torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130" }
+            "cu130": { "label": "Torch 2.10.0 + CUDA 13.0 (Nvidia Recommended)", "cmd": "torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130" },
+            "rocm65": { "label": "ROCm 6.5 (TheRock) for AMD Windows", "cmd": "https://github.com/scottt/rocm-TheRock/releases/download/v6.5.0rc-pytorch-gfx110x/torch-2.7.0a0+rocm_git3f903c3-cp311-cp311-win_amd64.whl https://github.com/scottt/rocm-TheRock/releases/download/v6.5.0rc-pytorch-gfx110x/torchvision-0.22.0+9eb57cd-cp311-cp311-win_amd64.whl https://github.com/scottt/rocm-TheRock/releases/download/v6.5.0rc-pytorch-gfx110x/torchaudio-2.7.0a0+52638ef-cp311-cp311-win_amd64.whl" }
         },
         "triton": {
             "v33": { "label": "Triton-Windows < 3.3", "cmd": "-U \"triton-windows<3.3\"" },
@@ -30,10 +31,13 @@
         }
     },
     "gpu_profiles": {
-        "GTX_10":      { "python": "3.10", "torch": "cu126", "triton": null,     "sage": null,       "flash": null,     "kernels": [] },
-        "RTX_20":         { "python": "3.10", "torch": "cu126", "triton": "v33",    "sage": "v1",       "flash": null,     "kernels": [] },
-        "RTX_30":         { "python": "3.10", "torch": "cu126", "triton": "v33",    "sage": "v211",     "flash": null,     "kernels": [] },
-        "RTX_40":         { "python": "3.10", "torch": "cu128", "triton": "v34",    "sage": "v220",     "flash": "v271",   "kernels": ["nunchaku"] },
-        "RTX_50":  { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210",   "kernels": ["light2xv"] }
+        "GTX_10":      { "python": "3.10", "torch": "cu126", "triton": null,     "sage": null,       "flash": null, "kernels": [] },
+        "RTX_20":      { "python": "3.10", "torch": "cu126", "triton": "v33",    "sage": "v1",       "flash": null, "kernels": [] },
+        "RTX_30":      { "python": "3.10", "torch": "cu126", "triton": "v33",    "sage": "v211",     "flash": null, "kernels": [] },
+        "RTX_40":      { "python": "3.10", "torch": "cu128", "triton": "v34",    "sage": "v220",     "flash": "v271", "kernels": ["nunchaku"] },
+        "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["light2xv"] },
+        "AMD_GFX110X": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"} },
+        "AMD_GFX1151": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.5.1"} },
+        "AMD_GFX1201": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "12.0.1"} }
     }
 }

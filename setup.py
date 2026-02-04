@@ -14,25 +14,48 @@ ENV_MAP = {
 }
 
 def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        print(f"Error: {CONFIG_PATH} not found.")
+        sys.exit(1)
     with open(CONFIG_PATH, 'r') as f: return json.load(f)
 
-def get_gpu_name():
-    try: return subprocess.check_output(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], encoding='utf-8').strip()
-    except: return None
+def get_gpu_info():
+    try:
+        name = subprocess.check_output(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], encoding='utf-8').strip()
+        return name, "NVIDIA"
+    except: pass
 
-def get_profile_key(gpu):
-    if not gpu: return "RTX_40"
-    g = gpu.upper()
-    if "50" in g: return "RTX_50"
-    if "40" in g: return "RTX_40"
-    if "30" in g: return "RTX_30"
-    if "20" in g or "QUADRO" in g: return "RTX_20"
-    return "GTX_10"
+    try:
+        name = subprocess.check_output("wmic path win32_VideoController get name", shell=True, encoding='utf-8')
+        name = name.replace("Name", "").strip().split('\n')[0].strip()
+        if "Radeon" in name or "AMD" in name: return name, "AMD"
+        return name, "INTEL"
+    except: return "Unknown", "UNKNOWN"
 
-def run_cmd(cmd):
+def get_profile_key(gpu_name, vendor):
+    g = gpu_name.upper()
+    if vendor == "NVIDIA":
+        if "50" in g: return "RTX_50"
+        if "40" in g: return "RTX_40"
+        if "30" in g: return "RTX_30"
+        if "20" in g or "QUADRO" in g: return "RTX_20"
+        return "GTX_10"
+    elif vendor == "AMD":
+        if any(x in g for x in ["7600", "7700", "7800", "7900"]): return "AMD_GFX110X"
+        if any(x in g for x in ["7000", "Z1", "PHOENIX"]): return "AMD_GFX1151"
+        if any(x in g for x in ["8000", "STRIX", "1201"]): return "AMD_GFX1201"
+        return "AMD_GFX110X" 
+    return "RTX_40"
+
+def run_cmd(cmd, env_vars=None):
     if not cmd: return
     print(f"\n>>> Running: {cmd}")
-    subprocess.run(cmd, shell=True, check=True)
+    custom_env = os.environ.copy()
+    if env_vars:
+        for k, v in env_vars.items():
+            print(f"    [ENV SET] {k}={v}")
+            custom_env[k] = v
+    subprocess.run(cmd, shell=True, check=True, env=custom_env)
 
 def list_installs():
     found = []
@@ -47,7 +70,12 @@ def list_installs():
 
 def get_active_env():
     installs = list_installs()
-    return installs[0] if installs else "none"
+    if not installs: return "none"
+    if len(installs) == 1: return installs[0]
+    print("\nMultiple environments detected:")
+    for i, env in enumerate(installs): print(f"{i+1}. {env}")
+    choice = input("Select environment to use: ")
+    return installs[int(choice)-1]
 
 def install_from_keys(env_type, py_k, torch_k, triton_k, sage_k, flash_k, kernel_list, config):
     env_dir = ENV_MAP[env_type]["dir"]
@@ -69,13 +97,15 @@ def install_from_keys(env_type, py_k, torch_k, triton_k, sage_k, flash_k, kernel
     if triton_k: run_cmd(f"{pip} {config['components']['triton'][triton_k]['cmd']}")
     if sage_k: run_cmd(f"{pip} {config['components']['sage'][sage_k]['cmd']}")
     if flash_k: run_cmd(f"{pip} {config['components']['flash'][flash_k]['cmd']}")
-    for k in kernel_list: run_cmd(f"{pip} {config['components']['kernels'][k]['cmd']}")
+    for k in kernel_list:
+        if k in config['components']['kernels']:
+            run_cmd(f"{pip} {config['components']['kernels'][k]['cmd']}")
 
 def menu(title, options, recommended_key=None):
     print(f"\n--- {title} ---")
     keys = list(options.keys())
     for i, k in enumerate(keys):
-        rec = " [RECOMMENDED]" if k == recommended_key else ""
+        rec = " [RECOMMENDED FOR YOUR GPU]" if k == recommended_key else ""
         print(f"{i+1}. {options[k]['label']}{rec}")
     choice = input(f"Select option (Enter for Recommended): ")
     if choice == "" and recommended_key: return recommended_key
@@ -90,11 +120,10 @@ def do_migrate(config):
     if env == "none":
         print("No environment found. Please run install.bat first.")
         return
-    
-    confirm = input(f"This will nuke your {env} and rebuild with Python 3.11 / Torch 2.10.\nProceed? (y/n): ")
+
+    confirm = input(f"This will wipe your {env} and rebuild. Proceed? (y/n): ")
     if confirm.lower() != 'y': return
     
-    target = config['gpu_profiles']['RTX_50']
     install_from_keys(env, target['python'], target['torch'], target['triton'], target['sage'], target['flash'], target['kernels'], config)
 
 def do_upgrade(config):
@@ -102,8 +131,8 @@ def do_upgrade(config):
     print("      WAN2GP MANUAL COMPONENT UPGRADE")
     print("="*60)
     env = get_active_env()
-    gpu = get_gpu_name()
-    rec = config['gpu_profiles'][get_profile_key(gpu)]
+    gpu_name, vendor = get_gpu_info()
+    rec = config['gpu_profiles'][get_profile_key(gpu_name, vendor)]
 
     py_k = menu("Python Version", config['components']['python'], rec['python'])
     torch_k = menu("Torch Version", config['components']['torch'], rec['torch'])
@@ -120,17 +149,26 @@ if __name__ == "__main__":
     args = parser.parse_args()
     cfg = load_config()
     
+    gpu_name, vendor = get_gpu_info()
+    profile_key = get_profile_key(gpu_name, vendor)
+    profile = cfg['gpu_profiles'][profile_key]
+
     if args.mode == "install":
-        p = cfg['gpu_profiles'][get_profile_key(get_gpu_name())]
-        install_from_keys(args.env, p['python'], p['torch'], p['triton'], p['sage'], p['flash'], p['kernels'], cfg)
+        print(f"Hardware Detected: {gpu_name} ({vendor})")
+        install_from_keys(args.env, profile['python'], profile['torch'], profile['triton'], profile['sage'], profile.get('flash'), profile['kernels'], cfg)
+    
     elif args.mode == "run":
         env = get_active_env()
-        run_cmd(f"{ENV_MAP[env]['run'].format(dir=ENV_MAP[env]['dir'])} wgp.py")
+        env_vars = profile.get("env", {})
+        run_cmd(f"{ENV_MAP[env]['run'].format(dir=ENV_MAP[env]['dir'])} wgp.py", env_vars=env_vars)
+
     elif args.mode == "update":
         run_cmd("git pull")
         env = get_active_env()
         run_cmd(f"{ENV_MAP[env]['run'].format(dir=ENV_MAP[env]['dir'])} -m pip install -r requirements.txt")
+
     elif args.mode == "migrate":
         do_migrate(cfg)
+
     elif args.mode == "upgrade":
         do_upgrade(cfg)

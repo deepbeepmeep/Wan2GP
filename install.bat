@@ -7,7 +7,7 @@ cls
 echo ======================================================
 echo                WAN2GP INSTALLER MENU
 echo ======================================================
-echo 1. Automatic Install (Standard: venv)
+echo 1. Use 'venv' (Easiest - Comes prepackaged with python)
 echo 2. Use 'uv' (Recommended - Handles Python 3.11 better)
 echo 3. Use 'Conda'
 echo 4. No Environment (Not Recommended)

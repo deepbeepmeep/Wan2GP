@@ -71,6 +71,8 @@
 	"cfg_zero_step": -1,
 	"self_refiner_setting": 0,
 	"self_refiner_plan": "",
+	"self_refiner_f_uncertainty": 0.1,
+	"self_refiner_certain_percentage":0.999,	
 	"min_frames_if_references": 1,
 	"motion_amplitude": 1.0,
 	"sliding_window_size": 129,

@@ -1,0 +1,24 @@
+{
+  "_class_name": "AutoencoderOobleck",
+  "_diffusers_version": "0.34.0",
+  "_name_or_path": "/root/data/repo/gongjunmin/ACE-Step-1.5/checkpoints/vae/",
+  "audio_channels": 2,
+  "channel_multiples": [
+    1,
+    2,
+    4,
+    8,
+    16
+  ],
+  "decoder_channels": 128,
+  "decoder_input_channels": 64,
+  "downsampling_ratios": [
+    2,
+    4,
+    4,
+    6,
+    10
+  ],
+  "encoder_hidden_size": 128,
+  "sampling_rate": 48000
+}

@@ -38,6 +38,7 @@ from .utils.helpers import (
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
 from shared.utils.loras_mutipliers import update_loras_slists
+from shared.utils.self_refiner import create_self_refiner_handler, normalize_self_refiner_plan
 from shared.utils.text_encoder_cache import TextEncoderCache
 
 device = get_device()
@@ -115,6 +116,11 @@ class DistilledPipeline:
         masking_source: dict | None = None,
         masking_strength: float | None = None,
         return_latent_slice: slice | None = None,
+        self_refiner_setting: int = 0,
+        self_refiner_plan: str = "",
+        self_refiner_f_uncertainty: float = 0.1,
+        self_refiner_certain_percentage: float = 0.999,
+        self_refiner_max_plans: int = 1,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
         alt_guidance_scale = 1.0
@@ -123,6 +129,43 @@ class DistilledPipeline:
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
         stepper = EulerDiffusionStep()
+        self_refiner_handler = None
+        self_refiner_handler_audio = None
+        self_refiner_handler_stage2 = None
+        self_refiner_handler_audio_stage2 = None
+        if self_refiner_setting and self_refiner_setting > 0:
+            plans, _ = normalize_self_refiner_plan(self_refiner_plan or "", max_plans=self_refiner_max_plans)
+            plan_stage1 = plans[0] if plans else []
+            plan_stage2 = plans[1] if len(plans) > 1 else []
+            self_refiner_handler = create_self_refiner_handler(
+                plan_stage1,
+                self_refiner_f_uncertainty,
+                self_refiner_setting,
+                self_refiner_certain_percentage,
+                channel_dim=-1,
+            )
+            self_refiner_handler_audio = create_self_refiner_handler(
+                plan_stage1,
+                self_refiner_f_uncertainty,
+                self_refiner_setting,
+                self_refiner_certain_percentage,
+                channel_dim=-1,
+            )
+            if plan_stage2:
+                self_refiner_handler_stage2 = create_self_refiner_handler(
+                    plan_stage2,
+                    self_refiner_f_uncertainty,
+                    self_refiner_setting,
+                    self_refiner_certain_percentage,
+                    channel_dim=-1,
+                )
+                self_refiner_handler_audio_stage2 = create_self_refiner_handler(
+                    plan_stage2,
+                    self_refiner_f_uncertainty,
+                    self_refiner_setting,
+                    self_refiner_certain_percentage,
+                    channel_dim=-1,
+                )
         dtype = torch.bfloat16
 
         text_encoder = self._get_model("text_encoder")
@@ -164,7 +207,7 @@ class DistilledPipeline:
         if callback is not None:
             callback(-1, None, True, override_num_inference_steps=len(stage_1_sigmas) - 1, pass_no=pass_no)
 
-        def denoising_loop(
+        def denoising_loop_stage1(
             sigmas: torch.Tensor,
             video_state: LatentState,
             audio_state: LatentState,
@@ -187,8 +230,11 @@ class DistilledPipeline:
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
-                pass_no=pass_no,
+                pass_no=1,
                 transformer=transformer,
+                self_refiner_handler=self_refiner_handler,
+                self_refiner_handler_audio=self_refiner_handler_audio,
+                self_refiner_generator=generator,
             )
 
         stage_1_output_shape = VideoPixelShape(
@@ -238,7 +284,7 @@ class DistilledPipeline:
             noiser=noiser,
             sigmas=stage_1_sigmas,
             stepper=stepper,
-            denoising_loop_fn=denoising_loop,
+            denoising_loop_fn=denoising_loop_stage1,
             components=self.pipeline_components,
             dtype=dtype,
             device=self.device,
@@ -272,6 +318,36 @@ class DistilledPipeline:
             )
         if callback is not None:
             callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=pass_no)
+
+        def denoising_loop_stage2(
+            sigmas: torch.Tensor,
+            video_state: LatentState,
+            audio_state: LatentState,
+            stepper: DiffusionStepProtocol,
+            preview_tools: VideoLatentTools | None = None,
+            mask_context=None,
+        ) -> tuple[LatentState, LatentState]:
+            return euler_denoising_loop(
+                sigmas=sigmas,
+                video_state=video_state,
+                audio_state=audio_state,
+                stepper=stepper,
+                denoise_fn=simple_denoising_func(
+                    video_context=video_context,
+                    audio_context=audio_context,
+                    transformer=transformer,  # noqa: F821
+                    alt_guidance_scale=alt_guidance_scale,
+                ),
+                mask_context=mask_context,
+                interrupt_check=interrupt_check,
+                callback=callback,
+                preview_tools=preview_tools,
+                pass_no=2,
+                transformer=transformer,
+                self_refiner_handler=self_refiner_handler_stage2,
+                self_refiner_handler_audio=self_refiner_handler_audio_stage2,
+                self_refiner_generator=generator,
+            )
         stage_2_output_shape = VideoPixelShape(batch=1, frames=num_frames, width=width, height=height, fps=frame_rate)
         stage_2_conditionings = image_conditionings_by_replacing_latent(
             images=images,
@@ -307,7 +383,7 @@ class DistilledPipeline:
             noiser=noiser,
             sigmas=stage_2_sigmas,
             stepper=stepper,
-            denoising_loop_fn=denoising_loop,
+            denoising_loop_fn=denoising_loop_stage2,
             components=self.pipeline_components,
             dtype=dtype,
             device=self.device,

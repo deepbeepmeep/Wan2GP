@@ -94,6 +94,8 @@ class family_handler:
             "output_audio_is_input_audio": True,
             "custom_denoising_strength": True,
             "profiles_dir": ["ltx2_19B"],
+            "self_refiner": True,
+            "self_refiner_max_plans": 2,
         }
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"] = True
@@ -281,6 +283,14 @@ class family_handler:
                     "slg_layers": [29],
                 }
             )
+
+        if settings_version < 2.49:
+            ui_defaults.update(
+                {
+                    "self_refiner_plan": "2-8:3",
+                }
+            )
+
                 
                 
     @staticmethod

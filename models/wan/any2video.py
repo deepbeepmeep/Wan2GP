@@ -38,6 +38,7 @@ from .modules.posemb_layers import (
 )
 from shared.utils.vace_preprocessor import VaceVideoProcessor
 from shared.utils.basic_flowmatch import FlowMatchScheduler
+from shared.utils.euler_scheduler import EulerScheduler
 from shared.utils.lcm_scheduler import LCMScheduler
 from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
@@ -466,11 +467,9 @@ class WanAny2V:
         control_scale_alt = 1.,
         motion_amplitude = 1.,
         window_start_frame_no = 0,
-        enable_self_refine = False,
         self_refiner_setting=0,
         self_refiner_plan="",
-        self_refiner_f_uncertainty = 0.0,
-        self_refiner_p_norm = 1,
+        self_refiner_f_uncertainty = 0.1,
         self_refiner_certain_percentage = 0.999,
         **bbargs
                 ):
@@ -478,14 +477,12 @@ class WanAny2V:
         model_def = self.model_def
 
         if sample_solver =="euler":
-            # prepare timesteps
-            timesteps = list(np.linspace(self.num_timesteps, 1, sampling_steps, dtype=np.float32))
-            timesteps.append(0.)
-            timesteps = [torch.tensor([t], device=self.device) for t in timesteps]
-            if self.use_timestep_transform:
-                timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]
-            timesteps = torch.tensor(timesteps)
-            sample_scheduler = None                  
+            sample_scheduler = EulerScheduler(
+                num_train_timesteps=self.num_timesteps,
+                use_timestep_transform=self.use_timestep_transform,
+            )
+            sample_scheduler.set_timesteps(sampling_steps, device=self.device, shift=shift)
+            timesteps = sample_scheduler.timesteps
         elif sample_solver == 'causvid':
             sample_scheduler = FlowMatchScheduler(num_inference_steps=sampling_steps, shift=shift, sigma_min=0, extra_one_step=True)
             timesteps = torch.tensor([1000, 934, 862, 756, 603, 410, 250, 140, 74])[:sampling_steps].to(self.device)
@@ -1171,7 +1168,7 @@ class WanAny2V:
                     latents = noisy_image
                     noisy_image = None
                 else:
-                    latents = randn * sigma + (1 - sigma) * source_latents
+                    latents[...] = randn * sigma + (1 - sigma) * source_latents
 
             if extended_overlapped_latents != None:
                 if no_noise_latents_injection:
@@ -1184,178 +1181,174 @@ class WanAny2V:
                     for zz in z:
                         zz[0:16, ref_images_count:extended_overlapped_latents.shape[2] ]   = extended_overlapped_latents[0, :, ref_images_count:]  * (1.0 - overlap_noise_factor) + torch.randn_like(extended_overlapped_latents[0, :, ref_images_count:] ) * overlap_noise_factor 
 
-            if extended_input_dim > 0:
-                latent_model_input = torch.cat([latents, extended_latents.expand(*expand_shape)], dim=extended_input_dim)
-            else:
-                latent_model_input = latents
+            def denoise_with_cfg_fn(latents):
 
-            any_guidance = guide_scale != 1
-            if phantom:
-                gen_args = {
-                    "x" : ([ torch.cat([latent_model_input[:,:, :-ref_images_count], lat_input_ref_images.unsqueeze(0).expand(*expand_shape)], dim=2) ] * 2 + 
-                        [ torch.cat([latent_model_input[:,:, :-ref_images_count], lat_input_ref_images_neg.unsqueeze(0).expand(*expand_shape)], dim=2)]),
-                    "context": [context, context_null, context_null] ,
-                }
-            elif fantasy:
-                gen_args = {
-                    "x" : [latent_model_input, latent_model_input, latent_model_input],
-                    "context" : [context, context_null, context_null],
-                    "audio_scale": [audio_scale, None, None ]
-                }
-            elif animate:
-                gen_args = {
-                    "x" : [latent_model_input, latent_model_input],
-                    "context" : [context, context_null],
-                    # "face_pixel_values": [face_pixel_values, None]
-                    "face_pixel_values": [face_pixel_values, face_pixel_values] # seems to look better this way
-                }
-            elif wanmove:
-                gen_args = {
-                    "x" : [latent_model_input, latent_model_input],
-                    "context" : [context, context_null],
-                    "y" : [y_cond, y_uncond],
-                }
-            elif lynx:
-                gen_args = {
-                    "x" : [latent_model_input, latent_model_input],
-                    "context" : [context, context_null],
-                    "lynx_ip_embeds": [ip_hidden_states, ip_hidden_states_uncond]
-                }
-                if model_type in ["lynx", "vace_lynx_14B"]:
-                    gen_args["lynx_ref_buffer"] = [lynx_ref_buffer, lynx_ref_buffer_uncond]
-                    
-            elif steadydancer:
-                # DC-CFG: pose guidance only in [10%, 50%] of denoising steps
-                apply_cond_cfg = 0.1 <= i / sampling_steps < 0.5 and condition_guide_scale != 1
-                x_list, ctx_list, cond_list = [latent_model_input], [context], [conditions]
-                if guide_scale != 1:
-                    x_list.append(latent_model_input); ctx_list.append(context_null); cond_list.append(conditions)
-                if apply_cond_cfg:
-                    x_list.append(latent_model_input); ctx_list.append(context); cond_list.append(conditions_null)
-                gen_args = {"x": x_list, "context": ctx_list, "steadydancer_condition": cond_list}
-                any_guidance = len(x_list) > 1
-            elif multitalk and audio_proj != None:
-                if guide_scale == 1:
-                    gen_args = {
-                        "x" : [latent_model_input, latent_model_input],
-                        "context" : [context, context],
-                        "multitalk_audio": [audio_proj, [torch.zeros_like(audio_proj[0][-1:]), torch.zeros_like(audio_proj[1][-1:])]],
-                        "multitalk_masks": [token_ref_target_masks, None]
-                    }
-                    any_guidance = audio_cfg_scale != 1
+                if extended_input_dim > 0:
+                    latent_model_input = torch.cat([latents, extended_latents.expand(*expand_shape)], dim=extended_input_dim)
                 else:
+                    latent_model_input = latents
+
+                any_guidance = guide_scale != 1
+                if phantom:
+                    gen_args = {
+                        "x" : ([ torch.cat([latent_model_input[:,:, :-ref_images_count], lat_input_ref_images.unsqueeze(0).expand(*expand_shape)], dim=2) ] * 2 + 
+                            [ torch.cat([latent_model_input[:,:, :-ref_images_count], lat_input_ref_images_neg.unsqueeze(0).expand(*expand_shape)], dim=2)]),
+                        "context": [context, context_null, context_null] ,
+                    }
+                elif fantasy:
                     gen_args = {
                         "x" : [latent_model_input, latent_model_input, latent_model_input],
                         "context" : [context, context_null, context_null],
-                        "multitalk_audio": [audio_proj, audio_proj, [torch.zeros_like(audio_proj[0][-1:]), torch.zeros_like(audio_proj[1][-1:])]],
-                        "multitalk_masks": [token_ref_target_masks, token_ref_target_masks, None]
+                        "audio_scale": [audio_scale, None, None ]
                     }
-            else:
-                gen_args = {
-                    "x" : [latent_model_input, latent_model_input],
-                    "context": [context, context_null]
-                }
-
-            if joint_pass and any_guidance:
-                ret_values = trans( **gen_args , **kwargs)
-                if self._interrupt:
-                    return clear()               
-            else:
-                size = len(gen_args["x"]) if any_guidance else 1 
-                ret_values = [None] * size
-                for x_id in range(size):
-                    sub_gen_args = {k : [v[x_id]] for k, v in gen_args.items() }
-                    ret_values[x_id] = trans( **sub_gen_args, x_id= x_id , **kwargs)[0]
-                    if self._interrupt:
-                        return clear()         
-                sub_gen_args = None
-            if not any_guidance:
-                noise_pred = ret_values[0]       
-            elif phantom:
-                guide_scale_img= 5.0
-                guide_scale_text= guide_scale #7.5
-                pos_it, pos_i, neg = ret_values
-                noise_pred = neg + guide_scale_img * (pos_i - neg) + guide_scale_text * (pos_it - pos_i)
-                pos_it = pos_i = neg = None
-            elif fantasy:
-                noise_pred_cond, noise_pred_noaudio, noise_pred_uncond = ret_values
-                noise_pred = noise_pred_uncond + guide_scale * (noise_pred_noaudio - noise_pred_uncond) + audio_cfg_scale * (noise_pred_cond  - noise_pred_noaudio) 
-                noise_pred_noaudio = None
-            elif steadydancer:
-                noise_pred_cond = ret_values[0]
-                if guide_scale == 1:  # only condition CFG (ret_values[1] = uncond_condition)
-                    noise_pred = ret_values[1] + condition_guide_scale * (noise_pred_cond - ret_values[1])
-                else:  # text CFG + optionally condition CFG (ret_values[1] = uncond_context)
-                    noise_pred = ret_values[1] + guide_scale * (noise_pred_cond - ret_values[1])
+                elif animate:
+                    gen_args = {
+                        "x" : [latent_model_input, latent_model_input],
+                        "context" : [context, context_null],
+                        # "face_pixel_values": [face_pixel_values, None]
+                        "face_pixel_values": [face_pixel_values, face_pixel_values] # seems to look better this way
+                    }
+                elif wanmove:
+                    gen_args = {
+                        "x" : [latent_model_input, latent_model_input],
+                        "context" : [context, context_null],
+                        "y" : [y_cond, y_uncond],
+                    }
+                elif lynx:
+                    gen_args = {
+                        "x" : [latent_model_input, latent_model_input],
+                        "context" : [context, context_null],
+                        "lynx_ip_embeds": [ip_hidden_states, ip_hidden_states_uncond]
+                    }
+                    if model_type in ["lynx", "vace_lynx_14B"]:
+                        gen_args["lynx_ref_buffer"] = [lynx_ref_buffer, lynx_ref_buffer_uncond]
+                        
+                elif steadydancer:
+                    # DC-CFG: pose guidance only in [10%, 50%] of denoising steps
+                    apply_cond_cfg = 0.1 <= i / sampling_steps < 0.5 and condition_guide_scale != 1
+                    x_list, ctx_list, cond_list = [latent_model_input], [context], [conditions]
+                    if guide_scale != 1:
+                        x_list.append(latent_model_input); ctx_list.append(context_null); cond_list.append(conditions)
                     if apply_cond_cfg:
-                        noise_pred = noise_pred + condition_guide_scale * (noise_pred_cond - ret_values[2])
-                noise_pred_cond = None
-
-            elif multitalk and audio_proj != None:
-                if apg_switch != 0:
+                        x_list.append(latent_model_input); ctx_list.append(context); cond_list.append(conditions_null)
+                    gen_args = {"x": x_list, "context": ctx_list, "steadydancer_condition": cond_list}
+                    any_guidance = len(x_list) > 1
+                elif multitalk and audio_proj != None:
                     if guide_scale == 1:
-                        noise_pred_cond, noise_pred_drop_audio  = ret_values
-                        noise_pred = noise_pred_cond + (audio_cfg_scale - 1)* adaptive_projected_guidance(noise_pred_cond - noise_pred_drop_audio, 
-                                                                                        noise_pred_cond, 
-                                                                                        momentum_buffer=audio_momentumbuffer, 
-                                                                                        norm_threshold=apg_norm_threshold)
-
+                        gen_args = {
+                            "x" : [latent_model_input, latent_model_input],
+                            "context" : [context, context],
+                            "multitalk_audio": [audio_proj, [torch.zeros_like(audio_proj[0][-1:]), torch.zeros_like(audio_proj[1][-1:])]],
+                            "multitalk_masks": [token_ref_target_masks, None]
+                        }
+                        any_guidance = audio_cfg_scale != 1
                     else:
-                        noise_pred_cond, noise_pred_drop_text, noise_pred_uncond = ret_values
-                        noise_pred = noise_pred_cond + (guide_scale - 1) * adaptive_projected_guidance(noise_pred_cond - noise_pred_drop_text, 
+                        gen_args = {
+                            "x" : [latent_model_input, latent_model_input, latent_model_input],
+                            "context" : [context, context_null, context_null],
+                            "multitalk_audio": [audio_proj, audio_proj, [torch.zeros_like(audio_proj[0][-1:]), torch.zeros_like(audio_proj[1][-1:])]],
+                            "multitalk_masks": [token_ref_target_masks, token_ref_target_masks, None]
+                        }
+                else:
+                    gen_args = {
+                        "x" : [latent_model_input, latent_model_input],
+                        "context": [context, context_null]
+                    }
+
+                if joint_pass and any_guidance:
+                    ret_values = trans( **gen_args , **kwargs)
+                    if self._interrupt:
+                        return clear()               
+                else:
+                    size = len(gen_args["x"]) if any_guidance else 1 
+                    ret_values = [None] * size
+                    for x_id in range(size):
+                        sub_gen_args = {k : [v[x_id]] for k, v in gen_args.items() }
+                        ret_values[x_id] = trans( **sub_gen_args, x_id= x_id , **kwargs)[0]
+                        if self._interrupt:
+                            return clear()         
+                    sub_gen_args = None
+                if not any_guidance:
+                    noise_pred = ret_values[0]       
+                elif phantom:
+                    guide_scale_img= 5.0
+                    guide_scale_text= guide_scale #7.5
+                    pos_it, pos_i, neg = ret_values
+                    noise_pred = neg + guide_scale_img * (pos_i - neg) + guide_scale_text * (pos_it - pos_i)
+                    pos_it = pos_i = neg = None
+                elif fantasy:
+                    noise_pred_cond, noise_pred_noaudio, noise_pred_uncond = ret_values
+                    noise_pred = noise_pred_uncond + guide_scale * (noise_pred_noaudio - noise_pred_uncond) + audio_cfg_scale * (noise_pred_cond  - noise_pred_noaudio) 
+                    noise_pred_noaudio = None
+                elif steadydancer:
+                    noise_pred_cond = ret_values[0]
+                    if guide_scale == 1:  # only condition CFG (ret_values[1] = uncond_condition)
+                        noise_pred = ret_values[1] + condition_guide_scale * (noise_pred_cond - ret_values[1])
+                    else:  # text CFG + optionally condition CFG (ret_values[1] = uncond_context)
+                        noise_pred = ret_values[1] + guide_scale * (noise_pred_cond - ret_values[1])
+                        if apply_cond_cfg:
+                            noise_pred = noise_pred + condition_guide_scale * (noise_pred_cond - ret_values[2])
+                    noise_pred_cond = None
+
+                elif multitalk and audio_proj != None:
+                    if apg_switch != 0:
+                        if guide_scale == 1:
+                            noise_pred_cond, noise_pred_drop_audio  = ret_values
+                            noise_pred = noise_pred_cond + (audio_cfg_scale - 1)* adaptive_projected_guidance(noise_pred_cond - noise_pred_drop_audio, 
+                                                                                            noise_pred_cond, 
+                                                                                            momentum_buffer=audio_momentumbuffer, 
+                                                                                            norm_threshold=apg_norm_threshold)
+
+                        else:
+                            noise_pred_cond, noise_pred_drop_text, noise_pred_uncond = ret_values
+                            noise_pred = noise_pred_cond + (guide_scale - 1) * adaptive_projected_guidance(noise_pred_cond - noise_pred_drop_text, 
+                                                                                                                noise_pred_cond, 
+                                                                                                                momentum_buffer=text_momentumbuffer, 
+                                                                                                                norm_threshold=apg_norm_threshold) \
+                                    + (audio_cfg_scale - 1) * adaptive_projected_guidance(noise_pred_drop_text - noise_pred_uncond, 
+                                                                                            noise_pred_cond, 
+                                                                                            momentum_buffer=audio_momentumbuffer, 
+                                                                                            norm_threshold=apg_norm_threshold)
+                    else:
+                        if guide_scale == 1:
+                            noise_pred_cond, noise_pred_drop_audio  = ret_values
+                            noise_pred = noise_pred_drop_audio + audio_cfg_scale* (noise_pred_cond - noise_pred_drop_audio)  
+                        else:
+                            noise_pred_cond, noise_pred_drop_text, noise_pred_uncond = ret_values
+                            noise_pred = noise_pred_uncond + guide_scale * (noise_pred_cond - noise_pred_drop_text) + audio_cfg_scale * (noise_pred_drop_text - noise_pred_uncond)  
+                        noise_pred_uncond = noise_pred_cond = noise_pred_drop_text = noise_pred_drop_audio = None
+                else:
+                    noise_pred_cond, noise_pred_uncond = ret_values
+                    if apg_switch != 0:
+                        noise_pred = noise_pred_cond + (guide_scale - 1) * adaptive_projected_guidance(noise_pred_cond - noise_pred_uncond, 
                                                                                                             noise_pred_cond, 
                                                                                                             momentum_buffer=text_momentumbuffer, 
-                                                                                                            norm_threshold=apg_norm_threshold) \
-                                + (audio_cfg_scale - 1) * adaptive_projected_guidance(noise_pred_drop_text - noise_pred_uncond, 
-                                                                                        noise_pred_cond, 
-                                                                                        momentum_buffer=audio_momentumbuffer, 
-                                                                                        norm_threshold=apg_norm_threshold)
-                else:
-                    if guide_scale == 1:
-                        noise_pred_cond, noise_pred_drop_audio  = ret_values
-                        noise_pred = noise_pred_drop_audio + audio_cfg_scale* (noise_pred_cond - noise_pred_drop_audio)  
+                                                                                                            norm_threshold=apg_norm_threshold)
                     else:
-                        noise_pred_cond, noise_pred_drop_text, noise_pred_uncond = ret_values
-                        noise_pred = noise_pred_uncond + guide_scale * (noise_pred_cond - noise_pred_drop_text) + audio_cfg_scale * (noise_pred_drop_text - noise_pred_uncond)  
-                    noise_pred_uncond = noise_pred_cond = noise_pred_drop_text = noise_pred_drop_audio = None
-            else:
-                noise_pred_cond, noise_pred_uncond = ret_values
-                if apg_switch != 0:
-                    noise_pred = noise_pred_cond + (guide_scale - 1) * adaptive_projected_guidance(noise_pred_cond - noise_pred_uncond, 
-                                                                                                        noise_pred_cond, 
-                                                                                                        momentum_buffer=text_momentumbuffer, 
-                                                                                                        norm_threshold=apg_norm_threshold)
-                else:
-                    noise_pred_text = noise_pred_cond
-                    if cfg_star_switch:
-                        # CFG Zero *. Thanks to https://github.com/WeichenFan/CFG-Zero-star/
-                        positive_flat = noise_pred_text.view(batch_size, -1)  
-                        negative_flat = noise_pred_uncond.view(batch_size, -1)  
+                        noise_pred_text = noise_pred_cond
+                        if cfg_star_switch:
+                            # CFG Zero *. Thanks to https://github.com/WeichenFan/CFG-Zero-star/
+                            positive_flat = noise_pred_text.view(batch_size, -1)  
+                            negative_flat = noise_pred_uncond.view(batch_size, -1)  
 
-                        alpha = optimized_scale(positive_flat,negative_flat)
-                        alpha = alpha.view(batch_size, 1, 1, 1)
+                            alpha = optimized_scale(positive_flat,negative_flat)
+                            alpha = alpha.view(batch_size, 1, 1, 1)
 
-                        if (i <= cfg_zero_step):
-                            noise_pred = noise_pred_text*0. # it would be faster not to compute noise_pred...
-                        else:
-                            noise_pred_uncond *= alpha
-                    noise_pred = noise_pred_uncond + guide_scale * (noise_pred_text - noise_pred_uncond)            
-            ret_values = noise_pred_uncond = noise_pred_cond = noise_pred_text = neg  = None
-            
+                            if (i <= cfg_zero_step):
+                                noise_pred = noise_pred_text*0. # it would be faster not to compute noise_pred...
+                            else:
+                                noise_pred_uncond *= alpha
+                        noise_pred = noise_pred_uncond + guide_scale * (noise_pred_text - noise_pred_uncond)            
+                ret_values = noise_pred_uncond = noise_pred_cond = noise_pred_text = neg  = None
+                return noise_pred
 
+            noise_pred = denoise_with_cfg_fn(latents) 
+            if noise_pred is None: return clear()
             if self_refiner_handler:
-                latents, sample_scheduler = self_refiner_handler.step(i, latents, noise_pred, locals(), phantom or scail or steadydancer or fantasy)
+                latents, sample_scheduler = self_refiner_handler.step(i, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_with_cfg_fn)
+                if latents is None: return clear()
             else:
-                if sample_solver == "euler":
-                    dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
-                    dt = dt.item() / self.num_timesteps
-                    latents = latents - noise_pred * dt
-                else:
-                    latents = sample_scheduler.step(
-                        noise_pred[:, :, :target_shape[1]],
-                        t,
-                        latents,
-                        **scheduler_kwargs)[0]
+                latents = sample_scheduler.step( noise_pred[:, :, :target_shape[1]], t, latents, **scheduler_kwargs)[0]
 
 
             if image_mask_latents is not None and i< masked_steps:

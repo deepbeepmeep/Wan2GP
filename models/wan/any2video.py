@@ -1157,30 +1157,31 @@ class WanAny2V:
             kwargs.update({"t": timestep, "current_step_no": i, "real_step_no": start_step_no + i })  
             kwargs["slg_layers"] = slg_layers if int(slg_start * sampling_steps) <= i < int(slg_end * sampling_steps) else None
 
-            def denoise_with_cfg_fn(latents):
-                if denoising_strength < 1 and i <= injection_denoising_step:
-                    sigma = t / 1000
-                    if inject_from_start:
-                        noisy_image = latents.clone()
-                        noisy_image[:,:, :source_latents.shape[2] ] = randn[:, :, :source_latents.shape[2] ] * sigma + (1 - sigma) * source_latents
-                        for latent_no, keep_latent in enumerate(latent_keep_frames):
-                            if not keep_latent:
-                                noisy_image[:, :, latent_no:latent_no+1 ] = latents[:, :, latent_no:latent_no+1]
-                        latents = noisy_image
-                        noisy_image = None
-                    else:
-                        latents = randn * sigma + (1 - sigma) * source_latents
+            if denoising_strength < 1 and i <= injection_denoising_step:
+                sigma = t / 1000
+                if inject_from_start:
+                    noisy_image = latents.clone()
+                    noisy_image[:,:, :source_latents.shape[2] ] = randn[:, :, :source_latents.shape[2] ] * sigma + (1 - sigma) * source_latents
+                    for latent_no, keep_latent in enumerate(latent_keep_frames):
+                        if not keep_latent:
+                            noisy_image[:, :, latent_no:latent_no+1 ] = latents[:, :, latent_no:latent_no+1]
+                    latents = noisy_image
+                    noisy_image = None
+                else:
+                    latents[...] = randn * sigma + (1 - sigma) * source_latents
 
-                if extended_overlapped_latents != None:
-                    if no_noise_latents_injection:
-                        latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents 
-                    else:
-                        latent_noise_factor = t / 1000
-                        latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents  * (1.0 - latent_noise_factor) + torch.randn_like(extended_overlapped_latents ) * latent_noise_factor 
-                    if vace:
-                        overlap_noise_factor = overlap_noise / 1000 
-                        for zz in z:
-                            zz[0:16, ref_images_count:extended_overlapped_latents.shape[2] ]   = extended_overlapped_latents[0, :, ref_images_count:]  * (1.0 - overlap_noise_factor) + torch.randn_like(extended_overlapped_latents[0, :, ref_images_count:] ) * overlap_noise_factor 
+            if extended_overlapped_latents != None:
+                if no_noise_latents_injection:
+                    latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents 
+                else:
+                    latent_noise_factor = t / 1000
+                    latents[:, :, :extended_overlapped_latents.shape[2]]   = extended_overlapped_latents  * (1.0 - latent_noise_factor) + torch.randn_like(extended_overlapped_latents ) * latent_noise_factor 
+                if vace:
+                    overlap_noise_factor = overlap_noise / 1000 
+                    for zz in z:
+                        zz[0:16, ref_images_count:extended_overlapped_latents.shape[2] ]   = extended_overlapped_latents[0, :, ref_images_count:]  * (1.0 - overlap_noise_factor) + torch.randn_like(extended_overlapped_latents[0, :, ref_images_count:] ) * overlap_noise_factor 
+
+            def denoise_with_cfg_fn(latents):
 
                 if extended_input_dim > 0:
                     latent_model_input = torch.cat([latents, extended_latents.expand(*expand_shape)], dim=extended_input_dim)

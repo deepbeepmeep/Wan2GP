@@ -496,6 +496,7 @@ class KugelAudioPipeline:
             speech_masks=speech_masks,
             cfg_scale=cfg_scale,
             max_new_tokens=max_new_tokens,
+            tail_tokens=3,
             do_sample=do_sample,
             temperature=float(temperature),
             show_progress=True,

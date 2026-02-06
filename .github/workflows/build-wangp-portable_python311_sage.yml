@@ -153,7 +153,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tag.outputs.new_tag }}
-          files: WanGP-Portable_Python311_Cu13_Sage.7z.*
+          files: WanGP-Portable_Python311_Cu13_Sage.7z
           body: "For details, see the [README](https://github.com/deepbeepmeep/Wan2GP/blob/main/README.md)"
           fail_on_unmatched_files: false
         env:

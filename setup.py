@@ -36,6 +36,29 @@ ENV_MAP = {
     }
 }
 
+VERSION_CHECK_SCRIPT = """
+import sys
+import importlib
+
+pkgs = ['torch', 'triton', 'sageattention', 'flash_attn']
+res = []
+try:
+    res.append(f"python={sys.version.split()[0]}")
+except: 
+    res.append("python=Unknown")
+
+for p in pkgs:
+    try:
+        m = importlib.import_module(p)
+        ver = getattr(m, '__version__', 'Installed')
+        res.append(f"{p}={ver}")
+    except ImportError:
+        res.append(f"{p}=Missing")
+    except Exception:
+        res.append(f"{p}=Error")
+print("||".join(res))
+"""
+
 def load_config():
     if not os.path.exists(CONFIG_PATH):
         print(f"Error: {CONFIG_PATH} not found.")
@@ -44,20 +67,34 @@ def load_config():
 
 def get_gpu_info():
     try:
-        name = subprocess.check_output(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], encoding='utf-8').strip()
+        name = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], 
+            encoding='utf-8', 
+            stderr=subprocess.DEVNULL
+        ).strip()
         return name, "NVIDIA"
     except: pass
 
     if IS_WIN:
         try:
-            name = subprocess.check_output("wmic path win32_VideoController get name", shell=True, encoding='utf-8')
+            name = subprocess.check_output(
+                "wmic path win32_VideoController get name", 
+                shell=True, 
+                encoding='utf-8', 
+                stderr=subprocess.DEVNULL
+            )
             name = name.replace("Name", "").strip().split('\n')[0].strip()
             if "Radeon" in name or "AMD" in name: return name, "AMD"
             return name, "INTEL"
         except: pass
     else:
         try:
-            name = subprocess.check_output("lspci | grep -i vga", shell=True, encoding='utf-8')
+            name = subprocess.check_output(
+                "lspci | grep -i vga", 
+                shell=True, 
+                encoding='utf-8', 
+                stderr=subprocess.DEVNULL
+            )
             if "NVIDIA" in name: return name, "NVIDIA"
             if "AMD" in name or "Advanced Micro Devices" in name: return name, "AMD"
         except: pass
@@ -108,14 +145,23 @@ def run_cmd(cmd, env_vars=None):
 
 def list_installs():
     found = []
-    for k, v in ENV_MAP.items():
-        if k in ["conda", "none"]: continue
+    for k in ["uv", "venv"]:
+        v = ENV_MAP[k]
         py_path = v["run"].format(dir=v["dir"])
-        if os.path.exists(py_path): found.append(k)
+        if os.path.exists(py_path): 
+            found.append(k)
+
     try:
-        res = subprocess.check_output("conda env list", shell=True, encoding='utf-8')
-        if "wangp " in res: found.append("conda")
+        res = subprocess.check_output(
+            "conda env list", 
+            shell=True, 
+            encoding='utf-8', 
+            stderr=subprocess.DEVNULL
+        )
+        if f"{ENV_MAP['conda']['dir']} " in res: 
+            found.append("conda")
     except: pass
+    
     return found
 
 def get_active_env():
@@ -126,6 +172,55 @@ def get_active_env():
     for i, env in enumerate(installs): print(f"{i+1}. {env}")
     choice = input("Select environment to use: ")
     return installs[int(choice)-1]
+
+def get_env_details(env_type):
+    entry = ENV_MAP[env_type]
+    dir_name = entry['dir']
+    
+    if env_type == "conda":
+        cmd_base = entry['run'].format(dir=dir_name)
+        full_cmd = f"{cmd_base} -c \"{VERSION_CHECK_SCRIPT.replace(chr(10), ';')}\""
+    else:
+        py_exec = entry['run'].format(dir=dir_name)
+        full_cmd = [py_exec, "-c", VERSION_CHECK_SCRIPT]
+        
+    try:
+        if env_type == "conda":
+            output = subprocess.check_output(full_cmd, shell=True, encoding='utf-8', stderr=subprocess.DEVNULL)
+        else:
+            output = subprocess.check_output(full_cmd, encoding='utf-8', stderr=subprocess.DEVNULL)
+        
+        data = {k: v for k, v in [x.split('=') for x in output.strip().split('||')]}
+        data['path'] = dir_name
+        data['type'] = env_type
+        return data
+    except Exception as e:
+        return {'error': str(e), 'type': env_type, 'path': dir_name}
+
+def show_status():
+    print("\n" + "="*80)
+    print(f"{'INSTALLED ENVIRONMENTS & VERSIONS':^80}")
+    print("="*80)
+    
+    installs = list_installs()
+    if not installs:
+        print("   No standard installations detected (venv/uv/conda).")
+        print("="*80)
+        return
+
+    print(f"{'ENV TYPE':<10} | {'PYTHON':<8} | {'TORCH':<15} | {'TRITON':<10} | {'SAGE':<10} | {'FLASH':<10}")
+    print("-" * 80)
+
+    for env in installs:
+        d = get_env_details(env)
+        if 'error' in d:
+            print(f"{env:<10} | [Error reading environment: {d['path']}]")
+            continue
+            
+        print(f"{env:<10} | {d.get('python','?'):<8} | {d.get('torch','?'):<15} | {d.get('triton','?'):<10} | {d.get('sageattention','?'):<10} | {d.get('flash_attn','?'):<10}")
+    
+    print("-" * 80)
+    print("="*80 + "\n")
 
 def install_from_keys(env_type, py_k, torch_k, triton_k, sage_k, flash_k, kernel_list, config):
     env_dir = ENV_MAP[env_type]["dir"]
@@ -216,11 +311,15 @@ def do_upgrade(config):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["install", "run", "update", "migrate", "upgrade"])
+    parser.add_argument("mode", choices=["install", "run", "update", "migrate", "upgrade", "status"])
     parser.add_argument("--env", default="venv")
     args = parser.parse_args()
     cfg = load_config()
     
+    if args.mode == "status":
+        show_status()
+        sys.exit(0)
+
     gpu_name, vendor = get_gpu_info()
     profile_key = get_profile_key(gpu_name, vendor)
     profile = cfg['gpu_profiles'][profile_key]

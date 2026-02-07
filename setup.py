@@ -359,6 +359,7 @@ def menu(title, options, recommended_key=None):
 
 def do_install_interactive(env_type, config, detected_key):
     manager = EnvsManager()
+    create_wgp_config(detected_key, config)
 
     default_name = f"env_{env_type}" if env_type != "none" else "system"
     print(f"\n--- Configuration for {env_type} ---")
@@ -517,6 +518,113 @@ def do_upgrade(config):
     flash_k = menu("Flash Attention", config['components']['flash'], rec['flash'])
 
     install_logic(env_name, env_data['type'], env_data['path'], py_k, torch_k, triton_k, sage_k, flash_k, rec['kernels'], config)
+
+def get_system_specs():
+    ram_gb = 0
+    vram_gb = 0
+
+    if IS_WIN:
+        try:
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"],
+                encoding='utf-8', stderr=subprocess.DEVNULL
+            ).strip()
+            if out:
+                ram_gb = int(out) / (1024**3)
+        except:
+            try:
+                out = subprocess.check_output(
+                    "wmic computersystem get TotalPhysicalMemory /value", 
+                    shell=True, encoding='utf-8', stderr=subprocess.DEVNULL
+                )
+                for line in out.splitlines():
+                    if "TotalPhysicalMemory=" in line:
+                        ram_gb = int(line.split('=')[1]) / (1024**3)
+                        break
+            except:
+                pass
+    else:
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                for line in f:
+                    if 'MemTotal' in line:
+                        kb_val = float(line.split()[1])
+                        ram_gb = kb_val / (1024**2)
+                        break
+        except: pass
+
+    if ram_gb == 0:
+        print("[!] Warning: Could not detect System RAM. Defaulting to 16GB.")
+        ram_gb = 16
+
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"], 
+            encoding='utf-8', stderr=subprocess.DEVNULL
+        ).strip()
+        vram_gb = float(out.split('\n')[0]) / 1024
+    except:
+        print("[!] Warning: Could not detect VRAM via nvidia-smi. Defaulting to 8GB.")
+        vram_gb = 8
+        
+    return ram_gb, vram_gb
+
+def create_wgp_config(profile_key, config_data):
+    WGP_CONFIG_FILE = "wgp_config.json"
+    
+    if os.path.exists(WGP_CONFIG_FILE):
+        return
+
+    print("\n[*] Auto-generating wgp_config.json based on hardware...")
+    
+    ram, vram = get_system_specs()
+    print(f"    Detected: {int(ram)}GB RAM / {int(vram)}GB VRAM")
+
+    has_high_ram = ram > 60
+    has_mid_ram = ram > 30
+    has_huge_vram = vram > 22
+    has_high_vram = vram > 11
+    
+    pid = 5
+    
+    if has_high_ram and has_huge_vram:
+        pid = 1
+    elif has_high_ram: 
+        pid = 2
+    elif has_mid_ram and has_huge_vram:
+        pid = 3 
+    elif has_mid_ram and has_high_vram:
+        pid = 4
+    else:
+        pid = 5
+
+    prof_settings = config_data['gpu_profiles'].get(profile_key, {})
+
+    attn_mode = ""
+    if "50" in profile_key or "40" in profile_key or "30" in profile_key:
+        attn_mode = "sage2"
+    elif "20" in profile_key:
+        attn_mode = "sage"
+
+    compile_mode = ""
+    triton_key = prof_settings.get('triton')
+    if triton_key and triton_key != "none":
+        compile_mode = "transformer"
+
+    config_out = {
+        "attention_mode": attn_mode,
+        "compile": compile_mode,
+        "video_profile": pid,
+        "image_profile": pid,
+        "audio_profile": pid,
+    }
+    
+    try:
+        with open(WGP_CONFIG_FILE, 'w') as f:
+            json.dump(config_out, f, indent=4)
+        print(f"    Created config with Profile {pid}, Attention: '{attn_mode}', Compile: '{compile_mode}'")
+    except Exception as e:
+        print(f"[!] Error writing config: {e}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

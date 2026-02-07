@@ -357,39 +357,56 @@ def menu(title, options, recommended_key=None):
     try: return keys[int(choice)-1]
     except: return recommended_key
 
-def do_install_interactive(env_type, config, profile):
+def do_install_interactive(env_type, config, detected_key):
     manager = EnvsManager()
 
     default_name = f"env_{env_type}" if env_type != "none" else "system"
     print(f"\n--- Configuration for {env_type} ---")
     name = input(f"Enter a name for this environment (Default: {default_name}): ").strip()
     if not name: name = default_name
-
+    
     cwd = os.getcwd()
     path = os.path.join(cwd, name) if env_type != "none" else ""
-
+    
     if name in manager.list_envs():
         print(f"\n[!] Warning: Environment '{name}' already exists in registry.")
         choice = input("Do you want to overwrite it? (This will delete the old folder) [y/N]: ").lower()
-        if choice != 'y':
-            print("Aborting installation.")
-            return
+        if choice != 'y': return
         manager.remove_env(name)
     elif os.path.exists(path) and env_type != "none":
         print(f"\n[!] Warning: Directory '{path}' exists but is not registered.")
         choice = input("Do you want to overwrite this directory? [y/N]: ").lower()
-        if choice != 'y':
-            print("Aborting installation.")
-            return
+        if choice != 'y': return
         try: shutil.rmtree(path)
         except: pass
 
-    install_logic(name, env_type, path, 
-                  profile['python'], profile['torch'], profile['triton'], 
-                  profile['sage'], profile.get('flash'), profile['kernels'], config)
+    print("\n--- Select Install Mode ---")
+    print("1. Autoselect (Recommended - Based on your card)")
+    print("2. Manual Selection (Custom versions)")
+    print("3. Use Latest (Forces RTX 50 Profile)")
+    
+    mode = input("Select option (1-3) [Default: 1]: ").strip()
+    
+    if mode == "2":
+        base = config['gpu_profiles'][detected_key]
+        py_k = menu("Python Version", config['components']['python'], base['python'])
+        torch_k = menu("Torch Version", config['components']['torch'], base['torch'])
+        triton_k = menu("Triton", config['components']['triton'], base['triton'])
+        sage_k = menu("Sage Attention", config['components']['sage'], base['sage'])
+        flash_k = menu("Flash Attention", config['components']['flash'], base['flash'])
+        kernels = base['kernels']
+        
+        install_logic(name, env_type, path, py_k, torch_k, triton_k, sage_k, flash_k, kernels, config)
+        
+    elif mode == "3":
+        p = config['gpu_profiles']['RTX_50']
+        install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('flash'), p['kernels'], config)
+    else:
+        p = config['gpu_profiles'][detected_key]
+        install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('flash'), p['kernels'], config)
 
     manager.add_env(name, env_type, path)
-
+    
     if len(manager.list_envs()) > 1:
         choice = input(f"\nDo you want to make '{name}' the active environment? [Y/n]: ").lower()
         if choice != 'n':
@@ -522,7 +539,7 @@ if __name__ == "__main__":
 
     if args.mode == "install":
         print(f"Hardware Detected: {gpu_name} ({vendor})")
-        do_install_interactive(args.env, cfg, profile)
+        do_install_interactive(args.env, cfg, profile_key)
     
     elif args.mode == "run":
         manager = EnvsManager()

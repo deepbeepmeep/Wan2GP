@@ -1586,7 +1586,7 @@ def generate_queue_html(queue):
     top_button_html = ""
     bottom_button_html = ""
     
-    if len(queue) > 9:
+    if len(queue) > 11:
         btn_style = "width: 100%; padding: 8px; margin-bottom: 2px; font-weight: bold; display: flex; justify-content: center; align-items: center;"
         
         top_button_html = f"""

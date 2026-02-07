@@ -7,31 +7,28 @@ import shutil
 import platform
 
 CONFIG_PATH = "setup_config.json"
+ENVS_FILE = "envs.json"
 IS_WIN = os.name == 'nt'
 
-ENV_MAP = {
+ENV_TEMPLATES = {
     "uv": {
-        "dir": "env_uv", 
-        "create": "uv venv --python {ver} {dir}", 
+        "create": "uv venv --python {ver} \"{dir}\"",
         "run": os.path.join("{dir}", "Scripts", "python.exe") if IS_WIN else os.path.join("{dir}", "bin", "python"),
         "install": (os.path.join("{dir}", "Scripts", "python.exe") if IS_WIN else os.path.join("{dir}", "bin", "python")) + " -m uv pip install"
     },
     "venv": {
-        "dir": "env_venv", 
-        "create": "{sys_py} -m venv {dir}", 
+        "create": "{sys_py} -m venv \"{dir}\"",
         "run": os.path.join("{dir}", "Scripts", "python.exe") if IS_WIN else os.path.join("{dir}", "bin", "python"),
         "install": (os.path.join("{dir}", "Scripts", "python.exe") if IS_WIN else os.path.join("{dir}", "bin", "python")) + " -m pip install"
     },
     "conda": {
-        "dir": "wangp", 
-        "create": "conda create -y -n {dir} python={ver}", 
-        "run": "conda run -n {dir} python", 
-        "install": "conda run -n {dir} pip install"
+        "create": "conda create -y -p \"{dir}\" python={ver}",
+        "run": "conda run -p \"{dir}\" python",
+        "install": "conda run -p \"{dir}\" pip install"
     },
     "none": {
-        "dir": "", 
-        "create": "", 
-        "run": "python" if IS_WIN else "python3", 
+        "create": "",
+        "run": "python" if IS_WIN else "python3",
         "install": "pip install"
     }
 }
@@ -58,6 +55,100 @@ for p in pkgs:
         res.append(f"{p}=Error")
 print("||".join(res))
 """
+
+class EnvsManager:
+    def __init__(self):
+        self.data = {"active": None, "envs": {}}
+        self.load()
+
+    def load(self):
+        if os.path.exists(ENVS_FILE):
+            try:
+                with open(ENVS_FILE, 'r') as f:
+                    self.data = json.load(f)
+            except:
+                print(f"[!] Warning: {ENVS_FILE} corrupted. Starting fresh.")
+
+    def save(self):
+        with open(ENVS_FILE, 'w') as f:
+            json.dump(self.data, f, indent=4)
+
+    def get_active(self):
+        return self.data.get("active")
+
+    def set_active(self, name):
+        if name in self.data["envs"]:
+            self.data["active"] = name
+            self.save()
+            print(f"[*] '{name}' is now the active environment.")
+        else:
+            print(f"[!] Environment '{name}' not found.")
+
+    def add_env(self, name, type, path):
+        self.data["envs"][name] = {"type": type, "path": path}
+        if not self.data["active"]:
+            self.data["active"] = name
+        self.save()
+
+    def remove_env(self, name):
+        if name in self.data["envs"]:
+            entry = self.data["envs"][name]
+            path = entry["path"]
+
+            if os.path.exists(path) and entry["type"] != "none":
+                try:
+                    print(f"[*] Deleting directory: {path}")
+                    if entry["type"] == "conda":
+                         run_cmd(f"conda env remove -p \"{path}\" -y")
+                    else:
+                        shutil.rmtree(path)
+                except Exception as e:
+                    print(f"[!] Error removing directory: {e}")
+
+            del self.data["envs"][name]
+            if self.data["active"] == name:
+                self.data["active"] = None
+                keys = list(self.data["envs"].keys())
+                if keys:
+                    self.data["active"] = keys[0]
+                    print(f"[*] Active environment switched to '{keys[0]}'.")
+                else:
+                    print("[*] No environments left.")
+            self.save()
+
+    def list_envs(self):
+        return self.data["envs"]
+
+    def resolve_target_env(self):
+        """Intelligently determine which env to use for operations."""
+        envs = self.list_envs()
+        if not envs:
+            print("[!] No environments found. Please run install first.")
+            sys.exit(1)
+        
+        active = self.get_active()
+
+        if len(envs) == 1:
+            return list(envs.keys())[0]
+
+        print("\nMultiple environments detected:")
+        keys = list(envs.keys())
+        for i, k in enumerate(keys):
+            marker = "*" if k == active else " "
+            print(f"{i+1}. [{marker}] {k} ({envs[k]['type']})")
+        
+        print(f"Default: {active}")
+        choice = input("Select environment (Number) or Press Enter for Default: ").strip()
+        
+        if choice == "":
+            return active
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(keys):
+                return keys[idx]
+        except:
+            pass
+        return active
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
@@ -143,39 +234,10 @@ def run_cmd(cmd, env_vars=None):
 
     subprocess.run(cmd, shell=True, check=True, env=custom_env)
 
-def list_installs():
-    found = []
-    for k in ["uv", "venv"]:
-        v = ENV_MAP[k]
-        py_path = v["run"].format(dir=v["dir"])
-        if os.path.exists(py_path): 
-            found.append(k)
-
-    try:
-        res = subprocess.check_output(
-            "conda env list", 
-            shell=True, 
-            encoding='utf-8', 
-            stderr=subprocess.DEVNULL
-        )
-        if f"{ENV_MAP['conda']['dir']} " in res: 
-            found.append("conda")
-    except: pass
-    
-    return found
-
-def get_active_env():
-    installs = list_installs()
-    if not installs: return "none"
-    if len(installs) == 1: return installs[0]
-    print("\nMultiple environments detected:")
-    for i, env in enumerate(installs): print(f"{i+1}. {env}")
-    choice = input("Select environment to use: ")
-    return installs[int(choice)-1]
-
-def get_env_details(env_type):
-    entry = ENV_MAP[env_type]
-    dir_name = entry['dir']
+def get_env_details(name, env_data):
+    env_type = env_data["type"]
+    dir_name = env_data["path"]
+    entry = ENV_TEMPLATES[env_type]
     
     if env_type == "conda":
         cmd_base = entry['run'].format(dir=dir_name)
@@ -198,43 +260,49 @@ def get_env_details(env_type):
         return {'error': str(e), 'type': env_type, 'path': dir_name}
 
 def show_status():
+    manager = EnvsManager()
     print("\n" + "="*80)
     print(f"{'INSTALLED ENVIRONMENTS & VERSIONS':^80}")
     print("="*80)
     
-    installs = list_installs()
-    if not installs:
-        print("   No standard installations detected (venv/uv/conda).")
+    envs = manager.list_envs()
+    active = manager.get_active()
+    
+    if not envs:
+        print("   No environments installed.")
         print("="*80)
         return
 
-    print(f"{'ENV TYPE':<10} | {'PYTHON':<8} | {'TORCH':<15} | {'TRITON':<10} | {'SAGE':<10} | {'FLASH':<10}")
+    print(f"{'NAME':<15} | {'TYPE':<6} | {'PYTHON':<8} | {'TORCH':<15} | {'TRITON':<10} | {'SAGE':<10}")
     print("-" * 80)
 
-    for env in installs:
-        d = get_env_details(env)
-        if 'error' in d:
-            print(f"{env:<10} | [Error reading environment: {d['path']}]")
+    for name, data in envs.items():
+        details = get_env_details(name, data)
+        marker = "*" if name == active else " "
+        display_name = f"[{marker}] {name}"
+        
+        if 'error' in details:
+            print(f"{display_name:<15} | {data['type']:<6} | [Error reading environment]")
             continue
             
-        print(f"{env:<10} | {d.get('python','?'):<8} | {d.get('torch','?'):<15} | {d.get('triton','?'):<10} | {d.get('sageattention','?'):<10} | {d.get('flash_attn','?'):<10}")
+        print(f"{display_name:<15} | {data['type']:<6} | {details.get('python','?'):<8} | {details.get('torch','?'):<15} | {details.get('triton','?'):<10} | {details.get('sageattention','?'):<10}")
     
     print("-" * 80)
+    print(f" * = Active Environment")
     print("="*80 + "\n")
 
-def install_from_keys(env_type, py_k, torch_k, triton_k, sage_k, flash_k, kernel_list, config):
-    env_dir = ENV_MAP[env_type]["dir"]
+def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k, flash_k, kernel_list, config):
+    template = ENV_TEMPLATES[env_type]
     target_py_ver = config['components']['python'][py_k]['ver']
     
-    print(f"\n[1/3] Preparing Environment: {env_type} (Python {target_py_ver})...")
-    if env_type != "none":
-        if env_type == "conda": run_cmd(f"conda env remove -y -n {env_dir}")
-        elif os.path.exists(env_dir): shutil.rmtree(env_dir)
-        
-        create_cmd = ENV_MAP[env_type]["create"].format(ver=target_py_ver, dir=env_dir, sys_py=sys.executable)
-        run_cmd(create_cmd)
+    print(f"\n[1/3] Preparing Environment: {env_name} ({env_type})...")
 
-    pip = ENV_MAP[env_type]["install"].format(dir=env_dir)
+    if env_type != "none":
+        create_cmd = template["create"].format(ver=target_py_ver, dir=env_path, sys_py=sys.executable)
+        if create_cmd:
+            run_cmd(create_cmd)
+
+    pip = template["install"].format(dir=env_path)
     
     print(f"\n[2/3] Installing Torch: {config['components']['torch'][torch_k]['label']}...")
     torch_cmd = resolve_cmd(config['components']['torch'][torch_k]['cmd'])
@@ -253,10 +321,10 @@ def install_from_keys(env_type, py_k, torch_k, triton_k, sage_k, flash_k, kernel
             run_cmd(f"{pip} {cmd}")
         else:
             if env_type == "venv" or env_type == "uv":
-                act = f". {env_dir}/bin/activate && " if not IS_WIN else ""
+                act = f". {env_path}/bin/activate && " if not IS_WIN else ""
                 run_cmd(f"{act}{cmd}")
             elif env_type == "conda":
-                pass 
+                pass
 
     if flash_k: 
         cmd = resolve_cmd(config['components']['flash'][flash_k]['cmd'])
@@ -278,26 +346,139 @@ def menu(title, options, recommended_key=None):
     try: return keys[int(choice)-1]
     except: return recommended_key
 
+def do_install_interactive(env_type, config, profile):
+    manager = EnvsManager()
+
+    default_name = f"env_{env_type}" if env_type != "none" else "system"
+    print(f"\n--- Configuration for {env_type} ---")
+    name = input(f"Enter a name for this environment (Default: {default_name}): ").strip()
+    if not name: name = default_name
+
+    cwd = os.getcwd()
+    path = os.path.join(cwd, name) if env_type != "none" else ""
+
+    if name in manager.list_envs():
+        print(f"\n[!] Warning: Environment '{name}' already exists in registry.")
+        choice = input("Do you want to overwrite it? (This will delete the old folder) [y/N]: ").lower()
+        if choice != 'y':
+            print("Aborting installation.")
+            return
+        manager.remove_env(name)
+    elif os.path.exists(path) and env_type != "none":
+        print(f"\n[!] Warning: Directory '{path}' exists but is not registered.")
+        choice = input("Do you want to overwrite this directory? [y/N]: ").lower()
+        if choice != 'y':
+            print("Aborting installation.")
+            return
+        try: shutil.rmtree(path)
+        except: pass
+
+    install_logic(name, env_type, path, 
+                  profile['python'], profile['torch'], profile['triton'], 
+                  profile['sage'], profile.get('flash'), profile['kernels'], config)
+
+    manager.add_env(name, env_type, path)
+
+    if len(manager.list_envs()) > 1:
+        choice = input(f"\nDo you want to make '{name}' the active environment? [Y/n]: ").lower()
+        if choice != 'n':
+            manager.set_active(name)
+    else:
+        print(f"\n[*] '{name}' is the only environment, setting as active.")
+        manager.set_active(name)
+
+def do_manage():
+    manager = EnvsManager()
+    while True:
+        os.system('cls' if IS_WIN else 'clear')
+        print("======================================================")
+        print("               ENVIRONMENT MANAGER")
+        print("======================================================")
+        envs = manager.list_envs()
+        active = manager.get_active()
+        
+        if not envs:
+            print(" No environments installed.")
+        else:
+            for name, data in envs.items():
+                status = "(Active)" if name == active else ""
+                print(f" - {name:<15} [{data['type']}] {status}")
+        
+        print("------------------------------------------------------")
+        print("1. Set Active Environment")
+        print("2. Delete Environment")
+        print("3. Add Existing Environment")
+        print("4. List Environment Details")
+        print("5. Return to Menu / Exit")
+        
+        choice = input("\nSelect option: ")
+        
+        if choice == "1":
+            name = input("Enter name of environment to activate: ")
+            manager.set_active(name)
+            input("Press Enter...")
+        elif choice == "2":
+            name = input("Enter name of environment to DELETE: ")
+            conf = input(f"Are you sure you want to delete '{name}' and its files? (y/n): ")
+            if conf.lower() == 'y':
+                manager.remove_env(name)
+                input("Deleted. Press Enter...")
+        elif choice == "3":
+            path = input("Enter the path to the existing environment folder: ").strip()
+            if not os.path.exists(path):
+                print("[!] Error: Path does not exist.")
+            else:
+                name = input("Enter a nickname for this environment: ").strip()
+                if not name: name = os.path.basename(path.rstrip(os.sep))
+                
+                print("\nSelect Environment Type:")
+                print("1. venv")
+                print("2. uv")
+                print("3. conda")
+                t_choice = input("Choice (Default 1): ")
+                e_type = "uv" if t_choice == "2" else "conda" if t_choice == "3" else "venv"
+                
+                manager.add_env(name, e_type, os.path.abspath(path))
+                print(f"[*] Registered '{name}' at {os.path.abspath(path)}")
+            input("Press Enter...")
+        elif choice == "4":
+            show_status()
+            input("Press Enter...")
+        elif choice == "5":
+            break
+
 def do_migrate(config):
+    manager = EnvsManager()
     print("\n" + "="*60)
     print("      WAN2GP AUTOMATED PLATFORM MIGRATION (TO 3.11)")
     print("="*60)
-    env = get_active_env()
-    if env == "none":
-        print("No environment found. Please run install first.")
-        return
-
-    confirm = input(f"This will wipe your {env} and rebuild. Proceed? (y/n): ")
+    
+    env_name = manager.resolve_target_env()
+    env_data = manager.list_envs()[env_name]
+    
+    print(f"\nTarget Environment: {env_name} ({env_data['type']})")
+    confirm = input(f"This will wipe '{env_name}' and rebuild it. Proceed? (y/n): ")
     if confirm.lower() != 'y': return
 
-    target = config['gpu_profiles']['RTX_50'] 
-    install_from_keys(env, target['python'], target['torch'], target['triton'], target['sage'], target.get('flash'), target['kernels'], config)
+    target = config['gpu_profiles']['RTX_50']
+
+    manager.remove_env(env_name)
+
+    install_logic(env_name, env_data['type'], env_data['path'], 
+                  target['python'], target['torch'], target['triton'], 
+                  target['sage'], target.get('flash'), target['kernels'], config)
+    
+    manager.add_env(env_name, env_data['type'], env_data['path'])
 
 def do_upgrade(config):
+    manager = EnvsManager()
     print("\n" + "="*60)
     print("      WAN2GP MANUAL COMPONENT UPGRADE")
     print("="*60)
-    env = get_active_env()
+    
+    env_name = manager.resolve_target_env()
+    env_data = manager.list_envs()[env_name]
+    
     gpu_name, vendor = get_gpu_info()
     rec = config['gpu_profiles'][get_profile_key(gpu_name, vendor)]
 
@@ -306,18 +487,22 @@ def do_upgrade(config):
     triton_k = menu("Triton", config['components']['triton'], rec['triton'])
     sage_k = menu("Sage Attention", config['components']['sage'], rec['sage'])
     flash_k = menu("Flash Attention", config['components']['flash'], rec['flash'])
-    
-    install_from_keys(env, py_k, torch_k, triton_k, sage_k, flash_k, rec['kernels'], config)
+
+    install_logic(env_name, env_data['type'], env_data['path'], py_k, torch_k, triton_k, sage_k, flash_k, rec['kernels'], config)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["install", "run", "update", "migrate", "upgrade", "status"])
-    parser.add_argument("--env", default="venv")
+    parser.add_argument("mode", choices=["install", "run", "update", "migrate", "upgrade", "status", "manage"])
+    parser.add_argument("--env", default="venv", help="Type of env for install (venv, uv, conda, none)")
     args = parser.parse_args()
     cfg = load_config()
     
     if args.mode == "status":
         show_status()
+        sys.exit(0)
+
+    if args.mode == "manage":
+        do_manage()
         sys.exit(0)
 
     gpu_name, vendor = get_gpu_info()
@@ -326,20 +511,35 @@ if __name__ == "__main__":
 
     if args.mode == "install":
         print(f"Hardware Detected: {gpu_name} ({vendor})")
-        install_from_keys(args.env, profile['python'], profile['torch'], profile['triton'], profile['sage'], profile.get('flash'), profile['kernels'], cfg)
+        do_install_interactive(args.env, cfg, profile)
     
     elif args.mode == "run":
-        env = get_active_env()
+        manager = EnvsManager()
+        active = manager.get_active()
+        if not active:
+            print("[!] No active environment found. Run install or manage.")
+            sys.exit(1)
+        
+        env_data = manager.list_envs().get(active)
+        if not env_data:
+            print(f"[!] Active environment '{active}' data missing from registry.")
+            sys.exit(1)
+
+        print(f"[*] Launching using active environment: {active}")
+        
         env_vars = profile.get("env", {})
-        cmd_fmt = ENV_MAP[env]['run']
-        cmd = f"{cmd_fmt.format(dir=ENV_MAP[env]['dir'])} wgp.py"
+        cmd_fmt = ENV_TEMPLATES[env_data['type']]['run']
+        cmd = f"{cmd_fmt.format(dir=env_data['path'])} wgp.py"
         run_cmd(cmd, env_vars=env_vars)
 
     elif args.mode == "update":
         run_cmd("git pull")
-        env = get_active_env()
-        cmd_fmt = ENV_MAP[env]['run']
-        cmd = f"{cmd_fmt.format(dir=ENV_MAP[env]['dir'])} -m pip install -r requirements.txt"
+        manager = EnvsManager()
+        env_name = manager.resolve_target_env()
+        env_data = manager.list_envs()[env_name]
+        
+        cmd_fmt = ENV_TEMPLATES[env_data['type']]['run']
+        cmd = f"{cmd_fmt.format(dir=env_data['path'])} -m pip install -r requirements.txt"
         run_cmd(cmd)
 
     elif args.mode == "migrate":

@@ -36,6 +36,7 @@ ENV_TEMPLATES = {
 VERSION_CHECK_SCRIPT = """
 import sys
 import importlib
+import importlib.metadata
 
 pkgs = ['torch', 'triton', 'sageattention', 'flash_attn']
 res = []
@@ -46,11 +47,16 @@ except:
 
 for p in pkgs:
     try:
-        m = importlib.import_module(p)
-        ver = getattr(m, '__version__', 'Installed')
+        ver = importlib.metadata.version(p)
         res.append(f"{p}={ver}")
-    except ImportError:
-        res.append(f"{p}=Missing")
+    except importlib.metadata.PackageNotFoundError:
+        try:
+            # Fallback to __version__
+            m = importlib.import_module(p)
+            ver = getattr(m, '__version__', 'Installed')
+            res.append(f"{p}={ver}")
+        except ImportError:
+            res.append(f"{p}=Missing")
     except Exception:
         res.append(f"{p}=Error")
 print("||".join(res))
@@ -261,20 +267,20 @@ def get_env_details(name, env_data):
 
 def show_status():
     manager = EnvsManager()
-    print("\n" + "="*80)
-    print(f"{'INSTALLED ENVIRONMENTS & VERSIONS':^80}")
-    print("="*80)
+    print("\n" + "="*95)
+    print(f"{'INSTALLED ENVIRONMENTS & VERSIONS':^95}")
+    print("="*95)
     
     envs = manager.list_envs()
     active = manager.get_active()
     
     if not envs:
         print("   No environments installed.")
-        print("="*80)
+        print("="*95)
         return
 
-    print(f"{'NAME':<15} | {'TYPE':<6} | {'PYTHON':<8} | {'TORCH':<15} | {'TRITON':<10} | {'SAGE':<10}")
-    print("-" * 80)
+    print(f"{'NAME':<15} | {'TYPE':<6} | {'PYTHON':<8} | {'TORCH':<15} | {'TRITON':<10} | {'SAGE':<12} | {'FLASH':<12}")
+    print("-" * 95)
 
     for name, data in envs.items():
         details = get_env_details(name, data)
@@ -285,11 +291,16 @@ def show_status():
             print(f"{display_name:<15} | {data['type']:<6} | [Error reading environment]")
             continue
             
-        print(f"{display_name:<15} | {data['type']:<6} | {details.get('python','?'):<8} | {details.get('torch','?'):<15} | {details.get('triton','?'):<10} | {details.get('sageattention','?'):<10}")
+        print(f"{display_name:<15} | {data['type']:<6} | "
+              f"{details.get('python','?'):<8} | "
+              f"{details.get('torch','?'):<15} | "
+              f"{details.get('triton','?'):<10} | "
+              f"{details.get('sageattention','?'):<12} | "
+              f"{details.get('flash_attn','?'):<12}")
     
-    print("-" * 80)
+    print("-" * 95)
     print(f" * = Active Environment")
-    print("="*80 + "\n")
+    print("="*95 + "\n")
 
 def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k, flash_k, kernel_list, config):
     template = ENV_TEMPLATES[env_type]

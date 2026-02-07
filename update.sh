@@ -4,7 +4,7 @@ echo "======================================================"
 echo "               WAN2GP UPDATE / UPGRADE"
 echo "======================================================"
 python3 setup.py status
-echo "1. Simple Update (git pull + pip requirements)"
+echo "1. Update (git pull + install requirements)"
 echo "2. Upgrade (Upgrade Torch, Triton, Sage Attention, etc.)"
 echo "3. Platform Migration (Upgrade to Py 3.11/Torch 2.10)"
 echo "4. Exit"

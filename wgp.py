@@ -1523,6 +1523,7 @@ def clear_queue_action(state):
 
 def quit_application():
     print("Save and Quit requested...")
+    clear_startup_lock()
     autosave_queue()
     import signal
     os.kill(os.getpid(), signal.SIGINT)
@@ -1540,7 +1541,6 @@ def show_countdown_info_from_state(current_value: int):
     return current_value
 quitting_app = False
 def autosave_queue():
-    clear_startup_lock()
     global quitting_app
     quitting_app = True
     global global_queue_ref

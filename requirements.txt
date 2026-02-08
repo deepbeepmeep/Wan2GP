@@ -9,7 +9,7 @@ imageio-ffmpeg
 einops
 sentencepiece
 open_clip_torch>=2.29.0
-numpy==2.1.2
+numpy==1.26.4
 num2words==0.5.14
 
 # Video & media

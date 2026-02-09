@@ -30,7 +30,7 @@ Based on [TheRock's official support matrix](https://github.com/ROCm/TheRock/blo
 
 <br>
 
-> **Note:** If your GPU is not listed above, it is not supported by TheRock on Windows. Support status and future updates can be found in the [official documentation](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md).
+> **Note:** If your GPU is not listed above, it may not supported by TheRock on Windows. Support status and future updates can be found in the [official documentation](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md).
 
 ## Requirements
 
@@ -166,7 +166,7 @@ rocm-sdk init
 
 ### Supported attention implementations
 
-- **SageAttention V1** (Requires the `.post26` wheel or newer):
+- **SageAttention V1** (Requires the `.post26` wheel or newer to fix Triton compilation issues without needing unofficial patches. Download it from [this](https://github.com/Comfy-Org/wheels/actions/runs/21343435018) URL)
 
 ```cmd
 pip install "sageattention <2"

@@ -51,6 +51,8 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 - **Auto Queue Saved if Gen Error**: if for whatever reason you have got an error during a Gen, the queue will now be automatically saved. So you can try again this queue later (with a different config or when the related bug is fixed, if ever ...).
 
 
+**Note to RTX 50xx owners**: you will need to upgrade to *pytorch 2.10* (see upgrade procedure below) to be able to use *Triton*
+
 ### February 4rd 2026: WanGP v10.70, Let's Get Ready To Rumble !
 *The competition between Open Source & Close Source has never been that hot !*
 
@@ -269,7 +271,7 @@ conda activate wan2gp
 pip install -r requirements.txt
 ```
 
-**Update the application (upgrade from python 3.10 to 3.11):**
+**Upgrade to 3.11, Pytorch 2.10, Cuda 13/13.1** (for non GTX10xx users)
 I recommend creating a new conda env for the Python 3.11 to avoid bad surprises. Let's call the new conda env *wangp* (instead of *wan2gp* the old name of this project)
 Get in the directory where WanGP is installed and:
 ```bash
@@ -280,7 +282,8 @@ pip install torch==2.10.0 torchvision torchaudio --index-url https://download.py
 pip install -r requirements.txt
 ```
 
-Once you are done you will have to reinstall *Sage Attention*, *Triton*, *Flash Attention* (if installed). Check the **[Installation Guide](docs/INSTALLATION.md)** -
+**Git Errors**
+Once you are done you will have to reinstall *Sage Attention*, *Triton*, *Flash Attention*. Check the **[Installation Guide](docs/INSTALLATION.md)** -
 
 if you get some error messages related to git, you may try the following (beware this will overwrite local changes made to the source code of WanGP):
 ```bash

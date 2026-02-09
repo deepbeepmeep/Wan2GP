@@ -305,8 +305,8 @@ class family_handler:
                     "labels": {
                         "": "Text (Lyrics) 2 Audio",
                         "A": "Cover Mode of Source Audio (need to provide original Lyrics and set a Source Audio Strength)",
-                        "B": "Apply Reference Timbre",
-                        "AB": "Cover Mode of Source Audio + Apply Reference Timbre",
+                        "B": "Transfer Reference Audio Timbre",
+                        "AB": "Cover Mode of Source Audio + Transfer Reference Audio Timbre",
                     },
                     "default": "",
                     "label": "Audio Task",

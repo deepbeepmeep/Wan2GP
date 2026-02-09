@@ -212,10 +212,15 @@ MIOpen (AMD’s equivalent of NVIDIA’s cuDNN) is not yet fully stable on sever
 set MIOPEN_FIND_MODE=FAST
 ```
 
-or to disable MIOpen entirely by editing `wgp.py` and adding the following line below `import torch` (around line 51):
+Alternatively, you can disable MIOpen entirely by editing `wgp.py` and adding the following line below `import torch` (around line 51):
 
 ```cmd
-torch.backends.cudnn.enabled = False
+...
+:: /Lines already in the file/
+:: import torch
+torch.backends.cudnn.enabled = False # <-- Add this here
+:: import gc
+...
 ```
 
 To verify that it is disabled, or to enable verbose logging, you can set:

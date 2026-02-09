@@ -1,4 +1,5 @@
 import os
+import re
 
 import torch
 
@@ -56,6 +57,128 @@ ACE_STEP_DURATION_SLIDER = {
     "default": 20,
 }
 
+ACE_STEP15_DURATION_SLIDER = {
+    "label": "Duration (seconds)",
+    "min": 5,
+    "max": 360,
+    "increment": 1,
+    "default": 20,
+}
+
+ACE_STEP_BPM_MIN = 30
+ACE_STEP_BPM_MAX = 300
+ACE_STEP_BPM_HINT = f"Use an integer from {ACE_STEP_BPM_MIN} to {ACE_STEP_BPM_MAX} (leave empty for N/A)."
+ACE_STEP_TIME_SIGNATURE_VALUES = {2, 3, 4, 6}
+ACE_STEP_TIME_SIGNATURE_HINT = "Use a single digit supported by ACE: 2, 3, 4, or 6 (leave empty for N/A)."
+ACE_STEP_KEYSCALE_HINT = (
+    "Use <NOTE><ACCIDENTAL> <MODE> where NOTE is A/B/C/D/E/F/G, "
+    "ACCIDENTAL is optional (# or b, Unicode ♯/♭ also accepted), "
+    "and MODE is major or minor. "
+    "Short form <NOTE><ACCIDENTAL>m is also accepted. Leave empty for N/A."
+)
+ACE_STEP15_VALID_LANGUAGES = [
+    "ar", "az", "bg", "bn", "ca", "cs", "da", "de", "el", "en",
+    "es", "fa", "fi", "fr", "he", "hi", "hr", "ht", "hu", "id",
+    "is", "it", "ja", "ko", "la", "lt", "ms", "ne", "nl", "no",
+    "pa", "pl", "pt", "ro", "ru", "sa", "sk", "sr", "sv", "sw",
+    "ta", "te", "th", "tl", "tr", "uk", "ur", "vi", "yue", "zh",
+    "unknown",
+]
+ACE_STEP15_VALID_LANGUAGE_SET = set(ACE_STEP15_VALID_LANGUAGES)
+ACE_STEP15_LANGUAGE_CODES_TEXT = ", ".join(ACE_STEP15_VALID_LANGUAGES)
+ACE_STEP15_CUSTOM_SETTINGS = [
+    {
+        "id": "bpm",
+        "label": f"BPM ({ACE_STEP_BPM_MIN}-{ACE_STEP_BPM_MAX})",
+        "name": "BPM",
+        "type": "int",
+    },
+    {
+        "id": "keyscale",
+        "label": "KeyScale (C major, F# minor, ...)",
+        "name": "KeyScale",
+        "type": "text",
+    },
+    {
+        "id": "timesignature",
+        "label": "Time Signature (2,3,4,6)",
+        "name": "Time Signature",
+        "type": "int",
+    },
+    {
+        "id": "language",
+        "label": "Language (ISO code, empty = auto/en)",
+        "name": "Language",
+        "type": "text",
+        "default": "",
+    },
+]
+ACE_STEP15_MODEL_MODES = {
+    "choices": [
+        ("Generate Audio Codes based on Lyrics for better Semantic Understanding", 0),
+        ("+ Compute empty Bpm, Keyscale, Time Signature, Language using Lyrics & Music Caption", 1),
+        ("++ Refine Caption", 2),
+        ("+++ Determine Best Song Duration based on Lyrics & Music Caption", 3),
+    ],
+    "default": 0,
+    "label": "LM Chain Of Thought Preprocessing",
+}
+ACE_STEP15_SETTING_ALIASES = {
+    "bpm": "bpm",
+    "keyscale": "keyscale",
+    "key_scale": "keyscale",
+    "timesignature": "timesignature",
+    "time_signature": "timesignature",
+    "language": "language",
+    "lang": "language",
+    "language_code": "language",
+}
+ACE_STEP_V1_SAMPLE_SOLVERS = [
+    ("Euler", "euler"),
+    ("Heun", "heun"),
+    ("PingPong", "pingpong"),
+]
+
+
+def _normalize_ace_setting_name(name):
+    return re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower()).strip("_")
+
+
+def _resolve_ace_setting_id(setting_def):
+    raw_name = setting_def.get("id") or setting_def.get("param") or setting_def.get("name") or ""
+    normalized_name = _normalize_ace_setting_name(raw_name)
+    return ACE_STEP15_SETTING_ALIASES.get(normalized_name, normalized_name)
+
+
+def _normalize_keyscale_value(value):
+    if value is None:
+        return None, None
+    keyscale = str(value).strip()
+    if len(keyscale) == 0:
+        return None, None
+    lowered = keyscale.lower()
+    if lowered in {"n/a", "na", "none"}:
+        return None, None
+    keyscale = keyscale.replace("\u266f", "#").replace("\u266d", "b")
+
+    short_minor = re.fullmatch(r"([A-Ga-g])\s*([#b]?)\s*[mM]", keyscale)
+    if short_minor:
+        note = short_minor.group(1).upper()
+        accidental = short_minor.group(2)
+        return f"{note}{accidental} minor", None
+
+    full = re.fullmatch(r"([A-Ga-g])\s*([#b]?)\s*(major|minor|maj|min)", keyscale, flags=re.IGNORECASE)
+    if not full:
+        return None, ACE_STEP_KEYSCALE_HINT
+    note = full.group(1).upper()
+    accidental = full.group(2)
+    mode = full.group(3).lower()
+    if mode == "maj":
+        mode = "major"
+    elif mode == "min":
+        mode = "minor"
+    return f"{note}{accidental} {mode}", None
+
 
 def _get_model_path(model_def, key, default):
     if not model_def:
@@ -106,6 +229,15 @@ def _is_ace_step15(base_model_type):
     return base_model_type == "ace_step_v1_5"
 
 
+def _ace_step15_has_lm_definition(model_def):
+    text_encoder_urls = _get_model_path(model_def, "text_encoder_URLs", None)
+    if isinstance(text_encoder_urls, str):
+        return len(text_encoder_urls.strip()) > 0
+    if isinstance(text_encoder_urls, (list, tuple)):
+        return any(isinstance(one, str) and len(one.strip()) > 0 for one in text_encoder_urls)
+    return False
+
+
 class family_handler:
     @staticmethod
     def query_supported_types():
@@ -148,11 +280,12 @@ class family_handler:
     @staticmethod
     def query_model_def(base_model_type, model_def):
         if _is_ace_step15(base_model_type):
-            return {
+            extra_model_def = {
                 "audio_only": True,
                 "image_outputs": False,
                 "sliding_window": False,
-                "guidance_max_phases": 1,
+                "guidance_max_phases": 0,
+                "lock_inference_steps": True,
                 "no_negative_prompt": True,
                 "image_prompt_types_allowed": "",
                 "profiles_dir": ["ace_step_v1_5"],
@@ -160,31 +293,40 @@ class family_handler:
                 "inference_steps": True,
                 "temperature": True,
                 "any_audio_prompt": True,
-                "audio_guide_label": "Reference Audio",
+                "audio_guide_label": "Source Audio",
                 "audio_guide2_label": "Reference Timbre",
-                "audio_scale_name": "Reference Audio Strength",
+                "audio_scale_name": "Source Audio Strength",
                 "audio_prompt_choices": True,
                 "enabled_audio_lora": False,
+                "prompt_class": "Lyrics",
+                "prompt_description": "Lyrics / Prompt (Write [Instrumental] for Instrumental Generation only)",
                 "audio_prompt_type_sources": {
                     "selection": ["", "A", "B", "AB"],
                     "labels": {
-                        "": "No Reference Audio / No Reference Timbre",
-                        "A": "Reference Audio (need to provide original lyrics and set a Reference Audio Strength)",
-                        "B": "Reference Timbre",
-                        "AB": "Reference Audio + Timbre",
+                        "": "Text (Lyrics) 2 Audio",
+                        "A": "Cover Mode of Source Audio (need to provide original Lyrics and set a Source Audio Strength)",
+                        "B": "Apply Reference Timbre",
+                        "AB": "Cover Mode of Source Audio + Apply Reference Timbre",
                     },
                     "default": "",
-                    "label": "Reference Sources",
+                    "label": "Audio Task",
                     "letters_filter": "AB",
                 },
                 "alt_prompt": {
-                    "label": "Genres / Tags",
+                    "label": "Music Caption (Describe the style, genre, instruments, and mood)",
+                    "name": "Music Caption",
                     "placeholder": "disco",
                     "lines": 2,
                 },
-                "duration_slider": dict(ACE_STEP_DURATION_SLIDER),
+                "duration_slider": dict(ACE_STEP15_DURATION_SLIDER),
+                "custom_settings": [one.copy() for one in ACE_STEP15_CUSTOM_SETTINGS],
                 "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
+                "text_prompt_enhancer_max_tokens": 512,
+                "prompt_enhancer_button_label": "Compose Lyrics",
             }
+            if _ace_step15_has_lm_definition(model_def):
+                extra_model_def["model_modes"] = ACE_STEP15_MODEL_MODES.copy()
+            return extra_model_def
         return {
             "audio_only": True,
             "image_outputs": False,
@@ -196,6 +338,7 @@ class family_handler:
             "text_encoder_URLs": [ACE_STEP_TEXT_ENCODER_URL],
             "text_encoder_folder": ACE_STEP_TEXT_ENCODER_FOLDER,
             "inference_steps": True,
+            "sample_solvers": ACE_STEP_V1_SAMPLE_SOLVERS,
             "temperature": False,
             "any_audio_prompt": True,
             "audio_guide_label": "Source Audio",
@@ -219,12 +362,13 @@ class family_handler:
             },
             "duration_slider": dict(ACE_STEP_DURATION_SLIDER),
             "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
+            "prompt_enhancer_button_label": "Compose Lyrics",
         }
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
         if _is_ace_step15(base_model_type):
-            enable_lm = bool(_get_model_path(model_def, "ace_step15_enable_lm", False))
+            enable_lm = _ace_step15_has_lm_definition(model_def)
             text_encoder_2_folder = _get_model_path(model_def, "ACE_STEP15_TEXT_ENCODER_2_FOLDER", ACE_STEP15_TEXT_ENCODER_2_FOLDER)
             base_files = [
                 ACE_STEP15_VAE_WEIGHTS_NAME,
@@ -306,6 +450,7 @@ class family_handler:
         submodel_no_list=None,
         text_encoder_filename=None,
         profile=0,
+        lm_decoder_engine="legacy",
         **kwargs,
     ):
         transformer_weights = None
@@ -337,12 +482,16 @@ class family_handler:
             )
             pre_text_tokenizer_dir = _get_model_path(model_def, "ace_step15_pre_text_tokenizer_dir", _ckpt_dir(text_encoder_2_folder))
 
-            enable_lm = bool(_get_model_path(model_def, "ace_step15_enable_lm", False))
-            ignore_lm_cache_seed = bool(_get_model_path(model_def, "ace_step15_lm_cache_ignore_seed", True))
+            enable_lm = bool(text_encoder_filename)
+            ignore_lm_cache_seed = bool(_get_model_path(model_def, "ace_step15_lm_cache_ignore_seed", False))
             lm_folder = _get_model_path(model_def, "text_encoder_folder", ACE_STEP15_LM_FOLDER)
             lm_weights = text_encoder_filename
             lm_tokenizer_dir = _get_model_path(model_def, "ace_step15_lm_tokenizer_dir", _ace_step15_lm_ckpt_dir(lm_folder))
             silence_latent = _get_model_path(model_def, "ace_step15_silence_latent", _ace_step15_ckpt_file(ACE_STEP15_SILENCE_LATENT_NAME))
+            lm_vllm_weight_mode = _get_model_path(model_def, "ace_step15_vllm_weight_mode", "lazy")
+            if enable_lm:
+                lm_weight_name = os.path.basename(str(lm_weights)) if lm_weights else ""
+                print(f"[ace_step15] LM engine='{lm_decoder_engine}' | LM weights='{lm_weight_name}'")
 
             pipeline = ACEStep15Pipeline(
                 transformer_weights_path=transformer_weights,
@@ -356,6 +505,8 @@ class family_handler:
                 silence_latent_path=silence_latent,
                 enable_lm=enable_lm,
                 ignore_lm_cache_seed=ignore_lm_cache_seed,
+                lm_decoder_engine=lm_decoder_engine,
+                lm_vllm_weight_mode=lm_vllm_weight_mode,
                 dtype=dtype or torch.bfloat16,
             )
 
@@ -364,7 +515,7 @@ class family_handler:
                 "text_encoder_2": pipeline.text_encoder_2,
                 "codec": pipeline.audio_vae,
             }
-            if text_encoder_filename and pipeline.lm_model is not None:
+            if lm_decoder_engine != "vllm" and text_encoder_filename and pipeline.lm_model is not None:
                 pipe["text_encoder"] = pipeline.lm_model
 
             if save_quantized and transformer_weights:
@@ -431,7 +582,6 @@ class family_handler:
                     "You hum the tune and I fall in time\\n"
                     "[Chorus]\\nHold me close and keep the time",
                     "alt_prompt": "dreamy synth-pop, shimmering pads, soft vocals",
-                    "scheduler_type": "euler",
                     "duration_seconds": duration_def.get("default", 60),
                     "repeat_generation": 1,
                     "video_length": 0,
@@ -443,6 +593,16 @@ class family_handler:
                     "audio_scale": 0.5,
                 }
             )
+            # default_custom_settings = {}
+            # for setting_def in model_def.get("custom_settings", []):
+            #     setting_id = _resolve_ace_setting_id(setting_def)
+            #     default_value = setting_def.get("default", None)
+            #     if default_value is None:
+            #         continue
+            #     if isinstance(default_value, str) and len(default_value.strip()) == 0:
+            #         continue
+            #     default_custom_settings[setting_id] = default_value
+            # ui_defaults["custom_settings"] = default_custom_settings if len(default_custom_settings) > 0 else None
             return
         ui_defaults.update(
             {
@@ -451,7 +611,7 @@ class family_handler:
                 "You hum the tune and I fall in time\\n"
                 "[Chorus]\\nHold me close and keep the time",
                 "alt_prompt": "dreamy synth-pop, shimmering pads, soft vocals",
-                "scheduler_type": "euler",
+                "sample_solver": ui_defaults.get("sample_solver", ui_defaults.get("scheduler_type", "euler")),
                 "duration_seconds": duration_def.get("default", 60),
                 "repeat_generation": 1,
                 "video_length": 0,
@@ -465,10 +625,130 @@ class family_handler:
         )
 
     @staticmethod
+    def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if _is_ace_step15(base_model_type):
+            return
+        if ui_defaults.get("sample_solver", "") in ("", None):
+            legacy_scheduler = ui_defaults.get("scheduler_type", "")
+            if legacy_scheduler in {"euler", "heun", "pingpong"}:
+                ui_defaults["sample_solver"] = legacy_scheduler
+
+    @staticmethod
     def validate_generative_prompt(base_model_type, model_def, inputs, one_prompt):
         if one_prompt is None or len(str(one_prompt).strip()) == 0:
             return "Lyrics prompt cannot be empty for ACE-Step."
         audio_prompt_type = inputs.get("audio_prompt_type", "") or ""
         if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
             return "Reference audio is required for Only Lyrics or Remix modes."
+        return None
+
+    @staticmethod
+    def validate_generative_settings(base_model_type, model_def, inputs):
+        if not _is_ace_step15(base_model_type):
+            return None
+
+        raw_custom_settings = inputs.get("custom_settings", None)
+        if raw_custom_settings is None:
+            return None
+        if not isinstance(raw_custom_settings, dict):
+            return "Custom settings must be a dictionary."
+
+        canonical_custom_settings = {}
+        for raw_key, raw_value in raw_custom_settings.items():
+            canonical_key = ACE_STEP15_SETTING_ALIASES.get(_normalize_ace_setting_name(raw_key), _normalize_ace_setting_name(raw_key))
+            if len(canonical_key) == 0:
+                continue
+            canonical_custom_settings[canonical_key] = raw_value
+
+        validated_custom_settings = {}
+        for setting_def in model_def.get("custom_settings", []):
+            setting_id = _resolve_ace_setting_id(setting_def)
+            raw_value = canonical_custom_settings.get(setting_id, None)
+            if raw_value is None:
+                continue
+            if isinstance(raw_value, str):
+                raw_value = raw_value.strip()
+                if len(raw_value) == 0:
+                    continue
+
+            if setting_id == "bpm":
+                try:
+                    if isinstance(raw_value, bool):
+                        raise ValueError()
+                    if isinstance(raw_value, int):
+                        bpm_value = raw_value
+                    elif isinstance(raw_value, float):
+                        if not raw_value.is_integer():
+                            raise ValueError()
+                        bpm_value = int(raw_value)
+                    else:
+                        bpm_as_float = float(str(raw_value).strip())
+                        if not bpm_as_float.is_integer():
+                            raise ValueError()
+                        bpm_value = int(bpm_as_float)
+                except Exception:
+                    return f"Invalid BPM. {ACE_STEP_BPM_HINT}"
+                if bpm_value < ACE_STEP_BPM_MIN or bpm_value > ACE_STEP_BPM_MAX:
+                    return f"Invalid BPM. {ACE_STEP_BPM_HINT}"
+                validated_custom_settings["bpm"] = bpm_value
+                continue
+
+            if setting_id == "timesignature":
+                timesig_value = None
+                if isinstance(raw_value, bool):
+                    return f"Invalid Time Signature. {ACE_STEP_TIME_SIGNATURE_HINT}"
+                if isinstance(raw_value, int):
+                    timesig_value = raw_value
+                elif isinstance(raw_value, float):
+                    if not raw_value.is_integer():
+                        return f"Invalid Time Signature. {ACE_STEP_TIME_SIGNATURE_HINT}"
+                    timesig_value = int(raw_value)
+                else:
+                    time_text = str(raw_value).strip()
+                    if len(time_text) == 0 or time_text.lower() in {"n/a", "na", "none"}:
+                        timesig_value = None
+                    else:
+                        compact = time_text.replace(" ", "")
+                        compact_lower = compact.lower()
+                        if compact_lower in {"2/4", "3/4", "4/4", "6/8"}:
+                            timesig_value = int(compact_lower.split("/", 1)[0])
+                        elif compact in {"2", "3", "4", "6"}:
+                            timesig_value = int(compact)
+                        else:
+                            return f"Invalid Time Signature. {ACE_STEP_TIME_SIGNATURE_HINT}"
+                if timesig_value is not None and timesig_value not in ACE_STEP_TIME_SIGNATURE_VALUES:
+                    return f"Invalid Time Signature. {ACE_STEP_TIME_SIGNATURE_HINT}"
+                if timesig_value is not None:
+                    validated_custom_settings["timesignature"] = timesig_value
+                continue
+
+            if setting_id == "keyscale":
+                normalized_keyscale, keyscale_error = _normalize_keyscale_value(raw_value)
+                if keyscale_error is not None:
+                    return f"Invalid KeyScale. {keyscale_error}"
+                if normalized_keyscale is not None:
+                    validated_custom_settings["keyscale"] = normalized_keyscale
+                continue
+
+            if setting_id == "language":
+                language_value = str(raw_value).strip().lower()
+                if len(language_value) == 0:
+                    continue
+                if language_value not in ACE_STEP15_VALID_LANGUAGE_SET:
+                    return f"Invalid Language code '{raw_value}'. Available codes: {ACE_STEP15_LANGUAGE_CODES_TEXT}"
+                validated_custom_settings["language"] = language_value
+                continue
+
+        for key, value in canonical_custom_settings.items():
+            if key in validated_custom_settings:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, str):
+                value = value.strip()
+                if len(value) == 0:
+                    continue
+            validated_custom_settings[key] = value
+
+        inputs["custom_settings"] = validated_custom_settings if len(validated_custom_settings) > 0 else None
         return None

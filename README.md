@@ -33,6 +33,24 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### February 9rd 2026: WanGP v10.80, Easy Metal
+
+- **Ace Step 1.5 Turbo Super Charged**: all the best features of *Ace Step 1.5* are now in *WanGP* and are *Fast* & *Easy* to use:
+   * Manual Selection of *Bpm*, *Keyscale*, *Time Signature* & *Language*
+   * Use *LM* to auto detect *Bpm*, *Keyscale*, *Time Signature* & *Language* that best suits your *Lyrics*
+   * Use *LM* to refine *Music Caption* or auto detect *Song Duration*
+   * Choice of *vllm* engine for *LM* for up to *10x faster LM generation!!!*. Also as a WanGP exclusive, *vllm* is offered in *INT8 quantized* format for lower VRAM requirements. Please note you will need to install *Triton* and *Flash Attention 2* (check the *INSTALLATION.Md* for easy install)
+   * Use *LM* to refine *Music Caption* (usually the key to get the song theme you expected)
+   * UI Makeover to better match vocabulary used in original Ace Step App (but without its complexity...)
+   * Refined *System Prompt* used in *Prompt Enhancer* to generate *Lyrics* (I recommend to use the *LLama Joy Prompt Enhancer*)
+
+- **LoKr support**: this "Lora" like format has been tested with *Flux Klein 9B*
+
+- **Optimized Int8 Kernels**: all the *Quantized INT8 checkpoints* (most of the quantized checkpoints) used with WanGP should be now *10% faster !!!*. You will need to install *Triton*. It is experimental, so for the moment it needs to be enabled manually in the *Config / Performance* tab. Please share your feedback on *discord* by mentioning your GPU so that I know if it works properly.
+
+- **Auto Queue Saved if Gen Error**: if for whatever reason you have got an error during a Gen, the queue will now be automatically saved. So you can try again this queue later (with a different config or when the related bug is fixed, if ever ...).
+
+
 ### February 4rd 2026: WanGP v10.70, Let's Get Ready To Rumble !
 *The competition between Open Source & Close Source has never been that hot !*
 

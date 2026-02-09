@@ -58,6 +58,7 @@ def _get_kugelaudio_model_def():
             "default": "",
         },
         "text_prompt_enhancer_instructions": TTS_MONOLOGUE_OR_DIALOGUE_PROMPT,
+        "prompt_enhancer_button_label": "Write Speech",
         "compile": False,
     }
 

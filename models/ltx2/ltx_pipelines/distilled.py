@@ -1,4 +1,6 @@
 import logging
+import os
+import time
 from collections.abc import Callable, Iterator
 
 import torch
@@ -42,6 +44,62 @@ from shared.utils.self_refiner import create_self_refiner_handler, normalize_sel
 from shared.utils.text_encoder_cache import TextEncoderCache
 
 device = get_device()
+_BENCH_TRANSFORMER_ENV = "WAN2GP_LTX2_BENCH_TRANSFORMER"
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    val = os.environ.get(name, default)
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+class _TransformerBenchWrapper:
+    def __init__(self, module, enabled: bool = False) -> None:
+        self._module = module
+        self._enabled = bool(enabled)
+        self._cuda_events: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
+        self._cpu_total_ms = 0.0
+        self._cpu_calls = 0
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+    def __call__(self, *args, **kwargs):
+        if not self._enabled:
+            return self._module(*args, **kwargs)
+        if torch.cuda.is_available():
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            out = self._module(*args, **kwargs)
+            end.record()
+            self._cuda_events.append((start, end))
+            return out
+
+        t0 = time.perf_counter()
+        out = self._module(*args, **kwargs)
+        self._cpu_total_ms += (time.perf_counter() - t0) * 1000.0
+        self._cpu_calls += 1
+        return out
+
+    def consume(self) -> tuple[float, int]:
+        if not self._enabled:
+            return 0.0, 0
+        if torch.cuda.is_available():
+            if not self._cuda_events:
+                return 0.0, 0
+            torch.cuda.synchronize()
+            total_ms = 0.0
+            for start, end in self._cuda_events:
+                total_ms += float(start.elapsed_time(end))
+            calls = len(self._cuda_events)
+            self._cuda_events.clear()
+            return total_ms, calls
+
+        total_ms = self._cpu_total_ms
+        calls = self._cpu_calls
+        self._cpu_total_ms = 0.0
+        self._cpu_calls = 0
+        return total_ms, calls
 
 
 class DistilledPipeline:
@@ -188,8 +246,9 @@ class DistilledPipeline:
         video_context, audio_context = contexts[0]
 
         # Stage 1: Initial low resolution video generation.
+        bench_transformer = _env_flag(_BENCH_TRANSFORMER_ENV, "0")
         video_encoder = self._get_model("video_encoder")
-        transformer = self._get_model("transformer")
+        transformer = _TransformerBenchWrapper(self._get_model("transformer"), enabled=bench_transformer)
         bind_interrupt_check(transformer, interrupt_check)
         # DISTILLED_SIGMA_VALUES = [0.421875, 0]
         stage_1_sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
@@ -290,6 +349,14 @@ class DistilledPipeline:
             device=self.device,
             mask_context=mask_context,
         )
+        stage1_transformer_ms = 0.0
+        stage1_transformer_calls = 0
+        if bench_transformer:
+            stage1_transformer_ms, stage1_transformer_calls = transformer.consume()
+            print(
+                "[WAN2GP][LTX2][bench] transformer stage1: "
+                f"{stage1_transformer_ms / 1000.0:.3f}s ({stage1_transformer_calls} calls)"
+            )
         if video_state is None or audio_state is None:
             return None, None
         if interrupt_check is not None and interrupt_check():
@@ -392,6 +459,18 @@ class DistilledPipeline:
             initial_audio_latent=audio_state.latent,
             mask_context=mask_context,
         )
+        if bench_transformer:
+            stage2_transformer_ms, stage2_transformer_calls = transformer.consume()
+            total_transformer_ms = stage1_transformer_ms + stage2_transformer_ms
+            total_transformer_calls = stage1_transformer_calls + stage2_transformer_calls
+            print(
+                "[WAN2GP][LTX2][bench] transformer stage2: "
+                f"{stage2_transformer_ms / 1000.0:.3f}s ({stage2_transformer_calls} calls)"
+            )
+            print(
+                "[WAN2GP][LTX2][bench] transformer total: "
+                f"{total_transformer_ms / 1000.0:.3f}s ({total_transformer_calls} calls)"
+            )
         if video_state is None or audio_state is None:
             return None, None
         if interrupt_check is not None and interrupt_check():

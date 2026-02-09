@@ -1,7 +1,6 @@
 import gradio as gr
 import json
 import traceback
-from wgp import quit_application, WanGP_version
 from shared.utils.plugins import WAN2GPPlugin, compare_release_metadata, is_wangp_compatible, plugin_id_from_url
 
 class PluginManagerUIPlugin(WAN2GPPlugin):
@@ -10,11 +9,15 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         self.name = "Plugin Manager UI"
         self.version = "1.8.0"
         self.description = "A built-in UI for managing, installing, and updating Wan2GP plugins"
+        self.WanGP_version = ""
+        self.quit_application = None
 
     def setup_ui(self):
         self.request_global("app")
         self.request_global("server_config")
         self.request_global("server_config_filename")
+        self.request_global("quit_application")
+        self.request_global("WanGP_version")
         self.request_component("main")
         self.request_component("main_tabs")
         
@@ -216,7 +219,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                 name = plugin_id_from_url(url) or "Unknown Plugin"
             
             safe_url = url.replace("'", "\\'")
-            incompatible = not is_wangp_compatible(wan2gp_version, WanGP_version)
+            incompatible = not is_wangp_compatible(wan2gp_version, self.WanGP_version)
             incompat_html = ""
             if incompatible and wan2gp_version:
                 incompat_html = (
@@ -347,7 +350,7 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
                     bundled_badge_html = '<span class="plugin-bundled-badge" title="Bundled plugin, cannot be uninstalled">Bundled</span>'
 
                 wan2gp_version = plugin.get('wan2gp_version') or plugin.get('wangp_version', '')
-                incompatible = not is_wangp_compatible(wan2gp_version, WanGP_version)
+                incompatible = not is_wangp_compatible(wan2gp_version, self.WanGP_version)
                 incompat_html = ''
                 if incompatible and wan2gp_version:
                     incompat_html = (
@@ -523,7 +526,10 @@ class PluginManagerUIPlugin(WAN2GPPlugin):
         with open(self.server_config_filename, "w", encoding="utf-8") as writer:
             writer.write(json.dumps(self.server_config, indent=4))
         gr.Info("Settings saved. Restarting application...")
-        quit_application()
+        if callable(getattr(self, "quit_application", None)):
+            self.quit_application()
+            return
+        gr.Warning("Restart hook is unavailable. Please restart WanGP manually.")
 
     def _handle_save_action(self, payload_str: str):
         if not payload_str:

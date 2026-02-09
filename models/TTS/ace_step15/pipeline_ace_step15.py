@@ -661,12 +661,7 @@ class ACEStep15Pipeline:
     def _ensure_reference_phase1_modules(self):
         if self._ref_metadata_processor_class is not None:
             return
-        acestep_root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "ACE-Step-1.5"))
-        if not os.path.isdir(acestep_root):
-            raise RuntimeError(f"ACE-Step reference folder is missing: '{acestep_root}'")
-        if acestep_root not in sys.path:
-            sys.path.insert(0, acestep_root)
-        from acestep.constrained_logits_processor import MetadataConstrainedLogitsProcessor
+        from .constrained_logits_processor import MetadataConstrainedLogitsProcessor
 
         self._ref_metadata_processor_class = MetadataConstrainedLogitsProcessor
         postprocess_caption = getattr(MetadataConstrainedLogitsProcessor, "postprocess_caption", None)

@@ -3176,10 +3176,11 @@ def download_mmaudio():
     mmaudio_enabled, mmaudio_mode, _, _, _ = get_mmaudio_settings(server_config)
     if mmaudio_enabled:
         mmaudio_files = ["synchformer_state_dict.pth", "v1-44.pth", MMAUDIO_STANDARD if mmaudio_mode == MMAUDIO_MODE_V2 else MMAUDIO_ALTERNATE]
+        bigvgan_v2_files = ["config.json", "bigvgan_generator.pt"]
         enhancer_def = {
             "repoId" : "DeepBeepMeep/Wan2.1",
-            "sourceFolderList" : [ "mmaudio", "DFN5B-CLIP-ViT-H-14-378"  ],
-            "fileList" : [ mmaudio_files, ["open_clip_config.json", "open_clip_pytorch_model.bin"]]
+            "sourceFolderList" : [ "mmaudio", "DFN5B-CLIP-ViT-H-14-378", "bigvgan_v2_44khz_128band_512x"  ],
+            "fileList" : [ mmaudio_files, ["open_clip_config.json", "open_clip_pytorch_model.bin"], bigvgan_v2_files]
         }
         process_files_def(**enhancer_def)
 

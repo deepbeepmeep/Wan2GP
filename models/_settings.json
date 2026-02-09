@@ -23,6 +23,7 @@
 	"batch_size": 1,
 	"video_length": 81,
 	"duration_seconds": 0,
+	"pause_seconds": 0,
 	"force_fps": "",
 	"num_inference_steps": 30,
 	"seed": -1,

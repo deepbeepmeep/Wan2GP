@@ -1,4 +1,5 @@
 import os
+import re
 
 import torch
 
@@ -221,7 +222,9 @@ class family_handler:
         if "B" in audio_prompt_type:
             if inputs.get("audio_guide") is None or inputs.get("audio_guide2") is None:
                 return "Two-voice cloning requires two reference audio files."
-            if "Speaker 1:" not in text and "speaker 1:" not in text:
+            has_speaker_0 = re.search(r"Speaker\s*0\s*:", text, flags=re.IGNORECASE) is not None
+            has_speaker_1 = re.search(r"Speaker\s*1\s*:", text, flags=re.IGNORECASE) is not None
+            if not has_speaker_0 or not has_speaker_1:
                 return "Two-voice cloning requires prompt lines with Speaker 0: and Speaker 1:."
         return None
 

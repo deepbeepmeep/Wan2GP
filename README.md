@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### February 10th 2026: WanGP v10.82, Easy Metal
+### February 10th 2026: WanGP v10.83, Easy Metal
 
 - **Ace Step 1.5 Turbo Super Charged**: all the best features of *Ace Step 1.5* are now in *WanGP* and are *Fast* & *Easy* to use:
    * Manual Selection of *Bpm*, *Keyscale*, *Time Signature* & *Language*
@@ -50,6 +50,15 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 - **Auto Queue Saved if Gen Error**: if for whatever reason you have got an error during a Gen, the queue will now be automatically saved. So you can try again this queue later (with a different config or when the related bug is fixed, if ever ...).
 
+- **UI Updates** (thx *Tophness!*):
+Updated the *Self-Refiner UI* to a dynamic, slider-based interface (no more manual text input).
+Improved queue reordering: items can now be dragged and dropped directly onto the Top and Bottom buttons while rearranging the queue in order to snap scroll to the top and bottom.
+
+- **Kugel Audio Audio Split**: Kugel Audio is a great model but strangely it tends to accelerate with long speeches. In order to avoid this effect, we need to split audio speeches. You can either do that manually by inserting an *Empty Line* or by specifiying an *Auto Audio Split Duration* (don't worry WanGP will try to split between lines or sentences). 
+
+*update 10.81*: Fixes\
+*update 10.82*: UI update\
+*update 10.83*: Kugel Audio Split
 
 **Note to RTX 50xx owners**: you will need to upgrade to *pytorch 2.10* (see upgrade procedure below) to be able to use *Triton*
 

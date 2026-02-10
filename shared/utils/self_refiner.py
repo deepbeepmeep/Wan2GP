@@ -1,5 +1,6 @@
 import torch
 import copy
+import uuid
 from diffusers.utils.torch_utils import randn_tensor
 
 def is_int_string(s: str) -> bool:
@@ -9,59 +10,49 @@ def is_int_string(s: str) -> bool:
     except ValueError:
         return False
     
-def _normalize_single_self_refiner_plan(plan_str):
-    entries = []
-    for chunk in plan_str.split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if ":" not in chunk:
-            return "", "Self-refine plan entries must be in 'start-end:steps' format."
-        range_part, steps_part = chunk.split(":", 1)
-        range_part = range_part.strip()
-        steps_part = steps_part.strip()
-        if not steps_part:
-            return "", "Self-refine plan entries must include a step count."
-        if "-" in range_part:
-            start_s, end_s = range_part.split("-", 1)
-        else:
-            start_s = end_s = range_part
-        start_s = start_s.strip()
-        if not is_int_string(start_s):
-            return "", "Self-refine plan start position must be an integer."
-        end_s = end_s.strip()
-        if not is_int_string(end_s):
-            return "", "Self-refine plan end position must be an integer."
-        if not is_int_string(steps_part):
-            return "", "Self-refine plan steps part must be an integer."
-        
-        entries.append({
-            "start": int(start_s),
-            "end": int(end_s),
-            "steps": int(steps_part),
-        })
-    plan = entries
-    return plan, ""
+def normalize_self_refiner_plan(plan_input, max_plans: int = 1):
+    default_plan = [
+        {"start": 1, "end": 5, "steps": 3},
+        {"start": 6, "end": 13, "steps": 1},
+    ]
+    if len(plan_input) > max_plans:
+        return [], f"Self-refiner supports up to {max_plans} plan(s); found {len(plan_input)}."
+    if not plan_input or not isinstance(plan_input, list):
+        return [default_plan], ""
+    
+    return [plan_input], ""
 
+def ensure_refiner_list(plan_data):
+    if not isinstance(plan_data, list):
+        return []
+    for rule in plan_data:
+        if "id" not in rule:
+            rule["id"] = str(uuid.uuid4())
+    return plan_data
 
-def normalize_self_refiner_plan(plan_str, max_plans: int = 1):
-    if plan_str is None:
-        plan_str = ""
-    if max_plans is None or max_plans < 1:
-        max_plans = 1
-    segments = [seg.strip() for seg in str(plan_str).split(";")]
-    if len(segments) > max_plans:
-        return [], f"Self-refiner supports up to {max_plans} plan(s); remove extra ';' separators."
-    plans = []
-    for seg in segments:
-        if not seg:
-            plans.append([])
-            continue
-        plan, error = _normalize_single_self_refiner_plan(seg)
-        if error:
-            return [], error
-        plans.append(plan)
-    return plans, ""
+def add_refiner_rule(current_rules, range_val, steps_val):
+    new_start, new_end = int(range_val[0]), int(range_val[1])
+    
+    if new_start >= new_end:
+         from gradio import Error
+         raise Error(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
+
+    for rule in current_rules:
+        if new_start <= rule['end'] and new_end >= rule['start']:
+            from gradio import Error
+            raise Error(f"Overlap detected! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
+
+    new_rule = {
+        "id": str(uuid.uuid4()),
+        "start": new_start,
+        "end": new_end,
+        "steps": int(steps_val)
+    }
+    updated_list = current_rules + [new_rule]
+    return sorted(updated_list, key=lambda x: x['start'])
+
+def remove_refiner_rule(current_rules, rule_id):
+    return [r for r in current_rules if r["id"] != rule_id]
 
 class PnPHandler:
     def __init__(self, stochastic_plan, ths_uncertainty=0.0, p_norm=1, certain_percentage=0.999, channel_dim: int = 1):
@@ -309,20 +300,8 @@ class PnPHandler:
         return latents, sample_scheduler
 
 def create_self_refiner_handler(pnp_plan, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage, channel_dim: int = 1):
-    stochastic_plan = None
-    if isinstance(pnp_plan, list):
-        stochastic_plan = pnp_plan
-    elif len(pnp_plan):
-        plans, _ = normalize_self_refiner_plan(pnp_plan, max_plans=1)
-        if plans:
-            stochastic_plan = plans[0]
-
-    if not stochastic_plan:
-        # Default plan from paper/code
-        stochastic_plan = [
-            {"start": 1, "end": 5, "steps": 3},
-            {"start": 6, "end": 13, "steps": 1},
-        ]
+    plans, _ = normalize_self_refiner_plan(pnp_plan, max_plans=1)
+    stochastic_plan = plans[0]
 
     return PnPHandler(
         stochastic_plan,

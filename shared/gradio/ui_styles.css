@@ -364,3 +364,14 @@ user-select: text;
     overflow: visible !important;
 }
 .tabitem {padding-top:0px}
+.rule-row { margin-bottom: 8px; align-items: center !important; display: flex; gap: 8px; }
+.rule-card { background-color: var(--background-fill-secondary); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-color-primary); flex-grow: 1; margin-bottom: 0 !important; }
+.rule-card p { margin-bottom: 0 !important; }
+.delete-btn { 
+	min-width: 42px !important; 
+	max-width: 42px !important; 
+	height: 42px !important; 
+	padding: 0 !important; 
+	align-self: center;
+}
+#refiner-input-row { align-items: center; }

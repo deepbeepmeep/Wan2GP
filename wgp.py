@@ -7161,26 +7161,26 @@ def process_tasks(state):
             break
         elif cmd == "info":
             gr.Info(data)
-		elif cmd == "error": 
-			queue.clear()
-			try:
-				save_queue_if_crash = server_config.get("save_queue_if_crash", 1)
-				if save_queue_if_crash:
-					error_filename = AUTOSAVE_ERROR_FILENAME if save_queue_if_crash == 1 else get_available_filename("", AUTOSAVE_ERROR_FILENAME, f"_{datetime.now():%Y%m%d_%H%M%S}")
-					if _save_queue_to_zip(global_queue_ref, error_filename):
-						print(f"Error Queue autosaved successfully to {error_filename}")
-						gr.Info(f"Error Queue autosaved successfully to {error_filename}")
-					else:
-						print("Autosave Error Queue failed.")
-			except Exception as e:
-				print(f"Error during autosave: {e}")
+        elif cmd == "error": 
+            queue.clear()
+            try:
+                save_queue_if_crash = server_config.get("save_queue_if_crash", 1)
+                if save_queue_if_crash:
+                    error_filename = AUTOSAVE_ERROR_FILENAME if save_queue_if_crash == 1 else get_available_filename("", AUTOSAVE_ERROR_FILENAME, f"_{datetime.now():%Y%m%d_%H%M%S}")
+                    if _save_queue_to_zip(global_queue_ref, error_filename):
+                        print(f"Error Queue autosaved successfully to {error_filename}")
+                        gr.Info(f"Error Queue autosaved successfully to {error_filename}")
+                    else:
+                        print("Autosave Error Queue failed.")
+            except Exception as e:
+                print(f"Error during autosave: {e}")
 
-			update_global_queue_ref(queue)
-			gen["prompts_max"] = 0
-			gen["prompt"] = ""
-			gen["status_display"] =  False
-			release_gen()
-			raise gr.Error(data, print_exception= False, duration = 0)
+            update_global_queue_ref(queue)
+            gen["prompts_max"] = 0
+            gen["prompt"] = ""
+            gen["status_display"] =  False
+            release_gen()
+            raise gr.Error(data, print_exception= False, duration = 0)
         elif cmd == "status":
             gen["status"] = data
         elif cmd == "output":

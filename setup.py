@@ -662,10 +662,16 @@ if __name__ == "__main__":
             sys.exit(1)
 
         print(f"[*] Launching using active environment: {active}")
+
+        extra_args = ""
+        if os.path.exists("scripts/args.txt"):
+            with open("scripts/args.txt", "r") as f:
+                lines = [l.strip() for l in f.readlines() if l.strip() and not l.startswith("#")]
+                extra_args = " ".join(lines)
         
         env_vars = profile.get("env", {})
         cmd_fmt = ENV_TEMPLATES[env_data['type']]['run']
-        cmd = f"{cmd_fmt.format(dir=env_data['path'])} wgp.py"
+        cmd = f"{cmd_fmt.format(dir=env_data['path'])} wgp.py {extra_args}"
         run_cmd(cmd, env_vars=env_vars)
 
     elif args.mode == "update":

@@ -11,7 +11,7 @@
   {
     "name": "FlashVSR",
     "author": "Hakaze",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "description": "AI-powered 4x video upscaling using FlashVSR models with Sparse SageAttention.",
     "url": "https://github.com/Hakaze/wan2gp-flashvsr",
     "date": "",

@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### February 9rd 2026: WanGP v10.80, Easy Metal
+### February 10th 2026: WanGP v10.82, Easy Metal
 
 - **Ace Step 1.5 Turbo Super Charged**: all the best features of *Ace Step 1.5* are now in *WanGP* and are *Fast* & *Easy* to use:
    * Manual Selection of *Bpm*, *Keyscale*, *Time Signature* & *Language*

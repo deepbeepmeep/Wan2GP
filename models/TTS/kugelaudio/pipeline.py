@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -32,6 +33,7 @@ KUGELAUDIO_TOKENIZER_FILES = [
     "vocab.json",
 ]
 KUGELAUDIO_DEBUG = os.getenv("KUGELAUDIO_DEBUG", "0") not in ("0", "", "false", "False")
+KUGELAUDIO_AUTO_SPLIT_SETTING_ID = "auto_split_every_s"
 
 
 def _seed_everything(seed: int) -> None:
@@ -203,6 +205,106 @@ class KugelAudioPipeline:
         except (TypeError, ValueError):
             return 2048
 
+    def _resolve_auto_split_seconds(self, kwargs: dict) -> Optional[float]:
+        custom_settings = kwargs.get("custom_settings", None)
+        if not isinstance(custom_settings, dict):
+            return None
+        raw_value = custom_settings.get(KUGELAUDIO_AUTO_SPLIT_SETTING_ID, None)
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, str):
+            raw_value = raw_value.strip()
+            if len(raw_value) == 0:
+                return None
+        try:
+            if isinstance(raw_value, bool):
+                return None
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _resolve_cut_char_index(self, text: str, token_limit: Optional[int]) -> Optional[int]:
+        if token_limit is None or token_limit <= 0 or len(text) == 0:
+            return None
+        tokenizer = getattr(self.processor, "tokenizer", None)
+        if tokenizer is None:
+            return None
+        try:
+            encoded = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+            offsets = encoded.get("offset_mapping", None) if isinstance(encoded, dict) else None
+            if offsets is None and hasattr(encoded, "offset_mapping"):
+                offsets = encoded.offset_mapping
+            if offsets is None or len(offsets) <= token_limit:
+                return None
+            cut_char = offsets[token_limit][0]
+            if isinstance(cut_char, (list, tuple)):
+                cut_char = cut_char[0]
+            cut_char = int(cut_char)
+            return min(len(text), max(1, cut_char))
+        except Exception:
+            try:
+                token_ids = tokenizer.encode(text, add_special_tokens=False)
+            except Exception:
+                return None
+            if token_ids is None or len(token_ids) <= token_limit:
+                return None
+            try:
+                prefix = tokenizer.decode(
+                    token_ids[:token_limit],
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                )
+            except Exception:
+                return None
+            return min(len(text), max(1, len(prefix)))
+
+    def _find_split_index_before_cut(self, text: str, cut_index: int) -> int:
+        safe_cut = min(len(text), max(1, int(cut_index)))
+        prefix = text[:safe_cut]
+        dot_idx = prefix.rfind(".")
+        newline_idx = prefix.rfind("\n")
+        best_idx = max(dot_idx, newline_idx)
+        if best_idx >= 0:
+            return best_idx + 1
+        space_idx = prefix.rfind(" ")
+        if space_idx >= 0:
+            return space_idx + 1
+        return safe_cut
+
+    def _split_text_sequence(self, text: str, auto_split_tokens: Optional[int]) -> list[str]:
+        normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        normalized = re.sub(r"\n(?:[ \t]*\n)+", "\n\n", normalized)
+        manual_blocks = re.split(r"\n\s*\n", normalized)
+        segments = []
+        for block in manual_blocks:
+            remaining = block.strip()
+            if len(remaining) == 0:
+                continue
+            if auto_split_tokens is None or auto_split_tokens <= 0:
+                segments.append(remaining)
+                continue
+            while len(remaining) > 0:
+                cut_index = self._resolve_cut_char_index(remaining, auto_split_tokens)
+                if cut_index is None:
+                    segments.append(remaining.strip())
+                    break
+                split_index = self._find_split_index_before_cut(remaining, cut_index)
+                if split_index <= 0:
+                    split_index = min(len(remaining), max(1, cut_index))
+                piece = remaining[:split_index].strip()
+                if len(piece) == 0:
+                    split_index = min(len(remaining), max(1, cut_index))
+                    piece = remaining[:split_index].strip()
+                if len(piece) == 0:
+                    split_index = 1
+                    piece = remaining[:1]
+                segments.append(piece)
+                remaining = remaining[split_index:].lstrip()
+        if len(segments) == 0 and len(normalized.strip()) > 0:
+            segments.append(normalized.strip())
+        return segments
+
     def generate(
         self,
         input_prompt: str,
@@ -218,6 +320,8 @@ class KugelAudioPipeline:
         text = _read_text_or_file(input_prompt, "Prompt")
         if not text.strip():
             raise ValueError("Prompt text cannot be empty for KugelAudio.")
+        if "\\n" in text and "\n" not in text:
+            text = text.replace("\\r\\n", "\n").replace("\\n", "\n")
         if KUGELAUDIO_DEBUG:
             print("[KugelAudio][debug] prompt repr:", repr(text))
             print("[KugelAudio][debug] contains 'Speaker':", "Speaker" in text)
@@ -245,6 +349,19 @@ class KugelAudioPipeline:
                 duration_seconds,
                 "max_new_tokens:",
                 max_new_tokens,
+            )
+        auto_split_seconds = self._resolve_auto_split_seconds(kwargs)
+        auto_split_tokens = (
+            max(1, int(round(auto_split_seconds * self._tokens_per_second())))
+            if auto_split_seconds is not None
+            else None
+        )
+        if KUGELAUDIO_DEBUG:
+            print(
+                "[KugelAudio][debug] auto_split_seconds:",
+                auto_split_seconds,
+                "auto_split_tokens:",
+                auto_split_tokens,
             )
 
         cfg_scale = kwargs.get("guide_scale", None)
@@ -320,7 +437,7 @@ class KugelAudioPipeline:
                     callback(
                         step_idx=progress_seconds,
                         override_num_inference_steps=int(round(total_seconds)),
-                        denoising_extra=f"Line {int(completed_lines) + 1}/{total_lines}",
+                        denoising_extra=f"Segment {int(completed_lines) + 1}/{total_lines}",
                         progress_unit="s",
                     )
                 active_callback = _line_callback
@@ -350,12 +467,6 @@ class KugelAudioPipeline:
         # Multi-speaker mode: split by Speaker tags and run per segment (ComfyUI behavior)
         # Only do this when a reference voice is provided; otherwise let the native model handle speakers.
         if "Speaker" in text and (audio_guide is not None or audio_guide2 is not None):
-            import re
-
-            # If the UI passed literal "\n", normalize to real line breaks for parsing.
-            if "\\n" in text and "\n" not in text:
-                text = text.replace("\\r\\n", "\n").replace("\\n", "\n")
-
             tag_pattern = re.compile(r"Speaker\s*(\d+)\s*:\s*", re.IGNORECASE)
             matches = list(tag_pattern.finditer(text))
             if KUGELAUDIO_DEBUG:
@@ -387,6 +498,19 @@ class KugelAudioPipeline:
                     print("[KugelAudio][debug] seg", idx, "speaker", sid, "text:", repr(seg[:120]))
 
             if parsed:
+                expanded = []
+                for parsed_idx, (speaker_id, line_text) in enumerate(parsed):
+                    split_segments = self._split_text_sequence(line_text, auto_split_tokens)
+                    for split_idx, one_segment in enumerate(split_segments):
+                        expanded.append(
+                            (
+                                speaker_id,
+                                one_segment,
+                                split_idx == len(split_segments) - 1 and parsed_idx < len(parsed) - 1,
+                            )
+                        )
+                if KUGELAUDIO_DEBUG:
+                    print("[KugelAudio][debug] expanded segments:", len(expanded))
                 audio_segments = []
                 pause_seconds = kwargs.get("pause_seconds", 0.2)
                 try:
@@ -404,7 +528,7 @@ class KugelAudioPipeline:
                 elapsed_seconds = 0.0
                 total_duration_seconds = duration_seconds if duration_seconds is not None and duration_seconds > 0 else None
                 completed_lines = 0
-                for idx, (speaker_id, line_text) in enumerate(parsed):
+                for speaker_id, line_text, append_pause_after in expanded:
                     if self._abort_requested():
                         return None
                     duration_left = None
@@ -422,7 +546,7 @@ class KugelAudioPipeline:
                         extra_tail_tokens=extra_tail_tokens,
                         segment_duration_seconds=duration_left,
                         completed_lines=completed_lines,
-                        total_lines=len(parsed),
+                        total_lines=len(expanded),
                         cumulative_offset_seconds=elapsed_seconds,
                     )
                     if segment is None:
@@ -434,7 +558,7 @@ class KugelAudioPipeline:
                     completed_lines += 1
                     # No extra callback here; per-line callback handles progress.
                     elapsed_seconds += float(segment.shape[-1]) / float(self.sample_rate)
-                    if silence is not None and idx < len(parsed) - 1:
+                    if silence is not None and append_pause_after:
                         audio_segments.append(silence.to(segment))
                         elapsed_seconds += float(pause_samples) / float(self.sample_rate)
                     if self._early_stop_requested():
@@ -443,8 +567,46 @@ class KugelAudioPipeline:
                     audio = torch.cat(audio_segments, dim=-1)
                     return {"x": audio, "audio_sampling_rate": int(self.sample_rate)}
 
-        # Default single-pass generation
         voice_prompt = audio_guide
+        single_segments = self._split_text_sequence(text, auto_split_tokens)
+        if len(single_segments) > 1:
+            audio_segments = []
+            elapsed_seconds = 0.0
+            total_duration_seconds = (
+                duration_seconds if duration_seconds is not None and duration_seconds > 0 else None
+            )
+            for idx, one_segment in enumerate(single_segments):
+                if self._abort_requested():
+                    return None
+                duration_left = None
+                if total_duration_seconds is not None:
+                    duration_left = max(0.0, total_duration_seconds - elapsed_seconds)
+                    if duration_left <= 0:
+                        break
+                segment = _run_single(
+                    one_segment + "   ",
+                    voice_prompt,
+                    extra_tail_tokens=3,
+                    segment_duration_seconds=duration_left,
+                    completed_lines=idx,
+                    total_lines=len(single_segments),
+                    cumulative_offset_seconds=elapsed_seconds,
+                )
+                if segment is None:
+                    if self._early_stop_requested() and audio_segments:
+                        audio = torch.cat(audio_segments, dim=-1)
+                        return {"x": audio, "audio_sampling_rate": int(self.sample_rate)}
+                    return None
+                audio_segments.append(segment)
+                elapsed_seconds += float(segment.shape[-1]) / float(self.sample_rate)
+                if self._early_stop_requested():
+                    break
+            if len(audio_segments) > 0:
+                audio = torch.cat(audio_segments, dim=-1)
+                return {"x": audio, "audio_sampling_rate": int(self.sample_rate)}
+            return None
+
+        # Default single-pass generation
         inputs = self.processor(
             text=text,
             voice_prompt=voice_prompt,

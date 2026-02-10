@@ -662,29 +662,23 @@ def validate_settings(state, model_type, single_prompt, inputs):
         gr.Info("Adaptive Progressive Guidance and Classifier Free Guidance Star can not be set at the same time")
         return ret()
     prompt = inputs["prompt"]
-    if len(prompt) ==0:
-        gr.Info("Prompt cannot be empty.")
-        gen = get_gen_info(state)
-        queue = gen.get("queue", [])
-        return ret()
-    prompt, errors = prompt_parser.process_template(prompt)
+    prompt, errors = prompt_parser.process_template(prompt, keep_empty_lines=model_def.get("preserve_empty_prompt_lines", False))
     if len(errors) > 0:
         gr.Info("Error processing prompt template: " + errors)
         return ret()
+    prompt = prompt.strip("\n").strip()
 
-    multi_prompts_gen_type = inputs["multi_prompts_gen_type"]
-
-    prompts = prompt.replace("\r", "").split("\n")
-    prompts = [prompt.strip() for prompt in prompts if len(prompt.strip())>0 and not prompt.startswith("#")]
-
-    if single_prompt or multi_prompts_gen_type == 2:
-        prompts = ["\n".join(prompts)]
-
-    if len(prompts) == 0:
+    if len(prompt) == 0:
         gr.Info("Prompt cannot be empty.")
         gen = get_gen_info(state)
         queue = gen.get("queue", [])
         return ret()
+
+    multi_prompts_gen_type = inputs["multi_prompts_gen_type"]
+    if single_prompt or multi_prompts_gen_type == 2:
+        prompts = [prompt] 
+    else:
+        prompts = [one_line.strip() for one_line in prompt.split("\n") if len(one_line.strip()) > 0]
 
     parsed_custom_settings, custom_settings_error = collect_custom_settings_from_inputs(model_def, inputs, strict=True)
     if custom_settings_error is not None:
@@ -7100,15 +7094,6 @@ def process_tasks(state):
             try:
                 import inspect
                 model_type = params.get('model_type')
-                known_defaults = {
-                    'image_refs_relative_size': 50,
-                    'custom_settings': None,
-                }
-
-                for arg_name, default_value in known_defaults.items():
-                    if arg_name not in params:
-                        print(f"Warning: Missing argument '{arg_name}' in loaded task. Applying default value: {default_value}")
-                        params[arg_name] = default_value
                 if model_type:
                     default_settings = get_default_settings(model_type)
                     expected_args = set(inspect.signature(generate_video).parameters.keys())

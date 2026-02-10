@@ -28,6 +28,17 @@ KUGELAUDIO_DURATION_SLIDER = {
     "increment": 1,
     "default": 20,
 }
+KUGELAUDIO_AUTO_SPLIT_SETTING_ID = "auto_split_every_s"
+KUGELAUDIO_AUTO_SPLIT_MIN_SECONDS = 5.0
+KUGELAUDIO_AUTO_SPLIT_MAX_SECONDS = 90.0
+KUGELAUDIO_CUSTOM_SETTINGS = [
+    {
+        "id": KUGELAUDIO_AUTO_SPLIT_SETTING_ID,
+        "label": "Auto Split Every s (5-90, optional), to avoid Acceleration Effect. Empty Lines will force anyway Manual Splits.",
+        "name": "Auto Split Every s",
+        "type": "float",
+    },
+]
 
 
 def _get_kugelaudio_model_def():
@@ -43,6 +54,8 @@ def _get_kugelaudio_model_def():
         "supports_early_stop": True,
         "profiles_dir": ["kugelaudio_0_open"],
         "duration_slider": dict(KUGELAUDIO_DURATION_SLIDER),
+        "custom_settings": [one.copy() for one in KUGELAUDIO_CUSTOM_SETTINGS],
+        "preserve_empty_prompt_lines": True,
         "pause_between_sentences": True,
         "any_audio_prompt": True,
         "audio_guide_label": "Reference voice (optional)",
@@ -210,4 +223,45 @@ class family_handler:
                 return "Two-voice cloning requires two reference audio files."
             if "Speaker 1:" not in text and "speaker 1:" not in text:
                 return "Two-voice cloning requires prompt lines with Speaker 0: and Speaker 1:."
+        return None
+
+    @staticmethod
+    def validate_generative_settings(base_model_type, model_def, inputs):
+        custom_settings = inputs.get("custom_settings", None)
+        if custom_settings is None:
+            return None
+        if not isinstance(custom_settings, dict):
+            return "Custom settings must be a dictionary."
+
+        raw_value = custom_settings.get(KUGELAUDIO_AUTO_SPLIT_SETTING_ID, None)
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, str):
+            raw_value = raw_value.strip()
+            if len(raw_value) == 0:
+                custom_settings.pop(KUGELAUDIO_AUTO_SPLIT_SETTING_ID, None)
+                inputs["custom_settings"] = custom_settings if len(custom_settings) > 0 else None
+                return None
+
+        try:
+            if isinstance(raw_value, bool):
+                raise ValueError()
+            auto_split_seconds = float(raw_value)
+        except Exception:
+            return (
+                f"Auto Split Every s must be a number between "
+                f"{int(KUGELAUDIO_AUTO_SPLIT_MIN_SECONDS)} and {int(KUGELAUDIO_AUTO_SPLIT_MAX_SECONDS)} seconds."
+            )
+
+        if (
+            auto_split_seconds < KUGELAUDIO_AUTO_SPLIT_MIN_SECONDS
+            or auto_split_seconds > KUGELAUDIO_AUTO_SPLIT_MAX_SECONDS
+        ):
+            return (
+                f"Auto Split Every s must be between "
+                f"{int(KUGELAUDIO_AUTO_SPLIT_MIN_SECONDS)} and {int(KUGELAUDIO_AUTO_SPLIT_MAX_SECONDS)} seconds."
+            )
+
+        custom_settings[KUGELAUDIO_AUTO_SPLIT_SETTING_ID] = auto_split_seconds
+        inputs["custom_settings"] = custom_settings
         return None

@@ -1,12 +1,38 @@
+import os
 from typing import Literal, Optional
 
 import torch
 import torch.nn as nn
+from mmgp import offload
+from shared.utils import files_locator as fl
 
 from ..autoencoder.vae import VAE, get_my_vae
 from ..bigvgan import BigVGAN
 from ..bigvgan_v2.bigvgan import BigVGAN as BigVGANv2
 from ...model.utils.distributions import DiagonalGaussianDistribution
+
+_BIGVGAN_V2_FOLDER = "bigvgan_v2_44khz_128band_512x"
+
+
+def _resolve_bigvgan_v2_files():
+    weights_path = fl.locate_file(
+        os.path.join(_BIGVGAN_V2_FOLDER, "bigvgan_generator.pt"), error_if_none=False
+    )
+    config_path = fl.locate_file(
+        os.path.join(_BIGVGAN_V2_FOLDER, "config.json"), error_if_none=False
+    )
+    if weights_path is None or config_path is None:
+        raise FileNotFoundError(
+            f"Missing BigVGANv2 files in '{_BIGVGAN_V2_FOLDER}'. "
+            "Expected 'config.json' and 'bigvgan_generator.pt'."
+        )
+    return weights_path, config_path
+
+
+def _preprocess_bigvgan_v2_state_dict(state_dict, quantization_map=None, tied_weights_map=None):
+    if isinstance(state_dict, dict) and isinstance(state_dict.get("generator"), dict):
+        state_dict = state_dict["generator"]
+    return state_dict, quantization_map, tied_weights_map
 
 
 class AutoEncoderModule(nn.Module):
@@ -27,9 +53,18 @@ class AutoEncoderModule(nn.Module):
             assert vocoder_ckpt_path is not None
             self.vocoder = BigVGAN(vocoder_ckpt_path).eval()
         elif mode == '44k':
-            self.vocoder = BigVGANv2.from_pretrained('nvidia/bigvgan_v2_44khz_128band_512x',
-                                                     use_cuda_kernel=False)
+            vocoder_ckpt_path, vocoder_config_path = _resolve_bigvgan_v2_files()
+            self.vocoder = offload.fast_load_transformers_model(
+                vocoder_ckpt_path,
+                modelClass=BigVGANv2,
+                forcedConfigPath=vocoder_config_path,
+                preprocess_sd=_preprocess_bigvgan_v2_state_dict,
+                configKwargs={"use_cuda_kernel": False},
+                writable_tensors=False,
+                default_dtype=torch.float32,
+            )
             self.vocoder.remove_weight_norm()
+            self.vocoder.eval()
         else:
             raise ValueError(f'Unknown mode: {mode}')
 

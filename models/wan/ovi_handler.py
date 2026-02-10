@@ -73,10 +73,11 @@ class family_handler:
         download_def = family_handler.query_model_files(computeList, "ti2v_2_2", model_def)
         if not isinstance(download_def, list):
             download_def = [download_def]
+        bigvgan_v2_files = ["config.json", "bigvgan_generator.pt"]
         download_def  += [{
             "repoId" : "DeepBeepMeep/Wan2.1", 
-            "sourceFolderList" :  ["mmaudio", ],
-            "fileList" : [ [ "v1-16.pth", "best_netG.pt"]]   
+            "sourceFolderList" :  ["mmaudio",  "bigvgan_v2_44khz_128band_512x"],
+            "fileList" : [ [ "v1-16.pth", "best_netG.pt"], bigvgan_v2_files]   
         }]
 
         return download_def

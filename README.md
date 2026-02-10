@@ -33,6 +33,26 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### February 9rd 2026: WanGP v10.80, Easy Metal
+
+- **Ace Step 1.5 Turbo Super Charged**: all the best features of *Ace Step 1.5* are now in *WanGP* and are *Fast* & *Easy* to use:
+   * Manual Selection of *Bpm*, *Keyscale*, *Time Signature* & *Language*
+   * Use *LM* to auto detect *Bpm*, *Keyscale*, *Time Signature* & *Language* that best suits your *Lyrics*
+   * Use *LM* to refine *Music Caption* or auto detect *Song Duration*
+   * Choice of *vllm* engine for *LM* for up to *10x faster LM generation!!!*. Also as a WanGP exclusive, *vllm* is offered in *INT8 quantized* format for lower VRAM requirements. Please note you will need to install *Triton* and *Flash Attention 2* (check the *INSTALLATION.Md* for easy install)
+   * Use *LM* to refine *Music Caption* (usually the key to get the song theme you expected)
+   * UI Makeover to better match vocabulary used in original Ace Step App (but without its complexity...)
+   * Refined *System Prompt* used in *Prompt Enhancer* to generate *Lyrics* (I recommend to use the *LLama Joy Prompt Enhancer*)
+
+- **LoKr support**: this "Lora" like format has been tested with *Flux Klein 9B*
+
+- **Optimized Int8 Kernels**: all the *Quantized INT8 checkpoints* (most of the quantized checkpoints) used with WanGP should be now *10% faster !!!*. You will need to install *Triton*. It is experimental, so for the moment it needs to be enabled manually in the *Config / Performance* tab. Please share your feedback on *discord* by mentioning your GPU so that I know if it works properly.
+
+- **Auto Queue Saved if Gen Error**: if for whatever reason you have got an error during a Gen, the queue will now be automatically saved. So you can try again this queue later (with a different config or when the related bug is fixed, if ever ...).
+
+
+**Note to RTX 50xx owners**: you will need to upgrade to *pytorch 2.10* (see upgrade procedure below) to be able to use *Triton*
+
 ### February 4rd 2026: WanGP v10.70, Let's Get Ready To Rumble !
 *The competition between Open Source & Close Source has never been that hot !*
 
@@ -251,7 +271,7 @@ conda activate wan2gp
 pip install -r requirements.txt
 ```
 
-**Update the application (upgrade from python 3.10 to 3.11):**
+**Upgrade to 3.11, Pytorch 2.10, Cuda 13/13.1** (for non GTX10xx users)
 I recommend creating a new conda env for the Python 3.11 to avoid bad surprises. Let's call the new conda env *wangp* (instead of *wan2gp* the old name of this project)
 Get in the directory where WanGP is installed and:
 ```bash
@@ -262,7 +282,8 @@ pip install torch==2.10.0 torchvision torchaudio --index-url https://download.py
 pip install -r requirements.txt
 ```
 
-Once you are done you will have to reinstall *Sage Attention*, *Triton*, *Flash Attention* (if installed). Check the **[Installation Guide](docs/INSTALLATION.md)** -
+**Git Errors**
+Once you are done you will have to reinstall *Sage Attention*, *Triton*, *Flash Attention*. Check the **[Installation Guide](docs/INSTALLATION.md)** -
 
 if you get some error messages related to git, you may try the following (beware this will overwrite local changes made to the source code of WanGP):
 ```bash

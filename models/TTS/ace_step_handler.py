@@ -297,7 +297,7 @@ class family_handler:
                 "audio_guide2_label": "Reference Timbre",
                 "audio_scale_name": "Source Audio Strength",
                 "audio_prompt_choices": True,
-                "enabled_audio_lora": False,
+                "enabled_audio_lora": True,
                 "prompt_class": "Lyrics",
                 "prompt_description": "Lyrics / Prompt (Write [Instrumental] for Instrumental Generation only)",
                 "audio_prompt_type_sources": {

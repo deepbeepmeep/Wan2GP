@@ -1,5 +1,6 @@
 import torch
 import copy
+import uuid
 from diffusers.utils.torch_utils import randn_tensor
 
 def is_int_string(s: str) -> bool:
@@ -20,6 +21,38 @@ def normalize_self_refiner_plan(plan_input, max_plans: int = 1):
         return [default_plan], ""
     
     return [plan_input], ""
+
+def ensure_refiner_list(plan_data):
+    if not isinstance(plan_data, list):
+        return []
+    for rule in plan_data:
+        if "id" not in rule:
+            rule["id"] = str(uuid.uuid4())
+    return plan_data
+
+def add_refiner_rule(current_rules, range_val, steps_val):
+    new_start, new_end = int(range_val[0]), int(range_val[1])
+    
+    if new_start >= new_end:
+         from gradio import Error
+         raise Error(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
+
+    for rule in current_rules:
+        if new_start <= rule['end'] and new_end >= rule['start']:
+            from gradio import Error
+            raise Error(f"Overlap detected! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
+
+    new_rule = {
+        "id": str(uuid.uuid4()),
+        "start": new_start,
+        "end": new_end,
+        "steps": int(steps_val)
+    }
+    updated_list = current_rules + [new_rule]
+    return sorted(updated_list, key=lambda x: x['start'])
+
+def remove_refiner_rule(current_rules, rule_id):
+    return [r for r in current_rules if r["id"] != rule_id]
 
 class PnPHandler:
     def __init__(self, stochastic_plan, ths_uncertainty=0.0, p_norm=1, certain_percentage=0.999, channel_dim: int = 1):

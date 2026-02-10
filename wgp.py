@@ -48,6 +48,7 @@ from shared.loras_migration import migrate_loras_layout
 from huggingface_hub import hf_hub_download, snapshot_download
 from shared.utils import files_locator as fl 
 from shared.gradio.audio_gallery import AudioGallery  
+from shared.utils.self_refiner import normalize_self_refiner_plan, ensure_refiner_list, add_refiner_rule, remove_refiner_rule
 import torch
 import gc
 import traceback
@@ -65,7 +66,6 @@ import shutil
 import glob
 import cv2
 import html
-import uuid
 from gradio_rangeslider import RangeSlider
 from transformers.utils import logging
 logging.set_verbosity_error
@@ -614,7 +614,6 @@ def validate_settings(state, model_type, single_prompt, inputs):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
     if self_refiner_setting != 0:
         if isinstance(self_refiner_plan, list):
-            from shared.utils.self_refiner import normalize_self_refiner_plan
             max_plans = model_def.get("self_refiner_max_plans", 1)
             _, error = normalize_self_refiner_plan(self_refiner_plan, max_plans=max_plans)
             if len(error):
@@ -9166,36 +9165,6 @@ def download_lora(state, lora_url, progress=gr.Progress(track_tqdm=True),):
 
 def set_gallery_tab(state, evt:gr.SelectData):                
     return evt.index, "video" if evt.index == 0 else "audio"
-
-def ensure_refiner_list(plan_data):
-    if not isinstance(plan_data, list):
-        return []
-    for rule in plan_data:
-        if "id" not in rule:
-            rule["id"] = str(uuid.uuid4())
-    return plan_data
-
-def add_refiner_rule(current_rules, range_val, steps_val):
-    new_start, new_end = int(range_val[0]), int(range_val[1])
-    
-    if new_start >= new_end:
-         raise gr.Error(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
-
-    for rule in current_rules:
-        if new_start <= rule['end'] and new_end >= rule['start']:
-            raise gr.Error(f"Overlap detected! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
-
-    new_rule = {
-        "id": str(uuid.uuid4()),
-        "start": new_start,
-        "end": new_end,
-        "steps": int(steps_val)
-    }
-    updated_list = current_rules + [new_rule]
-    return sorted(updated_list, key=lambda x: x['start'])
-
-def remove_refiner_rule(current_rules, rule_id):
-    return [r for r in current_rules if r["id"] != rule_id]
 
 def generate_video_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_base_type_choice = None, model_choice = None, header = None, main = None, main_tabs= None, tab_id='generate', edit_tab=None, default_state=None):
     global inputs_names #, advanced

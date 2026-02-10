@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### February 9rd 2026: WanGP v10.80, Easy Metal
+### February 10th 2026: WanGP v10.82, Easy Metal
 
 - **Ace Step 1.5 Turbo Super Charged**: all the best features of *Ace Step 1.5* are now in *WanGP* and are *Fast* & *Easy* to use:
    * Manual Selection of *Bpm*, *Keyscale*, *Time Signature* & *Language*
@@ -53,6 +53,9 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 **Note to RTX 50xx owners**: you will need to upgrade to *pytorch 2.10* (see upgrade procedure below) to be able to use *Triton*
 
+*UI Updates 10.82* (thx *Tophness!*):
+Updated the Self-Refiner UI to a dynamic, slider-based interface (no more manual text input).
+Improved queue reordering: items can now be dragged and dropped directly onto the Top and Bottom buttons while rearranging the queue in order to snap scroll to the top and bottom.
 ### February 4rd 2026: WanGP v10.70, Let's Get Ready To Rumble !
 *The competition between Open Source & Close Source has never been that hot !*
 

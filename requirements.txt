@@ -35,6 +35,7 @@ s3tokenizer
 conformer==0.3.2
 spacy_pkuseg
 spacy==3.8.4
+gradio_rangeslider
 
 # Vision & segmentation
 opencv-python>=4.12.0.88

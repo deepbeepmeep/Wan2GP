@@ -1,4 +1,5 @@
 #!/bin/bash
+cd "$(dirname "$0")/.."
 clear
 echo "======================================================"
 echo "               WAN2GP UPDATE / UPGRADE"

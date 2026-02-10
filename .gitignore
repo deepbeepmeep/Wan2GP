@@ -6,6 +6,8 @@
 *.gif
 *.bmp
 *.mp4
+*.webm
+*.npy
 *.mov
 *.mkv
 *.log

@@ -1715,6 +1715,45 @@ class ACEStepPipeline:
         *,
         alt_prompt=None,
         temperature: float = 1.0,
+        duration_seconds=None,
+        audio_duration=None,
+        sampling_steps=None,
+        num_inference_steps=None,
+        cfg_scale=None,
+        guidance_scale=7.0,
+        sample_solver=None,
+        scheduler_type="euler",
+        seed=None,
+        batch_size=1,
+        guidance_scale_text=None,
+        guidance_scale_lyric=None,
+        callback=None,
+        task="text2music",
+        src_audio_path=None,
+        edit_target_prompt=None,
+        edit_target_lyrics=None,
+        edit_n_min=None,
+        edit_n_max=None,
+        cfg_type="apg",
+        omega_scale=10.0,
+        guidance_interval=0.5,
+        guidance_interval_decay=0.0,
+        min_guidance_scale=3.0,
+        use_erg_tag=True,
+        use_erg_lyric=True,
+        use_erg_diffusion=True,
+        oss_steps=None,
+        audio_scale=None,
+        ref_audio_strength=0.5,
+        lora_name_or_path="none",
+        lora_weight=1.0,
+        retake_seeds=None,
+        retake_variance=0.5,
+        repaint_start=0,
+        repaint_end=0,
+        edit_n_avg=1,
+        debug=False,
+        loras_slists=None,
         **kwargs,
     ):
         self._interrupt = False
@@ -1731,59 +1770,34 @@ class ACEStepPipeline:
         if alt_prompt:
             prompt = self._read_text_or_file(str(alt_prompt), "Prompt")
 
-        duration_seconds = kwargs.get("duration_seconds", None)
         if duration_seconds is None:
-            duration_seconds = kwargs.get("audio_duration", None)
-        try:
-            duration_seconds = float(duration_seconds) if duration_seconds is not None else None
-        except (TypeError, ValueError):
-            duration_seconds = None
+            duration_seconds = audio_duration
         if duration_seconds is None or duration_seconds <= 0:
             duration_seconds = 20.0
 
-        sampling_steps = kwargs.get("sampling_steps", None)
         if sampling_steps is None:
-            sampling_steps = kwargs.get("num_inference_steps", None)
-        try:
-            infer_step = int(sampling_steps) if sampling_steps is not None else 0
-        except (TypeError, ValueError):
-            infer_step = 0
+            sampling_steps = num_inference_steps
+        infer_step = 0 if sampling_steps is None else sampling_steps
         if infer_step <= 0:
             infer_step = 30
 
-        guidance_scale = kwargs.get("cfg_scale", kwargs.get("guidance_scale", 7.0))
-        try:
-            guidance_scale = float(guidance_scale)
-        except (TypeError, ValueError):
+        if cfg_scale is not None:
+            guidance_scale = cfg_scale
+        if guidance_scale is None:
             guidance_scale = 7.0
 
-        scheduler_type = (model_mode or kwargs.get("scheduler_type", "euler")).lower()
+        scheduler_type = (model_mode or sample_solver or scheduler_type).lower()
         if scheduler_type not in ("euler", "heun", "pingpong"):
             scheduler_type = "euler"
 
-        seed = kwargs.get("seed", None)
-        try:
-            seed = int(seed) if seed is not None else None
-        except (TypeError, ValueError):
+        if seed is not None and seed < 0:
             seed = None
         manual_seeds = seed if seed is not None and seed >= 0 else None
 
-        batch_size = kwargs.get("batch_size", 1)
-        try:
-            batch_size = int(batch_size)
-        except (TypeError, ValueError):
+        if batch_size is None or batch_size <= 0:
             batch_size = 1
 
-        guidance_scale_text = kwargs.get("guidance_scale_text", None)
-        guidance_scale_lyric = kwargs.get("guidance_scale_lyric", None)
-
-        callback = kwargs.get("callback")
-        task = kwargs.get("task", "text2music")
-        src_audio_path = kwargs.get("src_audio_path", None)
-        edit_target_prompt = kwargs.get("edit_target_prompt", None)
-        edit_target_lyrics = kwargs.get("edit_target_lyrics", None)
-        edit_n_min = kwargs.get("edit_n_min", None)
-        edit_n_max = kwargs.get("edit_n_max", None)
+        effective_ref_audio_strength = audio_scale if audio_scale is not None else ref_audio_strength
 
         return self.__call__(
             format="wav",
@@ -1793,38 +1807,38 @@ class ACEStepPipeline:
             infer_step=infer_step,
             guidance_scale=guidance_scale,
             scheduler_type=scheduler_type,
-            cfg_type=kwargs.get("cfg_type", "apg"),
-            omega_scale=kwargs.get("omega_scale", 10.0),
+            cfg_type=cfg_type,
+            omega_scale=omega_scale,
             manual_seeds=manual_seeds,
-            guidance_interval=kwargs.get("guidance_interval", 0.5),
-            guidance_interval_decay=kwargs.get("guidance_interval_decay", 0.0),
-            min_guidance_scale=kwargs.get("min_guidance_scale", 3.0),
-            use_erg_tag=kwargs.get("use_erg_tag", True),
-            use_erg_lyric=kwargs.get("use_erg_lyric", True),
-            use_erg_diffusion=kwargs.get("use_erg_diffusion", True),
-            oss_steps=kwargs.get("oss_steps", None),
+            guidance_interval=guidance_interval,
+            guidance_interval_decay=guidance_interval_decay,
+            min_guidance_scale=min_guidance_scale,
+            use_erg_tag=use_erg_tag,
+            use_erg_lyric=use_erg_lyric,
+            use_erg_diffusion=use_erg_diffusion,
+            oss_steps=oss_steps,
             guidance_scale_text=0.0 if guidance_scale_text is None else guidance_scale_text,
             guidance_scale_lyric=0.0 if guidance_scale_lyric is None else guidance_scale_lyric,
             audio2audio_enable=audio2audio_enable,
-            ref_audio_strength=kwargs.get("audio_scale", kwargs.get("ref_audio_strength", 0.5)),
+            ref_audio_strength=effective_ref_audio_strength,
             ref_audio_input=ref_audio_input,
-            lora_name_or_path=kwargs.get("lora_name_or_path", "none"),
-            lora_weight=kwargs.get("lora_weight", 1.0),
-            retake_seeds=kwargs.get("retake_seeds", None),
-            retake_variance=kwargs.get("retake_variance", 0.5),
+            lora_name_or_path=lora_name_or_path,
+            lora_weight=lora_weight,
+            retake_seeds=retake_seeds,
+            retake_variance=retake_variance,
             task=task,
-            repaint_start=kwargs.get("repaint_start", 0),
-            repaint_end=kwargs.get("repaint_end", 0),
+            repaint_start=repaint_start,
+            repaint_end=repaint_end,
             src_audio_path=src_audio_path,
             edit_target_prompt=edit_target_prompt,
             edit_target_lyrics=edit_target_lyrics,
             edit_n_min=0.0 if edit_n_min is None else edit_n_min,
             edit_n_max=1.0 if edit_n_max is None else edit_n_max,
-            edit_n_avg=kwargs.get("edit_n_avg", 1),
+            edit_n_avg=edit_n_avg,
             save_path=None,
             batch_size=batch_size,
-            debug=kwargs.get("debug", False),
+            debug=debug,
             callback=callback,
             return_audio=True,
-            loras_slists=kwargs["loras_slists"],
+            loras_slists=loras_slists,
         )

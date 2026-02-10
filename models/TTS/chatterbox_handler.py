@@ -48,6 +48,28 @@ def _get_language_choices() -> list[tuple[str, str]]:
         for code, name in sorted(languages.items(), key=lambda item: item[1])
     ]
 
+CHATTERBOX_CUSTOM_SETTINGS_MIGRATION_VERSION = 2.50
+CHATTERBOX_DEFAULT_CUSTOM_SETTINGS = {
+    "exaggeration": 0.5,
+    "pace": 0.5,
+}
+CHATTERBOX_CUSTOM_SETTINGS = [
+    {
+        "id": "exaggeration",
+        "label": "Emotion Exaggeration (0.25-2.0, 0.5 = neutral)",
+        "name": "Exaggeration",
+        "type": "float",
+        "default": CHATTERBOX_DEFAULT_CUSTOM_SETTINGS["exaggeration"],
+    },
+    {
+        "id": "pace",
+        "label": "Pace (0.2-1.0)",
+        "name": "Pace",
+        "type": "float",
+        "default": CHATTERBOX_DEFAULT_CUSTOM_SETTINGS["pace"],
+    },
+]
+
 
 def _get_chatterbox_model_def():
     return {
@@ -67,8 +89,9 @@ def _get_chatterbox_model_def():
             "label": "Language",
         },
         "any_audio_prompt": True,
-        "chatterbox_controls": True,
+        "custom_settings": [one.copy() for one in CHATTERBOX_CUSTOM_SETTINGS],
         "text_prompt_enhancer_instructions": TTS_MONOLOGUE_PROMPT,
+        "prompt_enhancer_button_label": "Write Speech",
     }
 
 
@@ -171,6 +194,29 @@ class family_handler:
         if settings_version < 2.44:
             ui_defaults["guidance_scale"] = 1.0
 
+        legacy_exaggeration = ui_defaults.pop("exaggeration", None)
+        legacy_pace = ui_defaults.pop("pace", None)
+        custom_settings = ui_defaults.get("custom_settings", None)
+        if not isinstance(custom_settings, dict):
+            custom_settings = {}
+        else:
+            custom_settings = custom_settings.copy()
+
+        if settings_version < CHATTERBOX_CUSTOM_SETTINGS_MIGRATION_VERSION:
+            if legacy_exaggeration is not None:
+                custom_settings.setdefault("exaggeration", legacy_exaggeration)
+            if legacy_pace is not None:
+                custom_settings.setdefault("pace", legacy_pace)
+
+        if legacy_exaggeration is not None and "exaggeration" not in custom_settings:
+            custom_settings["exaggeration"] = legacy_exaggeration
+        if legacy_pace is not None and "pace" not in custom_settings:
+            custom_settings["pace"] = legacy_pace
+
+        for key, value in CHATTERBOX_DEFAULT_CUSTOM_SETTINGS.items():
+            custom_settings.setdefault(key, value)
+        ui_defaults["custom_settings"] = custom_settings
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update(
@@ -181,9 +227,8 @@ class family_handler:
                 "video_length": 0,
                 "num_inference_steps": 0,
                 "negative_prompt": "",
-                "exaggeration": 0.5,
+                "custom_settings": dict(CHATTERBOX_DEFAULT_CUSTOM_SETTINGS),
                 "temperature": 0.8,
-                "pace": 0.5,
                 "guidance_scale": 1.0,
                 "multi_prompts_gen_type": 2,
             }

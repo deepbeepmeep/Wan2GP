@@ -7,7 +7,6 @@
             "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/ace_step_v1_5_transformer_bf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/ace_step_v1_5_transformer_quanto_bf16_int8.safetensors"
         ],
-        "ace_step15_enable_lm": false,
         "ace_step15_transformer_variant": "turbo",
         "text_encoder_folder": "acestep-5Hz-lm-1.7B"
     },
@@ -15,7 +14,7 @@
     "alt_prompt": "Dreamy synth-pop with shimmering pads, soft vocals, and a slow dance groove.",
     "audio_prompt_type": "",
     "audio_scale": 0.5,
-    "duration_seconds": 60,
+    "duration_seconds": 120,
     "num_inference_steps": 8,
     "shift": 1.0,
     "guidance_scale": 1.0,

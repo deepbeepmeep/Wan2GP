@@ -1,6 +1,6 @@
 # AMD Installation Guide for Windows (TheRock)
 
-This guide covers installation for AMD GPUs and APUs running under Windows using TheRock's official PyTorch wheels.
+This guide covers installation for AMD GPUs running under Windows using TheRock's official PyTorch wheels.
 
 ## Supported GPUs
 
@@ -206,7 +206,7 @@ set FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
 set TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
 ```
 
-MIOpen (AMD’s equivalent of NVIDIA’s cuDNN) is not yet fully stable on several architectures; it can cause out-of-memory errors (OOMs), crash the display driver, or significantly increase generation times. Currently, it is recommended to either use fast mode by setting:
+MIOpen (AMD’s equivalent of NVIDIA’s cuDNN) is not yet fully stable on several architectures; it can cause out-of-memory errors (OOMs), crash the display driver, or significantly increase generation times. Currently, it is recommended to use fast mode by setting:
 
 ```cmd
 set MIOPEN_FIND_MODE=FAST
@@ -216,10 +216,12 @@ Alternatively, you can disable MIOpen entirely by editing `wgp.py` and adding th
 
 ```cmd
 ...
-:: /Lines already in the file/
+:: /lines already in the file/
+:: ...
 :: import torch
 torch.backends.cudnn.enabled = False # <-- Add this here
 :: import gc
+:: ...
 ...
 ```
 
@@ -246,7 +248,6 @@ If `torch.cuda.is_available()` returns `False`:
 **"Could not find a version that satisfies the requirement":**
 - Double-check that you're using the correct `--index-url` for your GPU family. You can also try adding the `--pre` flag or replacing `/v2/` in the URL with `/v2/staging/`
 - Ensure you're using Python 3.11, and not 3.10
-- Try adding `--pre` flag if not already present
 
 **"No matching distribution found":**
 - Your GPU architecture may not be supported

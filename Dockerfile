@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 # Build arg for GPU architectures - specify which CUDA compute capabilities to compile for
 # Common values:
@@ -35,17 +35,17 @@ COPY requirements.txt .
 # Upgrade pip first
 RUN pip install --upgrade pip setuptools wheel
 
+# First install torch with the versions we want, so that stuff in requirements.txt doesn't pull in the generic versions
+# If you change CUDA 12.8 here, you also need to change the FROM docker image at the top
+RUN pip install torch==2.10.0+cu128 torchvision==0.25.0+cu128 torchaudio==2.10.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+
 # Install requirements if exists
 RUN pip install -r requirements.txt
-
-# Install PyTorch with CUDA support
-RUN pip install --extra-index-url https://download.pytorch.org/whl/cu124 \
-    torch==2.6.0+cu124 torchvision==0.21.0+cu124
 
 # Install SageAttention from git (patch GPU detection)
 ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCHITECTURES}"
 ENV FORCE_CUDA="1"
-ENV MAX_JOBS="1"
+ENV MAX_JOBS="8"
 
 COPY <<EOF /tmp/patch_setup.py
 import os

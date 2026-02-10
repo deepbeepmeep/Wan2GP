@@ -1859,7 +1859,7 @@ def generate_queue_html(queue):
     table_html = table_header + "".join(table_rows) + table_footer
     scrollable_div = f'<div id="queue-scroll-container" style="max-height: 650px; overflow-y: auto;">{table_html}</div>'
 
-    return scroll_buttons + scrollable_div
+    return top_button_html + scrollable_div + bottom_button_html
 
 def update_queue_data(queue):
     update_global_queue_ref(queue)

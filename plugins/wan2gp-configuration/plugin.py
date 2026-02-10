@@ -129,6 +129,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         value=self.server_config.get("loras_root", "loras"),
                         interactive=not self.args.lock_config
                     )
+                    self.save_queue_if_crash_choice = gr.Dropdown(
+                        choices=[("Disabled", 0), ("Overwrite Last Error Queue", 1), ("Create a New Error Queue File", 2)],
+                        value=self.server_config.get("save_queue_if_crash", 1),
+                        label="Save Queue if Crash during Generation",
+                        interactive=not self.args.lock_config
+                    )
                     self.UI_theme_choice = gr.Dropdown(
                         choices=[("Blue Sky (Default)", "default"), ("Classic Gradio", "gradio")],
                         value=self.server_config.get("UI_theme", "default"), label="UI Theme (requires restart)"
@@ -282,7 +288,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
             self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice,
-            self.display_stats_choice, self.max_frames_multiplier_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice,
+            self.display_stats_choice, self.max_frames_multiplier_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice, self.save_queue_if_crash_choice,
             self.UI_theme_choice, self.queue_color_scheme_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.lm_decoder_engine_choice, self.VAE_precision_choice, self.compile_choice,
@@ -334,7 +340,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         (
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
             attention_choice, preload_model_policy_choice, clear_file_list_choice,
-            display_stats_choice, max_frames_multiplier_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice,
+            display_stats_choice, max_frames_multiplier_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice, save_queue_if_crash_choice,
             UI_theme_choice, queue_color_scheme_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, lm_decoder_engine_choice, VAE_precision_choice, compile_choice,
@@ -391,6 +397,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "model_hierarchy_type": model_hierarchy_type_choice,
             "checkpoints_paths": checkpoints_paths,
             "loras_root": loras_root_choice,
+            "save_queue_if_crash": save_queue_if_crash_choice,
             "queue_color_scheme": queue_color_scheme_choice,
             "embed_source_images": embed_source_images_choice,
             "video_container": "mp4", # Fixed to MP4
@@ -420,7 +427,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "mmaudio_persistence", "mmaudio_enabled", "rife_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed",
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
-            "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root",
+            "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
         ]
 

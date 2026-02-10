@@ -29,6 +29,34 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
     bin_dir.mkdir(parents=True, exist_ok=True)
     repo_root = bin_dir.parent
 
+    def _candidate_name(name: str) -> str:
+        if os.name == "nt" and not name.endswith(".exe"):
+            return f"{name}.exe"
+        return name
+
+    def _quarantine_root_ffmpeg():
+        root_ffmpeg = repo_root / _candidate_name("ffmpeg")
+        if not root_ffmpeg.is_file():
+            return
+        quarantine_dir = repo_root / "ffmpeg_quarantine"
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        target_path = quarantine_dir / root_ffmpeg.name
+        if target_path.exists():
+            stem = target_path.stem
+            suffix = target_path.suffix
+            idx = 1
+            while True:
+                candidate = quarantine_dir / f"{stem}_{idx}{suffix}"
+                if not candidate.exists():
+                    target_path = candidate
+                    break
+                idx += 1
+        shutil.move(str(root_ffmpeg), str(target_path))
+        print(
+            f"[FFmpeg] Quarantined root binary: {root_ffmpeg} -> {target_path}. "
+            "Reason: ffmpeg.exe in the project root can be picked from CWD and break TorchCodec DLL loading on Windows. Quarantined file can be deleted if unused."
+        )
+
     def _ensure_bin_dir_on_path():
         current_path = os.environ.get("PATH", "")
         path_parts = current_path.split(os.pathsep) if current_path else []
@@ -56,13 +84,9 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
         if str(bin_dir) not in ld_parts:
             os.environ["LD_LIBRARY_PATH"] = os.pathsep.join([str(bin_dir)] + ld_parts) if current_ld else str(bin_dir)
 
+    _quarantine_root_ffmpeg()
     _ensure_bin_dir_on_path()
     _ensure_library_path()
-
-    def _candidate_name(name: str) -> str:
-        if os.name == "nt" and not name.endswith(".exe"):
-            return f"{name}.exe"
-        return name
 
     def _resolve_path(name: str) -> typing.Optional[Path]:
         # Check ffmpeg_bins folder first

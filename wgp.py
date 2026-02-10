@@ -92,7 +92,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.4"
-WanGP_version = "10.80"
+WanGP_version = "10.81"
 settings_version = 2.50
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2347,6 +2347,7 @@ if not Path(config_load_filename).is_file():
         "UI_theme": "default",
         "checkpoints_paths": fl.default_checkpoints_paths,
         "loras_root": DEFAULT_LORA_ROOT,
+        "save_queue_if_crash": 1,
 		"queue_color_scheme": "pastel",
         "model_hierarchy_type": 1,
         "mmaudio_mode": 0,
@@ -2976,6 +2977,7 @@ if not "audio_output_codec" in server_config: server_config["audio_output_codec"
 if not "audio_stand_alone_output_codec" in server_config: server_config["audio_stand_alone_output_codec"]= "wav"
 if not "rife_version" in server_config: server_config["rife_version"] = "v4"
 if "loras_root" not in server_config: server_config["loras_root"] = DEFAULT_LORA_ROOT
+if "save_queue_if_crash" not in server_config: server_config["save_queue_if_crash"] = 1
 if "prompt_enhancer_temperature" not in server_config: server_config["prompt_enhancer_temperature"] = 0.6
 if "prompt_enhancer_top_p" not in server_config: server_config["prompt_enhancer_top_p"] = 0.9
 if "prompt_enhancer_randomize_seed" not in server_config: server_config["prompt_enhancer_randomize_seed"] = True
@@ -7136,12 +7138,14 @@ def process_tasks(state):
             elif cmd == "error": 
                 queue.clear()
                 try:
-                    error_filename = get_available_filename("", AUTOSAVE_ERROR_FILENAME)
-                    if _save_queue_to_zip(global_queue_ref,  error_filename):
-                        print(f"Error Queue autosaved successfully to {error_filename}")
-                        gr.Info(f"Error Queue autosaved successfully to {error_filename}")
-                    else:
-                        print("Autosave Error Queue failed.")
+                    save_queue_if_crash = server_config.get("save_queue_if_crash", 1)
+                    if save_queue_if_crash:
+                        error_filename = AUTOSAVE_ERROR_FILENAME if save_queue_if_crash == 1 else get_available_filename("", AUTOSAVE_ERROR_FILENAME, f"_{datetime.now():%Y%m%d_%H%M%S}")
+                        if _save_queue_to_zip(global_queue_ref, error_filename):
+                            print(f"Error Queue autosaved successfully to {error_filename}")
+                            gr.Info(f"Error Queue autosaved successfully to {error_filename}")
+                        else:
+                            print("Autosave Error Queue failed.")
                 except Exception as e:
                     print(f"Error during autosave: {e}")
                 update_global_queue_ref(queue)

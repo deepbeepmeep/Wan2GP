@@ -1741,22 +1741,35 @@ def generate_queue_html(queue):
     if len(queue) <= 1:
         return "<div style='text-align: center; color: grey; padding: 20px;'>Queue is empty.</div>"
 
-    scroll_buttons = ""
+    top_button_html = ""
+    bottom_button_html = ""
+    
     if len(queue) > 11:
-        scroll_buttons = """
-        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 8px;">
-            <div>
-                <button onclick="scrollToQueueTop()" class="gr-button gr-button-sm gr-button-secondary" style="display: flex; align-items: center;">
-                    <img src="/gradio_api/file=icons/top.svg" alt="Top" style="width: 1.1em; height: 1.1em; margin-right: 4px;">
-                    Top
-                </button>
-            </div>
-            <div>
-                <button onclick="scrollToQueueBottom()" class="gr-button gr-button-sm gr-button-secondary" style="display: flex; align-items: center;">
-                    <img src="/gradio_api/file=icons/bottom.svg" alt="Bottom" style="width: 1.1em; height: 1.1em; margin-right: 4px;">
-                    Bottom
-                </button>
-            </div>
+        btn_style = "width: 100%; padding: 8px; margin-bottom: 2px; font-weight: bold; display: flex; justify-content: center; align-items: center;"
+        
+        top_button_html = f"""
+        <div style="margin-bottom: 5px;">
+            <button onclick="scrollToQueueTop()" 
+                    ondragenter="scrollToQueueTop(); event.preventDefault();" 
+                    ondragover="event.preventDefault();"
+                    class="gr-button gr-button-secondary" 
+                    style="{btn_style}">
+                <img src="/gradio_api/file=icons/top.svg" alt="Top" style="width: 1.3em; height: 1.3em; margin-right: 6px;">
+                Scroll to Top
+            </button>
+        </div>
+        """
+        
+        bottom_button_html = f"""
+        <div style="margin-top: 5px;">
+            <button onclick="scrollToQueueBottom()" 
+                    ondragenter="scrollToQueueBottom(); event.preventDefault();" 
+                    ondragover="event.preventDefault();"
+                    class="gr-button gr-button-secondary" 
+                    style="{btn_style.replace('margin-bottom', 'margin-top')}">
+                <img src="/gradio_api/file=icons/bottom.svg" alt="Bottom" style="width: 1.3em; height: 1.3em; margin-right: 6px;">
+                Scroll to Bottom
+            </button>
         </div>
         """
 

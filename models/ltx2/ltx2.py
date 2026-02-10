@@ -677,6 +677,11 @@ class LTX2:
         slg_layers = kwargs.get("slg_layers")
         slg_start = kwargs.get("slg_start", 0.0)
         slg_end = kwargs.get("slg_end", 1.0)
+        self_refiner_setting = kwargs.get("self_refiner_setting", 0)
+        self_refiner_plan = kwargs.get("self_refiner_plan", "")
+        self_refiner_f_uncertainty = kwargs.get("self_refiner_f_uncertainty", 0.1)
+        self_refiner_certain_percentage = kwargs.get("self_refiner_certain_percentage", 0.999)
+        self_refiner_max_plans = int(self.model_def.get("self_refiner_max_plans", 1))
 
         def _get_frame_dim(video_tensor: torch.Tensor) -> int | None:
             if video_tensor.dim() < 2:
@@ -976,6 +981,11 @@ class LTX2:
                 masking_source=masking_source,
                 masking_strength=masking_strength,
                 return_latent_slice=return_latent_slice,
+                self_refiner_setting=self_refiner_setting,
+                self_refiner_plan=self_refiner_plan,
+                self_refiner_f_uncertainty=self_refiner_f_uncertainty,
+                self_refiner_certain_percentage=self_refiner_certain_percentage,
+                self_refiner_max_plans=self_refiner_max_plans,
             )
         else:
             pipeline_output = self.pipeline(
@@ -999,6 +1009,11 @@ class LTX2:
                 masking_source=masking_source,
                 masking_strength=masking_strength,
                 return_latent_slice=return_latent_slice,
+                self_refiner_setting=self_refiner_setting,
+                self_refiner_plan=self_refiner_plan,
+                self_refiner_f_uncertainty=self_refiner_f_uncertainty,
+                self_refiner_certain_percentage=self_refiner_certain_percentage,
+                self_refiner_max_plans=self_refiner_max_plans,
             )
 
         latent_slice = None

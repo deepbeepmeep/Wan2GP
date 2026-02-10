@@ -64,7 +64,7 @@ pydantic==2.10.6
 # Math & modeling
 torchdiffeq>=0.2.5
 tensordict>=0.6.1
-mmgp==3.7.3
+mmgp==3.7.4
 peft==0.17.0 # 0.15.0
 vector-quantize-pytorch
 matplotlib
@@ -78,6 +78,7 @@ misaki
 gitdb==4.0.12 
 gitpython==3.1.45
 stringzilla==4.0.14
+xxhash
 
 # Optional / commented out
 # transformers==4.46.3  # for llamallava pre-patch

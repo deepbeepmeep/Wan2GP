@@ -215,6 +215,9 @@ class family_handler():
         if base_model_type in ["vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"]:
             extra_model_def["parent_model_type"] = "vace_14B"
 
+        if base_model_type in ["alpha2"]:
+            extra_model_def["parent_model_type"] = "alpha"
+
         group = "wan"
         if base_model_type in ["t2v_2_2", "vace_14B_2_2"] or test_i2v_2_2(base_model_type):
             profiles_dir = "wan_2_2"
@@ -277,7 +280,7 @@ class family_handler():
                             ("lcm + ltx", "lcm"), ]
         })
 
-        extra_model_def["self_refiner"] = base_model_type in ["t2v_2_2", "i2v_2_2", "i2v", "t2v", "flf2v_720p"]
+        extra_model_def["self_refiner"] = True
 
         if i2v:
             extra_model_def["motion_amplitude"] = True
@@ -866,8 +869,9 @@ class family_handler():
         if model_def.get("self_refiner",False) and settings_version < 2.47:
             ui_defaults["self_refiner_setting"] = 0
             ui_defaults["self_refiner_plan"] = ""
-            # ui_defaults["self_refiner_f_uncertainty"] = 0.2
-            # ui_defaults["self_refiner_certain_percentage"] = 0.999
+        if model_def.get("self_refiner",False) and settings_version < 2.48:
+            ui_defaults["self_refiner_f_uncertainty"] = 0.1
+            ui_defaults["self_refiner_certain_percentage"] = 0.999
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):

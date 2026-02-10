@@ -200,6 +200,7 @@ def get_qwen3_model_def(base_model_type: str) -> dict:
         "duration_slider": dict(QWEN3_TTS_DURATION_SLIDER),
         "top_k_slider": True,
         "text_prompt_enhancer_instructions": TTS_MONOLOGUE_PROMPT,
+        "prompt_enhancer_button_label": "Write Speech",
         "compile": False,
         "parent_model_type": "qwen3_tts_base",
     }

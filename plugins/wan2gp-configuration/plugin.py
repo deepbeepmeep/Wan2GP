@@ -20,6 +20,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("default_profile_audio")
         self.request_global("vae_config")
         self.request_global("boost")
+        self.request_global("enable_int8_kernels")
         self.request_global("preload_model_policy")
         self.request_global("transformer_quantization")
         self.request_global("transformer_dtype_policy")
@@ -43,6 +44,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("generate_dropdown_model_list")
         self.request_global("get_unique_id")
         self.request_global("reset_prompt_enhancer")
+        self.request_global("resolve_lm_decoder_engine")
+        self.request_global("apply_int8_kernel_setting")
 
         self.request_component("header")
         self.request_component("model_family")
@@ -126,6 +129,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         value=self.server_config.get("loras_root", "loras"),
                         interactive=not self.args.lock_config
                     )
+                    self.save_queue_if_crash_choice = gr.Dropdown(
+                        choices=[("Disabled", 0), ("Overwrite Last Error Queue", 1), ("Create a New Error Queue File", 2)],
+                        value=self.server_config.get("save_queue_if_crash", 1),
+                        label="Save Queue if Crash during Generation",
+                        interactive=not self.args.lock_config
+                    )
                     self.UI_theme_choice = gr.Dropdown(
                         choices=[("Blue Sky (Default)", "default"), ("Classic Gradio", "gradio")],
                         value=self.server_config.get("UI_theme", "default"), label="UI Theme (requires restart)"
@@ -144,11 +153,21 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.transformer_dtype_policy_choice = gr.Dropdown(choices=[("Auto (Best for Hardware)", ""), ("FP16", "fp16"), ("BF16", "bf16")], value=self.transformer_dtype_policy, label="Transformer Data Type (if available)")
                     self.mixed_precision_choice = gr.Dropdown(choices=[("16-bit only (less VRAM)", "0"), ("Mixed 16/32-bit (better quality)", "1")], value=self.server_config.get("mixed_precision", "0"), label="Transformer Engine Precision")
                     self.text_encoder_quantization_choice = gr.Dropdown(choices=[("16-bit (more RAM, better quality)", "bf16"), ("8-bit (less RAM, slightly lower quality)", "int8")], value=self.text_encoder_quantization, label="Text Encoder Precision")
+                    self.lm_decoder_engine_choice = gr.Dropdown(
+                        choices=[
+                            ("Auto", ""),
+                            ("PyTorch (slow, compatible)", "legacy"),
+                            ("vllm (up to x10 faster, requires Triton & Flash Attention 2 and must be implemented in corresponding model)", "vllm"),
+                        ],
+                        value=self.server_config.get("lm_decoder_engine", ""),
+                        label="Language Models Decoder Engine",
+                    )
                     self.VAE_precision_choice = gr.Dropdown(choices=[("16-bit (faster, less VRAM)", "16"), ("32-bit (slower, better for sliding window)", "32")], value=self.server_config.get("vae_precision", "16"), label="VAE Encoding/Decoding Precision")
                     self.compile_choice = gr.Dropdown(choices=[("On (up to 20% faster, requires Triton)", "transformer"), ("Off", "")], value=self.compile, label="Compile Transformer Model (slight speed again, but first generation is slower and potential compatibility issues with some GPUs/Models)", interactive=not self.args.lock_config)
                     self.depth_anything_v2_variant_choice = gr.Dropdown(choices=[("Large (more precise, slower)", "vitl"), ("Big (less precise, faster)", "vitb")], value=self.server_config.get("depth_anything_v2_variant", "vitl"), label="Depth Anything v2 VACE Preprocessor")
                     self.vae_config_choice = gr.Dropdown(choices=[("Auto", 0), ("Disabled (fastest, high VRAM)", 1), ("256x256 Tiles (for >=8GB VRAM)", 2), ("128x128 Tiles (for >=6GB VRAM)", 3)], value=self.vae_config, label="VAE Tiling (to reduce VRAM usage)")
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
+                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled", 1)], value=self.server_config.get("enable_int8_kernels", 0), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
                     self.video_profile_choice = gr.Dropdown(
                         choices=self.memory_profile_choices,
                         value=self.default_profile_video,
@@ -177,7 +196,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 with gr.Tab("Extensions"):
                     with gr.Group():
                         self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1), ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires 8-14GB extra download)")
-                        self.enhancer_mode_choice = gr.Dropdown(choices=[("Automatic on Generation", 0), ("On-Demand Button Only", 1)], value=self.server_config.get("enhancer_mode", 0), label="Prompt Enhancer Usage")
+                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
                     with gr.Row():
                         self.prompt_enhancer_temperature_choice = gr.Slider(
                             0.1,
@@ -269,11 +288,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
             self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice,
-            self.display_stats_choice, self.max_frames_multiplier_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice,
+            self.display_stats_choice, self.max_frames_multiplier_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice, self.save_queue_if_crash_choice,
             self.UI_theme_choice, self.queue_color_scheme_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
-            self.text_encoder_quantization_choice, self.VAE_precision_choice, self.compile_choice,
-            self.depth_anything_v2_variant_choice, self.vae_config_choice, self.boost_choice,
+            self.text_encoder_quantization_choice, self.lm_decoder_engine_choice, self.VAE_precision_choice, self.compile_choice,
+            self.depth_anything_v2_variant_choice, self.vae_config_choice, self.boost_choice, self.enable_int8_kernels_choice,
             self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice,
             self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
             self.enhancer_enabled_choice, self.enhancer_mode_choice,
@@ -321,11 +340,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
         (
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
             attention_choice, preload_model_policy_choice, clear_file_list_choice,
-            display_stats_choice, max_frames_multiplier_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice,
+            display_stats_choice, max_frames_multiplier_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice, save_queue_if_crash_choice,
             UI_theme_choice, queue_color_scheme_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
-            text_encoder_quantization_choice, VAE_precision_choice, compile_choice,
-            depth_anything_v2_variant_choice, vae_config_choice, boost_choice,
+            text_encoder_quantization_choice, lm_decoder_engine_choice, VAE_precision_choice, compile_choice,
+            depth_anything_v2_variant_choice, vae_config_choice, boost_choice, enable_int8_kernels_choice,
             video_profile_choice, image_profile_choice, audio_profile_choice,
             preload_in_VRAM_choice, max_reserved_loras_choice,
             enhancer_enabled_choice, enhancer_mode_choice,
@@ -351,12 +370,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "attention_mode": attention_choice, "transformer_types": transformer_types_choices,
             "text_encoder_quantization": text_encoder_quantization_choice, "save_path": save_path_choice,
             "image_save_path": image_save_path_choice, "audio_save_path": audio_save_path_choice,
+            "lm_decoder_engine": lm_decoder_engine_choice,
             "compile": compile_choice, "profile": video_profile_choice,
             "video_profile": video_profile_choice, "image_profile": image_profile_choice, "audio_profile": audio_profile_choice,
             "vae_config": vae_config_choice, "vae_precision": VAE_precision_choice,
             "mixed_precision": mixed_precision_choice, "metadata_type": metadata_choice,
             "transformer_quantization": quantization_choice, "transformer_dtype_policy": transformer_dtype_policy_choice,
-            "boost": boost_choice, "clear_file_list": clear_file_list_choice,
+            "boost": boost_choice, "enable_int8_kernels": enable_int8_kernels_choice, "clear_file_list": clear_file_list_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
             "fit_canvas": fit_canvas_choice, "enhancer_enabled": enhancer_enabled_choice,
             "enhancer_mode": enhancer_mode_choice, "mmaudio_mode": mmaudio_mode_choice,
@@ -377,6 +397,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "model_hierarchy_type": model_hierarchy_type_choice,
             "checkpoints_paths": checkpoints_paths,
             "loras_root": loras_root_choice,
+            "save_queue_if_crash": save_queue_if_crash_choice,
             "queue_color_scheme": queue_color_scheme_choice,
             "embed_source_images": embed_source_images_choice,
             "video_container": "mp4", # Fixed to MP4
@@ -400,13 +421,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
         changes = [k for k, v in new_server_config.items() if v != old_server_config.get(k)]
 
         no_reload_keys = [
-            "attention_mode", "vae_config", "boost", "save_path", "image_save_path", "audio_save_path",
+            "attention_mode", "vae_config", "boost", "enable_int8_kernels", "save_path", "image_save_path", "audio_save_path",
             "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled", "rife_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed",
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
-            "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root",
+            "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
         ]
 
@@ -421,8 +442,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("default_profile_audio", new_server_config["audio_profile"])
         self.set_global("compile", new_server_config["compile"])
         self.set_global("text_encoder_quantization", new_server_config["text_encoder_quantization"])
+        self.set_global("lm_decoder_engine", new_server_config["lm_decoder_engine"])
+        self.set_global("lm_decoder_engine_obtained", self.resolve_lm_decoder_engine(new_server_config["lm_decoder_engine"]))
         self.set_global("vae_config", new_server_config["vae_config"])
         self.set_global("boost", new_server_config["boost"])
+        self.set_global("enable_int8_kernels", new_server_config["enable_int8_kernels"])
         self.set_global("save_path", new_server_config["save_path"])
         self.set_global("image_save_path", new_server_config["image_save_path"])
         self.set_global("audio_save_path", new_server_config["audio_save_path"])
@@ -435,6 +459,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         if "enhancer_enabled" in changes or "enhancer_mode" in changes:
             self.reset_prompt_enhancer()
+        if "enable_int8_kernels" in changes:
+            self.apply_int8_kernel_setting(new_server_config["enable_int8_kernels"], True)
 
         model_type = state["model_type"]
         

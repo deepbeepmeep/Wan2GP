@@ -1,4 +1,6 @@
 import logging
+import os
+import time
 from collections.abc import Callable, Iterator
 
 import torch
@@ -38,9 +40,66 @@ from .utils.helpers import (
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
 from shared.utils.loras_mutipliers import update_loras_slists
+from shared.utils.self_refiner import create_self_refiner_handler, normalize_self_refiner_plan
 from shared.utils.text_encoder_cache import TextEncoderCache
 
 device = get_device()
+_BENCH_TRANSFORMER_ENV = "WAN2GP_LTX2_BENCH_TRANSFORMER"
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    val = os.environ.get(name, default)
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+class _TransformerBenchWrapper:
+    def __init__(self, module, enabled: bool = False) -> None:
+        self._module = module
+        self._enabled = bool(enabled)
+        self._cuda_events: list[tuple[torch.cuda.Event, torch.cuda.Event]] = []
+        self._cpu_total_ms = 0.0
+        self._cpu_calls = 0
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+    def __call__(self, *args, **kwargs):
+        if not self._enabled:
+            return self._module(*args, **kwargs)
+        if torch.cuda.is_available():
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            out = self._module(*args, **kwargs)
+            end.record()
+            self._cuda_events.append((start, end))
+            return out
+
+        t0 = time.perf_counter()
+        out = self._module(*args, **kwargs)
+        self._cpu_total_ms += (time.perf_counter() - t0) * 1000.0
+        self._cpu_calls += 1
+        return out
+
+    def consume(self) -> tuple[float, int]:
+        if not self._enabled:
+            return 0.0, 0
+        if torch.cuda.is_available():
+            if not self._cuda_events:
+                return 0.0, 0
+            torch.cuda.synchronize()
+            total_ms = 0.0
+            for start, end in self._cuda_events:
+                total_ms += float(start.elapsed_time(end))
+            calls = len(self._cuda_events)
+            self._cuda_events.clear()
+            return total_ms, calls
+
+        total_ms = self._cpu_total_ms
+        calls = self._cpu_calls
+        self._cpu_total_ms = 0.0
+        self._cpu_calls = 0
+        return total_ms, calls
 
 
 class DistilledPipeline:
@@ -115,6 +174,11 @@ class DistilledPipeline:
         masking_source: dict | None = None,
         masking_strength: float | None = None,
         return_latent_slice: slice | None = None,
+        self_refiner_setting: int = 0,
+        self_refiner_plan: str = "",
+        self_refiner_f_uncertainty: float = 0.1,
+        self_refiner_certain_percentage: float = 0.999,
+        self_refiner_max_plans: int = 1,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
         alt_guidance_scale = 1.0
@@ -123,6 +187,43 @@ class DistilledPipeline:
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
         stepper = EulerDiffusionStep()
+        self_refiner_handler = None
+        self_refiner_handler_audio = None
+        self_refiner_handler_stage2 = None
+        self_refiner_handler_audio_stage2 = None
+        if self_refiner_setting and self_refiner_setting > 0:
+            plans, _ = normalize_self_refiner_plan(self_refiner_plan or "", max_plans=self_refiner_max_plans)
+            plan_stage1 = plans[0] if plans else []
+            plan_stage2 = plans[1] if len(plans) > 1 else []
+            self_refiner_handler = create_self_refiner_handler(
+                plan_stage1,
+                self_refiner_f_uncertainty,
+                self_refiner_setting,
+                self_refiner_certain_percentage,
+                channel_dim=-1,
+            )
+            self_refiner_handler_audio = create_self_refiner_handler(
+                plan_stage1,
+                self_refiner_f_uncertainty,
+                self_refiner_setting,
+                self_refiner_certain_percentage,
+                channel_dim=-1,
+            )
+            if plan_stage2:
+                self_refiner_handler_stage2 = create_self_refiner_handler(
+                    plan_stage2,
+                    self_refiner_f_uncertainty,
+                    self_refiner_setting,
+                    self_refiner_certain_percentage,
+                    channel_dim=-1,
+                )
+                self_refiner_handler_audio_stage2 = create_self_refiner_handler(
+                    plan_stage2,
+                    self_refiner_f_uncertainty,
+                    self_refiner_setting,
+                    self_refiner_certain_percentage,
+                    channel_dim=-1,
+                )
         dtype = torch.bfloat16
 
         text_encoder = self._get_model("text_encoder")
@@ -145,8 +246,9 @@ class DistilledPipeline:
         video_context, audio_context = contexts[0]
 
         # Stage 1: Initial low resolution video generation.
+        bench_transformer = _env_flag(_BENCH_TRANSFORMER_ENV, "0")
         video_encoder = self._get_model("video_encoder")
-        transformer = self._get_model("transformer")
+        transformer = _TransformerBenchWrapper(self._get_model("transformer"), enabled=bench_transformer)
         bind_interrupt_check(transformer, interrupt_check)
         # DISTILLED_SIGMA_VALUES = [0.421875, 0]
         stage_1_sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
@@ -164,7 +266,7 @@ class DistilledPipeline:
         if callback is not None:
             callback(-1, None, True, override_num_inference_steps=len(stage_1_sigmas) - 1, pass_no=pass_no)
 
-        def denoising_loop(
+        def denoising_loop_stage1(
             sigmas: torch.Tensor,
             video_state: LatentState,
             audio_state: LatentState,
@@ -187,8 +289,11 @@ class DistilledPipeline:
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
-                pass_no=pass_no,
+                pass_no=1,
                 transformer=transformer,
+                self_refiner_handler=self_refiner_handler,
+                self_refiner_handler_audio=self_refiner_handler_audio,
+                self_refiner_generator=generator,
             )
 
         stage_1_output_shape = VideoPixelShape(
@@ -238,12 +343,20 @@ class DistilledPipeline:
             noiser=noiser,
             sigmas=stage_1_sigmas,
             stepper=stepper,
-            denoising_loop_fn=denoising_loop,
+            denoising_loop_fn=denoising_loop_stage1,
             components=self.pipeline_components,
             dtype=dtype,
             device=self.device,
             mask_context=mask_context,
         )
+        stage1_transformer_ms = 0.0
+        stage1_transformer_calls = 0
+        if bench_transformer:
+            stage1_transformer_ms, stage1_transformer_calls = transformer.consume()
+            print(
+                "[WAN2GP][LTX2][bench] transformer stage1: "
+                f"{stage1_transformer_ms / 1000.0:.3f}s ({stage1_transformer_calls} calls)"
+            )
         if video_state is None or audio_state is None:
             return None, None
         if interrupt_check is not None and interrupt_check():
@@ -272,6 +385,36 @@ class DistilledPipeline:
             )
         if callback is not None:
             callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=pass_no)
+
+        def denoising_loop_stage2(
+            sigmas: torch.Tensor,
+            video_state: LatentState,
+            audio_state: LatentState,
+            stepper: DiffusionStepProtocol,
+            preview_tools: VideoLatentTools | None = None,
+            mask_context=None,
+        ) -> tuple[LatentState, LatentState]:
+            return euler_denoising_loop(
+                sigmas=sigmas,
+                video_state=video_state,
+                audio_state=audio_state,
+                stepper=stepper,
+                denoise_fn=simple_denoising_func(
+                    video_context=video_context,
+                    audio_context=audio_context,
+                    transformer=transformer,  # noqa: F821
+                    alt_guidance_scale=alt_guidance_scale,
+                ),
+                mask_context=mask_context,
+                interrupt_check=interrupt_check,
+                callback=callback,
+                preview_tools=preview_tools,
+                pass_no=2,
+                transformer=transformer,
+                self_refiner_handler=self_refiner_handler_stage2,
+                self_refiner_handler_audio=self_refiner_handler_audio_stage2,
+                self_refiner_generator=generator,
+            )
         stage_2_output_shape = VideoPixelShape(batch=1, frames=num_frames, width=width, height=height, fps=frame_rate)
         stage_2_conditionings = image_conditionings_by_replacing_latent(
             images=images,
@@ -307,7 +450,7 @@ class DistilledPipeline:
             noiser=noiser,
             sigmas=stage_2_sigmas,
             stepper=stepper,
-            denoising_loop_fn=denoising_loop,
+            denoising_loop_fn=denoising_loop_stage2,
             components=self.pipeline_components,
             dtype=dtype,
             device=self.device,
@@ -316,6 +459,18 @@ class DistilledPipeline:
             initial_audio_latent=audio_state.latent,
             mask_context=mask_context,
         )
+        if bench_transformer:
+            stage2_transformer_ms, stage2_transformer_calls = transformer.consume()
+            total_transformer_ms = stage1_transformer_ms + stage2_transformer_ms
+            total_transformer_calls = stage1_transformer_calls + stage2_transformer_calls
+            print(
+                "[WAN2GP][LTX2][bench] transformer stage2: "
+                f"{stage2_transformer_ms / 1000.0:.3f}s ({stage2_transformer_calls} calls)"
+            )
+            print(
+                "[WAN2GP][LTX2][bench] transformer total: "
+                f"{total_transformer_ms / 1000.0:.3f}s ({total_transformer_calls} calls)"
+            )
         if video_state is None or audio_state is None:
             return None, None
         if interrupt_check is not None and interrupt_check():

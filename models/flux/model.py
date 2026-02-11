@@ -340,6 +340,11 @@ class Flux(nn.Module):
                         if "lora_B" in k:
                             v = swap_scale_shift(v)
                         k = k.replace("norm_out.linear", "final_layer.adaLN_modulation.1")
+                k = k.replace("double_stream_modulation_img.linear.", "double_stream_modulation_img.lin.")
+                k = k.replace("double_stream_modulation_txt.linear.", "double_stream_modulation_txt.lin.")
+                k = k.replace("single_stream_modulation.linear.", "single_stream_modulation.lin.")
+                k = k.replace(".lora.down.weight", ".lora_down.weight")
+                k = k.replace(".lora.up.weight", ".lora_up.weight")
                 if not k.startswith("diffusion_model."):
                     k = "diffusion_model." + k 
 

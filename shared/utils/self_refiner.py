@@ -35,12 +35,14 @@ def add_refiner_rule(current_rules, range_val, steps_val):
     
     if new_start >= new_end:
          from gradio import Info
-         raise Info(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
+         Info(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
+         return current_rules
 
     for rule in current_rules:
         if new_start <= rule['end'] and new_end >= rule['start']:
             from gradio import Info
-            raise Info(f"Overlap detected! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
+            Info(f"Overlap detected! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
+            return current_rules
 
     new_rule = {
         "id": str(uuid.uuid4()),

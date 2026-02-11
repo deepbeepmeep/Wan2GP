@@ -95,7 +95,7 @@ CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.4"
 WanGP_version = "10.83"
-settings_version = 2.50
+settings_version = 2.51
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -4337,6 +4337,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             video_audio_guidance_scale = configs.get("audio_guidance_scale", None)
             video_alt_guidance_scale = configs.get("alt_guidance_scale", None)
             video_temperature = configs.get("temperature", None)
+            video_top_p = configs.get("top_p", None)
             video_top_k = configs.get("top_k", None)
             video_switch_threshold = configs.get("switch_threshold", 0)
             video_switch_threshold2 = configs.get("switch_threshold2", 0)
@@ -4459,9 +4460,6 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels += ["Sampler Solver"]                                        
             values += [video_resolution, video_length_summary, video_seed, video_guidance_scale, video_audio_guidance_scale]
             labels += ["Resolution", video_length_label, "Seed", video_guidance_label, "Audio Guidance Scale"]
-            if model_def.get("temperature", True) and video_temperature is not None:
-                values += [video_temperature]
-                labels += ["Temperature"]
             video_custom_settings = configs.get("custom_settings", None)
             if isinstance(video_custom_settings, dict):
                 custom_settings = get_model_custom_settings(model_def)
@@ -4474,6 +4472,12 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                         continue
                     values += [setting_value]
                     labels += [setting_def.get("name", f"Custom Setting {idx + 1}")]
+            if model_def.get("temperature", True) and video_temperature is not None:
+                values += [video_temperature]
+                labels += ["Temperature"]
+            if model_def.get("top_p_slider", False) and video_top_p is not None:
+                values += [video_top_p]
+                labels += ["Top-p"]
             if model_def.get("top_k_slider", False) and video_top_k is not None:
                 values += [video_top_k]
                 labels += ["Top-k"]
@@ -5744,6 +5748,7 @@ def generate_video(
     override_attention,
     temperature,
     custom_settings,
+    top_p,
     top_k,
     self_refiner_setting,
     self_refiner_plan,
@@ -6619,6 +6624,7 @@ def generate_video(
                     self_refiner_certain_percentage = self_refiner_certain_percentage,
                     duration_seconds=duration_seconds,
                     pause_seconds=pause_seconds,
+                    top_p=top_p,
                     top_k=top_k,
                     set_progress_status=set_progress_status,                     
                 )
@@ -7920,6 +7926,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["duration_seconds"]
     if not model_def.get("pause_between_sentences", False):
         pop += ["pause_seconds"]
+    if not model_def.get("top_p_slider", False):
+        pop += ["top_p"]
     if not model_def.get("top_k_slider", False):
         pop += ["top_k"]
     if not model_def.get("temperature", True):
@@ -8686,6 +8694,7 @@ def save_inputs(
             custom_setting_3,
             custom_setting_4,
             custom_setting_5,
+            top_p,
             top_k,
             self_refiner_setting,
             self_refiner_plan,            
@@ -10159,9 +10168,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         temperature_visible=audio_only and model_def.get("temperature", True)
                         with gr.Row(visible=temperature_visible) as temperature_row:
                             temperature = gr.Slider(0.1, 1.5, value=ui_get("temperature"), step=0.01, label="Temperature", show_reset_button=False)
-
-                        with gr.Row(visible=audio_only and model_def.get("top_k_slider", False)) as top_k_row:
-                            top_k = gr.Slider( 0, 100, value=ui_get("top_k", 50), step=1, label="Top-k", show_reset_button=False,)
+                        top_p_visible = model_def.get("top_p_slider", False)
+                        top_k_visible = model_def.get("top_k_slider", False)
+                        with gr.Row(visible = top_p_visible or top_k_visible ) as top_pk_row:
+                            top_p = gr.Slider(0.0, 1.0, value=ui_get("top_p", 0.9), step=0.01, label="Top-p", visible= top_p_visible, show_reset_button=False)
+                            top_k = gr.Slider( 0, 100, value=ui_get("top_k", 50), step=1, label="Top-k (0 = disabled)", visible= top_k_visible, show_reset_button=False,)
 
                         sample_solver_choices = model_def.get("sample_solvers", None)
                         any_flow_shift = model_def.get("flow_shift", False) 
@@ -10712,7 +10723,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       audio_buttons_row, deleted_audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_eject_audio_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
-                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, *custom_settings_rows, top_k_row, number_frames_row, negative_prompt_row,
+                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, *custom_settings_rows, top_pk_row, 
+                                      number_frames_row, negative_prompt_row,
                                       self_refiner_col, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:

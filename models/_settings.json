@@ -39,6 +39,7 @@
 	"embedded_guidance_scale": 6.0,
 	"alt_guidance_scale": 1.0,
 	"temperature": 0.8,
+	"top_p": 0.9,
 	"top_k": 50,
 	"sample_solver": "",
 	"flow_shift":3,

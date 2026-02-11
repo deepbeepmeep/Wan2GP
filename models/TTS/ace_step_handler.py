@@ -292,6 +292,8 @@ class family_handler:
                 "text_encoder_folder": _get_model_path(model_def, "text_encoder_folder", ACE_STEP15_LM_FOLDER),
                 "inference_steps": True,
                 "temperature": True,
+                "top_p_slider": True,
+                "top_k_slider": True,
                 "any_audio_prompt": True,
                 "audio_guide_label": "Source Audio",
                 "audio_guide2_label": "Reference Timbre",
@@ -588,6 +590,8 @@ class family_handler:
                     "num_inference_steps": 8,
                     "negative_prompt": "",
                     "temperature": 1.0,
+                    "top_p": 0.9,
+                    "top_k": 0,
                     "guidance_scale": 1.0,
                     "multi_prompts_gen_type": 2,
                     "audio_scale": 0.5,
@@ -627,6 +631,13 @@ class family_handler:
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
         if _is_ace_step15(base_model_type):
+            if settings_version < 2.51:
+                # ACE-Step 1.5 implicit LM defaults are: top-p 0.9, top-k disabled.
+                ui_defaults["top_p"] = 0.9
+                ui_defaults["top_k"] = 0
+            else:
+                ui_defaults.setdefault("top_p", 0.9)
+                ui_defaults.setdefault("top_k", 0)
             return
         if ui_defaults.get("sample_solver", "") in ("", None):
             legacy_scheduler = ui_defaults.get("scheduler_type", "")

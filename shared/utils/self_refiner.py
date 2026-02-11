@@ -3,6 +3,11 @@ import copy
 import uuid
 from diffusers.utils.torch_utils import randn_tensor
 
+default_plan = [
+    {"start": 1, "end": 5, "steps": 3},
+    {"start": 6, "end": 13, "steps": 1},
+]
+
 def is_int_string(s: str) -> bool:
     try:
         int(s)
@@ -11,16 +16,12 @@ def is_int_string(s: str) -> bool:
         return False
     
 def normalize_self_refiner_plan(plan_input, max_plans: int = 1):
-    default_plan = [
-        {"start": 1, "end": 5, "steps": 3},
-        {"start": 6, "end": 13, "steps": 1},
-    ]
     if len(plan_input) > max_plans:
         return [], f"Self-refiner supports up to {max_plans} plan(s); found {len(plan_input)}."
     if not plan_input or not isinstance(plan_input, list):
-        return [default_plan], ""
+        return default_plan, ""
     
-    return [plan_input], ""
+    return plan_input, ""
 
 def ensure_refiner_list(plan_data):
     if not isinstance(plan_data, list):
@@ -302,8 +303,9 @@ class PnPHandler:
         return latents, sample_scheduler
 
 def create_self_refiner_handler(pnp_plan, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage, channel_dim: int = 1):
-    plans, _ = normalize_self_refiner_plan(pnp_plan, max_plans=1)
-    stochastic_plan = plans[0]
+    stochastic_plan, _ = normalize_self_refiner_plan(pnp_plan)
+    if not stochastic_plan:
+        stochastic_plan = default_plan
 
     return PnPHandler(
         stochastic_plan,

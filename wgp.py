@@ -137,14 +137,14 @@ from shared.kernels.quanto_int8_inject import maybe_enable_quanto_int8_kernel, d
 
 
 def apply_int8_kernel_setting(enabled: int, notify_disabled = False) -> bool:
-    global enable_int8_kernels
+    global enable_int8_kernels, verbose_level
     try:
         enable_int8_kernels = 1 if int(enabled) == 1 else 0
     except Exception:
         enable_int8_kernels = 0
     os.environ["WAN2GP_QUANTO_INT8_KERNEL"] = "1" if enable_int8_kernels == 1 else "0"
     if enable_int8_kernels == 1:
-        return bool(maybe_enable_quanto_int8_kernel())
+        return bool(maybe_enable_quanto_int8_kernel(verbose_level=verbose_level))
     disable_quanto_int8_kernel(notify_disabled)
     return False
 

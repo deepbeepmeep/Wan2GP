@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import atexit
+import traceback
 from types import SimpleNamespace
 from typing import Optional, Tuple
 
@@ -36,6 +37,7 @@ _TIME_PROFILE_ON = False
 _TIME_PROFILE_EVENTS = []
 _TIME_PROFILE_CPU_MS = 0.0
 _TIME_PROFILE_CALLS = 0
+_DEBUG_OVERRIDE: Optional[bool] = None
 
 _PATCH_STATE = SimpleNamespace(enabled=False, orig_forward=None)
 _OPS_REGISTERED = False
@@ -85,12 +87,61 @@ def _log(msg: str) -> None:
 
 
 def _debug(msg: str) -> None:
-    if _env_flag(_ENV_DEBUG, "0"):
+    if _DEBUG_OVERRIDE is None:
+        debug_on = _env_flag(_ENV_DEBUG, "0")
+    else:
+        debug_on = bool(_DEBUG_OVERRIDE)
+    if debug_on:
         _log(msg)
 
 
+def _format_exception_detail(exc: Exception) -> str:
+    try:
+        return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
+    except Exception:
+        return str(exc)
+
+
+def _summarize_kernel_error(exc_or_text: Exception | str, max_chars: int = 480) -> str:
+    text = str(exc_or_text)
+    lines = [ln.strip() for ln in text.replace("\r", "\n").split("\n") if ln.strip()]
+    if len(lines) == 0:
+        return "Unknown Triton kernel failure"
+    keywords = (
+        "CompilationError",
+        "shape mismatch",
+        "tl.dot",
+        "K >=",
+        "M >=",
+        "N >=",
+        "Triton",
+        "unsupported",
+        "invalid",
+        "at ",
+    )
+    picked = [ln for ln in lines if any(kw in ln for kw in keywords)]
+    if len(picked) == 0:
+        picked = [lines[-1]]
+    unique: list[str] = []
+    seen = set()
+    for ln in picked:
+        if ln in seen:
+            continue
+        seen.add(ln)
+        unique.append(ln)
+    summary = " | ".join(unique[-4:])
+    if len(summary) > max_chars:
+        summary = summary[: max_chars - 3] + "..."
+    return summary
+
+
+def set_kernel_debug(enabled: Optional[bool] = None) -> None:
+    global _DEBUG_OVERRIDE
+    _DEBUG_OVERRIDE = None if enabled is None else bool(enabled)
+
+
 def _allow_runtime_fallback() -> bool:
-    return _env_flag(_ENV_ALLOW_RUNTIME_FALLBACK, "0")
+    return _env_flag(_ENV_ALLOW_RUNTIME_FALLBACK, "1")
 
 
 def _startup_status(enabled: bool, detail: str) -> None:
@@ -107,11 +158,11 @@ def _startup_status(enabled: bool, detail: str) -> None:
 def _disable_runtime(reason: str) -> None:
     global _RUNTIME_DISABLED, _RUNTIME_DISABLE_REASON, _RUNTIME_DISABLE_PRINTED
     _RUNTIME_DISABLED = True
-    _RUNTIME_DISABLE_REASON = str(reason)
+    _RUNTIME_DISABLE_REASON = _summarize_kernel_error(reason)
     if not _RUNTIME_DISABLE_PRINTED:
         _RUNTIME_DISABLE_PRINTED = True
         _log(
-            "Runtime fallback to non-injected Quanto path after Triton failure: "
+            "Runtime fallback to non-injected Quanto path is now active. Reason: "
             f"{_RUNTIME_DISABLE_REASON}"
         )
 
@@ -351,26 +402,33 @@ def _fused_quant_scaled_mm_direct_call(x2d: torch.Tensor, qweight: torch.Tensor,
 
     block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n = _fused_launch_params(m, k, n, x2d.device)
     out = torch.empty((m, n), device=x2d.device, dtype=output_dtype)
-    mod._fused_dynamic_int8_blockscale_gemm_kernel[(grid_m, grid_n)](
-        x2d,
-        qweight,
-        qweight_scale,
-        out,
-        m,
-        n,
-        k,
-        x2d.stride(0),
-        x2d.stride(1),
-        qweight.stride(0),
-        qweight.stride(1),
-        out.stride(0),
-        out.stride(1),
-        block_m=block_m,
-        block_n=block_n,
-        block_k=block_k,
-        num_warps=num_warps,
-        num_stages=num_stages,
-    )
+    try:
+        mod._fused_dynamic_int8_blockscale_gemm_kernel[(grid_m, grid_n)](
+            x2d,
+            qweight,
+            qweight_scale,
+            out,
+            m,
+            n,
+            k,
+            x2d.stride(0),
+            x2d.stride(1),
+            qweight.stride(0),
+            qweight.stride(1),
+            out.stride(0),
+            out.stride(1),
+            block_m=block_m,
+            block_n=block_n,
+            block_k=block_k,
+            num_warps=num_warps,
+            num_stages=num_stages,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Triton fused int8 kernel launch failed "
+            f"(shape m={m}, k={k}, n={n}; tile=({block_m},{block_n},{block_k}); "
+            f"warps={num_warps}, stages={num_stages}). {exc}"
+        ) from exc
     return out
 
 
@@ -394,27 +452,34 @@ def _scaled_int8_mm_direct_call(
 
     block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n = _scaled_launch_params(m, k, n, a_int8.device)
     out = torch.empty((m, n), device=a_int8.device, dtype=output_dtype)
-    mod._scaled_int8_gemm_kernel[(grid_m, grid_n)](
-        a_int8,
-        b_int8,
-        a_scale,
-        b_scale,
-        out,
-        m,
-        n,
-        k,
-        a_int8.stride(0),
-        a_int8.stride(1),
-        b_int8.stride(0),
-        b_int8.stride(1),
-        out.stride(0),
-        out.stride(1),
-        block_m=block_m,
-        block_n=block_n,
-        block_k=block_k,
-        num_warps=num_warps,
-        num_stages=num_stages,
-    )
+    try:
+        mod._scaled_int8_gemm_kernel[(grid_m, grid_n)](
+            a_int8,
+            b_int8,
+            a_scale,
+            b_scale,
+            out,
+            m,
+            n,
+            k,
+            a_int8.stride(0),
+            a_int8.stride(1),
+            b_int8.stride(0),
+            b_int8.stride(1),
+            out.stride(0),
+            out.stride(1),
+            block_m=block_m,
+            block_n=block_n,
+            block_k=block_k,
+            num_warps=num_warps,
+            num_stages=num_stages,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Triton scaled int8 kernel launch failed "
+            f"(shape m={m}, k={k}, n={n}; tile=({block_m},{block_n},{block_k}); "
+            f"warps={num_warps}, stages={num_stages}). {exc}"
+        ) from exc
     return out
 
 
@@ -608,13 +673,17 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
             try:
                 return _int8_linear_forward_triton_dense_fast(ctx, input, other, bias)
             except Exception as exc:
+                short_reason = _summarize_kernel_error(exc)
                 if _allow_runtime_fallback():
-                    _disable_runtime(str(exc))
+                    _disable_runtime(short_reason)
+                    _debug(f"Full Triton failure detail:\n{_format_exception_detail(exc)}")
                     return orig_forward(ctx, input, other, bias)
+                full_detail = _format_exception_detail(exc)
                 raise RuntimeError(
                     "Injected Triton int8 kernel failed. "
                     f"Set {_ENV_ALLOW_RUNTIME_FALLBACK}=1 to force fallback to non-injected Quanto path. "
-                    f"Original error: {exc}"
+                    f"Reason: {short_reason}\n"
+                    f"Full Triton error details:\n{full_detail}"
                 ) from exc
 
         if not _use_int8_kernel(input, other):
@@ -624,13 +693,17 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
         try:
             return _int8_linear_forward_triton(ctx, input, other, bias)
         except Exception as exc:
+            short_reason = _summarize_kernel_error(exc)
             if _allow_runtime_fallback():
-                _disable_runtime(str(exc))
+                _disable_runtime(short_reason)
+                _debug(f"Full Triton failure detail:\n{_format_exception_detail(exc)}")
                 return orig_forward(ctx, input, other, bias)
+            full_detail = _format_exception_detail(exc)
             raise RuntimeError(
                 "Injected Triton int8 kernel failed. "
                 f"Set {_ENV_ALLOW_RUNTIME_FALLBACK}=1 to force fallback to non-injected Quanto path. "
-                f"Original error: {exc}"
+                f"Reason: {short_reason}\n"
+                f"Full Triton error details:\n{full_detail}"
             ) from exc
 
     _qbytes.WeightQBytesLinearFunction.forward = staticmethod(forward)
@@ -662,10 +735,18 @@ def disable_quanto_int8_kernel(notify_disabled = False) -> bool:
     return True
 
 
-def maybe_enable_quanto_int8_kernel() -> bool:
+def maybe_enable_quanto_int8_kernel(verbose_level: Optional[int] = None) -> bool:
     global _SHAPE_PROFILE_ON, _TIME_PROFILE_ON, _STARTUP_PRINTED 
 
     _STARTUP_PRINTED = False
+    verbose_debug: Optional[bool] = None
+    if verbose_level is not None:
+        try:
+            verbose_debug = int(verbose_level) >= 2
+        except Exception:
+            verbose_debug = False
+    set_kernel_debug(verbose_debug)
+
     if not _env_flag(_ENV_ENABLE, "1"):
         # _startup_status(False, f"disabled by {_ENV_ENABLE}=0; using non-injected Quanto path.")
         return False
@@ -674,6 +755,9 @@ def maybe_enable_quanto_int8_kernel() -> bool:
     if triton_mod is None:
         # _startup_status(False, f"{reason}; using non-injected Quanto path.")
         return False
+    set_triton_debug = getattr(triton_mod, "set_autotune_debug", None)
+    if callable(set_triton_debug):
+        set_triton_debug(verbose_debug)
 
     if not enable_quanto_int8_kernel(triton_mod=triton_mod):
         _startup_status(False, "failed to patch Quanto linear forward; using non-injected Quanto path.")

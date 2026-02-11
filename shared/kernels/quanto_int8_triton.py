@@ -42,6 +42,7 @@ _AUTOTUNE_CONFIG_CACHE: dict[str, tuple[int, int, int, int, int]] = {}
 _AUTOTUNE_SESSION_CACHE: dict[tuple[int, str, str], tuple[int, int, int, int, int]] = {}
 _AUTOTUNE_SEEN_SLOTS: set[tuple[int, str, str]] = set()
 _AUTOTUNE_SLOTS_TUNED = 0
+_AUTOTUNE_DEBUG_OVERRIDE: Optional[bool] = None
 
 # Tuned decode-time configs reused from nanovllm int8 kernels.
 _TRITON_SMALL_M_CONFIGS = {
@@ -123,8 +124,17 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _autotune_debug(msg: str) -> None:
-    if _env_flag(_ENV_AUTOTUNE_DEBUG, "0"):
+    if _AUTOTUNE_DEBUG_OVERRIDE is None:
+        debug_on = _env_flag(_ENV_AUTOTUNE_DEBUG, "0")
+    else:
+        debug_on = bool(_AUTOTUNE_DEBUG_OVERRIDE)
+    if debug_on:
         print(f"[WAN2GP][INT8][autotune] {msg}")
+
+
+def set_autotune_debug(enabled: Optional[bool] = None) -> None:
+    global _AUTOTUNE_DEBUG_OVERRIDE
+    _AUTOTUNE_DEBUG_OVERRIDE = None if enabled is None else bool(enabled)
 
 
 def _runtime_compatible() -> bool:
@@ -249,7 +259,7 @@ def _normalize_config(cfg) -> Optional[tuple[int, int, int, int, int]]:
 
 
 def _autotune_cache_path() -> Path:
-    default_path = os.path.join("_tmp", "quanto_int8_autotune_cache.json")
+    default_path = str(Path.home() / ".triton" / "autotune" / "wan2gp_int8_autotune_cache.json")
     return Path(os.environ.get(_ENV_AUTOTUNE_CACHE, default_path)).expanduser()
 
 
@@ -412,6 +422,61 @@ def _candidate_configs(
     return dedup
 
 
+def _looks_like_unsupported_dot_tile(cfg: tuple[int, int, int, int, int]) -> bool:
+    block_m, block_n, block_k, _, _ = cfg
+    # Triton int8 dot kernels can reject tiny tiles on some runtimes (e.g. decode-time M<=4).
+    return block_m < 16 or block_n < 16 or block_k < 32
+
+
+def _compile_recovery_candidates(
+    kind: str,
+    baseline: tuple[int, int, int, int, int],
+    preferred: tuple[int, int, int, int, int],
+    m: int,
+    k: int,
+    n: int,
+) -> list[tuple[int, int, int, int, int]]:
+    block_k = max(32, int(baseline[2]))
+    if block_k % 32 != 0:
+        block_k = ((block_k + 31) // 32) * 32
+    conservative_large_tiles = [
+        (16, 32, block_k, 4, 4),
+        (16, 64, block_k, 4, 4),
+        (16, 128, block_k, 4, 4),
+        (32, 32, block_k, 4, 4),
+        (32, 64, block_k, 8, 4),
+        (32, 128, block_k, 8, 4),
+        (64, 64, block_k, 8, 4),
+        (64, 128, block_k, 8, 4),
+    ]
+    raw = [preferred]
+    raw.extend(_candidate_configs(baseline, m, k, n, kind=kind))
+    raw.extend(conservative_large_tiles)
+
+    dedup: list[tuple[int, int, int, int, int]] = []
+    seen = set()
+    for cfg in raw:
+        norm = _normalize_config(cfg)
+        if norm is None or norm in seen:
+            continue
+        if not _config_compatible_with_baseline(kind, baseline, norm):
+            continue
+        seen.add(norm)
+        dedup.append(norm)
+
+    if baseline not in dedup:
+        dedup.append(baseline)
+
+    if len(dedup) <= 1:
+        return dedup
+
+    head = dedup[0]
+    tail = dedup[1:]
+    non_tiny = [cfg for cfg in tail if not _looks_like_unsupported_dot_tile(cfg)]
+    tiny = [cfg for cfg in tail if _looks_like_unsupported_dot_tile(cfg)]
+    return [head, *non_tiny, *tiny]
+
+
 def _launch_candidate(kind: str, cfg: tuple[int, int, int, int, int], tensors: tuple[torch.Tensor, ...], m: int, n: int, k: int) -> None:
     block_m, block_n, block_k, num_warps, num_stages = cfg
     grid = (triton.cdiv(m, block_m), triton.cdiv(n, block_n))
@@ -477,20 +542,85 @@ def _create_bench_tensors(kind: str, device: torch.device, m: int, k: int, n: in
     return (a_int8_c, b_int8_c, a_scale_c, b_scale_c, out)
 
 
-def _run_candidate_once(kind: str, cfg: tuple[int, int, int, int, int], tensors: tuple[torch.Tensor, ...], m: int, k: int, n: int) -> Optional[torch.Tensor]:
+def _run_candidate_once_with_error(
+    kind: str,
+    cfg: tuple[int, int, int, int, int],
+    tensors: tuple[torch.Tensor, ...],
+    m: int,
+    k: int,
+    n: int,
+) -> tuple[Optional[torch.Tensor], Optional[Exception]]:
     try:
         if kind == "fused":
             x_mm_c, qweight_c, b_scale_c, _ = tensors
             out = torch.empty((m, n), device=x_mm_c.device, dtype=torch.bfloat16)
             _launch_candidate(kind, cfg, (x_mm_c, qweight_c, b_scale_c, out), m, n, k)
-            return out
+            torch.cuda.synchronize(x_mm_c.device)
+            return out, None
         a_int8_c, b_int8_c, a_scale_c, b_scale_c, _ = tensors
         out = torch.empty((m, n), device=a_int8_c.device, dtype=torch.bfloat16)
         _launch_candidate(kind, cfg, (a_int8_c, b_int8_c, a_scale_c, b_scale_c, out), m, n, k)
-        return out
+        torch.cuda.synchronize(a_int8_c.device)
+        return out, None
     except Exception as exc:
         _autotune_debug(f"single-run failed for {kind} shape=({m},{k},{n}) cfg={cfg}: {exc}")
-        return None
+        return None, exc
+
+
+def _run_candidate_once(kind: str, cfg: tuple[int, int, int, int, int], tensors: tuple[torch.Tensor, ...], m: int, k: int, n: int) -> Optional[torch.Tensor]:
+    out, _ = _run_candidate_once_with_error(kind, cfg, tensors, m, k, n)
+    return out
+
+
+def _ensure_compile_compatible_config(
+    kind: str,
+    device_index: int,
+    slot_id: str,
+    preferred: tuple[int, int, int, int, int],
+    baseline: tuple[int, int, int, int, int],
+    m: int,
+    k: int,
+    n: int,
+    rep_shapes: tuple[tuple[int, int, int], ...],
+) -> tuple[tuple[int, int, int, int, int], Optional[Exception]]:
+    device = torch.device("cuda", device_index)
+    _ = rep_shapes
+    # Probing the current shape is enough to catch tile compile incompatibilities while
+    # keeping allocations low for large representative shapes.
+    probe_shapes = ((m, k, n),)
+    tensors_by_shape = {shape: _create_bench_tensors(kind, device, *shape) for shape in probe_shapes}
+    candidates = _compile_recovery_candidates(kind, baseline, preferred, m, k, n)
+    last_error: Optional[Exception] = None
+
+    for cfg in candidates:
+        all_ok = True
+        for probe_m, probe_k, probe_n in probe_shapes:
+            _, probe_err = _run_candidate_once_with_error(
+                kind,
+                cfg,
+                tensors_by_shape[(probe_m, probe_k, probe_n)],
+                probe_m,
+                probe_k,
+                probe_n,
+            )
+            if probe_err is not None:
+                all_ok = False
+                last_error = probe_err
+                break
+        if all_ok:
+            if cfg != preferred:
+                _autotune_debug(
+                    f"compile recovery picked {cfg} for {kind} slot={slot_id} shape=({m},{k},{n}) "
+                    f"instead of {preferred}"
+                )
+            return cfg, None
+
+    if last_error is not None:
+        _autotune_debug(
+            f"compile recovery failed for {kind} slot={slot_id} shape=({m},{k},{n}); "
+            f"keeping {preferred}. last_error={last_error}"
+        )
+    return preferred, last_error
 
 
 def _candidate_matches_baseline(
@@ -637,7 +767,19 @@ def _autotune_config(
             results[cfg] = ms
     baseline_ms = results.get(baseline)
     if baseline_ms is None:
+        if len(results) > 0:
+            recovered_cfg, recovered_ms = min(results.items(), key=lambda item: item[1])
+            _set_cached_config(device_index, kind, slot_id, recovered_cfg)
+            _autotune_debug(
+                f"baseline config failed for {kind} slot={slot_id} shape=({m},{k},{n}); "
+                f"using first compilable cfg={recovered_cfg} (ms={recovered_ms:.4f})"
+            )
+            return recovered_cfg
         _set_cached_config(device_index, kind, slot_id, baseline)
+        _autotune_debug(
+            f"no compilable configs found during autotune for {kind} slot={slot_id} shape=({m},{k},{n}); "
+            f"keeping baseline {baseline}"
+        )
         return baseline
     best_cfg, best_ms = min(results.items(), key=lambda item: item[1])
     min_speedup = max(1.0, _env_float(_ENV_AUTOTUNE_MIN_SPEEDUP, 1.02))
@@ -668,12 +810,7 @@ def _select_triton_int8_config(
     kernel_kind: str = "fused",
 ) -> tuple[int, int, int, int, int]:
     baseline = _select_static_triton_int8_config(m, k, n)
-    if not _env_flag(_ENV_AUTOTUNE_ENABLE, "1"):
-        return baseline
     if not is_available() or not torch.cuda.is_available():
-        return baseline
-    max_m = _env_int(_ENV_AUTOTUNE_MAX_M, -1)
-    if max_m >= 0 and m > max_m:
         return baseline
     try:
         device_index = _device_index(device)
@@ -684,9 +821,36 @@ def _select_triton_int8_config(
     cached = _AUTOTUNE_SESSION_CACHE.get(session_key)
     if cached is not None:
         return cached
-    tuned = _autotune_config(kernel_kind, device_index, m, k, n, baseline, slot_id, rep_shapes)
-    _AUTOTUNE_SESSION_CACHE[session_key] = tuned
-    return tuned
+
+    autotune_enabled = _env_flag(_ENV_AUTOTUNE_ENABLE, "1")
+    max_m = _env_int(_ENV_AUTOTUNE_MAX_M, -1)
+    if autotune_enabled and not (max_m >= 0 and m > max_m):
+        preferred = _autotune_config(kernel_kind, device_index, m, k, n, baseline, slot_id, rep_shapes)
+    else:
+        preferred = baseline
+
+    compile_safe, compile_err = _ensure_compile_compatible_config(
+        kernel_kind,
+        device_index,
+        slot_id,
+        preferred,
+        baseline,
+        m,
+        k,
+        n,
+        rep_shapes,
+    )
+
+    picked = compile_safe
+    if compile_safe != preferred:
+        _set_cached_config(device_index, kernel_kind, slot_id, compile_safe)
+    elif compile_err is not None:
+        _autotune_debug(
+            f"compile probe could not find an alternative for {kernel_kind} slot={slot_id} "
+            f"shape=({m},{k},{n}); will keep {preferred}"
+        )
+    _AUTOTUNE_SESSION_CACHE[session_key] = picked
+    return picked
 
 
 atexit.register(_save_autotune_cache)

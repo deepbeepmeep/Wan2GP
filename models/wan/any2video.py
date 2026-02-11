@@ -470,7 +470,7 @@ class WanAny2V:
         window_start_frame_no = 0,
         self_refiner_setting=0,
         self_refiner_plan="",
-        self_refiner_f_uncertainty = 0.1,
+        self_refiner_f_uncertainty = 0.0,
         self_refiner_certain_percentage = 0.999,
         **bbargs
                 ):

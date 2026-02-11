@@ -4502,7 +4502,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if video_self_refiner_setting > 0:  
                 video_self_refiner_plan = configs.get('self_refiner_plan','')
                 if len(video_self_refiner_plan)==0: video_self_refiner_plan ='default'
-                values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}', Uncertainty={configs.get('self_refiner_f_uncertainty',0.2)}, Certain Percentage='{configs.get('self_refiner_certain_percentage', 0.999)} "]
+                values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}', Uncertainty={configs.get('self_refiner_f_uncertainty',0.0)}, Certain Percentage='{configs.get('self_refiner_certain_percentage', 0.999)} "]
                 # values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}'"]
                 labels += ["Self Refiner"]      
             video_apg_switch = configs.get("apg_switch", None)
@@ -10421,11 +10421,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             refiner_val = ensure_refiner_list(ui_get("self_refiner_plan", []))
                             self_refiner_plan = refiner_val if update_form else gr.State(value=refiner_val)
                             
-                            with gr.Group(visible=(update_form and ui_get("self_refiner_setting", 0) > 0)) as self_refiner_rules_ui:
-                                gr.Markdown("### Refiner Plan")
+                            with gr.Column(visible=(update_form and ui_get("self_refiner_setting", 0) > 0)) as self_refiner_rules_ui:
+                                gr.Markdown("#### Refiner Plan")
                                 
                                 with gr.Row(elem_id="refiner-input-row"):
-                                    refiner_range = RangeSlider(minimum=0, maximum=100, value=(0, 10), step=1, label="Step Range", info="Start - End", scale=3)
+                                    refiner_range = RangeSlider(minimum=1, maximum=100, value=(1, 10), step=1, label="Step Range", info="Start - End", scale=3)
                                     refiner_mult = gr.Slider(label="Iterations", value=3, minimum=1, maximum=5, step=1, scale=2)
                                     refiner_add_btn = gr.Button("➕ Add", variant="primary", scale=0, min_width=100)
                                 
@@ -10436,7 +10436,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     @gr.render(inputs=self_refiner_plan)
                                     def render_refiner_plans(plans):
                                         if not plans:
-                                            gr.Markdown("<I style='color:grey; padding: 8px;'>No plans defined. Using defaults: Steps 2-5 (3x), Steps 6-13 (1x).</I>")
+                                            gr.Markdown("<I style='padding: 8px;'>No plans defined. Using defaults: Steps 2-5 (3x), Steps 6-13 (1x).</I>")
                                             return
                                         for plan in plans:
                                             with gr.Row(elem_classes="rule-row"):
@@ -10449,7 +10449,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                                 )
                                                 
                             with gr.Row():
-                                self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.1), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
+                                self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
                                 self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
                             
 

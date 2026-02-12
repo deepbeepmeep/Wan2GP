@@ -11,10 +11,10 @@ jobs:
       TORCH_INDEX: https://download.pytorch.org/whl/cu130
 
     steps:
-      # Checkout repo
-      - uses: actions/checkout@v4
-        with:
-          ref: main
+     # Checkout repo
+     - uses: actions/checkout@v4
+       with:
+       ref: main
           
       # Clone Wan2GP source publicly to include inside portable
       - name: Clone Wan2GP source

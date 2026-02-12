@@ -178,7 +178,7 @@ class LTXV:
         # offload.save_model(transformer, "ckpts/ltxv_0.9.8_13B_quanto_bf16_int8.safetensors", do_quantize= True, config_file_path= "c:/temp/ltxv_config.json")
         
         # vae = CausalVideoAutoencoder.from_pretrained(ckpt_path)
-        vae = offload.fast_load_transformers_model( fl.locate_file("ltxv_0.9.7_VAE.safetensors"), modelClass=CausalVideoAutoencoder)
+        vae = offload.fast_load_transformers_model(fl.locate_file("ltxv_0.9.7_VAE.safetensors"), modelClass=CausalVideoAutoencoder, writable_tensors=False)
         # vae = offload.fast_load_transformers_model("ckpts/ltxv_0.9.8_VAE.safetensors", modelClass=CausalVideoAutoencoder)
         # if VAE_dtype == torch.float16:
         VAE_dtype = torch.bfloat16
@@ -188,7 +188,7 @@ class LTXV:
         # offload.save_model(vae, "vae.safetensors", config_file_path="c:/temp/config_vae.json")
 
         # model_filepath = "c:/temp/ltxd/ltxv-13b-0.9.7-distilled.safetensors"
-        transformer = offload.fast_load_transformers_model(model_filepath, modelClass=Transformer3DModel) 
+        transformer = offload.fast_load_transformers_model(model_filepath, modelClass=Transformer3DModel, writable_tensors=False)
         # offload.save_model(transformer, "ckpts/ltxv_0.9.7_13B_distilled_bf16.safetensors", config_file_path= "c:/temp/ltxd/config.json")
         # offload.save_model(transformer, "ckpts/ltxv_0.9.7_13B_distilled_quanto_bf16_int8.safetensors", do_quantize= True, config_file_path="c:/temp/ltxd/config.json")
         # transformer = offload.fast_load_transformers_model(model_filepath, modelClass=Transformer3DModel) 
@@ -215,7 +215,7 @@ class LTXV:
         # offload.save_model(text_encoder, "T5_xxl_1.1_enc_bf16.safetensors", config_file_path="T5_config.json")
         # offload.save_model(text_encoder, "T5_xxl_1.1_enc_quanto_bf16_int8.safetensors", do_quantize= True, config_file_path="T5_config.json")
 
-        text_encoder = offload.fast_load_transformers_model(text_encoder_filepath)
+        text_encoder = offload.fast_load_transformers_model(text_encoder_filepath, writable_tensors=False)
         patchifier = SymmetricPatchifier(patch_size=1)
         text_encoder_folder = self.model_def.get("text_encoder_folder")
         if text_encoder_folder:

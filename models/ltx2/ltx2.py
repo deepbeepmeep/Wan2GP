@@ -499,6 +499,7 @@ class LTX2:
                 path,
                 postprocess_sd=postprocess,
                 default_dtype=self.dtype,
+                writable_tensors=False,
                 ignore_missing_keys=False,
             )
             model.eval().requires_grad_(False)

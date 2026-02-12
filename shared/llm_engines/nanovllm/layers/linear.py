@@ -117,9 +117,20 @@ class LinearBase(nn.Module):
 
     def quant_weight_data_loader(self, loaded_weight: torch.Tensor, loaded_shard_id=None):
         device = self.weight.device
-        shard = self._shard_weight(loaded_weight, loaded_shard_id).contiguous()
-        q = shard.to(device=device, dtype=torch.int8, non_blocking=True)
-        self.qweight_data = q
+        shard = self._shard_weight(loaded_weight, loaded_shard_id)
+        if self.qweight_t.numel() == 0:
+            self.qweight_t = torch.empty(
+                (self.input_size, self.output_size),
+                dtype=torch.int8,
+                device=device,
+            )
+        if shard.dtype != torch.int8:
+            shard = shard.to(device=device, dtype=torch.int8, non_blocking=True)
+        else:
+            shard = shard.to(device=device, non_blocking=True)
+        # Store directly in transposed layout to avoid an extra full-size transpose pass
+        # after loading.
+        self.qweight_t.t().copy_(shard)
         shard_key = loaded_shard_id if loaded_shard_id is not None else 0
         self._quant_data_loaded.add(shard_key)
 
@@ -141,15 +152,20 @@ class LinearBase(nn.Module):
         self.output_scale = loaded_scale.to(device=device, dtype=torch.bfloat16, non_blocking=True)
 
     def finalize_quantized(self):
-        if self.qweight_data.numel() == 0 or self.qweight_scale.numel() == 0:
+        if self.qweight_scale.numel() == 0:
             return
         if len(self._quant_data_loaded) < self._quant_expected_shards:
             return
         if len(self._quant_scale_loaded) < self._quant_expected_shards:
             return
-        # Keep int8 weights in KxN layout for int8 GEMM paths.
-        self.qweight_t = self.qweight_data.transpose(0, 1).contiguous()
-        self.qweight_data = torch.empty(0, dtype=torch.int8, device=self.qweight_t.device)
+        if self.qweight_data.numel() == 0 and self.qweight_t.numel() == 0:
+            return
+        if self.qweight_t.numel() == 0:
+            # Fallback path for loaders that still filled qweight_data (older checkpoints
+            # or custom loaders). Keep memory usage low by releasing qweight_data immediately
+            # after conversion.
+            self.qweight_t = self.qweight_data.transpose(0, 1).contiguous()
+            self.qweight_data = torch.empty(0, dtype=torch.int8, device=self.qweight_t.device)
         self.qweight_scale_fp32 = self.qweight_scale.to(dtype=torch.float32)
         if not torch.is_tensor(self.input_scale):
             raise RuntimeError(f"Invalid input_scale type: {type(self.input_scale)}")
@@ -186,6 +202,7 @@ class LinearBase(nn.Module):
             raise RuntimeError("quanto.qbytes_mm op unavailable for int8 fallback path")
         if self.qweight_t.numel() == 0 and self.qweight_data.numel() != 0:
             self.qweight_t = self.qweight_data.transpose(0, 1).contiguous()
+            self.qweight_data = torch.empty(0, dtype=torch.int8, device=self.qweight_t.device)
         qweight = self.qweight_t.transpose(0, 1).contiguous()
         scales = self.qweight_scale_fp32
         if scales.numel() == 0:
@@ -205,6 +222,8 @@ class LinearBase(nn.Module):
         elif self.qweight_scale.numel() != 0:
             device = self.qweight_scale.device
         else:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if getattr(device, "type", None) == "meta":
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         if self.weight.numel() != 0:
@@ -301,12 +320,15 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
 
     def quant_weight_data_loader(self, loaded_weight: torch.Tensor, loaded_shard_id=None):
         device = self.weight.device
-        if self.qweight_data.numel() == 0:
-            self.qweight_data = torch.empty((self.output_size, self.input_size), dtype=torch.int8, device=device)
+        if self.qweight_t.numel() == 0:
+            self.qweight_t = torch.empty((self.input_size, self.output_size), dtype=torch.int8, device=device)
         shard_offset, shard_size = self._merged_shard_meta(int(loaded_shard_id))
-        param_slice = self.qweight_data.narrow(0, shard_offset, shard_size)
         shard = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
-        param_slice.copy_(shard.to(device=device, dtype=torch.int8, non_blocking=True))
+        if shard.dtype != torch.int8:
+            shard = shard.to(device=device, dtype=torch.int8, non_blocking=True)
+        else:
+            shard = shard.to(device=device, non_blocking=True)
+        self.qweight_t.narrow(1, shard_offset, shard_size).copy_(shard.t())
         self._quant_data_loaded.add(int(loaded_shard_id))
 
     def quant_weight_scale_loader(self, loaded_scale: torch.Tensor, loaded_shard_id=None):
@@ -363,12 +385,15 @@ class QKVParallelLinear(ColumnParallelLinear):
 
     def quant_weight_data_loader(self, loaded_weight: torch.Tensor, loaded_shard_id=None):
         device = self.weight.device
-        if self.qweight_data.numel() == 0:
-            self.qweight_data = torch.empty((self.output_size, self.input_size), dtype=torch.int8, device=device)
+        if self.qweight_t.numel() == 0:
+            self.qweight_t = torch.empty((self.input_size, self.output_size), dtype=torch.int8, device=device)
         shard_offset, shard_size = self._qkv_offset_size(str(loaded_shard_id))
-        param_slice = self.qweight_data.narrow(0, shard_offset, shard_size)
         shard = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
-        param_slice.copy_(shard.to(device=device, dtype=torch.int8, non_blocking=True))
+        if shard.dtype != torch.int8:
+            shard = shard.to(device=device, dtype=torch.int8, non_blocking=True)
+        else:
+            shard = shard.to(device=device, non_blocking=True)
+        self.qweight_t.narrow(1, shard_offset, shard_size).copy_(shard.t())
         self._quant_data_loaded.add(str(loaded_shard_id))
 
     def quant_weight_scale_loader(self, loaded_scale: torch.Tensor, loaded_shard_id=None):

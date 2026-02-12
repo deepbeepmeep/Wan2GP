@@ -953,7 +953,7 @@ class WanAny2V:
                 if True:
                     with init_empty_weights():
                         arc_resampler = Resampler( depth=4, dim=1280, dim_head=64, embedding_dim=512, ff_mult=4, heads=20, num_queries=16, output_dim=2048 if lynx_lite else 5120 )
-                    offload.load_model_data(arc_resampler, fl.locate_file("wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"))
+                    offload.load_model_data(arc_resampler, fl.locate_file("wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"), writable_tensors=False)
                     arc_resampler.to(self.device)
                     arcface_embed = face_arc_embeds[None,None,:].to(device=self.device, dtype=torch.float) 
                     ip_hidden_states = arc_resampler(arcface_embed).to(self.dtype)

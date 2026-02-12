@@ -158,6 +158,7 @@ class ACEStepPipeline:
             self.transformer_weights_path,
             modelClass=ACEStepTransformer2DModel,
             defaultConfigPath=self.transformer_config_path,
+            writable_tensors=False,
             default_dtype=self.dtype,
             ignore_unused_weights=True,
         )
@@ -193,6 +194,7 @@ class ACEStepPipeline:
             self.text_encoder_weights_path,
             modelClass=UMT5EncoderModel,
             defaultConfigPath=self.text_encoder_config_path,
+            writable_tensors=False,
             default_dtype=self.dtype,
             ignore_unused_weights=True,
             preprocess_sd=_fix_umt5_state_dict,

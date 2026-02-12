@@ -552,7 +552,9 @@ class Qwen3PtEngine:
         logits_processor_update_state: Optional[Callable[[int], None]] = None,
         stop_checker: Optional[Callable[[list[int], int], bool]] = None,
         progress_label: str = "LM text",
+        release_vram_after: bool = True,
     ):
+        del release_vram_after
         return generate_text_legacy(
             model=self.model,
             tokenizer=self.tokenizer,
@@ -582,13 +584,14 @@ class Qwen3VllmEngine:
         tokenizer,
         audio_code_mask: Optional[torch.Tensor],
         audio_code_token_map: dict[int, int],
+        free_mmap_after_cuda_copy: bool = True,
         weight_load_mode: str = "lazy",
     ):
         self.lm_weights_path = lm_weights_path
         self.tokenizer = tokenizer
         self.audio_code_mask = audio_code_mask
         self.audio_code_token_map = audio_code_token_map
-        self.weight_load_mode = (weight_load_mode or "lazy").lower()
+        self.free_mmap_after_cuda_copy = free_mmap_after_cuda_copy
         self._llm = None
         self._sampling_params_cls = None
         self._model_dir = None
@@ -596,6 +599,28 @@ class Qwen3VllmEngine:
         self._max_num_seqs_hint = None
         self._max_num_batched_tokens_hint = None
         self._last_zero_code_diagnostic = None
+        self.weight_load_mode = (weight_load_mode or "lazy").strip().lower()
+        if self.weight_load_mode not in ("lazy", "pinned"):
+            raise ValueError(f"Unsupported vllm weight_load_mode '{self.weight_load_mode}'. Supported: lazy, pinned.")
+
+    def reserve_runtime(self, prompt_len: int, max_tokens: int, cfg_scale: float):
+        req_model_len, req_num_seqs, req_num_batched = self._compute_runtime_hints(
+            prompt_len=prompt_len,
+            max_tokens=max_tokens,
+            cfg_scale=cfg_scale,
+        )
+        self._ensure_runtime_capacity(req_model_len, req_num_seqs, req_num_batched)
+
+    def _release_vram(self):
+        if self._llm is None:
+            return
+        try:
+            self._llm.unload_weights()
+        except Exception:
+            pass
+
+    def release_vram(self):
+        self._release_vram()
 
     @staticmethod
     def _compute_runtime_hints(prompt_len: int, max_tokens: int, cfg_scale: float):
@@ -675,22 +700,40 @@ class Qwen3VllmEngine:
             max_num_batched_tokens=max_num_batched_tokens,
             gpu_memory_utilization=gpu_memory_utilization,
             tokenizer=self.tokenizer,
+            free_mmap_after_cuda_copy=self.free_mmap_after_cuda_copy,
             weight_load_mode=self.weight_load_mode,
         )
         self._sampling_params_cls = SamplingParams
 
     def close(self):
-        if self._llm is None:
-            return
-        try:
-            self._llm.unload_weights()
-        except Exception:
-            pass
-        try:
-            self._llm.clear_graph_cache()
-        except Exception:
-            pass
+        llm = getattr(self, "_llm", None)
         self._llm = None
+        if llm is not None:
+            try:
+                close_fn = getattr(llm, "close", None)
+                if callable(close_fn):
+                    close_fn()
+                else:
+                    try:
+                        llm.unload_weights()
+                    except Exception:
+                        pass
+                    try:
+                        llm.clear_graph_cache()
+                    except Exception:
+                        pass
+                    exit_fn = getattr(llm, "exit", None)
+                    if callable(exit_fn):
+                        exit_fn()
+            except Exception:
+                pass
+            try:
+                del llm
+            except Exception:
+                pass
+        # Keep close() idempotent; this method is also used for runtime rebuilds.
+        self._sampling_params_cls = None
+        self._model_dir = None
 
     def get_last_failure_reason(self) -> str:
         diag = self._last_zero_code_diagnostic
@@ -888,11 +931,7 @@ class Qwen3VllmEngine:
                 progress_unit="tokens",
             )
 
-        if self.weight_load_mode in ("lazy", "pinned"):
-            try:
-                self._llm.unload_weights()
-            except Exception:
-                pass
+        self._release_vram()
 
         return _postprocess_audio_codes(audio_codes, min_tokens, max_tokens)
 
@@ -912,6 +951,7 @@ class Qwen3VllmEngine:
         logits_processor_update_state: Optional[Callable[[int], None]] = None,
         stop_checker: Optional[Callable[[list[int], int], bool]] = None,
         progress_label: str = "LM text",
+        release_vram_after: bool = True,
     ):
         del stop_checker  # nanovllm does not support external stop callbacks yet.
         if abort_fn is not None and abort_fn():
@@ -995,11 +1035,8 @@ class Qwen3VllmEngine:
                 progress_unit="tokens",
             )
 
-        if self.weight_load_mode in ("lazy", "pinned"):
-            try:
-                self._llm.unload_weights()
-            except Exception:
-                pass
+        if release_vram_after:
+            self._release_vram()
 
         return {"token_ids": token_ids, "text": text}
 
@@ -1012,6 +1049,7 @@ def create_qwen3_lm_engine(
     lm_weights_path: str,
     audio_code_mask: Optional[torch.Tensor],
     audio_code_token_map: dict[int, int],
+    free_mmap_after_cuda_copy: bool = True,
     weight_load_mode: str = "lazy",
 ):
     engine = (engine_name or "legacy").strip().lower()
@@ -1023,6 +1061,7 @@ def create_qwen3_lm_engine(
             tokenizer=tokenizer,
             audio_code_mask=audio_code_mask,
             audio_code_token_map=audio_code_token_map,
+            free_mmap_after_cuda_copy=free_mmap_after_cuda_copy,
             weight_load_mode=weight_load_mode,
         )
     if engine == "pt":

@@ -17,7 +17,7 @@ def parse_audio(audio_path, start_frame, num_frames, fps = 23, device = "cuda"):
 
     with init_empty_weights():
         proj_model = AudioProjModel( 768, 2048)
-    offload.load_model_data(proj_model, fl.locate_file("fantasy_proj_model.safetensors"))
+    offload.load_model_data(proj_model, fl.locate_file("fantasy_proj_model.safetensors"), writable_tensors=False)
     proj_model.to("cpu").eval().requires_grad_(False)
 
     wav2vec_model_dir = fl.locate_folder("wav2vec")

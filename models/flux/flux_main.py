@@ -151,6 +151,7 @@ class model_factory:
                 fl.locate_file(os.path.join("siglip-so400m-patch14-384", "model.safetensors")),
                 modelClass=SiglipVisionModel,
                 defaultConfigPath=fl.locate_file(os.path.join("siglip-so400m-patch14-384", "vision_config.json")),
+                writable_tensors=False,
             )
             siglip_model.eval().to("cpu")
             if len(model_filename) > 1:
@@ -162,7 +163,7 @@ class model_factory:
                     hidden_size=3072, #self.hidden_size,
                     context_layer_norm=True,
                 )
-                offload.load_model_data(feature_embedder, model_filename[1])
+                offload.load_model_data(feature_embedder, model_filename[1], writable_tensors=False)
         self.vision_encoder = siglip_model
         self.vision_encoder_processor = siglip_processor
         self.feature_embedder = feature_embedder

@@ -192,13 +192,13 @@ class TextEncoder(nn.Module):
         from mmgp import offload
         if "llm" in text_encoder_type:
             if "i2v" in text_encoder_type:
-                self.model= offload.fast_load_transformers_model(self.model_path, modelClass= LlavaForConditionalGeneration)
+                self.model= offload.fast_load_transformers_model(self.model_path, modelClass= LlavaForConditionalGeneration, writable_tensors=False)
             else:
-                self.model= offload.fast_load_transformers_model(self.model_path, modelPrefix="language_model", forcedConfigPath = fl.locate_file("llava-llama-3-8b/config.json"))
+                self.model= offload.fast_load_transformers_model(self.model_path, modelPrefix="language_model", forcedConfigPath = fl.locate_file("llava-llama-3-8b/config.json"), writable_tensors=False)
                 self.model.final_layer_norm = self.model.model.norm
         
         else:
-            self.model= offload.fast_load_transformers_model(fl.locate_file("clip_vit_large_patch14/model.safetensors"), ignore_unused_weights= True, modelClass=CLIPTextModel, forcedConfigPath = fl.locate_file("clip_vit_large_patch14/text_config.json"))
+            self.model= offload.fast_load_transformers_model(fl.locate_file("clip_vit_large_patch14/model.safetensors"), ignore_unused_weights= True, modelClass=CLIPTextModel, forcedConfigPath = fl.locate_file("clip_vit_large_patch14/text_config.json"), writable_tensors=False)
             self.model.final_layer_norm = self.model.text_model.final_layer_norm
 
         self.dtype = self.model.dtype

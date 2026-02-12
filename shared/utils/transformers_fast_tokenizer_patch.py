@@ -6,6 +6,7 @@ import sys
 
 _PATCH_ALLOWED_PATHS = None
 _ORIG_FAST_INIT = None
+_DISABLE_FULL_TOKENIZER_PICKLE_CACHE = True  # Temporary: disable Python pickle tokenizer cache load/dump.
 
 
 def _normalize_path(path):
@@ -273,6 +274,8 @@ def _meta_matches(meta, tokenizer_dir):
 
 
 def _load_full_tokenizer_cache(tokenizer_dir, cache_tag=None):
+    if _DISABLE_FULL_TOKENIZER_PICKLE_CACHE:
+        return None
     cache_file, meta_file = _cache_paths(tokenizer_dir, cache_tag=cache_tag)
     if not os.path.isfile(cache_file) or not os.path.isfile(meta_file):
         return None
@@ -287,6 +290,8 @@ def _load_full_tokenizer_cache(tokenizer_dir, cache_tag=None):
 
 
 def _save_full_tokenizer_cache(tokenizer_dir, tokenizer, cache_tag=None):
+    if _DISABLE_FULL_TOKENIZER_PICKLE_CACHE:
+        return
     cache_file, meta_file = _cache_paths(tokenizer_dir, cache_tag=cache_tag)
     meta = {
         "py_version": list(sys.version_info[:3]),

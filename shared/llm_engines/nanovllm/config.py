@@ -12,8 +12,9 @@ class Config:
     gpu_memory_utilization: float = 0.9
     tensor_parallel_size: int = 1
     enforce_eager: bool = False
-    weight_load_mode: str = "eager"  # eager | lazy | pinned
+    weight_load_mode: str = "lazy"  # lazy | pinned
     hf_config: AutoConfig | None = None
+    free_mmap_after_cuda_copy: bool = True
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
@@ -29,6 +30,8 @@ class Config:
             self.model_dir = self.model
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size <= 8
+        if self.weight_load_mode not in ("lazy", "pinned"):
+            raise ValueError(f"Unsupported weight_load_mode '{self.weight_load_mode}'. Supported: lazy, pinned.")
         self.hf_config = AutoConfig.from_pretrained(self.model_dir)
         self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
         assert self.max_num_batched_tokens >= self.max_model_len

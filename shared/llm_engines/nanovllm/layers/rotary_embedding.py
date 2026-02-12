@@ -25,14 +25,30 @@ class RotaryEmbedding(nn.Module):
     ) -> None:
         super().__init__()
         self.head_size = head_size
+        self.rotary_dim = rotary_dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = float(base)
         assert rotary_dim == head_size
-        inv_freq = 1.0 / (base**(torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim))
-        t = torch.arange(max_position_embeddings, dtype=torch.float)
+        cache = self._build_cache(device=None)
+        self.register_buffer("cos_sin_cache", cache, persistent=False)
+
+    def _build_cache(self, device: torch.device | str | None) -> torch.Tensor:
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, self.rotary_dim, 2, dtype=torch.float32, device=device) / self.rotary_dim)
+        )
+        t = torch.arange(self.max_position_embeddings, dtype=torch.float32, device=device)
         freqs = torch.einsum("i,j -> ij", t, inv_freq)
         cos = freqs.cos()
         sin = freqs.sin()
-        cache = torch.cat((cos, sin), dim=-1).unsqueeze_(1)
-        self.register_buffer("cos_sin_cache", cache, persistent=False)
+        return torch.cat((cos, sin), dim=-1).unsqueeze_(1)
+
+    def materialize_cache(self, device: torch.device | str | None = None):
+        target_device = device
+        if target_device is None:
+            target_device = self.cos_sin_cache.device
+        if getattr(target_device, "type", None) == "meta":
+            target_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.cos_sin_cache = self._build_cache(target_device)
 
     @torch.compile
     def forward(

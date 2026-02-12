@@ -94,7 +94,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.4"
-WanGP_version = "10.83"
+WanGP_version = "10.84"
 settings_version = 2.51
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -170,13 +170,6 @@ def clear_gen_cache():
 
 def release_model():
     global wan_model, offloadobj, reload_needed
-    if wan_model is not None:
-        close_fn = getattr(wan_model, "close", None)
-        if callable(close_fn):
-            try:
-                close_fn()
-            except Exception:
-                pass
     wan_model = None
     clear_gen_cache()
     if "_cache" in offload.shared_state:
@@ -3544,6 +3537,7 @@ def setup_prompt_enhancer(pipe, kwargs):
                 fl.locate_file("Llama3_2/Llama3_2_quanto_bf16_int8.safetensors"),
                 defaultConfigPath=fl.locate_file("Llama3_2/config.json", error_if_none=False),
                 configKwargs={"attn_implementation": "sdpa", "hidden_act": "silu"},
+                writable_tensors=False,
             )
             prompt_enhancer_llm_model._validate_model_kwargs = lambda *_args, **_kwargs: None
             prompt_enhancer_llm_model._offload_hooks = ["generate"]
@@ -3559,6 +3553,7 @@ def setup_prompt_enhancer(pipe, kwargs):
                 forcedConfigPath=fl.locate_file("llama-joycaption-beta-one-hf-llava/llama_config.json", error_if_none=False),
                 configKwargs={"attn_implementation": "sdpa", "hidden_act": "silu"},
                 preprocess_sd=preprocess_sd,
+                writable_tensors=False,
             )
 
             prompt_enhancer_llm_tokenizer = AutoTokenizer.from_pretrained(fl.locate_folder("llama-joycaption-beta-one-hf-llava"))
@@ -5779,7 +5774,7 @@ def generate_video(
     torch.set_grad_enabled(False) 
     if mode.startswith("edit_"):
         edit_video(send_cmd, state, mode, video_source, seed, temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, MMAudio_setting, MMAudio_prompt, MMAudio_neg_prompt, repeat_generation, audio_source)
-        return
+        return True
     with lock:
         file_list = gen["file_list"]
         file_settings_list = gen["file_settings_list"]
@@ -5833,7 +5828,6 @@ def generate_video(
     profile = compute_profile(override_profile, output_type)
     enhancer_mode = server_config.get("enhancer_mode", 1)
     if model_type != transformer_type or reload_needed or profile != loaded_profile:
-        wan_model = None
         release_model()
         send_cmd("status", f"Loading model {get_model_name(model_type)}...")
         wan_model, offloadobj = load_models(
@@ -5846,7 +5840,7 @@ def generate_video(
         reload_needed=  False
     if args.test:
         send_cmd("info", "Test mode: model loaded, skipping generation.")
-        return
+        return True
     overridden_attention = override_attention if len(override_attention) else get_overridden_attention(model_type)
     # if overridden_attention is not None and overridden_attention !=  attention_mode: print(f"Attention mode has been overriden to {overridden_attention} for model type '{model_type}'")
     attn = overridden_attention if overridden_attention is not None else attention_mode
@@ -5855,7 +5849,7 @@ def generate_video(
     elif not attn in attention_modes_supported:
         send_cmd("info", f"You have selected attention mode '{attention_mode}'. However it is not installed or supported on your system. You should either install it or switch to the default 'sdpa' attention.")
         send_cmd("exit")
-        return
+        return True
     
     width, height = resolution.split("x")
     width, height = int(width) // block_size *  block_size, int(height) // block_size *  block_size
@@ -6135,7 +6129,7 @@ def generate_video(
     wan_model._interrupt = False
     abort = False
     if gen.get("abort", False):
-        return 
+        return True
     # gen["abort"] = False
     gen["prompt"] = prompt    
     repeat_no = 0
@@ -6663,7 +6657,7 @@ def generate_video(
                 print('\n'.join(tb))
                 send_cmd("error", new_error)
                 clear_status(state)
-                return
+                return False
             src_video = src_video2 = src_mask = src_mask2 = None
             if skip_steps_cache != None :
                 skip_steps_cache.previous_residual = None
@@ -6950,6 +6944,7 @@ def generate_video(
         cleanup_temp_audio_files(control_audio_tracks + source_audio_tracks)
 
     remove_temp_filenames(temp_filenames_list)
+    return True
 
 def prepare_generate_video(state):    
 
@@ -7129,7 +7124,7 @@ def process_tasks(state):
                     
                     filtered_params = {k: v for k, v in params.items() if k in expected_args}
                     plugin_data = task.pop('plugin_data', {})
-                    generate_video(task, send_cmd, plugin_data=plugin_data,  **filtered_params)
+                    success = generate_video(task, send_cmd, plugin_data=plugin_data,  **filtered_params)
                     
                 except Exception as e:
                     tb = traceback.format_exc().split('\n')[:-1] 
@@ -7145,7 +7140,7 @@ def process_tasks(state):
 
                 gen["early_stop"] = False
                 gen["early_stop_forwarded"] = False
-
+                if not success: break
                 with lock:
                     queue[:] = [item for item in queue if item['id'] != task_id]
                 update_global_queue_ref(queue)
@@ -8819,7 +8814,6 @@ def preload_model_when_switching(state):
     if "S" in preload_model_policy:
         model_type = get_state_model_type(state) 
         if  model_type !=  transformer_type:
-            wan_model = None
             release_model()            
             model_filename = get_model_name(model_type)
             yield f"Loading model {model_filename}..."
@@ -8836,7 +8830,6 @@ def unload_model_if_needed(state):
     global wan_model
     if "U" in preload_model_policy:
         if wan_model != None:
-            wan_model = None
             release_model()
 
 def all_letters(source_str, letters):

@@ -4,7 +4,6 @@ from time import perf_counter
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 import torch.multiprocessing as mp
-import torch
 
 from nanovllm.config import Config
 from nanovllm.sampling_params import SamplingParams
@@ -38,22 +37,80 @@ class LLMEngine:
             self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
         self.scheduler = Scheduler(config)
-        atexit.register(self.exit)
+        self._exit_registered = False
+        self._closed = False
+        self._exited = False
+        self._atexit_callback = self.exit
+        atexit.register(self._atexit_callback)
+        self._exit_registered = True
 
     def exit(self):
-        self.model_runner.call("exit")
-        del self.model_runner
-        for p in self.ps:
-            p.join()
+        if self._exited:
+            return
+        self._exited = True
+        runner = getattr(self, "model_runner", None)
+        if runner is not None:
+            try:
+                runner.call("exit")
+            except Exception:
+                pass
+            try:
+                del self.model_runner
+            except Exception:
+                pass
+        for p in list(getattr(self, "ps", [])):
+            try:
+                p.join()
+            except Exception:
+                pass
+        self.ps = []
+        self.events = []
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.unload_weights()
+        except Exception:
+            pass
+        try:
+            self.clear_graph_cache()
+        except Exception:
+            pass
+        try:
+            self.exit()
+        except Exception:
+            pass
+        if self._exit_registered:
+            try:
+                atexit.unregister(self._atexit_callback)
+            except Exception:
+                pass
+            self._exit_registered = False
+        self._atexit_callback = None
+        self.scheduler = None
+        self.tokenizer = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def unload_weights(self):
-        self.model_runner.unload_weights()
+        runner = getattr(self, "model_runner", None)
+        if runner is None:
+            return
+        runner.unload_weights()
         # KV cache is invalid after unload/reload, so cached prefix block metadata
         # must be dropped as well to prevent stale-cache reuse.
         try:
             self.reset()
         except Exception:
             pass
+        if self.scheduler is None:
+            return
         self.scheduler.waiting.clear()
         self.scheduler.running.clear()
         self.scheduler.block_manager = BlockManager(
@@ -62,13 +119,22 @@ class LLMEngine:
         )
 
     def clear_graph_cache(self):
-        self.model_runner.clear_graph_cache()
+        runner = getattr(self, "model_runner", None)
+        if runner is None:
+            return
+        runner.clear_graph_cache()
 
     def reset_guard_counts(self):
-        self.model_runner.call("reset_guard_counts")
+        runner = getattr(self, "model_runner", None)
+        if runner is None:
+            return
+        runner.call("reset_guard_counts")
 
     def get_guard_counts(self, reset: bool = False):
-        return self.model_runner.call("get_guard_counts", reset)
+        runner = getattr(self, "model_runner", None)
+        if runner is None:
+            return {}
+        return runner.call("get_guard_counts", reset)
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams, unconditional_prompt: str | list[int] | None = None):
         if isinstance(prompt, str):
@@ -109,6 +175,8 @@ class LLMEngine:
         return outputs, num_tokens
 
     def is_finished(self):
+        if self.scheduler is None:
+            return True
         return self.scheduler.is_finished()
 
     def reset(self):
@@ -118,6 +186,8 @@ class LLMEngine:
         KV cache block leaks that can cause 'deque index out of range' errors.
         """
         # Deallocate all running sequences
+        if self.scheduler is None:
+            return
         while self.scheduler.running:
             seq = self.scheduler.running.popleft()
             if seq.block_table:  # Only deallocate if blocks are allocated
@@ -136,6 +206,8 @@ class LLMEngine:
         use_tqdm: bool = True,
         unconditional_prompts: list[str] | list[list[int]] | None = None,
     ) -> list[str]:
+        if self.scheduler is None:
+            raise RuntimeError("LLM engine is closed.")
         # Ensure weights/KV cache are ready for lazy/pinned modes, and sync scheduler blocks.
         self.model_runner.ensure_weights_loaded()
         if (self.config.num_kvcache_blocks > 0 and
@@ -163,10 +235,7 @@ class LLMEngine:
                     break
                 except Exception:
                     seed_to_apply = None
-        if seed_to_apply is not None:
-            torch.manual_seed(seed_to_apply)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed(seed_to_apply)
+        self.model_runner.call("set_sampling_seed", seed_to_apply)
         if unconditional_prompts is None:
             unconditional_prompts = [None] * len(prompts)
         for prompt, sp, uncond_prompt in zip(prompts, sampling_params, unconditional_prompts):

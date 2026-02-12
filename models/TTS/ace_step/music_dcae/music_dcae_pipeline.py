@@ -42,6 +42,7 @@ class MusicDCAE(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             dcae_weights_path,
             modelClass=AutoencoderDC,
             defaultConfigPath=dcae_config_path,
+            writable_tensors=False,
             default_dtype=self._dtype,
             ignore_unused_weights=True,
         )
@@ -51,6 +52,7 @@ class MusicDCAE(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             vocoder_weights_path,
             modelClass=ADaMoSHiFiGANV1,
             defaultConfigPath=vocoder_config_path,
+            writable_tensors=False,
             default_dtype=self._dtype,
             ignore_unused_weights=True,
         )

@@ -51,9 +51,7 @@ class ChatterboxPipeline:
         model_mode: Optional[str],
         audio_guide: Optional[str],
         *,
-        exaggeration: float,
-        pace: float,
-        temperature: float,
+        temperature: float = 0.8,
         repetition_penalty: float = 2.0,
         min_p: float = 0.05,
         top_p: float = 1.0,
@@ -64,7 +62,22 @@ class ChatterboxPipeline:
             raise ValueError("Prompt text cannot be empty for Chatterbox generation.")
 
         language_id = model_mode
-        cfg_weight = pace
+        custom_settings = bkwargs.get("custom_settings", None)
+        if not isinstance(custom_settings, dict):
+            custom_settings = {}
+        raw_exaggeration = custom_settings.get("exaggeration", bkwargs.get("exaggeration", 0.5))
+        raw_pace = custom_settings.get("pace", bkwargs.get("pace", 0.5))
+        try:
+            exaggeration = float(raw_exaggeration)
+        except (TypeError, ValueError):
+            exaggeration = 0.5
+        try:
+            cfg_weight = float(raw_pace)
+        except (TypeError, ValueError):
+            cfg_weight = 0.5
+        exaggeration = min(2.0, max(0.25, exaggeration))
+        cfg_weight = min(1.0, max(0.2, cfg_weight))
+
         cfg_override = bkwargs.get("cfg_scale", None)
         if cfg_override is not None:
             try:

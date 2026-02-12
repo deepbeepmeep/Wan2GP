@@ -1,3 +1,4 @@
+--extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/
 # Core AI stack
 diffusers==0.36.0
 transformers==4.54.0 #4.53.1
@@ -34,13 +35,15 @@ loguru
 s3tokenizer
 conformer==0.3.2
 spacy_pkuseg
-spacy==3.8.4
+spacy
+gradio_rangeslider
 
 # Vision & segmentation
 opencv-python>=4.12.0.88
 segment-anything
 rembg[gpu]==2.0.65
-onnxruntime-gpu==1.22
+onnxruntime-gpu==1.22.0; python_version < "3.11"
+onnxruntime-gpu==1.25.0.dev20260210001; python_version >= "3.11"
 decord
 timm
 insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insightface/insightface-0.7.3-cp310-cp310-win_amd64.whl ; sys_platform == "win32" and python_version == "3.10"
@@ -64,7 +67,7 @@ pydantic==2.10.6
 # Math & modeling
 torchdiffeq>=0.2.5
 tensordict>=0.6.1
-mmgp==3.7.3
+mmgp==3.7.4
 peft==0.17.0 # 0.15.0
 vector-quantize-pytorch
 matplotlib
@@ -78,6 +81,7 @@ misaki
 gitdb==4.0.12 
 gitpython==3.1.45
 stringzilla==4.0.14
+xxhash
 
 # Optional / commented out
 # transformers==4.46.3  # for llamallava pre-patch

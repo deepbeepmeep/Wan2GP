@@ -2,7 +2,7 @@
     "model": {
         "name": "TTS KugelAudio 0 Open 7B",
         "architecture": "kugelaudio_0_open",
-        "description": "KugelAudio open-source text-to-speech with optional voice cloning, based on an AR + diffusion architecture. You can create a dialogue between two people by providing two audio sources and by starting lines alternatively with'Speaker0: ' or 'Speaker1: '.",
+        "description": "KugelAudio open-source text-to-speech with optional voice cloning. You can create a dialogue between two people by providing two audio sources and by starting lines alternatively with 'Speaker 0: ' or 'Speaker 1: '. You may observe Accelerated Speech with long speeches, use Manual Split (one empty line) or Auto Split to avoid this effect.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/kugelaudio_0_open_bf16.safetensors",
             "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/kugelaudio_0_open_quanto_bf16_int8.safetensors"

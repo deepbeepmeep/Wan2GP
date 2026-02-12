@@ -11,7 +11,7 @@
   {
     "name": "FlashVSR",
     "author": "Hakaze",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "description": "AI-powered 4x video upscaling using FlashVSR models with Sparse SageAttention.",
     "url": "https://github.com/Hakaze/wan2gp-flashvsr",
     "date": "",
@@ -54,11 +54,20 @@
     "url": "https://github.com/CodeBarrie/wan2gp-multiangle-prompt-helper"
   },
   {
-    "name": "Training",
+    "name": "Lora Merger",
     "author": "Tophness",
-    "version": "1.1.6",
-    "description": "Integrates a Kohya-ss Musubi Tuner training tab directly into Wan2GP",
-    "url": "https://github.com/Tophness/wan2gp-training",
+    "version": "1.0.0",
+    "description": "Advanced LoRA Merger with granular block control and drift visualization.",
+    "url": "https://github.com/Tophness/wan2gp-lora-merger",
+    "date": "",
+    "wan2gp_version": ""
+  },
+  {
+    "name": "Queue Editor",
+    "author": "Tophness",
+    "version": "1.0.0",
+    "description": "Perform advanced/bulk queue.zip operations offline without affecting your main generator queue.",
+    "url": "https://github.com/Tophness/wan2gp-queue-editor",
     "date": "",
     "wan2gp_version": ""
   }

@@ -27,6 +27,7 @@ def _get_heartmula_model_def():
             "lines": 2,
         },
         "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
+        "prompt_enhancer_button_label": "Compose Lyrics",
         "duration_slider": {
             "label": "Duration of the Song (in seconds)",
             "min": 30,

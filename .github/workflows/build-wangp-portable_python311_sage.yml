@@ -1,6 +1,6 @@
 name: Build WanGP Portable Python 3.11 Sage Attention
 
-on:
+'on':
   workflow_dispatch:
 
 jobs:

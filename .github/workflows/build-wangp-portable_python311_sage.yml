@@ -9,13 +9,11 @@ jobs:
     env:
       PYTHON_VERSION: 3.11.9
       TORCH_INDEX: https://download.pytorch.org/whl/cu130
-
     steps:
-     # Checkout repo
-     - uses: actions/checkout@v4
-       with:
-       ref: main
-          
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
       # Clone Wan2GP source publicly to include inside portable
       - name: Clone Wan2GP source
         shell: pwsh

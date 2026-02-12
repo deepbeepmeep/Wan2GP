@@ -147,9 +147,10 @@ jobs:
             git push origin $new_tag
           }
           echo "new_tag=$new_tag" >> $env:GITHUB_OUTPUT
+          
       - name: Debug list files
-         shell: pwsh
-         run: |
+        shell: pwsh
+        run: |
             Write-Host "Current directory:"
             Get-Location
             Write-Host "Files in root:"

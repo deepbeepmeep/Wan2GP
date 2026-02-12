@@ -127,7 +127,7 @@ jobs:
           }
           robocopy python_embedded WanGP-Portable\python_embedded /E /COPYALL
           if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
-          7z a -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -ms=on -v2000m "WanGP-Portable_Python311_Cu13_Sage.7z" "WanGP-Portable\*" -xr!"__pycache__" -xr!"*.pyc" -xr!".gitignore"
+          7z a -t7z -m0=lzma2 -mx=9 -md=512m -mfb=273 -ms=on "WanGP-Portable_Python311_Cu13_Sage.7z" "WanGP-Portable\*" -xr!"__pycache__" -xr!"*.pyc" -xr!".gitignore"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     
       # Create version-based tag
@@ -148,6 +148,15 @@ jobs:
             git push origin $new_tag
           }
           echo "new_tag=$new_tag" >> $env:GITHUB_OUTPUT
+       - name: Debug list files
+         shell: pwsh
+         run: |
+            Write-Host "Current directory:"
+            Get-Location
+            Write-Host "Files in root:"
+            Get-ChildItem
+            Write-Host "Search entire workspace:"
+            Get-ChildItem -Recurse -Filter *.7z
 
       - name: Create or Update Release
         uses: softprops/action-gh-release@v1

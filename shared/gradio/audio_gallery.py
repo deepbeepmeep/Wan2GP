@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import json
 import uuid
+from collections import OrderedDict
 
 
 def _get_selected_idx(audio_infos, selected_idx):
@@ -29,6 +30,9 @@ class AudioGallery:
         label: Label for the component (default: "Audio Gallery")
         update_only: If True, only render the inner HTML/Audio (internal use)
     """
+
+    _timestamp_cache = OrderedDict()
+    _timestamp_cache_max_entries = 50
 
     def __init__(self, audio_paths=None, selected_index=-1, max_thumbnails=10, height=400, label="Audio Gallery", update_only=False):
         self.audio_paths = audio_paths or []
@@ -392,6 +396,43 @@ AG.tryInstall();
         except Exception:
             return "0:00"
 
+    @classmethod
+    def _get_cached_creation_datetime(cls, audio_path):
+        try:
+            stat = os.stat(audio_path)
+            cache_key = (audio_path, int(stat.st_size), int(stat.st_mtime))
+        except Exception:
+            return None
+
+        cached_dt = cls._timestamp_cache.get(cache_key)
+        if cached_dt is not None:
+            cls._timestamp_cache.move_to_end(cache_key)
+            return cached_dt
+
+        dt = None
+        try:
+            from shared.utils.audio_metadata import read_audio_metadata, resolve_audio_creation_datetime
+            wangp_metadata = read_audio_metadata(audio_path)
+            dt = resolve_audio_creation_datetime(audio_path, wangp_metadata=wangp_metadata)
+        except Exception:
+            dt = None
+
+        if dt is None:
+            try:
+                if os.name == "nt":
+                    ts = os.path.getctime(audio_path)
+                else:
+                    stat = os.stat(audio_path)
+                    ts = stat.st_birthtime if hasattr(stat, "st_birthtime") else stat.st_mtime
+                dt = datetime.fromtimestamp(ts)
+            except Exception:
+                return None
+
+        cls._timestamp_cache[cache_key] = dt
+        while len(cls._timestamp_cache) > cls._timestamp_cache_max_entries:
+            cls._timestamp_cache.popitem(last=False)
+        return dt
+
     def _format_duration(self, seconds):
         """Format duration in seconds to MM:SS format."""
         mins = int(seconds // 60)
@@ -404,16 +445,17 @@ AG.tryInstall();
         basename = p.name
 
         if not_found:
-            mtime = ""
+            timestamp = ""
             date_str = "Deleted"
             time_str = "00:00:00"
             duration = "0:00"
         else:
-            # Get modification time
-            mtime = os.path.getmtime(audio_path)
-            dt = datetime.fromtimestamp(mtime)
+            dt = self._get_cached_creation_datetime(audio_path)
+            if dt is None:
+                dt = datetime.fromtimestamp(os.path.getmtime(audio_path))
             date_str = dt.strftime("%Y-%m-%d")
             time_str = dt.strftime("%H:%M:%S")
+            timestamp = dt.timestamp()
 
             # Get duration
             duration = self._get_audio_duration(audio_path)
@@ -424,7 +466,7 @@ AG.tryInstall();
             "time": time_str,
             "duration": duration,
             "path": audio_path,
-            "timestamp": mtime,
+            "timestamp": timestamp,
         }
 
     def _create_thumbnail_html(self, info, index, is_selected):

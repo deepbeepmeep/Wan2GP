@@ -41,7 +41,7 @@ from shared.utils.utils import calculate_new_dimensions, get_outpainting_frame_l
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files,  save_video, save_image
 from shared.utils.audio_video import save_image_metadata, read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension
-from shared.utils.audio_metadata import save_audio_metadata, read_audio_metadata
+from shared.utils.audio_metadata import save_audio_metadata, read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
 from shared.utils.video_metadata import save_video_metadata
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
@@ -4125,6 +4125,22 @@ all_process_map_video_guide =  { "B": "face", "H" : "bbox"}
 all_process_map_video_guide.update(process_map_video_guide)
 processes_names = { "pose": "Open Pose", "depth": "Depth Mask", "scribble" : "Shapes", "flow" : "Flow Map", "gray" : "Gray Levels", "inpaint" : "Inpaint Mask", "identity": "Identity Mask", "raw" : "Raw Format", "canny" : "Canny Edges", "face": "Face Movements", "bbox": "BBox"}
 
+
+def resolve_media_creation_date(file_name, configs=None):
+    creation_dt = extract_creation_datetime_from_metadata(configs) if isinstance(configs, dict) else None
+    if creation_dt is None and has_audio_file_extension(file_name):
+        try:
+            creation_dt = resolve_audio_creation_datetime(file_name, wangp_metadata=configs if isinstance(configs, dict) else None)
+        except Exception:
+            creation_dt = None
+    if creation_dt is None:
+        creation_dt = get_file_creation_date(file_name)
+    creation_date = str(creation_dt)
+    if "." in creation_date:
+        creation_date = creation_date[:creation_date.rfind(".")]
+    return creation_date
+
+
 def update_video_prompt_type(state, any_video_guide = False, any_video_mask = False, any_background_image_ref = False, process_type = None, default_update = ""):
     letters = default_update
     settings = get_current_model_settings(state)
@@ -4257,8 +4273,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             values += misc_values
             labels += misc_labels
             
-            video_creation_date = "Deleted" if is_deleted else str(get_file_creation_date(file_name))
-            if "." in video_creation_date: video_creation_date = video_creation_date[:video_creation_date.rfind(".")]
+            video_creation_date = "Deleted" if is_deleted else resolve_media_creation_date(file_name, configs)
             if is_audio:
                 pass
             elif is_image:
@@ -4366,8 +4381,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                     and (any_letters(video_video_prompt_type, "VFK") ) :
                 video_video_guide_outpainting = video_video_guide_outpainting.split(" ")
                 video_outpainting = f"Top={video_video_guide_outpainting[0]}%, Bottom={video_video_guide_outpainting[1]}%, Left={video_video_guide_outpainting[2]}%, Right={video_video_guide_outpainting[3]}%" 
-            video_creation_date = str(get_file_creation_date(file_name))
-            if "." in video_creation_date: video_creation_date = video_creation_date[:video_creation_date.rfind(".")]
+            video_creation_date = resolve_media_creation_date(file_name, configs)
             video_generation_time = format_generation_time(float(configs.get("generation_time", "0")))
             video_activated_loras = configs.get("activated_loras", [])
             video_loras_multipliers = configs.get("loras_multipliers", "")
@@ -6886,6 +6900,8 @@ def generate_video(
                 if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0 and enhancer_mode != 1:
                     configs["enhanced_prompt"] = "\n".join(prompts)
                 configs["generation_time"] = round(end_time-start_time)
+                configs["creation_date"] = datetime.fromtimestamp(end_time).isoformat(timespec="seconds")
+                configs["creation_timestamp"] = int(end_time)
                 # if sample_is_image: configs["is_image"] = True
                 metadata_choice = server_config.get("metadata_type","metadata")
                 video_path = [video_path] if not isinstance(video_path, list) else video_path

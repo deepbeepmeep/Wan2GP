@@ -187,7 +187,8 @@ def load_model(
         file_weights = weight_store._file_to_weight_names.get(file, [])
         if not file_weights:
             continue
-        with safe_open(file, "pt", "cpu", writable_tensors=False) as f:
+        with safe_open(file, "pt", "cuda", writable_tensors = False, streaming = True) as f:
+            file_weights = f.reorder_for_streaming(file_weights)
             for weight_name in file_weights:
                 tensor = f.get_tensor(weight_name)
                 if clone_loaded_tensors:
@@ -196,6 +197,7 @@ def load_model(
                     _apply_weight(model, packed_modules_mapping, weight_name, tensor)
                 finally:
                     del tensor
+            f = None
         if torch.cuda.is_available():
             torch.cuda.synchronize()
     gc.collect()

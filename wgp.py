@@ -11525,6 +11525,7 @@ def create_ui():
     with open(js_path, "r", encoding="utf-8") as f:
         js = f.read()
     js += AudioGallery.get_javascript()
+    AudioGallery.install_gradio_upload_mtime_patch()
     app.initialize_plugins(globals())
     plugin_js = ""
     if hasattr(app, "plugin_manager"):

@@ -323,11 +323,8 @@ def _extract_native_audio_datetime(path):
 
 
 def _get_file_creation_datetime(path):
-    if os.name == "nt":
-        return datetime.fromtimestamp(os.path.getctime(path))
-    stat = os.stat(path)
-    ts = stat.st_birthtime if hasattr(stat, "st_birthtime") else stat.st_mtime
-    return datetime.fromtimestamp(ts)
+    # For uploaded files, preserving browser-provided lastModified maps naturally to mtime.
+    return datetime.fromtimestamp(os.path.getmtime(path))
 
 
 def resolve_audio_creation_datetime(path, wangp_metadata=None):

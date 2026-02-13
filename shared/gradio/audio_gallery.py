@@ -33,6 +33,7 @@ class AudioGallery:
 
     _timestamp_cache = OrderedDict()
     _timestamp_cache_max_entries = 50
+    _gradio_upload_mtime_patch_installed = False
 
     def __init__(self, audio_paths=None, selected_index=-1, max_thumbnails=10, height=400, label="Audio Gallery", update_only=False):
         self.audio_paths = audio_paths or []
@@ -61,6 +62,7 @@ const AG = window.__agNS;
 AG.state = AG.state || { manual: false, prevScroll: 0 };
 AG.init  = AG.init  || false;
 AG.moMap = AG.moMap || {}; // by element id, if needed later
+AG.uploadPatchInit = AG.uploadPatchInit || false;
 
 // Helpers scoped on the namespace
 AG.root = function () { return document.querySelector('#audio_gallery_html'); };
@@ -85,6 +87,40 @@ if (!AG.init) {
   });
 
   AG.init = true;
+}
+
+// Patch upload requests once to forward browser lastModified timestamps.
+if (!AG.uploadPatchInit) {
+  AG._origFetch = AG._origFetch || window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    let nextInit = init;
+    try {
+      const reqUrl = (typeof input === 'string')
+        ? input
+        : (input && input.url ? input.url : '');
+      const reqMethod = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+      const reqBody = init && init.body;
+      const isUploadRequest = reqMethod === 'POST' && typeof reqUrl === 'string' && (reqUrl.includes('/upload') || reqUrl.includes('/gradio_api/upload'));
+      if (isUploadRequest && reqBody instanceof FormData && reqBody.has('files')) {
+        const files = reqBody.getAll('files');
+        const lastModifiedValues = [];
+        for (const oneFile of files) {
+          if (typeof File !== 'undefined' && oneFile instanceof File) {
+            lastModifiedValues.push(Number(oneFile.lastModified || 0));
+          } else {
+            lastModifiedValues.push(0);
+          }
+        }
+        if (lastModifiedValues.length > 0) {
+          const headers = new Headers((init && init.headers) || {});
+          headers.set('x-wangp-file-last-modified', JSON.stringify(lastModifiedValues));
+          nextInit = Object.assign({}, init || {}, { headers });
+        }
+      }
+    } catch (_) {}
+    return AG._origFetch(input, nextInit);
+  };
+  AG.uploadPatchInit = true;
 }
 
 // Manual selection trigger (used by click handler and callable from elsewhere)
@@ -176,6 +212,69 @@ AG.tryInstall = function () {
 AG.tryInstall();
 // ===== end AudioGallery JS =====
 """
+
+    @classmethod
+    def install_gradio_upload_mtime_patch(cls):
+        """Monkey-patch Gradio multipart parser to keep browser file lastModified as temp-file mtime."""
+        if cls._gradio_upload_mtime_patch_installed:
+            return True
+        try:
+            from gradio.route_utils import GradioMultiPartParser, GradioUploadFile
+        except Exception:
+            return False
+
+        original_parse = getattr(GradioMultiPartParser, "parse", None)
+        if original_parse is None:
+            return False
+        if getattr(original_parse, "__wangp_upload_mtime_patch__", False):
+            cls._gradio_upload_mtime_patch_installed = True
+            return True
+
+        header_name = "x-wangp-file-last-modified"
+
+        async def patched_parse(parser_self, *args, **kwargs):
+            form = await original_parse(parser_self, *args, **kwargs)
+            try:
+                header_payload = None
+                if hasattr(parser_self, "headers") and parser_self.headers is not None:
+                    header_payload = parser_self.headers.get(header_name)
+                if not header_payload:
+                    return form
+
+                mtime_values = json.loads(header_payload)
+                if not isinstance(mtime_values, list) or len(mtime_values) == 0:
+                    return form
+
+                uploaded_files = form.getlist("files")
+                for idx, file_obj in enumerate(uploaded_files):
+                    if idx >= len(mtime_values):
+                        break
+                    ts_ms = mtime_values[idx]
+                    if isinstance(ts_ms, dict):
+                        ts_ms = ts_ms.get("lastModified", ts_ms.get("last_modified", 0))
+                    try:
+                        ts_ms = float(ts_ms)
+                    except Exception:
+                        continue
+                    if ts_ms <= 0:
+                        continue
+                    ts = ts_ms / 1000.0 if ts_ms > 100_000_000_000 else ts_ms
+
+                    tmp_path = None
+                    if isinstance(file_obj, GradioUploadFile):
+                        tmp_path = getattr(getattr(file_obj, "file", None), "name", None)
+                    elif hasattr(file_obj, "file"):
+                        tmp_path = getattr(file_obj.file, "name", None)
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.utime(tmp_path, (ts, ts))
+            except Exception:
+                pass
+            return form
+
+        patched_parse.__wangp_upload_mtime_patch__ = True
+        GradioMultiPartParser.parse = patched_parse
+        cls._gradio_upload_mtime_patch_installed = True
+        return True
 
     def get_state(self):
         """Get the state components for use in other Gradio events. Returns: (state_paths, state_selected, refresh_trigger)"""

@@ -584,7 +584,7 @@ class KugelAudioPipeline:
                     if duration_left <= 0:
                         break
                 segment = _run_single(
-                    one_segment + "   ",
+                    one_segment,
                     voice_prompt,
                     extra_tail_tokens=3,
                     segment_duration_seconds=duration_left,

@@ -15,9 +15,7 @@ def is_int_string(s: str) -> bool:
     except ValueError:
         return False
     
-def normalize_self_refiner_plan(plan_input, max_plans: int = 1):
-    if len(plan_input) > max_plans:
-        return [], f"Self-refiner supports up to {max_plans} plan(s); found {len(plan_input)}."
+def normalize_self_refiner_plan(plan_input):
     if not plan_input or not isinstance(plan_input, list):
         return default_plan, ""
     

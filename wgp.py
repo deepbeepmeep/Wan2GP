@@ -755,7 +755,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
     if self_refiner_setting != 0:
-        norm_plan, error = normalize_self_refiner_plan(self_refiner_plan, max_plans=model_def.get("self_refiner_max_plans", 1))
+        norm_plan, error = normalize_self_refiner_plan(self_refiner_plan)
         if len(error):
             gr.Info(error)
             return ret()

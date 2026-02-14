@@ -95,7 +95,6 @@ class family_handler:
             "custom_denoising_strength": True,
             "profiles_dir": ["ltx2_19B"],
             "self_refiner": True,
-            "self_refiner_max_plans": 2,
         }
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"] = True

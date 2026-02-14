@@ -682,7 +682,6 @@ class LTX2:
         self_refiner_plan = kwargs.get("self_refiner_plan", "")
         self_refiner_f_uncertainty = kwargs.get("self_refiner_f_uncertainty", 0.1)
         self_refiner_certain_percentage = kwargs.get("self_refiner_certain_percentage", 0.999)
-        self_refiner_max_plans = int(self.model_def.get("self_refiner_max_plans", 1))
 
         def _get_frame_dim(video_tensor: torch.Tensor) -> int | None:
             if video_tensor.dim() < 2:
@@ -986,7 +985,6 @@ class LTX2:
                 self_refiner_plan=self_refiner_plan,
                 self_refiner_f_uncertainty=self_refiner_f_uncertainty,
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
-                self_refiner_max_plans=self_refiner_max_plans,
             )
         else:
             pipeline_output = self.pipeline(
@@ -1014,7 +1012,6 @@ class LTX2:
                 self_refiner_plan=self_refiner_plan,
                 self_refiner_f_uncertainty=self_refiner_f_uncertainty,
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
-                self_refiner_max_plans=self_refiner_max_plans,
             )
 
         latent_slice = None

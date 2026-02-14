@@ -17,9 +17,27 @@ def is_int_string(s: str) -> bool:
     
 def normalize_self_refiner_plan(plan_input):
     if not plan_input or not isinstance(plan_input, list):
-        return default_plan, ""
+        return [default_plan], ""
+
+    if len(plan_input) > 0 and isinstance(plan_input[0], list):
+        return plan_input, ""
+
+    phases = {}
+    max_phase = 0
+    for rule in plan_input:
+        p = int(rule.get("phase", 0))
+        if p not in phases: phases[p] = []
+        phases[p].append(rule)
+        if p > max_phase: max_phase = p
     
-    return plan_input, ""
+    normalized = []
+    for i in range(max_phase + 1):
+        normalized.append(phases.get(i, []))
+        
+    if not normalized:
+        return [default_plan], ""
+        
+    return normalized, ""
 
 def ensure_refiner_list(plan_data):
     if not isinstance(plan_data, list):
@@ -27,30 +45,47 @@ def ensure_refiner_list(plan_data):
     for rule in plan_data:
         if "id" not in rule:
             rule["id"] = str(uuid.uuid4())
+        if "phase" not in rule:
+            rule["phase"] = 0
     return plan_data
 
-def add_refiner_rule(current_rules, range_val, steps_val):
+def add_refiner_rule(current_rules, range_val, steps_val, phase_val=None):
     new_start, new_end = int(range_val[0]), int(range_val[1])
     
+    phase_idx = 0
+    if phase_val is not None:
+        if isinstance(phase_val, str) and "Phase" in phase_val:
+            try:
+                phase_idx = int(phase_val.split()[-1]) - 1
+            except:
+                phase_idx = 0
+        else:
+            try:
+                phase_idx = int(phase_val)
+            except:
+                phase_idx = 0
+
     if new_start >= new_end:
          from gradio import Info
          Info(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
          return current_rules
 
     for rule in current_rules:
-        if new_start <= rule['end'] and new_end >= rule['start']:
-            from gradio import Info
-            Info(f"Overlap detected! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
-            return current_rules
+        if rule.get('phase', 0) == phase_idx:
+            if new_start <= rule['end'] and new_end >= rule['start']:
+                from gradio import Info
+                Info(f"Overlap detected in Phase {phase_idx+1}! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
+                return current_rules
 
     new_rule = {
         "id": str(uuid.uuid4()),
         "start": new_start,
         "end": new_end,
-        "steps": int(steps_val)
+        "steps": int(steps_val),
+        "phase": phase_idx
     }
     updated_list = current_rules + [new_rule]
-    return sorted(updated_list, key=lambda x: x['start'])
+    return sorted(updated_list, key=lambda x: (x.get('phase', 0), x['start']))
 
 def remove_refiner_rule(current_rules, rule_id):
     return [r for r in current_rules if r["id"] != rule_id]
@@ -301,9 +336,7 @@ class PnPHandler:
         return latents, sample_scheduler
 
 def create_self_refiner_handler(pnp_plan, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage, channel_dim: int = 1):
-    stochastic_plan, _ = normalize_self_refiner_plan(pnp_plan)
-    if not stochastic_plan:
-        stochastic_plan = default_plan
+    stochastic_plan = pnp_plan if pnp_plan is not None else []
 
     return PnPHandler(
         stochastic_plan,

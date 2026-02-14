@@ -9338,13 +9338,17 @@ def get_max_frames(nb):
     return (nb - 1) * server_config.get("max_frames_multiplier",1) + 1
 
 
-def change_guidance_phases(state, guidance_phases):
+def change_guidance_phases(state, guidance_phases, refiner_phase_val):
     model_type = get_state_model_type(state)
     model_def = get_model_def(model_type)
     visible_phases = model_def.get("visible_phases", guidance_phases) 
     multiple_submodels = model_def.get("multiple_submodels", False)
     label ="Phase 1-2" if guidance_phases ==3 else ( "Model / Guidance Switch Threshold" if multiple_submodels  else "Guidance Switch Threshold" )
-    return gr.update(visible= guidance_phases >=3 and visible_phases >=3 and multiple_submodels) , gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=2 and visible_phases >=2, label = label), gr.update(visible= guidance_phases >=3 and visible_phases >=3), gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=3 and visible_phases >=3)
+    refiner_visible = guidance_phases >= 2
+    new_refiner_choices = [f"Phase {i+1}" for i in range(guidance_phases)]
+    new_refiner_value = refiner_phase_val if refiner_phase_val in new_refiner_choices else "Phase 1"
+
+    return gr.update(visible= guidance_phases >=3 and visible_phases >=3 and multiple_submodels) , gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=2 and visible_phases >=2, label = label), gr.update(visible= guidance_phases >=3 and visible_phases >=3), gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=3 and visible_phases >=3), gr.update(visible=refiner_visible, choices=new_refiner_choices, value=new_refiner_value)
 
 
 memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: at least 64 GB of RAM and 24 GB of VRAM, the fastest for short videos with a RTX 3090 / RTX 4090", 1),
@@ -10426,22 +10430,28 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 gr.Markdown("#### Refiner Plan")
                                 
                                 with gr.Row(elem_id="refiner-input-row"):
+                                    current_phase_count = int(guidance_phases_value) if guidance_phases_value else 1
+                                    refiner_choices = [f"Phase {i+1}" for i in range(current_phase_count)]                                    
+                                    refiner_phase = gr.Dropdown(choices=refiner_choices, value="Phase 1", label="Phase", scale=1, visible=current_phase_count >= 2)
                                     refiner_range = RangeSlider(minimum=1, maximum=100, value=(1, 10), step=1, label="Step Range", info="Start - End", scale=3)
                                     refiner_mult = gr.Slider(label="Iterations", value=3, minimum=1, maximum=5, step=1, scale=2)
                                     refiner_add_btn = gr.Button("➕ Add", variant="primary", scale=0, min_width=100)
                                 
                                 if not update_form:
-                                    refiner_add_btn.click(fn=add_refiner_rule, inputs=[self_refiner_plan, refiner_range, refiner_mult], outputs=[self_refiner_plan])
+                                    refiner_add_btn.click(fn=add_refiner_rule, inputs=[self_refiner_plan, refiner_range, refiner_mult, refiner_phase], outputs=[self_refiner_plan])
                                     self_refiner_setting.change(fn=lambda s: gr.update(visible=s > 0), inputs=[self_refiner_setting], outputs=[self_refiner_rules_ui])
 
-                                    @gr.render(inputs=self_refiner_plan)
-                                    def render_refiner_plans(plans):
+                                    @gr.render(inputs=[self_refiner_plan, guidance_phases])
+                                    def render_refiner_plans(plans, phase_count):
                                         if not plans:
                                             gr.Markdown("<I style='padding: 8px;'>No plans defined. Using defaults: Steps 2-5 (3x), Steps 6-13 (1x).</I>")
                                             return
                                         for plan in plans:
                                             with gr.Row(elem_classes="rule-row"):
-                                                text_display = f"Steps **{plan['start']} - {plan['end']}** : **{plan['steps']}x** iterations"
+                                                phase = plan.get('phase', 0)
+                                                phase_label = f"Phase {phase + 1} | " if phase_count >= 2 or phase > 0 else ""
+                                                
+                                                text_display = f"{phase_label}Steps **{plan['start']} - {plan['end']}** : **{plan['steps']}x** iterations"
                                                 gr.Markdown(text_display, elem_classes="rule-card")
                                                 gr.Button("✖", variant="stop", scale=0, elem_classes="delete-btn").click(
                                                     fn=remove_refiner_rule, 
@@ -10735,7 +10745,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             gallery_tabs.select(fn=set_gallery_tab, inputs=[state], outputs=[current_gallery_tab, gallery_source]).then(
                 fn=select_video, inputs=[state, current_gallery_tab, output, last_choice, audio_files_paths, audio_file_selected, gallery_source], outputs=[last_choice, video_info, video_buttons_row, image_buttons_row, audio_buttons_row, deleted_video_buttons_row, deleted_audio_buttons_row, video_postprocessing_tab, audio_remuxing_tab], show_progress="hidden")
             gr.on(triggers=[video_length.release, force_fps.change, video_guide.change, video_source.change], fn=refresh_video_length_label, inputs=[state, video_length, force_fps, video_guide, video_source] , outputs = video_length, trigger_mode="always_last", show_progress="hidden"  )
-            guidance_phases.change(fn=change_guidance_phases, inputs= [state, guidance_phases], outputs =[model_switch_phase, guidance_phases_row, switch_threshold, switch_threshold2, guidance2_scale, guidance3_scale ])
+            guidance_phases.change(fn=change_guidance_phases, inputs= [state, guidance_phases, refiner_phase], outputs =[model_switch_phase, guidance_phases_row, switch_threshold, switch_threshold2, guidance2_scale, guidance3_scale, refiner_phase ])
             audio_prompt_type_remux.change(fn=refresh_audio_prompt_type_remux, inputs=[state, audio_prompt_type, audio_prompt_type_remux], outputs=[audio_prompt_type])
             remove_background_sound.change(fn=refresh_remove_background_sound, inputs=[state, audio_prompt_type, remove_background_sound], outputs=[audio_prompt_type])
             audio_prompt_type_sources.change(fn=refresh_audio_prompt_type_sources, inputs=[state, audio_prompt_type, audio_prompt_type_sources], outputs=[audio_prompt_type, audio_guide, audio_guide2, speakers_locations_row, remove_background_sound, audio_guide_row])

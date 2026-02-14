@@ -54,11 +54,12 @@ def add_refiner_rule(current_rules, range_val, steps_val, phase_val=None):
     
     phase_idx = 0
     if phase_val is not None:
-        if isinstance(phase_val, str) and "Phase" in phase_val:
-            try:
-                phase_idx = int(phase_val.split()[-1]) - 1
-            except:
-                phase_idx = 0
+        if isinstance(phase_val, str):
+            if "Phase" in phase_val or "Stage" in phase_val:
+                try:
+                    phase_idx = int(phase_val.split()[-1]) - 1
+                except:
+                    phase_idx = 0
         else:
             try:
                 phase_idx = int(phase_val)
@@ -74,7 +75,7 @@ def add_refiner_rule(current_rules, range_val, steps_val, phase_val=None):
         if rule.get('phase', 0) == phase_idx:
             if new_start <= rule['end'] and new_end >= rule['start']:
                 from gradio import Info
-                Info(f"Overlap detected in Phase {phase_idx+1}! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
+                Info(f"Overlap detected in {phase_val or 'Phase ' + str(phase_idx+1)}! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
                 return current_rules
 
     new_rule = {

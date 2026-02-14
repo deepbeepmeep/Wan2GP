@@ -91,8 +91,14 @@ def remove_refiner_rule(current_rules, rule_id):
     return [r for r in current_rules if r["id"] != rule_id]
 
 class PnPHandler:
-    def __init__(self, stochastic_plan, ths_uncertainty=0.0, p_norm=1, certain_percentage=0.999, channel_dim: int = 1):
-        self.stochastic_step_map = self._build_stochastic_step_map(stochastic_plan)
+    def __init__(self, stochastic_plans, ths_uncertainty=0.0, p_norm=1, certain_percentage=0.999, channel_dim: int = 1):
+        if stochastic_plans and isinstance(stochastic_plans[0], dict) and "start" in stochastic_plans[0]:
+             stochastic_plans = [stochastic_plans]
+        if not stochastic_plans:
+            stochastic_plans = [[]]
+
+        self.stochastic_step_maps = [self._build_stochastic_step_map(p) for p in stochastic_plans]
+        
         self.ths_uncertainty = ths_uncertainty
         self.p_norm = p_norm
         self.certain_percentage = certain_percentage
@@ -122,8 +128,10 @@ class PnPHandler:
                     step_map[idx] = steps_i
         return step_map
 
-    def get_anneal_steps(self, step_index):
-        return self.stochastic_step_map.get(step_index, 0)
+    def get_anneal_steps(self, step_index, phase_index=0):
+        if 0 <= phase_index < len(self.stochastic_step_maps):
+            return self.stochastic_step_maps[phase_index].get(step_index, 0)
+        return 0
 
     def reset_buffer(self):
         self.buffer = [None]
@@ -256,7 +264,7 @@ class PnPHandler:
                 
         return latents_next
 
-    def step(self, step_index, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_func):
+    def step(self, step_index, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_func, phase_index=0):
         if noise_pred is None:
             return None, sample_scheduler
         # Reset per denoising step to avoid blending with stale buffers from prior timesteps.
@@ -265,7 +273,7 @@ class PnPHandler:
         current_sigma = t.item() / 1000.0
         next_sigma = (0. if step_index == len(timesteps)-1 else timesteps[step_index+1].item()) / 1000.0
         
-        m_steps = self.get_anneal_steps(step_index)
+        m_steps = self.get_anneal_steps(step_index, phase_index)
 
         if m_steps > 1 and not self.certain_flag:
 
@@ -336,10 +344,12 @@ class PnPHandler:
         return latents, sample_scheduler
 
 def create_self_refiner_handler(pnp_plan, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage, channel_dim: int = 1):
-    stochastic_plan = pnp_plan if pnp_plan is not None else []
+    stochastic_plans, _ = normalize_self_refiner_plan(pnp_plan)
+    if not stochastic_plans:
+        stochastic_plans = [default_plan]
 
     return PnPHandler(
-        stochastic_plan,
+        stochastic_plans,
         ths_uncertainty=pnp_f_uncertainty,
         p_norm=pnp_p_norm,
         certain_percentage=pnp_certain_percentage,

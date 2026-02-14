@@ -9343,12 +9343,18 @@ def change_guidance_phases(state, guidance_phases, refiner_phase_val):
     model_def = get_model_def(model_type)
     visible_phases = model_def.get("visible_phases", guidance_phases) 
     multiple_submodels = model_def.get("multiple_submodels", False)
-    label ="Phase 1-2" if guidance_phases ==3 else ( "Model / Guidance Switch Threshold" if multiple_submodels  else "Guidance Switch Threshold" )
-    refiner_visible = guidance_phases >= 2
-    new_refiner_choices = [f"Phase {i+1}" for i in range(guidance_phases)]
-    new_refiner_value = refiner_phase_val if refiner_phase_val in new_refiner_choices else "Phase 1"
+    label = "Phase 1-2" if guidance_phases == 3 else ("Model / Guidance Switch Threshold" if multiple_submodels else "Guidance Switch Threshold")
+    is_ltx = get_model_family(model_type) == "ltx2"
+    prefix = "Stage" if is_ltx else "Phase"
+    new_choices = [f"{prefix} {i+1}" for i in range(guidance_phases)]
+    new_val = new_choices[0]
+    if refiner_phase_val:
+        try:
+            idx = int(refiner_phase_val.split()[-1]) - 1
+            if 0 <= idx < len(new_choices): new_val = new_choices[idx]
+        except: pass
 
-    return gr.update(visible= guidance_phases >=3 and visible_phases >=3 and multiple_submodels) , gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=2 and visible_phases >=2, label = label), gr.update(visible= guidance_phases >=3 and visible_phases >=3), gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=3 and visible_phases >=3), gr.update(visible=refiner_visible, choices=new_refiner_choices, value=new_refiner_value)
+    return (gr.update(visible=guidance_phases >= 3 and visible_phases >= 3 and multiple_submodels), gr.update(visible=guidance_phases >= 2 and visible_phases >= 2), gr.update(visible=guidance_phases >= 2 and visible_phases >= 2, label=label), gr.update(visible=guidance_phases >= 3 and visible_phases >= 3), gr.update(visible=guidance_phases >= 2 and visible_phases >= 2), gr.update(visible=guidance_phases >= 3 and visible_phases >= 3), gr.update(visible=guidance_phases >= 2, choices=new_choices, value=new_val))
 
 
 memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: at least 64 GB of RAM and 24 GB of VRAM, the fastest for short videos with a RTX 3090 / RTX 4090", 1),
@@ -10422,17 +10428,20 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         with gr.Column(visible = model_def.get("self_refiner", False)) as self_refiner_col:
                             gr.Markdown("<B>Self-Refining Video Sampling (PnP) - should improve quality of Motion</B>")
                             self_refiner_setting = gr.Dropdown(choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2)], value=ui_get("self_refiner_setting", 0), scale=1, label="Self Refiner")
-                            
                             refiner_val = ensure_refiner_list(ui_get("self_refiner_plan", []))
                             self_refiner_plan = refiner_val if update_form else gr.State(value=refiner_val)
-                            
+                            refiner_prefix_str = "Stage" if get_model_family(model_type) == "ltx2" else "Phase"
+                            refiner_prefix_component = gr.Text(value=refiner_prefix_str, visible=False)
+
                             with gr.Column(visible=(update_form and ui_get("self_refiner_setting", 0) > 0)) as self_refiner_rules_ui:
                                 gr.Markdown("#### Refiner Plan")
                                 
                                 with gr.Row(elem_id="refiner-input-row"):
                                     current_phase_count = int(guidance_phases_value) if guidance_phases_value else 1
-                                    refiner_choices = [f"Phase {i+1}" for i in range(current_phase_count)]                                    
-                                    refiner_phase = gr.Dropdown(choices=refiner_choices, value="Phase 1", label="Phase", scale=1, visible=current_phase_count >= 2)
+
+                                    refiner_choices = [f"{refiner_prefix_str} {i+1}" for i in range(current_phase_count)]
+                                    
+                                    refiner_phase = gr.Dropdown(choices=refiner_choices, value=refiner_choices[0], label="Apply to", scale=1, visible=current_phase_count >= 2)
                                     refiner_range = RangeSlider(minimum=1, maximum=100, value=(1, 10), step=1, label="Step Range", info="Start - End", scale=3)
                                     refiner_mult = gr.Slider(label="Iterations", value=3, minimum=1, maximum=5, step=1, scale=2)
                                     refiner_add_btn = gr.Button("➕ Add", variant="primary", scale=0, min_width=100)
@@ -10441,15 +10450,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     refiner_add_btn.click(fn=add_refiner_rule, inputs=[self_refiner_plan, refiner_range, refiner_mult, refiner_phase], outputs=[self_refiner_plan])
                                     self_refiner_setting.change(fn=lambda s: gr.update(visible=s > 0), inputs=[self_refiner_setting], outputs=[self_refiner_rules_ui])
 
-                                    @gr.render(inputs=[self_refiner_plan, guidance_phases])
-                                    def render_refiner_plans(plans, phase_count):
+                                    @gr.render(inputs=[self_refiner_plan, guidance_phases, refiner_prefix_component])
+                                    def render_refiner_plans(plans, phase_count, p_prefix):
                                         if not plans:
                                             gr.Markdown("<I style='padding: 8px;'>No plans defined. Using defaults: Steps 2-5 (3x), Steps 6-13 (1x).</I>")
                                             return
                                         for plan in plans:
                                             with gr.Row(elem_classes="rule-row"):
                                                 phase = plan.get('phase', 0)
-                                                phase_label = f"Phase {phase + 1} | " if phase_count >= 2 or phase > 0 else ""
+                                                phase_label = f"{p_prefix} {phase + 1} | " if phase_count >= 2 or phase > 0 else ""
                                                 
                                                 text_display = f"{phase_label}Steps **{plan['start']} - {plan['end']}** : **{plan['steps']}x** iterations"
                                                 gr.Markdown(text_display, elem_classes="rule-card")
@@ -10725,7 +10734,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, *custom_settings_rows, top_pk_row, 
                                       number_frames_row, negative_prompt_row,
-                                      self_refiner_col, pause_row]+\
+                                      self_refiner_col, pause_row, refiner_prefix_component, refiner_phase]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

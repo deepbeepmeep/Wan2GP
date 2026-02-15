@@ -10440,7 +10440,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             is_ltx_ui = get_model_family(model_type) == "ltx2"
                             refiner_prefix_str = "Stage" if is_ltx_ui else "Phase"
                             refiner_prefix_component = gr.Text(value=refiner_prefix_str, visible=False)
-                            is_ltx_component = gr.Checkbox(value=is_ltx_ui, visible=False)
 
                             with gr.Column(visible=(update_form and ui_get("self_refiner_setting", 0) > 0)) as self_refiner_rules_ui:
                                 gr.Markdown("#### Refiner Plan")
@@ -10461,15 +10460,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     refiner_add_btn = gr.Button("➕ Add", variant="primary", scale=0, min_width=100)
                                 
                                 if not update_form:
-                                    def check_ltx_stage_2(is_ltx_flag, selected_val):
-                                        if is_ltx_flag and str(selected_val) == "Stage 2":
+                                    def check_refiner_phase_restriction(selected_val):
+                                        if is_ltx_ui and str(selected_val) == "Stage 2":
                                             gr.Info("Stage 2 is currently disabled for Self-Refiner in LTX-2.")
                                             return "Stage 1"
                                         return gr.update()
 
                                     refiner_phase.select(
-                                        fn=check_ltx_stage_2,
-                                        inputs=[is_ltx_component, refiner_phase],
+                                        fn=check_refiner_phase_restriction,
+                                        inputs=[refiner_phase],
                                         outputs=[refiner_phase]
                                     )
 
@@ -10478,6 +10477,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                         inputs=[self_refiner_plan, refiner_range, refiner_mult, refiner_phase, guidance_phases], 
                                         outputs=[self_refiner_plan]
                                     )
+                                    
                                     self_refiner_setting.change(fn=lambda s: gr.update(visible=s > 0), inputs=[self_refiner_setting], outputs=[self_refiner_rules_ui])
 
                                     @gr.render(inputs=[self_refiner_plan, guidance_phases, refiner_prefix_component])
@@ -10487,11 +10487,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                             return
                                         for plan in plans:
                                             with gr.Row(elem_classes="rule-row"):
-                                                phase = plan.get('phase', 0)
-                                                if phase == -1:
+                                                p_idx = plan.get('phase', 0)
+                                                if p_idx == -1:
                                                     phase_label = f"All {p_prefix}s | "
                                                 else:
-                                                    phase_label = f"{p_prefix} {phase + 1} | " if phase_count >= 2 or phase > 0 else ""
+                                                    phase_label = f"{p_prefix} {p_idx + 1} | " if phase_count >= 2 or p_idx > 0 else ""
                                                 
                                                 text_display = f"{phase_label}Steps **{plan['start']} - {plan['end']}** : **{plan['steps']}x** iterations"
                                                 gr.Markdown(text_display, elem_classes="rule-card")
@@ -10767,7 +10767,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       NAG_col, remove_background_sound , speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, *custom_settings_rows, top_pk_row, 
                                       number_frames_row, negative_prompt_row,
-                                      self_refiner_col, pause_row, refiner_prefix_component, refiner_phase, is_ltx_component]+\
+                                      self_refiner_col, pause_row, refiner_prefix_component, refiner_phase]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

@@ -178,7 +178,6 @@ class DistilledPipeline:
         self_refiner_plan: str = "",
         self_refiner_f_uncertainty: float = 0.1,
         self_refiner_certain_percentage: float = 0.999,
-        self_refiner_max_plans: int = 1,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
         alt_guidance_scale = 1.0
@@ -192,7 +191,7 @@ class DistilledPipeline:
         self_refiner_handler_stage2 = None
         self_refiner_handler_audio_stage2 = None
         if self_refiner_setting and self_refiner_setting > 0:
-            plans, _ = normalize_self_refiner_plan(self_refiner_plan or "", max_plans=self_refiner_max_plans)
+            plans, _ = normalize_self_refiner_plan(self_refiner_plan or "")
             plan_stage1 = plans[0] if plans else []
             plan_stage2 = plans[1] if len(plans) > 1 else []
             self_refiner_handler = create_self_refiner_handler(

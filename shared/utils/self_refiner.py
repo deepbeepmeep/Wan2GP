@@ -26,9 +26,17 @@ def normalize_self_refiner_plan(plan_input):
     max_phase = 0
     for rule in plan_input:
         p = int(rule.get("phase", 0))
-        if p not in phases: phases[p] = []
-        phases[p].append(rule)
         if p > max_phase: max_phase = p
+    max_phase = max(max_phase, 2) 
+
+    for rule in plan_input:
+        p = int(rule.get("phase", 0))
+
+        targets = [p] if p >= 0 else range(max_phase + 1)
+        
+        for t_phase in targets:
+            if t_phase not in phases: phases[t_phase] = []
+            phases[t_phase].append(rule)
     
     normalized = []
     for i in range(max_phase + 1):
@@ -49,13 +57,21 @@ def ensure_refiner_list(plan_data):
             rule["phase"] = 0
     return plan_data
 
-def add_refiner_rule(current_rules, range_val, steps_val, phase_val=None):
+def add_refiner_rule(current_rules, range_val, steps_val, phase_val=None, max_phases_val=1):
     new_start, new_end = int(range_val[0]), int(range_val[1])
     
+    if new_start >= new_end:
+         from gradio import Info
+         Info(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
+         return current_rules
+
     phase_idx = 0
+    
     if phase_val is not None:
         if isinstance(phase_val, str):
-            if "Phase" in phase_val or "Stage" in phase_val:
+            if "All" in phase_val:
+                phase_idx = -1
+            elif "Phase" in phase_val or "Stage" in phase_val:
                 try:
                     phase_idx = int(phase_val.split()[-1]) - 1
                 except:
@@ -66,16 +82,19 @@ def add_refiner_rule(current_rules, range_val, steps_val, phase_val=None):
             except:
                 phase_idx = 0
 
-    if new_start >= new_end:
-         from gradio import Info
-         Info(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
-         return current_rules
-
     for rule in current_rules:
-        if rule.get('phase', 0) == phase_idx:
+        r_phase = rule.get('phase', 0)
+
+        phases_overlap = (phase_idx == -1) or (r_phase == -1) or (phase_idx == r_phase)
+        
+        if phases_overlap:
             if new_start <= rule['end'] and new_end >= rule['start']:
                 from gradio import Info
-                Info(f"Overlap detected in {phase_val or 'Phase ' + str(phase_idx+1)}! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
+                
+                p_name_existing = "All Phases" if r_phase == -1 else f"Phase/Stage {r_phase+1}"
+                p_name_new = "All Phases" if phase_idx == -1 else f"Phase/Stage {phase_idx+1}"
+                
+                Info(f"Overlap detected! {p_name_new} steps {new_start}-{new_end} conflict with existing {p_name_existing} rule.")
                 return current_rules
 
     new_rule = {
@@ -85,6 +104,7 @@ def add_refiner_rule(current_rules, range_val, steps_val, phase_val=None):
         "steps": int(steps_val),
         "phase": phase_idx
     }
+
     updated_list = current_rules + [new_rule]
     return sorted(updated_list, key=lambda x: (x.get('phase', 0), x['start']))
 

@@ -1,5 +1,6 @@
 import torch
 import copy
+import uuid
 from diffusers.utils.torch_utils import randn_tensor
 
 default_plan = [
@@ -16,45 +17,19 @@ def is_int_string(s: str) -> bool:
     
 def normalize_self_refiner_plan(plan_input):
     if not plan_input or not isinstance(plan_input, list):
-        return [default_plan], ""
-
-    if len(plan_input) > 0 and isinstance(plan_input[0], list):
-        return plan_input, ""
-
-    phases = {}
-    max_phase = 0
-    for rule in plan_input:
-        p = int(rule.get("phase", 0))
-        if p > max_phase: max_phase = p
-    max_phase = max(max_phase, 2) 
-
-    for rule in plan_input:
-        p = int(rule.get("phase", 0))
-
-        targets = [p] if p >= 0 else range(max_phase + 1)
-        
-        for t_phase in targets:
-            if t_phase not in phases: phases[t_phase] = []
-            phases[t_phase].append(rule)
+        return default_plan, ""
     
-    normalized = []
-    for i in range(max_phase + 1):
-        normalized.append(phases.get(i, []))
-        
-    if not normalized:
-        return [default_plan], ""
-        
-    return normalized, ""
+    return plan_input, ""
 
 def ensure_refiner_list(plan_data):
     if not isinstance(plan_data, list):
         return []
     for rule in plan_data:
-        if "phase" not in rule:
-            rule["phase"] = 0
+        if "id" not in rule:
+            rule["id"] = str(uuid.uuid4())
     return plan_data
 
-def add_refiner_rule(current_rules, range_val, steps_val, phase_val=None, max_phases_val=1):
+def add_refiner_rule(current_rules, range_val, steps_val):
     new_start, new_end = int(range_val[0]), int(range_val[1])
     
     if new_start >= new_end:
@@ -62,62 +37,27 @@ def add_refiner_rule(current_rules, range_val, steps_val, phase_val=None, max_ph
          Info(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
          return current_rules
 
-    phase_idx = 0
-    
-    if phase_val is not None:
-        if isinstance(phase_val, str):
-            if "All" in phase_val:
-                phase_idx = -1
-            elif "Phase" in phase_val or "Stage" in phase_val:
-                try:
-                    phase_idx = int(phase_val.split()[-1]) - 1
-                except:
-                    phase_idx = 0
-        else:
-            try:
-                phase_idx = int(phase_val)
-            except:
-                phase_idx = 0
-
     for rule in current_rules:
-        r_phase = rule.get('phase', 0)
-
-        phases_overlap = (phase_idx == -1) or (r_phase == -1) or (phase_idx == r_phase)
-        
-        if phases_overlap and new_start <= rule['end'] and new_end >= rule['start']:
+        if new_start <= rule['end'] and new_end >= rule['start']:
             from gradio import Info
-            p_name_existing = "All Phases" if r_phase == -1 else f"Phase/Stage {r_phase+1}"
-            p_name_new = "All Phases" if phase_idx == -1 else f"Phase/Stage {phase_idx+1}"
-            Info(f"Overlap detected! {p_name_new} steps {new_start}-{new_end} conflict with existing {p_name_existing} rule.")
+            Info(f"Overlap detected! Steps {new_start}-{new_end} conflict with existing rule {rule['start']}-{rule['end']}.")
             return current_rules
 
     new_rule = {
+        "id": str(uuid.uuid4()),
         "start": new_start,
         "end": new_end,
-        "steps": int(steps_val),
-        "phase": phase_idx
+        "steps": int(steps_val)
     }
-    
     updated_list = current_rules + [new_rule]
-    return sorted(updated_list, key=lambda x: (x.get('phase', 0), x['start']))
+    return sorted(updated_list, key=lambda x: x['start'])
 
-def remove_refiner_rule(current_rules, index):
-    try:
-        updated_list = list(current_rules)
-        updated_list.pop(int(index))
-        return updated_list
-    except:
-        return current_rules
+def remove_refiner_rule(current_rules, rule_id):
+    return [r for r in current_rules if r["id"] != rule_id]
 
 class PnPHandler:
-    def __init__(self, stochastic_plans, ths_uncertainty=0.0, p_norm=1, certain_percentage=0.999, channel_dim: int = 1):
-        if stochastic_plans and isinstance(stochastic_plans[0], dict) and "start" in stochastic_plans[0]:
-             stochastic_plans = [stochastic_plans]
-        if not stochastic_plans:
-            stochastic_plans = [[]]
-
-        self.stochastic_step_maps = [self._build_stochastic_step_map(p) for p in stochastic_plans]
-        
+    def __init__(self, stochastic_plan, ths_uncertainty=0.0, p_norm=1, certain_percentage=0.999, channel_dim: int = 1):
+        self.stochastic_step_map = self._build_stochastic_step_map(stochastic_plan)
         self.ths_uncertainty = ths_uncertainty
         self.p_norm = p_norm
         self.certain_percentage = certain_percentage
@@ -137,9 +77,9 @@ class PnPHandler:
                 steps = entry.get("steps", entry.get("anneal", entry.get("num_anneal_steps", 1)))
             else:
                 start, end, steps = entry
-
-            start_i = max(0, int(start) - 1)
-            end_i = max(0, int(end) - 1)
+            
+            start_i = int(start)
+            end_i = int(end)
             steps_i = int(steps)
             
             if steps_i > 0:
@@ -147,10 +87,8 @@ class PnPHandler:
                     step_map[idx] = steps_i
         return step_map
 
-    def get_anneal_steps(self, step_index, phase_index=0):
-        if 0 <= phase_index < len(self.stochastic_step_maps):
-            return self.stochastic_step_maps[phase_index].get(step_index, 0)
-        return 0
+    def get_anneal_steps(self, step_index):
+        return self.stochastic_step_map.get(step_index, 0)
 
     def reset_buffer(self):
         self.buffer = [None]
@@ -283,7 +221,7 @@ class PnPHandler:
                 
         return latents_next
 
-    def step(self, step_index, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_func, phase_index=0):
+    def step(self, step_index, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_func):
         if noise_pred is None:
             return None, sample_scheduler
         # Reset per denoising step to avoid blending with stale buffers from prior timesteps.
@@ -292,7 +230,7 @@ class PnPHandler:
         current_sigma = t.item() / 1000.0
         next_sigma = (0. if step_index == len(timesteps)-1 else timesteps[step_index+1].item()) / 1000.0
         
-        m_steps = self.get_anneal_steps(step_index, phase_index)
+        m_steps = self.get_anneal_steps(step_index)
 
         if m_steps > 1 and not self.certain_flag:
 
@@ -363,12 +301,12 @@ class PnPHandler:
         return latents, sample_scheduler
 
 def create_self_refiner_handler(pnp_plan, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage, channel_dim: int = 1):
-    stochastic_plans, _ = normalize_self_refiner_plan(pnp_plan)
-    if not stochastic_plans:
-        stochastic_plans = [default_plan]
+    stochastic_plan, _ = normalize_self_refiner_plan(pnp_plan)
+    if not stochastic_plan:
+        stochastic_plan = default_plan
 
     return PnPHandler(
-        stochastic_plans,
+        stochastic_plan,
         ths_uncertainty=pnp_f_uncertainty,
         p_norm=pnp_p_norm,
         certain_percentage=pnp_certain_percentage,

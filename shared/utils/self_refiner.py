@@ -119,9 +119,9 @@ class PnPHandler:
                 steps = entry.get("steps", entry.get("anneal", entry.get("num_anneal_steps", 1)))
             else:
                 start, end, steps = entry
-            
-            start_i = int(start)
-            end_i = int(end)
+
+            start_i = max(0, int(start) - 1)
+            end_i = max(0, int(end) - 1)
             steps_i = int(steps)
             
             if steps_i > 0:

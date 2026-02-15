@@ -133,7 +133,7 @@ class HeartMuLaPipeline:
 
         self._load_models()
         engine = "cg" if self.lm_decoder_engine == "cg" else "legacy"
-        print(f"[HeartMuLa] Decoder Engine={engine} flash2={'on' if getattr(self.mula.backbone.layers[0].attn, '_flash_attn', None) is not None else 'off'}")
+        print(f"[HeartMuLa] LM Engine='{engine}', flash2={'on' if getattr(self.mula.backbone.layers[0].attn, '_flash_attn', None) is not None else 'off'}")
 
     def _load_models(self):
         (

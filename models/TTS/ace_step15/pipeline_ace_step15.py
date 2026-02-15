@@ -248,7 +248,7 @@ class ACEStep15Pipeline:
         self.lm_tokenizer = None
         if not self.enable_lm:
             return
-        print("Loading Tokenizers...")
+        print("Loading Ace Step 1.5 LM Tokenizers...")
         lm_loader = lambda: AutoTokenizer.from_pretrained(
             self.lm_tokenizer_dir,
             local_files_only=True,

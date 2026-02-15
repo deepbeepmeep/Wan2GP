@@ -1,6 +1,5 @@
 import torch
 import copy
-import uuid
 from diffusers.utils.torch_utils import randn_tensor
 
 default_plan = [
@@ -51,8 +50,6 @@ def ensure_refiner_list(plan_data):
     if not isinstance(plan_data, list):
         return []
     for rule in plan_data:
-        if "id" not in rule:
-            rule["id"] = str(uuid.uuid4())
         if "phase" not in rule:
             rule["phase"] = 0
     return plan_data
@@ -87,29 +84,30 @@ def add_refiner_rule(current_rules, range_val, steps_val, phase_val=None, max_ph
 
         phases_overlap = (phase_idx == -1) or (r_phase == -1) or (phase_idx == r_phase)
         
-        if phases_overlap:
-            if new_start <= rule['end'] and new_end >= rule['start']:
-                from gradio import Info
-                
-                p_name_existing = "All Phases" if r_phase == -1 else f"Phase/Stage {r_phase+1}"
-                p_name_new = "All Phases" if phase_idx == -1 else f"Phase/Stage {phase_idx+1}"
-                
-                Info(f"Overlap detected! {p_name_new} steps {new_start}-{new_end} conflict with existing {p_name_existing} rule.")
-                return current_rules
+        if phases_overlap and new_start <= rule['end'] and new_end >= rule['start']:
+            from gradio import Info
+            p_name_existing = "All Phases" if r_phase == -1 else f"Phase/Stage {r_phase+1}"
+            p_name_new = "All Phases" if phase_idx == -1 else f"Phase/Stage {phase_idx+1}"
+            Info(f"Overlap detected! {p_name_new} steps {new_start}-{new_end} conflict with existing {p_name_existing} rule.")
+            return current_rules
 
     new_rule = {
-        "id": str(uuid.uuid4()),
         "start": new_start,
         "end": new_end,
         "steps": int(steps_val),
         "phase": phase_idx
     }
-
+    
     updated_list = current_rules + [new_rule]
     return sorted(updated_list, key=lambda x: (x.get('phase', 0), x['start']))
 
-def remove_refiner_rule(current_rules, rule_id):
-    return [r for r in current_rules if r["id"] != rule_id]
+def remove_refiner_rule(current_rules, index):
+    try:
+        updated_list = list(current_rules)
+        updated_list.pop(int(index))
+        return updated_list
+    except:
+        return current_rules
 
 class PnPHandler:
     def __init__(self, stochastic_plans, ths_uncertainty=0.0, p_norm=1, certain_percentage=0.999, channel_dim: int = 1):

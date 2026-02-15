@@ -10485,7 +10485,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                         if not plans:
                                             gr.Markdown("<I style='padding: 8px;'>No plans defined. Using defaults: Steps 2-5 (3x), Steps 6-13 (1x).</I>")
                                             return
-                                        for plan in plans:
+                                        for idx, plan in enumerate(plans):
                                             with gr.Row(elem_classes="rule-row"):
                                                 p_idx = plan.get('phase', 0)
                                                 if p_idx == -1:
@@ -10497,7 +10497,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                                 gr.Markdown(text_display, elem_classes="rule-card")
                                                 gr.Button("✖", variant="stop", scale=0, elem_classes="delete-btn").click(
                                                     fn=remove_refiner_rule, 
-                                                    inputs=[self_refiner_plan, gr.State(plan["id"])], 
+                                                    inputs=[self_refiner_plan, gr.State(idx)], 
                                                     outputs=[self_refiner_plan]
                                                 )
                                                 

@@ -57,32 +57,37 @@ def probe_vllm_runtime(force=False):
     return result
 
 
-def resolve_lm_decoder_engine(requested_engine):
+def resolve_lm_decoder_engine(requested_engine, engines_available = []):
     requested_engine = str(requested_engine or "").strip().lower()
     probe_result = probe_vllm_runtime()
     supported = bool(probe_result.get("supported", False))
+    cg_available = "cg" in engines_available
+    vllm_available= "vllm" in engines_available
+    default_engine = "cg" if cg_available else "legacy"
     if requested_engine == "vllm":
         if supported:
-            return "vllm"
-        global _WARNED_REQUESTED_VLLM_UNAVAILABLE
-        if not _WARNED_REQUESTED_VLLM_UNAVAILABLE:
-            checks = probe_result.get("checks", {})
-            reasons = []
-            if isinstance(checks, dict):
-                for check_name, check_data in checks.items():
-                    if isinstance(check_data, dict) and not check_data.get("ok", False):
-                        msg = str(check_data.get("message", "failed")).replace("\n", " ").strip()
-                        if len(msg) > 220:
-                            msg = msg[:220] + "..."
-                        reasons.append(f"{check_name}={msg}")
-            reason_text = "; ".join(reasons) if len(reasons) > 0 else "unknown reason"
-            print(f"[LM] Requested decoder engine 'vllm' is unavailable at startup ({reason_text}).")
-            _WARNED_REQUESTED_VLLM_UNAVAILABLE = True
-        return "legacy"
+            if vllm_available: return "vllm"
+            requested_engine = default_engine
+        else:
+            global _WARNED_REQUESTED_VLLM_UNAVAILABLE
+            if not _WARNED_REQUESTED_VLLM_UNAVAILABLE:
+                checks = probe_result.get("checks", {})
+                reasons = []
+                if isinstance(checks, dict):
+                    for check_name, check_data in checks.items():
+                        if isinstance(check_data, dict) and not check_data.get("ok", False):
+                            msg = str(check_data.get("message", "failed")).replace("\n", " ").strip()
+                            if len(msg) > 220:
+                                msg = msg[:220] + "..."
+                            reasons.append(f"{check_name}={msg}")
+                reason_text = "; ".join(reasons) if len(reasons) > 0 else "unknown reason"
+                print(f"[LM] Requested decoder engine 'vllm' is unavailable at startup ({reason_text}).")
+                _WARNED_REQUESTED_VLLM_UNAVAILABLE = True
+            return default_engine
     if requested_engine == "":
-        return "vllm" if supported else "legacy"
-    if requested_engine == "legacy":
-        return "legacy"
+        return "vllm" if supported and vllm_available else default_engine
+    if requested_engine in ("legacy", "cg"):
+        return requested_engine
     print(f"[LM] Unknown decoder engine '{requested_engine}', falling back to 'legacy'.")
     return "legacy"
 

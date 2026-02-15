@@ -13,7 +13,7 @@ def apply_rotary_emb(
     y2 = x2 * cos + x1 * sin
     return torch.cat((y1, y2), dim=-1).to(x.dtype)
 
-@lru_cache(1)
+@lru_cache(2)
 def _build_cache(device: torch.device | str | None, base, rotary_dim, max_position_embeddings ) -> torch.Tensor:
     inv_freq = 1.0 / (
         base ** (torch.arange(0, rotary_dim, 2, dtype=torch.float32, device=device) / rotary_dim)

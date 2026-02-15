@@ -103,7 +103,6 @@ CUSTOM_SETTINGS_MAX = 6
 CUSTOM_SETTINGS_PER_ROW = 2
 CUSTOM_SETTING_TYPES = {"int", "float", "text"}
 lm_decoder_engine = ""
-lm_decoder_engine_obtained = "legacy"
 enable_int8_kernels = 0
 # All media attachment keys for queue save/load
 ATTACHMENT_KEYS = ["image_start", "image_end", "image_refs", "image_guide", "image_mask",
@@ -2433,7 +2432,6 @@ def _normalize_output_paths(config):
 _normalize_profile_defaults(server_config)
 _normalize_output_paths(server_config)
 lm_decoder_engine = server_config.get("lm_decoder_engine", "")
-lm_decoder_engine_obtained = resolve_lm_decoder_engine(lm_decoder_engine)
 
 #   Deprecated models
 for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion_forcing_1.3B_bf16.safetensors","sky_reels2_diffusion_forcing_720p_14B_bf16.safetensors",
@@ -3573,11 +3571,9 @@ def setup_prompt_enhancer(pipe, kwargs):
 
 
 def load_models(model_type, override_profile = -1, output_type="video", **model_kwargs):
-    global transformer_type, loaded_profile, lm_decoder_engine_obtained
+    global transformer_type, loaded_profile
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(model_type)
-    requested_lm_decoder_engine = model_kwargs.pop("lm_decoder_engine", lm_decoder_engine)
-    lm_decoder_engine_obtained = resolve_lm_decoder_engine(requested_lm_decoder_engine)
     save_quantized = args.save_quantized and model_def != None
     model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy) 
     if "URLs2" in model_def:
@@ -3662,6 +3658,7 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
 
 
     profile = compute_profile(override_profile, output_type)
+    lm_decoder_engine_obtained = resolve_lm_decoder_engine(lm_decoder_engine, model_def.get("lm_engines", []) )
     torch.set_default_device('cpu')    
     wan_model, pipe = model_type_handler.load_model(
                 local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,

@@ -44,7 +44,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("generate_dropdown_model_list")
         self.request_global("get_unique_id")
         self.request_global("reset_prompt_enhancer")
-        self.request_global("resolve_lm_decoder_engine")
         self.request_global("apply_int8_kernel_setting")
 
         self.request_component("header")
@@ -156,11 +155,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.lm_decoder_engine_choice = gr.Dropdown(
                         choices=[
                             ("Auto", ""),
-                            ("PyTorch (slow, compatible)", "legacy"),
-                            ("vllm (up to x10 faster, requires Triton & Flash Attention 2 and must be implemented in corresponding model)", "vllm"),
+                            ("PyTorch: slow, compatible", "legacy"),
+                            ("Cuda Graph: up to x6 faster, whole LM will be loaded in VRAM", "cg"),
+                            ("vllm: up to x10 faster, whole LM will be loaded in VRAM, requires Triton & Flash Attention 2", "vllm"),
                         ],
                         value=self.server_config.get("lm_decoder_engine", ""),
-                        label="Language Models Decoder Engine",
+                        label="Language Models Decoder Engine (when available for a model)",
                     )
                     self.VAE_precision_choice = gr.Dropdown(choices=[("16-bit (faster, less VRAM)", "16"), ("32-bit (slower, better for sliding window)", "32")], value=self.server_config.get("vae_precision", "16"), label="VAE Encoding/Decoding Precision")
                     self.compile_choice = gr.Dropdown(choices=[("On (up to 20% faster, requires Triton)", "transformer"), ("Off", "")], value=self.compile, label="Compile Transformer Model (slight speed again, but first generation is slower and potential compatibility issues with some GPUs/Models)", interactive=not self.args.lock_config)
@@ -443,7 +443,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("compile", new_server_config["compile"])
         self.set_global("text_encoder_quantization", new_server_config["text_encoder_quantization"])
         self.set_global("lm_decoder_engine", new_server_config["lm_decoder_engine"])
-        self.set_global("lm_decoder_engine_obtained", self.resolve_lm_decoder_engine(new_server_config["lm_decoder_engine"]))
         self.set_global("vae_config", new_server_config["vae_config"])
         self.set_global("boost", new_server_config["boost"])
         self.set_global("enable_int8_kernels", new_server_config["enable_int8_kernels"])

@@ -300,6 +300,7 @@ class family_handler:
                 "audio_scale_name": "Source Audio Strength",
                 "audio_prompt_choices": True,
                 "enabled_audio_lora": True,
+                "lm_engines": ["vllm"],
                 "prompt_class": "Lyrics",
                 "prompt_description": "Lyrics / Prompt (Write [Instrumental] for Instrumental Generation only)",
                 "audio_prompt_type_sources": {

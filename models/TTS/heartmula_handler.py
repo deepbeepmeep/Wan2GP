@@ -26,6 +26,7 @@ def _get_heartmula_model_def():
             "placeholder": "piano,happy,wedding",
             "lines": 2,
         },
+        "lm_engines": ["cg"],
         "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
         "prompt_enhancer_button_label": "Compose Lyrics",
         "duration_slider": {
@@ -118,6 +119,7 @@ class family_handler:
         submodel_no_list=None,
         text_encoder_filename=None,
         profile=0,
+        lm_decoder_engine="legacy",
         **kwargs,
     ):
         from .HeartMula.pipeline import HeartMuLaPipeline
@@ -148,7 +150,10 @@ class family_handler:
             codec_steps=model_def.get("heartmula_codec_steps", 10),
             codec_guidance_scale=model_def.get("heartmula_codec_guidance_scale", 1.25),
             codec_version=model_def.get("heartmula_codec_version", ""),
+            lm_decoder_engine=lm_decoder_engine,
         )
+        if lm_decoder_engine=="cg":
+            pipeline.mula._budget = 0
 
         pipeline.mula.decoder[0].layers._compile_me = False
         pipeline.mula.backbone.layers._compile_me = False

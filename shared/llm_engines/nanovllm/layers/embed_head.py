@@ -3,7 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
 
-from nanovllm.utils.context import get_context
+from ..utils.context import get_context
 
 
 def _get_tp_info():

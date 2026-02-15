@@ -5,17 +5,18 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 import torch.multiprocessing as mp
 
-from nanovllm.config import Config
-from nanovllm.sampling_params import SamplingParams
-from nanovllm.engine.sequence import Sequence
-from nanovllm.engine.scheduler import Scheduler
-from nanovllm.engine.block_manager import BlockManager
-from nanovllm.engine.model_runner import ModelRunner
+from ..config import Config
+from ..sampling_params import SamplingParams
+from .sequence import Sequence
+from .scheduler import Scheduler
+from .block_manager import BlockManager
+from .model_runner import ModelRunner
 
 
 class LLMEngine:
 
     def __init__(self, model, **kwargs):
+        model_object = kwargs.get("model_object", None)
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
         config = Config(model, **config_kwargs)
@@ -29,7 +30,7 @@ class LLMEngine:
             process.start()
             self.ps.append(process)
             self.events.append(event)
-        self.model_runner = ModelRunner(config, 0, self.events)
+        self.model_runner = ModelRunner(config, 0, self.events, model_object=model_object)
         tokenizer = kwargs.get("tokenizer", None)
         if tokenizer is not None:
             self.tokenizer = tokenizer
@@ -71,7 +72,7 @@ class LLMEngine:
             return
         self._closed = True
         try:
-            self.unload_weights()
+            self.reset_runtime_state()
         except Exception:
             pass
         try:
@@ -98,12 +99,12 @@ class LLMEngine:
         except Exception:
             pass
 
-    def unload_weights(self):
+    def reset_runtime_state(self):
         runner = getattr(self, "model_runner", None)
         if runner is None:
             return
-        runner.unload_weights()
-        # KV cache is invalid after unload/reload, so cached prefix block metadata
+        runner.reset_runtime_state()
+        # KV cache is invalid after runtime reset/reprepare, so cached prefix block metadata
         # must be dropped as well to prevent stale-cache reuse.
         try:
             self.reset()
@@ -123,18 +124,6 @@ class LLMEngine:
         if runner is None:
             return
         runner.clear_graph_cache()
-
-    def reset_guard_counts(self):
-        runner = getattr(self, "model_runner", None)
-        if runner is None:
-            return
-        runner.call("reset_guard_counts")
-
-    def get_guard_counts(self, reset: bool = False):
-        runner = getattr(self, "model_runner", None)
-        if runner is None:
-            return {}
-        return runner.call("get_guard_counts", reset)
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams, unconditional_prompt: str | list[int] | None = None):
         if isinstance(prompt, str):
@@ -208,8 +197,8 @@ class LLMEngine:
     ) -> list[str]:
         if self.scheduler is None:
             raise RuntimeError("LLM engine is closed.")
-        # Ensure weights/KV cache are ready for lazy/pinned modes, and sync scheduler blocks.
-        self.model_runner.ensure_weights_loaded()
+        # Ensure model runtime/KV cache are prepared, and sync scheduler blocks.
+        self.model_runner.ensure_runtime_ready()
         if (self.config.num_kvcache_blocks > 0 and
                 len(self.scheduler.block_manager.blocks) != self.config.num_kvcache_blocks):
             self.scheduler.block_manager = BlockManager(

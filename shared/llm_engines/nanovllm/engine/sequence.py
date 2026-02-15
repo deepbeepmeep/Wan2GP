@@ -3,7 +3,7 @@ from enum import Enum, auto
 from itertools import count
 from typing import Optional, Callable, Any
 
-from nanovllm.sampling_params import SamplingParams
+from ..sampling_params import SamplingParams
 
 
 class SequenceStatus(Enum):

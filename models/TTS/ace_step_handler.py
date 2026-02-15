@@ -490,7 +490,6 @@ class family_handler:
             lm_weights = text_encoder_filename
             lm_tokenizer_dir = _get_model_path(model_def, "ace_step15_lm_tokenizer_dir", _ace_step15_lm_ckpt_dir(lm_folder))
             silence_latent = _get_model_path(model_def, "ace_step15_silence_latent", _ace_step15_ckpt_file(ACE_STEP15_SILENCE_LATENT_NAME))
-            lm_vllm_weight_mode = _get_model_path(model_def, "ace_step15_vllm_weight_mode", "lazy")
             if enable_lm:
                 lm_weight_name = os.path.basename(str(lm_weights)) if lm_weights else ""
                 print(f"[ace_step15] LM engine='{lm_decoder_engine}' | LM weights='{lm_weight_name}'")
@@ -508,7 +507,6 @@ class family_handler:
                 enable_lm=enable_lm,
                 ignore_lm_cache_seed=ignore_lm_cache_seed,
                 lm_decoder_engine=lm_decoder_engine,
-                lm_vllm_weight_mode=lm_vllm_weight_mode,
                 dtype=dtype or torch.bfloat16,
             )
 
@@ -517,8 +515,10 @@ class family_handler:
                 "text_encoder_2": pipeline.text_encoder_2,
                 "codec": pipeline.audio_vae,
             }
-            if lm_decoder_engine != "vllm" and text_encoder_filename and pipeline.lm_model is not None:
+            if text_encoder_filename and pipeline.lm_model is not None:
                 pipe["text_encoder"] = pipeline.lm_model
+
+            pipe = { "pipe": pipe, "coTenantsMap": {}, }
 
             if save_quantized and transformer_weights:
                 from wgp import save_quantized_model

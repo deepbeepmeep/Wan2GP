@@ -10423,7 +10423,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             self_refiner_plan = refiner_val if update_form else gr.State(value=refiner_val)
                             
                             with gr.Column(visible=(update_form and ui_get("self_refiner_setting", 0) > 0)) as self_refiner_rules_ui:
-                                gr.Markdown("#### Refiner Plan")
+                                gr.Markdown("#### Refiner Rules")
                                 
                                 with gr.Row(elem_id="refiner-input-row"):
                                     refiner_range = RangeSlider(minimum=1, maximum=100, value=(1, 10), step=1, label="Step Range", info="Start - End", scale=3)
@@ -10435,17 +10435,17 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     self_refiner_setting.change(fn=lambda s: gr.update(visible=s > 0), inputs=[self_refiner_setting], outputs=[self_refiner_rules_ui])
 
                                     @gr.render(inputs=self_refiner_plan)
-                                    def render_refiner_plans(plans):
-                                        if not plans:
-                                            gr.Markdown("<I style='padding: 8px;'>No plans defined. Using defaults: Steps 2-5 (3x), Steps 6-13 (1x).</I>")
+                                    def render_refiner_rules(rules):
+                                        if not rules:
+                                            gr.Markdown("<I style='padding: 8px;'>No rules defined. Using defaults: Steps 2-5 (3x), Steps 6-13 (1x).</I>")
                                             return
-                                        for plan in plans:
+                                        for i, rule in enumerate(rules):
                                             with gr.Row(elem_classes="rule-row"):
-                                                text_display = f"Steps **{plan['start']} - {plan['end']}** : **{plan['steps']}x** iterations"
+                                                text_display = f"Steps **{rule['start']} - {rule['end']}** : **{rule['steps']}x** iterations"
                                                 gr.Markdown(text_display, elem_classes="rule-card")
                                                 gr.Button("✖", variant="stop", scale=0, elem_classes="delete-btn").click(
                                                     fn=remove_refiner_rule, 
-                                                    inputs=[self_refiner_plan, gr.State(plan["id"])], 
+                                                    inputs=[self_refiner_plan, gr.State(i)], 
                                                     outputs=[self_refiner_plan]
                                                 )
                                                 

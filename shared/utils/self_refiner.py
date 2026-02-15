@@ -1,6 +1,5 @@
 import torch
 import copy
-import uuid
 from diffusers.utils.torch_utils import randn_tensor
 
 default_plan = [
@@ -22,12 +21,9 @@ def normalize_self_refiner_plan(plan_input):
     return plan_input, ""
 
 def ensure_refiner_list(plan_data):
-    if not isinstance(plan_data, list):
-        return []
-    for rule in plan_data:
-        if "id" not in rule:
-            rule["id"] = str(uuid.uuid4())
-    return plan_data
+    if isinstance(plan_data, list):
+        return plan_data
+    return []
 
 def add_refiner_rule(current_rules, range_val, steps_val):
     new_start, new_end = int(range_val[0]), int(range_val[1])
@@ -44,7 +40,6 @@ def add_refiner_rule(current_rules, range_val, steps_val):
             return current_rules
 
     new_rule = {
-        "id": str(uuid.uuid4()),
         "start": new_start,
         "end": new_end,
         "steps": int(steps_val)
@@ -52,8 +47,10 @@ def add_refiner_rule(current_rules, range_val, steps_val):
     updated_list = current_rules + [new_rule]
     return sorted(updated_list, key=lambda x: x['start'])
 
-def remove_refiner_rule(current_rules, rule_id):
-    return [r for r in current_rules if r["id"] != rule_id]
+def remove_refiner_rule(current_rules, index):
+    if 0 <= index < len(current_rules):
+        current_rules.pop(index)
+    return current_rules
 
 class PnPHandler:
     def __init__(self, stochastic_plan, ths_uncertainty=0.0, p_norm=1, certain_percentage=0.999, channel_dim: int = 1):

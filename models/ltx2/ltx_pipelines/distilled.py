@@ -191,18 +191,38 @@ class DistilledPipeline:
         self_refiner_handler_stage2 = None
         self_refiner_handler_audio_stage2 = None
         if self_refiner_setting and self_refiner_setting > 0:
+            plans, _ = normalize_self_refiner_plan(self_refiner_plan or "")
+            plan_stage1 = plans[0] if plans else []
+            plan_stage2 = plans[1] if len(plans) > 1 else []
             self_refiner_handler = create_self_refiner_handler(
+                plan_stage1,
                 self_refiner_f_uncertainty,
                 self_refiner_setting,
                 self_refiner_certain_percentage,
                 channel_dim=-1,
             )
             self_refiner_handler_audio = create_self_refiner_handler(
+                plan_stage1,
                 self_refiner_f_uncertainty,
                 self_refiner_setting,
                 self_refiner_certain_percentage,
                 channel_dim=-1,
             )
+            if plan_stage2:
+                self_refiner_handler_stage2 = create_self_refiner_handler(
+                    plan_stage2,
+                    self_refiner_f_uncertainty,
+                    self_refiner_setting,
+                    self_refiner_certain_percentage,
+                    channel_dim=-1,
+                )
+                self_refiner_handler_audio_stage2 = create_self_refiner_handler(
+                    plan_stage2,
+                    self_refiner_f_uncertainty,
+                    self_refiner_setting,
+                    self_refiner_certain_percentage,
+                    channel_dim=-1,
+                )
         dtype = torch.bfloat16
 
         text_encoder = self._get_model("text_encoder")

@@ -95,7 +95,7 @@ CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.4"
 WanGP_version = "10.84"
-settings_version = 2.51
+settings_version = 2.52
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -755,11 +755,14 @@ def validate_settings(state, model_type, single_prompt, inputs):
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
     if self_refiner_setting != 0:
-        norm_plan, error = normalize_self_refiner_plan(self_refiner_plan)
+        from shared.utils.self_refiner import normalize_self_refiner_plan, convert_refiner_list_to_string
+        if isinstance(self_refiner_plan, list):
+            self_refiner_plan = convert_refiner_list_to_string(self_refiner_plan)
+        max_p = model_def.get("self_refiner_max_plans", 1)
+        _, error = normalize_self_refiner_plan(self_refiner_plan, max_plans=max_p)
         if len(error):
             gr.Info(error)
             return ret()
-        self_refiner_plan = norm_plan
 
     if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
     if "vae" in spatial_upsampling:
@@ -1068,6 +1071,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
         "model_mode": model_mode,
         "video_guide_outpainting": video_guide_outpainting,
         "custom_settings": inputs.get("custom_settings", None),
+        "self_refiner_plan": self_refiner_plan,
     } 
     inputs.update(override_inputs)
     if hasattr(model_handler, "validate_generative_settings"):

@@ -2,36 +2,118 @@ import torch
 import copy
 from diffusers.utils.torch_utils import randn_tensor
 
-default_plan = [
-    {"start": 1, "end": 5, "steps": 3},
-    {"start": 6, "end": 13, "steps": 1},
-]
-
 def is_int_string(s: str) -> bool:
     try:
         int(s)
         return True
     except ValueError:
         return False
-    
-def normalize_self_refiner_plan(plan_input):
-    if not plan_input or not isinstance(plan_input, list):
-        return default_plan, ""
-    
-    return plan_input, ""
+
+def _normalize_single_self_refiner_plan_from_str(plan_str):
+    entries = []
+    if not plan_str.strip():
+        return [], ""
+        
+    for chunk in plan_str.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" not in chunk:
+            return [], f"Invalid format in '{chunk}'. Entries must be in 'start-end:steps' format."
+        
+        range_part, steps_part = chunk.split(":", 1)
+        range_part = range_part.strip()
+        steps_part = steps_part.strip()
+        
+        if not steps_part:
+            return [], f"Missing step count in '{chunk}'."
+            
+        if "-" in range_part:
+            start_s, end_s = range_part.split("-", 1)
+        else:
+            start_s = end_s = range_part
+            
+        start_s = start_s.strip()
+        end_s = end_s.strip()
+        
+        if not is_int_string(start_s) or not is_int_string(end_s):
+            return [], f"Range '{range_part}' must contain integers."
+        if not is_int_string(steps_part):
+            return [], f"Steps '{steps_part}' must be an integer."
+        
+        entries.append({
+            "start": int(start_s),
+            "end": int(end_s),
+            "steps": int(steps_part),
+        })
+
+    entries.sort(key=lambda x: x["start"])
+    return entries, ""
+
+def convert_refiner_list_to_string(rules_list):    
+    parts = []
+    for r in rules_list:
+        if isinstance(r, dict):
+            start = r.get("start")
+            end = r.get("end")
+            steps = r.get("steps")
+            if start == end:
+                parts.append(f"{start}:{steps}")
+            else:
+                parts.append(f"{start}-{end}:{steps}")
+    return ",".join(parts)
+
+def normalize_self_refiner_plan(plan_input, max_plans: int = 1):
+    if plan_input is None:
+        return [[]], ""
+
+    if isinstance(plan_input, list):
+        cleaned_plan = []
+        for rule in plan_input:
+            if isinstance(rule, dict) and 'start' in rule and 'end' in rule:
+                cleaned_plan.append(rule)
+
+        return [cleaned_plan], ""
+
+    plan_str = str(plan_input).strip()
+    if not plan_str:
+        return [[]], ""
+
+    segments = [seg.strip() for seg in plan_str.split(";")]
+
+    if max_plans > 0 and len(segments) > max_plans:
+        pass
+
+    plans = []
+    for seg in segments:
+        if not seg:
+            plans.append([])
+            continue
+        
+        plan_rules, error = _normalize_single_self_refiner_plan_from_str(seg)
+        if error:
+            return [], error
+        plans.append(plan_rules)
+        
+    return plans, ""
 
 def ensure_refiner_list(plan_data):
     if isinstance(plan_data, list):
         return plan_data
+    
+    if isinstance(plan_data, str):
+        plans, _ = normalize_self_refiner_plan(plan_data)
+        if plans and len(plans) > 0:
+            return plans[0]
+            
     return []
 
 def add_refiner_rule(current_rules, range_val, steps_val):
+    current_rules = ensure_refiner_list(current_rules)
     new_start, new_end = int(range_val[0]), int(range_val[1])
     
-    if new_start >= new_end:
-         from gradio import Info
-         Info(f"Start step ({new_start}) must be smaller than End step ({new_end}).")
-         return current_rules
+    if new_start > new_end:
+         new_start, new_end = new_end, new_start
 
     for rule in current_rules:
         if new_start <= rule['end'] and new_end >= rule['start']:
@@ -48,6 +130,7 @@ def add_refiner_rule(current_rules, range_val, steps_val):
     return sorted(updated_list, key=lambda x: x['start'])
 
 def remove_refiner_rule(current_rules, index):
+    current_rules = ensure_refiner_list(current_rules)
     if 0 <= index < len(current_rules):
         current_rules.pop(index)
     return current_rules
@@ -59,7 +142,7 @@ class PnPHandler:
         self.p_norm = p_norm
         self.certain_percentage = certain_percentage
         self.channel_dim = channel_dim
-        self.buffer = [None] # [certain_mask, pred_original_sample, latents_next]
+        self.buffer = [None]
         self.certain_flag = False
 
     def _build_stochastic_step_map(self, plan):
@@ -72,8 +155,10 @@ class PnPHandler:
                 start = entry.get("start", entry.get("begin"))
                 end = entry.get("end", entry.get("stop"))
                 steps = entry.get("steps", entry.get("anneal", entry.get("num_anneal_steps", 1)))
+            elif isinstance(entry, (list, tuple)):
+                start, end, steps = entry[0], entry[1], entry[2]
             else:
-                start, end, steps = entry
+                continue
             
             start_i = int(start)
             end_i = int(end)
@@ -92,18 +177,6 @@ class PnPHandler:
         self.certain_flag = False
 
     def process_step(self, latents, noise_pred, sigma, sigma_next, generator=None, device=None, latents_next=None, pred_original_sample=None):
-        """
-        Returns (latents_next, buffer_updated)
-        """
-        # Predict original sample (x0) and next latent
-        # x_t = t * x_1 + (1-t) * x_0 (Flow Matching)
-        # v_t = x_1 - x_0
-        # dx/dt = v_t
-        # Here sigma is time t?? In Wan code usually t goes 1000->0.
-        # Ref code: pred_original_sample = latents - sigma * noise_pred
-        # latents_next = latents + (sigma_next - sigma) * noise_pred
-        # This matches Flow Matching if sigma is time t.
-        
         if pred_original_sample is None:
             pred_original_sample = latents - sigma * noise_pred
         
@@ -111,13 +184,11 @@ class PnPHandler:
             latents_next = latents + (sigma_next - sigma) * noise_pred
 
         if self.buffer[-1] is not None:
-            # Calculate uncertainty
-            # buffer[-1][1] is previous pred_original_sample
             diff = pred_original_sample - self.buffer[-1][1]
             channel_dim = self.channel_dim
             if channel_dim < 0:
                 channel_dim += latents.ndim
-            # dim=channel_dim is channels/features
+
             uncertainty = torch.norm(diff, p=self.p_norm, dim=channel_dim) / latents.shape[channel_dim]
             
             certain_mask = uncertainty < self.ths_uncertainty
@@ -127,13 +198,12 @@ class PnPHandler:
             if certain_mask.sum() / certain_mask.numel() > self.certain_percentage:
                 self.certain_flag = True
             
-            certain_mask_float = certain_mask.to(latents.dtype).unsqueeze(channel_dim) # Broadcast channels
-            
-            # Blend
+            certain_mask_float = certain_mask.to(latents.dtype).unsqueeze(channel_dim) 
+
             latents_next = certain_mask_float * self.buffer[-1][2] + (1.0 - certain_mask_float) * latents_next
             pred_original_sample = certain_mask_float * self.buffer[-1][1] + (1.0 - certain_mask_float) * pred_original_sample
             
-            certain_mask_stored = certain_mask # keep bool
+            certain_mask_stored = certain_mask 
         else:
             certain_mask_stored = None
         self.buffer.append([certain_mask_stored, pred_original_sample, latents_next])
@@ -148,28 +218,14 @@ class PnPHandler:
         sigma_t = (noise_mask.to(latents.dtype) * sigma)
         return (1.0 - sigma_t) * buffer_latent + sigma_t * noise
 
-    def run_refinement_loop(self, 
-                            latents, 
-                            noise_pred, 
-                            current_sigma, 
-                            next_sigma, 
-                            m_steps, 
-                            denoise_func, 
-                            step_func, 
-                            clone_func=None, 
-                            restore_func=None, 
-                            generator=None, 
-                            device=None,
-                            noise_mask=None):
-        
+    def run_refinement_loop(self, latents, noise_pred, current_sigma, next_sigma, m_steps, denoise_func, step_func, clone_func=None, restore_func=None, generator=None, device=None, noise_mask=None):
         if noise_pred is None:
             return None
-        # Save initial state if needed
+        
         scheduler_state = None
         if clone_func:
             scheduler_state = clone_func()
 
-        # Step 0 (Initial)
         latents_next_0, pred_original_sample_0 = step_func(noise_pred, latents)
         if latents_next_0 is None or pred_original_sample_0 is None:
             return None
@@ -182,12 +238,10 @@ class PnPHandler:
         if self.certain_flag:
             return latents_next
 
-        # Refinement Loop
         for ii in range(1, m_steps):
             if restore_func and scheduler_state is not None:
                 restore_func(scheduler_state)
-            
-            # Perturb
+
             latents_perturbed = self.perturb_latents(
                 latents,
                 self.buffer[-1][1],
@@ -196,18 +250,15 @@ class PnPHandler:
                 device=device,
                 noise_mask=noise_mask,
             )
-            
-            # Denoise
+
             n_pred = denoise_func(latents_perturbed)
             if n_pred is None:
                 return None
-            
-            # Step
+
             latents_next_loop, pred_original_sample_loop = step_func(n_pred, latents_perturbed)
             if latents_next_loop is None or pred_original_sample_loop is None:
                 return None
-            
-            # Refine
+
             latents_next = self.process_step(
                 latents_perturbed, n_pred, current_sigma, next_sigma,
                 latents_next=latents_next_loop, pred_original_sample=pred_original_sample_loop
@@ -221,9 +272,9 @@ class PnPHandler:
     def step(self, step_index, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_func):
         if noise_pred is None:
             return None, sample_scheduler
-        # Reset per denoising step to avoid blending with stale buffers from prior timesteps.
+        
         self.reset_buffer()
-        # Calculate sigma for PnP
+
         current_sigma = t.item() / 1000.0
         next_sigma = (0. if step_index == len(timesteps)-1 else timesteps[step_index+1].item()) / 1000.0
         
@@ -245,11 +296,7 @@ class PnPHandler:
                 return latents_in - (t_val / 1000.0) * n_pred_sliced
 
             def step_func(n_pred_in, latents_in):
-                # Correct slicing: 
-                # [:, :channels] slices Dimension 1
-                # [:, :, :frames] slices Dimension 2
                 n_pred_sliced = n_pred_in[:, :latents_in.shape[1], :target_shape[1]]
-
                 nonlocal sample_scheduler
                 step_out = sample_scheduler.step(n_pred_sliced, t, latents_in, **scheduler_kwargs)
                 latents_next_out = _get_prev_sample(step_out)
@@ -284,8 +331,6 @@ class PnPHandler:
             if latents is None:
                 return None, sample_scheduler
         else:
-            # Standard logic
-            # Correct slicing: [:, :channels, :frames]
             n_pred_sliced = noise_pred[:, :latents.shape[1], :target_shape[1]]
             step_out = sample_scheduler.step( n_pred_sliced, t, latents, **scheduler_kwargs)
             if hasattr(step_out, "prev_sample"):
@@ -298,9 +343,17 @@ class PnPHandler:
         return latents, sample_scheduler
 
 def create_self_refiner_handler(pnp_plan, pnp_f_uncertainty, pnp_p_norm, pnp_certain_percentage, channel_dim: int = 1):
-    stochastic_plan, _ = normalize_self_refiner_plan(pnp_plan)
+    plans, _ = normalize_self_refiner_plan(pnp_plan, max_plans=2)
+    stochastic_plan = None
+
+    if plans and len(plans) > 0:
+        stochastic_plan = plans[0]
+
     if not stochastic_plan:
-        stochastic_plan = default_plan
+        stochastic_plan = [
+            {"start": 1, "end": 5, "steps": 3},
+            {"start": 6, "end": 13, "steps": 1},
+        ]
 
     return PnPHandler(
         stochastic_plan,
@@ -309,7 +362,6 @@ def create_self_refiner_handler(pnp_plan, pnp_f_uncertainty, pnp_p_norm, pnp_cer
         certain_percentage=pnp_certain_percentage,
         channel_dim=channel_dim,
     )
-
 
 def run_refinement_loop_multi(
     handlers,
@@ -340,13 +392,10 @@ def run_refinement_loop_multi(
     latents_next_list, pred_original_list = step_func(noise_pred_list, latents_list)
     if latents_next_list is None or pred_original_list is None:
         return None
-    if not isinstance(latents_next_list, (list, tuple)) or not isinstance(pred_original_list, (list, tuple)):
-        return None
+
     if len(latents_next_list) != len(handlers) or len(pred_original_list) != len(handlers):
         return None
-    if any(latent is None for latent in latents_next_list) or any(pred is None for pred in pred_original_list):
-        return None
-
+    
     refined_latents_list = []
     for handler, latents, latents_next, pred_original in zip(
         handlers, latents_list, latents_next_list, pred_original_list
@@ -384,17 +433,11 @@ def run_refinement_loop_multi(
         noise_pred_list = denoise_func(perturbed_list)
         if noise_pred_list is None:
             return None
-        if not isinstance(noise_pred_list, (list, tuple)) or any(pred is None for pred in noise_pred_list):
-            return None
+            
         latents_next_list, pred_original_list = step_func(noise_pred_list, perturbed_list)
         if latents_next_list is None or pred_original_list is None:
             return None
-        if not isinstance(latents_next_list, (list, tuple)) or not isinstance(pred_original_list, (list, tuple)):
-            return None
-        if len(latents_next_list) != len(handlers) or len(pred_original_list) != len(handlers):
-            return None
-        if any(latent is None for latent in latents_next_list) or any(pred is None for pred in pred_original_list):
-            return None
+            
         refined_latents_list = []
         for handler, latents, latents_next, pred_original in zip(
             handlers, perturbed_list, latents_next_list, pred_original_list

@@ -118,8 +118,8 @@ QWEN3_TTS_DURATION_SLIDER = {
 QWEN3_TTS_AUDIO_PROMPT_TYPE_SOURCES = {
     "selection": ["A", "AB"],
     "labels": {
-        "A": "Voice cloning (1 speaker)",
-        "AB": "Dialogue (2 speakers)",
+        "A": "Voice cloning of 1 speaker",
+        "AB": "Voice cloning of 2 speakers",
     },
     "letters_filter": "AB",
     "default": "A",

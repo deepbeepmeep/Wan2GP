@@ -93,8 +93,8 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.7.4"
-WanGP_version = "10.84"
+target_mmgp_version = "3.7.5"
+WanGP_version = "10.9"
 settings_version = 2.51
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -3659,6 +3659,9 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
 
     profile = compute_profile(override_profile, output_type)
     lm_decoder_engine_obtained = resolve_lm_decoder_engine(lm_decoder_engine, model_def.get("lm_engines", []) )
+    if lm_decoder_engine_obtained in ("cg", "vllm") and int(profile) not in [ 1, 3]:
+        print(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
+        lm_decoder_engine_obtained = "legacy"
     torch.set_default_device('cpu')    
     wan_model, pipe = model_type_handler.load_model(
                 local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
@@ -5384,23 +5387,29 @@ class DynamicClass:
         return self.assign(**dict)
 
 def process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image_start, original_image_refs, is_image, audio_only, seed, prompt_enhancer_instructions = None ):
-
+    prompt_enhancer_mode = str(prompt_enhancer or "")
     prompt_enhancer_instructions = model_def.get("image_prompt_enhancer_instructions" if is_image else "video_prompt_enhancer_instructions", None)
     text_encoder_max_tokens = model_def.get("image_prompt_enhancer_max_tokens" if is_image else "video_prompt_enhancer_max_tokens", 256)
-    if not "I" in prompt_enhancer:
-        prompt_enhancer_instructions = model_def.get("text_prompt_enhancer_instructions", prompt_enhancer_instructions)
-        text_encoder_max_tokens = model_def.get("text_prompt_enhancer_max_tokens", text_encoder_max_tokens)
+    if "I" not in prompt_enhancer_mode:
+        prompt_profile_id = "0"
+        prompt_profile_match = re.search(r"\d", prompt_enhancer_mode)
+        if prompt_profile_match is not None:
+            prompt_profile_id = prompt_profile_match.group(0)
+        prompt_instructions_key = "text_prompt_enhancer_instructions" if prompt_profile_id == "0" else f"text_prompt_enhancer_instructions{prompt_profile_id}"
+        prompt_max_tokens_key = "text_prompt_enhancer_max_tokens" if prompt_profile_id == "0" else f"text_prompt_enhancer_max_tokens{prompt_profile_id}"
+        prompt_enhancer_instructions = model_def.get(prompt_instructions_key, model_def.get("text_prompt_enhancer_instructions", prompt_enhancer_instructions))
+        text_encoder_max_tokens = model_def.get(prompt_max_tokens_key, model_def.get("text_prompt_enhancer_max_tokens", text_encoder_max_tokens))
 
     from shared.prompt_enhancer.prompt_enhance_utils import generate_cinematic_prompt
     prompt_images = []
-    if "I" in prompt_enhancer:
+    if "I" in prompt_enhancer_mode:
         if image_start != None:
             if not isinstance(image_start, list): image_start= [image_start] 
             prompt_images += image_start
         if original_image_refs != None:
             prompt_images += original_image_refs[:1]
     prompt_images = [Image.open(img) if isinstance(img,str) else img for img in prompt_images]
-    if len(original_prompts) == 0 and not "T" in prompt_enhancer:
+    if len(original_prompts) == 0 and "T" not in prompt_enhancer_mode:
         return None
     else:
         import secrets
@@ -5416,7 +5425,7 @@ def process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image
             prompt_enhancer_image_caption_processor,
             prompt_enhancer_llm_model,
             prompt_enhancer_llm_tokenizer,
-            original_prompts if "T" in prompt_enhancer else ["an image"],
+            original_prompts if "T" in prompt_enhancer_mode else ["an image"],
             prompt_images if len(prompt_images) > 0 else None,
             video_prompt = not is_image,
             text_prompt = audio_only,
@@ -9971,23 +9980,64 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 wizard_variables_var = gr.Text(wizard_variables, visible = False)
             with gr.Row(visible= server_config.get("enhancer_enabled", 0) > 0  ) as prompt_enhancer_row:
                 on_demand_prompt_enhancer = server_config.get("enhancer_mode", 0) == 1
-                prompt_enhancer_choices_allowed = model_def.get("prompt_enhancer_choices_allowed", ["T"] if audio_only else ["T", "I", "TI"])
                 prompt_enhancer_value = ui_get("prompt_enhancer")
                 prompt_enhancer_btn_label = str(model_def.get("prompt_enhancer_button_label", "Enhance Prompt"))
                 prompt_enhancer_btn = gr.Button( value =prompt_enhancer_btn_label, visible= on_demand_prompt_enhancer, size="lg",  elem_classes="btn_centered")
-                prompt_enhancer_choices= ([] if on_demand_prompt_enhancer else [("Disabled", "")]) 
-                if "T" in prompt_enhancer_choices_allowed:
-                    prompt_enhancer_choices +=  [("Based on Text Prompt Content", "T")]
-                if "I" in prompt_enhancer_choices_allowed:
-                    prompt_enhancer_choices += [("Based on Images Prompts Content (such as Start Image and Reference Images)", "I")]
-                if "TI" in prompt_enhancer_choices_allowed:
-                    prompt_enhancer_choices += [("Based on both Text Prompt and Images Prompts Content", "TI")]
+                prompt_enhancer_choices = [] if on_demand_prompt_enhancer else [("Disabled", "")]
+                prompt_enhancer_default = ""
+                prompt_enhancer_default_labels = {
+                    "T": "Based on Text Prompt Content",
+                    "I": "Based on Images Prompts Content (such as Start Image and Reference Images)",
+                    "TI": "Based on both Text Prompt and Images Prompts Content",
+                }
+                prompt_enhancer_def = model_def.get("prompt_enhancer_def")
+                if isinstance(prompt_enhancer_def, dict):
+                    prompt_enhancer_selection = prompt_enhancer_def.get("selection", [])
+                    if isinstance(prompt_enhancer_selection, str):
+                        prompt_enhancer_selection = [prompt_enhancer_selection]
+                    if not isinstance(prompt_enhancer_selection, list):
+                        prompt_enhancer_selection = []
+                    prompt_enhancer_labels_override = prompt_enhancer_def.get("labels", {})
+                    if not isinstance(prompt_enhancer_labels_override, dict):
+                        prompt_enhancer_labels_override = {}
+                    for selection_value in prompt_enhancer_selection:
+                        selection_value = str(selection_value).strip()
+                        if len(selection_value) == 0:
+                            continue
+                        display_label = prompt_enhancer_labels_override.get(selection_value, prompt_enhancer_default_labels.get(selection_value, selection_value))
+                        prompt_enhancer_choices.append((str(display_label), selection_value))
+                    prompt_enhancer_default = str(prompt_enhancer_def.get("default", "")).strip()
+                else:
+                    prompt_enhancer_choices_allowed = model_def.get("prompt_enhancer_choices_allowed", ["T"] if audio_only else ["T", "I", "TI"])
+                    if isinstance(prompt_enhancer_choices_allowed, str):
+                        prompt_enhancer_choices_allowed = [prompt_enhancer_choices_allowed]
+                    if not isinstance(prompt_enhancer_choices_allowed, list):
+                        prompt_enhancer_choices_allowed = []
+                    for selection_value in prompt_enhancer_choices_allowed:
+                        selection_value = str(selection_value).strip()
+                        if len(selection_value) == 0:
+                            continue
+                        display_label = prompt_enhancer_default_labels.get(selection_value, selection_value)
+                        prompt_enhancer_choices.append((display_label, selection_value))
 
-                if len(prompt_enhancer_value) == 0 and on_demand_prompt_enhancer: prompt_enhancer_value = prompt_enhancer_choices[0][1] 
+                prompt_enhancer_values = [value for _, value in prompt_enhancer_choices]
+                if prompt_enhancer_value not in prompt_enhancer_values:
+                    if prompt_enhancer_default in prompt_enhancer_values:
+                        prompt_enhancer_value = prompt_enhancer_default
+                    elif len(prompt_enhancer_values) > 0:
+                        prompt_enhancer_value = prompt_enhancer_values[0]
+                    else:
+                        prompt_enhancer_value = ""
+                elif len(prompt_enhancer_value) == 0 and on_demand_prompt_enhancer and len(prompt_enhancer_values) > 0:
+                    if prompt_enhancer_default in prompt_enhancer_values:
+                        prompt_enhancer_value = prompt_enhancer_default
+                    else:
+                        prompt_enhancer_value = prompt_enhancer_values[0]
+
                 prompt_enhancer = gr.Dropdown(
                     choices=prompt_enhancer_choices,
                     value=prompt_enhancer_value,
-                    label="Enhance Prompt using a LLM", scale = 5,
+                    label=model_def.get("prompt_enhancer_button_label", "Enhance Prompt using a LLM") , scale = 5,
                     visible= True, show_label= not on_demand_prompt_enhancer,
                 )
             alt_prompt_def = model_def.get("alt_prompt", None)

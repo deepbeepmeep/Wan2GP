@@ -33,6 +33,25 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### February 16th 2026: WanGP v10.9, Breaking the Sound Barrier
+With this new release of WanGP you should have best TTS (Text To Speech) experience you can find:
+
+- **Qwen3 TTS Powered Up**:  
+   - with new *Cuda Graph* optimized mode, speech generation is up to *4x faster*, in some occasion generating 1s of speech may take less than 1s !
+   - with int8 quantization, the Qwen3 TTS can work at full speed with only 6 GB of VRAM
+   - New **Two Speakers Mode** with **Two Cloned Voices** can generate dialogues much with smoother transitions than with *Kugel Audio* 
+
+- **Heart Mula Powered Up**:
+   - with new *Cuda Graph* optimized mode, song generation is up to 6x faster
+
+- **Ace Step 1.5 Powered Up**:
+   - WanGP version offers an exclusive support for *vllm* & *int8 quantization* for LM (that is fast LM & low VRAM at the same time)
+   - you will only need 10GB of RAM and 6 GB oF VRAM, to run Ace Step with all its features
+
+Also you now have a choice of multiple *Prompt Enhancements* for *Qwen3 TTS* & *Kugel Audio*: *Prompt Enhancer* can now generate for you either a *Monologue* or a *Dialogue between two Speakers*
+
+Please note that to use the new *Cuda Graph*, mode you will need to select either *vllm* or *cuda graph* in *Configuration / Performance / Language Models Decoder Engine*. Profiles 1,3  or 3+ will need to be enabled for the corresponding Model. vllm is a powered up version of cuda graph that may not always work with all GPUs. But don't worry if it is not available for your GPU there will be an automatic fallback to cuda graph.
+
 ### February 12th 2026: WanGP v10.84, Easy Metal
 
 - **Ace Step 1.5 Turbo Super Charged**: all the best features of *Ace Step 1.5* are now in *WanGP* and are *Fast* & *Easy* to use:

@@ -5,7 +5,7 @@ import torch
 
 from shared.utils import files_locator as fl
 
-from .prompt_enhancers import TTS_MONOLOGUE_OR_DIALOGUE_PROMPT
+from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
 
 
 KUGELAUDIO_REPO_ID = "DeepBeepMeep/TTS"
@@ -91,8 +91,19 @@ def _get_kugelaudio_model_def():
             "letters_filter": "AB",
             "default": "",
         },
-        "text_prompt_enhancer_instructions": TTS_MONOLOGUE_OR_DIALOGUE_PROMPT,
-        "prompt_enhancer_button_label": "Write Speech",
+        "text_prompt_enhancer_instructions": TTS_MONOLOGUE_PROMPT,
+        "text_prompt_enhancer_instructions1": TTS_QWEN3_DIALOGUE_PROMPT,
+        "text_prompt_enhancer_max_tokens": 512,
+        "text_prompt_enhancer_max_tokens1": 512,
+        "prompt_enhancer_def": {
+            "selection": ["T", "T1"],
+            "labels": {
+                "T": "A Speech based on current Prompt",
+                "T1": "A Dialogue between two People based on current Prompt",
+            },
+            "default": "T",
+        },
+        "prompt_enhancer_button_label": "Write",
         "compile": ["transformer"],
     }
 

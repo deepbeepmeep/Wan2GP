@@ -2,9 +2,10 @@
     "model": {
         "name": "TTS Qwen3 Base (12Hz) 1.7B",
         "architecture": "qwen3_tts_base",
-        "description": "Qwen3 Base voice clone model with reference audio.",
+        "description": "Qwen3 Base voice clone model with reference audio. Use Manual Split (one empty line) or Auto Split to reduce VRAM requirements for very long speeches.",
         "URLs": [
-            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_base_bf16.safetensors"
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_base_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_base_quanto_bf16_int8.safetensors"
         ]
     },
     "prompt": "I checked the schedule twice, and everything lines up.",

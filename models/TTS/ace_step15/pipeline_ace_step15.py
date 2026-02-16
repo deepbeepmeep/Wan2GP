@@ -303,6 +303,8 @@ class ACEStep15Pipeline:
         config_path = os.path.join(os.path.dirname(self.lm_weights_path), "config.json")
 
         def _remap_lm_state_dict(state_dict, quantization_map=None, tied_weights_map=None):
+            if not next(iter(state_dict)).startswith("model."):
+                state_dict = { "model." + k:v for k,v in state_dict.items() }
             embed_key = "model.embed_tokens.weight"
             if "lm_head.weight" not in state_dict and embed_key in state_dict:
                 state_dict["lm_head.weight"] = state_dict[embed_key]

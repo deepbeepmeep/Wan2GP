@@ -34,12 +34,12 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 ## 🔥 Latest Updates : 
 ### February 16th 2026: WanGP v10.9, Breaking the Sound Barrier
-With this new release of WanGP you should have best TTS (Text To Speech) experience you can find:
+With this new release of WanGP you should have the best TTS (Text To Speech) experience you can find:
 
 - **Qwen3 TTS Powered Up**:  
    - with new *Cuda Graph* optimized mode, speech generation is up to *4x faster*, in some occasion generating 1s of speech may take less than 1s !
    - with int8 quantization, the Qwen3 TTS can work at full speed with only 6 GB of VRAM
-   - New **Two Speakers Mode** with **Two Cloned Voices** can generate dialogues much with smoother transitions than with *Kugel Audio* 
+   - New **Two Speakers Mode** with **Two Cloned Voices** can generate dialogues with much smoother transitions than with *Kugel Audio* 
 
 - **Heart Mula Powered Up**:
    - with new *Cuda Graph* optimized mode, song generation is up to 6x faster

@@ -47,6 +47,7 @@ _ACE_STEP15_MODEL_MODE_DEFAULT = 0
 _ACE_STEP15_MODEL_MODE_INFER_MISSING = 1
 _ACE_STEP15_MODEL_MODE_INFER_AND_REFINE = 2
 _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION = 3
+_ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION = 4
 _ACE_STEP15_DEFAULT_BPM = 120
 _ACE_STEP15_DEFAULT_TIMESIGNATURE = 2
 _ACE_STEP15_DEFAULT_KEYSCALE = "C major"
@@ -522,6 +523,7 @@ class ACEStep15Pipeline:
             _ACE_STEP15_MODEL_MODE_INFER_MISSING,
             _ACE_STEP15_MODEL_MODE_INFER_AND_REFINE,
             _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION,
+            _ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION,
         ):
             return _ACE_STEP15_MODEL_MODE_DEFAULT
         return parsed_mode
@@ -1849,10 +1851,16 @@ class ACEStep15Pipeline:
                 language = phase1_metadata["language"] if phase1_metadata["language"] is not None else "en"
             else:
                 if not self.enable_lm:
-                    raise RuntimeError("ACE-Step 1.5 model mode 1/2/3 requires an LM definition (text_encoder_URLs).")
+                    raise RuntimeError("ACE-Step 1.5 model mode 1/2/3/4 requires an LM definition (text_encoder_URLs).")
                 missing_fields = [field_name for field_name in ("bpm", "keyscale", "timesignature", "language") if phase1_metadata.get(field_name) is None]
                 infer_language = phase1_metadata.get("language", None) is None
-                run_phase1 = model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_AND_REFINE, _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION) or (
+                infer_duration = model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION, _ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION)
+                refine_caption = model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_AND_REFINE, _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION)
+                run_phase1 = model_mode_value in (
+                    _ACE_STEP15_MODEL_MODE_INFER_AND_REFINE,
+                    _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION,
+                    _ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION,
+                ) or (
                     model_mode_value == _ACE_STEP15_MODEL_MODE_INFER_MISSING and len(missing_fields) > 0
                 )
                 if run_phase1:
@@ -1862,7 +1870,7 @@ class ACEStep15Pipeline:
                         tags=tags,
                         lyrics=lyrics,
                         metadata=phase1_metadata,
-                        refine_caption=model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_AND_REFINE, _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION),
+                        refine_caption=refine_caption,
                         infer_language=infer_language,
                         seed=phase1_seed,
                         cfg_scale=1.0 if lm_cfg_scale is None else float(lm_cfg_scale),
@@ -1879,7 +1887,7 @@ class ACEStep15Pipeline:
                             computed_phase1_metadata[field_name] = value
                 if phase1_metadata is None:
                     return None
-                if model_mode_value == _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION:
+                if infer_duration:
                     duration_value = self._parse_optional_int_custom_setting(phase1_metadata.get("duration", None))
                     if duration_value is None:
                         raise RuntimeError("LM phase1 failed to resolve required metadata 'duration'.")
@@ -2125,10 +2133,14 @@ class ACEStep15Pipeline:
             original_caption = str(tags).strip()
             if len(original_caption) > 0:
                 overridden_inputs["extra_info"] = {"Original Caption": original_caption}
-        if model_mode_value == _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION:
+        if model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION, _ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION):
             overridden_inputs["duration_seconds"] = int(duration_int)
             overridden_inputs["duration"] = int(duration_int)
-        if model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_AND_REFINE, _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION):
+        if model_mode_value in (
+            _ACE_STEP15_MODEL_MODE_INFER_AND_REFINE,
+            _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION,
+            _ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION,
+        ):
             overridden_inputs["model_mode"] = _ACE_STEP15_MODEL_MODE_INFER_MISSING
 
         return {

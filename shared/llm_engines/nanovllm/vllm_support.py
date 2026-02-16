@@ -87,6 +87,8 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
     if requested_engine == "":
         return "vllm" if supported and vllm_available else default_engine
     if requested_engine in ("legacy", "cg"):
+        if not cg_available:
+            return "legacy"
         return requested_engine
     print(f"[LM] Unknown decoder engine '{requested_engine}', falling back to 'legacy'.")
     return "legacy"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -101,6 +102,8 @@ class HeartMuLaPipeline:
         codec_guidance_scale: float = 1.25,
         codec_version: str = "",
         VAE_dtype = torch.float32,
+        lm_decoder_engine=None,
+
     ):
         self.device = torch.device("cpu")
         self.mula_device = self.device
@@ -116,6 +119,7 @@ class HeartMuLaPipeline:
         self.codec_version = codec_version
         self.heartmula_weights_path = heartmula_weights_path
         self.VAE_dtype = VAE_dtype
+        self.lm_decoder_engine = str(lm_decoder_engine or "legacy").strip().lower()
 
         self.ckpt_root = Path(ckpt_root) if ckpt_root is not None else Path(
             fl.get_download_location()
@@ -128,6 +132,8 @@ class HeartMuLaPipeline:
         self._muq_dim = 512
 
         self._load_models()
+        engine = "cg" if self.lm_decoder_engine == "cg" else "legacy"
+        print(f"[HeartMuLa] LM Engine='{engine}', flash2={'on' if getattr(self.mula.backbone.layers[0].attn, '_flash_attn', None) is not None else 'off'}")
 
     def _load_models(self):
         (
@@ -162,8 +168,8 @@ class HeartMuLaPipeline:
         delattr(self.mula, "decoder")
         self.mula.decoder = [decoder]
 
-        if hasattr(self.mula, "_interrupt_check"):
-            self.mula._interrupt_check = self._abort_requested
+        self.mula._interrupt_check = self._abort_requested
+        self.mula.set_lm_decoder_engine(self.lm_decoder_engine)
         self.model = self.mula
         self.mula.eval()
         first_param = next(self.mula.parameters(), None)
@@ -338,6 +344,13 @@ class HeartMuLaPipeline:
             self.mula.prepare_flash(mula_device, flash_dtype)
         if self._abort_requested():
             return None
+        frame_duration_ms = 80  # 80 ms per audio token frame.
+        max_audio_frames = max_audio_length_ms // frame_duration_ms
+        prompt_len = int(prompt_tokens.shape[1])
+        self.mula.prepare_decode_cuda_graph(
+            max_backbone_tokens=prompt_len + max_audio_frames,
+            max_decoder_tokens=int(getattr(self.mula.config, "audio_num_codebooks", 8)),
+        )
         try:
             curr_token = self.mula.generate_frame(
                 tokens=prompt_tokens,
@@ -371,9 +384,9 @@ class HeartMuLaPipeline:
                 padded_token_mask[..., -1] = False
                 return padded_token, padded_token_mask
 
-            frame_duration_ms = 80  # 80 ms per audio token frame.
-            max_audio_frames = max_audio_length_ms // frame_duration_ms
             progress_total_seconds = max(1, max_audio_length_ms // 1000)
+            progress_refresh_interval_s = 0.33
+            last_progress_callback_ts = 0.0
             if callback is not None:
                 callback(
                     step_idx=-1,
@@ -381,9 +394,10 @@ class HeartMuLaPipeline:
                     denoising_extra=f"0s/{progress_total_seconds}s",
                     progress_unit="seconds",
                 )
+                last_progress_callback_ts = time.monotonic()
 
             if not early_stop_now:
-                for i in tqdm(range(max_audio_frames)):
+                for i in tqdm(range(max_audio_frames), mininterval=progress_refresh_interval_s):
                     if self._abort_requested():
                         return None
                     curr_token, curr_token_mask = _pad_audio_token(curr_token)
@@ -404,7 +418,7 @@ class HeartMuLaPipeline:
                     frames.append(curr_token[0:1,])
                     if self._early_stop_requested():
                         break
-                    if i % 10 == 0 and callback is not None:
+                    if callback is not None and (time.monotonic() - last_progress_callback_ts) >= progress_refresh_interval_s:
                         generated_ms = len(frames) * frame_duration_ms
                         generated_seconds_int = min(
                             progress_total_seconds,
@@ -418,11 +432,13 @@ class HeartMuLaPipeline:
                             ),
                             progress_unit="seconds",
                         )
+                        last_progress_callback_ts = time.monotonic()
             frames = torch.stack(frames).permute(1, 2, 0).squeeze(0)
             return {"frames": frames}
         finally:
             # Drop KV cache tensors as soon as we're done with generation.
             try:
+                self.mula.release_decode_cuda_graph()
                 self.mula.move_causal_masks(torch.device("cpu"))
                 self.mula.release_caches()
                 torch.cuda.empty_cache()
@@ -538,6 +554,7 @@ class HeartMuLaPipeline:
 
     def release(self) -> None:
         if hasattr(self, "mula") and self.mula is not None:
+            self.mula.release_decode_cuda_graph()
             self.mula = None
         if hasattr(self, "model"):
             self.model = None

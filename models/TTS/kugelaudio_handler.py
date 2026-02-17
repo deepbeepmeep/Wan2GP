@@ -5,7 +5,7 @@ import torch
 
 from shared.utils import files_locator as fl
 
-from .prompt_enhancers import TTS_MONOLOGUE_OR_DIALOGUE_PROMPT
+from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
 
 
 KUGELAUDIO_REPO_ID = "DeepBeepMeep/TTS"
@@ -42,6 +42,25 @@ KUGELAUDIO_CUSTOM_SETTINGS = [
 ]
 
 
+def _configure_diffusion_compile_targets(model):
+    for _, submodule in model.named_modules():
+        submodule._compile_me = False
+
+    prediction_head = getattr(model, "prediction_head", None)
+    if prediction_head is None:
+        prediction_head = getattr(getattr(model, "model", None), "prediction_head", None)
+    if prediction_head is None:
+        raise RuntimeError("KugelAudio diffusion head is missing; cannot configure compile targets.")
+
+    layers = getattr(prediction_head, "layers", None)
+    if layers is not None:
+        for layer in layers:
+            layer._compile_me = True
+    final_layer = getattr(prediction_head, "final_layer", None)
+    if final_layer is not None:
+        final_layer._compile_me = True
+
+
 def _get_kugelaudio_model_def():
     return {
         "audio_only": True,
@@ -54,6 +73,7 @@ def _get_kugelaudio_model_def():
         "image_prompt_types_allowed": "",
         "supports_early_stop": True,
         "profiles_dir": ["kugelaudio_0_open"],
+        "lm_engines": ["cg"],
         "duration_slider": dict(KUGELAUDIO_DURATION_SLIDER),
         "custom_settings": [one.copy() for one in KUGELAUDIO_CUSTOM_SETTINGS],
         "preserve_empty_prompt_lines": True,
@@ -71,9 +91,20 @@ def _get_kugelaudio_model_def():
             "letters_filter": "AB",
             "default": "",
         },
-        "text_prompt_enhancer_instructions": TTS_MONOLOGUE_OR_DIALOGUE_PROMPT,
-        "prompt_enhancer_button_label": "Write Speech",
-        "compile": False,
+        "text_prompt_enhancer_instructions": TTS_MONOLOGUE_PROMPT,
+        "text_prompt_enhancer_instructions1": TTS_QWEN3_DIALOGUE_PROMPT,
+        "text_prompt_enhancer_max_tokens": 512,
+        "text_prompt_enhancer_max_tokens1": 512,
+        "prompt_enhancer_def": {
+            "selection": ["T", "T1"],
+            "labels": {
+                "T": "A Speech based on current Prompt",
+                "T1": "A Dialogue between two People based on current Prompt",
+            },
+            "default": "T",
+        },
+        "prompt_enhancer_button_label": "Write",
+        "compile": ["transformer"],
     }
 
 
@@ -140,6 +171,7 @@ class family_handler:
         submodel_no_list=None,
         text_encoder_filename=None,
         profile=0,
+        lm_decoder_engine="legacy",
         **kwargs,
     ):
         from .kugelaudio.pipeline import KugelAudioPipeline
@@ -149,7 +181,14 @@ class family_handler:
             model_weights_path=weights_path,
             ckpt_root=fl.get_download_location(),
             device=torch.device("cpu"),
+            lm_decoder_engine=lm_decoder_engine,
         )
+        if lm_decoder_engine == "cg":
+            pipeline.model._budget = 0
+            language_model = getattr(getattr(pipeline.model, "model", None), "language_model", None)
+            if language_model is not None:
+                language_model._budget = 0
+        _configure_diffusion_compile_targets(pipeline.model)
 
         pipe = {
             "transformer": pipeline.model,

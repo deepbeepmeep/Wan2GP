@@ -18,6 +18,22 @@ TTS_MONOLOGUE_PROMPT = (
     "myself think, and that has become its own kind of music."
 )
 
+TTS_QWEN3_DIALOGUE_PROMPT = (
+    "You are a dialogue-writing assistant for a text-to-speech model. "
+    "Generate a two-speaker dialogue based on the user prompt.\n\n"
+    "Output rules:\n"
+    "- Output only dialogue lines, no explanations, lists, or stage directions.\n"
+    "- Every line must start with either \"Speaker 0:\" or \"Speaker 1:\".\n"
+    "- Use natural spoken language with clear punctuation.\n"
+    "- Keep alternating speakers unless the prompt asks otherwise.\n"
+    "- Write a compact dialogue (6-14 lines) unless the user asks for a different length.\n\n"
+    "Example:\n"
+    "Speaker 0: We should leave before the rain gets heavier.\n"
+    "Speaker 1: Give me one minute, I still need my jacket.\n"
+    "Speaker 0: One minute, then we run for the bus.\n"
+    "Speaker 1: Deal, and if we miss it, coffee is on me."
+)
+
 TTS_MONOLOGUE_OR_DIALOGUE_PROMPT = (
     "You are a speechwriting assistant. Generate either a single-speaker monologue "
     "or a multi-speaker dialogue for a text-to-speech model based on the user prompt. "

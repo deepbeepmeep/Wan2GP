@@ -6,12 +6,10 @@ from multiprocessing.synchronize import Event
 from multiprocessing.shared_memory import SharedMemory
 import sys
 
-from nanovllm.config import Config
-from nanovllm.engine.sequence import Sequence
-from nanovllm.models import resolve_model_class
-from nanovllm.layers.sampler import Sampler
-from nanovllm.utils.context import set_context, get_context, reset_context
-from nanovllm.utils.loader import load_model, WeightStore
+from ..config import Config
+from .sequence import Sequence
+from ..layers.sampler import Sampler
+from ..utils.context import set_context, get_context, reset_context
 
 import socket
 
@@ -44,7 +42,7 @@ def find_available_port(start_port: int = 2333, max_attempts: int = 100) -> int:
 
 class ModelRunner:
 
-    def __init__(self, config: Config, rank: int, event: Event | list[Event]):
+    def __init__(self, config: Config, rank: int, event: Event | list[Event], model_object=None):
         # Enable capturing scalar outputs to avoid graph breaks from Tensor.item() calls
         torch._dynamo.config.capture_scalar_outputs = True
         
@@ -91,12 +89,7 @@ class ModelRunner:
             config_dtype = torch.bfloat16
 
         self.dtype = config_dtype  # Save for later use
-        self.weight_load_mode = (config.weight_load_mode or "lazy").lower()
-        self._weights_loaded = False
-        self._weight_store = None
-        self._is_quanto_int8 = False
-        self._model_cls = resolve_model_class(hf_config)
-        self._model_is_meta = False
+        self._runtime_ready = False
         self._graph_cache = {}
         self._graph_cache_order = []
         self._logits_bias_cache = {}
@@ -104,7 +97,12 @@ class ModelRunner:
         self._guard_counts = {}
         self._guard_seen_details = set()
         torch.set_default_dtype(config_dtype)
-        self.model = self._build_deferred_model(hf_config)
+        if model_object is None:
+            raise RuntimeError(
+                "nanovllm now requires a preloaded MMGP model object. "
+                "Pass model_object=... when creating LLM."
+            )
+        self.model = model_object
         self.sampler = Sampler()
         
         # Pre-allocate buffers for sampling (optimization: avoid repeated tensor creation)
@@ -123,78 +121,16 @@ class ModelRunner:
                 self.shm = SharedMemory(name="nanovllm")
                 self.loop()
 
-    def _build_deferred_model(self, hf_config):
-        # Lazy/pinned mode should not allocate full CPU parameter storage upfront.
-        with torch.device("meta"):
-            model = self._model_cls(hf_config)
-        self._model_is_meta = True
-        return model
-
-    def ensure_weights_loaded(self):
-        if self._weights_loaded:
+    def ensure_runtime_ready(self):
+        if self._runtime_ready:
             return
-        print(f"Loading LM Weights '{self.config.model}' in vllm...")
-        default_dtype = torch.get_default_dtype()
-        torch.set_default_dtype(self.dtype)
-        try:
-            self._ensure_weight_store()
-            if self.model is None:
-                self.model = self._build_deferred_model(self.config.hf_config)
-            self._tie_word_embeddings_if_needed()
-            self._mark_tied_meta_parameter_ids()
-            # Tie before materialization so lm_head does not allocate a duplicate tensor.
-            was_meta_model = bool(self._model_is_meta)
-            if self._is_quanto_int8:
-                for module in self.model.modules():
-                    prepare = getattr(module, "prepare_for_quantized_load", None)
-                    if callable(prepare):
-                        prepare()
-            # Keep model meta until each parameter is replaced directly from safetensor
-            # to avoid allocating a dense, fully materialized CUDA shell first.
-            load_model(
-                self.model,
-                "",
-                weight_store=self._weight_store,
-                # We keep tensors tied to the active weight reader only within each
-                # load iteration; explicit cloning is not needed and avoids a full
-                # model-sized temporary copy in RAM.
-                clone_loaded_tensors=False,
-            )
-            if was_meta_model:
-                self._materialize_runtime_buffers()
-            self._model_is_meta = False
-            self._close_weight_store_if_lazy()
-            self._weights_loaded = True
-            self.allocate_kv_cache()
-            if not self.enforce_eager:
-                self.capture_cudagraph()
-        finally:
-            if not self._weights_loaded:
-                self._close_weight_store_if_lazy()
-            torch.set_default_device("cpu")
-            torch.set_default_dtype(default_dtype)
-
-    def _ensure_weight_store(self):
-        if self._weight_store is not None:
-            return
-        self._weight_store = WeightStore(self.config.model_file or self.config.model_dir, mode=self.weight_load_mode)
-        self._is_quanto_int8 = bool(getattr(self._weight_store, "is_quanto_int8", False))
-
-    def _close_weight_store_if_lazy(self):
-        if self._weight_store is None:
-            return
-        close_fn = getattr(self._weight_store, "close", None)
-        if callable(close_fn):
-            close_fn()
-        self._weight_store = None
-
-    def _materialize_runtime_buffers(self):
         if self.model is None:
-            return
-        for module in self.model.modules():
-            materialize = getattr(module, "materialize_cache", None)
-            if callable(materialize):
-                materialize()
+            raise RuntimeError("LLM model object is not available.")
+        self._tie_word_embeddings_if_needed()
+        self.allocate_kv_cache()
+        if not self.enforce_eager:
+            self.capture_cudagraph()
+        self._runtime_ready = True
 
     def _get_tied_embeddings(self):
         if self.model is None:
@@ -212,17 +148,6 @@ class ModelRunner:
             return None
         return lm_head, embed
 
-    def _mark_tied_meta_parameter_ids(self):
-        tied = self._get_tied_embeddings()
-        if tied is None:
-            self.model._vllm_tied_param_ids = set()
-            return
-        lm_head, embed = tied
-        if lm_head.weight is not embed.weight:
-            self.model._vllm_tied_param_ids = set()
-            return
-        self.model._vllm_tied_param_ids = {id(embed.weight)}
-
     def _tie_word_embeddings_if_needed(self):
         tied = self._get_tied_embeddings()
         if tied is None:
@@ -233,8 +158,8 @@ class ModelRunner:
         if lm_head.weight is not embed.weight:
             raise RuntimeError("Failed to retie lm_head.weight with embed_tokens.weight.")
 
-    def unload_weights(self):
-        if not self._weights_loaded:
+    def reset_runtime_state(self):
+        if not self._runtime_ready:
             return
         # Clear attention KV cache refs so we don't write into freed storage later.
         try:
@@ -249,8 +174,8 @@ class ModelRunner:
                 del self.kv_cache
             except Exception:
                 pass
-        # CUDA graphs captured against previous weight/KV pointers are unsafe after unload/reload.
-        # Force recapture on next load to avoid stale-pointer illegal memory access.
+        # CUDA graphs captured against previous model/KV pointers are unsafe after runtime reset.
+        # Force recapture on next prepare to avoid stale-pointer illegal memory access.
         try:
             self.clear_graph_cache()
         except Exception:
@@ -268,17 +193,7 @@ class ModelRunner:
             pass
         self._logits_bias_cache.clear()
         self._sampling_generator = None
-        self._weights_loaded = False
-        self.model = None
-        self._model_is_meta = False
-        if self._weight_store is not None:
-            try:
-                close_fn = getattr(self._weight_store, "close", None)
-                if callable(close_fn):
-                    close_fn()
-            except Exception:
-                pass
-            self._weight_store = None
+        self._runtime_ready = False
         gc.collect()
 
     def _get_graph_capture_signature(self):
@@ -335,16 +250,6 @@ class ModelRunner:
             return
         if count == 1:
             print(f"[nanovllm][guard] {name}")
-
-    def reset_guard_counts(self):
-        self._guard_counts.clear()
-        self._guard_seen_details.clear()
-
-    def get_guard_counts(self, reset: bool = False):
-        counts = dict(self._guard_counts)
-        if reset:
-            self.reset_guard_counts()
-        return counts
 
     def _get_logits_bias(self, seq: Sequence, logits: torch.Tensor):
         bias = getattr(seq, "logits_bias", None)
@@ -430,17 +335,9 @@ class ModelRunner:
 
     def exit(self):
         try:
-            self.unload_weights()
+            self.reset_runtime_state()
         except Exception:
             pass
-        try:
-            if self._weight_store is not None:
-                close_fn = getattr(self._weight_store, "close", None)
-                if callable(close_fn):
-                    close_fn()
-        except Exception:
-            pass
-        self._weight_store = None
         self._release_sample_buffers()
         self._logits_bias_cache.clear()
         self._guard_counts.clear()
@@ -449,7 +346,6 @@ class ModelRunner:
             self.sampler = None
         if hasattr(self, "model"):
             self.model = None
-        self._model_is_meta = False
         if self.world_size > 1:
             self.shm.close()
             dist.barrier()
@@ -710,7 +606,7 @@ class ModelRunner:
         """Run model forward and sampling. For CFG sequences, batch is structured as:
         [cond_seq1, cond_seq2, ..., uncond_seq1, uncond_seq2, ...]
         where uncond_seqi is the paired unconditional sequence of cond_seqi."""
-        self.ensure_weights_loaded()
+        self.ensure_runtime_ready()
         # Check if this is a CFG batch (contains paired conditional and unconditional sequences)
         is_cfg_batch = seqs[0].cfg_scale > 1.0 and seqs[0].paired_seq is not None
         if is_cfg_batch:
@@ -878,7 +774,7 @@ class ModelRunner:
     def capture_cudagraph(self):
         config = self.config
         cache_key = (config.max_model_len, config.max_num_seqs)
-        model_device = self._get_model_device()
+        model_device = torch.device("cuda") if torch.cuda.is_available() else self._get_model_device()
         cached = self._graph_cache.get(cache_key)
         if cached is not None:
             current_sig = self._get_graph_capture_signature()

@@ -2,6 +2,8 @@ import struct
 from typing import Optional
 import json
 import os
+import re
+from datetime import datetime
 
 def write_wav_text_chunk(in_path: str, out_path: str, text: str,
                          fourcc: bytes = b'json', encoding: str = 'utf-8') -> None:
@@ -155,3 +157,190 @@ def read_audio_metadata(path):
     if not raw:
         return None
     return json.loads(raw)
+
+
+_CREATION_KEYS = (
+    "creation_date",
+    "creation_datetime",
+    "created_at",
+    "created_on",
+    "creation_timestamp",
+    "created_timestamp",
+)
+_DATE_KEY_PARTS = ("date", "time", "created", "timestamp")
+_DATE_KEY_EXCLUDE = ("generation_time", "pause_seconds", "duration_seconds", "video_length")
+
+
+def _parse_datetime_value(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        if 1900 <= value <= 3000:
+            try:
+                return datetime(int(value), 1, 1)
+            except Exception:
+                return None
+        if value <= 0:
+            return None
+        try:
+            return datetime.fromtimestamp(float(value))
+        except Exception:
+            return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d{10}(\.\d+)?", text) or re.fullmatch(r"\d{13}", text):
+        try:
+            ts = float(text)
+            if ts > 1_000_000_000_000:
+                ts /= 1000.0
+            return datetime.fromtimestamp(ts)
+        except Exception:
+            pass
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    if re.match(r"^\d{4}:\d{2}:\d{2}\s", text):
+        text = text.replace(":", "-", 2)
+
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d",
+        "%Y-%m-%d-%Hh%Mm%Ss",
+        "%Y%m%d",
+        "%Y",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            pass
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _iter_tag_values(value):
+    if value is None:
+        return
+    if hasattr(value, "text"):
+        txt = value.text
+        if isinstance(txt, (list, tuple)):
+            for item in txt:
+                yield item
+        else:
+            yield txt
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_tag_values(item)
+        return
+    yield value
+
+
+def extract_creation_datetime_from_metadata(metadata):
+    if not isinstance(metadata, dict):
+        return None
+    for key in _CREATION_KEYS:
+        dt = _parse_datetime_value(metadata.get(key))
+        if dt is not None:
+            return dt
+
+    extra_info = metadata.get("extra_info")
+    if isinstance(extra_info, dict):
+        for key in _CREATION_KEYS:
+            dt = _parse_datetime_value(extra_info.get(key))
+            if dt is not None:
+                return dt
+
+    for source in (metadata, extra_info if isinstance(extra_info, dict) else {}):
+        for key, value in source.items():
+            lkey = str(key).strip().lower()
+            if any(part in lkey for part in _DATE_KEY_EXCLUDE):
+                continue
+            if not any(part in lkey for part in _DATE_KEY_PARTS):
+                continue
+            dt = _parse_datetime_value(value)
+            if dt is not None:
+                return dt
+    return None
+
+
+def _extract_native_audio_datetime(path):
+    try:
+        from mutagen import File
+    except Exception:
+        return None
+    try:
+        audio = File(path, easy=False)
+    except Exception:
+        return None
+    tags = None if audio is None else getattr(audio, "tags", None)
+    if tags is None:
+        return None
+
+    if hasattr(tags, "getall"):
+        for frame_name in ("TDRC", "TDEN", "TORY", "TYER", "TDAT", "TIME"):
+            try:
+                frames = tags.getall(frame_name)
+            except Exception:
+                frames = []
+            for frame in frames:
+                for item in _iter_tag_values(frame):
+                    dt = _parse_datetime_value(item)
+                    if dt is not None:
+                        return dt
+        try:
+            txxx_frames = tags.getall("TXXX")
+        except Exception:
+            txxx_frames = []
+        for frame in txxx_frames:
+            desc = str(getattr(frame, "desc", "")).lower()
+            if not any(part in desc for part in _DATE_KEY_PARTS):
+                continue
+            for item in _iter_tag_values(frame):
+                dt = _parse_datetime_value(item)
+                if dt is not None:
+                    return dt
+
+    items = tags.items() if hasattr(tags, "items") else []
+    for key, value in items:
+        lkey = str(key).lower()
+        if any(part in lkey for part in _DATE_KEY_EXCLUDE):
+            continue
+        if not any(part in lkey for part in _DATE_KEY_PARTS + ("icrd", "\xa9day", "year")):
+            continue
+        for item in _iter_tag_values(value):
+            dt = _parse_datetime_value(item)
+            if dt is not None:
+                return dt
+    return None
+
+
+def _get_file_creation_datetime(path):
+    # For uploaded files, preserving browser-provided lastModified maps naturally to mtime.
+    return datetime.fromtimestamp(os.path.getmtime(path))
+
+
+def resolve_audio_creation_datetime(path, wangp_metadata=None):
+    metadata = wangp_metadata
+    if metadata is None:
+        try:
+            metadata = read_audio_metadata(path)
+        except Exception:
+            metadata = None
+
+    dt = extract_creation_datetime_from_metadata(metadata)
+    if dt is not None:
+        return dt
+
+    dt = _extract_native_audio_datetime(path)
+    if dt is not None:
+        return dt
+
+    return _get_file_creation_datetime(path)

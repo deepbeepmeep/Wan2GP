@@ -4,13 +4,14 @@ This is the open-source inference implementation without optimizations.
 Based on the original VibeVoice model architecture.
 """
 
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import DynamicCache, StaticCache
 from transformers.generation import (
     GenerationConfig,
     GenerationMixin,
@@ -25,6 +26,7 @@ from transformers.utils import logging
 
 from ..configs import KugelAudioConfig
 from ..schedule.dpm_solver import DPMSolverMultistepScheduler
+from .cudagraph_hooks import KugelAudioCudaGraphHooks
 from .diffusion_head import KugelAudioDiffusionHead
 from .kugelaudio_model import KugelAudioModel, KugelAudioPreTrainedModel
 from .tokenizer import (
@@ -97,6 +99,7 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
     def __init__(self, config):
         super().__init__(config)
         self.model = KugelAudioModel(config)
+        self._cuda_graph_hooks = KugelAudioCudaGraphHooks(self)
         self.lm_head = nn.Linear(
             config.decoder_config.hidden_size,
             config.decoder_config.vocab_size,
@@ -153,6 +156,15 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
         self.ddpm_inference_steps = (
             num_steps or self.config.diffusion_head_config.ddpm_num_inference_steps
         )
+
+    def set_lm_decoder_engine(self, lm_decoder_engine: str | None) -> None:
+        self._cuda_graph_hooks.set_lm_decoder_engine(lm_decoder_engine)
+
+    def prepare_decode_cuda_graph(self, *, max_batch_size: int, max_cache_tokens: int) -> None:
+        self._cuda_graph_hooks.prepare(max_batch_size=max_batch_size, max_cache_tokens=max_cache_tokens)
+
+    def release_decode_cuda_graph(self) -> None:
+        self._cuda_graph_hooks.release()
 
     def _process_speech_inputs(
         self,
@@ -237,8 +249,7 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
         # Combine embeddings and index by speech_masks
         combined_embed = acoustic_embed + semantic_embed
 
-        # Move speech_masks to CPU for indexing (matches working implementation)
-        speech_embeds = combined_embed[speech_masks.cpu()]
+        speech_embeds = combined_embed[speech_masks.to(device=combined_embed.device, dtype=torch.bool)]
 
         return acoustic_features, speech_embeds
 
@@ -327,28 +338,21 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                 speech = self.model.noise_scheduler.step(eps, t, speech).prev_sample
             return speech
 
-        # With CFG - batched forward pass
-        combined_condition = torch.cat([condition, neg_condition], dim=0).to(
-            self.model.prediction_head.device
-        )
-        speech = torch.randn(combined_condition.shape[0], self.config.acoustic_vae_dim).to(
-            combined_condition
-        )
+        # With CFG - run guidance on one latent batch (N), not duplicated scheduler states (2N).
+        combined_condition = torch.cat([condition, neg_condition], dim=0).to(self.model.prediction_head.device)
+        batch = int(condition.shape[0])
+        speech = torch.randn(batch, self.config.acoustic_vae_dim).to(combined_condition)
 
         for t in self.model.noise_scheduler.timesteps:
             if abort_check is not None and abort_check():
                 return None
-            half = speech[: len(speech) // 2]
-            combined = torch.cat([half, half], dim=0)
-            eps = self.model.prediction_head(
-                combined, t.repeat(combined.shape[0]).to(combined), condition=combined_condition
-            )
-            cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
-            half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
-            eps = torch.cat([half_eps, half_eps], dim=0)
-            speech = self.model.noise_scheduler.step(eps, t, speech).prev_sample
+            combined = torch.cat([speech, speech], dim=0)
+            eps = self.model.prediction_head(combined, t.repeat(combined.shape[0]).to(combined), condition=combined_condition)
+            cond_eps, uncond_eps = torch.split(eps, batch, dim=0)
+            guided_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
+            speech = self.model.noise_scheduler.step(guided_eps, t, speech).prev_sample
 
-        return speech[: len(speech) // 2]
+        return speech
 
     @torch.no_grad()
     def encode_voice_prompt(
@@ -401,6 +405,7 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
         early_stop_check=None,
         callback=None,
         progress_interval: int = 10,
+        release_decode_graph_on_exit: bool = True,
         **kwargs,
     ) -> KugelAudioGenerationOutput:
         """Generate speech from text.
@@ -457,12 +462,21 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
         semantic_cache = KugelAudioTokenizerStreamingCache()
 
         # Initialize sequences and attention masks
-        current_ids = text_ids
-        attention_mask = torch.ones_like(current_ids)
+        input_embedding_layer = self.model.get_input_embeddings()
+        prompt_ids = text_ids
+        generated_tokens: list[torch.Tensor] = []
+        positive_seq_len = int(prompt_ids.shape[1])
+        attention_mask = torch.ones_like(prompt_ids)
 
         # For CFG, create negative prompt (just speech_start token)
-        negative_ids = torch.full((batch_size, 1), speech_start_id, dtype=torch.long, device=device)
-        negative_attention_mask = torch.ones_like(negative_ids)
+        max_cache_tokens = int(prompt_ids.shape[1]) + max(1, int(max_new_tokens))
+        embed_dim = int(input_embedding_layer.weight.shape[1])
+        negative_ids = torch.full((batch_size, max_cache_tokens), speech_start_id, dtype=torch.long, device=device)
+        negative_attention_mask = torch.zeros((batch_size, max_cache_tokens), dtype=attention_mask.dtype, device=device)
+        negative_attention_mask[:, 0] = 1
+        negative_inputs_embeds = torch.empty((batch_size, max_cache_tokens, embed_dim), device=device, dtype=dtype)
+        negative_inputs_embeds[:, :1, :] = input_embedding_layer(negative_ids[:, :1])
+        negative_seq_len = 1
 
         # Storage for generated audio and tracking
         audio_chunks = [[] for _ in range(batch_size)]
@@ -474,7 +488,7 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
         tail_exhausted = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         # Get initial embeddings
-        inputs_embeds = self.model.get_input_embeddings()(current_ids)
+        inputs_embeds = input_embedding_layer(prompt_ids)
 
         # Process voice/speech input if provided
         if speech_tensors is not None or voice_cache is not None:
@@ -522,8 +536,6 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                         )
                 inputs_embeds[speech_input_mask] = speech_embeds
 
-        negative_inputs_embeds = self.model.get_input_embeddings()(negative_ids)
-
         # Setup logits processor to constrain to valid tokens
         valid_tokens = [speech_start_id, speech_end_id, speech_diffusion_id, eos_token_id]
         token_constraint = KugelAudioTokenConstraintProcessor(valid_tokens, device=device)
@@ -531,16 +543,46 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
         # Initialize KV caches
         past_key_values = None
         negative_past_key_values = None
+        self.prepare_decode_cuda_graph(max_batch_size=int(batch_size), max_cache_tokens=max_cache_tokens)
+        graph_active = self._cuda_graph_hooks.is_active()
+        use_fast_kvcache = False
+        static_past_key_values = None
+        static_decode_cache_position = None
+        lm_attn_backend = str(
+            getattr(getattr(self.model.language_model, "config", None), "_attn_implementation", None)
+            or getattr(getattr(self.model.language_model, "config", None), "attn_implementation", None)
+            or ""
+        ).strip().lower()
+        if not graph_active and device.type == "cuda" and lm_attn_backend != "flash_attention_2":
+            static_past_key_values = StaticCache(
+                config=self.config.decoder_config,
+                max_batch_size=int(batch_size),
+                max_cache_len=int(max_cache_tokens),
+                device=device,
+                dtype=dtype,
+            )
+            static_decode_cache_position = torch.empty(1, device=device, dtype=torch.long)
+            use_fast_kvcache = True
+        if self._cuda_graph_hooks.is_enabled():
+            prepare_status = "reused" if self._cuda_graph_hooks.last_prepare_reused() else "new"
+            state = "active" if graph_active else "inactive"
+            if state == "inactive" or prepare_status == "new":
+                print(f"[KugelAudio][cg] decode graph {state} ({prepare_status})")
+        if use_fast_kvcache:
+            print("[KugelAudio][kv] fast static cache active (legacy)")
 
         # Progress bar
         progress_iter = (
-            tqdm(range(max_new_tokens), desc="KugelAudio", leave=False)
+            tqdm(range(max_new_tokens), desc="KugelAudio", leave=False, mininterval=0.33)
             if show_progress
             else range(max_new_tokens)
         )
 
         total_steps = max(1, int(max_new_tokens))
         progress_interval = max(1, int(progress_interval or 1))
+        progress_refresh_interval_s = 0.33
+        last_progress_callback_ts = 0.0
+        eos_token_tensor = torch.tensor(eos_token_id, device=device)
         if callback is not None:
             callback(
                 step_idx=-1,
@@ -548,9 +590,12 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                 denoising_extra=f"0/{total_steps} tokens",
                 progress_unit="tokens",
             )
+            last_progress_callback_ts = time.monotonic()
 
         for step in progress_iter:
             if abort_check is not None and abort_check():
+                if release_decode_graph_on_exit:
+                    self.release_decode_cuda_graph()
                 return None
             if early_stop_check is not None and early_stop_check():
                 break
@@ -558,27 +603,55 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                 break
 
             # Forward pass for positive (main) model
-            if past_key_values is None:
-                outputs = self(
-                    inputs_embeds=inputs_embeds,
-                    attention_mask=attention_mask,
-                    use_cache=True,
-                    return_dict=True,
+            if step == 0:
+                outputs = (
+                    self._cuda_graph_hooks.prefill(inputs_embeds)
+                    if graph_active
+                    else self(
+                        inputs_embeds=inputs_embeds,
+                        attention_mask=attention_mask if not use_fast_kvcache else None,
+                        past_key_values=static_past_key_values,
+                        use_cache=True,
+                        return_dict=True,
+                        cache_position=torch.arange(positive_seq_len, device=device, dtype=torch.long)
+                        if use_fast_kvcache
+                        else None,
+                    )
                 )
+                if not graph_active and not use_fast_kvcache:
+                    past_key_values = outputs.past_key_values
+                logits = outputs.logits[:, -1, :]
+                positive_last_hidden = outputs.last_hidden_state
             else:
-                outputs = self(
-                    inputs_embeds=inputs_embeds[:, -1:],
-                    attention_mask=attention_mask,
-                    past_key_values=past_key_values,
-                    use_cache=True,
-                    return_dict=True,
-                )
-
-            past_key_values = outputs.past_key_values
-            logits = outputs.logits[:, -1, :]
+                if graph_active:
+                    decode_position = int(positive_seq_len - 1)
+                    if not self._cuda_graph_hooks.has_capacity(decode_position):
+                        # Static cache replay cannot compact KV; stop when max duration/token budget is reached.
+                        break
+                    step_logits, positive_last_hidden = self._cuda_graph_hooks.run_decode(
+                        inputs_embeds[:, -1:], decode_position
+                    )
+                    logits = step_logits[:, -1, :]
+                else:
+                    outputs = self(
+                        inputs_embeds=inputs_embeds[:, -1:],
+                        attention_mask=attention_mask if not use_fast_kvcache else None,
+                        past_key_values=past_key_values if not use_fast_kvcache else static_past_key_values,
+                        use_cache=True,
+                        return_dict=True,
+                        cache_position=(
+                            static_decode_cache_position.fill_(positive_seq_len - 1)
+                            if use_fast_kvcache
+                            else None
+                        ),
+                    )
+                    if not use_fast_kvcache:
+                        past_key_values = outputs.past_key_values
+                    logits = outputs.logits[:, -1, :]
+                    positive_last_hidden = outputs.last_hidden_state
 
             # Apply token constraint
-            logits = token_constraint(current_ids, logits)
+            logits = token_constraint(prompt_ids, logits)
 
 
             # If tail mode is active, prevent EOS/speech_end for those samples.
@@ -618,19 +691,19 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
 
             # Force finished samples to output EOS
             force_eos_mask = finished
-            next_tokens = torch.where(
-                force_eos_mask, torch.tensor(eos_token_id, device=device), next_tokens
-            )
+            next_tokens = torch.where(force_eos_mask, eos_token_tensor, next_tokens)
 
             # Update sequences
-            current_ids = torch.cat([current_ids, next_tokens.unsqueeze(-1)], dim=-1)
-            attention_mask = torch.cat(
-                [
-                    attention_mask,
-                    torch.ones((batch_size, 1), device=device, dtype=attention_mask.dtype),
-                ],
-                dim=-1,
-            )
+            generated_tokens.append(next_tokens.unsqueeze(-1))
+            positive_seq_len += 1
+            if not graph_active and not use_fast_kvcache:
+                attention_mask = torch.cat(
+                    [
+                        attention_mask,
+                        torch.ones((batch_size, 1), device=device, dtype=attention_mask.dtype),
+                    ],
+                    dim=-1,
+                )
 
             # Check for EOS/speech_end tokens (optionally extend with tail tokens)
             eos_mask = (next_tokens == eos_token_id) & ~finished
@@ -674,20 +747,20 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                 speech_start_indices = speech_start_mask.nonzero(as_tuple=False).squeeze(-1)
                 if speech_start_indices.dim() == 0:
                     speech_start_indices = speech_start_indices.unsqueeze(0)
+                key_caches, value_caches = _get_cache_tensors(negative_past_key_values)
 
                 for sample_idx in speech_start_indices.tolist():
-                    negative_attention_mask[sample_idx, :] = 0
-                    negative_attention_mask[sample_idx, -1] = 1
+                    negative_attention_mask[sample_idx, :negative_seq_len] = 0
+                    negative_attention_mask[sample_idx, negative_seq_len - 1] = 1
 
-                    key_caches, value_caches = _get_cache_tensors(negative_past_key_values)
                     for k_cache, v_cache in zip(key_caches, value_caches):
                         k_cache[sample_idx, :, -1, :] = k_cache[sample_idx, :, 0, :].clone()
                         v_cache[sample_idx, :, -1, :] = v_cache[sample_idx, :, 0, :].clone()
 
-                    negative_ids[sample_idx, -1] = speech_start_id
+                    negative_ids[sample_idx, negative_seq_len - 1] = speech_start_id
 
             # Prepare next input embeddings
-            next_inputs_embeds = self.model.get_input_embeddings()(next_tokens).unsqueeze(1)
+            next_inputs_embeds = input_embedding_layer(next_tokens).unsqueeze(1)
 
             # Handle diffusion tokens - generate speech
             diffusion_mask = (next_tokens == speech_diffusion_id) & ~finished
@@ -700,15 +773,15 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                 if cfg_scale != 1.0:
                     if negative_past_key_values is None:
                         neg_outputs = self(
-                            inputs_embeds=negative_inputs_embeds,
-                            attention_mask=negative_attention_mask,
+                            inputs_embeds=negative_inputs_embeds[:, :negative_seq_len],
+                            attention_mask=negative_attention_mask[:, :negative_seq_len],
                             use_cache=True,
                             return_dict=True,
                         )
                     else:
                         neg_outputs = self(
-                            inputs_embeds=negative_inputs_embeds[:, -1:],
-                            attention_mask=negative_attention_mask,
+                            inputs_embeds=negative_inputs_embeds[:, negative_seq_len - 1 : negative_seq_len],
+                            attention_mask=negative_attention_mask[:, :negative_seq_len],
                             past_key_values=negative_past_key_values,
                             use_cache=True,
                             return_dict=True,
@@ -727,26 +800,26 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                         key_caches, value_caches = _get_cache_tensors(negative_past_key_values)
                         for sample_idx in non_diffusion_indices.tolist():
                             start_idx = correct_cnt[sample_idx].item()
-                            seq_len = negative_attention_mask.shape[1]
+                            seq_len = int(negative_seq_len)
 
                             if start_idx + 1 < seq_len - 1:
-                                negative_attention_mask[sample_idx, start_idx + 1 :] = (
-                                    negative_attention_mask[sample_idx, start_idx:-1].clone()
+                                negative_attention_mask[sample_idx, start_idx + 1 : seq_len] = (
+                                    negative_attention_mask[sample_idx, start_idx : seq_len - 1].clone()
                                 )
                             negative_attention_mask[sample_idx, start_idx] = 0
 
                             for k_cache, v_cache in zip(key_caches, value_caches):
-                                if start_idx + 1 < k_cache.shape[2] - 1:
-                                    k_cache[sample_idx, :, start_idx + 1 :, :] = k_cache[
-                                        sample_idx, :, start_idx:-1, :
+                                if start_idx + 1 < seq_len - 1:
+                                    k_cache[sample_idx, :, start_idx + 1 : seq_len, :] = k_cache[
+                                        sample_idx, :, start_idx : seq_len - 1, :
                                     ].clone()
-                                    v_cache[sample_idx, :, start_idx + 1 :, :] = v_cache[
-                                        sample_idx, :, start_idx:-1, :
+                                    v_cache[sample_idx, :, start_idx + 1 : seq_len, :] = v_cache[
+                                        sample_idx, :, start_idx : seq_len - 1, :
                                     ].clone()
 
-                            if start_idx + 1 < negative_ids.shape[1] - 1:
-                                negative_ids[sample_idx, start_idx + 1 :] = negative_ids[
-                                    sample_idx, start_idx:-1
+                            if start_idx + 1 < seq_len - 1:
+                                negative_ids[sample_idx, start_idx + 1 : seq_len] = negative_ids[
+                                    sample_idx, start_idx : seq_len - 1
                                 ].clone()
 
                         correct_cnt[non_diffusion_indices] += 1
@@ -761,13 +834,15 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                     )
 
                 # Get conditioning from last hidden state
-                condition = outputs.last_hidden_state[diffusion_indices, -1, :]
+                condition = positive_last_hidden[diffusion_indices, -1, :]
 
                 # Sample speech latents using diffusion
                 speech_latents = self.sample_speech_tokens(
                     condition, neg_condition, cfg_scale, abort_check=abort_check
                 )
                 if speech_latents is None:
+                    if release_decode_graph_on_exit:
+                        self.release_decode_cuda_graph()
                     return None
 
                 # Unscale latents
@@ -786,9 +861,9 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                 # Store audio chunks
                 for i, idx in enumerate(diffusion_indices.tolist()):
                     if not finished[idx]:
-                        audio_chunks[idx].append(audio[i].cpu())
+                        audio_chunks[idx].append(audio[i].detach().clone())
 
-                # Encode audio to semantic features with streaming cache
+                # Keep both acoustic + semantic conditioning for diffusion tokens.
                 semantic_output = self.semantic_tokenizer.encode(
                     audio,
                     cache=semantic_cache,
@@ -796,38 +871,42 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                     use_cache=True,
                 )
                 semantic_features = semantic_output.mean
-
-                # Compute embeddings for next step
                 acoustic_embed = self.acoustic_connector(speech_latents.unsqueeze(1))
                 semantic_embed = self.semantic_connector(semantic_features)
-                diffusion_embeds = (acoustic_embed + semantic_embed).squeeze(1)
 
                 # Update embeddings for diffusion samples
-                next_inputs_embeds[diffusion_indices] = diffusion_embeds.unsqueeze(1)
+                next_inputs_embeds[diffusion_indices] = acoustic_embed + semantic_embed
 
-            # Update embeddings for next iteration
-            inputs_embeds = torch.cat([inputs_embeds, next_inputs_embeds], dim=1)
+            # Positive decode only consumes the latest token after prefill.
+            inputs_embeds = next_inputs_embeds
 
             # Update negative model
-            negative_inputs_embeds = torch.cat([negative_inputs_embeds, next_inputs_embeds], dim=1)
-            negative_attention_mask = torch.cat(
-                [
-                    negative_attention_mask,
-                    torch.ones((batch_size, 1), device=device, dtype=negative_attention_mask.dtype),
-                ],
-                dim=-1,
-            )
-            negative_ids = torch.cat([negative_ids, next_tokens.unsqueeze(-1)], dim=-1)
+            if cfg_scale != 1.0:
+                if negative_seq_len >= max_cache_tokens:
+                    break
+                negative_inputs_embeds[:, negative_seq_len : negative_seq_len + 1, :] = next_inputs_embeds
+                negative_attention_mask[:, negative_seq_len] = 1
+                negative_ids[:, negative_seq_len] = next_tokens
+                negative_seq_len += 1
 
-            if callback is not None and (step % progress_interval == 0 or step + 1 == total_steps):
-                callback(
-                    step_idx=step,
-                    override_num_inference_steps=total_steps,
-                    denoising_extra=f"{step + 1}/{total_steps} tokens",
-                    progress_unit="tokens",
+            if callback is not None:
+                now = time.monotonic()
+                should_refresh = (
+                    step + 1 == total_steps
+                    or (step % progress_interval == 0 and (now - last_progress_callback_ts) >= progress_refresh_interval_s)
                 )
+                if should_refresh:
+                    callback(
+                        step_idx=step,
+                        override_num_inference_steps=total_steps,
+                        denoising_extra=f"{step + 1}/{total_steps} tokens",
+                        progress_unit="tokens",
+                    )
+                    last_progress_callback_ts = now
 
         if abort_check is not None and abort_check():
+            if release_decode_graph_on_exit:
+                self.release_decode_cuda_graph()
             return None
 
         # Concatenate audio chunks with normalization
@@ -841,14 +920,18 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                     concatenated = concatenated * (0.95 / max_val)
                 # Apply watermark to all generated audio
                 # concatenated = self._apply_watermark(concatenated, sample_rate=24000)
-                speech_outputs.append(concatenated)
+                speech_outputs.append(concatenated.cpu())
             else:
                 speech_outputs.append(None)
 
-        return KugelAudioGenerationOutput(
-            sequences=current_ids,
-            speech_outputs=speech_outputs,
-        )
+        if generated_tokens:
+            sequences = torch.cat([prompt_ids] + generated_tokens, dim=-1)
+        else:
+            sequences = prompt_ids
+        output = KugelAudioGenerationOutput(sequences=sequences, speech_outputs=speech_outputs)
+        if release_decode_graph_on_exit:
+            self.release_decode_cuda_graph()
+        return output
 
     def _apply_watermark(self, audio: torch.Tensor, sample_rate: int = 24000) -> torch.Tensor:
         """Apply imperceptible watermark to generated audio.

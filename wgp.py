@@ -41,7 +41,7 @@ from shared.utils.utils import calculate_new_dimensions, get_outpainting_frame_l
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files,  save_video, save_image
 from shared.utils.audio_video import save_image_metadata, read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension
-from shared.utils.audio_metadata import save_audio_metadata, read_audio_metadata
+from shared.utils.audio_metadata import save_audio_metadata, read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
 from shared.utils.video_metadata import save_video_metadata
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
@@ -93,8 +93,8 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.7.4"
-WanGP_version = "10.84"
+target_mmgp_version = "3.7.5"
+WanGP_version = "10.9"
 settings_version = 2.52
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -103,7 +103,6 @@ CUSTOM_SETTINGS_MAX = 6
 CUSTOM_SETTINGS_PER_ROW = 2
 CUSTOM_SETTING_TYPES = {"int", "float", "text"}
 lm_decoder_engine = ""
-lm_decoder_engine_obtained = "legacy"
 enable_int8_kernels = 0
 # All media attachment keys for queue save/load
 ATTACHMENT_KEYS = ["image_start", "image_end", "image_refs", "image_guide", "image_mask",
@@ -2437,7 +2436,6 @@ def _normalize_output_paths(config):
 _normalize_profile_defaults(server_config)
 _normalize_output_paths(server_config)
 lm_decoder_engine = server_config.get("lm_decoder_engine", "")
-lm_decoder_engine_obtained = resolve_lm_decoder_engine(lm_decoder_engine)
 
 #   Deprecated models
 for path in  ["wan2.1_Vace_1.3B_preview_bf16.safetensors", "sky_reels2_diffusion_forcing_1.3B_bf16.safetensors","sky_reels2_diffusion_forcing_720p_14B_bf16.safetensors",
@@ -3577,11 +3575,9 @@ def setup_prompt_enhancer(pipe, kwargs):
 
 
 def load_models(model_type, override_profile = -1, output_type="video", **model_kwargs):
-    global transformer_type, loaded_profile, lm_decoder_engine_obtained
+    global transformer_type, loaded_profile
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(model_type)
-    requested_lm_decoder_engine = model_kwargs.pop("lm_decoder_engine", lm_decoder_engine)
-    lm_decoder_engine_obtained = resolve_lm_decoder_engine(requested_lm_decoder_engine)
     save_quantized = args.save_quantized and model_def != None
     model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy) 
     if "URLs2" in model_def:
@@ -3666,6 +3662,10 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
 
 
     profile = compute_profile(override_profile, output_type)
+    lm_decoder_engine_obtained = resolve_lm_decoder_engine(lm_decoder_engine, model_def.get("lm_engines", []) )
+    if lm_decoder_engine_obtained in ("cg", "vllm") and int(profile) not in [ 1, 3]:
+        print(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
+        lm_decoder_engine_obtained = "legacy"
     torch.set_default_device('cpu')    
     wan_model, pipe = model_type_handler.load_model(
                 local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
@@ -4129,6 +4129,22 @@ all_process_map_video_guide =  { "B": "face", "H" : "bbox"}
 all_process_map_video_guide.update(process_map_video_guide)
 processes_names = { "pose": "Open Pose", "depth": "Depth Mask", "scribble" : "Shapes", "flow" : "Flow Map", "gray" : "Gray Levels", "inpaint" : "Inpaint Mask", "identity": "Identity Mask", "raw" : "Raw Format", "canny" : "Canny Edges", "face": "Face Movements", "bbox": "BBox"}
 
+
+def resolve_media_creation_date(file_name, configs=None):
+    creation_dt = extract_creation_datetime_from_metadata(configs) if isinstance(configs, dict) else None
+    if creation_dt is None and has_audio_file_extension(file_name):
+        try:
+            creation_dt = resolve_audio_creation_datetime(file_name, wangp_metadata=configs if isinstance(configs, dict) else None)
+        except Exception:
+            creation_dt = None
+    if creation_dt is None:
+        creation_dt = get_file_creation_date(file_name)
+    creation_date = str(creation_dt)
+    if "." in creation_date:
+        creation_date = creation_date[:creation_date.rfind(".")]
+    return creation_date
+
+
 def update_video_prompt_type(state, any_video_guide = False, any_video_mask = False, any_background_image_ref = False, process_type = None, default_update = ""):
     letters = default_update
     settings = get_current_model_settings(state)
@@ -4261,8 +4277,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             values += misc_values
             labels += misc_labels
             
-            video_creation_date = "Deleted" if is_deleted else str(get_file_creation_date(file_name))
-            if "." in video_creation_date: video_creation_date = video_creation_date[:video_creation_date.rfind(".")]
+            video_creation_date = "Deleted" if is_deleted else resolve_media_creation_date(file_name, configs)
             if is_audio:
                 pass
             elif is_image:
@@ -4370,8 +4385,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                     and (any_letters(video_video_prompt_type, "VFK") ) :
                 video_video_guide_outpainting = video_video_guide_outpainting.split(" ")
                 video_outpainting = f"Top={video_video_guide_outpainting[0]}%, Bottom={video_video_guide_outpainting[1]}%, Left={video_video_guide_outpainting[2]}%, Right={video_video_guide_outpainting[3]}%" 
-            video_creation_date = str(get_file_creation_date(file_name))
-            if "." in video_creation_date: video_creation_date = video_creation_date[:video_creation_date.rfind(".")]
+            video_creation_date = resolve_media_creation_date(file_name, configs)
             video_generation_time = format_generation_time(float(configs.get("generation_time", "0")))
             video_activated_loras = configs.get("activated_loras", [])
             video_loras_multipliers = configs.get("loras_multipliers", "")
@@ -5377,23 +5391,29 @@ class DynamicClass:
         return self.assign(**dict)
 
 def process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image_start, original_image_refs, is_image, audio_only, seed, prompt_enhancer_instructions = None ):
-
+    prompt_enhancer_mode = str(prompt_enhancer or "")
     prompt_enhancer_instructions = model_def.get("image_prompt_enhancer_instructions" if is_image else "video_prompt_enhancer_instructions", None)
     text_encoder_max_tokens = model_def.get("image_prompt_enhancer_max_tokens" if is_image else "video_prompt_enhancer_max_tokens", 256)
-    if not "I" in prompt_enhancer:
-        prompt_enhancer_instructions = model_def.get("text_prompt_enhancer_instructions", prompt_enhancer_instructions)
-        text_encoder_max_tokens = model_def.get("text_prompt_enhancer_max_tokens", text_encoder_max_tokens)
+    if "I" not in prompt_enhancer_mode:
+        prompt_profile_id = "0"
+        prompt_profile_match = re.search(r"\d", prompt_enhancer_mode)
+        if prompt_profile_match is not None:
+            prompt_profile_id = prompt_profile_match.group(0)
+        prompt_instructions_key = "text_prompt_enhancer_instructions" if prompt_profile_id == "0" else f"text_prompt_enhancer_instructions{prompt_profile_id}"
+        prompt_max_tokens_key = "text_prompt_enhancer_max_tokens" if prompt_profile_id == "0" else f"text_prompt_enhancer_max_tokens{prompt_profile_id}"
+        prompt_enhancer_instructions = model_def.get(prompt_instructions_key, model_def.get("text_prompt_enhancer_instructions", prompt_enhancer_instructions))
+        text_encoder_max_tokens = model_def.get(prompt_max_tokens_key, model_def.get("text_prompt_enhancer_max_tokens", text_encoder_max_tokens))
 
     from shared.prompt_enhancer.prompt_enhance_utils import generate_cinematic_prompt
     prompt_images = []
-    if "I" in prompt_enhancer:
+    if "I" in prompt_enhancer_mode:
         if image_start != None:
             if not isinstance(image_start, list): image_start= [image_start] 
             prompt_images += image_start
         if original_image_refs != None:
             prompt_images += original_image_refs[:1]
     prompt_images = [Image.open(img) if isinstance(img,str) else img for img in prompt_images]
-    if len(original_prompts) == 0 and not "T" in prompt_enhancer:
+    if len(original_prompts) == 0 and "T" not in prompt_enhancer_mode:
         return None
     else:
         import secrets
@@ -5409,7 +5429,7 @@ def process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image
             prompt_enhancer_image_caption_processor,
             prompt_enhancer_llm_model,
             prompt_enhancer_llm_tokenizer,
-            original_prompts if "T" in prompt_enhancer else ["an image"],
+            original_prompts if "T" in prompt_enhancer_mode else ["an image"],
             prompt_images if len(prompt_images) > 0 else None,
             video_prompt = not is_image,
             text_prompt = audio_only,
@@ -6890,6 +6910,8 @@ def generate_video(
                 if prompt_enhancer_image_caption_model != None and prompt_enhancer !=None and len(prompt_enhancer)>0 and enhancer_mode != 1:
                     configs["enhanced_prompt"] = "\n".join(prompts)
                 configs["generation_time"] = round(end_time-start_time)
+                configs["creation_date"] = datetime.fromtimestamp(end_time).isoformat(timespec="seconds")
+                configs["creation_timestamp"] = int(end_time)
                 # if sample_is_image: configs["is_image"] = True
                 metadata_choice = server_config.get("metadata_type","metadata")
                 video_path = [video_path] if not isinstance(video_path, list) else video_path
@@ -9962,23 +9984,64 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 wizard_variables_var = gr.Text(wizard_variables, visible = False)
             with gr.Row(visible= server_config.get("enhancer_enabled", 0) > 0  ) as prompt_enhancer_row:
                 on_demand_prompt_enhancer = server_config.get("enhancer_mode", 0) == 1
-                prompt_enhancer_choices_allowed = model_def.get("prompt_enhancer_choices_allowed", ["T"] if audio_only else ["T", "I", "TI"])
                 prompt_enhancer_value = ui_get("prompt_enhancer")
                 prompt_enhancer_btn_label = str(model_def.get("prompt_enhancer_button_label", "Enhance Prompt"))
                 prompt_enhancer_btn = gr.Button( value =prompt_enhancer_btn_label, visible= on_demand_prompt_enhancer, size="lg",  elem_classes="btn_centered")
-                prompt_enhancer_choices= ([] if on_demand_prompt_enhancer else [("Disabled", "")]) 
-                if "T" in prompt_enhancer_choices_allowed:
-                    prompt_enhancer_choices +=  [("Based on Text Prompt Content", "T")]
-                if "I" in prompt_enhancer_choices_allowed:
-                    prompt_enhancer_choices += [("Based on Images Prompts Content (such as Start Image and Reference Images)", "I")]
-                if "TI" in prompt_enhancer_choices_allowed:
-                    prompt_enhancer_choices += [("Based on both Text Prompt and Images Prompts Content", "TI")]
+                prompt_enhancer_choices = [] if on_demand_prompt_enhancer else [("Disabled", "")]
+                prompt_enhancer_default = ""
+                prompt_enhancer_default_labels = {
+                    "T": "Based on Text Prompt Content",
+                    "I": "Based on Images Prompts Content (such as Start Image and Reference Images)",
+                    "TI": "Based on both Text Prompt and Images Prompts Content",
+                }
+                prompt_enhancer_def = model_def.get("prompt_enhancer_def")
+                if isinstance(prompt_enhancer_def, dict):
+                    prompt_enhancer_selection = prompt_enhancer_def.get("selection", [])
+                    if isinstance(prompt_enhancer_selection, str):
+                        prompt_enhancer_selection = [prompt_enhancer_selection]
+                    if not isinstance(prompt_enhancer_selection, list):
+                        prompt_enhancer_selection = []
+                    prompt_enhancer_labels_override = prompt_enhancer_def.get("labels", {})
+                    if not isinstance(prompt_enhancer_labels_override, dict):
+                        prompt_enhancer_labels_override = {}
+                    for selection_value in prompt_enhancer_selection:
+                        selection_value = str(selection_value).strip()
+                        if len(selection_value) == 0:
+                            continue
+                        display_label = prompt_enhancer_labels_override.get(selection_value, prompt_enhancer_default_labels.get(selection_value, selection_value))
+                        prompt_enhancer_choices.append((str(display_label), selection_value))
+                    prompt_enhancer_default = str(prompt_enhancer_def.get("default", "")).strip()
+                else:
+                    prompt_enhancer_choices_allowed = model_def.get("prompt_enhancer_choices_allowed", ["T"] if audio_only else ["T", "I", "TI"])
+                    if isinstance(prompt_enhancer_choices_allowed, str):
+                        prompt_enhancer_choices_allowed = [prompt_enhancer_choices_allowed]
+                    if not isinstance(prompt_enhancer_choices_allowed, list):
+                        prompt_enhancer_choices_allowed = []
+                    for selection_value in prompt_enhancer_choices_allowed:
+                        selection_value = str(selection_value).strip()
+                        if len(selection_value) == 0:
+                            continue
+                        display_label = prompt_enhancer_default_labels.get(selection_value, selection_value)
+                        prompt_enhancer_choices.append((display_label, selection_value))
 
-                if len(prompt_enhancer_value) == 0 and on_demand_prompt_enhancer: prompt_enhancer_value = prompt_enhancer_choices[0][1] 
+                prompt_enhancer_values = [value for _, value in prompt_enhancer_choices]
+                if prompt_enhancer_value not in prompt_enhancer_values:
+                    if prompt_enhancer_default in prompt_enhancer_values:
+                        prompt_enhancer_value = prompt_enhancer_default
+                    elif len(prompt_enhancer_values) > 0:
+                        prompt_enhancer_value = prompt_enhancer_values[0]
+                    else:
+                        prompt_enhancer_value = ""
+                elif len(prompt_enhancer_value) == 0 and on_demand_prompt_enhancer and len(prompt_enhancer_values) > 0:
+                    if prompt_enhancer_default in prompt_enhancer_values:
+                        prompt_enhancer_value = prompt_enhancer_default
+                    else:
+                        prompt_enhancer_value = prompt_enhancer_values[0]
+
                 prompt_enhancer = gr.Dropdown(
                     choices=prompt_enhancer_choices,
                     value=prompt_enhancer_value,
-                    label="Enhance Prompt using a LLM", scale = 5,
+                    label=model_def.get("prompt_enhancer_button_label", "Enhance Prompt using a LLM") , scale = 5,
                     visible= True, show_label= not on_demand_prompt_enhancer,
                 )
             alt_prompt_def = model_def.get("alt_prompt", None)
@@ -11513,6 +11576,7 @@ def create_ui():
     with open(js_path, "r", encoding="utf-8") as f:
         js = f.read()
     js += AudioGallery.get_javascript()
+    AudioGallery.install_gradio_upload_mtime_patch()
     app.initialize_plugins(globals())
     plugin_js = ""
     if hasattr(app, "plugin_manager"):

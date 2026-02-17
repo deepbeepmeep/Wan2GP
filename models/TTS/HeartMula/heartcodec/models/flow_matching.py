@@ -150,7 +150,7 @@ class FlowMatching(nn.Module):
         dt = t_span[1] - t_span[0]
         noise = x.clone()
         sol = []
-        for step in tqdm(range(1, len(t_span)), disable=disable_progress):
+        for step in tqdm(range(1, len(t_span)), disable=disable_progress, mininterval=0.33):
             if abort_signal and abort_signal():
                 return None
             x[:, 0:incontext_length, :] = (1 - (1 - 1e-6) * t) * noise[

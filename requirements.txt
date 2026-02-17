@@ -1,4 +1,5 @@
 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/
+mmgp==3.7.5
 # Core AI stack
 diffusers==0.36.0
 transformers==4.54.0 #4.53.1
@@ -67,7 +68,6 @@ pydantic==2.10.6
 # Math & modeling
 torchdiffeq>=0.2.5
 tensordict>=0.6.1
-mmgp==3.7.4
 peft==0.17.0 # 0.15.0
 vector-quantize-pytorch
 matplotlib

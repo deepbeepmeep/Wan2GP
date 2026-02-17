@@ -109,6 +109,15 @@ def _parse_version(ver: str) -> tuple[int, int]:
         return (0, 0)
 
 
+def _is_stream_capturing() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    try:
+        return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:
+        return False
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, str(default)))
@@ -821,6 +830,16 @@ def _select_triton_int8_config(
     cached = _AUTOTUNE_SESSION_CACHE.get(session_key)
     if cached is not None:
         return cached
+    if _is_stream_capturing():
+        _load_autotune_cache()
+        slot_key = _autotune_slot_cache_key(device_index, kernel_kind, slot_id)
+        cached_cfg = _AUTOTUNE_CONFIG_CACHE.get(slot_key)
+        if cached_cfg is not None and _config_compatible_with_baseline(kernel_kind, baseline, cached_cfg):
+            _AUTOTUNE_SESSION_CACHE[session_key] = cached_cfg
+            return cached_cfg
+        # During graph capture we must avoid autotune/probing allocations. Do not populate
+        # session cache with the baseline fallback, so a later non-capture call can autotune.
+        return baseline
 
     autotune_enabled = _env_flag(_ENV_AUTOTUNE_ENABLE, "1")
     max_m = _env_int(_ENV_AUTOTUNE_MAX_M, -1)

@@ -4,7 +4,8 @@
         "architecture": "qwen3_tts_voicedesign",
         "description": "Qwen3 Voice Design with natural language voice instructions.",
         "URLs": [
-            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_voicedesign_bf16.safetensors"
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_voicedesign_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/qwen3_tts_12hz_1b7_voicedesign_quanto_bf16_int8.safetensors"
         ]
     },
     "prompt": "I wish you a good day. Please keep the door closed. I am afraid AI haters are going to come in. Oh I am so afraid !",

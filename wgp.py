@@ -95,7 +95,7 @@ CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.5"
 WanGP_version = "10.9"
-settings_version = 2.51
+settings_version = 2.52
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
 image_names_list = ["image_start", "image_end", "image_refs"]
@@ -754,11 +754,14 @@ def validate_settings(state, model_type, single_prompt, inputs):
     if server_config.get("fit_canvas", 0) == 2 and outpainting_dims is not None and any_letters(video_prompt_type, "VKF"):
         gr.Info("Output Resolution Cropping will be not used for this Generation as it is not compatible with Video Outpainting")
     if self_refiner_setting != 0:
-        norm_plan, error = normalize_self_refiner_plan(self_refiner_plan, max_plans=model_def.get("self_refiner_max_plans", 1))
+        from shared.utils.self_refiner import normalize_self_refiner_plan, convert_refiner_list_to_string
+        if isinstance(self_refiner_plan, list):
+            self_refiner_plan = convert_refiner_list_to_string(self_refiner_plan)
+        max_p = model_def.get("self_refiner_max_plans", 1)
+        _, error = normalize_self_refiner_plan(self_refiner_plan, max_plans=max_p)
         if len(error):
             gr.Info(error)
             return ret()
-        self_refiner_plan = norm_plan
 
     if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
     if "vae" in spatial_upsampling:
@@ -1067,6 +1070,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
         "model_mode": model_mode,
         "video_guide_outpainting": video_guide_outpainting,
         "custom_settings": inputs.get("custom_settings", None),
+        "self_refiner_plan": self_refiner_plan,
     } 
     inputs.update(override_inputs)
     if hasattr(model_handler, "validate_generative_settings"):
@@ -10486,7 +10490,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             self_refiner_plan = refiner_val if update_form else gr.State(value=refiner_val)
                             
                             with gr.Column(visible=(update_form and ui_get("self_refiner_setting", 0) > 0)) as self_refiner_rules_ui:
-                                gr.Markdown("#### Refiner Plan")
+                                gr.Markdown("#### Refiner Rules")
                                 
                                 with gr.Row(elem_id="refiner-input-row"):
                                     refiner_range = RangeSlider(minimum=1, maximum=100, value=(1, 10), step=1, label="Step Range", info="Start - End", scale=3)
@@ -10498,17 +10502,17 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                     self_refiner_setting.change(fn=lambda s: gr.update(visible=s > 0), inputs=[self_refiner_setting], outputs=[self_refiner_rules_ui])
 
                                     @gr.render(inputs=self_refiner_plan)
-                                    def render_refiner_plans(plans):
-                                        if not plans:
-                                            gr.Markdown("<I style='padding: 8px;'>No plans defined. Using defaults: Steps 2-5 (3x), Steps 6-13 (1x).</I>")
+                                    def render_refiner_rules(rules):
+                                        if not rules:
+                                            gr.Markdown("<I style='padding: 8px;'>No rules defined. Using defaults: Steps 2-5 (3x), Steps 6-13 (1x).</I>")
                                             return
-                                        for plan in plans:
+                                        for i, rule in enumerate(rules):
                                             with gr.Row(elem_classes="rule-row"):
-                                                text_display = f"Steps **{plan['start']} - {plan['end']}** : **{plan['steps']}x** iterations"
+                                                text_display = f"Steps **{rule['start']} - {rule['end']}** : **{rule['steps']}x** iterations"
                                                 gr.Markdown(text_display, elem_classes="rule-card")
                                                 gr.Button("✖", variant="stop", scale=0, elem_classes="delete-btn").click(
                                                     fn=remove_refiner_rule, 
-                                                    inputs=[self_refiner_plan, gr.State(plan["id"])], 
+                                                    inputs=[self_refiner_plan, gr.State(i)], 
                                                     outputs=[self_refiner_plan]
                                                 )
                                                 

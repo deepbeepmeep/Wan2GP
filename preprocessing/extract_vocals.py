@@ -18,7 +18,7 @@ def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
     default_device = torch.get_default_device()
     torch.set_default_device('cpu')
 
-    dst = Path(dst_path)
+    dst = Path(dst_path).resolve()  # absolute path so output_dir is never ambiguous
     dst.parent.mkdir(parents=True, exist_ok=True)
 
     # Quick duration check
@@ -54,7 +54,23 @@ def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
         out_files = sep.separate(use_path, {"Vocals": dst.stem})
 
         out = Path(out_files[0])
-        return str(out if out.is_absolute() else (dst.parent / out))
+        result_path = out if out.is_absolute() else (dst.parent / out)
+
+        if not result_path.exists():
+            import shutil
+            # audio-separator skips writing the file when the stem is near-silent/empty.
+            # It still returns the intended filename, so result_path won't exist.
+            # Fall back to copying the original source audio so downstream code has a
+            # valid file to open.
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Audio separator did not produce '{result_path}' "
+                f"(likely near-silent stem). Falling back to original audio: {src_path}"
+            )
+            shutil.copy2(src_path, str(dst))
+            result_path = dst
+
+        return str(result_path)
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)

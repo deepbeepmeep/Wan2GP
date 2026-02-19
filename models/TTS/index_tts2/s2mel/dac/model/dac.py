@@ -4,8 +4,7 @@ from typing import Union
 
 import numpy as np
 import torch
-from audiotools import AudioSignal
-from audiotools.ml import BaseModel
+from models.TTS.index_tts2.utils.audiotools_lite import AudioSignal, BaseModel
 from torch import nn
 
 from .base import CodecMixin

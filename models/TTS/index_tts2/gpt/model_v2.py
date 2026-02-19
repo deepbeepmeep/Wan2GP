@@ -462,7 +462,7 @@ class UnifiedVoice(nn.Module):
                  train_solo_embeddings=False, use_mel_codes_as_input=True,
                  checkpointing=True, types=1,
                  condition_num_latent=32, condition_type="perceiver", condition_module=None, emo_condition_module=None, use_accel=False,
-                 gpt_build_fp16=True, gpt_build_meta=True):
+                 gpt_build_fp16=True, gpt_build_meta=True, force_no_flash2=False):
         """
         Args:
             layers: Number of layers in transformer stack.
@@ -577,7 +577,9 @@ class UnifiedVoice(nn.Module):
                     module.weight.data.normal_(mean=0.0, std=.02)
 
         self.use_accel = use_accel
+        self.force_no_flash2 = bool(force_no_flash2)
         self.accel_engine = None  # Will be initialized in post_init_gpt2_config
+        self.accel_flash2_available = False
 
     @staticmethod
     def _install_layernorm_input_dtype_guard(module):
@@ -614,13 +616,15 @@ class UnifiedVoice(nn.Module):
         )
 
         if self.use_accel and torch.cuda.is_available():
-            # Check if flash attention is available
-            try:
-                import flash_attn
-            except ImportError:
-                raise ImportError("flash_attn is required for acceleration but not installed. Please install from https://github.com/Dao-AILab/flash-attention/releases/")
-
             from ..accel import GPT2AccelModel, AccelInferenceEngine
+            from ..accel.attention import flash_attn2_available
+
+            self.accel_flash2_available = bool(flash_attn2_available() and (not self.force_no_flash2))
+            if not self.accel_flash2_available:
+                if self.force_no_flash2:
+                    print("[IndexTTS2][accel] flash_attn forced off by pipeline flag; using SDPA fallback.")
+                else:
+                    print("[IndexTTS2][accel] flash_attn is unavailable at load time; using SDPA fallback.")
 
             # Create accel model
             accel_gpt = GPT2AccelModel(gpt_config)
@@ -649,7 +653,9 @@ class UnifiedVoice(nn.Module):
                 num_blocks=16,  # Reduce to save memory (16*256 = 4096 tokens capacity)
                 use_cuda_graph=True,
             )
-            print("acceleration engine initialized")
+            backend = "flash2" if self.accel_flash2_available else "sdpa"
+            cg_state = "on"
+            print(f"[IndexTTS2][accel] acceleration engine initialized (backend={backend}, cuda_graph={cg_state})")
         self.inference_model = GPT2InferenceModel(
             gpt_config,
             self.gpt,

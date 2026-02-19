@@ -31,6 +31,8 @@ _AUTO_SPLIT_TOKENS_PER_SECOND = 6.0
 _MEL_TOKENS_PER_SOUND_TOKEN = 1.72
 _MIN_CG_SOUND_SECONDS = 10.0
 _CG_SOUND_TOKENS_PER_TEXT_TOKEN = 29.67
+# Local dev toggle: set to True to simulate FlashAttention2 unavailable.
+_FORCE_NO_FLASH2 = False
 
 
 def _read_text_or_file(value: Optional[str], label: str) -> str:
@@ -93,9 +95,16 @@ class IndexTTS2Pipeline:
             use_torch_compile=False,
             show_load_logs=self.show_load_logs,
             lm_decoder_engine=self.lm_decoder_engine,
+            force_no_flash2=_FORCE_NO_FLASH2,
         )
         engine = "cg" if self.lm_decoder_engine in ("cg", "cudagraph") else "legacy"
-        print(f"[IndexTTS2] LM Engine='{engine}'")
+        flash_status = "n/a"
+        if engine == "cg":
+            if getattr(self.model.gpt, "accel_engine", None) is None:
+                flash_status = "disabled"
+            else:
+                flash_status = "on" if getattr(self.model.gpt, "accel_flash2_available", False) else "off(sdpa)"
+        print(f"[IndexTTS2] LM Engine='{engine}', flash2={flash_status}")
         self.sample_rate = 22050
         self._mark_model_dtypes()
 

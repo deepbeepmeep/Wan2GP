@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### February 19th 2026: WanGP v10.95, Breaking the Sound Barrier, Mach 2
+### February 19th 2026: WanGP v10.951, Breaking the Sound Barrier, Mach 2
 Here comes the (last ?) missing bit in WanGP of the *Text To Speech* offering: **emotions**
 
 There isnt many TTS models around that let you express emotions, so I hope you will forgive me for adding an old TTS model (6 months old!) in WanGP: **Index TTS 2**.
@@ -56,6 +56,8 @@ You can also set manually which emotion you expect with [] tags, here is one exa
 [happy] By chance I discovered this wonderful App, and now everything is different.
 [anger] I have a new voice and now everybody will have no choice but to listen to my words !!! 
 ```
+You can mix emotions *[sadness,disgust]* or if you want to precise the weight of one or several emotions *[sadness=0.7,disgust]* (in any case total of weights is 1)
+
 Remember two speakers mode requires to insert *"Speaker 1:"* & *"Speaker 2:"* to indicate who is talking.
 
 There is only one snag: Index TTS 2 supports only English & Chinese. But dont' panic ! not all is lost. There is a workaround:

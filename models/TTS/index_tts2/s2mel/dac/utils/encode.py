@@ -5,8 +5,7 @@ from pathlib import Path
 import argbind
 import numpy as np
 import torch
-from audiotools import AudioSignal
-from audiotools.core import util
+from models.TTS.index_tts2.utils.audiotools_lite import AudioSignal, find_audio
 from tqdm import tqdm
 
 from . import load_model
@@ -63,7 +62,7 @@ def encode(
 
     # Find all audio files in input path
     input = Path(input)
-    audio_files = util.find_audio(input)
+    audio_files = find_audio(input)
 
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)

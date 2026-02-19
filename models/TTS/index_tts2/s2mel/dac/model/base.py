@@ -6,7 +6,7 @@ from typing import Union
 import numpy as np
 import torch
 import tqdm
-from audiotools import AudioSignal
+from models.TTS.index_tts2.utils.audiotools_lite import AudioSignal
 from torch import nn
 
 SUPPORTED_VERSIONS = ["1.0.0"]

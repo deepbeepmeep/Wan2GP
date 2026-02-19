@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import argbind
-from audiotools import ml
+from models.TTS.index_tts2.utils.audiotools_lite import ml
 
 from ... import dac as dac
 

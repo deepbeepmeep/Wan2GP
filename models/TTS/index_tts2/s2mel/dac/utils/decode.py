@@ -4,7 +4,6 @@ from pathlib import Path
 import argbind
 import numpy as np
 import torch
-from audiotools import AudioSignal
 from tqdm import tqdm
 
 from .. import DACFile

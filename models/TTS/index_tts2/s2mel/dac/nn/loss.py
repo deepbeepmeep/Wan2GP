@@ -3,8 +3,7 @@ from typing import List
 
 import torch
 import torch.nn.functional as F
-from audiotools import AudioSignal
-from audiotools import STFTParams
+from models.TTS.index_tts2.utils.audiotools_lite import AudioSignal, STFTParams
 from torch import nn
 
 

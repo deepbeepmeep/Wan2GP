@@ -35,7 +35,7 @@ from ......s2mel.dac.nn.loss import (
     L1Loss,
     FocalLoss,
 )
-from audiotools import AudioSignal
+from models.TTS.index_tts2.utils.audiotools_lite import AudioSignal
 
 from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
 

@@ -56,7 +56,7 @@ taichi
 vector_quantize_pytorch==1.27.19 
 
 # Audio
-descript-audiotools @ git+https://github.com/descriptinc/audiotools.git@0.7.4
+descript-audiotools @ https://github.com/descriptinc/audiotools/archive/refs/tags/0.7.4.tar.gz
 
 # chumpy wheel hosted on GitHub to avoid sdist build isolation issue
 chumpy @ https://github.com/deepbeepmeep/chumpy/releases/download/v0.71/chumpy-0.71-py3-none-any.whl

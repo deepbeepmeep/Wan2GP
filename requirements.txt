@@ -55,6 +55,9 @@ facexlib==0.3.0
 taichi
 vector_quantize_pytorch==1.27.19 
 
+# Audio
+descript-audiotools==0.7.2
+
 # chumpy wheel hosted on GitHub to avoid sdist build isolation issue
 chumpy @ https://github.com/deepbeepmeep/chumpy/releases/download/v0.71/chumpy-0.71-py3-none-any.whl
 smplfitter @ https://github.com/deepbeepmeep/smplfitter/releases/download/v0.2.10/smplfitter-0.2.10-py3-none-any.whl
@@ -83,7 +86,7 @@ gitpython==3.1.45
 stringzilla==4.0.14
 xxhash
 munch
-
+wetext==0.1.2
 # Optional / commented out
 # transformers==4.46.3  # for llamallava pre-patch
 # rembg==2.0.65         # non-GPU fallback

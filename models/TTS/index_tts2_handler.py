@@ -10,7 +10,6 @@ from .prompt_enhancers import TTS_MONOLOGUE_PROMPT, TTS_QWEN3_DIALOGUE_PROMPT
 
 INDEX_TTS2_REPO_ID = "DeepBeepMeep/TTS"
 INDEX_TTS2_FOLDER = "index_tts2"
-INDEX_TTS2_CONFIGS_FOLDER = "index_tts2/configs"
 INDEX_TTS2_MAIN_GPT_FILENAME = "index_tts2_gpt_fp16.safetensors"
 INDEX_TTS2_QWEN_EMO_FOLDER = "qwen0.6bemo4-merge"
 INDEX_TTS2_BIGVGAN_FOLDER = "bigvgan_v2_22khz_80band_256x"
@@ -22,7 +21,7 @@ INDEX_TTS2_BIGVGAN_FILES = [
 INDEX_TTS2_W2V_BERT_FILES = [
     "config.json",
     "preprocessor_config.json",
-    "model.safetensors",
+    "model_fp16.safetensors",
 ]
 INDEX_TTS2_SHOW_LOAD_LOGS = False
 INDEX_TTS2_ROOT_FILES = [
@@ -34,7 +33,6 @@ INDEX_TTS2_ROOT_FILES = [
     "campplus_cn_common.bin",
     "index_tts2_semantic_codec.safetensors",
 ]
-INDEX_TTS2_CONFIG_FILES = ["config.yaml"]
 INDEX_TTS2_QWEN_EMO_FILES = [
     "Modelfile",
     "added_tokens.json",
@@ -121,16 +119,15 @@ def _get_index_tts2_model_def():
 def _get_index_tts2_download_def():
     return {
         "repoId": INDEX_TTS2_REPO_ID,
+        # IndexTTS2 configs are bundled with source code in models/TTS/index_tts2/configs.
         "sourceFolderList": [
             INDEX_TTS2_FOLDER,
-            INDEX_TTS2_CONFIGS_FOLDER,
             INDEX_TTS2_QWEN_EMO_FOLDER,
             INDEX_TTS2_BIGVGAN_FOLDER,
             INDEX_TTS2_W2V_BERT_FOLDER,
         ],
         "fileList": [
             INDEX_TTS2_ROOT_FILES,
-            INDEX_TTS2_CONFIG_FILES,
             INDEX_TTS2_QWEN_EMO_FILES,
             INDEX_TTS2_BIGVGAN_FILES,
             INDEX_TTS2_W2V_BERT_FILES,
@@ -155,25 +152,25 @@ def _ensure_w2v_bert_fp16_file():
             f"IndexTTS2 semantic folder '{INDEX_TTS2_W2V_BERT_FOLDER}' is missing. "
             "WanGP must download it from DeepBeepMeep/TTS."
         )
-    fp32_path = os.path.join(w2v_dir, "model.safetensors")
-    if not os.path.isfile(fp32_path):
-        raise FileNotFoundError(
-            f"IndexTTS2 semantic model file is missing at '{fp32_path}'. "
-            "Expected DeepBeepMeep/TTS/w2v-bert-2.0/model.safetensors."
-        )
+    # fp32_path = os.path.join(w2v_dir, "model.safetensors")
+    # if not os.path.isfile(fp32_path):
+    #     raise FileNotFoundError(
+    #         f"IndexTTS2 semantic model file is missing at '{fp32_path}'. "
+    #         "Expected DeepBeepMeep/TTS/w2v-bert-2.0/model.safetensors."
+    #     )
     fp16_path = os.path.join(w2v_dir, "model_fp16.safetensors")
     if os.path.isfile(fp16_path):
         return fp16_path
-    from safetensors.torch import load_file, save_file
+    from mmgp import offload
 
-    src = load_file(fp32_path, device="cpu")
-    dst = {}
-    for key, value in src.items():
-        if torch.is_floating_point(value) and value.dtype != torch.float16:
-            dst[key] = value.to(torch.float16).contiguous()
-        else:
-            dst[key] = value.contiguous()
-    save_file(dst, fp16_path, metadata={"format": "pt", "dtype": "float16"})
+    src = safetensors2.l .load_ (fp16_path, device="cpu")
+    # dst = {}
+    # for key, value in src.items():
+    #     if torch.is_floating_point(value) and value.dtype != torch.float16:
+    #         dst[key] = value.to(torch.float16).contiguous()
+    #     else:
+    #         dst[key] = value.contiguous()
+    # save_file(dst, fp16_path, metadata={"format": "pt", "dtype": "float16"})
     return fp16_path
 
 
@@ -235,7 +232,7 @@ class family_handler:
     ):
         from .index_tts2.pipeline import IndexTTS2Pipeline
 
-        _ensure_w2v_bert_fp16_file()
+        # _ensure_w2v_bert_fp16_file()
         weights_candidate = None
         if isinstance(model_filename, (list, tuple)):
             if len(model_filename) > 0:

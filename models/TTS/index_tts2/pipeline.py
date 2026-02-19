@@ -25,6 +25,7 @@ _W2V_BERT_FOLDER = "w2v-bert-2.0"
 _CONFIGS_SUBDIR = "configs"
 _BASE_CFG_NAME = "config.yaml"
 _RUNTIME_CFG_NAME = "config_runtime.yaml"
+_SOURCE_CONFIGS_DIR = Path(__file__).resolve().parent / _CONFIGS_SUBDIR
 _AUTO_SPLIT_SETTING_ID = "auto_split_every_s"
 _AUTO_SPLIT_TOKENS_PER_SECOND = 6.0
 _MEL_TOKENS_PER_SOUND_TOKEN = 1.72
@@ -99,16 +100,13 @@ class IndexTTS2Pipeline:
         self._mark_model_dtypes()
 
     def _resolve_config_path(self) -> Path:
-        configs_dir = self.model_dir / _CONFIGS_SUBDIR
-        cfg_path = configs_dir / _BASE_CFG_NAME
+        cfg_path = _SOURCE_CONFIGS_DIR / _BASE_CFG_NAME
         if cfg_path.is_file():
             return cfg_path
-        legacy_cfg_path = self.model_dir / _BASE_CFG_NAME
-        if legacy_cfg_path.is_file():
-            configs_dir.mkdir(parents=True, exist_ok=True)
-            legacy_cfg_path.replace(cfg_path)
-            return cfg_path
-        raise FileNotFoundError(f"IndexTTS2 config not found: {cfg_path}")
+        raise FileNotFoundError(
+            f"IndexTTS2 source config not found: {cfg_path}. "
+            f"Expected configs bundled with project source in '{_SOURCE_CONFIGS_DIR}'."
+        )
 
     def _resolve_model_dir(self) -> Path:
         located = fl.locate_folder("index_tts2", error_if_none=False)

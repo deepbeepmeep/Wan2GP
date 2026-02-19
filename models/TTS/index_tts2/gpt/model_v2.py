@@ -462,7 +462,7 @@ class UnifiedVoice(nn.Module):
                  train_solo_embeddings=False, use_mel_codes_as_input=True,
                  checkpointing=True, types=1,
                  condition_num_latent=32, condition_type="perceiver", condition_module=None, emo_condition_module=None, use_accel=False,
-                 gpt_build_fp16=True, gpt_build_meta=True, force_no_flash2=False):
+                 gpt_build_fp16=True, gpt_build_meta=True, force_no_flash2=False, accel_allow_vllm_kernels=False):
         """
         Args:
             layers: Number of layers in transformer stack.
@@ -578,8 +578,11 @@ class UnifiedVoice(nn.Module):
 
         self.use_accel = use_accel
         self.force_no_flash2 = bool(force_no_flash2)
+        self.accel_allow_vllm_kernels = bool(accel_allow_vllm_kernels)
         self.accel_engine = None  # Will be initialized in post_init_gpt2_config
         self.accel_flash2_available = False
+        self.accel_triton_available = False
+        self.accel_kernel_mode = "sdpa"
 
     @staticmethod
     def _install_layernorm_input_dtype_guard(module):
@@ -617,15 +620,18 @@ class UnifiedVoice(nn.Module):
 
         if self.use_accel and torch.cuda.is_available():
             from ..accel import GPT2AccelModel, AccelInferenceEngine
-            from ..accel.attention import flash_attn2_available
+            from ..accel.attention import configure_attention_kernels
 
-            self.accel_flash2_available = bool(flash_attn2_available() and (not self.force_no_flash2))
-            if not self.accel_flash2_available:
-                if self.force_no_flash2:
-                    print("[IndexTTS2][accel] flash_attn forced off by pipeline flag; using SDPA fallback.")
-                else:
-                    print("[IndexTTS2][accel] flash_attn is unavailable at load time; using SDPA fallback.")
-
+            allow_vllm_kernels = bool(self.accel_allow_vllm_kernels)
+            allow_flash2_kernel = bool(allow_vllm_kernels and (not self.force_no_flash2))
+            allow_triton_kernel = bool(allow_vllm_kernels)
+            configure_attention_kernels(
+                allow_flash2=allow_flash2_kernel,
+                allow_triton=allow_triton_kernel,
+            )
+            # The LM engine resolution already ran vllm probe; don't re-probe here.
+            self.accel_flash2_available = allow_flash2_kernel
+            self.accel_triton_available = allow_triton_kernel
             # Create accel model
             accel_gpt = GPT2AccelModel(gpt_config)
             accel_gpt.load_state_dict(self.gpt.state_dict(), strict=False)
@@ -653,7 +659,13 @@ class UnifiedVoice(nn.Module):
                 num_blocks=16,  # Reduce to save memory (16*256 = 4096 tokens capacity)
                 use_cuda_graph=True,
             )
-            backend = "flash2" if self.accel_flash2_available else "sdpa"
+            if allow_vllm_kernels and self.accel_flash2_available and self.accel_triton_available:
+                self.accel_kernel_mode = "vllm"
+            elif self.accel_flash2_available:
+                self.accel_kernel_mode = "flash2"
+            else:
+                self.accel_kernel_mode = "sdpa"
+            backend = self.accel_kernel_mode
             cg_state = "on"
             print(f"[IndexTTS2][accel] acceleration engine initialized (backend={backend}, cuda_graph={cg_state})")
         self.inference_model = GPT2InferenceModel(

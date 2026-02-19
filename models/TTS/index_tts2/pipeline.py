@@ -75,11 +75,17 @@ class IndexTTS2Pipeline:
         self.device = device or torch.device("cpu")
         self.show_load_logs = bool(show_load_logs)
         self.lm_decoder_engine = str(lm_decoder_engine or "legacy").strip().lower()
+        if self.lm_decoder_engine == "cudagraph":
+            self.lm_decoder_engine = "cg"
+        if self.lm_decoder_engine not in ("legacy", "cg", "vllm"):
+            self.lm_decoder_engine = "legacy"
         self.ckpt_root = Path(ckpt_root) if ckpt_root is not None else Path(fl.get_download_location())
         self.gpt_weights_path = Path(gpt_weights_path) if gpt_weights_path is not None else None
         self.model_dir = self._resolve_model_dir()
         cfg_path = self._resolve_config_path()
         runtime_cfg_path = self._build_runtime_cfg(cfg_path)
+        use_accel_engine = self.lm_decoder_engine in ("cg", "vllm")
+        allow_vllm_kernels = self.lm_decoder_engine == "vllm"
 
         device_str = str(self.device)
         if device_str == "cuda":
@@ -91,20 +97,23 @@ class IndexTTS2Pipeline:
             device=device_str,
             use_cuda_kernel=False,
             use_deepspeed=False,
-            use_accel=self.lm_decoder_engine in ("cg", "cudagraph"),
+            use_accel=use_accel_engine,
             use_torch_compile=False,
             show_load_logs=self.show_load_logs,
             lm_decoder_engine=self.lm_decoder_engine,
-            force_no_flash2=_FORCE_NO_FLASH2,
+            force_no_flash2=bool(_FORCE_NO_FLASH2 or (not allow_vllm_kernels)),
+            accel_allow_vllm_kernels=allow_vllm_kernels,
         )
-        engine = "cg" if self.lm_decoder_engine in ("cg", "cudagraph") else "legacy"
+        engine = self.lm_decoder_engine
         flash_status = "n/a"
-        if engine == "cg":
+        backend = "n/a"
+        if engine in ("cg", "vllm"):
             if getattr(self.model.gpt, "accel_engine", None) is None:
                 flash_status = "disabled"
             else:
                 flash_status = "on" if getattr(self.model.gpt, "accel_flash2_available", False) else "off(sdpa)"
-        print(f"[IndexTTS2] LM Engine='{engine}', flash2={flash_status}")
+                backend = str(getattr(self.model.gpt, "accel_kernel_mode", "sdpa"))
+        print(f"[IndexTTS2] LM Engine='{engine}', flash2={flash_status}, backend={backend}")
         self.sample_rate = 22050
         self._mark_model_dtypes()
 

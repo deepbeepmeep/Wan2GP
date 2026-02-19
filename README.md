@@ -44,7 +44,7 @@ But in WanGP, you wont just get the vanilla version of Index TTS:
 - *Volume Normalization* of the two speaker voices (no one will speak louder)
 - Optimized for a *dialogue that can last forever* (new *infinitalk* best friend)
 - *GPU Poor version*: VRAM, 6GB will be sufficient
-- Highly Optimized with *Cuda Graph acceleration*: *up to 10x faster* than vanilla Index TTS. On high end GPUs, generating a 1 min of dialogue will take only 30s !
+- Highly Optimized with *vllm* & *Cuda Graph acceleration*: *up to 10x faster* than vanilla Index TTS. On high end GPUs, generating a 1 min of dialogue will take only 30s !
 
 Here is how to use it: By default Index TTS, will detect automatically the emotion to apply to a Text Prompt based on the text itself. However, it will apply the same emotion for the whole prompt. If you want a different emotion per sentence, just insert empty lines between each sentence.
 

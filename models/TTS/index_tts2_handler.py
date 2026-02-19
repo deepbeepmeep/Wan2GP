@@ -111,7 +111,7 @@ def _get_index_tts2_model_def():
             "default": "T",
         },
         "prompt_enhancer_button_label": "Write",
-        "lm_engines": ["legacy", "cg"],
+        "lm_engines": ["legacy", "cg", "vllm"],
         "compile": False,
     }
 
@@ -276,7 +276,7 @@ class family_handler:
             "campplus_model": pipeline.model.campplus_model,
             "qwen_emo_model": pipeline.model.qwen_emo.model,
         }
-        if str(lm_decoder_engine).strip().lower() in ("cg", "cudagraph"):
+        if str(lm_decoder_engine).strip().lower() in ("cg", "cudagraph", "vllm"):
             pipe["transformer"]._budget = 0
 
         load_def = {

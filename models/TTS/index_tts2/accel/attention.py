@@ -18,6 +18,8 @@ except Exception:
     flash_attn_with_kvcache = None
 
 _SDPA_FALLBACK_NOTICE_SHOWN = False
+_ALLOW_FLASH_ATTN2 = True
+_ALLOW_TRITON_KVCACHE = True
 
 
 @dataclass
@@ -35,8 +37,19 @@ class ForwardContext:
 _FORWARD_CONTEXT = ForwardContext()
 
 
+def configure_attention_kernels(allow_flash2=True, allow_triton=True):
+    global _ALLOW_FLASH_ATTN2, _ALLOW_TRITON_KVCACHE, _SDPA_FALLBACK_NOTICE_SHOWN
+    _ALLOW_FLASH_ATTN2 = bool(allow_flash2)
+    _ALLOW_TRITON_KVCACHE = bool(allow_triton)
+    _SDPA_FALLBACK_NOTICE_SHOWN = False
+
+
+def triton_available():
+    return bool(_ALLOW_TRITON_KVCACHE and triton is not None)
+
+
 def flash_attn2_available():
-    return flash_attn_varlen_func is not None and flash_attn_with_kvcache is not None
+    return bool(_ALLOW_FLASH_ATTN2 and flash_attn_varlen_func is not None and flash_attn_with_kvcache is not None)
 
 
 def get_forward_context():
@@ -114,17 +127,23 @@ def store_kvcache(
     N, num_heads, head_dim = key.shape
     D = num_heads * head_dim
     assert slot_mapping.numel() == N
-    if triton is None:
+    if not triton_available():
         flat_slots = slot_mapping.to(device=key.device, dtype=torch.long)
-        valid = flat_slots >= 0
-        if not bool(valid.any().item()):
-            return
-        src_idx = torch.nonzero(valid, as_tuple=False).squeeze(1)
-        dst_idx = flat_slots.index_select(0, src_idx)
+        safe_slots = torch.clamp(flat_slots, min=0)
+        valid = (flat_slots >= 0).to(dtype=key.dtype).view(N, 1, 1)
         flat_k_cache = k_cache.view(-1, num_heads, head_dim)
         flat_v_cache = v_cache.view(-1, num_heads, head_dim)
-        flat_k_cache.index_copy_(0, dst_idx, key.index_select(0, src_idx))
-        flat_v_cache.index_copy_(0, dst_idx, value.index_select(0, src_idx))
+        src_k = key * valid
+        src_v = value * valid
+        upd_k = torch.zeros_like(flat_k_cache)
+        upd_v = torch.zeros_like(flat_v_cache)
+        upd_m = torch.zeros((flat_k_cache.shape[0], 1, 1), device=key.device, dtype=key.dtype)
+        upd_k.index_add_(0, safe_slots, src_k)
+        upd_v.index_add_(0, safe_slots, src_v)
+        upd_m.index_add_(0, safe_slots, valid)
+        has_update = upd_m > 0
+        flat_k_cache.copy_(torch.where(has_update, upd_k, flat_k_cache))
+        flat_v_cache.copy_(torch.where(has_update, upd_v, flat_v_cache))
         return
     assert key.stride(-1) == 1 and value.stride(-1) == 1
     assert key.stride(1) == head_dim and value.stride(1) == head_dim
@@ -241,7 +260,7 @@ class Attention(nn.Module):
         base_mask = valid_blocks & valid_len
         q_steps = torch.arange(q_per_seq, device=device, dtype=torch.long).view(1, q_per_seq, 1)
         q_pos = context.context_lens.to(device=device, dtype=torch.long).view(batch, 1, 1) - q_per_seq + q_steps
-        causal_mask = token_idx.view(1, 1, max_tokens) <= q_pos
+        causal_mask = (token_idx.view(1, 1, max_tokens) <= q_pos).unsqueeze(1)
         attn_mask = (base_mask.view(batch, 1, 1, max_tokens) & causal_mask).expand(batch, self.num_heads, q_per_seq, max_tokens)
         out = F.scaled_dot_product_attention(q_all, k_all, v_all, attn_mask=attn_mask, dropout_p=0.0, is_causal=False)
         out = out.transpose(1, 2).contiguous().view(q_total, self.num_heads, self.head_dim)
@@ -282,10 +301,6 @@ class Attention(nn.Module):
                 )
             return o
 
-        global _SDPA_FALLBACK_NOTICE_SHOWN
-        if not _SDPA_FALLBACK_NOTICE_SHOWN:
-            print("[IndexTTS2][accel] flash_attn not found. Using SDPA fallback for attention.")
-            _SDPA_FALLBACK_NOTICE_SHOWN = True
         if context.is_prefill:
             return self._sdpa_prefill(q, k, v, context, k_cache, v_cache)
         return self._sdpa_decode(q, context, k_cache, v_cache)

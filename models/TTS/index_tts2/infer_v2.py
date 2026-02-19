@@ -67,6 +67,7 @@ class IndexTTS2:
             use_cuda_kernel=None,use_deepspeed=False, use_accel=False, use_torch_compile=False, show_load_logs=False,
             lm_decoder_engine="legacy",
             force_no_flash2=False,
+            accel_allow_vllm_kernels=False,
     ):
         """
         Args:
@@ -111,6 +112,7 @@ class IndexTTS2:
         self.stop_mel_token = self.cfg.gpt.stop_mel_token
         self.use_accel = use_accel
         self.force_no_flash2 = bool(force_no_flash2)
+        self.accel_allow_vllm_kernels = bool(accel_allow_vllm_kernels)
         self.use_torch_compile = use_torch_compile
 
         qwen_emo_dir = self.cfg.qwen_emo_path
@@ -141,7 +143,13 @@ class IndexTTS2:
                 modelClass=UnifiedVoice,
                 forcedConfigPath=gpt_config_path,
                 default_dtype=torch.float16 if self.use_fp16 else torch.float32,
-                configKwargs={"use_accel": self.use_accel, "gpt_build_fp16": self.use_fp16, "gpt_build_meta": True, "force_no_flash2": self.force_no_flash2},
+                configKwargs={
+                    "use_accel": self.use_accel,
+                    "gpt_build_fp16": self.use_fp16,
+                    "gpt_build_meta": True,
+                    "force_no_flash2": self.force_no_flash2,
+                    "accel_allow_vllm_kernels": self.accel_allow_vllm_kernels,
+                },
             )
         self.gpt = self.gpt.to("cpu")
         if self.use_fp16:
@@ -1392,7 +1400,7 @@ class QwenEmotion:
 
     def set_lm_decoder_engine(self, lm_decoder_engine):
         engine = str(lm_decoder_engine or "legacy").strip().lower()
-        self._cg_enabled = engine in ("cg", "cudagraph")
+        self._cg_enabled = engine in ("cg", "cudagraph", "vllm")
         if not self._cg_enabled:
             self.release_cuda_graph()
 

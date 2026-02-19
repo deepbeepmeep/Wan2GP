@@ -1,7 +1,56 @@
+import os
 from typing import Any, Callable, Optional
 
 _PROBE_CACHE = None
-_WARNED_REQUESTED_VLLM_UNAVAILABLE = False
+_WARNED_REQUESTED_VLLM_NOT_SUPPORTED = False
+_TRITON_SMOKE_CACHE = None
+
+
+def _env_enabled(name, default=True):
+    raw = str(os.environ.get(name, "1" if default else "0")).strip().lower()
+    return raw in ("1", "true", "yes", "y", "on")
+
+
+def _check_triton_runtime_smoke():
+    global _TRITON_SMOKE_CACHE
+    if _TRITON_SMOKE_CACHE is not None:
+        return _TRITON_SMOKE_CACHE
+    try:
+        import torch
+        import triton
+        import triton.language as tl
+
+        if not torch.cuda.is_available():
+            _TRITON_SMOKE_CACHE = (False, "CUDA is not available")
+            return _TRITON_SMOKE_CACHE
+
+        @triton.jit
+        def _smoke_add_one_kernel(x_ptr, y_ptr, n_elements, BLOCK: tl.constexpr):
+            pid = tl.program_id(0)
+            offs = pid * BLOCK + tl.arange(0, BLOCK)
+            mask = offs < n_elements
+            x = tl.load(x_ptr + offs, mask=mask, other=0.0)
+            tl.store(y_ptr + offs, x + 1.0, mask=mask)
+
+        n_elements = 128
+        block_size = 128
+        device = torch.device("cuda", torch.cuda.current_device())
+        x = torch.arange(n_elements, dtype=torch.float32, device=device)
+        y = torch.empty_like(x)
+        grid = (triton.cdiv(n_elements, block_size),)
+        _smoke_add_one_kernel[grid](x, y, n_elements, BLOCK=block_size)
+        torch.cuda.synchronize(device=device)
+        if not torch.allclose(y, x + 1.0, atol=1e-5, rtol=1e-5):
+            _TRITON_SMOKE_CACHE = (False, "Triton runtime smoke test failed: incorrect output from smoke kernel")
+            return _TRITON_SMOKE_CACHE
+    except Exception as exc:
+        msg = str(exc).replace("\n", " ").strip()
+        if len(msg) > 260:
+            msg = msg[:260] + "..."
+        _TRITON_SMOKE_CACHE = (False, f"Triton runtime smoke test failed: {msg}")
+        return _TRITON_SMOKE_CACHE
+    _TRITON_SMOKE_CACHE = (True, "ok")
+    return _TRITON_SMOKE_CACHE
 
 
 def _check_triton():
@@ -10,6 +59,10 @@ def _check_triton():
         import triton.language as tl  # noqa: F401
     except Exception as exc:
         return False, f"Triton import failed: {exc}"
+    if _env_enabled("WGP_VLLM_TRITON_SMOKE", default=True):
+        smoke_ok, smoke_msg = _check_triton_runtime_smoke()
+        if not smoke_ok:
+            return False, smoke_msg
     return True, "ok"
 
 
@@ -19,7 +72,11 @@ def _check_flash_attention_2():
         from flash_attn import flash_attn_varlen_func  # noqa: F401
         from flash_attn import flash_attn_with_kvcache  # noqa: F401
         version = str(getattr(flash_attn, "__version__", ""))
+    except ModuleNotFoundError:
+        return False, "non installed"
     except Exception as exc:
+        if "no module named 'flash_attn'" in str(exc).strip().lower():
+            return False, "non installed"
         return False, f"FlashAttention import failed: {exc}"
 
     major = None
@@ -68,9 +125,11 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
         if supported:
             if vllm_available: return "vllm"
             requested_engine = default_engine
+        elif not vllm_available:
+            requested_engine = default_engine
         else:
-            global _WARNED_REQUESTED_VLLM_UNAVAILABLE
-            if not _WARNED_REQUESTED_VLLM_UNAVAILABLE:
+            global _WARNED_REQUESTED_VLLM_NOT_SUPPORTED
+            if not _WARNED_REQUESTED_VLLM_NOT_SUPPORTED:
                 checks = probe_result.get("checks", {})
                 reasons = []
                 if isinstance(checks, dict):
@@ -81,8 +140,8 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
                                 msg = msg[:220] + "..."
                             reasons.append(f"{check_name}={msg}")
                 reason_text = "; ".join(reasons) if len(reasons) > 0 else "unknown reason"
-                print(f"[LM] Requested decoder engine 'vllm' is unavailable at startup ({reason_text}).")
-                _WARNED_REQUESTED_VLLM_UNAVAILABLE = True
+                print(f"[LM] Requested decoder engine 'vllm' is not supported at startup ({reason_text}).")
+                _WARNED_REQUESTED_VLLM_NOT_SUPPORTED = True
             return default_engine
     if requested_engine == "":
         return "vllm" if supported and vllm_available else default_engine

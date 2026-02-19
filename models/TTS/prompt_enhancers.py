@@ -23,15 +23,15 @@ TTS_QWEN3_DIALOGUE_PROMPT = (
     "Generate a two-speaker dialogue based on the user prompt.\n\n"
     "Output rules:\n"
     "- Output only dialogue lines, no explanations, lists, or stage directions.\n"
-    "- Every line must start with either \"Speaker 0:\" or \"Speaker 1:\".\n"
+    "- Every line must start with either \"Speaker 1:\" or \"Speaker 2:\".\n"
     "- Use natural spoken language with clear punctuation.\n"
     "- Keep alternating speakers unless the prompt asks otherwise.\n"
     "- Write a compact dialogue (6-14 lines) unless the user asks for a different length.\n\n"
     "Example:\n"
-    "Speaker 0: We should leave before the rain gets heavier.\n"
-    "Speaker 1: Give me one minute, I still need my jacket.\n"
-    "Speaker 0: One minute, then we run for the bus.\n"
-    "Speaker 1: Deal, and if we miss it, coffee is on me."
+    "Speaker 1: We should leave before the rain gets heavier.\n"
+    "Speaker 2: Give me one minute, I still need my jacket.\n"
+    "Speaker 1: One minute, then we run for the bus.\n"
+    "Speaker 2: Deal, and if we miss it, coffee is on me."
 )
 
 TTS_MONOLOGUE_OR_DIALOGUE_PROMPT = (
@@ -43,7 +43,7 @@ TTS_MONOLOGUE_OR_DIALOGUE_PROMPT = (
     "Output rules:\n"
     "- Output only the script text. No explanations, lists, or stage directions.\n"
     "- Monologue: plain text, 4-8 sentences unless the user asks for a different length.\n"
-    "- Dialogue: use lines prefixed with \"Speaker 0:\" and \"Speaker 1:\". Keep each line as a "
+    "- Dialogue: use lines prefixed with \"Speaker 1:\" and \"Speaker 2:\". Keep each line as a "
     "natural spoken sentence. Alternate speakers unless the user requests a different structure.\n"
     "- Keep a consistent tone and point of view. Use clear punctuation for pauses.\n\n"
     "Example (monologue):\n"
@@ -54,10 +54,10 @@ TTS_MONOLOGUE_OR_DIALOGUE_PROMPT = (
     "the city, but most days I am grateful for the quiet. It lets me hear "
     "myself think, and that has become its own kind of music.\n\n"
     "Example (dialogue):\n"
-    "Speaker 0: I can feel the storm coming; the air has that metallic bite.\n"
-    "Speaker 1: Then we should head in now, before the sky decides for us.\n"
-    "Speaker 0: Give me one minute, I want to watch the trees bend first.\n"
-    "Speaker 1: One minute, then we go. I don't want to race the rain."
+    "Speaker 1: I can feel the storm coming; the air has that metallic bite.\n"
+    "Speaker 2: Then we should head in now, before the sky decides for us.\n"
+    "Speaker 1: Give me one minute, I want to watch the trees bend first.\n"
+    "Speaker 2: One minute, then we go. I don't want to race the rain."
 )
 
 HEARTMULA_LYRIC_PROMPT = (

@@ -46,6 +46,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("reset_prompt_enhancer")
         self.request_global("apply_int8_kernel_setting")
 
+        self.request_component("model_description")
         self.request_component("header")
         self.request_component("model_family")
         self.request_component("model_base_type_choice")
@@ -108,7 +109,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     self.max_frames_multiplier_choice = gr.Dropdown(
                         choices=[("Default", 1), ("x2", 2), ("x3", 3), ("x4", 4), ("x5", 5), ("x6", 6), ("x7", 7)],
-                        value=self.server_config.get("max_frames_multiplier", 1), label="Max Frames Multiplier (requires restart)"
+                        value=self.server_config.get("max_frames_multiplier", 1), label="Max Frames / Duration Multiplier (requires restart)"
                     )
                     self.enable_4k_resolutions_choice = gr.Dropdown(
                         choices=[("Off", 0), ("On", 1)],
@@ -310,6 +311,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             inputs=inputs,
             outputs=[
                 self.msg,
+                self.model_description,
                 self.header,
                 self.model_family,
                 self.model_base_type_choice,
@@ -464,7 +466,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         model_type = state["model_type"]
         
         model_family_update, model_base_type_update, model_choice_update = self.generate_dropdown_model_list(model_type)
-        header_update = self.generate_header(model_type, compile=new_server_config["compile"], attention_mode=new_server_config["attention_mode"])
+        description_update, header_update = self.generate_header(model_type, compile=new_server_config["compile"], attention_mode=new_server_config["attention_mode"])
 
         if gen_in_progress:
             msg = "<div style='color:green; text-align:center;'>The new configuration has been succesfully applied. Some of the Settings will be only effective when you will start another Generation</div>"
@@ -473,6 +475,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         return (msg
             ,
+            description_update,
             header_update,
             model_family_update,
             model_base_type_update,

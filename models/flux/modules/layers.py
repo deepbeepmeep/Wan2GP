@@ -297,18 +297,18 @@ class DoubleStreamBlock(nn.Module):
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
 
         # calculate the img blocks
-        img.addcmul_(self.img_attn.proj(img_attn), img_mod1.gate)
+        torch.addcmul(img, self.img_attn.proj(img_attn), img_mod1.gate, out=img)
         mod_img = self.img_norm2(img)
         mod_img.mul_(1 + img_mod2.scale)
         mod_img.add_(img_mod2.shift)
         mod_img = split_mlp(self.img_mlp, mod_img)
         # mod_img = self.img_mlp(mod_img)
-        img.addcmul_( mod_img, img_mod2.gate)
+        torch.addcmul(img, mod_img, img_mod2.gate, out=img)
         mod_img = None
 
         # calculate the txt blocks
-        txt.addcmul_(self.txt_attn.proj(txt_attn), txt_mod1.gate)
-        txt.addcmul_(self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift), txt_mod2.gate)
+        torch.addcmul(txt, self.txt_attn.proj(txt_attn), txt_mod1.gate, out=txt)
+        torch.addcmul(txt, self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift), txt_mod2.gate, out=txt)
         return img, txt
 
 
@@ -401,7 +401,7 @@ class SingleStreamBlock(nn.Module):
             x_chunk[...] = self.linear2(attn_mlp_chunk)
             del attn_mlp_chunk
         x_mod = x_mod.view(x_mod_shape)
-        x.addcmul_(x_mod, mod.gate)
+        torch.addcmul(x, x_mod, mod.gate, out=x)
         return x
 
 

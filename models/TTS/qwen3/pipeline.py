@@ -393,13 +393,14 @@ class Qwen3TTSPipeline:
     def _parse_two_speaker_dialogue(text: str) -> list[tuple[int, str]]:
         speaker_matches = list(re.finditer(r"Speaker\s*(\d+)\s*:\s*", text, flags=re.IGNORECASE))
         if not speaker_matches:
-            raise ValueError("Two-speaker mode requires prompt lines using Speaker 0: and Speaker 1:.")
-        invalid_ids = sorted({match.group(1) for match in speaker_matches if match.group(1) not in ("0", "1")})
-        if invalid_ids:
-            raise ValueError("Only Speaker 0: and Speaker 1: are supported in two-speaker mode.")
-        seen_ids = {match.group(1) for match in speaker_matches}
-        if "0" not in seen_ids or "1" not in seen_ids:
-            raise ValueError("Two-speaker mode requires prompt lines using both Speaker 0: and Speaker 1:.")
+            raise ValueError(
+                "Two-speaker mode requires prompt lines using Speaker 1: and Speaker 2: "
+                "(or any two numeric speaker IDs)."
+            )
+        speaker_ids = sorted({int(match.group(1)) for match in speaker_matches})
+        if len(speaker_ids) != 2:
+            raise ValueError("Two-speaker mode requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:.")
+        speaker_id_to_internal = {speaker_ids[0]: 0, speaker_ids[1]: 1}
 
         segments: list[tuple[int, str]] = []
         for index, match in enumerate(speaker_matches):
@@ -407,7 +408,7 @@ class Qwen3TTSPipeline:
             end = speaker_matches[index + 1].start() if index + 1 < len(speaker_matches) else len(text)
             segment_text = text[start:end].strip()
             if segment_text:
-                segments.append((int(match.group(1)), segment_text))
+                segments.append((speaker_id_to_internal[int(match.group(1))], segment_text))
         if not segments:
             raise ValueError("No dialogue text found after Speaker tags.")
         return segments
@@ -721,9 +722,9 @@ class Qwen3TTSPipeline:
 
         if self.base_model_type == "qwen3_tts_base" and audio_prompt_type == "AB":
             if not audio_guide:
-                raise ValueError("Speaker 0 reference audio is required for Qwen3 Base voice clone.")
+                raise ValueError("Speaker 1 reference audio is required for Qwen3 Base voice clone.")
             if not audio_guide2:
-                raise ValueError("Speaker 1 reference audio is required for two-speaker Qwen3 Base mode.")
+                raise ValueError("Speaker 2 reference audio is required for two-speaker Qwen3 Base mode.")
             language = (model_mode or "auto").lower()
             ref_text = _read_text_or_file(alt_prompt, "Reference transcript(s)")
             speaker_ref_texts, speaker_xvector_only = self._resolve_two_speaker_ref_scripts(ref_text)

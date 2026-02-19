@@ -375,3 +375,17 @@ user-select: text;
 	align-self: center;
 }
 #refiner-input-row { align-items: center; }
+
+.header-markdown-group,
+.header-markdown-group > div {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+.header-markdown-group {
+    padding: 0 !important;
+}
+.header-markdown-group .prose {
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+}

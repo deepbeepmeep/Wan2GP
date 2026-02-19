@@ -6,7 +6,6 @@
 import os
 import torch
 import json
-import json5
 import time
 import accelerate
 import random
@@ -384,14 +383,8 @@ class VocoderInference(object):
 
     def _dump_cfg(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        json5.dump(
-            self.cfg,
-            open(path, "w"),
-            indent=4,
-            sort_keys=True,
-            ensure_ascii=False,
-            quote_keys=True,
-        )
+        with open(path, "w", encoding="utf-8") as cfg_file:
+            json.dump(self.cfg, cfg_file, indent=4, sort_keys=True, ensure_ascii=False)
 
 
 def load_nnvocoder(

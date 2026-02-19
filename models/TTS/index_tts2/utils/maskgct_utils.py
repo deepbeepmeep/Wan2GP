@@ -1,7 +1,7 @@
 import os
 import torch
 import librosa
-import json5
+import json
 from transformers import Wav2Vec2BertModel
 import numpy as np
 from mmgp import offload
@@ -24,7 +24,7 @@ def _load_config(config_fn, lowercase=False):
     """
     with open(config_fn, "r") as f:
         data = f.read()
-    config_ = json5.loads(data)
+    config_ = json.loads(data)
     if "base_config" in config_:
         # load configurations from new path
         p_config_path = os.path.join(os.getenv("WORK_DIR"), config_["base_config"])

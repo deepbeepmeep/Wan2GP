@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 
 import accelerate
-import json5
+import json
 import numpy as np
 import torch
 from accelerate.utils import ProjectConfiguration
@@ -151,14 +151,8 @@ class CodecTrainer:
 
     def _dump_cfg(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        json5.dump(
-            self.cfg,
-            open(path, "w"),
-            indent=4,
-            sort_keys=True,
-            ensure_ascii=False,
-            quote_keys=True,
-        )
+        with open(path, "w", encoding="utf-8") as cfg_file:
+            json.dump(self.cfg, cfg_file, indent=4, sort_keys=True, ensure_ascii=False)
 
     def _is_valid_pattern(self, directory_name):
         directory_name = str(directory_name)

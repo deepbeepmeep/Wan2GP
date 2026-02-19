@@ -10,7 +10,6 @@ import pickle
 import math
 import json
 import safetensors
-import json5
 # from codec.kmeans.repcodec_model import RepCodec
 from ..utils.maskgct.models.codec.kmeans.repcodec_model import RepCodec
 
@@ -58,7 +57,7 @@ def _load_config(config_fn, lowercase=False):
     """
     with open(config_fn, "r") as f:
         data = f.read()
-    config_ = json5.loads(data)
+    config_ = json.loads(data)
     if "base_config" in config_:
         # load configurations from new path
         p_config_path = os.path.join(os.getenv("WORK_DIR"), config_["base_config"])

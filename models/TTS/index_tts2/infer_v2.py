@@ -534,7 +534,7 @@ class IndexTTS2:
             key_preview = re.sub(r"\s+", " ", key).strip()
             if len(key_preview) > 160:
                 key_preview = key_preview[:157] + "..."
-            print(f">> detected emotion from keywords: '{key_preview}' -> {keyword_emotions}")
+            print(f">> detected mixed emotion tags: '{key_preview}' -> {keyword_emotions}")
             return list(emo_vector)
         emo_dict = self.qwen_emo.inference(key, log_if_default=log_if_default)
         emo_vector = list(emo_dict.values())
@@ -1420,29 +1420,25 @@ class QwenEmotion:
         raw = re.sub(r"[\[\]]", " ", str(text_input or "")).strip().lower()
         if len(raw) == 0:
             return None
-        chunks = [chunk.strip() for chunk in re.split(r"[,;/|+]+", raw) if chunk.strip()]
-        if len(chunks) == 0:
+        if "," not in raw and "，" not in raw:
             return None
-        values = {key: 0.0 for key in self.emotion_keys}
+        chunks = [chunk.strip() for chunk in re.split(r"[，,]+", raw) if chunk.strip()]
+        if len(chunks) <= 1:
+            return None
+        parsed_keys = []
         for chunk in chunks:
             normalized_chunk = re.sub(r"\s+", " ", chunk).strip()
-            parsed_key = None
-            parsed_value = 1.0
-            weighted_match = re.match(r"^(.+?)\s*[:=]\s*([-+]?\d*\.?\d+)\s*$", normalized_chunk)
-            if weighted_match is not None:
-                alias = re.sub(r"\s+", " ", weighted_match.group(1)).strip()
-                parsed_key = self._keyword_aliases.get(alias) or self._keyword_aliases.get(alias.replace(" ", ""))
-                try:
-                    parsed_value = float(weighted_match.group(2))
-                except Exception:
-                    parsed_value = 1.0
-            else:
-                parsed_key = self._keyword_aliases.get(normalized_chunk) or self._keyword_aliases.get(normalized_chunk.replace(" ", ""))
+            parsed_key = self._keyword_aliases.get(normalized_chunk) or self._keyword_aliases.get(normalized_chunk.replace(" ", ""))
             if parsed_key is None:
                 return None
-            values[parsed_key] = max(values[parsed_key], self.clamp_score(parsed_value))
-        if all(v <= 0.0 for v in values.values()):
-            values["calm"] = 1.0
+            parsed_keys.append(parsed_key)
+        unique_keys = list(dict.fromkeys(parsed_keys))
+        if len(unique_keys) <= 1:
+            return None
+        split_value = 1.0 / float(len(unique_keys))
+        values = {key: 0.0 for key in self.emotion_keys}
+        for one_key in unique_keys:
+            values[one_key] = split_value
         return values
 
     def release_cuda_graph(self):

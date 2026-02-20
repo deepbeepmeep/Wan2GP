@@ -2,7 +2,7 @@
     "model": {
         "name": "TTS Index TTS 2",
         "architecture": "index_tts2",
-        "description": "IndexTTS2 zero-shot speech synthesis with optional emotion guidance from text or a second reference audio. It supports two-speaker dialogue with by starting lines with 'Speaker 1:' and 'Speaker 2:' tags. Emotion is automatically detected in each paragraph or set manually using [].", 
+        "description": "IndexTTS2 zero-shot speech synthesis with optional emotion guidance from text or a second reference audio. It supports two-speakers dialogue by starting lines with 'Speaker 1:' and 'Speaker 2:' tags. Emotion is automatically detected in each paragraph or set manually using [].", 
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/index_tts2_gpt_fp16.safetensors"
         ]

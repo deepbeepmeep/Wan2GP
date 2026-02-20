@@ -2569,15 +2569,15 @@ def test_any_sliding_window(model_type):
     return model_def.get("sliding_window", False)
 
 def get_model_min_frames_and_step(model_type):
-    mode_def = get_model_def(model_type)
-    frames_minimum = mode_def.get("frames_minimum", 5)
-    frames_steps = mode_def.get("frames_steps", 4)
-    latent_size = mode_def.get("latent_size", frames_steps)
+    model_def = get_model_def(model_type)
+    frames_minimum = model_def.get("frames_minimum", 5)
+    frames_steps = model_def.get("frames_steps", 4)
+    latent_size = model_def.get("latent_size", frames_steps)
     return frames_minimum, frames_steps, latent_size 
     
 def get_model_fps(model_type):
-    mode_def = get_model_def(model_type)
-    fps= mode_def.get("fps", 16)
+    model_def = get_model_def(model_type)
+    fps= model_def.get("fps", 16)
     return fps
 
 def get_computed_fps(force_fps, base_model_type , video_guide, video_source ):
@@ -9189,7 +9189,9 @@ def get_image_end_label(multi_prompts_gen_type):
     return "Images as ending points for new Videos in the Generation Queue" if multi_prompts_gen_type == 0 else "Images as ending points for each new Window of the same Video Generation" 
 
 def refresh_prompt_labels(state, multi_prompts_gen_type, image_mode):
-    prompt_label, wizard_prompt_label =  get_prompt_labels(multi_prompts_gen_type, model_def, image_mode > 0, mode_def.get("audio_only", False))
+    model_type = get_state_model_type(state)
+    model_def = get_model_def(model_type)
+    prompt_label, wizard_prompt_label =  get_prompt_labels(multi_prompts_gen_type, model_def, image_mode > 0, model_def.get("audio_only", False))
     return gr.update(label=prompt_label), gr.update(label = wizard_prompt_label), gr.update(label=get_image_end_label(multi_prompts_gen_type))
 
 def update_video_guide_outpainting(video_guide_outpainting_value, value, pos):

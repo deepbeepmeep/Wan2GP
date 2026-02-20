@@ -267,6 +267,18 @@ class LTXModel(torch.nn.Module):
                 rope_type=self.rope_type,
             )
 
+    def _refresh_preprocessor_refs(self) -> None:
+        if self.model_type.is_video_enabled():
+            if isinstance(self.video_args_preprocessor, MultiModalTransformerArgsPreprocessor):
+                self.video_args_preprocessor.simple_preprocessor.patchify_proj = self.patchify_proj
+            else:
+                self.video_args_preprocessor.patchify_proj = self.patchify_proj
+        if self.model_type.is_audio_enabled():
+            if isinstance(self.audio_args_preprocessor, MultiModalTransformerArgsPreprocessor):
+                self.audio_args_preprocessor.simple_preprocessor.patchify_proj = self.audio_patchify_proj
+            else:
+                self.audio_args_preprocessor.patchify_proj = self.audio_patchify_proj
+
     def _init_transformer_blocks(
         self,
         num_layers: int,
@@ -418,6 +430,7 @@ class LTXModel(torch.nn.Module):
         if not self.model_type.is_audio_enabled() and audio is not None:
             raise ValueError("Audio is not enabled for this model")
 
+        self._refresh_preprocessor_refs()
         self.interrupted = False
         joint_pass = isinstance(video, (list, tuple)) or isinstance(audio, (list, tuple))
         if joint_pass:

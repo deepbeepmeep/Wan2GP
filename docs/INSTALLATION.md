@@ -356,5 +356,5 @@ These kernels will offer optimized INT4 / FP4 dequantization.
 
 - Linux 
    ```
-  pip install https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp310-cp310-linux_x86_64.whl
+  pip install https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp311-cp311-linux_x86_64.whl
    ```

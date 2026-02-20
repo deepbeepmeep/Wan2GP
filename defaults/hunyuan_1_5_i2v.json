@@ -11,6 +11,7 @@
 	"prompt" : "",
     "resolution": "1280x720",
     "video_length": 97,
+    "sliding_window_size": 97,
     "num_inference_steps": 30,
     "guidance_scale": 6.0,
     "flow_shift": 7.0

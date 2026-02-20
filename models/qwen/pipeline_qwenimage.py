@@ -910,7 +910,6 @@ class QwenImagePipeline(): #DiffusionPipeline
                 latent_noise_factor = t/1000
                 latents  = original_image_latents  * (1.0 - latent_noise_factor) + latents * latent_noise_factor 
 
-
             latents_dtype = latents.dtype
 
             # latent_model_input = latents
@@ -990,17 +989,12 @@ class QwenImagePipeline(): #DiffusionPipeline
             latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
             noise_pred = None
 
-            if image_mask_latents is not None and i < masked_steps:
-                if lanpaint_proc is None :
-                    pass
-                    # latents  =  original_image_latents * (1-image_mask_latents)  + image_mask_latents * latents
-                else:
-                    next_t = timesteps[i+1] if i<len(timesteps)-1 else 0
-                    latent_noise_factor = next_t / 1000
-                        # noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + torch.randn_like(original_image_latents) * latent_noise_factor 
-                    noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + randn * latent_noise_factor 
-                    latents  =  noisy_image * (1-image_mask_latents)  + image_mask_latents * latents
-                    noisy_image = None
+            if image_mask_latents is not None and i < masked_steps -1 :
+                next_t = timesteps[i+1] if i<len(timesteps)-1 else 0
+                latent_noise_factor = next_t / 1000
+                noisy_image  = original_image_latents  * (1.0 - latent_noise_factor) + randn * latent_noise_factor 
+                latents  =  noisy_image * (1-image_mask_latents)  + image_mask_latents * latents
+                noisy_image = None
 
             if latents.dtype != latents_dtype:
                 if torch.backends.mps.is_available():

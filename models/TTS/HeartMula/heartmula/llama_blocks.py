@@ -358,6 +358,7 @@ class MultiHeadAttention(nn.Module):
         is_causal: bool = True,
         attn_dropout: float = 0.0,
         cache_expand_step: int = 200,
+        allow_flash2_kvcache: bool = False,
     ) -> None:
         super().__init__()
         if num_heads % num_kv_heads != 0:
@@ -378,6 +379,7 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = head_dim
         self.max_seq_len = max_seq_len
         self.is_causal = is_causal
+        self.allow_flash2_kvcache = allow_flash2_kvcache
 
         self.kv_cache: Optional[ExpandableKVCache] = None
         self.q_proj = q_proj
@@ -503,15 +505,15 @@ class MultiHeadAttention(nn.Module):
         self._flash_device = device
         self._flash_dtype = dtype
         flash_ok = (
-            device.type == "cuda"
+            self.allow_flash2_kvcache
+            and device.type == "cuda"
             and dtype in (torch.float16, torch.bfloat16)
             and self.head_dim <= 256
-        ) and False #disabled flash
-        kv_ready = self.kv_cache is not None and self.cache_enabled
-        self._flash_kv_ready = (
-            flash_ok and self._flash_attn is not None and kv_ready
+            and self._flash_attn is not None
         )
-        self._flash_full_ready = flash_ok and self._flash_attn_func is not None
+        kv_ready = self.kv_cache is not None and self.cache_enabled
+        self._flash_kv_ready = flash_ok and kv_ready
+        self._flash_full_ready = False
 
     def reset_flash(self) -> None:
         self._flash_kv_ready = False
@@ -529,9 +531,13 @@ class MultiHeadAttention(nn.Module):
     ) -> torch.Tensor:
         bsz, s_x, _ = x.shape
         q = self.q_proj(x).view(bsz, s_x, self.num_heads, self.head_dim)
+        graph_state = None
+        graph_flash_kvcache = False
         if self.kv_cache is not None and self.cache_enabled:
             self.kv_cache.ensure_device(q.device, q.dtype)
-            if mask is not None and s_x == 1:
+            graph_state = getattr(self.kv_cache, "graph_state", None)
+            graph_flash_kvcache = bool(getattr(graph_state, "flash_kvcache", False))
+            if mask is not None and s_x == 1 and graph_state is None:
                 mask = None
         y = x if y is None else y
         s_y = y.shape[1]
@@ -544,31 +550,53 @@ class MultiHeadAttention(nn.Module):
         k= v = None
         k, v = self._expand_kv(kv_list, self.num_heads // self.num_kv_heads)
 
-        if s_x == 1:
-            use_flash_kv = self._flash_kv_ready and mask is None
-            if use_flash_kv:
-                global _FLASH_ATTN_NOTICE_SHOWN
-                if not _FLASH_ATTN_NOTICE_SHOWN:
-                    print("\nHeartMuLa attention: using flash_attn_with_kvcache.")
-                    _FLASH_ATTN_NOTICE_SHOWN = True
-                self.kv_cache.ensure_capacity(self.kv_cache.size + s_y)
+        use_flash_kv = self._flash_kv_ready and mask is None and (graph_state is None or graph_flash_kvcache)
+        if graph_flash_kvcache and (input_pos is None or input_pos.numel() != bsz):
+            use_flash_kv = False
+        if use_flash_kv:
+            self.kv_cache.ensure_capacity(self.kv_cache.size + s_y)
+            if graph_flash_kvcache:
+                cache_seqlens = input_pos.reshape(-1).to(device=q.device, dtype=torch.int32)
+            else:
                 cache_seqlens = torch.full(
                     (bsz,),
                     self.kv_cache.size,
                     device=q.device,
                     dtype=torch.int32,
                 )
-                attn_out = self._flash_attn(
-                    q=q,
-                    k_cache=self.kv_cache.k_cache,
-                    v_cache=self.kv_cache.v_cache,
-                    k=k,
-                    v=v,
-                    cache_seqlens=cache_seqlens,
-                    cache_leftpad=None,
-                    causal=True,
-                )
+            attn_out = self._flash_attn(
+                q=q,
+                k_cache=self.kv_cache.k_cache,
+                v_cache=self.kv_cache.v_cache,
+                k=k,
+                v=v,
+                cache_seqlens=cache_seqlens,
+                cache_leftpad=None,
+                causal=self.is_causal,
+            )
+            if not graph_flash_kvcache:
                 self.kv_cache.advance(s_y)
+        elif s_x == 1:
+            if (
+                graph_state is not None
+                and not graph_flash_kvcache
+                and self.kv_cache is not None
+                and self.cache_enabled
+                and input_pos is not None
+                and mask is not None
+            ):
+                k_cache = self.kv_cache.k_cache[:bsz]
+                v_cache = self.kv_cache.v_cache[:bsz]
+                graph_state.write(k_cache, v_cache, k, v, input_pos)
+                k = k_cache
+                v = v_cache
+                attn_out = self._sdpa(
+                    q,
+                    k,
+                    v,
+                    mask=mask,
+                    is_causal=False,
+                )
             else:
                 if self.kv_cache is not None and self.cache_enabled:
                     k_cache, v_cache = self.kv_cache.update(k, v)
@@ -582,28 +610,17 @@ class MultiHeadAttention(nn.Module):
                     is_causal=False,
                 )
         else:
-            use_flash_full = self._flash_full_ready and mask is None
-            if use_flash_full:
-                if self.kv_cache is not None and self.cache_enabled:
-                    self.kv_cache.update(k, v)
-                attn_out = self._flash_full(
-                    q,
-                    k,
-                    v,
-                    is_causal=self.is_causal,
-                )
-            else:
-                if self.kv_cache is not None and self.cache_enabled:
-                    k_cache, v_cache = self.kv_cache.update(k, v)
-                    k = k_cache[:, : self.kv_cache.size]
-                    v = v_cache[:, : self.kv_cache.size]
-                attn_out = self._sdpa(
-                    q,
-                    k,
-                    v,
-                    mask=mask,
-                    is_causal=self.is_causal if mask is None else False,
-                )
+            if self.kv_cache is not None and self.cache_enabled:
+                k_cache, v_cache = self.kv_cache.update(k, v)
+                k = k_cache[:, : self.kv_cache.size]
+                v = v_cache[:, : self.kv_cache.size]
+            attn_out = self._sdpa(
+                q,
+                k,
+                v,
+                mask=mask,
+                is_causal=self.is_causal if mask is None else False,
+            )
 
         q = None
         k = None
@@ -752,6 +769,7 @@ def build_llama_decoder(
     intermediate_dim: Optional[int] = None,
     norm_eps: float = 1e-5,
     scale_factor: int = 32,
+    allow_flash2_kvcache: bool = False,
 ) -> TransformerDecoder:
     head_dim = embed_dim // num_heads
     num_kv_heads = num_kv_heads if num_kv_heads else num_heads
@@ -775,6 +793,7 @@ def build_llama_decoder(
             pos_embeddings=rope,
             max_seq_len=max_seq_len,
             attn_dropout=attn_dropout,
+            allow_flash2_kvcache=allow_flash2_kvcache,
         )
         hidden_dim = (
             intermediate_dim

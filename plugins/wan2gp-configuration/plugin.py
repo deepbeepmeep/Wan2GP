@@ -44,9 +44,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("generate_dropdown_model_list")
         self.request_global("get_unique_id")
         self.request_global("reset_prompt_enhancer")
-        self.request_global("resolve_lm_decoder_engine")
         self.request_global("apply_int8_kernel_setting")
 
+        self.request_component("model_description")
         self.request_component("header")
         self.request_component("model_family")
         self.request_component("model_base_type_choice")
@@ -109,7 +109,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     self.max_frames_multiplier_choice = gr.Dropdown(
                         choices=[("Default", 1), ("x2", 2), ("x3", 3), ("x4", 4), ("x5", 5), ("x6", 6), ("x7", 7)],
-                        value=self.server_config.get("max_frames_multiplier", 1), label="Max Frames Multiplier (requires restart)"
+                        value=self.server_config.get("max_frames_multiplier", 1), label="Max Frames / Duration Multiplier (requires restart)"
                     )
                     self.enable_4k_resolutions_choice = gr.Dropdown(
                         choices=[("Off", 0), ("On", 1)],
@@ -152,15 +152,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.quantization_choice = gr.Dropdown(choices=[("Scaled Int8 (recommended)", "int8"), ("Scaled Fp8", "fp8"), ("16-bit (no quantization)", "bf16")], value=self.transformer_quantization, label="Transformer Model Quantization (if available otherwise get the closest available)")
                     self.transformer_dtype_policy_choice = gr.Dropdown(choices=[("Auto (Best for Hardware)", ""), ("FP16", "fp16"), ("BF16", "bf16")], value=self.transformer_dtype_policy, label="Transformer Data Type (if available)")
                     self.mixed_precision_choice = gr.Dropdown(choices=[("16-bit only (less VRAM)", "0"), ("Mixed 16/32-bit (better quality)", "1")], value=self.server_config.get("mixed_precision", "0"), label="Transformer Engine Precision")
-                    self.text_encoder_quantization_choice = gr.Dropdown(choices=[("16-bit (more RAM, better quality)", "bf16"), ("8-bit (less RAM, slightly lower quality)", "int8")], value=self.text_encoder_quantization, label="Text Encoder Precision")
+                    self.text_encoder_quantization_choice = gr.Dropdown(choices=[("16-bit (more RAM, better quality)", "bf16"), ("8-bit (less RAM, slightly lower quality)", "int8")], value=self.text_encoder_quantization, label="Text Encoder Quantization")
                     self.lm_decoder_engine_choice = gr.Dropdown(
                         choices=[
                             ("Auto", ""),
-                            ("PyTorch (slow, compatible)", "legacy"),
-                            ("vllm (up to x10 faster, requires Triton & Flash Attention 2 and must be implemented in corresponding model)", "vllm"),
+                            ("PyTorch: slow, compatible", "legacy"),
+                            ("Cuda Graph: up to x6 faster, whole LM will be loaded in VRAM", "cg"),
+                            ("vllm: up to x10 faster, whole LM will be loaded in VRAM, requires Triton & Flash Attention 2", "vllm"),
                         ],
                         value=self.server_config.get("lm_decoder_engine", ""),
-                        label="Language Models Decoder Engine",
+                        label="Language Models Decoder Engine (when available for a model)",
                     )
                     self.VAE_precision_choice = gr.Dropdown(choices=[("16-bit (faster, less VRAM)", "16"), ("32-bit (slower, better for sliding window)", "32")], value=self.server_config.get("vae_precision", "16"), label="VAE Encoding/Decoding Precision")
                     self.compile_choice = gr.Dropdown(choices=[("On (up to 20% faster, requires Triton)", "transformer"), ("Off", "")], value=self.compile, label="Compile Transformer Model (slight speed again, but first generation is slower and potential compatibility issues with some GPUs/Models)", interactive=not self.args.lock_config)
@@ -310,6 +311,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             inputs=inputs,
             outputs=[
                 self.msg,
+                self.model_description,
                 self.header,
                 self.model_family,
                 self.model_base_type_choice,
@@ -443,7 +445,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("compile", new_server_config["compile"])
         self.set_global("text_encoder_quantization", new_server_config["text_encoder_quantization"])
         self.set_global("lm_decoder_engine", new_server_config["lm_decoder_engine"])
-        self.set_global("lm_decoder_engine_obtained", self.resolve_lm_decoder_engine(new_server_config["lm_decoder_engine"]))
         self.set_global("vae_config", new_server_config["vae_config"])
         self.set_global("boost", new_server_config["boost"])
         self.set_global("enable_int8_kernels", new_server_config["enable_int8_kernels"])
@@ -465,7 +466,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         model_type = state["model_type"]
         
         model_family_update, model_base_type_update, model_choice_update = self.generate_dropdown_model_list(model_type)
-        header_update = self.generate_header(model_type, compile=new_server_config["compile"], attention_mode=new_server_config["attention_mode"])
+        description_update, header_update = self.generate_header(model_type, compile=new_server_config["compile"], attention_mode=new_server_config["attention_mode"])
 
         if gen_in_progress:
             msg = "<div style='color:green; text-align:center;'>The new configuration has been succesfully applied. Some of the Settings will be only effective when you will start another Generation</div>"
@@ -474,6 +475,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         return (msg
             ,
+            description_update,
             header_update,
             model_family_update,
             model_base_type_update,

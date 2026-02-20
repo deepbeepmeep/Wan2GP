@@ -291,8 +291,12 @@ class family_handler:
                 }
             )
 
-                
-                
+        if settings_version < 2.52:
+            plan = ui_defaults.get("self_refiner_plan")
+            if isinstance(plan, list):
+                from shared.utils.self_refiner import convert_refiner_list_to_string
+                ui_defaults["self_refiner_plan"] = convert_refiner_list_to_string(plan)
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update(

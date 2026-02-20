@@ -7,6 +7,11 @@ from optimum.quanto import QModuleMixin
 from optimum.quanto.tensor.qtensor import QTensor
 from optimum.quanto.tensor.qtype import qtype as _quanto_qtype, qtypes as _quanto_qtypes
 
+try:
+    from torch._subclasses.fake_tensor import FakeTensor as _TorchFakeTensor
+except Exception:  # pragma: no cover
+    _TorchFakeTensor = ()
+
 def _maybe_add_nvfp4_cu13_dll_dir():
     if os.name != "nt":
         return
@@ -266,6 +271,10 @@ def _supports_nvfp4_kernel(device):
 _init_nvfp4_kernel_support()
 
 
+def _is_fake_tensor(tensor):
+    return isinstance(tensor, _TorchFakeTensor)
+
+
 def _nvfp4_layout(weight):
     return getattr(weight, "_layout", _NVFP4_LAYOUT_LEGACY)
 
@@ -303,6 +312,8 @@ def _nvfp4_can_use_kernel(input, weight):
         return False
     if getattr(weight._input_global_scale, "is_meta", False):
         return False
+    if _is_fake_tensor(input):
+        return True
     try:
         if not torch.isfinite(weight._input_global_scale).all():
             return False
@@ -467,16 +478,10 @@ def _nvfp4_linear_cuda(input, weight, bias=None):
 @torch.compiler.disable()
 def _nvfp4_linear(input, weight, bias=None, op=None):
     if _nvfp4_can_use_kernel(input, weight):
+        if _is_fake_tensor(input):
+            return input.new_empty((*input.shape[:-1], weight.size(0)))
         return _nvfp4_linear_cuda(input, weight, bias=bias)
-    _nvfp4_note_fallback()
-    dtype = input.dtype if torch.is_tensor(input) else weight.dtype
-    device = input.device if torch.is_tensor(input) else weight.device
-    w = weight.dequantize(dtype=dtype, device=device)
-    if bias is not None and torch.is_tensor(bias) and bias.dtype != dtype:
-        bias = bias.to(dtype)
-    if op is not None:
-        return op(input, w, bias)
-    return torch.nn.functional.linear(input, w, bias)
+    raise RuntimeError("NVFP4 kernel path required but this layer is kernel-incompatible.")
 
 
 def _is_float8_dtype(dtype):
@@ -783,6 +788,11 @@ class NVFP4WeightTensor(QTensor):
         self._layout = layout
         self._allow_kernel = allow_kernel
 
+    def __repr__(self):
+        return f"NVFP4WeightTensor(shape={tuple(self.shape)}, dtype={self.dtype}, device={self.device}, layout={self._layout})"
+
+    __str__ = __repr__
+
     def dequantize(self, dtype=None, device=None):
         if dtype is None:
             dtype = self.dtype
@@ -1042,18 +1052,12 @@ class QLinearNVFP4(QModuleMixin, torch.nn.Linear):
             if weight_scale_2 is None:
                 missing_keys.append(scale2_key)
             if input_scale is None:
-                allow_kernel = False
                 if torch.is_tensor(weight_scale_2):
-                    input_scale = torch.full(
-                        (),
-                        float("nan"),
-                        dtype=weight_scale_2.dtype,
-                        device=weight_scale_2.device,
-                    )
+                    input_scale = torch.ones((), dtype=torch.float32, device=weight_scale_2.device)
                 elif torch.is_tensor(weight_u8):
-                    input_scale = torch.full((), float("nan"), dtype=torch.float32, device=weight_u8.device)
+                    input_scale = torch.ones((), dtype=torch.float32, device=weight_u8.device)
                 else:
-                    input_scale = torch.tensor(float("nan"), dtype=torch.float32)
+                    input_scale = torch.ones((), dtype=torch.float32)
         else:
             if input_global_scale is None or alpha is None:
                 if input_absmax is not None and weight_global_scale is not None:

@@ -87,9 +87,9 @@ class model_factory():
         source =  model_def.get("source", None)
 
         if source is not None:
-            offload.load_model_data(transformer, source, fused_split_map=_QWEN_FUSED_SPLIT_MAP)
+            offload.load_model_data(transformer, source, fused_split_map=_QWEN_FUSED_SPLIT_MAP, writable_tensors=False)
         else:
-            offload.load_model_data(transformer, transformer_filename, fused_split_map=_QWEN_FUSED_SPLIT_MAP)
+            offload.load_model_data(transformer, transformer_filename, fused_split_map=_QWEN_FUSED_SPLIT_MAP, writable_tensors=False)
         # transformer = offload.fast_load_transformers_model("transformer_quanto.safetensors", writable_tensors= True , modelClass=QwenImageTransformer2DModel, defaultConfigPath="transformer_config.json")
 
         if not source is None:

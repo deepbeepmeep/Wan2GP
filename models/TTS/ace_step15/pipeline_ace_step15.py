@@ -7,20 +7,21 @@ import math
 import os
 import random
 import re
-import sys
 from typing import Any
 
 import torch
 import torchaudio
 import yaml
 from tqdm import tqdm
-from transformers import AutoTokenizer, Qwen3ForCausalLM, Qwen3Model
-from diffusers import AutoencoderOobleck
+from transformers import AutoTokenizer, Qwen3ForCausalLM as HfQwen3ForCausalLM, Qwen3Model
 
 from mmgp import offload
 from shared.utils.text_encoder_cache import TextEncoderCache
 
+from .models.autoencoder_oobleck import AutoencoderOobleck
 from .models.ace_step15_hf import AceStepConditionGenerationModel
+from .qwen3_audio_codes import generate_audio_codes_with_engine_sampling
+from .qwen3_lm_engines import Qwen3LegacyEngine, Qwen3LmEngine, Qwen3VllmEngine
 
 _DEFAULT_TIMBRE = [
     -1.3672e-01, -1.5820e-01,  5.8594e-01, -5.7422e-01,  3.0273e-02,
@@ -46,11 +47,13 @@ _ACE_STEP15_MODEL_MODE_DEFAULT = 0
 _ACE_STEP15_MODEL_MODE_INFER_MISSING = 1
 _ACE_STEP15_MODEL_MODE_INFER_AND_REFINE = 2
 _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION = 3
+_ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION = 4
 _ACE_STEP15_DEFAULT_BPM = 120
 _ACE_STEP15_DEFAULT_TIMESIGNATURE = 2
 _ACE_STEP15_DEFAULT_KEYSCALE = "C major"
 _ACE_STEP15_DURATION_MIN_SECONDS = 5
 _ACE_STEP15_DURATION_MAX_SECONDS = 600
+_ACE_STEP15_PHASE1_MAX_TOKENS = 512
 _ACE_STEP15_ALLOWED_TIMESIGNATURES = {2, 3, 4, 6}
 _ACE_STEP15_BPM_OPTIONS = [str(v) for v in range(30, 301)]
 _ACE_STEP15_TIMESIGNATURE_OPTIONS = ["2", "3", "4", "6"]
@@ -110,7 +113,6 @@ class ACEStep15Pipeline:
         enable_lm: bool = True,
         ignore_lm_cache_seed: bool = False,
         lm_decoder_engine: str = "legacy",
-        lm_vllm_weight_mode: str = "lazy",
         device=None,
         dtype=torch.bfloat16,
     ):
@@ -135,21 +137,15 @@ class ACEStep15Pipeline:
         self.lm_tokenizer_dir = lm_tokenizer_dir
         self.silence_latent_path = silence_latent_path
         self.ignore_lm_cache_seed = bool(ignore_lm_cache_seed)
-        self.lm_engine = (lm_decoder_engine or "legacy").strip().lower()
-        if self.lm_engine not in ("legacy", "pt", "vllm"):
-            self.lm_engine = "legacy"
-        self.lm_vllm_weight_mode = (lm_vllm_weight_mode or "lazy").strip().lower()
+        self.lm_engine = str(lm_decoder_engine or "legacy").strip().lower()
+        if self.lm_engine not in {"legacy", "vllm"}:
+            raise ValueError(f"Unsupported LM engine '{lm_decoder_engine}'. Expected one of: legacy, vllm.")
 
         self._interrupt = False
         self._early_stop = False
         self.loaded = False
 
         self._latent_hop_length = 1920
-        self.lm_code_cache = TextEncoderCache()
-        self._lm_engine_impl = None
-        self._lm_create_engine_fn = None
-        self._lm_legacy_generate_fn = None
-        self._lm_legacy_text_fn = None
         self._ref_metadata_processor = None
         self._ref_metadata_processor_class = None
         self._ref_caption_postprocess_fn = None
@@ -158,12 +154,13 @@ class ACEStep15Pipeline:
         self._init_lm_hint_modules()
         self._load_tokenizers()
         self._load_text_encoder_2()
-        if self.enable_lm and self.lm_engine != "vllm":
-            self._load_lm()
-        else:
-            self.lm_model = None
         self._load_silence_latent()
+        self.lm_code_cache = TextEncoderCache()
+        self._lm_engine_impl: Qwen3LmEngine | None = None
+        self._lm_last_failure_reason = ""
+        self.lm_model = None
         if self.enable_lm:
+            self._load_lm()
             self._init_lm_engine()
 
         self.loaded = True
@@ -174,32 +171,45 @@ class ACEStep15Pipeline:
             modelClass=AceStepConditionGenerationModel,
             defaultConfigPath=transformer_config_path,
             default_dtype=self.dtype,
+            writable_tensors=False,
             ignore_unused_weights=True,
         )
         self.ace_step_transformer.eval()
         self.model = self.ace_step_transformer
 
-        self._patch_oobleck_weight_norm()
         self.audio_vae = offload.fast_load_transformers_model(
             vae_weights_path,
             modelClass=AutoencoderOobleck,
             defaultConfigPath=vae_config_path,
             default_dtype=self.dtype,
+            writable_tensors=False,
             ignore_unused_weights=True,
         )
+        self._fold_oobleck_decoder_weight_norm_once(self.audio_vae)
         self.audio_vae.eval()
         self.audio_vae._offload_hooks = ["encode", "decode"]
         self.audio_vae.get_VAE_tile_size = _ace_step15_get_vae_tile_size
         self.vae = self.audio_vae
 
     @staticmethod
-    def _patch_oobleck_weight_norm():
+    def _fold_oobleck_decoder_weight_norm_once(audio_vae):
         try:
-            from torch.nn.utils import parametrizations
-            from diffusers.models.autoencoders import autoencoder_oobleck
-            autoencoder_oobleck.weight_norm = parametrizations.weight_norm
+            from torch.nn.utils import parametrize
         except Exception:
             return
+        decoder = getattr(audio_vae, "decoder", None)
+        if decoder is None:
+            return
+        folded = 0
+        with torch.no_grad():
+            for module in decoder.modules():
+                module_parametrizations = getattr(module, "parametrizations", None)
+                if module_parametrizations is None or "weight" not in module_parametrizations:
+                    continue
+                parametrize.remove_parametrizations(module, "weight", leave_parametrized=True)
+                folded += 1
+        # if folded > 0:
+        #     print(f"[ace_step15] Folded Oobleck decoder weight_norm once for {folded} layers.")
 
     def _init_lm_hint_modules(self):
         self._lm_hint_quantizer = None
@@ -239,6 +249,7 @@ class ACEStep15Pipeline:
         self.lm_tokenizer = None
         if not self.enable_lm:
             return
+        print("Loading Ace Step 1.5 LM Tokenizers...")
         lm_loader = lambda: AutoTokenizer.from_pretrained(
             self.lm_tokenizer_dir,
             local_files_only=True,
@@ -284,70 +295,54 @@ class ACEStep15Pipeline:
             modelClass=Qwen3Model,
             defaultConfigPath=config_path,
             default_dtype=self.dtype,
+            writable_tensors=False,
             ignore_unused_weights=True,
         )
         self.text_encoder_2.eval()
 
     def _load_lm(self):
         config_path = os.path.join(os.path.dirname(self.lm_weights_path), "config.json")
+
         def _remap_lm_state_dict(state_dict, quantization_map=None, tied_weights_map=None):
-            # AceStep 5Hz LM weights are stored without a `model.` prefix.
-            if any(key.startswith("model.") for key in state_dict.keys()):
-                if "lm_head.weight" not in state_dict and "model.embed_tokens.weight" in state_dict:
-                    state_dict["lm_head.weight"] = state_dict["model.embed_tokens.weight"]
-                return state_dict, quantization_map, tied_weights_map
-            remapped = {f"model.{key}": value for key, value in state_dict.items()}
-            if "model.embed_tokens.weight" in remapped and "lm_head.weight" not in remapped:
-                remapped["lm_head.weight"] = remapped["model.embed_tokens.weight"]
-            return remapped, quantization_map, tied_weights_map
+            if not next(iter(state_dict)).startswith("model."):
+                state_dict = { "model." + k:v for k,v in state_dict.items() }
+            embed_key = "model.embed_tokens.weight"
+            if "lm_head.weight" not in state_dict and embed_key in state_dict:
+                state_dict["lm_head.weight"] = state_dict[embed_key]
+            return state_dict, quantization_map, tied_weights_map
+
+        if self.lm_engine == "vllm":
+            from shared.llm_engines.nanovllm.models.qwen3 import Qwen3ForCausalLM as NanoQwen3ForCausalLM
+            model_class = NanoQwen3ForCausalLM
+            unlimited_budget = True
+        else:
+            model_class = HfQwen3ForCausalLM
+            unlimited_budget = False
 
         self.lm_model = offload.fast_load_transformers_model(
             self.lm_weights_path,
-            modelClass=Qwen3ForCausalLM,
+            modelClass=model_class,
             defaultConfigPath=config_path,
             default_dtype=self.dtype,
             preprocess_sd=_remap_lm_state_dict,
+            writable_tensors=False,
             ignore_unused_weights=True,
         )
+        if unlimited_budget: self.lm_model._budget = 0
         self.lm_model.eval()
-        self._disable_lm_compile_for_mmgp()
-
-    def _disable_lm_compile_for_mmgp(self):
-        if self.lm_model is None:
-            return
-        try:
-            self.lm_model._compile_me = False
-            for submodule in self.lm_model.modules():
-                submodule._compile_me = False
-        except Exception:
-            return
-
-    def _ensure_lm_module_loaded(self):
-        if self._lm_create_engine_fn is not None and self._lm_legacy_generate_fn is not None and self._lm_legacy_text_fn is not None:
-            return
-        from .qwen3_audio_codes import create_qwen3_lm_engine, generate_audio_codes_legacy, generate_text_legacy
-
-        self._lm_create_engine_fn = create_qwen3_lm_engine
-        self._lm_legacy_generate_fn = generate_audio_codes_legacy
-        self._lm_legacy_text_fn = generate_text_legacy
 
     def _init_lm_engine(self):
-        self._ensure_lm_module_loaded()
-        self._lm_engine_impl = self._lm_create_engine_fn(
-            engine_name=self.lm_engine,
-            model=self.lm_model,
-            tokenizer=self.lm_tokenizer,
-            device=self.device,
-            lm_weights_path=self.lm_weights_path,
-            audio_code_mask=getattr(self, "_audio_code_mask", None),
-            audio_code_token_map=getattr(self, "_audio_code_token_map", {}),
-            weight_load_mode=self.lm_vllm_weight_mode,
-        )
-        if self.lm_engine in ("pt", "vllm") and self._lm_engine_impl is None:
-            raise RuntimeError(
-                f"Failed to initialize LM engine '{self.lm_engine}'. "
-                "Check LM weights path and tokenizer availability."
-            )
+        if self.lm_model is None or self.lm_tokenizer is None:
+            raise RuntimeError(f"LM engine '{self.lm_engine}' requires loaded LM model and tokenizer.")
+        common_kwargs = {"model": self.lm_model, "tokenizer": self.lm_tokenizer, "device": self.device}
+        engine_builders = {
+            "legacy": lambda: Qwen3LegacyEngine(**common_kwargs),
+            "vllm": lambda: Qwen3VllmEngine(lm_weights_path=self.lm_weights_path, **common_kwargs),
+        }
+        build_engine = engine_builders.get(self.lm_engine, None)
+        if build_engine is None:
+            raise RuntimeError(f"Unsupported LM engine '{self.lm_engine}'.")
+        self._lm_engine_impl = build_engine()
 
     def _load_silence_latent(self):
         if not self.silence_latent_path or not os.path.isfile(self.silence_latent_path):
@@ -528,6 +523,7 @@ class ACEStep15Pipeline:
             _ACE_STEP15_MODEL_MODE_INFER_MISSING,
             _ACE_STEP15_MODEL_MODE_INFER_AND_REFINE,
             _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION,
+            _ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION,
         ):
             return _ACE_STEP15_MODEL_MODE_DEFAULT
         return parsed_mode
@@ -614,33 +610,12 @@ class ACEStep15Pipeline:
         logits_processor_update_state=None,
         stop_checker=None,
         progress_label: str = "LM text",
+        release_vram_after: bool = True,
+        ignore_eos: bool = False,
     ):
-        if self._lm_engine_impl is not None and hasattr(self._lm_engine_impl, "generate_text"):
-            return self._lm_engine_impl.generate_text(
-                prompt=prompt,
-                prompt_negative=prompt_negative,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                cfg_scale=cfg_scale,
-                seed=seed,
-                callback=callback,
-                abort_fn=self._should_abort,
-                logits_processor=logits_processor,
-                logits_processor_update_state=logits_processor_update_state,
-                stop_checker=stop_checker,
-                progress_label=progress_label,
-            )
-        if self.lm_engine != "legacy":
+        if self._lm_engine_impl is None:
             raise RuntimeError(f"LM engine '{self.lm_engine}' is not initialized for text generation.")
-        if self.lm_model is None or self.lm_tokenizer is None:
-            raise RuntimeError("Legacy LM engine requires loaded LM model and tokenizer.")
-        self._ensure_lm_module_loaded()
-        return self._lm_legacy_text_fn(
-            model=self.lm_model,
-            tokenizer=self.lm_tokenizer,
-            device=self.device,
+        output = self._lm_engine_impl.generate_text(
             prompt=prompt,
             prompt_negative=prompt_negative,
             max_tokens=max_tokens,
@@ -655,8 +630,11 @@ class ACEStep15Pipeline:
             logits_processor_update_state=logits_processor_update_state,
             stop_checker=stop_checker,
             progress_label=progress_label,
-            ignore_eos=False,
+            release_vram_after=release_vram_after,
+            ignore_eos=ignore_eos,
         )
+        self._lm_last_failure_reason = ""
+        return output
 
     def _ensure_reference_phase1_modules(self):
         if self._ref_metadata_processor_class is not None:
@@ -779,6 +757,7 @@ class ACEStep15Pipeline:
         top_p,
         top_k,
         callback=None,
+        release_vram_after: bool = True,
     ):
         phase1_metadata = dict(metadata)
         if self._should_abort():
@@ -811,7 +790,7 @@ class ACEStep15Pipeline:
         text_out = self._generate_lm_text(
             prompt=prompt,
             prompt_negative=prompt_negative,
-            max_tokens=512,
+            max_tokens=_ACE_STEP15_PHASE1_MAX_TOKENS,
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
@@ -822,9 +801,12 @@ class ACEStep15Pipeline:
             logits_processor_update_state=processor.update_state,
             stop_checker=None,
             progress_label="LM Compute Metadata",
+            release_vram_after=release_vram_after,
         )
         if text_out is None:
-            raise RuntimeError("LM phase1 failed while inferring metadata.")
+            return None, None
+        if self._should_abort():
+            return None, None
 
         phase1_text = text_out.get("text", "") if isinstance(text_out, dict) else ""
         parsed_metadata, _ = self._parse_reference_lm_output(phase1_text)
@@ -921,6 +903,43 @@ class ACEStep15Pipeline:
             int(seed_value) if seed_value is not None else None,
         )
 
+    def _reserve_lm_runtime_for_max_duration(self, tags: str, lyrics: str, negative_prompt: str, lm_cfg_scale):
+        if self._lm_engine_impl is None or self.lm_tokenizer is None:
+            return
+        reserve_fn = getattr(self._lm_engine_impl, "reserve_runtime", None)
+        if not callable(reserve_fn):
+            return
+        cfg_phase1 = 1.0 if lm_cfg_scale is None else float(lm_cfg_scale)
+        cfg_phase2 = 2.5 if lm_cfg_scale is None else float(lm_cfg_scale)
+        reserve_cfg = max(1.0, cfg_phase1, cfg_phase2)
+        max_duration_seconds = int(_ACE_STEP15_DURATION_MAX_SECONDS)
+        phase1_max_tokens = int(_ACE_STEP15_PHASE1_MAX_TOKENS)
+        phase2_max_tokens = max(1, max_duration_seconds * 5)
+        reserve_max_tokens = max(phase1_max_tokens, phase2_max_tokens)
+
+        phase1_prompt = self._build_reference_phase1_prompt(tags, lyrics, is_negative_prompt=False, negative_prompt=negative_prompt)
+        phase1_prompt_negative = self._build_reference_phase1_prompt(tags, lyrics, is_negative_prompt=True, negative_prompt=negative_prompt)
+        reserve_metadata = {
+            "bpm": _ACE_STEP15_DEFAULT_BPM,
+            "duration": max_duration_seconds,
+            "keyscale": _ACE_STEP15_DEFAULT_KEYSCALE,
+            "timesignature": _ACE_STEP15_DEFAULT_TIMESIGNATURE,
+            "caption": tags,
+        }
+        reserve_cot = self._format_lm_metadata_as_cot(reserve_metadata)
+        phase2_prompt = self._build_lm_prompt_with_cot(tags, lyrics, reserve_cot, is_negative_prompt=False, negative_prompt=negative_prompt)
+        phase2_prompt_negative = self._build_lm_prompt_with_cot(tags, lyrics, reserve_cot, is_negative_prompt=True, negative_prompt=negative_prompt)
+
+        prompt_len = 0
+        for text in (phase1_prompt, phase1_prompt_negative, phase2_prompt, phase2_prompt_negative):
+            try:
+                prompt_len = max(prompt_len, len(self.lm_tokenizer.encode(text)))
+            except Exception:
+                pass
+        if prompt_len <= 0:
+            prompt_len = 256
+        reserve_fn(prompt_len=prompt_len, max_tokens=reserve_max_tokens, cfg_scale=reserve_cfg)
+
     def _generate_audio_codes_uncached(
         self,
         tags,
@@ -943,11 +962,6 @@ class ACEStep15Pipeline:
     ):
         if cfg_scale is None:
             cfg_scale = 2.5
-        if self.lm_engine == "vllm" and offloadobj is not None:
-            try:
-                offloadobj.unload_all()
-            except Exception:
-                pass
 
         metadata = {
             "bpm": bpm,
@@ -964,29 +978,11 @@ class ACEStep15Pipeline:
         prompt = self._build_lm_prompt_with_cot(tags, lyrics, cot_text, is_negative_prompt=False, negative_prompt=negative_prompt)
         prompt_negative = self._build_lm_prompt_with_cot(tags, lyrics, cot_text, is_negative_prompt=True, negative_prompt=negative_prompt)
 
-        if self._lm_engine_impl is not None:
-            return self._lm_engine_impl.generate_audio_codes(
-                prompt=prompt,
-                prompt_negative=prompt_negative,
-                min_tokens=min_tokens,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                cfg_scale=cfg_scale,
-                seed=seed,
-                callback=callback,
-                abort_fn=self._should_abort,
-            )
-        if self.lm_engine != "legacy":
+        if self._lm_engine_impl is None:
             raise RuntimeError(f"LM engine '{self.lm_engine}' is not initialized.")
-        if self.lm_model is None or self.lm_tokenizer is None:
-            raise RuntimeError("Legacy LM engine requires loaded LM model and tokenizer.")
-        self._ensure_lm_module_loaded()
-        return self._lm_legacy_generate_fn(
-            model=self.lm_model,
+        audio_codes, failure_reason = generate_audio_codes_with_engine_sampling(
+            engine=self._lm_engine_impl,
             tokenizer=self.lm_tokenizer,
-            device=self.device,
             prompt=prompt,
             prompt_negative=prompt_negative,
             audio_code_mask=getattr(self, "_audio_code_mask", None),
@@ -1000,7 +996,21 @@ class ACEStep15Pipeline:
             seed=seed,
             callback=callback,
             abort_fn=self._should_abort,
+            release_vram_after=True,
         )
+        self._lm_last_failure_reason = failure_reason
+        return audio_codes
+
+    def _release_lm_runtime(self):
+        if self._lm_engine_impl is None:
+            return
+        release_fn = getattr(self._lm_engine_impl, "release_runtime_allocations", None)
+        if not callable(release_fn):
+            return
+        try:
+            release_fn()
+        except Exception:
+            pass
 
     def _generate_audio_codes(
         self,
@@ -1157,7 +1167,9 @@ class ACEStep15Pipeline:
                 progress_unit="tokens",
             )
         if torch.is_tensor(cached):
+            self._release_lm_runtime()
             return cached.tolist()
+        self._release_lm_runtime()
         return list(cached)
 
     def _default_timbre_latents(self, length):
@@ -1795,6 +1807,21 @@ class ACEStep15Pipeline:
                 user_language = None
         if user_language is None and instrumental_only:
             user_language = "unknown"
+        use_ref = "A" in (audio_prompt_type or "")
+        has_src_audio = bool(use_ref and audio_guide)
+        user_audio_codes = audio_codes if audio_codes is not None else audio_code_hints
+        if isinstance(user_audio_codes, str):
+            parsed = self._parse_audio_code_string(user_audio_codes)
+            user_audio_codes = parsed if parsed else None
+        elif isinstance(user_audio_codes, (list, tuple)) and user_audio_codes and isinstance(user_audio_codes[0], str):
+            parsed = self._parse_audio_code_string(user_audio_codes[0])
+            user_audio_codes = parsed if parsed else None
+        keep_lm_loaded_for_phase2 = bool(
+            self.enable_lm
+            and (not has_src_audio)
+            and (not user_audio_codes)
+            and bool(getattr(self._lm_engine_impl, "keep_loaded_for_phase2", False))
+        )
 
         phase1_metadata = {
             "bpm": user_bpm,
@@ -1802,168 +1829,175 @@ class ACEStep15Pipeline:
             "timesignature": user_timesignature,
             "language": user_language,
         }
-        tags_for_generation = tags
-        computed_phase1_metadata = {}
-        refined_caption = None
-        if model_mode_value == _ACE_STEP15_MODEL_MODE_DEFAULT:
-            bpm = phase1_metadata["bpm"] if phase1_metadata["bpm"] is not None else _ACE_STEP15_DEFAULT_BPM
-            timesignature = phase1_metadata["timesignature"] if phase1_metadata["timesignature"] is not None else _ACE_STEP15_DEFAULT_TIMESIGNATURE
-            if timesignature not in _ACE_STEP15_ALLOWED_TIMESIGNATURES:
-                timesignature = _ACE_STEP15_DEFAULT_TIMESIGNATURE
-            keyscale = phase1_metadata["keyscale"] if phase1_metadata["keyscale"] is not None else _ACE_STEP15_DEFAULT_KEYSCALE
-            keyscale = str(keyscale).strip()
-            if len(keyscale) == 0:
-                keyscale = _ACE_STEP15_DEFAULT_KEYSCALE
-            language = phase1_metadata["language"] if phase1_metadata["language"] is not None else "en"
-        else:
-            if not self.enable_lm:
-                raise RuntimeError("ACE-Step 1.5 model mode 1/2/3 requires an LM definition (text_encoder_URLs).")
-            missing_fields = [field_name for field_name in ("bpm", "keyscale", "timesignature", "language") if phase1_metadata.get(field_name) is None]
-            infer_language = phase1_metadata.get("language", None) is None
-            run_phase1 = model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_AND_REFINE, _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION) or (
-                model_mode_value == _ACE_STEP15_MODEL_MODE_INFER_MISSING and len(missing_fields) > 0
-            )
-            if run_phase1:
-                if self.lm_engine == "vllm" and offloadobj is not None:
-                    try:
-                        offloadobj.unload_all()
-                    except Exception:
-                        pass
-                phase1_seed = seed if seed is not None else 0
-                _update_progress_status("LM Compute Metadata")
-                phase1_metadata, refined_caption = self._run_phase1_metadata(
-                    tags=tags,
+        lm_runtime_retained = keep_lm_loaded_for_phase2
+        try:
+            if self.enable_lm:
+                try:
+                    self._reserve_lm_runtime_for_max_duration(tags, lyrics, lm_negative_prompt, lm_cfg_scale)
+                except Exception:
+                    pass
+            tags_for_generation = tags
+            computed_phase1_metadata = {}
+            refined_caption = None
+            if model_mode_value == _ACE_STEP15_MODEL_MODE_DEFAULT:
+                bpm = phase1_metadata["bpm"] if phase1_metadata["bpm"] is not None else _ACE_STEP15_DEFAULT_BPM
+                timesignature = phase1_metadata["timesignature"] if phase1_metadata["timesignature"] is not None else _ACE_STEP15_DEFAULT_TIMESIGNATURE
+                if timesignature not in _ACE_STEP15_ALLOWED_TIMESIGNATURES:
+                    timesignature = _ACE_STEP15_DEFAULT_TIMESIGNATURE
+                keyscale = phase1_metadata["keyscale"] if phase1_metadata["keyscale"] is not None else _ACE_STEP15_DEFAULT_KEYSCALE
+                keyscale = str(keyscale).strip()
+                if len(keyscale) == 0:
+                    keyscale = _ACE_STEP15_DEFAULT_KEYSCALE
+                language = phase1_metadata["language"] if phase1_metadata["language"] is not None else "en"
+            else:
+                if not self.enable_lm:
+                    raise RuntimeError("ACE-Step 1.5 model mode 1/2/3/4 requires an LM definition (text_encoder_URLs).")
+                missing_fields = [field_name for field_name in ("bpm", "keyscale", "timesignature", "language") if phase1_metadata.get(field_name) is None]
+                infer_language = phase1_metadata.get("language", None) is None
+                infer_duration = model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION, _ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION)
+                refine_caption = model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_AND_REFINE, _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION)
+                run_phase1 = model_mode_value in (
+                    _ACE_STEP15_MODEL_MODE_INFER_AND_REFINE,
+                    _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION,
+                    _ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION,
+                ) or (
+                    model_mode_value == _ACE_STEP15_MODEL_MODE_INFER_MISSING and len(missing_fields) > 0
+                )
+                if run_phase1:
+                    phase1_seed = seed if seed is not None else 0
+                    _update_progress_status("LM Compute Metadata")
+                    phase1_metadata, refined_caption = self._run_phase1_metadata(
+                        tags=tags,
+                        lyrics=lyrics,
+                        metadata=phase1_metadata,
+                        refine_caption=refine_caption,
+                        infer_language=infer_language,
+                        seed=phase1_seed,
+                        cfg_scale=1.0 if lm_cfg_scale is None else float(lm_cfg_scale),
+                        negative_prompt=lm_negative_prompt,
+                        temperature=temperature,
+                        top_p=top_p,
+                        top_k=top_k,
+                        callback=_phase_callback,
+                        release_vram_after=not keep_lm_loaded_for_phase2,
+                    )
+                    for field_name in missing_fields:
+                        value = phase1_metadata.get(field_name, None) if phase1_metadata is not None else None
+                        if value is not None:
+                            computed_phase1_metadata[field_name] = value
+                if phase1_metadata is None:
+                    return None
+                if infer_duration:
+                    duration_value = self._parse_optional_int_custom_setting(phase1_metadata.get("duration", None))
+                    if duration_value is None:
+                        raise RuntimeError("LM phase1 failed to resolve required metadata 'duration'.")
+                    duration_value = max(_ACE_STEP15_DURATION_MIN_SECONDS, min(_ACE_STEP15_DURATION_MAX_SECONDS, int(duration_value)))
+                    duration_seconds = float(duration_value)
+                    computed_phase1_metadata["duration"] = int(duration_value)
+                if len(computed_phase1_metadata) > 0:
+                    print(f"[ace_step15][phase1] computed metadata: {computed_phase1_metadata}")
+                if refined_caption is not None:
+                    tags_for_generation = refined_caption
+                    if refined_caption.strip() != tags.strip():
+                        print(f"[ace_step15][phase1] refined caption: {refined_caption}")
+                if set_header_text is not None:
+                    header_parts = []
+                    if len(computed_phase1_metadata) > 0:
+                        computed_bits = []
+                        for field_name in ("bpm", "keyscale", "timesignature", "language", "duration"):
+                            if field_name in computed_phase1_metadata:
+                                computed_bits.append(f"{field_name}={computed_phase1_metadata[field_name]}")
+                        if len(computed_bits) > 0:
+                            header_parts.append("LM computed metadata: " + "<BR>- ".join(computed_bits))
+                    if refined_caption is not None and refined_caption.strip() != tags.strip():
+                        header_parts.append(f"<BR>- LM refined caption: {refined_caption}")
+                    if len(header_parts) > 0:
+                        try:
+                            set_header_text("".join(header_parts))
+                        except Exception:
+                            pass
+                for field_name in ("bpm", "keyscale", "timesignature", "language"):
+                    if phase1_metadata.get(field_name, None) is None:
+                        raise RuntimeError(f"LM phase1 failed to resolve required metadata '{field_name}'.")
+                bpm = int(phase1_metadata["bpm"])
+                timesignature = int(phase1_metadata["timesignature"])
+                if timesignature not in _ACE_STEP15_ALLOWED_TIMESIGNATURES:
+                    raise RuntimeError("LM phase1 produced an unsupported timesignature.")
+                keyscale = str(phase1_metadata["keyscale"]).strip()
+                if len(keyscale) == 0:
+                    raise RuntimeError("LM phase1 produced an empty keyscale.")
+                language = str(phase1_metadata["language"]).strip().lower()
+                if len(language) == 0:
+                    raise RuntimeError("LM phase1 produced an empty language.")
+                if language not in _ACE_STEP15_VALID_LANGUAGE_SET:
+                    raise RuntimeError(f"LM phase1 produced unsupported language '{language}'.")
+
+            duration_int = int(math.ceil(duration_seconds))
+            min_tokens = duration_int * 5
+
+            meta_cap = self._format_meta(bpm, duration_int, keyscale, timesignature)
+            use_timbre = "B" in (audio_prompt_type or "")
+
+            audio_codes = None
+            if user_audio_codes:
+                max_code = getattr(self, "_audio_code_max", None)
+                if max_code is not None:
+                    bad_codes = [v for v in user_audio_codes if v < 0 or v > max_code]
+                    if bad_codes:
+                        raise ValueError(f"Audio codes out of range 0..{max_code}; example={bad_codes[0]}")
+                audio_codes = user_audio_codes
+            elif self.enable_lm and not has_src_audio:
+                _update_progress_status("LM Compute Audio Codes")
+                audio_codes = self._generate_audio_codes(
+                    tags=tags_for_generation,
                     lyrics=lyrics,
-                    metadata=phase1_metadata,
-                    refine_caption=model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_AND_REFINE, _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION),
-                    infer_language=infer_language,
-                    seed=phase1_seed,
-                    cfg_scale=1.0 if lm_cfg_scale is None else float(lm_cfg_scale),
-                    negative_prompt=lm_negative_prompt,
+                    bpm=bpm,
+                    duration=duration_int,
+                    keyscale=keyscale,
+                    timesignature=timesignature,
+                    seed=seed if seed is not None else 0,
+                    min_tokens=min_tokens,
+                    max_tokens=min_tokens,
                     temperature=temperature,
                     top_p=top_p,
                     top_k=top_k,
+                    language=language,
+                    negative_prompt=lm_negative_prompt,
+                    cfg_scale=lm_cfg_scale,
                     callback=_phase_callback,
+                    offloadobj=offloadobj,
                 )
-                for field_name in missing_fields:
-                    value = phase1_metadata.get(field_name, None) if phase1_metadata is not None else None
-                    if value is not None:
-                        computed_phase1_metadata[field_name] = value
-            if phase1_metadata is None:
-                return None
-            if model_mode_value == _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION:
-                duration_value = self._parse_optional_int_custom_setting(phase1_metadata.get("duration", None))
-                if duration_value is None:
-                    raise RuntimeError("LM phase1 failed to resolve required metadata 'duration'.")
-                duration_value = max(_ACE_STEP15_DURATION_MIN_SECONDS, min(_ACE_STEP15_DURATION_MAX_SECONDS, int(duration_value)))
-                duration_seconds = float(duration_value)
-                computed_phase1_metadata["duration"] = int(duration_value)
-            if len(computed_phase1_metadata) > 0:
-                print(f"[ace_step15][phase1] computed metadata: {computed_phase1_metadata}")
-            if refined_caption is not None:
-                tags_for_generation = refined_caption
-                if refined_caption.strip() != tags.strip():
-                    print(f"[ace_step15][phase1] refined caption: {refined_caption}")
-            if set_header_text is not None:
-                header_parts = []
-                if len(computed_phase1_metadata) > 0:
-                    computed_bits = []
-                    for field_name in ("bpm", "keyscale", "timesignature", "language", "duration"):
-                        if field_name in computed_phase1_metadata:
-                            computed_bits.append(f"{field_name}={computed_phase1_metadata[field_name]}")
-                    if len(computed_bits) > 0:
-                        header_parts.append("LM computed metadata: " + "<BR>- ".join(computed_bits))
-                if refined_caption is not None and refined_caption.strip() != tags.strip():
-                    header_parts.append(f"<BR>- LM refined caption: {refined_caption}")
-                if len(header_parts) > 0:
-                    try:
-                        set_header_text("".join(header_parts))
-                    except Exception:
-                        pass
-            for field_name in ("bpm", "keyscale", "timesignature", "language"):
-                if phase1_metadata.get(field_name, None) is None:
-                    raise RuntimeError(f"LM phase1 failed to resolve required metadata '{field_name}'.")
-            bpm = int(phase1_metadata["bpm"])
-            timesignature = int(phase1_metadata["timesignature"])
-            if timesignature not in _ACE_STEP15_ALLOWED_TIMESIGNATURES:
-                raise RuntimeError("LM phase1 produced an unsupported timesignature.")
-            keyscale = str(phase1_metadata["keyscale"]).strip()
-            if len(keyscale) == 0:
-                raise RuntimeError("LM phase1 produced an empty keyscale.")
-            language = str(phase1_metadata["language"]).strip().lower()
-            if len(language) == 0:
-                raise RuntimeError("LM phase1 produced an empty language.")
-            if language not in _ACE_STEP15_VALID_LANGUAGE_SET:
-                raise RuntimeError(f"LM phase1 produced unsupported language '{language}'.")
-
-        duration_int = int(math.ceil(duration_seconds))
-        min_tokens = duration_int * 5
-
-        meta_cap = self._format_meta(bpm, duration_int, keyscale, timesignature)
-        use_ref = "A" in (audio_prompt_type or "")
-        use_timbre = "B" in (audio_prompt_type or "")
-        has_src_audio = bool(use_ref and audio_guide)
-
-        user_audio_codes = audio_codes if audio_codes is not None else audio_code_hints
-        if isinstance(user_audio_codes, str):
-            parsed = self._parse_audio_code_string(user_audio_codes)
-            user_audio_codes = parsed if parsed else None
-        elif isinstance(user_audio_codes, (list, tuple)) and user_audio_codes:
-            if isinstance(user_audio_codes[0], str):
-                parsed = self._parse_audio_code_string(user_audio_codes[0])
-                user_audio_codes = parsed if parsed else None
-
-        audio_codes = None
-        if user_audio_codes:
-            max_code = getattr(self, "_audio_code_max", None)
-            if max_code is not None:
-                bad_codes = [v for v in user_audio_codes if v < 0 or v > max_code]
-                if bad_codes:
-                    raise ValueError(f"Audio codes out of range 0..{max_code}; example={bad_codes[0]}")
-            audio_codes = user_audio_codes
-        elif self.enable_lm and not has_src_audio:
-            _update_progress_status("LM Compute Audio Codes")
-            audio_codes = self._generate_audio_codes(
-                tags=tags_for_generation,
-                lyrics=lyrics,
-                bpm=bpm,
-                duration=duration_int,
-                keyscale=keyscale,
-                timesignature=timesignature,
-                seed=seed if seed is not None else 0,
-                min_tokens=min_tokens,
-                max_tokens=min_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                language=language,
-                negative_prompt=lm_negative_prompt,
-                cfg_scale=lm_cfg_scale,
-                callback=_phase_callback,
-                offloadobj=offloadobj,
-            )
-            if audio_codes is None:
-                return None
-            if len(audio_codes) == 0:
-                failure_reason = ""
-                if self._lm_engine_impl is not None:
-                    get_reason = getattr(self._lm_engine_impl, "get_last_failure_reason", None)
-                    if callable(get_reason):
-                        try:
-                            failure_reason = str(get_reason() or "")
-                        except Exception:
-                            failure_reason = ""
-                extra = f" last_failure={failure_reason}" if failure_reason else ""
-                raise RuntimeError(
-                    "Audio code generation returned 0 usable codes "
-                    f"(engine={self.lm_engine}, tokenizer_dir='{self.lm_tokenizer_dir}', "
-                    f"audio_code_vocab={len(getattr(self, '_audio_code_token_ids', []))}).{extra}"
-                )
-            max_code = getattr(self, "_audio_code_max", None)
-            if audio_codes is not None and max_code is not None:
-                bad_codes = [v for v in audio_codes if v < 0 or v > max_code]
-                if bad_codes:
-                    raise RuntimeError(f"LM generated out-of-range audio codes; example={bad_codes[0]}")
+                if audio_codes is None:
+                    return None
+                if self._should_abort():
+                    return None
+                if len(audio_codes) == 0:
+                    if self._should_abort():
+                        return None
+                    failure_reason = str(getattr(self, "_lm_last_failure_reason", "") or "")
+                    if self._lm_engine_impl is not None:
+                        get_reason = getattr(self._lm_engine_impl, "get_last_failure_reason", None)
+                        if callable(get_reason):
+                            try:
+                                engine_reason = str(get_reason() or "")
+                                if len(engine_reason) > 0:
+                                    failure_reason = engine_reason
+                            except Exception:
+                                pass
+                    extra = f" last_failure={failure_reason}" if failure_reason else ""
+                    raise RuntimeError(
+                        "Audio code generation returned 0 usable codes "
+                        f"(engine={self.lm_engine}, tokenizer_dir='{self.lm_tokenizer_dir}', "
+                        f"audio_code_vocab={len(getattr(self, '_audio_code_token_ids', []))}).{extra}"
+                    )
+                max_code = getattr(self, "_audio_code_max", None)
+                if audio_codes is not None and max_code is not None:
+                    bad_codes = [v for v in audio_codes if v < 0 or v > max_code]
+                    if bad_codes:
+                        raise RuntimeError(f"LM generated out-of-range audio codes; example={bad_codes[0]}")
+        finally:
+            if lm_runtime_retained:
+                self._release_lm_runtime()
 
         _update_progress_status("")
         if audio_codes is not None:
@@ -2099,10 +2133,14 @@ class ACEStep15Pipeline:
             original_caption = str(tags).strip()
             if len(original_caption) > 0:
                 overridden_inputs["extra_info"] = {"Original Caption": original_caption}
-        if model_mode_value == _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION:
+        if model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION, _ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION):
             overridden_inputs["duration_seconds"] = int(duration_int)
             overridden_inputs["duration"] = int(duration_int)
-        if model_mode_value in (_ACE_STEP15_MODEL_MODE_INFER_AND_REFINE, _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION):
+        if model_mode_value in (
+            _ACE_STEP15_MODEL_MODE_INFER_AND_REFINE,
+            _ACE_STEP15_MODEL_MODE_INFER_REFINE_AND_DURATION,
+            _ACE_STEP15_MODEL_MODE_INFER_MISSING_AND_DURATION,
+        ):
             overridden_inputs["model_mode"] = _ACE_STEP15_MODEL_MODE_INFER_MISSING
 
         return {
@@ -2110,13 +2148,3 @@ class ACEStep15Pipeline:
             "audio_sampling_rate": int(self.audio_sample_rate),
             "overridden_inputs": overridden_inputs,
         }
-
-    def close(self):
-        if self._lm_engine_impl is not None:
-            close_fn = getattr(self._lm_engine_impl, "close", None)
-            if callable(close_fn):
-                try:
-                    close_fn()
-                except Exception:
-                    pass
-            self._lm_engine_impl = None

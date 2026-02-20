@@ -1017,7 +1017,7 @@ def load_flow_model(
 
     # print(f"Loading checkpoint: {ckpt_path}")
     from mmgp import offload
-    offload.load_model_data(model, model_filename, preprocess_sd=preprocess_sd)
+    offload.load_model_data(model, model_filename, preprocess_sd=preprocess_sd, writable_tensors=False)
 
     # # load_sft doesn't support torch.device
     # sd = load_sft(ckpt_path, device=str(device))

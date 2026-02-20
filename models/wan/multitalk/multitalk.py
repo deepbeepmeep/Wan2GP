@@ -28,6 +28,7 @@ def custom_init(device, wav2vec):
         os.path.join(wav2vec_folder, "pytorch_model.bin"),
         modelClass=Wav2Vec2Model,
         defaultConfigPath=os.path.join(wav2vec_folder, "config.json"),
+        writable_tensors=False,
     ).to(device)
     audio_encoder.feature_extractor._freeze_parameters()
     wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(

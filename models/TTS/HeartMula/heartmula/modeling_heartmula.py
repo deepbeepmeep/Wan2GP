@@ -3,6 +3,7 @@ import torch.nn as nn
 from transformers.modeling_utils import PreTrainedModel
 
 from .configuration_heartmula import HeartMuLaConfig
+from .cudagraph_hooks import HeartMuLaCudaGraphHooks
 from .llama_blocks import Llama3ScaledRoPE, TransformerDecoder, build_llama_decoder
 
 
@@ -123,6 +124,7 @@ class HeartMuLa(PreTrainedModel):
 
         self.config = config
         self._interrupt_check = None
+        self._cuda_graph_hooks = HeartMuLaCudaGraphHooks(self)
 
         self.backbone, backbone_dim = _prepare_transformer(
             FLAVORS[config.backbone_flavor]()
@@ -130,6 +132,9 @@ class HeartMuLa(PreTrainedModel):
         self.decoder, decoder_dim = _prepare_transformer(
             FLAVORS[config.decoder_flavor]()
         )
+        for layer in self.backbone.layers:
+            if hasattr(layer, "attn"):
+                layer.attn.allow_flash2_kvcache = True
         self.text_embeddings = nn.Embedding(config.text_vocab_size, backbone_dim)
         self.audio_embeddings = nn.Embedding(
             config.audio_vocab_size * config.audio_num_codebooks, backbone_dim
@@ -147,6 +152,20 @@ class HeartMuLa(PreTrainedModel):
         )
         self.muq_linear = nn.Linear(config.muq_dim, backbone_dim)
         self.post_init()
+
+    def set_lm_decoder_engine(self, lm_decoder_engine: str | None) -> None:
+        self._cuda_graph_hooks.set_lm_decoder_engine(lm_decoder_engine)
+
+    def prepare_decode_cuda_graph(
+        self, *, max_backbone_tokens: int, max_decoder_tokens: int
+    ) -> None:
+        self._cuda_graph_hooks.prepare(
+            max_backbone_tokens=max_backbone_tokens,
+            max_decoder_tokens=max_decoder_tokens,
+        )
+
+    def release_decode_cuda_graph(self) -> None:
+        self._cuda_graph_hooks.release()
 
     def setup_caches(self, max_batch_size: int):
         dtype = next(self.parameters()).dtype
@@ -210,10 +229,10 @@ class HeartMuLa(PreTrainedModel):
     ) -> torch.Tensor:
         if self._check_interrupt():
             return None
-        b, _, _ = tokens.size()
+        b, seq_len, _ = tokens.size()
+        graph_active = self._cuda_graph_hooks.is_active()
 
         assert self.backbone.caches_are_enabled(), "backbone caches are not enabled"
-        curr_backbone_mask = None
 
         uncond_mask = None
         if cfg_scale > 1.0 and b > 1:
@@ -241,7 +260,8 @@ class HeartMuLa(PreTrainedModel):
                 )
             batch_indices = torch.arange(h.shape[0], device=h.device)
             h[batch_indices, starts] = continuous_segments
-        h = self.backbone(h, input_pos=input_pos, mask=curr_backbone_mask)
+        use_backbone_graph = graph_active and seq_len == 1 and continuous_segments is None
+        h = self._cuda_graph_hooks.run_backbone_decode(h, input_pos) if use_backbone_graph else self.backbone(h, input_pos=input_pos, mask=None)
         if self._check_interrupt():
             return None
         last_h = h[:, -1, :]
@@ -271,10 +291,7 @@ class HeartMuLa(PreTrainedModel):
         for i in range(1, self.config.audio_num_codebooks):
             if self._check_interrupt():
                 return None
-            curr_decoder_mask = None
-            decoder_h = self.decoder[0](
-                self.projection(curr_h), input_pos=curr_pos, mask=curr_decoder_mask
-            )
+            decoder_h = self._cuda_graph_hooks.run_decoder(curr_h, curr_pos) if graph_active else self.decoder[0](self.projection(curr_h), input_pos=curr_pos, mask=None)
             if self._check_interrupt():
                 return None
             head_weight = self.audio_head[i - 1]
@@ -304,6 +321,7 @@ class HeartMuLa(PreTrainedModel):
 
     def release_caches(self):
         # Drop KV cache tensors to free memory between generations.
+        self.release_decode_cuda_graph()
         for module in self.backbone.modules():
             if hasattr(module, "kv_cache"):
                 module.kv_cache = None

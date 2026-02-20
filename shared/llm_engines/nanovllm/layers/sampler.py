@@ -97,6 +97,7 @@ class Sampler(nn.Module):
         top_ps: Optional[torch.Tensor] = None,
         repetition_penalties: Optional[torch.Tensor] = None,
         input_ids: Optional[torch.Tensor] = None,
+        generator: Optional[torch.Generator] = None,
     ):
         """
         Sample tokens from logits with optional top-k and top-p filtering.
@@ -118,5 +119,6 @@ class Sampler(nn.Module):
             if invalid_rows.any():
                 logits[invalid_rows, 0] = 0.0
         probs = torch.softmax(logits, dim=-1)
-        sample_tokens = probs.div_(torch.empty_like(probs).exponential_(1).clamp_min_(1e-10)).argmax(dim=-1)
+        noise = torch.empty_like(probs).exponential_(1, generator=generator).clamp_min_(1e-10)
+        sample_tokens = probs.div_(noise).argmax(dim=-1)
         return sample_tokens

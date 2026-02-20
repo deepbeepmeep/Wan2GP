@@ -54,7 +54,7 @@ def load_vae(vae_type: str="884-16c-hy",
     # offload.save_model(vae, "vae_32.safetensors")
     # vae.to(torch.bfloat16)
     # offload.save_model(vae, "vae_16.safetensors")
-    offload.load_model_data(vae, vae_path )
+    offload.load_model_data(vae, vae_path, writable_tensors=False)
     # ckpt = torch.load(vae_ckpt, weights_only=True, map_location=vae.device)
 
     spatial_compression_ratio = vae.config.spatial_compression_ratio

@@ -63,9 +63,11 @@ class KugelAudioPipeline:
         *,
         ckpt_root: Optional[Path] = None,
         device: Optional[torch.device] = None,
+        lm_decoder_engine: Optional[str] = None,
     ) -> None:
         self.device = device or torch.device("cpu")
         self.ckpt_root = Path(ckpt_root) if ckpt_root is not None else Path(fl.get_download_location())
+        self.lm_decoder_engine = str(lm_decoder_engine or "legacy").strip().lower()
         self._interrupt = False
         self._early_stop = False
 
@@ -75,6 +77,9 @@ class KugelAudioPipeline:
         self.sample_rate = getattr(self.processor.audio_processor, "sampling_rate", 24000)
 
         self.generation_config = self._load_generation_config(assets["generation_config_path"])
+        engine = "cg" if self.lm_decoder_engine == "cg" else "legacy"
+        attn = getattr(self.model, "_attn_implementation", "sdpa")
+        print(f"[KugelAudio] LM engine='{engine}', attention='{attn}'")
 
     def _abort_requested(self) -> bool:
         return bool(self._interrupt)
@@ -134,6 +139,12 @@ class KugelAudioPipeline:
         with open(config_path, "r", encoding="utf-8") as handle:
             config_dict = json.load(handle)
         config = KugelAudioConfig(**config_dict)
+        attn_implementation = "sdpa"
+        if hasattr(config, "decoder_config") and config.decoder_config is not None:
+            config.decoder_config._attn_implementation = attn_implementation
+            config.decoder_config.attn_implementation = attn_implementation
+        config._attn_implementation = attn_implementation
+        config.attn_implementation = attn_implementation
         with init_empty_weights():
             model = KugelAudioForConditionalGenerationInference(config)
         offload.load_model_data(
@@ -142,7 +153,22 @@ class KugelAudioPipeline:
             default_dtype=None,
             writable_tensors=False,
         )
+        model.set_lm_decoder_engine(self.lm_decoder_engine)
         model.eval()
+        language_model = getattr(getattr(model, "model", None), "language_model", None)
+        if language_model is not None and hasattr(language_model, "config"):
+            language_model.config._attn_implementation = attn_implementation
+            language_model.config.attn_implementation = attn_implementation
+        if hasattr(model, "config"):
+            model.config._attn_implementation = attn_implementation
+            model.config.attn_implementation = attn_implementation
+            if hasattr(model.config, "decoder_config") and model.config.decoder_config is not None:
+                model.config.decoder_config._attn_implementation = attn_implementation
+                model.config.decoder_config.attn_implementation = attn_implementation
+        if hasattr(model, "generation_config") and model.generation_config is not None:
+            model.generation_config._attn_implementation = attn_implementation
+            model.generation_config.attn_implementation = attn_implementation
+        model._attn_implementation = attn_implementation
         if KUGELAUDIO_DEBUG:
             try:
                 print(
@@ -316,6 +342,9 @@ class KugelAudioPipeline:
     ):
         self._interrupt = False
         self._early_stop = False
+        def _finish(value):
+            self.model.release_decode_cuda_graph()
+            return value
 
         text = _read_text_or_file(input_prompt, "Prompt")
         if not text.strip():
@@ -457,6 +486,7 @@ class KugelAudioPipeline:
                 abort_check=self._abort_requested,
                 early_stop_check=self._early_stop_requested,
                 callback=active_callback,
+                release_decode_graph_on_exit=False,
             )
             if outputs is None:
                 return None
@@ -492,6 +522,15 @@ class KugelAudioPipeline:
                 line_text = text[start:end].strip()
                 if line_text:
                     parsed.append((speaker_id, line_text))
+            speaker_id_map = None
+            if parsed and audio_guide2 is not None:
+                unique_ids = sorted({speaker_id for speaker_id, _ in parsed})
+                if len(unique_ids) > 2:
+                    raise ValueError("Two-speaker mode supports exactly two speaker IDs.")
+                if len(unique_ids) >= 2:
+                    speaker_id_map = {unique_ids[0]: 0, unique_ids[1]: 1}
+                elif len(unique_ids) == 1:
+                    speaker_id_map = {unique_ids[0]: 0}
             if KUGELAUDIO_DEBUG:
                 print("[KugelAudio][debug] parsed segments:", len(parsed))
                 for idx, (sid, seg) in enumerate(parsed[:6]):
@@ -530,14 +569,17 @@ class KugelAudioPipeline:
                 completed_lines = 0
                 for speaker_id, line_text, append_pause_after in expanded:
                     if self._abort_requested():
-                        return None
+                        return _finish(None)
                     duration_left = None
                     if total_duration_seconds is not None:
                         duration_left = max(0.0, total_duration_seconds - elapsed_seconds)
                         if duration_left <= 0:
                             break
                     voice_path = audio_guide
-                    if speaker_id == 1 and audio_guide2 is not None:
+                    mapped_id = speaker_id
+                    if speaker_id_map is not None:
+                        mapped_id = speaker_id_map.get(speaker_id, 0)
+                    if mapped_id == 1 and audio_guide2 is not None:
                         voice_path = audio_guide2
                     extra_tail_tokens = tail_tokens
                     segment = _run_single(
@@ -552,8 +594,8 @@ class KugelAudioPipeline:
                     if segment is None:
                         if self._early_stop_requested() and audio_segments:
                             audio = torch.cat(audio_segments, dim=-1)
-                            return {"x": audio, "audio_sampling_rate": int(self.sample_rate)}
-                        return None
+                            return _finish({"x": audio, "audio_sampling_rate": int(self.sample_rate)})
+                        return _finish(None)
                     audio_segments.append(segment)
                     completed_lines += 1
                     # No extra callback here; per-line callback handles progress.
@@ -565,7 +607,7 @@ class KugelAudioPipeline:
                         break
                 if audio_segments:
                     audio = torch.cat(audio_segments, dim=-1)
-                    return {"x": audio, "audio_sampling_rate": int(self.sample_rate)}
+                    return _finish({"x": audio, "audio_sampling_rate": int(self.sample_rate)})
 
         voice_prompt = audio_guide
         single_segments = self._split_text_sequence(text, auto_split_tokens)
@@ -577,14 +619,14 @@ class KugelAudioPipeline:
             )
             for idx, one_segment in enumerate(single_segments):
                 if self._abort_requested():
-                    return None
+                    return _finish(None)
                 duration_left = None
                 if total_duration_seconds is not None:
                     duration_left = max(0.0, total_duration_seconds - elapsed_seconds)
                     if duration_left <= 0:
                         break
                 segment = _run_single(
-                    one_segment + "   ",
+                    one_segment,
                     voice_prompt,
                     extra_tail_tokens=3,
                     segment_duration_seconds=duration_left,
@@ -595,16 +637,16 @@ class KugelAudioPipeline:
                 if segment is None:
                     if self._early_stop_requested() and audio_segments:
                         audio = torch.cat(audio_segments, dim=-1)
-                        return {"x": audio, "audio_sampling_rate": int(self.sample_rate)}
-                    return None
+                        return _finish({"x": audio, "audio_sampling_rate": int(self.sample_rate)})
+                    return _finish(None)
                 audio_segments.append(segment)
                 elapsed_seconds += float(segment.shape[-1]) / float(self.sample_rate)
                 if self._early_stop_requested():
                     break
             if len(audio_segments) > 0:
                 audio = torch.cat(audio_segments, dim=-1)
-                return {"x": audio, "audio_sampling_rate": int(self.sample_rate)}
-            return None
+                return _finish({"x": audio, "audio_sampling_rate": int(self.sample_rate)})
+            return _finish(None)
 
         # Default single-pass generation
         inputs = self.processor(
@@ -665,22 +707,25 @@ class KugelAudioPipeline:
             abort_check=self._abort_requested,
             early_stop_check=self._early_stop_requested,
             callback=callback,
+            release_decode_graph_on_exit=False,
         )
         if outputs is None:
-            return None
+            return _finish(None)
 
         if self._abort_requested():
-            return None
+            return _finish(None)
 
         audio = None
         if getattr(outputs, "speech_outputs", None):
             audio = outputs.speech_outputs[0]
         if audio is None:
-            return None
+            return _finish(None)
 
-        return {"x": audio, "audio_sampling_rate": int(self.sample_rate)}
+        return _finish({"x": audio, "audio_sampling_rate": int(self.sample_rate)})
 
     def release(self) -> None:
+        if self.model is not None and hasattr(self.model, "release_decode_cuda_graph"):
+            self.model.release_decode_cuda_graph()
         if hasattr(self.model, "to"):
             self.model.to("cpu")
         self.model = None

@@ -26,7 +26,7 @@ from librosa.filters import mel as librosa_mel_fn
 from torch import nn
 from torch.nn import functional as F
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import Cache, DynamicCache, StaticCache
 from transformers.generation import GenerationMixin
 from transformers.integrations import use_kernel_forward_from_hub
 from transformers.masking_utils import (create_causal_mask,
@@ -48,6 +48,7 @@ from .configuration_qwen3_tts import (Qwen3TTSConfig,
                                       Qwen3TTSSpeakerEncoderConfig,
                                       Qwen3TTSTalkerCodePredictorConfig,
                                       Qwen3TTSTalkerConfig)
+from .cudagraph_hooks import Qwen3TTSCudaGraphHooks
 
 logger = logging.get_logger(__name__)
 
@@ -56,6 +57,52 @@ def _check_abort(module) -> None:
     checker = getattr(module, "_interrupt_check", None)
     if callable(checker) and checker():
         raise RuntimeError("Abort requested")
+
+
+def _apply_repetition_penalty_inplace(logits: torch.Tensor, generated_ids: torch.Tensor, repetition_penalty: float) -> None:
+    penalty = float(repetition_penalty)
+    if penalty == 1.0 or generated_ids.numel() == 0:
+        return
+    for batch_idx in range(logits.shape[0]):
+        token_ids = torch.unique(generated_ids[batch_idx]).to(dtype=torch.long)
+        token_logits = logits[batch_idx, token_ids]
+        logits[batch_idx, token_ids] = torch.where(token_logits < 0, token_logits * penalty, token_logits / penalty)
+
+
+def _sample_from_logits(
+    logits: torch.Tensor,
+    *,
+    do_sample: bool,
+    top_k: int,
+    top_p: float,
+    temperature: float,
+) -> torch.Tensor:
+    if not do_sample:
+        return torch.argmax(logits, dim=-1)
+
+    scores = logits / max(float(temperature), 1e-5)
+
+    top_k = int(top_k or 0)
+    if top_k > 0 and top_k < scores.shape[-1]:
+        topk_values, _ = torch.topk(scores, top_k, dim=-1)
+        min_values = topk_values[:, -1].unsqueeze(-1)
+        scores = scores.masked_fill(scores < min_values, float("-inf"))
+
+    top_p = float(top_p)
+    if 0.0 < top_p < 1.0:
+        sorted_scores, sorted_indices = torch.sort(scores, descending=True, dim=-1)
+        sorted_probs = torch.softmax(sorted_scores, dim=-1)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+        remove_mask = cumulative_probs > top_p
+        remove_mask[:, 1:] = remove_mask[:, :-1].clone()
+        remove_mask[:, 0] = False
+        sorted_scores = sorted_scores.masked_fill(remove_mask, float("-inf"))
+        filtered_scores = torch.full_like(scores, float("-inf"))
+        filtered_scores.scatter_(1, sorted_indices, sorted_scores)
+        scores = filtered_scores
+
+    probs = torch.softmax(scores, dim=-1)
+    return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
 
 def download_weights_from_hf_specific(
@@ -1184,6 +1231,10 @@ class Qwen3TTSTalkerCodePredictorModelForConditionalGeneration(Qwen3TTSPreTraine
 
         # Initialize weights and apply final processing
         self.post_init()
+        self._cuda_graph_hooks = None
+
+    def set_cuda_graph_hooks(self, hooks: Qwen3TTSCudaGraphHooks | None) -> None:
+        self._cuda_graph_hooks = hooks
 
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
@@ -1297,20 +1348,60 @@ class Qwen3TTSTalkerCodePredictorModelForConditionalGeneration(Qwen3TTSPreTraine
                 input_ids = input_ids.to(self.device)
             inputs_embeds = self.model.get_input_embeddings()[generation_steps - 1](input_ids)
         inputs_embeds = self.small_to_mtp_projection(inputs_embeds)
-
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs: BaseModelOutputWithPast = self.model(
-            input_ids=None,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            cache_position=cache_position,
-            **kwargs,
+        cg_attention_mask = None if isinstance(attention_mask, dict) else attention_mask
+        cuda_graph_hooks = self._cuda_graph_hooks
+        use_cg_decode = (
+            cuda_graph_hooks is not None
+            and cuda_graph_hooks.is_active()
+            and inputs_embeds is not None
+            and inputs_embeds.shape[1] == 1
+            and cuda_graph_hooks.is_subtalker_cache(past_key_values)
+            and cache_position is not None
         )
+        if use_cg_decode:
+            generation_step = int(generation_steps if generation_steps is not None else 0)
+
+            def _subtalker_decode_step(
+                decode_inputs_embeds: torch.Tensor,
+                decode_attention_mask: torch.Tensor,
+                decode_position_ids: torch.Tensor,
+                decode_cache_position: torch.Tensor,
+            ) -> BaseModelOutputWithPast:
+                return self.model(
+                    input_ids=None,
+                    attention_mask=decode_attention_mask,
+                    position_ids=decode_position_ids,
+                    past_key_values=past_key_values,
+                    inputs_embeds=decode_inputs_embeds,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                    cache_position=decode_cache_position,
+                    **kwargs,
+                )
+
+            outputs: BaseModelOutputWithPast = cuda_graph_hooks.run_subtalker_decode(
+                _subtalker_decode_step,
+                inputs_embeds=inputs_embeds,
+                attention_mask=cg_attention_mask,
+                position_ids=position_ids,
+                cache_position=cache_position,
+                generation_step=generation_step,
+            )
+        else:
+            # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+            outputs: BaseModelOutputWithPast = self.model(
+                input_ids=None,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                cache_position=cache_position,
+                **kwargs,
+            )
 
         hidden_states = outputs.last_hidden_state
         logits = self.lm_head[generation_steps](hidden_states)
@@ -1327,6 +1418,82 @@ class Qwen3TTSTalkerCodePredictorModelForConditionalGeneration(Qwen3TTSPreTraine
             attentions=outputs.attentions,
             generation_steps=generation_steps + 1,
         )
+
+    @torch.no_grad()
+    def generate_stepwise(
+        self,
+        *,
+        inputs_embeds: torch.Tensor,
+        max_new_tokens: int,
+        do_sample: bool,
+        top_k: int,
+        top_p: float,
+        temperature: float,
+        past_key_values=None,
+        use_cache: bool = True,
+    ) -> torch.Tensor:
+        _check_abort(self)
+        device = inputs_embeds.device
+        batch_size = int(inputs_embeds.shape[0])
+        max_new_tokens = int(max_new_tokens)
+        if max_new_tokens <= 0:
+            return torch.empty((batch_size, 0), dtype=torch.long, device=device)
+
+        prefill_len = int(inputs_embeds.shape[1])
+        cache_position = torch.arange(prefill_len, device=device, dtype=torch.long)
+        outputs = self.forward(
+            input_ids=None,
+            attention_mask=None,
+            position_ids=None,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=False,
+            output_hidden_states=False,
+            cache_position=cache_position,
+            generation_steps=None,
+        )
+
+        logits = outputs.logits[:, -1, :]
+        next_token = _sample_from_logits(
+            logits,
+            do_sample=bool(do_sample),
+            top_k=int(top_k),
+            top_p=float(top_p),
+            temperature=float(temperature),
+        )
+        sequences = torch.empty((batch_size, max_new_tokens), dtype=torch.long, device=device)
+        sequences[:, 0] = next_token
+        generation_steps = 1
+        decode_position = torch.empty(1, dtype=torch.long, device=device)
+
+        for step_idx in range(1, max_new_tokens):
+            _check_abort(self)
+            decode_position.fill_(prefill_len + step_idx - 1)
+            outputs = self.forward(
+                input_ids=next_token.unsqueeze(-1),
+                attention_mask=None,
+                position_ids=None,
+                past_key_values=past_key_values,
+                inputs_embeds=None,
+                use_cache=use_cache,
+                output_attentions=False,
+                output_hidden_states=False,
+                cache_position=decode_position,
+                generation_steps=generation_steps,
+            )
+            logits = outputs.logits[:, -1, :]
+            next_token = _sample_from_logits(
+                logits,
+                do_sample=bool(do_sample),
+                top_k=int(top_k),
+                top_p=float(top_p),
+                temperature=float(temperature),
+            )
+            sequences[:, step_idx] = next_token
+            generation_steps += 1
+
+        return sequences
 
     def _update_model_kwargs_for_generation(self, outputs, model_kwargs, is_encoder_decoder=False, num_new_tokens=1):
         model_kwargs = super()._update_model_kwargs_for_generation(
@@ -1599,7 +1766,10 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel, 
             config=config.code_predictor_config,
             talker_config=config
         )
+        self._cuda_graph_hooks = Qwen3TTSCudaGraphHooks(self)
+        self.code_predictor.set_cuda_graph_hooks(self._cuda_graph_hooks)
         self.rope_deltas = None
+        self._prefill_attention_mask = None
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1632,6 +1802,170 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel, 
 
     def get_decoder(self):
         return self.model
+
+    def set_lm_decoder_engine(self, lm_decoder_engine: str | None) -> None:
+        self._cuda_graph_hooks.set_lm_decoder_engine(lm_decoder_engine)
+
+    def prepare_decode_cuda_graph(self, *, max_batch_size: int, max_talker_tokens: int, max_subtalker_tokens: int) -> None:
+        self._cuda_graph_hooks.prepare(
+            max_batch_size=max_batch_size,
+            max_talker_tokens=max_talker_tokens,
+            max_subtalker_tokens=max_subtalker_tokens,
+            talker_config=self.config,
+            subtalker_config=self.config.code_predictor_config,
+        )
+
+    def release_decode_cuda_graph(self) -> None:
+        self._cuda_graph_hooks.release()
+
+    def is_decode_cuda_graph_active(self) -> bool:
+        return self._cuda_graph_hooks.is_active()
+
+    def is_decode_cuda_graph_enabled(self) -> bool:
+        return self._cuda_graph_hooks.is_enabled()
+
+    def decode_cuda_graph_last_prepare_reused(self) -> bool:
+        return self._cuda_graph_hooks.last_prepare_reused()
+
+    def get_decode_talker_cache(self):
+        return self._cuda_graph_hooks.get_talker_cache()
+
+    @torch.no_grad()
+    def generate_stepwise(
+        self,
+        *,
+        inputs_embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
+        trailing_text_hidden: torch.Tensor,
+        tts_pad_embed: torch.Tensor,
+        max_new_tokens: int,
+        do_sample: bool,
+        top_k: int,
+        top_p: float,
+        temperature: float,
+        subtalker_dosample: bool,
+        subtalker_top_k: int,
+        subtalker_top_p: float,
+        subtalker_temperature: float,
+        eos_token_id: int,
+        repetition_penalty: float,
+        past_key_values=None,
+        use_cache: bool = True,
+        stopping_criteria=None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        _check_abort(self)
+        device = inputs_embeds.device
+        batch_size = int(inputs_embeds.shape[0])
+        max_new_tokens = int(max_new_tokens)
+        if max_new_tokens <= 0:
+            empty_codes = torch.empty((batch_size, 0, self.config.num_code_groups), dtype=torch.long, device=device)
+            empty_hidden = torch.empty((batch_size, 0, self.config.hidden_size), dtype=inputs_embeds.dtype, device=device)
+            return empty_codes, empty_hidden
+
+        prompt_len = int(inputs_embeds.shape[1])
+        cache_position = torch.arange(prompt_len, device=device, dtype=torch.long)
+        outputs = self.forward(
+            input_ids=None,
+            attention_mask=attention_mask,
+            position_ids=None,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            labels=None,
+            use_cache=use_cache,
+            output_attentions=False,
+            output_hidden_states=False,
+            cache_position=cache_position,
+            past_hidden=None,
+            generation_step=None,
+            trailing_text_hidden=trailing_text_hidden,
+            tts_pad_embed=tts_pad_embed,
+            subtalker_dosample=subtalker_dosample,
+            subtalker_top_k=subtalker_top_k,
+            subtalker_top_p=subtalker_top_p,
+            subtalker_temperature=subtalker_temperature,
+        )
+
+        running_attention_mask = torch.zeros(
+            (batch_size, prompt_len + max_new_tokens),
+            dtype=attention_mask.dtype,
+            device=device,
+        )
+        running_attention_mask[:, :prompt_len].copy_(attention_mask)
+        logits = outputs.logits[:, -1, :]
+        past_hidden = outputs.past_hidden
+        generation_step = outputs.generation_step
+        finished = torch.zeros((batch_size,), dtype=torch.bool, device=device)
+        generated_code0 = torch.empty((batch_size, max_new_tokens), dtype=torch.long, device=device)
+        codec_steps = []
+        hidden_steps = []
+        decode_position = torch.empty(1, dtype=torch.long, device=device)
+
+        for step_idx in range(max_new_tokens):
+            _check_abort(self)
+            step_logits = logits.clone()
+            if float(repetition_penalty) != 1.0 and step_idx > 0:
+                history = generated_code0[:, :step_idx]
+                _apply_repetition_penalty_inplace(step_logits, history, float(repetition_penalty))
+            next_token = _sample_from_logits(
+                step_logits,
+                do_sample=bool(do_sample),
+                top_k=int(top_k),
+                top_p=float(top_p),
+                temperature=float(temperature),
+            )
+            if eos_token_id is not None:
+                eos_fill = torch.full_like(next_token, int(eos_token_id))
+                next_token = torch.where(finished, eos_fill, next_token)
+            generated_code0[:, step_idx] = next_token
+            finished = finished | (next_token == int(eos_token_id))
+
+            current_len = prompt_len + step_idx + 1
+            running_attention_mask[:, current_len - 1].fill_(1)
+            decode_position.fill_(prompt_len + step_idx)
+            outputs = self.forward(
+                input_ids=next_token.unsqueeze(-1),
+                attention_mask=running_attention_mask[:, :current_len],
+                position_ids=None,
+                past_key_values=past_key_values,
+                inputs_embeds=None,
+                labels=None,
+                use_cache=use_cache,
+                output_attentions=False,
+                output_hidden_states=False,
+                cache_position=decode_position,
+                past_hidden=past_hidden,
+                generation_step=generation_step,
+                trailing_text_hidden=trailing_text_hidden,
+                tts_pad_embed=tts_pad_embed,
+                subtalker_dosample=subtalker_dosample,
+                subtalker_top_k=subtalker_top_k,
+                subtalker_top_p=subtalker_top_p,
+                subtalker_temperature=subtalker_temperature,
+            )
+
+            codec_ids = outputs.hidden_states[-1] if outputs.hidden_states is not None else None
+            if codec_ids is not None:
+                codec_steps.append(codec_ids)
+                hidden_steps.append(outputs.past_hidden)
+
+            logits = outputs.logits[:, -1, :]
+            past_hidden = outputs.past_hidden
+            generation_step = outputs.generation_step
+
+            if stopping_criteria is not None:
+                generated_ids = generated_code0[:, : step_idx + 1]
+                if stopping_criteria(generated_ids, step_logits):
+                    break
+            if bool(torch.all(finished)):
+                break
+
+        if codec_steps:
+            talker_codes = torch.stack(codec_steps, dim=1)
+            talker_hidden_states = torch.cat(hidden_steps, dim=1)
+        else:
+            talker_codes = torch.empty((batch_size, 0, self.config.num_code_groups), dtype=torch.long, device=device)
+            talker_hidden_states = torch.empty((batch_size, 0, self.config.hidden_size), dtype=inputs_embeds.dtype, device=device)
+        return talker_codes, talker_hidden_states
     
     def forward_sub_talker_finetune(self, codec_ids, talker_hidden_states):
         assert len(codec_ids.shape) == 2
@@ -1693,20 +2027,36 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel, 
         else:
             _check_abort(self)
             last_id_hidden = self.get_input_embeddings()(input_ids)
-            predictor_result = self.code_predictor.generate(
-                inputs_embeds=torch.cat((past_hidden, last_id_hidden), dim=1),
-                max_new_tokens=self.config.num_code_groups - 1,
-                do_sample=subtalker_dosample,
-                top_p=subtalker_top_p,
-                top_k=subtalker_top_k,
-                temperature=subtalker_temperature,
-                output_hidden_states=True,
-                return_dict_in_generate=True,
-            )
-            codec_ids = torch.cat((input_ids, predictor_result.sequences), dim=-1)
+            use_stepwise_subtalker = self._cuda_graph_hooks.is_active()
+            if use_stepwise_subtalker:
+                self._cuda_graph_hooks.reset_subtalker_cache()
+                sub_cache = self._cuda_graph_hooks.get_subtalker_cache()
+                predictor_sequences = self.code_predictor.generate_stepwise(
+                    inputs_embeds=torch.cat((past_hidden, last_id_hidden), dim=1),
+                    max_new_tokens=self.config.num_code_groups - 1,
+                    do_sample=subtalker_dosample,
+                    top_p=subtalker_top_p,
+                    top_k=subtalker_top_k,
+                    temperature=subtalker_temperature,
+                    past_key_values=sub_cache,
+                    use_cache=sub_cache is not None,
+                )
+            else:
+                predictor_result = self.code_predictor.generate(
+                    inputs_embeds=torch.cat((past_hidden, last_id_hidden), dim=1),
+                    max_new_tokens=self.config.num_code_groups - 1,
+                    do_sample=subtalker_dosample,
+                    top_p=subtalker_top_p,
+                    top_k=subtalker_top_k,
+                    temperature=subtalker_temperature,
+                    output_hidden_states=True,
+                    return_dict_in_generate=True,
+                )
+                predictor_sequences = predictor_result.sequences
+            codec_ids = torch.cat((input_ids, predictor_sequences), dim=-1)
             codec_hiddens = torch.cat(
                 [last_id_hidden]
-                + [self.code_predictor.get_input_embeddings()[i](predictor_result.sequences[..., i:i+1]) for i in range(self.config.num_code_groups - 1)],
+                + [self.code_predictor.get_input_embeddings()[i](predictor_sequences[..., i:i+1]) for i in range(self.config.num_code_groups - 1)],
                 dim=1,
             )
             inputs_embeds = codec_hiddens.sum(1, keepdim=True)
@@ -1716,15 +2066,41 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel, 
             else:
                 inputs_embeds = inputs_embeds + tts_pad_embed
         if attention_mask is not None:
+            decode_attention_mask_2d = attention_mask if attention_mask.dim() == 2 else None
+            if decode_attention_mask_2d is None and self._prefill_attention_mask is not None:
+                current_len = (
+                    int(cache_position.reshape(-1)[0].item()) + 1
+                    if cache_position is not None
+                    else int(self._prefill_attention_mask.shape[1])
+                )
+                prefill_mask = self._prefill_attention_mask.to(device=inputs_embeds.device)
+                if current_len > int(prefill_mask.shape[1]):
+                    pad = torch.ones(
+                        (prefill_mask.shape[0], current_len - int(prefill_mask.shape[1])),
+                        dtype=prefill_mask.dtype,
+                        device=prefill_mask.device,
+                    )
+                    decode_attention_mask_2d = torch.cat([prefill_mask, pad], dim=1)
+                else:
+                    decode_attention_mask_2d = prefill_mask[:, :current_len]
             if (
                 cache_position is None
                 or (cache_position is not None and cache_position[0] == 0)
                 or self.rope_deltas is None
             ):
-                delta0 = (1 - attention_mask).sum(dim=-1).unsqueeze(1)
-                position_ids, rope_deltas = self.get_rope_index(
-                    attention_mask,
-                )
+                rope_attention_mask = decode_attention_mask_2d
+                if rope_attention_mask is None or rope_attention_mask.dim() != 2:
+                    batch_size = int(inputs_embeds.shape[0]) if inputs_embeds is not None else int(input_ids.shape[0])
+                    seq_len = int(cache_position[-1].item()) + 1 if cache_position is not None else 1
+                    rope_attention_mask = torch.ones((batch_size, seq_len), dtype=torch.long, device=inputs_embeds.device)
+                else:
+                    rope_attention_mask = rope_attention_mask.to(device=inputs_embeds.device)
+
+                if rope_attention_mask.dtype == torch.bool:
+                    delta0 = (~rope_attention_mask).to(dtype=torch.long).sum(dim=-1).unsqueeze(1)
+                else:
+                    delta0 = (1 - rope_attention_mask).sum(dim=-1).unsqueeze(1)
+                position_ids, rope_deltas = self.get_rope_index(rope_attention_mask)
                 rope_deltas = rope_deltas - delta0
                 self.rope_deltas = rope_deltas
             else:
@@ -1734,19 +2110,61 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel, 
                 position_ids = position_ids.view(1, -1).expand(batch_size, -1)
                 position_ids = position_ids.add(delta)
                 position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
-
-        outputs: BaseModelOutputWithPast = self.model(
-            input_ids=None,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            cache_position=cache_position,
-            **kwargs,
+            cg_attention_mask = attention_mask if attention_mask.dim() == 2 else decode_attention_mask_2d
+        else:
+            decode_attention_mask_2d = None
+            cg_attention_mask = attention_mask
+        use_cg_decode = (
+            self._cuda_graph_hooks.is_active()
+            and inputs_embeds is not None
+            and inputs_embeds.shape[1] == 1
+            and position_ids is not None
+            and not isinstance(cg_attention_mask, dict)
+            and (cg_attention_mask is None or cg_attention_mask.dim() == 2)
+            and self._cuda_graph_hooks.is_talker_cache(past_key_values)
+            and cache_position is not None
         )
+        if use_cg_decode:
+
+            def _talker_decode_step(
+                decode_inputs_embeds: torch.Tensor,
+                decode_attention_mask: torch.Tensor,
+                decode_position_ids: torch.Tensor,
+                decode_cache_position: torch.Tensor,
+            ) -> BaseModelOutputWithPast:
+                return self.model(
+                    input_ids=None,
+                    attention_mask=decode_attention_mask,
+                    position_ids=decode_position_ids,
+                    past_key_values=past_key_values,
+                    inputs_embeds=decode_inputs_embeds,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                    cache_position=decode_cache_position,
+                    **kwargs,
+                )
+
+            outputs: BaseModelOutputWithPast = self._cuda_graph_hooks.run_talker_decode(
+                _talker_decode_step,
+                inputs_embeds=inputs_embeds,
+                attention_mask=cg_attention_mask,
+                position_ids=position_ids,
+                cache_position=cache_position,
+            )
+        else:
+            outputs: BaseModelOutputWithPast = self.model(
+                input_ids=None,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                cache_position=cache_position,
+                **kwargs,
+            )
 
         hidden_states = outputs.last_hidden_state
         logits = self.codec_head(hidden_states)
@@ -1872,6 +2290,19 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
     
     def load_generate_config(self, generate_config):
         self.generate_config = generate_config
+
+    def set_lm_decoder_engine(self, lm_decoder_engine: str | None) -> None:
+        self.talker.set_lm_decoder_engine(lm_decoder_engine)
+
+    def prepare_decode_cuda_graph(self, *, max_batch_size: int, max_talker_tokens: int, max_subtalker_tokens: int) -> None:
+        self.talker.prepare_decode_cuda_graph(
+            max_batch_size=max_batch_size,
+            max_talker_tokens=max_talker_tokens,
+            max_subtalker_tokens=max_subtalker_tokens,
+        )
+
+    def release_decode_cuda_graph(self) -> None:
+        self.talker.release_decode_cuda_graph()
     
     def get_supported_speakers(self):
         return self.supported_speakers
@@ -2061,9 +2492,17 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         subtalker_temperature: float = 0.9,
         eos_token_id: Optional[int] = None,
         repetition_penalty: float = 1.05,
+        release_decode_graph_on_exit: bool = True,
+        cg_max_talker_tokens: Optional[int] = None,
+        cg_max_subtalker_tokens: Optional[int] = None,
         **kwargs,
     ):
         _check_abort(self)
+        talker_eos_token_id = (
+            int(eos_token_id)
+            if eos_token_id is not None
+            else int(self.config.talker_config.codec_eos_token_id)
+        )
         talker_kwargs = {
             "max_new_tokens": max_new_tokens,
             "min_new_tokens": 0,
@@ -2071,13 +2510,11 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             "top_k": top_k,
             "top_p": top_p,
             "temperature": temperature,
-            "subtalker_dosample": subtalker_dosample, 
+            "subtalker_dosample": subtalker_dosample,
             "subtalker_top_k": subtalker_top_k,
             "subtalker_top_p": subtalker_top_p,
             "subtalker_temperature": subtalker_temperature,
-            "eos_token_id": eos_token_id
-            if eos_token_id is not None
-            else self.config.talker_config.codec_eos_token_id,
+            "eos_token_id": talker_eos_token_id,
             "repetition_penalty": repetition_penalty,
             "output_hidden_states": True,
             "return_dict_in_generate": True,
@@ -2302,18 +2739,71 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
 
         # forward
         target_device = torch.device("cuda") if torch.cuda.is_available() else talker_input_embeds.device
+        batch_size = int(talker_input_embeds.shape[0])
+        prompt_len = int(talker_input_embeds.shape[1])
+        max_talker_tokens = int(prompt_len + max(1, int(max_new_tokens)))
+        if cg_max_talker_tokens is not None:
+            max_talker_tokens = max(max_talker_tokens, int(cg_max_talker_tokens))
+        max_subtalker_tokens = int(max(2, int(self.talker.config.num_code_groups) + 1))
+        if cg_max_subtalker_tokens is not None:
+            max_subtalker_tokens = max(max_subtalker_tokens, int(cg_max_subtalker_tokens))
+        self.prepare_decode_cuda_graph(
+            max_batch_size=batch_size,
+            max_talker_tokens=max_talker_tokens,
+            max_subtalker_tokens=max_subtalker_tokens,
+        )
+        graph_active = self.talker.is_decode_cuda_graph_active()
+        if self.talker.is_decode_cuda_graph_enabled():
+            prepare_status = "reused" if self.talker.decode_cuda_graph_last_prepare_reused() else "new"
+            state = "active" if graph_active else "inactive"
+            if state == "inactive" or prepare_status == "new":
+                print(f"[Qwen3TTS][cg] decode graph {state} ({prepare_status})")
+
+        talker_cache = self.talker.get_decode_talker_cache()
+        use_stepwise_talker = bool(graph_active and talker_cache is not None)
+        if use_stepwise_talker:
+            self.talker.rope_deltas = None
 
         _check_abort(self)
-        talker_result = self.talker.generate(
-            inputs_embeds=talker_input_embeds.to(target_device),
-            attention_mask=talker_attention_mask.to(target_device),
-            trailing_text_hidden=trailing_text_hiddens.to(target_device),
-            tts_pad_embed=tts_pad_embed.to(target_device),
-            **talker_kwargs,
-        )
-
-        talker_codes = torch.stack([hid[-1] for hid in talker_result.hidden_states if hid[-1] is not None], dim=1)
-        talker_hidden_states = torch.cat([hid[0][-1][:, -1:] for hid in talker_result.hidden_states], dim=1)[:, :-1]
+        try:
+            self.talker._prefill_attention_mask = talker_attention_mask.to(target_device)
+            if use_stepwise_talker:
+                talker_codes, talker_hidden_states = self.talker.generate_stepwise(
+                    inputs_embeds=talker_input_embeds.to(target_device),
+                    attention_mask=talker_attention_mask.to(target_device),
+                    trailing_text_hidden=trailing_text_hiddens.to(target_device),
+                    tts_pad_embed=tts_pad_embed.to(target_device),
+                    max_new_tokens=int(max_new_tokens),
+                    do_sample=bool(do_sample),
+                    top_k=int(top_k),
+                    top_p=float(top_p),
+                    temperature=float(temperature),
+                    subtalker_dosample=bool(subtalker_dosample),
+                    subtalker_top_k=int(subtalker_top_k),
+                    subtalker_top_p=float(subtalker_top_p),
+                    subtalker_temperature=float(subtalker_temperature),
+                    eos_token_id=talker_eos_token_id,
+                    repetition_penalty=float(repetition_penalty),
+                    past_key_values=talker_cache,
+                    use_cache=True,
+                    stopping_criteria=kwargs.get("stopping_criteria"),
+                )
+            else:
+                if "use_cache" in kwargs:
+                    talker_kwargs["use_cache"] = kwargs["use_cache"]
+                talker_result = self.talker.generate(
+                    inputs_embeds=talker_input_embeds.to(target_device),
+                    attention_mask=talker_attention_mask.to(target_device),
+                    trailing_text_hidden=trailing_text_hiddens.to(target_device),
+                    tts_pad_embed=tts_pad_embed.to(target_device),
+                    **talker_kwargs,
+                )
+                talker_codes = torch.stack([hid[-1] for hid in talker_result.hidden_states if hid[-1] is not None], dim=1)
+                talker_hidden_states = torch.cat([hid[0][-1][:, -1:] for hid in talker_result.hidden_states], dim=1)[:, :-1]
+        finally:
+            self.talker._prefill_attention_mask = None
+            if bool(release_decode_graph_on_exit):
+                self.release_decode_cuda_graph()
         
         first_codebook = talker_codes[:, :, 0]
         is_stop_token = (first_codebook ==  self.config.talker_config.codec_eos_token_id)

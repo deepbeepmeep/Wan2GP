@@ -3,12 +3,12 @@ from torch import nn
 import torch.distributed as dist
 from transformers import Qwen3Config
 
-from nanovllm.layers.activation import SiluAndMul
-from nanovllm.layers.attention import Attention
-from nanovllm.layers.layernorm import RMSNorm
-from nanovllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
-from nanovllm.layers.rotary_embedding import get_rope
-from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+from ..layers.activation import SiluAndMul
+from ..layers.attention import Attention
+from ..layers.layernorm import RMSNorm
+from ..layers.linear import ColumnParallelLinear, RowParallelLinear
+from ..layers.rotary_embedding import RotaryEmbedding
+from ..layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 
 
 def _get_tp_size():
@@ -45,31 +45,18 @@ class Qwen3Attention(nn.Module):
         self.scaling = self.head_dim ** -0.5
         self.qkv_bias = qkv_bias
 
-        self.qkv_proj = QKVParallelLinear(
-            hidden_size,
-            self.head_dim,
-            self.total_num_heads,
-            self.total_num_kv_heads,
-            bias=qkv_bias,
-        )
+        self.q_proj = ColumnParallelLinear(hidden_size, self.total_num_heads * self.head_dim, bias=qkv_bias)
+        self.k_proj = ColumnParallelLinear(hidden_size, self.total_num_kv_heads * self.head_dim, bias=qkv_bias)
+        self.v_proj = ColumnParallelLinear(hidden_size, self.total_num_kv_heads * self.head_dim, bias=qkv_bias)
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
         )
-        self.rotary_emb = get_rope(
-            self.head_dim,
-            rotary_dim=self.head_dim,
-            max_position=max_position,
-            base=rope_theta,
-            rope_scaling=rope_scaling,
-        )
-        self.attn = Attention(
-            self.num_heads,
-            self.head_dim,
-            self.scaling,
-            self.num_kv_heads,
-        )
+        self.rotary_emb = RotaryEmbedding(self.head_dim, self.head_dim, max_position, rope_theta)
+
+        self.attn = Attention( self.num_heads, self.head_dim, self.scaling, self.num_kv_heads)
+        
         if not self.qkv_bias:
             self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
             self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
@@ -79,8 +66,9 @@ class Qwen3Attention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        qkv = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        q = self.q_proj(hidden_states)
+        k = self.k_proj(hidden_states)
+        v = self.v_proj(hidden_states)
         q = q.view(-1, self.num_heads, self.head_dim)
         k = k.view(-1, self.num_kv_heads, self.head_dim)
         v = v.view(-1, self.num_kv_heads, self.head_dim)
@@ -102,11 +90,8 @@ class Qwen3MLP(nn.Module):
         hidden_act: str,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
-            hidden_size,
-            [intermediate_size] * 2,
-            bias=False,
-        )
+        self.gate_proj = ColumnParallelLinear(hidden_size, intermediate_size, bias=False)
+        self.up_proj = ColumnParallelLinear(hidden_size, intermediate_size, bias=False)
         self.down_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
@@ -116,8 +101,9 @@ class Qwen3MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up = self.gate_up_proj(x)
-        x = self.act_fn(gate_up)
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        x = self.act_fn(torch.cat((gate, up), dim=-1))
         x = self.down_proj(x)
         return x
 
@@ -189,14 +175,6 @@ class Qwen3Model(nn.Module):
 
 
 class Qwen3ForCausalLM(nn.Module):
-    packed_modules_mapping = {
-        "q_proj": ("qkv_proj", "q"),
-        "k_proj": ("qkv_proj", "k"),
-        "v_proj": ("qkv_proj", "v"),
-        "gate_proj": ("gate_up_proj", 0),
-        "up_proj": ("gate_up_proj", 1),
-    }
-
     def __init__(
         self,
         config: Qwen3Config
@@ -204,11 +182,8 @@ class Qwen3ForCausalLM(nn.Module):
         super().__init__()
         self.model = Qwen3Model(config)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
-        if config.tie_word_embeddings:
-            self.lm_head.weight.data = self.model.embed_tokens.weight.data
 
-    # Proxy attributes for weight loading compatibility
-    # Some model weights use "embed_tokens" instead of "model.embed_tokens"
+    # Proxy attributes to keep the top-level module layout simple for runtime helpers.
     @property
     def embed_tokens(self):
         return self.model.embed_tokens

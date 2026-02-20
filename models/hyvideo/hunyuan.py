@@ -259,7 +259,7 @@ class Inference(object):
         from mmgp import offload
 
         source =  model_def.get("source", None)
-        kwargs_light = dict(do_quantize= quantizeTransformer and not save_quantized, pinToMemory = pinToMemory, partialPinning = partialPinning)
+        kwargs_light = dict(do_quantize= quantizeTransformer and not save_quantized, pinToMemory = pinToMemory, partialPinning = partialPinning, writable_tensors=False)
         if source is not None:
             from wgp import save_model
             offload.load_model_data(model, fl.locate_file(source),  **kwargs_light)
@@ -338,7 +338,7 @@ class Inference(object):
             from accelerate import init_empty_weights
             with init_empty_weights():
                 vae = AutoencoderKLConv3D(**config)
-            offload.load_model_data(vae, vae_filepath )
+            offload.load_model_data(vae, vae_filepath, writable_tensors=False)
             vae = vae.to("cpu")
             s_ratio = t_ratio = 1
             vae._model_dtype =  torch.float32 if VAE_dtype == torch.float32 else  torch.float16

@@ -1,4 +1,5 @@
 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/
+mmgp==3.7.5
 # Core AI stack
 diffusers==0.36.0
 transformers==4.54.0 #4.53.1
@@ -54,6 +55,7 @@ facexlib==0.3.0
 taichi
 vector_quantize_pytorch==1.27.19 
 
+
 # chumpy wheel hosted on GitHub to avoid sdist build isolation issue
 chumpy @ https://github.com/deepbeepmeep/chumpy/releases/download/v0.71/chumpy-0.71-py3-none-any.whl
 smplfitter @ https://github.com/deepbeepmeep/smplfitter/releases/download/v0.2.10/smplfitter-0.2.10-py3-none-any.whl
@@ -67,7 +69,6 @@ pydantic==2.10.6
 # Math & modeling
 torchdiffeq>=0.2.5
 tensordict>=0.6.1
-mmgp==3.7.4
 peft==0.17.0 # 0.15.0
 vector-quantize-pytorch
 matplotlib
@@ -82,7 +83,8 @@ gitdb==4.0.12
 gitpython==3.1.45
 stringzilla==4.0.14
 xxhash
-
+munch
+wetext==0.1.2
 # Optional / commented out
 # transformers==4.46.3  # for llamallava pre-patch
 # rembg==2.0.65         # non-GPU fallback

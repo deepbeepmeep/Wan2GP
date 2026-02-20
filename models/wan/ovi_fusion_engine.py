@@ -71,8 +71,8 @@ class OviFusionEngine:
         self.target_dtype = torch.bfloat16 # dtype, wont work with torch.float16
         model, video_config, audio_config = init_fusion_score_model_ovi()
         # offload.load_model_data(model, "c:/temp/model_960x960.safetensors")
-        offload.load_model_data(model.video_model, model_filename[0])
-        offload.load_model_data(model.audio_model, model_filename[1])
+        offload.load_model_data(model.video_model, model_filename[0], writable_tensors=False)
+        offload.load_model_data(model.audio_model, model_filename[1], writable_tensors=False)
         offload.change_dtype(model, dtype, True)
         model = model.eval()
         # model.set_rope_params()

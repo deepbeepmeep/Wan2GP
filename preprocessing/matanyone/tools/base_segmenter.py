@@ -139,7 +139,7 @@ class BaseSegmenter:
         # self.model.to(torch.float16)
         # offload.save_model(self.model, "ckpts/mask/sam_vit_h_4b8939_fp16.safetensors")
         
-        offload.load_model_data(self.model, fl.locate_file("mask/sam_vit_h_4b8939_fp16.safetensors"))
+        offload.load_model_data(self.model, fl.locate_file("mask/sam_vit_h_4b8939_fp16.safetensors"), writable_tensors=False)
         self.model.to(torch.float32) # need to be optimized, if not f32 crappy precision
         self.model.to(device=self.device)
         self.predictor = SamPredictor(self.model)

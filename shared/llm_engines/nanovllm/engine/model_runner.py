@@ -1,16 +1,15 @@
 import pickle
+import gc
 import torch
 import torch.distributed as dist
 from multiprocessing.synchronize import Event
 from multiprocessing.shared_memory import SharedMemory
 import sys
 
-from nanovllm.config import Config
-from nanovllm.engine.sequence import Sequence
-from nanovllm.models.qwen3 import Qwen3ForCausalLM
-from nanovllm.layers.sampler import Sampler
-from nanovllm.utils.context import set_context, get_context, reset_context
-from nanovllm.utils.loader import load_model, WeightStore
+from ..config import Config
+from .sequence import Sequence
+from ..layers.sampler import Sampler
+from ..utils.context import set_context, get_context, reset_context
 
 import socket
 
@@ -43,7 +42,7 @@ def find_available_port(start_port: int = 2333, max_attempts: int = 100) -> int:
 
 class ModelRunner:
 
-    def __init__(self, config: Config, rank: int, event: Event | list[Event]):
+    def __init__(self, config: Config, rank: int, event: Event | list[Event], model_object=None):
         # Enable capturing scalar outputs to avoid graph breaks from Tensor.item() calls
         torch._dynamo.config.capture_scalar_outputs = True
         
@@ -90,38 +89,25 @@ class ModelRunner:
             config_dtype = torch.bfloat16
 
         self.dtype = config_dtype  # Save for later use
-        self.weight_load_mode = (config.weight_load_mode or "eager").lower()
-        self._weights_loaded = False
-        self._weight_store = None
-        self._is_quanto_int8 = False
+        self._runtime_ready = False
         self._graph_cache = {}
         self._graph_cache_order = []
         self._logits_bias_cache = {}
+        self._sampling_generator = None
         self._guard_counts = {}
         self._guard_seen_details = set()
         torch.set_default_dtype(config_dtype)
-        if self.weight_load_mode in ("lazy", "pinned"):
-            torch.set_default_device("cpu")
-            self.model = Qwen3ForCausalLM(hf_config)
-            self._weight_store = WeightStore(config.model_file or config.model_dir, mode=self.weight_load_mode)
-            self._is_quanto_int8 = bool(getattr(self._weight_store, "is_quanto_int8", False))
-        else:
-            torch.set_default_device("cuda")
-            self.model = Qwen3ForCausalLM(hf_config)
-            load_model(self.model, config.model_file or config.model_dir)
-            self._retie_word_embeddings_if_needed()
-            self._weights_loaded = True
+        if model_object is None:
+            raise RuntimeError(
+                "nanovllm now requires a preloaded MMGP model object. "
+                "Pass model_object=... when creating LLM."
+            )
+        self.model = model_object
         self.sampler = Sampler()
         
         # Pre-allocate buffers for sampling (optimization: avoid repeated tensor creation)
-        # Must be called before warmup_model() since it uses these buffers
+        # Must be called before model execution paths that use these buffers.
         self._allocate_sample_buffers()
-        
-        if self._weights_loaded:
-            self.warmup_model()
-            self.allocate_kv_cache()
-            if not self.enforce_eager:
-                self.capture_cudagraph()
         
         torch.set_default_device("cpu")
         torch.set_default_dtype(default_dtype)
@@ -135,59 +121,52 @@ class ModelRunner:
                 self.shm = SharedMemory(name="nanovllm")
                 self.loop()
 
-    def ensure_weights_loaded(self):
-        if self._weights_loaded:
+    def ensure_runtime_ready(self):
+        if self._runtime_ready:
             return
-        default_dtype = torch.get_default_dtype()
-        torch.set_default_dtype(self.dtype)
-        torch.set_default_device("cuda")
-        if self._is_quanto_int8:
-            for module in self.model.modules():
-                prepare = getattr(module, "prepare_for_quantized_load", None)
-                if callable(prepare):
-                    prepare()
-        self.model = self.model.to("cuda")
-        load_model(self.model, "", weight_store=self._weight_store)
-        self._retie_word_embeddings_if_needed()
-        self._weights_loaded = True
-        self.warmup_model()
+        if self.model is None:
+            raise RuntimeError("LLM model object is not available.")
+        self._tie_word_embeddings_if_needed()
         self.allocate_kv_cache()
         if not self.enforce_eager:
             self.capture_cudagraph()
-        torch.set_default_device("cpu")
-        torch.set_default_dtype(default_dtype)
+        self._runtime_ready = True
 
-    def _retie_word_embeddings_if_needed(self):
-        # Some quantized checkpoints omit lm_head.weight and rely on tied embeddings.
-        # After device moves/load cycles, the tie can be broken; restore it explicitly.
-        try:
-            lm_head = getattr(self.model, "lm_head", None)
-            embed = getattr(self.model, "embed_tokens", None)
-            if lm_head is None or embed is None:
-                return
-            lm_w = getattr(lm_head, "weight", None)
-            emb_w = getattr(embed, "weight", None)
-            if lm_w is None or emb_w is None:
-                return
-            if lm_w.shape != emb_w.shape:
-                return
-            if lm_w.data_ptr() != emb_w.data_ptr():
-                lm_head.weight.data = emb_w.data
-        except Exception:
-            return
+    def _get_tied_embeddings(self):
+        if self.model is None:
+            return None
+        hf_config = getattr(self.config, "hf_config", None)
+        if not bool(getattr(hf_config, "tie_word_embeddings", False)):
+            return None
+        lm_head = getattr(self.model, "lm_head", None)
+        embed = getattr(self.model, "embed_tokens", None)
+        if lm_head is None or embed is None:
+            return None
+        lm_w = getattr(lm_head, "weight", None)
+        emb_w = getattr(embed, "weight", None)
+        if lm_w is None or emb_w is None:
+            return None
+        return lm_head, embed
 
-    def unload_weights(self):
-        if not self._weights_loaded:
+    def _tie_word_embeddings_if_needed(self):
+        tied = self._get_tied_embeddings()
+        if tied is None:
             return
-        try:
-            self.model = self.model.to("cpu")
-        except Exception:
-            pass
+        lm_head, embed = tied
+        if lm_head.weight is not embed.weight:
+            lm_head.register_parameter("weight", embed.weight)
+        if lm_head.weight is not embed.weight:
+            raise RuntimeError("Failed to retie lm_head.weight with embed_tokens.weight.")
+
+    def reset_runtime_state(self):
+        if not self._runtime_ready:
+            return
         # Clear attention KV cache refs so we don't write into freed storage later.
         try:
-            for module in self.model.modules():
-                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                    module.k_cache = module.v_cache = torch.tensor([])
+            if self.model is not None:
+                for module in self.model.modules():
+                    if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
+                        module.k_cache = module.v_cache = torch.tensor([])
         except Exception:
             pass
         if hasattr(self, "kv_cache"):
@@ -195,8 +174,8 @@ class ModelRunner:
                 del self.kv_cache
             except Exception:
                 pass
-        # CUDA graphs captured against previous weight/KV pointers are unsafe after unload/reload.
-        # Force recapture on next load to avoid stale-pointer illegal memory access.
+        # CUDA graphs captured against previous model/KV pointers are unsafe after runtime reset.
+        # Force recapture on next prepare to avoid stale-pointer illegal memory access.
         try:
             self.clear_graph_cache()
         except Exception:
@@ -213,7 +192,9 @@ class ModelRunner:
         except Exception:
             pass
         self._logits_bias_cache.clear()
-        self._weights_loaded = False
+        self._sampling_generator = None
+        self._runtime_ready = False
+        gc.collect()
 
     def _get_graph_capture_signature(self):
         model_ptr = -1
@@ -230,6 +211,12 @@ class ModelRunner:
         except Exception:
             pass
         return (model_ptr, kv_ptr, int(self.config.max_model_len), int(self.config.max_num_seqs))
+
+    def _get_model_device(self) -> torch.device:
+        try:
+            return next(self.model.parameters()).device
+        except Exception:
+            return torch.device("cpu")
 
     def _drop_graph_cache_entry(self, cache_key):
         entry = self._graph_cache.pop(cache_key, None)
@@ -264,16 +251,6 @@ class ModelRunner:
         if count == 1:
             print(f"[nanovllm][guard] {name}")
 
-    def reset_guard_counts(self):
-        self._guard_counts.clear()
-        self._guard_seen_details.clear()
-
-    def get_guard_counts(self, reset: bool = False):
-        counts = dict(self._guard_counts)
-        if reset:
-            self.reset_guard_counts()
-        return counts
-
     def _get_logits_bias(self, seq: Sequence, logits: torch.Tensor):
         bias = getattr(seq, "logits_bias", None)
         if bias is None or not torch.is_tensor(bias):
@@ -285,6 +262,14 @@ class ModelRunner:
         cached = bias.to(device=logits.device, dtype=logits.dtype)
         self._logits_bias_cache[key] = cached
         return cached
+
+    def set_sampling_seed(self, seed: int | None):
+        if seed is None or not torch.cuda.is_available():
+            self._sampling_generator = None
+            return
+        generator = torch.Generator(device="cuda")
+        generator.manual_seed(int(seed))
+        self._sampling_generator = generator
 
     @staticmethod
     def _apply_logits_bias(logits_row: torch.Tensor, bias: torch.Tensor):
@@ -323,7 +308,44 @@ class ModelRunner:
         # Max length is max_model_len since sequences can be that long
         self._seq_token_ids_buffer = torch.zeros(max_bs, self.config.max_model_len, dtype=torch.int64, device="cpu", pin_memory=True)
 
+    def _release_sample_buffers(self):
+        buffer_names = [
+            "_cpu_temperatures",
+            "_cpu_cfg_scales",
+            "_cpu_top_ks",
+            "_cpu_top_ps",
+            "_cpu_repetition_penalties",
+            "_cpu_input_ids",
+            "_cpu_positions",
+            "_cpu_slot_mapping",
+            "_cpu_context_lens",
+            "_cpu_prefill_input_ids",
+            "_cpu_prefill_positions",
+            "_cpu_prefill_cu_seqlens",
+            "_cpu_prefill_slot_mapping",
+            "_cpu_block_tables",
+            "_seq_token_ids_buffer",
+        ]
+        for name in buffer_names:
+            if hasattr(self, name):
+                try:
+                    delattr(self, name)
+                except Exception:
+                    pass
+
     def exit(self):
+        try:
+            self.reset_runtime_state()
+        except Exception:
+            pass
+        self._release_sample_buffers()
+        self._logits_bias_cache.clear()
+        self._guard_counts.clear()
+        self._guard_seen_details.clear()
+        if hasattr(self, "sampler"):
+            self.sampler = None
+        if hasattr(self, "model"):
+            self.model = None
         if self.world_size > 1:
             self.shm.close()
             dist.barrier()
@@ -336,6 +358,10 @@ class ModelRunner:
                 del self.graph_pool
         try:
             torch.cuda.synchronize()
+        except Exception:
+            pass
+        try:
+            torch.cuda.empty_cache()
         except Exception:
             pass
         if dist.is_initialized():
@@ -371,58 +397,51 @@ class ModelRunner:
         method = getattr(self, method_name, None)
         return method(*args)
 
-    def warmup_model(self):
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        max_num_batched_tokens, max_model_len = self.config.max_num_batched_tokens, self.config.max_model_len
-        num_seqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs)
-        seqs = [Sequence([0] * max_model_len) for _ in range(num_seqs)]
-        self.run(seqs, True)
-        torch.cuda.empty_cache()
-
     def allocate_kv_cache(self):
         config = self.config
         hf_config = config.hf_config
-        free, total = torch.cuda.mem_get_info()
-        current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
         num_kv_heads = hf_config.num_key_value_heads // self.world_size
         head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
         block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * head_dim * self.dtype.itemsize
-        
-        # Calculate available memory for KV cache
-        # After warmup_model, empty_cache has been called, so current represents model memory only
-        # Use free memory but respect the gpu_memory_utilization limit
-        target_total_usage = total * config.gpu_memory_utilization
-        available_for_kv_cache = min(free * 0.9, target_total_usage - current)
-        
-        # Ensure we have positive memory available
-        if available_for_kv_cache <= 0:
-            available_for_kv_cache = free * 0.5  # Fallback to 50% of free memory
-        
-        config.num_kvcache_blocks = max(1, int(available_for_kv_cache) // block_bytes)
-        # Cap KV cache blocks to what is required by max_model_len and max_num_seqs.
-        # This keeps VRAM usage proportional to the requested token budget (incl. CFG).
+
+        # Strict policy: allocate exactly the blocks required by requested runtime limits.
         required_blocks_per_seq = (config.max_model_len + self.block_size - 1) // self.block_size
         required_total_blocks = required_blocks_per_seq * max(1, config.max_num_seqs)
-        if required_total_blocks > 0:
-            config.num_kvcache_blocks = min(config.num_kvcache_blocks, required_total_blocks)
-        if config.num_kvcache_blocks <= 0:
+        config.num_kvcache_blocks = max(1, int(required_total_blocks))
+        required_kv_bytes = config.num_kvcache_blocks * block_bytes
+        free, total = torch.cuda.mem_get_info()
+        current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
+        target_total_usage = total * config.gpu_memory_utilization
+        allowed_kv_bytes = max(0, target_total_usage - current)
+        if required_kv_bytes > allowed_kv_bytes:
             raise RuntimeError(
-                f"Insufficient GPU memory for KV cache. "
+                f"Insufficient GPU memory for strict KV cache sizing under gpu_memory_utilization={config.gpu_memory_utilization:.2f}. "
+                f"Required KV: {required_kv_bytes / 1024**3:.2f} GB "
+                f"(blocks={config.num_kvcache_blocks}, block={block_bytes / 1024**2:.2f} MB), "
+                f"Allowed by limit: {allowed_kv_bytes / 1024**3:.2f} GB, "
                 f"Free: {free / 1024**3:.2f} GB, Current: {current / 1024**3:.2f} GB, "
-                f"Available for KV: {available_for_kv_cache / 1024**3:.2f} GB, "
-                f"Block size: {block_bytes / 1024**2:.2f} MB"
+                f"Requested max_model_len={config.max_model_len}, max_num_seqs={config.max_num_seqs}."
             )
-        self.kv_cache = torch.empty(
-            2,
-            hf_config.num_hidden_layers,
-            config.num_kvcache_blocks,
-            self.block_size,
-            num_kv_heads,
-            head_dim,
-            device="cuda",
-            dtype=self.dtype,
-        )
+        try:
+            self.kv_cache = torch.empty(
+                2,
+                hf_config.num_hidden_layers,
+                config.num_kvcache_blocks,
+                self.block_size,
+                num_kv_heads,
+                head_dim,
+                device="cuda",
+                dtype=self.dtype,
+            )
+        except RuntimeError as exc:
+            if "out of memory" in str(exc).lower():
+                free_now, total_now = torch.cuda.mem_get_info()
+                raise RuntimeError(
+                    f"Failed to allocate strict KV cache ({required_kv_bytes / 1024**3:.2f} GB) for "
+                    f"max_model_len={config.max_model_len}, max_num_seqs={config.max_num_seqs}. "
+                    f"Current free VRAM: {free_now / 1024**3:.2f} GB / {total_now / 1024**3:.2f} GB total."
+                ) from exc
+            raise
         layer_id = 0
         for module in self.model.modules():
             if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
@@ -587,7 +606,7 @@ class ModelRunner:
         """Run model forward and sampling. For CFG sequences, batch is structured as:
         [cond_seq1, cond_seq2, ..., uncond_seq1, uncond_seq2, ...]
         where uncond_seqi is the paired unconditional sequence of cond_seqi."""
-        self.ensure_weights_loaded()
+        self.ensure_runtime_ready()
         # Check if this is a CFG batch (contains paired conditional and unconditional sequences)
         is_cfg_batch = seqs[0].cfg_scale > 1.0 and seqs[0].paired_seq is not None
         if is_cfg_batch:
@@ -663,6 +682,7 @@ class ModelRunner:
                     top_ks=top_ks if top_ks is not None else None,
                     top_ps=top_ps if top_ps is not None else None,
                     repetition_penalties=None,  # Already applied above
+                    generator=self._sampling_generator,
                     # input_ids=cond_input_ids,
                 ).tolist()
                 
@@ -735,6 +755,7 @@ class ModelRunner:
                     top_ks=top_ks if top_ks is not None else None,
                     top_ps=top_ps if top_ps is not None else None,
                     repetition_penalties=None,  # Already applied above
+                    generator=self._sampling_generator,
                     # input_ids=seq_input_ids,
                 ).tolist()
                 
@@ -753,6 +774,7 @@ class ModelRunner:
     def capture_cudagraph(self):
         config = self.config
         cache_key = (config.max_model_len, config.max_num_seqs)
+        model_device = torch.device("cuda") if torch.cuda.is_available() else self._get_model_device()
         cached = self._graph_cache.get(cache_key)
         if cached is not None:
             current_sig = self._get_graph_capture_signature()
@@ -765,16 +787,16 @@ class ModelRunner:
                     self._graph_cache_order.remove(cache_key)
                 self._graph_cache_order.append(cache_key)
                 return
-            self._drop_graph_cache_entry(cache_key)
+                self._drop_graph_cache_entry(cache_key)
         hf_config = config.hf_config
         max_bs = min(self.config.max_num_seqs, 512)
         max_num_blocks = (config.max_model_len + self.block_size - 1) // self.block_size
-        input_ids = torch.zeros(max_bs, dtype=torch.int64)
-        positions = torch.zeros(max_bs, dtype=torch.int64)
-        slot_mapping = torch.zeros(max_bs, dtype=torch.int32)
-        context_lens = torch.zeros(max_bs, dtype=torch.int32)
-        block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32)
-        outputs = torch.zeros(max_bs, hf_config.hidden_size)
+        input_ids = torch.zeros(max_bs, dtype=torch.int64, device=model_device)
+        positions = torch.zeros(max_bs, dtype=torch.int64, device=model_device)
+        slot_mapping = torch.zeros(max_bs, dtype=torch.int32, device=model_device)
+        context_lens = torch.zeros(max_bs, dtype=torch.int32, device=model_device)
+        block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32, device=model_device)
+        outputs = torch.zeros(max_bs, hf_config.hidden_size, device=model_device)
         self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
         self.graphs = {}
         self.graph_pool = None

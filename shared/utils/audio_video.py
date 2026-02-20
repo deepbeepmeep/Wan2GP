@@ -40,6 +40,55 @@ def write_wav_file(path, audio_data, sample_rate):
     return path
 
 
+def _compute_active_abs_amplitude(audio_data):
+    abs_audio = np.abs(np.asarray(audio_data, dtype=np.float32)).reshape(-1)
+    if abs_audio.size == 0:
+        return 0.0, 0.0
+    avg_abs = float(abs_audio.mean())
+    if avg_abs <= 0.0:
+        return 0.0, 0.0
+    threshold = 0.1 * avg_abs
+    active_mask = abs_audio > threshold
+    active_avg_abs = float(abs_audio[active_mask].mean()) if np.any(active_mask) else avg_abs
+    return avg_abs, active_avg_abs
+
+
+def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_dir=None, prefix="audio_norm_"):
+    audio1, sr1 = sf.read(os.fspath(audio_path1), dtype="float32", always_2d=False)
+    audio2, sr2 = sf.read(os.fspath(audio_path2), dtype="float32", always_2d=False)
+
+    avg1, active1 = _compute_active_abs_amplitude(audio1)
+    avg2, active2 = _compute_active_abs_amplitude(audio2)
+    midpoint = 0.5 * (active1 + active2)
+    eps = 1e-8
+    gain1 = midpoint / active1 if active1 > eps else 1.0
+    gain2 = midpoint / active2 if active2 > eps else 1.0
+
+    norm1 = np.clip(np.asarray(audio1, dtype=np.float32) * float(gain1), -1.0, 1.0)
+    norm2 = np.clip(np.asarray(audio2, dtype=np.float32) * float(gain2), -1.0, 1.0)
+
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+
+    fd1, out1 = tempfile.mkstemp(prefix=prefix + "1_", suffix=".wav", dir=output_dir)
+    os.close(fd1)
+    fd2, out2 = tempfile.mkstemp(prefix=prefix + "2_", suffix=".wav", dir=output_dir)
+    os.close(fd2)
+    sf.write(out1, norm1, int(sr1))
+    sf.write(out2, norm2, int(sr2))
+
+    stats = {
+        "audio1_avg_abs": float(avg1),
+        "audio2_avg_abs": float(avg2),
+        "audio1_active_avg_abs": float(active1),
+        "audio2_active_avg_abs": float(active2),
+        "target_active_avg_abs": float(midpoint),
+        "audio1_gain": float(gain1),
+        "audio2_gain": float(gain2),
+    }
+    return out1, out2, stats
+
+
 def _get_audio_codec_settings(codec_key):
     if not codec_key:
         codec_key = "wav"

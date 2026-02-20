@@ -163,15 +163,15 @@ class ChatterboxMultilingualTTS:
         ckpt_dir = Path(ckpt_dir)
         from mmgp import offload
         ve = VoiceEncoder()
-        offload.load_model_data(ve, fl.locate_file( os.path.join(ckpt_folder,"ve.safetensors")))
+        offload.load_model_data(ve, fl.locate_file(os.path.join(ckpt_folder, "ve.safetensors")), writable_tensors=False)
         ve.eval()
         # from accelerate import init_empty_weights
         # with init_empty_weights():
         t3 = T3(T3Config.multilingual())
-        offload.load_model_data(t3, fl.locate_file( os.path.join(ckpt_folder,"t3_mtl23ls_v2.safetensors")))
+        offload.load_model_data(t3, fl.locate_file(os.path.join(ckpt_folder, "t3_mtl23ls_v2.safetensors")), writable_tensors=False)
         t3.eval()
         s3gen = S3Gen()
-        offload.load_model_data(s3gen, fl.locate_file( os.path.join(ckpt_folder,"s3gen.pt")))
+        offload.load_model_data(s3gen, fl.locate_file(os.path.join(ckpt_folder, "s3gen.pt")), writable_tensors=False)
         s3gen.eval()
 
         tokenizer = MTLTokenizer(

@@ -33,7 +33,58 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### February 10th 2026: WanGP v10.83, Easy Metal
+### February 19th 2026: WanGP v10.951, Breaking the Sound Barrier, Mach 2
+Here comes the (last ?) missing bit in WanGP of the *Text To Speech* offering: **emotions**
+
+There isnt many TTS models around that let you express emotions, so I hope you will forgive me for adding an old TTS model (6 months old!) in WanGP: **Index TTS 2**.
+
+But in WanGP, you wont just get the vanilla version of Index TTS:
+- *Two speakers Dialogue* (with 2 Cloned Voices) out of the Box
+- Each speaker can express *varrying emotions* within the same prompt   
+- *Volume Normalization* of the two speaker voices (no one will speak louder)
+- Optimized for a *dialogue that can last forever* (new *infinitalk* best friend)
+- *GPU Poor version*: VRAM, 6GB will be sufficient
+- Highly Optimized with *vllm* & *Cuda Graph acceleration*: *up to 10x faster* than vanilla Index TTS. On high end GPUs, generating a 1 min of dialogue will take only 30s !
+
+Here is how to use it: By default Index TTS, will detect automatically the emotion to apply to a Text Prompt based on the text itself. However, it will apply the same emotion for the whole prompt. If you want a different emotion per sentence, just insert empty lines between each sentence.
+
+You can also set manually which emotion you expect with [] tags, here is one example for one speaker:
+```bash
+[fear] At the very beginning I was so afraid to speak.
+[sadness] Nobody would talk to me. I felt so alone.
+[disgust] They would just ignore me and pretend that I didnt exist
+[happy] By chance I discovered this wonderful App, and now everything is different.
+[anger] I have a new voice and now everybody will have no choice but to listen to my words !!! 
+```
+You can mix emotions *[sadness,disgust]* or if you want to precise the weight of one or several emotions *[sadness=0.7,disgust]* (in any case total of weights is 1)
+
+Remember two speakers mode requires to insert *"Speaker 1:"* & *"Speaker 2:"* to indicate who is talking.
+
+There is only one snag: Index TTS 2 supports only English & Chinese. But dont' panic ! not all is lost. There is a workaround:
+1) Feed *Index TTS 2* with the voice to clone and ask it to generate a sample English spoken text with with the emotion you expected
+2) Now ask *Qwen3TTS*, to clone this newly generated voice sample (in English) in the other language you want
+
+
+### February 16th 2026: WanGP v10.9, Breaking the Sound Barrier
+With this new release of WanGP you should have the best TTS (Text To Speech) experience you can find:
+
+- **Qwen3 TTS Powered Up**:  
+   - with new *Cuda Graph* optimized mode, speech generation is up to *4x faster*, in some occasion generating 1s of speech may take less than 1s !
+   - with int8 quantization, the Qwen3 TTS can work at full speed with only 6 GB of VRAM
+   - New **Two Speakers Mode** with **Two Cloned Voices** can generate dialogues with much smoother transitions than with *Kugel Audio* 
+
+- **Heart Mula Powered Up**:
+   - with new *Cuda Graph* optimized mode, song generation is up to 6x faster
+
+- **Ace Step 1.5 Powered Up**:
+   - WanGP version offers an exclusive support for *vllm* & *int8 quantization* for LM (that is fast LM & low VRAM at the same time)
+   - you will only need 10GB of RAM and 6 GB oF VRAM, to run Ace Step with all its features
+
+Also you now have a choice of multiple *Prompt Enhancements* for *Qwen3 TTS* & *Kugel Audio*: *Prompt Enhancer* can now generate for you either a *Monologue* or a *Dialogue between two Speakers*
+
+Please note that to use the new *Cuda Graph*, mode you will need to select either *vllm* or *cuda graph* in *Configuration / Performance / Language Models Decoder Engine*. Profiles 1,3  or 3+ will need to be enabled for the corresponding Model. vllm is a powered up version of cuda graph that may not always work with all GPUs. But don't worry if it is not available for your GPU there will be an automatic fallback to cuda graph.
+
+### February 12th 2026: WanGP v10.84, Easy Metal
 
 - **Ace Step 1.5 Turbo Super Charged**: all the best features of *Ace Step 1.5* are now in *WanGP* and are *Fast* & *Easy* to use:
    * Manual Selection of *Bpm*, *Keyscale*, *Time Signature* & *Language*
@@ -58,7 +109,8 @@ Improved queue reordering: items can now be dragged and dropped directly onto th
 
 *update 10.81*: Fixes\
 *update 10.82*: UI update\
-*update 10.83*: Kugel Audio Split
+*update 10.83*: Kugel Audio Split\
+*update 10.84*: Ace Step RAM optimizations (fixed memory leak & reduce RAM requirements)
 
 **Note to RTX 50xx owners**: you will need to upgrade to *pytorch 2.10* (see upgrade procedure below) to be able to use *Triton*
 

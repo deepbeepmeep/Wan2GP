@@ -147,6 +147,7 @@ class LongCatModel:
             vae_weights,
             modelClass=AutoencoderKLWan,
             defaultConfigPath=fl.locate_file(vae_cfg_path),
+            writable_tensors=False,
             preprocess_sd=preprocess_vae_sd,
             default_dtype=VAE_dtype,
         )

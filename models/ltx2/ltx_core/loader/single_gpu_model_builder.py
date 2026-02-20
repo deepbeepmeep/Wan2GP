@@ -141,6 +141,7 @@ class SingleGPUModelBuilder(Generic[ModelType], ModelBuilderProtocol[ModelType],
                     meta_model,
                     [(sd, quantization_map)],
                     default_dtype=dtype or torch.bfloat16,
+                    writable_tensors=False,
                     ignore_missing_keys=self.ignore_missing_keys,
                 )
             return self._return_model(meta_model, device)
@@ -163,6 +164,7 @@ class SingleGPUModelBuilder(Generic[ModelType], ModelBuilderProtocol[ModelType],
             meta_model,
             model_paths,
             default_dtype=dtype or torch.bfloat16,
+            writable_tensors=False,
             preprocess_sd=preprocess_sd,
             ignore_missing_keys=self.ignore_missing_keys,
         )

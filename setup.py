@@ -10,16 +10,18 @@ CONFIG_PATH = "setup_config.json"
 ENVS_FILE = "envs.json"
 IS_WIN = os.name == 'nt'
 
+_PY_PATH = f'"{os.path.join("{dir}", "Scripts", "python.exe")}"' if IS_WIN else f'"{os.path.join("{dir}", "bin", "python")}"'
+
 ENV_TEMPLATES = {
     "uv": {
         "create": "uv venv --python {ver} \"{dir}\"",
-        "run": os.path.join("{dir}", "Scripts", "python.exe") if IS_WIN else os.path.join("{dir}", "bin", "python"),
-        "install": (os.path.join("{dir}", "Scripts", "python.exe") if IS_WIN else os.path.join("{dir}", "bin", "python")) + " -m uv pip install"
+        "run": _PY_PATH,
+        "install": f"{_PY_PATH} -m uv pip install"
     },
     "venv": {
-        "create": "{sys_py} -m venv \"{dir}\"",
-        "run": os.path.join("{dir}", "Scripts", "python.exe") if IS_WIN else os.path.join("{dir}", "bin", "python"),
-        "install": (os.path.join("{dir}", "Scripts", "python.exe") if IS_WIN else os.path.join("{dir}", "bin", "python")) + " -m pip install"
+        "create": "\"{sys_py}\" -m venv \"{dir}\"",
+        "run": _PY_PATH,
+        "install": f"{_PY_PATH} -m pip install"
     },
     "conda": {
         "create": "conda create -y -p \"{dir}\" python={ver}",
@@ -249,7 +251,7 @@ def get_env_details(name, env_data):
         cmd_base = entry['run'].format(dir=dir_name)
         full_cmd = f"{cmd_base} -c \"{VERSION_CHECK_SCRIPT.replace(chr(10), ';')}\""
     else:
-        py_exec = entry['run'].format(dir=dir_name)
+        py_exec = entry['run'].format(dir=dir_name).strip('"')
         full_cmd = [py_exec, "-c", VERSION_CHECK_SCRIPT]
         
     try:
@@ -332,7 +334,7 @@ def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k,
             run_cmd(f"{pip} {cmd}")
         else:
             if env_type == "venv" or env_type == "uv":
-                act = f". {env_path}/bin/activate && " if not IS_WIN else ""
+                act = f". \"{env_path}/bin/activate\" && " if not IS_WIN else ""
                 run_cmd(f"{act}{cmd}")
             elif env_type == "conda":
                 pass

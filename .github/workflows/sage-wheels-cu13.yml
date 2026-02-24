@@ -86,7 +86,7 @@ jobs:
           target: sage-tools
           load: true
           push: false
-          tags: sage-tools-cu13-${{ matrix.matrix_name }}:latest
+          tags: sage-tools-cu13-${{ matrix.name }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
@@ -97,7 +97,7 @@ jobs:
           mkdir -p dist
           docker run --rm \
             -v "$(pwd)/dist:/out" \
-            sage-tools-cu13-${{ matrix.matrix_name }}:latest \
+            sage-tools-cu13-${{ matrix.name }}:latest \
             bash -c "cp /tmp/sa_dist/*.whl /out/"
           
           ORIG_WHEEL=$(ls dist/*.whl | head -1)

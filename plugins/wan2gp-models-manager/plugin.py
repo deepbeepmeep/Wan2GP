@@ -1736,6 +1736,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         .ckpt-badge { padding: 3px 8px; border-radius: 999px; font-weight: 600; font-size: 0.82em; font-variant-numeric: tabular-nums; min-width: 84px; width: 100%; display: inline-flex; align-items: center; justify-content: center; }
         .ckpt-badge-unique { background: rgba(64, 120, 255, 0.18); color: #2f5bd4; border: 1px solid rgba(64, 120, 255, 0.4); }
         .ckpt-badge-shared { background: rgba(240, 200, 40, 0.25); color: #a66a00; border: 1px solid rgba(240, 200, 40, 0.5); }
+        .ckpt-badge-zero { background: rgba(120, 120, 120, 0.12); color: #888; border: 1px solid rgba(120, 120, 120, 0.25); }
         .ckpt-actions { display: flex; gap: 18px; }
         .ckpt-action-btn { padding: 3px 12px; height: 30px; border: 1px solid var(--border-color-primary); border-radius: 6px; cursor: pointer; font-size: 0.85em; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; background: transparent; color: inherit; }
         .ckpt-action-btn:hover { box-shadow: var(--shadow-drop, 0 2px 6px rgba(0,0,0,0.12)); }
@@ -1879,8 +1880,16 @@ class modelsManagerPlugin(WAN2GPPlugin):
         row_onclick = (
             "onclick='handlemodelRowClick(event, this);'" if click_view else ""
         )
-        unique_badge = f"<span class='ckpt-badge ckpt-badge-unique'>{unique}</span>"
-        shared_badge = f"<span class='ckpt-badge ckpt-badge-shared'>{shared}</span>"
+        unique_badge_class = "ckpt-badge ckpt-badge-unique"
+        shared_badge_class = "ckpt-badge ckpt-badge-shared"
+
+        if unique == "0.00 GB":
+            unique_badge_class += " ckpt-badge-zero"
+        if shared == "0.00 GB":
+            shared_badge_class += " ckpt-badge-zero"
+
+        unique_badge = f"<span class='{unique_badge_class}'>{unique}</span>"
+        shared_badge = f"<span class='{shared_badge_class}'>{shared}</span>"
         return (
             f"<div class='{row_class}' data-node-id=\"{node_id_attr}\" data-node-label=\"{label_attr}\" data-node-type=\"{type_attr}\" {row_onclick}>"
             f"<div class='ckpt-label'>{label_display}</div>"

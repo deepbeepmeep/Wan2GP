@@ -31,6 +31,9 @@ samples/
 !.gitignore
 !.github
 !.yamllint
+!.dockerignore
+# Private Sanctuary
+private/
 !requirements.txt
 .DS_Store
 *DS_Store

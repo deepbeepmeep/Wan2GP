@@ -1,6 +1,8 @@
 # blackwell-kernels.yml
 # One-time build factory for Blackwell-specific NVFP4 kernels (LightX2V).
-#
+# This should be manually run once to populate the blackwell-kernels release.
+# After that, the kernels are available for download from the release page and 
+# can be used in the Dockerfile.cu13
 # Release: blackwell-kernels
 ---
 name: Blackwell Static Kernels (cu130)
@@ -22,6 +24,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Lowercase Repository Name
+        id: repo
+        run: echo "nameslc=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+
       - name: Build blackwell-tools stage
         uses: docker/build-push-action@v5
         with:
@@ -33,6 +39,8 @@ jobs:
           tags: blackwell-tools:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            REPO_OWNER=${{ steps.repo.outputs.nameslc }}
 
       - name: Extract wheels
         run: |

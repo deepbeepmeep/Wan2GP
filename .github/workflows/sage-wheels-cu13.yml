@@ -78,6 +78,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Lowercase Repository Name
+        id: repo
+        run: echo "nameslc=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+
       - name: Build sage-tools-cu13 stage
         uses: docker/build-push-action@v5
         with:
@@ -91,6 +95,7 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             CUDA_ARCHITECTURES=${{ matrix.arch }}
+            REPO_OWNER=${{ steps.repo.outputs.nameslc }}
 
       - name: Extract and rename wheel
         run: |
@@ -106,7 +111,7 @@ jobs:
           NEW_WHEEL="sageattention-${SAGE_VER_CLEAN}+${{ matrix.suffix }}-cp312-cp312-linux_x86_64.whl"
           
           mv "$ORIG_WHEEL" "dist/$NEW_WHEEL"
-
+          
       - name: Upload asset to Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

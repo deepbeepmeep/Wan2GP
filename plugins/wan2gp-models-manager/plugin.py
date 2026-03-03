@@ -5,6 +5,7 @@ import html
 from collections import defaultdict
 from shared.utils.plugins import WAN2GPPlugin
 from shared.utils import files_locator as fl
+from shared import model_dropdowns
 from mmgp import quant_router
 
 
@@ -19,6 +20,9 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self._variant_to_model = {}
         self._model_base_label = {}
         self._model_family_label = {}
+        self._model_display_label = {}
+        self._model_direct_status_map = {}
+        self._model_aggregated_status_map = {}
         self._model_usage_ids = {}
         self._usage_files = {}
         self._file_usage = {}
@@ -45,11 +49,13 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self.request_global("create_models_hierarchy")
         self.request_global("families_infos")
         self.request_global("models_def")
+        self.request_global("server_config")
         self.request_global("transformer_quantization")
         self.request_global("transformer_dtype_policy")
         self.request_global("text_encoder_quantization")
         self.request_global("displayed_model_types")
         self.request_global("transformer_types")
+        self.request_global("get_transformer_dtype")
 
         self.add_custom_js(self._get_js())
 
@@ -559,6 +565,9 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self._variant_to_model = {}
         self._model_base_label = {}
         self._model_family_label = {}
+        self._model_display_label = {}
+        self._model_direct_status_map = {}
+        self._model_aggregated_status_map = {}
         self._model_usage_ids = {}
         self._usage_files = {}
         self._file_usage = defaultdict(set)
@@ -570,6 +579,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self._stats_by_drive = []
 
         model_types = self._get_model_types()
+        self._model_direct_status_map, self._model_aggregated_status_map = self._compute_model_status_maps(model_types)
         for model_type in model_types:
             try:
                 variant_info = self._collect_model_variants(model_type)
@@ -613,6 +623,43 @@ class modelsManagerPlugin(WAN2GPPlugin):
 
         self._compute_global_stats()
         self._build_tree_structure(model_types)
+
+    def _compute_model_status_maps(self, model_types):
+        if not model_types:
+            return {}, {}
+        try:
+            fallback_type = model_types[0]
+            deps = model_dropdowns.DropdownDeps(
+                transformer_types=list(model_types),
+                displayed_model_types=list(model_types),
+                transformer_type=fallback_type,
+                three_levels_hierarchy=True,
+                families_infos=self.families_infos,
+                server_config=self.server_config,
+                transformer_quantization=self.transformer_quantization,
+                transformer_dtype_policy=self.transformer_dtype_policy,
+                text_encoder_quantization=self.text_encoder_quantization,
+                get_model_def=self.get_model_def,
+                get_model_recursive_prop=self.get_model_recursive_prop,
+                get_model_filename=self.get_model_filename,
+                get_local_model_filename=self.get_local_model_filename,
+                get_lora_dir=self.get_lora_dir,
+                get_parent_model_type=self.get_parent_model_type,
+                get_base_model_type=self.get_base_model_type,
+                get_model_family=self.get_model_family,
+                get_model_name=self.get_model_name,
+                get_transformer_dtype=self.get_transformer_dtype,
+            )
+            direct_status_map, aggregated_parent_status_map = model_dropdowns.get_model_download_status_maps(
+                deps, dropdown_types=list(model_types)
+            )
+            return direct_status_map, aggregated_parent_status_map
+        except Exception as exc:
+            self._errors.append(f"Model status map failed: {exc}")
+            return {}, {}
+
+    def _decorate_status_label(self, label, status):
+        return model_dropdowns.decorate_model_dropdown_label(label, status)
 
     def _compute_global_stats(self):
         total = 0
@@ -662,14 +709,21 @@ class modelsManagerPlugin(WAN2GPPlugin):
         transformer_variants = self._collect_transformer_variants(
             model_type, model_def, default_dtype_policy
         )
+        module_variants = self._collect_module_variants(
+            model_type, model_def, default_dtype_policy
+        )
         text_encoder_variants = self._collect_text_encoder_variants(
             model_type, model_def, default_dtype_policy
         )
         transformer_files = set()
+        module_files = set()
         text_encoder_files = set()
         model_primary_paths = []
         for variant in transformer_variants:
             transformer_files.update(variant["files"])
+            model_primary_paths.extend(variant.get("primary_paths", []))
+        for variant in module_variants:
+            module_files.update(variant["files"])
             model_primary_paths.extend(variant.get("primary_paths", []))
         for variant in text_encoder_variants:
             text_encoder_files.update(variant["files"])
@@ -679,10 +733,10 @@ class modelsManagerPlugin(WAN2GPPlugin):
         other_files, shared_files = self._collect_other_files(
             model_type,
             model_def,
-            transformer_files,
+            transformer_files.union(module_files),
             text_encoder_files,
         )
-        variants = list(transformer_variants) + list(text_encoder_variants)
+        variants = list(transformer_variants) + list(module_variants) + list(text_encoder_variants)
         if other_files:
             other_id = self._make_variant_id(model_type, "other", "other")
             variants.append(
@@ -789,6 +843,204 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 used_labels.add(variant_label)
 
         return sorted(variants, key=lambda v: v["label"].lower())
+
+    def _collect_module_variants(self, model_type, model_def, default_dtype_policy):
+        module_entries = self._expand_modules_with_ids(model_type)
+        if not module_entries:
+            return []
+
+        variants = []
+        used_labels = set()
+        base_default = self._format_dtype_label(default_dtype_policy)
+        for idx, entry in enumerate(module_entries):
+            module = entry.get("module")
+            module_id = entry.get("module_id", "")
+            module_name = self._get_module_display_name(model_type, module, module_id, idx)
+            choice_lists = self._collect_module_choice_lists(module)
+            base_dtypes, token_dtypes, token_labels = self._collect_variant_candidates(
+                choice_lists, default_dtype_policy
+            )
+
+            if base_dtypes:
+                for dtype_policy in sorted(base_dtypes):
+                    label = self._format_variant_label("", dtype_policy, base_default)
+                    files = self._collect_module_files_for_variant(
+                        model_type,
+                        module,
+                        "",
+                        dtype_policy,
+                    )
+                    if not files:
+                        continue
+                    file_label = self._detect_quant_label_from_files(files)
+                    label = file_label or label
+                    variant_label = f"Module {module_name} {label}".strip()
+                    if variant_label in used_labels:
+                        continue
+                    variant_id = self._make_variant_id(model_type, "module", f"{module_name} {label}")
+                    variants.append(
+                        {
+                            "id": variant_id,
+                            "label": variant_label,
+                            "type": "variant",
+                            "files": files,
+                            "primary_paths": [],
+                        }
+                    )
+                    used_labels.add(variant_label)
+
+            for token, dtypes in sorted(token_dtypes.items()):
+                quant_param = self._quant_param_from_token(token)
+                quant_label = token_labels.get(token) or self._format_quant_label(token)
+                for dtype_policy in sorted(dtypes):
+                    label_suffix = ""
+                    if len(dtypes) > 1:
+                        label_suffix = f" {self._format_dtype_label(dtype_policy)}"
+                    files = self._collect_module_files_for_variant(
+                        model_type,
+                        module,
+                        quant_param,
+                        dtype_policy,
+                        token_match=token,
+                    )
+                    if not files:
+                        continue
+                    if not self._files_match_token(files, token):
+                        continue
+                    file_label = self._detect_quant_label_from_files(files)
+                    effective_quant_label = file_label or quant_label
+                    label = f"{effective_quant_label}{label_suffix}" if effective_quant_label else self._format_dtype_label(dtype_policy)
+                    variant_label = f"Module {module_name} {label}".strip()
+                    if variant_label in used_labels:
+                        continue
+                    variant_id = self._make_variant_id(model_type, "module", f"{module_name} {label}")
+                    variants.append(
+                        {
+                            "id": variant_id,
+                            "label": variant_label,
+                            "type": "variant",
+                            "files": files,
+                            "primary_paths": [],
+                        }
+                    )
+                    used_labels.add(variant_label)
+
+        return sorted(variants, key=lambda v: v["label"].lower())
+
+    def _get_module_display_name(self, model_type, module, module_id, module_index):
+        if isinstance(module_id, str) and module_id:
+            return module_id
+        if isinstance(module, str):
+            module_type, _ = self._split_module_ref(module)
+            return module_type
+        return model_type
+
+    def _collect_module_choice_lists(self, module):
+        choice_lists = []
+        if isinstance(module, dict):
+            urls1 = module.get("URLs", [])
+            urls2 = module.get("URLs2", [])
+            if urls1:
+                choice_lists.append(urls1)
+            if urls2:
+                choice_lists.append(urls2)
+        elif isinstance(module, list):
+            if module:
+                choice_lists.append(module)
+        else:
+            module_type = module
+            sub_prop_name = "_list"
+            if isinstance(module_type, str) and "#" in module_type:
+                pos = module_type.rfind("#")
+                sub_prop_name = module_type[pos + 1 :]
+                module_type = module_type[:pos]
+            try:
+                mod_urls = self.get_model_recursive_prop(
+                    module_type, "modules", sub_prop_name=sub_prop_name, return_list=True
+                )
+            except Exception:
+                mod_urls = []
+            if isinstance(mod_urls, list) and mod_urls:
+                if all(isinstance(item, list) for item in mod_urls):
+                    for entry in mod_urls:
+                        if entry:
+                            choice_lists.append(entry)
+                else:
+                    choice_lists.append(mod_urls)
+        return choice_lists
+
+    def _collect_module_files_for_variant(
+        self,
+        model_type,
+        module,
+        quantization,
+        dtype_policy,
+        token_match=None,
+    ):
+        files = set()
+        is_exotic = quantization not in ("", "int8", "fp8")
+        if isinstance(module, dict):
+            for key in ("URLs", "URLs2"):
+                urls = module.get(key, [])
+                if not urls:
+                    continue
+                filename = ""
+                if token_match and is_exotic:
+                    filename = self._select_filename_by_token(urls, token_match)
+                if not filename:
+                    filename = self.get_model_filename(
+                        model_type=model_type,
+                        quantization=quantization,
+                        dtype_policy=dtype_policy,
+                        URLs=urls,
+                    )
+                if filename:
+                    self._add_file(files, filename)
+        elif isinstance(module, list):
+            filename = ""
+            if token_match and is_exotic:
+                filename = self._select_filename_by_token(module, token_match)
+            if not filename:
+                filename = self.get_model_filename(
+                    model_type=model_type,
+                    quantization=quantization,
+                    dtype_policy=dtype_policy,
+                    URLs=module,
+                )
+            if filename:
+                self._add_file(files, filename)
+        else:
+            filename = ""
+            if token_match and is_exotic:
+                module_type = module
+                sub_prop_name = "_list"
+                if isinstance(module_type, str) and "#" in module_type:
+                    pos = module_type.rfind("#")
+                    sub_prop_name = module_type[pos + 1 :]
+                    module_type = module_type[:pos]
+                try:
+                    mod_urls = self.get_model_recursive_prop(
+                        module_type,
+                        "modules",
+                        sub_prop_name=sub_prop_name,
+                        return_list=True,
+                    )
+                except Exception:
+                    mod_urls = []
+                filename = self._select_filename_by_token(mod_urls, token_match)
+            if not filename:
+                try:
+                    filename = self.get_model_filename(
+                        model_type=model_type,
+                        quantization=quantization,
+                        dtype_policy=dtype_policy,
+                        module_type=module,
+                    )
+                except Exception:
+                    filename = ""
+            if filename:
+                self._add_file(files, filename)
+        return files
 
     def _collect_transformer_choice_lists(self, model_type, model_def):
         choice_lists = []
@@ -1303,13 +1555,64 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 return entry
         return ""
 
-    def _expand_modules(self, model_type):
+    def _split_module_ref(self, module_ref, default_sub_prop="_list"):
+        module_type = module_ref
+        sub_prop_name = default_sub_prop
+        if isinstance(module_ref, str) and "#" in module_ref:
+            pos = module_ref.rfind("#")
+            module_type = module_ref[:pos]
+            sub_prop_name = module_ref[pos + 1 :]
+        return module_type, sub_prop_name
+
+    def _resolve_recursive_prop_owner(self, model_type, prop, sub_prop_name, stack):
+        if not isinstance(model_type, str) or not model_type:
+            return ""
+        if model_type in stack or len(stack) > 20:
+            return model_type
+        model_def = self.get_model_def(model_type)
+        if not isinstance(model_def, dict):
+            return model_type
+        prop_value = model_def.get(prop, None)
+        if prop_value is None:
+            return model_type
+        if sub_prop_name is not None:
+            if sub_prop_name == "_list":
+                if not isinstance(prop_value, list) or len(prop_value) != 1:
+                    return model_type
+                prop_value = prop_value[0]
+            else:
+                if not isinstance(prop_value, dict) or sub_prop_name not in prop_value:
+                    return model_type
+                prop_value = prop_value[sub_prop_name]
+        if isinstance(prop_value, str):
+            next_model_type, next_sub_prop_name = self._split_module_ref(
+                prop_value, default_sub_prop=sub_prop_name
+            )
+            if not next_model_type:
+                return model_type
+            return self._resolve_recursive_prop_owner(
+                next_model_type, prop, next_sub_prop_name, stack + [model_type]
+            )
+        return model_type
+
+    def _resolve_final_module_id(self, module_ref):
+        if not isinstance(module_ref, str) or not module_ref:
+            return ""
+        module_type, sub_prop_name = self._split_module_ref(module_ref)
+        resolved_id = self._resolve_recursive_prop_owner(
+            module_type, "modules", sub_prop_name, []
+        )
+        return resolved_id or module_type
+
+    def _expand_modules_with_ids(self, model_type):
         modules = self.get_model_recursive_prop(model_type, "modules", return_list=True)
         expanded_modules = []
-        for module in modules:
+        modules_count = len(modules)
+        for index, module in enumerate(modules):
             if isinstance(module, str):
+                module_id = self._resolve_final_module_id(module)
                 if "#" in module:
-                    expanded_modules.append(module)
+                    expanded_modules.append({"module": module, "module_id": module_id})
                     continue
                 try:
                     expanded = self.get_model_recursive_prop(
@@ -1318,12 +1621,16 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 except Exception:
                     expanded = []
                 if expanded:
-                    expanded_modules.append(expanded)
+                    expanded_modules.append({"module": expanded, "module_id": module_id})
                 else:
-                    expanded_modules.append(module)
+                    expanded_modules.append({"module": module, "module_id": module_id})
             else:
-                expanded_modules.append(module)
+                fallback_id = model_type if modules_count <= 1 else f"{model_type}#{index + 1}"
+                expanded_modules.append({"module": module, "module_id": fallback_id})
         return expanded_modules
+
+    def _expand_modules(self, model_type):
+        return [entry.get("module") for entry in self._expand_modules_with_ids(model_type)]
 
     def _make_variant_id(self, model_type, kind, label):
         slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in label).strip("_")
@@ -1471,12 +1778,20 @@ class modelsManagerPlugin(WAN2GPPlugin):
 
             base_nodes = []
             for base_label, base_id in parents_list:
+                base_status = self._model_aggregated_status_map.get(
+                    base_id, model_dropdowns.MODEL_FILE_STATUS_MISSING
+                )
+                base_label_decorated = self._decorate_status_label(base_label, base_status)
                 child_entries = children_dict.get(base_id, [])
                 child_nodes = []
                 base_models = set()
                 base_usage_ids = set()
                 base_path = f"{family_label} / {base_label}"
                 for child_label, child_model in child_entries:
+                    child_status = self._model_direct_status_map.get(
+                        child_model, model_dropdowns.MODEL_FILE_STATUS_MISSING
+                    )
+                    child_label_decorated = self._decorate_status_label(child_label, child_status)
                     base_models.add(child_model)
                     model_usage_ids = self._model_usage_ids.get(child_model, set())
                     base_usage_ids.update(model_usage_ids)
@@ -1486,9 +1801,10 @@ class modelsManagerPlugin(WAN2GPPlugin):
                     model_files = self._collect_files_for_usage_ids(model_usage_ids)
                     primary_paths = self._model_primary.get(child_model, [])
                     model_path = f"{base_path} / {child_label}"
+                    self._model_display_label[child_model] = model_path
                     self._register_node(
                         model_node_id,
-                        child_label,
+                        child_label_decorated,
                         "model",
                         {child_model},
                         model_files,
@@ -1515,7 +1831,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
                     child_nodes.append(
                         {
                             "id": model_node_id,
-                            "label": child_label,
+                            "label": child_label_decorated,
                             "type": "model",
                             "children": variant_children,
                         }
@@ -1525,7 +1841,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 base_files = self._collect_files_for_usage_ids(base_usage_ids)
                 self._register_node(
                     base_node_id,
-                    base_label,
+                    base_label_decorated,
                     "base",
                     base_models,
                     base_files,
@@ -1534,7 +1850,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 base_nodes.append(
                     {
                         "id": base_node_id,
-                        "label": base_label,
+                        "label": base_label_decorated,
                         "type": "base",
                         "children": child_nodes,
                     }
@@ -1674,47 +1990,24 @@ class modelsManagerPlugin(WAN2GPPlugin):
 
             self._model_variants[model_type] = new_variants
 
-    def _shared_base_labels(self, path, exclude_key=None):
-        pairs = set()
-        for model_type in self._file_usage_models.get(path, set()):
-            base_label = self._model_base_label.get(model_type)
-            family_label = self._model_family_label.get(model_type)
-            if base_label and family_label:
-                pairs.add((family_label, base_label))
-        if exclude_key:
-            pairs.discard(exclude_key)
-        return [
-            f"{family} {base}"
-            for family, base in sorted(pairs, key=lambda item: (item[0].lower(), item[1].lower()))
-        ]
+    def _get_model_shared_label(self, model_type):
+        model_name = self.get_model_name(model_type)
+        if model_name:
+            return model_name
+        label = self._model_display_label.get(model_type)
+        if label:
+            return label
+        return model_type
 
-    def _get_node_base_label(self, node_id, node_type):
-        model_type = None
-        if node_type == "base":
-            family_label = None
-            if node_id.startswith("base::"):
-                parts = node_id.split("::", 2)
-                if len(parts) >= 2:
-                    family_key = parts[1]
-                    family_label = self.families_infos.get(
-                        family_key, (999, family_key)
-                    )[1]
-            info = self._node_map.get(node_id, {})
-            base_label = info.get("label")
-            if family_label and base_label:
-                return (family_label, base_label)
-            return None
-        if node_type == "variant":
-            model_type = self._variant_to_model.get(node_id)
-        elif node_type == "model":
-            if node_id.startswith("model::"):
-                model_type = node_id.split("model::", 1)[1]
-        if model_type:
-            family_label = self._model_family_label.get(model_type)
-            base_label = self._model_base_label.get(model_type)
-            if family_label and base_label:
-                return (family_label, base_label)
-        return None
+    def _shared_model_labels(self, path, exclude_models=None):
+        if exclude_models is None:
+            exclude_models = set()
+        labels = set()
+        for model_type in self._file_usage_models.get(path, set()):
+            if model_type in exclude_models:
+                continue
+            labels.add(self._get_model_shared_label(model_type))
+        return sorted(labels, key=lambda value: value.lower())
 
     def _build_tree_html(self):
         css = """
@@ -1917,22 +2210,18 @@ class modelsManagerPlugin(WAN2GPPlugin):
             return self._build_empty_view_html()
 
         files = sorted(node["files"])
-        node_type = node.get("type", "")
-        current_base = self._get_node_base_label(node_id, node_type)
+        model_set = set(node.get("models", set()))
         shared_set = {
             path
             for path in files
             if not self._file_usage_models.get(path, set()).issubset(node["models"])
         }
 
-        current_base_label = None
-        if current_base:
-            current_base_label = f"{current_base[0]} {current_base[1]}"
         shared_info = {}
         for path in shared_set:
-            shared_labels = self._shared_base_labels(path, exclude_key=current_base)
-            if not shared_labels and current_base_label:
-                shared_labels = [f"Shared only within {current_base_label}"]
+            shared_labels = self._shared_model_labels(path, exclude_models=model_set)
+            if not shared_labels:
+                shared_labels = ["Shared with another model"]
             shared_info[path] = shared_labels
         file_tree = self._build_file_tree(files, shared_set, shared_info)
         file_tree_html = self._render_file_tree(file_tree)

@@ -8,6 +8,9 @@ from shared.utils import files_locator as fl
 from shared import model_dropdowns
 from mmgp import quant_router
 
+VARIANT_LABEL_OTHER_NON_SHARED = "Other Non Shared"
+VARIANT_LABEL_OTHER_SHARED = "Other Shared"
+
 
 class modelsManagerPlugin(WAN2GPPlugin):
     def __init__(self):
@@ -72,14 +75,24 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 "Sizes are unique GB recoverable on delete, plus shared GB used outside the branch."
             )
             with gr.Row():
+                self.filter_input = gr.Textbox(
+                    label="Filter Finetunes",
+                    show_label=False,
+                    placeholder="Type at least 3 characters from a model name",
+                    lines=1,
+                    scale=5,
+                    visible=False,
+                    elem_id="ckpt_filter_input",
+                )
+                self.filter_button = gr.Button("Filter", variant="primary", scale=1, visible=False, elem_id="ckpt_filter_btn", elem_classes="btn_centered")
+                self.refresh_button = gr.Button(
+                    "Refresh", variant="secondary", elem_id="ckpt_refresh_btn", scale=1, elem_classes="btn_centered"
+                )
+            with gr.Row():
                 with gr.Column(scale=3, min_width=550):
                     self.tree_html = gr.HTML()
                 with gr.Column(scale=2, min_width=350, elem_classes="ckpt-right-column"):
                     self.view_html = gr.HTML()
-
-            self.refresh_button = gr.Button(
-                "Refresh", variant="secondary", elem_id="ckpt_refresh_btn"
-            )
 
             with gr.Column(visible=False):
                 self.action_input = gr.Textbox(elem_id="model_action_input")
@@ -87,23 +100,35 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self.refresh_button.click(
             fn=self._show_loading,
             inputs=[],
-            outputs=[self.tree_html, self.view_html, self.refresh_button],
+            outputs=[self.tree_html, self.view_html, self.refresh_button, self.filter_input, self.filter_button],
             show_progress="hidden",
         ).then(
             fn=self._build_tree,
             inputs=[],
-            outputs=[self.tree_html, self.view_html, self.refresh_button],
+            outputs=[self.tree_html, self.view_html, self.refresh_button, self.filter_input, self.filter_button],
+            show_progress="full",
+        ).then(
+            fn=lambda: gr.update(value=""),
+            inputs=[],
+            outputs=[self.filter_input],
+            show_progress="hidden",
+        )
+
+        self.filter_button.click(
+            fn=self._build_filtered_tree,
+            inputs=[self.filter_input],
+            outputs=[self.tree_html, self.view_html, self.refresh_button, self.filter_input, self.filter_button],
             show_progress="full",
         )
 
         self.action_input.change(
             fn=self._handle_action,
             inputs=[self.action_input],
-            outputs=[self.tree_html, self.view_html, self.refresh_button],
+            outputs=[self.tree_html, self.view_html, self.refresh_button, self.filter_input, self.filter_button],
             show_progress="hidden",
         )
 
-        self.on_tab_outputs = [self.tree_html, self.view_html, self.refresh_button]
+        self.on_tab_outputs = [self.tree_html, self.view_html, self.refresh_button, self.filter_input, self.filter_button]
         return self.tree_html
 
     def on_tab_select(self, state: dict):
@@ -263,6 +288,25 @@ class modelsManagerPlugin(WAN2GPPlugin):
             const root = modelRoot();
             const btn = root.querySelector('#ckpt_refresh_btn button') || root.querySelector('#ckpt_refresh_btn');
             if (btn) btn.click();
+        }
+
+        function triggermodelFilter() {
+            const root = modelRoot();
+            const btn = root.querySelector('#ckpt_filter_btn button') || root.querySelector('#ckpt_filter_btn');
+            if (btn) btn.click();
+        }
+
+        function setupmodelFilterEnter() {
+            const root = modelRoot();
+            const input = root.querySelector('#ckpt_filter_input textarea, #ckpt_filter_input input');
+            if (!input || input.dataset.ckptEnterBound === '1') return;
+            input.dataset.ckptEnterBound = '1';
+            input.addEventListener('keydown', (evt) => {
+                if (evt.key !== 'Enter') return;
+                evt.preventDefault();
+                evt.stopPropagation();
+                triggermodelFilter();
+            });
         }
 
         function applymodelSticky() {
@@ -425,6 +469,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             const observer = new MutationObserver(() => {
                 applymodelSticky();
                 setupmodelFloating();
+                setupmodelFilterEnter();
             });
             observer.observe(column, { childList: true, subtree: true });
         }
@@ -440,12 +485,14 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 ckptRefreshBusy = false;
                 applymodelSticky();
                 setupmodelFloating();
+                setupmodelFilterEnter();
                 return;
             }
             if (ckptRefreshStartedAt && Date.now() - ckptRefreshStartedAt > 60000) {
                 ckptRefreshBusy = false;
                 applymodelSticky();
                 setupmodelFloating();
+                setupmodelFilterEnter();
                 return;
             }
             setTimeout(waitForRefreshReady, 400);
@@ -468,6 +515,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 observemodelView();
                 setTimeout(applymodelSticky, 200);
                 setTimeout(setupmodelFloating, 260);
+                setTimeout(setupmodelFilterEnter, 280);
             }
             ckptTabWasActive = active;
         }
@@ -491,7 +539,9 @@ class modelsManagerPlugin(WAN2GPPlugin):
         tree_loading = self._build_loading_html()
         view_hidden = gr.update(value="", visible=False)
         refresh_hidden = gr.update(visible=False)
-        return tree_loading, view_hidden, refresh_hidden
+        filter_input_hidden = gr.update(visible=False)
+        filter_button_hidden = gr.update(visible=False)
+        return tree_loading, view_hidden, refresh_hidden, filter_input_hidden, filter_button_hidden
 
     def _build_tree(self):
         self._build_cache()
@@ -499,27 +549,44 @@ class modelsManagerPlugin(WAN2GPPlugin):
         view_html = self._build_empty_view_html()
         view_visible = gr.update(value=view_html, visible=True)
         refresh_visible = gr.update(visible=True)
-        return tree_html, view_visible, refresh_visible
+        filter_input_visible = gr.update(visible=True)
+        filter_button_visible = gr.update(visible=True)
+        return tree_html, view_visible, refresh_visible, filter_input_visible, filter_button_visible
+
+    def _build_filtered_tree(self, filter_text):
+        text = str(filter_text or "").strip()
+        if len(text) < 3:
+            gr.Info("Please enter at least 3 characters to filter finetunes.")
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
+        self._build_cache()
+        tree_html = self._build_filtered_tree_html(text)
+        view_html = self._build_empty_view_html()
+        view_visible = gr.update(value=view_html, visible=True)
+        refresh_visible = gr.update(visible=True)
+        filter_input_visible = gr.update(visible=True)
+        filter_button_visible = gr.update(visible=True)
+        return tree_html, view_visible, refresh_visible, filter_input_visible, filter_button_visible
 
     def _handle_action(self, payload: str):
         if not payload:
-            return gr.update(), gr.update(), gr.update()
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
-            return gr.update(), gr.update(), gr.update()
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         action = data.get("action")
         node_id = data.get("node_id")
         if not action or not node_id:
-            return gr.update(), gr.update(), gr.update()
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         if not self._node_map:
             self._build_cache()
 
         if action == "view":
             view_html = self._build_view_html(node_id)
-            return gr.update(), gr.update(value=view_html, visible=True), gr.update()
+            return gr.update(), gr.update(value=view_html, visible=True), gr.update(), gr.update(), gr.update()
 
         if action == "delete":
             delete_shared = bool(data.get("delete_shared"))
@@ -532,7 +599,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 gr.Info(f"Deleted {len(removed)} files (missing: {len(missing)})")
             return self._build_tree()
 
-        return gr.update(), gr.update(), gr.update()
+        return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
     def _delete_files_for_node(self, node_id, delete_shared=False):
         node = self._node_map.get(node_id)
@@ -715,9 +782,11 @@ class modelsManagerPlugin(WAN2GPPlugin):
         text_encoder_variants = self._collect_text_encoder_variants(
             model_type, model_def, default_dtype_policy
         )
+        lora_variants = self._collect_lora_variants(model_type)
         transformer_files = set()
         module_files = set()
         text_encoder_files = set()
+        lora_files = set()
         model_primary_paths = []
         for variant in transformer_variants:
             transformer_files.update(variant["files"])
@@ -728,6 +797,9 @@ class modelsManagerPlugin(WAN2GPPlugin):
         for variant in text_encoder_variants:
             text_encoder_files.update(variant["files"])
             model_primary_paths.extend(variant.get("primary_paths", []))
+        for variant in lora_variants:
+            lora_files.update(variant["files"])
+            model_primary_paths.extend(variant.get("primary_paths", []))
         model_primary_paths = self._dedupe_paths(model_primary_paths)
 
         other_files, shared_files = self._collect_other_files(
@@ -735,14 +807,15 @@ class modelsManagerPlugin(WAN2GPPlugin):
             model_def,
             transformer_files.union(module_files),
             text_encoder_files,
+            lora_files,
         )
-        variants = list(transformer_variants) + list(module_variants) + list(text_encoder_variants)
+        variants = list(transformer_variants) + list(module_variants) + list(text_encoder_variants) + list(lora_variants)
         if other_files:
             other_id = self._make_variant_id(model_type, "other", "other")
             variants.append(
                 {
                     "id": other_id,
-                    "label": "Other",
+                    "label": VARIANT_LABEL_OTHER_NON_SHARED,
                     "type": "variant",
                     "files": other_files,
                     "primary_paths": [],
@@ -753,7 +826,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             variants.append(
                 {
                     "id": shared_id,
-                    "label": "Shared",
+                    "label": VARIANT_LABEL_OTHER_SHARED,
                     "type": "variant",
                     "files": shared_files,
                     "primary_paths": [],
@@ -1371,12 +1444,56 @@ class modelsManagerPlugin(WAN2GPPlugin):
 
         return sorted(variants, key=lambda v: v["label"].lower())
 
+    def _collect_lora_variants(self, model_type):
+        lora_dir = self._safe_get_lora_dir(model_type)
+        if not lora_dir:
+            return []
+        loras = self.get_model_recursive_prop(model_type, "loras", return_list=True)
+        if loras is None:
+            return []
+
+        variants = []
+        used_paths = set()
+        used_labels = {}
+        for entry in self._ensure_list(loras):
+            if not isinstance(entry, str) or len(entry) == 0:
+                continue
+            basename = os.path.basename(entry)
+            if len(basename) == 0:
+                continue
+            lora_path = os.path.join(lora_dir, basename)
+            files = set()
+            self._add_file(files, lora_path)
+            if not files:
+                continue
+            resolved_path = next(iter(files))
+            if resolved_path in used_paths:
+                continue
+            used_paths.add(resolved_path)
+            stem = os.path.splitext(basename)[0]
+            base_label = f"Lora {stem}"
+            label_count = used_labels.get(base_label, 0)
+            used_labels[base_label] = label_count + 1
+            variant_label = base_label if label_count == 0 else f"{base_label} #{label_count + 1}"
+            variant_id = self._make_variant_id(model_type, "lora", basename)
+            variants.append(
+                {
+                    "id": variant_id,
+                    "label": variant_label,
+                    "type": "variant",
+                    "files": files,
+                    "primary_paths": [resolved_path],
+                }
+            )
+        return sorted(variants, key=lambda v: v["label"].lower())
+
     def _collect_other_files(
         self,
         model_type,
         model_def,
         transformer_files,
         text_encoder_files,
+        lora_files,
     ):
         other_files = set()
         shared_files = set()
@@ -1391,20 +1508,15 @@ class modelsManagerPlugin(WAN2GPPlugin):
         for url in self._ensure_list(vae_urls):
             self._add_file(shared_files, url)
 
-        loras = self.get_model_recursive_prop(model_type, "loras", return_list=True)
-        for url in self._ensure_list(loras):
-            lora_dir = self._safe_get_lora_dir(model_type)
-            if lora_dir:
-                lora_path = os.path.join(lora_dir, os.path.basename(url))
-                self._add_file(other_files, lora_path)
-
         handler_files = self._collect_handler_files(model_type, model_def)
         shared_files.update(handler_files)
 
         other_files.difference_update(transformer_files)
         other_files.difference_update(text_encoder_files)
+        other_files.difference_update(lora_files)
         shared_files.difference_update(transformer_files)
         shared_files.difference_update(text_encoder_files)
+        shared_files.difference_update(lora_files)
         shared_files.difference_update(other_files)
         return other_files, shared_files
 
@@ -1930,10 +2042,13 @@ class modelsManagerPlugin(WAN2GPPlugin):
             other_variant = None
             shared_variant = None
             for variant in variants:
+                variant_id = str(variant.get("id", ""))
+                parts = variant_id.split("::")
+                variant_kind = parts[2] if len(parts) >= 4 else ""
                 label = str(variant.get("label", "")).lower()
-                if label == "other":
+                if variant_kind == "other" or label in ("other", "other non shared"):
                     other_variant = variant
-                elif label == "shared":
+                elif variant_kind == "shared" or label in ("shared", "other shared"):
                     shared_variant = variant
 
             if not other_variant and not shared_variant:
@@ -1966,7 +2081,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 if other_variant is None:
                     other_variant = {
                         "id": self._make_variant_id(model_type, "other", "other"),
-                        "label": "Other",
+                        "label": VARIANT_LABEL_OTHER_NON_SHARED,
                         "type": "variant",
                         "files": other_files,
                         "primary_paths": [],
@@ -1979,7 +2094,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 if shared_variant is None:
                     shared_variant = {
                         "id": self._make_variant_id(model_type, "shared", "shared"),
-                        "label": "Shared",
+                        "label": VARIANT_LABEL_OTHER_SHARED,
                         "type": "variant",
                         "files": shared_files,
                         "primary_paths": [],
@@ -2101,6 +2216,90 @@ class modelsManagerPlugin(WAN2GPPlugin):
             tree_parts.append(self._render_node(family, is_family=True))
         tree_parts.append("</div></div></div></div>")
         return "".join(tree_parts)
+
+    def _get_tree_css_block(self):
+        tree_html = self._build_tree_html()
+        start = tree_html.find("<style>")
+        if start < 0:
+            return ""
+        end = tree_html.find("</style>", start)
+        if end < 0:
+            return ""
+        return tree_html[start : end + len("</style>")]
+
+    def _build_filtered_tree_html(self, filter_text):
+        query = str(filter_text).strip()
+        query_lower = query.casefold()
+        matches = []
+        for node_id, info in self._node_map.items():
+            if info.get("type") != "model":
+                continue
+            model_types = list(info.get("models", set()))
+            if len(model_types) != 1:
+                continue
+            model_type = model_types[0]
+            model_name = self.get_model_name(model_type)
+            if not isinstance(model_name, str):
+                continue
+            if query_lower not in model_name.casefold():
+                continue
+            status = self._model_direct_status_map.get(
+                model_type, model_dropdowns.MODEL_FILE_STATUS_MISSING
+            )
+            display_label = self._decorate_status_label(model_name, status)
+            matches.append((model_name, display_label, node_id, info, model_type))
+
+        matches.sort(key=lambda item: item[0].casefold())
+
+        css = self._get_tree_css_block()
+        title = (
+            f"Filtered Finetunes for '{html.escape(query)}' "
+            f"<span class='ckpt-muted'>({len(matches)} match{'es' if len(matches) != 1 else ''})</span>"
+        )
+        parts = [
+            css,
+            "<div id='ckpt_tree_root' data-status='ready' class='ckpt-wrap'>",
+            "<div class='ckpt-panel'><div class='ckpt-panel-inner'>",
+            f"<div class='ckpt-loading-message'>{title}</div>",
+            "<div class='ckpt-tree'>",
+        ]
+        if not matches:
+            parts.append(
+                "<div class='ckpt-leaf'><div class='ckpt-row'>"
+                "<div class='ckpt-label'>No finetune matches your filter.</div>"
+                "</div></div>"
+            )
+        for _, display_label, node_id, info, model_type in matches:
+            unique = self._format_gb(info.get("unique_size", 0))
+            shared = self._format_gb(info.get("shared_size", 0))
+            unique_label = self._format_size(info.get("unique_size", 0))
+            shared_label = self._format_size(info.get("shared_size", 0))
+            total_label = self._format_size(info.get("total_size", 0))
+            row_html = self._render_row(
+                display_label,
+                node_id,
+                unique,
+                shared,
+                unique_label,
+                shared_label,
+                total_label,
+                "model",
+                click_view=True,
+            )
+            variant_children = [
+                {"id": variant["id"], "label": variant["label"], "type": "variant", "children": []}
+                for variant in self._model_variants.get(model_type, [])
+            ]
+            if variant_children:
+                child_html = "".join(self._render_node(child) for child in variant_children)
+                parts.append(
+                    f"<details class='ckpt-node'><summary>{row_html}</summary>"
+                    f"<div class='ckpt-children'>{child_html}</div></details>"
+                )
+            else:
+                parts.append(f"<div class='ckpt-leaf'>{row_html}</div>")
+        parts.extend(["</div></div></div></div>"])
+        return "".join(parts)
 
     def _build_stats_html(self):
         total_label = self._format_gb(self._stats_total)

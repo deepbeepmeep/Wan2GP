@@ -9,7 +9,7 @@
 
 - **Wan NVP4**: *Light2xv nvfp4 support for Wan 2.1 i2v & t2v 1.3B*, you can now load nvfp4 (4 bits quantized file) in WanGP. These will make really a difference with RTX 50xx as they support natively scaled FP4 calculation. Other GPUs will get the pytorch fallback which is slower. This model can be useful for machines with low RAM but don't expect significant VRAM reduction of much faster speed for non RTX 50xx owners. You will need to install the Light2xv kernels.
 
-- **Nunckaku int4 & fp4 support for Qwen 2509 & Z Image**: int4 versions will work with most GPUs, fp4 will accelerate only RTX50xx. You will need to install the nunchaku kernels. See light2xv nvfp4 above, as the other comments apply here too.
+- **Nunckaku int4 & fp4 support for Qwen 2509 & Z Image**: int4 versions will work with most GPUs, fp4 will accelerate only RTX50xx. You will need to install the nunchaku kernels. See lightx2v nvfp4 above, as the other comments apply here too.
 
 - **Z Image Control Net 2.1**: Control Net upgraded should work better. I have enabled as well inpainting for the control net.
 

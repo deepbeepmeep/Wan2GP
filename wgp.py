@@ -2687,7 +2687,6 @@ def get_model_filename(model_type, quantization ="int8", dtype_policy = "", modu
 
         for quant_type in quant_order:
             quant_tokens += quant_router.get_quantization_tokens(quant_type) or []
-
         sub_choices = []
         for token in quant_tokens:
             sub_choices += [name for name in choices if token in os.path.basename(name).lower()]
@@ -5853,6 +5852,8 @@ def generate_video(
     output_type = get_output_type_for_model(model_type, image_mode)
     profile = compute_profile(override_profile, output_type)
     enhancer_mode = server_config.get("enhancer_mode", 1)
+    model_filename_expected = get_model_filename(model_type, transformer_quantization, transformer_dtype_policy)
+    model_missing_before_load = isinstance(model_filename_expected, str) and len(model_filename_expected) > 0 and get_local_model_filename(model_filename_expected) is None
     if model_type != transformer_type or reload_needed or profile != loaded_profile:
         release_model()
         send_cmd("status", f"Loading model {get_model_name(model_type)}...")
@@ -5863,6 +5864,8 @@ def generate_video(
             **model_kwargs,
         )
         send_cmd("status", "Model loaded")
+        if model_missing_before_load:
+            send_cmd("refresh_models", get_unique_id())
         reload_needed=  False
     if args.test:
         send_cmd("info", "Test mode: model loaded, skipping generation.")
@@ -7103,7 +7106,7 @@ def process_tasks(state):
     gen["status"] = "Generating..."
     gen["header_text"] = ""    
 
-    yield time.time(), time.time()
+    yield time.time(), time.time(), gr.update()
 
     com_stream = AsyncStream()
     send_cmd = com_stream.output_queue.push
@@ -7217,7 +7220,7 @@ def process_tasks(state):
         elif cmd == "output":
             gen["preview"] = None
             gen["refresh_tab"] = True
-            yield time.time(), time.time()
+            yield time.time(), time.time(), gr.update()
         elif cmd == "progress":
             gen["progress_args"] = data
         elif cmd == "preview":
@@ -7230,9 +7233,11 @@ def process_tasks(state):
                 torch.cuda.current_stream().synchronize()
                 preview = None if data is None else generate_preview(current_model_type, data) 
                 gen["preview"] = preview
-                yield time.time() , gr.Text()
+                yield time.time(), gr.Text(), gr.update()
             except Exception:
                 pass
+        elif cmd == "refresh_models":
+            yield gr.update(), gr.update(), (data if data is not None else get_unique_id())
         else:
             pass
 
@@ -8608,6 +8613,9 @@ def load_settings_from_file(state, file_path):
 def goto_model_type(state, model_type):
     gen = get_gen_info(state)
     return *generate_dropdown_model_list(model_type), gr.update()
+
+def refresh_model_dropdowns(state):
+    return *generate_dropdown_model_list(get_state_model_type(state)), gr.update()
 
 def reset_settings(state):
     model_type = get_state_model_type(state)
@@ -10688,6 +10696,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         output_audio = AudioGallery(audio_paths=[], max_thumbnails=999, height=40, update_only=update_form)
                         audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger = output_audio.get_state()
                 output_trigger = gr.Text(interactive= False, visible=False)
+                refresh_models_trigger = gr.Text(interactive= False, visible=False)
                 refresh_form_trigger = gr.Text(interactive= False, visible=False)
                 fill_wizard_prompt_trigger = gr.Text(interactive= False, visible=False)
                 save_form_trigger = gr.Text(interactive= False, visible=False)
@@ -11068,6 +11077,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 # main_tabs.select(fn=detect_auto_save_form, inputs= [state], outputs= save_form_trigger, trigger_mode="multiple")
                 model_family.input(fn=change_model_family, inputs=[state, model_family], outputs= [model_base_type_choice, model_choice], show_progress="hidden")
                 model_base_type_choice.input(fn=change_model_base_types, inputs=[state, model_family, model_base_type_choice], outputs= [model_base_type_choice, model_choice], show_progress="hidden")
+                refresh_models_trigger.change(fn=refresh_model_dropdowns, inputs=[state], outputs=[model_family, model_base_type_choice, model_choice, refresh_form_trigger], show_progress="hidden")
 
                 model_choice.change(fn=validate_wizard_prompt,
                     inputs= [state, wizard_prompt_activated_var, wizard_variables_var,  prompt, wizard_prompt, *prompt_vars] ,
@@ -11125,7 +11135,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     outputs= [status_trigger],             
                 ).then(fn=process_tasks,
                     inputs= [state],
-                    outputs= [preview_trigger, output_trigger], 
+                    outputs= [preview_trigger, output_trigger, refresh_models_trigger], 
                     show_progress="hidden",
                 ).then(finalize_generation,
                     inputs= [state], 
@@ -11157,7 +11167,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 ).then(
                     fn=process_tasks,
                     inputs=[state],
-                    outputs=[preview_trigger, output_trigger],
+                    outputs=[preview_trigger, output_trigger, refresh_models_trigger],
                     trigger_mode="once"
                 ).then(
                     fn=finalize_generation_with_state,
@@ -11241,6 +11251,137 @@ def compact_name(family_name, model_name):
     if model_name.startswith(family_name):
         return model_name[len(family_name):].strip()
     return model_name
+
+MODEL_FILE_STATUS_MISSING = 0
+MODEL_FILE_STATUS_PARTIAL = 1
+MODEL_FILE_STATUS_EXPECTED = 2
+MODEL_STATUS_PREFIXES = {
+    MODEL_FILE_STATUS_MISSING: "\u2B1C",
+    MODEL_FILE_STATUS_EXPECTED: "\U0001F7E6",
+    MODEL_FILE_STATUS_PARTIAL: "\U0001F7E8",
+}
+
+def decorate_model_dropdown_label(label, status):
+    if not isinstance(label, str):
+        return label
+    prefix = MODEL_STATUS_PREFIXES.get(status, "")
+    return f"{prefix} {label}" if len(prefix) > 0 else label
+
+def decorate_dropdown_choices_with_status(choices, status_map):
+    decorated = []
+    for choice in choices:
+        if not isinstance(choice, tuple) or len(choice) < 2:
+            decorated.append(choice)
+            continue
+        label, value = choice[0], choice[1]
+        status = status_map.get(value, MODEL_FILE_STATUS_MISSING)
+        decorated.append((decorate_model_dropdown_label(label, status), value, *choice[2:]))
+    return decorated
+
+def get_dropdown_model_types():
+    dropdown_types = list(transformer_types) if len(transformer_types) > 0 else list(displayed_model_types)
+    if transformer_type not in dropdown_types:
+        dropdown_types.append(transformer_type)
+    return list(dict.fromkeys(dropdown_types))
+
+def has_secondary_model_files_for_status(model_type, dtype_policy):
+    model_def = get_model_def(model_type)
+    if model_def is None:
+        return True
+
+    text_encoder_URLs = get_model_recursive_prop(model_type, "text_encoder_URLs", return_list=True)
+    if text_encoder_URLs is not None:
+        text_encoder_filename = get_model_filename(model_type=model_type, quantization=text_encoder_quantization, dtype_policy=dtype_policy, URLs=text_encoder_URLs)
+        if isinstance(text_encoder_filename, str) and len(text_encoder_filename) > 0:
+            text_encoder_folder = model_def.get("text_encoder_folder", None)
+            if get_local_model_filename(text_encoder_filename, extra_paths=text_encoder_folder) is None:
+                return False
+
+    for prop, recursive in (("preload_URLs", True), ("VAE_URLs", False)):
+        if recursive:
+            urls = get_model_recursive_prop(model_type, prop, return_list=True)
+        else:
+            urls = model_def.get(prop, [])
+        if urls is None:
+            continue
+        if not isinstance(urls, list):
+            urls = [urls]
+        for url in urls:
+            if not isinstance(url, str) or len(url) == 0:
+                continue
+            if get_local_model_filename(url) is None:
+                return False
+
+    model_loras = get_model_recursive_prop(model_type, "loras", return_list=True)
+    if model_loras is None:
+        model_loras = []
+    if not isinstance(model_loras, list):
+        model_loras = [model_loras]
+    lora_dir = get_lora_dir(model_type)
+    for url in model_loras:
+        if not isinstance(url, str) or len(url) == 0:
+            continue
+        if not os.path.isfile(os.path.join(lora_dir, os.path.basename(url))):
+            return False
+    return True
+
+def get_model_download_status(model_type):
+    quantization = server_config.get("transformer_quantization", transformer_quantization)
+    dtype_policy = server_config.get("transformer_dtype_policy", transformer_dtype_policy)
+    expected_filename = get_model_filename(model_type, quantization=quantization, dtype_policy=dtype_policy)
+    expected_local_filename = get_local_model_filename(expected_filename) if isinstance(expected_filename, str) and len(expected_filename) > 0 else None
+    if expected_local_filename is not None:
+        if not has_secondary_model_files_for_status(model_type, dtype_policy):
+            return MODEL_FILE_STATUS_PARTIAL
+        return MODEL_FILE_STATUS_EXPECTED
+
+    candidate_urls = get_model_recursive_prop(model_type, "URLs", return_list=True)
+    if not isinstance(candidate_urls, list):
+        candidate_urls = [candidate_urls] if candidate_urls else []
+
+    checked_candidates = set()
+    for candidate in candidate_urls:
+        if not isinstance(candidate, str) or len(candidate) == 0:
+            continue
+        candidate_key = candidate.casefold()
+        if candidate_key in checked_candidates:
+            continue
+        checked_candidates.add(candidate_key)
+        if candidate == expected_filename:
+            continue
+        if get_local_model_filename(candidate) is not None:
+            return MODEL_FILE_STATUS_PARTIAL
+    return MODEL_FILE_STATUS_MISSING
+
+def get_model_download_status_maps(dropdown_types = None):
+    direct_status_map = {}
+    dropdown_types = get_dropdown_model_types() if dropdown_types is None else dropdown_types
+    parent_to_children = defaultdict(list)
+
+    for model_type in dropdown_types:
+        if get_model_def(model_type) is None:
+            continue
+        status = get_model_download_status(model_type)
+        direct_status_map[model_type] = status
+        parent_model_type = get_parent_model_type(model_type)
+        if parent_model_type is not None:
+            parent_to_children[parent_model_type].append(model_type)
+
+    aggregated_parent_status_map = dict(direct_status_map)
+    for parent_model_type, children in parent_to_children.items():
+        child_statuses = [direct_status_map.get(child, MODEL_FILE_STATUS_MISSING) for child in children]
+        if len(child_statuses) == 0:
+            continue
+        parent_status = MODEL_FILE_STATUS_MISSING
+        if any(status == MODEL_FILE_STATUS_EXPECTED for status in child_statuses):
+            parent_status = MODEL_FILE_STATUS_EXPECTED
+        elif any(status == MODEL_FILE_STATUS_PARTIAL for status in child_statuses):
+            parent_status = MODEL_FILE_STATUS_PARTIAL
+        aggregated_parent_status_map[parent_model_type] = max(aggregated_parent_status_map.get(parent_model_type, MODEL_FILE_STATUS_MISSING), parent_status)
+    return direct_status_map, aggregated_parent_status_map
+
+def get_model_download_status_map(dropdown_types = None):
+    return get_model_download_status_maps(dropdown_types)[1]
 
 
 def create_models_hierarchy(rows):
@@ -11402,6 +11543,9 @@ def generate_dropdown_model_list(current_model_type):
         dropdown_types.append(current_model_type)
     current_model_family = get_model_family(current_model_type, for_ui= True)
     sorted_familes, sorted_models, sorted_finetunes = get_sorted_dropdown(dropdown_types, current_model_family, current_model_type, three_levels=three_levels_hierarchy)
+    direct_status_map, aggregated_parent_status_map = get_model_download_status_maps(dropdown_types)
+    sorted_models = decorate_dropdown_choices_with_status(sorted_models, aggregated_parent_status_map)
+    sorted_finetunes = decorate_dropdown_choices_with_status(sorted_finetunes, direct_status_map)
 
     dropdown_families = gr.Dropdown(
         choices= sorted_familes,
@@ -11438,6 +11582,7 @@ def change_model_family(state, current_model_family):
     models_families = [get_model_family(type, for_ui= True) for type in dropdown_types] 
     dropdown_choices = [ (compact_name(current_family_name,  get_model_name(model_type)), model_type) for model_type, family in zip(dropdown_types, models_families) if family == current_model_family ]
     dropdown_choices = sorted(dropdown_choices, key=lambda c: c[0])
+    direct_status_map, aggregated_parent_status_map = get_model_download_status_maps(dropdown_types)
     last_model_per_family = state.get("last_model_per_family", {})
     model_type = last_model_per_family.get(current_model_family, "")
     if len(model_type) == "" or model_type not in [choice[1] for choice in dropdown_choices] :  model_type = dropdown_choices[0][1]
@@ -11446,12 +11591,14 @@ def change_model_family(state, current_model_family):
         parent_model_type = get_parent_model_type(model_type)
         dropdown_choices = [ (*tup, get_parent_model_type(tup[1])) for tup in dropdown_choices] 
         dropdown_base_types_choices, finetunes_dict = create_models_hierarchy(dropdown_choices)
-        dropdown_choices = finetunes_dict[parent_model_type ]
+        dropdown_choices = decorate_dropdown_choices_with_status(finetunes_dict[parent_model_type], direct_status_map)
+        dropdown_base_types_choices = decorate_dropdown_choices_with_status(dropdown_base_types_choices, aggregated_parent_status_map)
         model_finetunes_visible = len(dropdown_choices) > 1 
     else:
         parent_model_type = get_base_model_type(model_type)
         model_finetunes_visible = True
         dropdown_base_types_choices = list({get_base_model_type(model[1]) for model in dropdown_choices})
+        dropdown_choices = decorate_dropdown_choices_with_status(dropdown_choices, direct_status_map)
 
     return gr.Dropdown(choices= dropdown_base_types_choices, value = parent_model_type, scale=3 if model_finetunes_visible else 7), gr.Dropdown(choices= dropdown_choices, value = model_type, visible = model_finetunes_visible )
 
@@ -11462,7 +11609,8 @@ def change_model_base_types(state,  current_model_family, model_base_type_choice
     dropdown_choices = [ (compact_name(current_family_name,  get_model_name(model_type)), model_type, model_base_type_choice) for model_type in dropdown_types if get_parent_model_type(model_type) == model_base_type_choice and get_model_family(model_type, for_ui= True) == current_model_family]
     dropdown_choices = sorted(dropdown_choices, key=lambda c: c[0])
     _, finetunes_dict = create_models_hierarchy(dropdown_choices)
-    dropdown_choices = finetunes_dict[model_base_type_choice ]
+    direct_status_map, _ = get_model_download_status_maps(dropdown_types)
+    dropdown_choices = decorate_dropdown_choices_with_status(finetunes_dict[model_base_type_choice], direct_status_map)
     model_finetunes_visible = len(dropdown_choices) > 1 
     last_model_per_type = state.get("last_model_per_type", {})
     model_type = last_model_per_type.get(model_base_type_choice, "")
@@ -11749,7 +11897,12 @@ def create_ui():
                 show_progress="hidden"
             )
 
-            video_generator_tab.select(lambda state: state.update({"active_form": "add"}), inputs=state)
+            video_generator_tab.select(lambda state: state.update({"active_form": "add"}), inputs=state).then(
+                fn=refresh_model_dropdowns,
+                inputs=[state],
+                outputs=[model_family, model_base_type_choice, model_choice, refresh_form_trigger],
+                show_progress="hidden",
+            )
             edit_tab.select(lambda state: state.update({"active_form": "edit"}), inputs=state)
             app.setup_ui_tabs(main_tabs, state, generator_tab_components["set_save_form_event"])
         if stats_app is not None:

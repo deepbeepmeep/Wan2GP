@@ -97,6 +97,117 @@ def _get_module_files_for_status(deps, model_type, quantization, dtype_policy):
     return module_files
 
 
+def _get_status_quantization_and_dtype(deps):
+    quantization = deps.server_config.get("transformer_quantization", deps.transformer_quantization)
+    dtype_policy = deps.server_config.get("transformer_dtype_policy", deps.transformer_dtype_policy)
+    return quantization, dtype_policy
+
+
+def _append_expected_file_entry(entries, seen, filename, extra_paths=None):
+    if not isinstance(filename, str) or len(filename) == 0:
+        return
+    if extra_paths is None:
+        extra_list = []
+    elif isinstance(extra_paths, list):
+        extra_list = [path for path in extra_paths if isinstance(path, str) and len(path) > 0]
+    else:
+        extra_list = [extra_paths] if isinstance(extra_paths, str) and len(extra_paths) > 0 else []
+    key = (filename.casefold(), tuple(path.casefold() for path in extra_list))
+    if key in seen:
+        return
+    seen.add(key)
+    entries.append({"filename": filename, "extra_paths": extra_list if len(extra_list) > 0 else None})
+
+
+def _append_expected_local_path_entry(entries, seen, local_path):
+    if not isinstance(local_path, str) or len(local_path) == 0:
+        return
+    path_key = local_path.casefold()
+    if path_key in seen:
+        return
+    seen.add(path_key)
+    entries.append({"path": local_path})
+
+
+def get_expected_core_file_entries_for_status(deps, model_type):
+    model_def = deps.get_model_def(model_type)
+    if model_def is None:
+        return []
+    quantization, dtype_policy = _get_status_quantization_and_dtype(deps)
+    entries = []
+    seen = set()
+
+    expected_filename = deps.get_model_filename(model_type, quantization=quantization, dtype_policy=dtype_policy)
+    _append_expected_file_entry(entries, seen, expected_filename)
+    if isinstance(model_def, dict) and "URLs2" in model_def:
+        expected_filename2 = deps.get_model_filename(model_type, quantization=quantization, dtype_policy=dtype_policy, submodel_no=2)
+        _append_expected_file_entry(entries, seen, expected_filename2)
+
+    module_files = _get_module_files_for_status(deps, model_type, quantization, dtype_policy)
+    if isinstance(module_files, list):
+        for filename in module_files:
+            _append_expected_file_entry(entries, seen, filename)
+
+    text_encoder_URLs = deps.get_model_recursive_prop(model_type, "text_encoder_URLs", return_list=True)
+    if text_encoder_URLs is not None:
+        text_encoder_filename = deps.get_model_filename(model_type=model_type, quantization=deps.text_encoder_quantization, dtype_policy=dtype_policy, URLs=text_encoder_URLs)
+        text_encoder_folder = model_def.get("text_encoder_folder", None)
+        _append_expected_file_entry(entries, seen, text_encoder_filename, extra_paths=text_encoder_folder)
+    return entries
+
+
+def get_missing_core_file_entries_for_status(deps, model_type):
+    missing_entries = []
+    for entry in get_expected_core_file_entries_for_status(deps, model_type):
+        filename = entry.get("filename", "")
+        extra_paths = entry.get("extra_paths", None)
+        if deps.get_local_model_filename(filename, extra_paths=extra_paths) is None:
+            missing_entries.append(entry)
+    return missing_entries
+
+
+def get_expected_secondary_file_entries_for_status(deps, model_type):
+    model_def = deps.get_model_def(model_type)
+    if model_def is None:
+        return []
+    entries = []
+    seen = set()
+
+    preload_urls = deps.get_model_recursive_prop(model_type, "preload_URLs", return_list=True)
+    if preload_urls is None:
+        preload_urls = []
+    if not isinstance(preload_urls, list):
+        preload_urls = [preload_urls]
+    for url in preload_urls:
+        if isinstance(url, str) and len(url) > 0:
+            _append_expected_file_entry(entries, seen, url)
+
+    vae_urls = model_def.get("VAE_URLs", [])
+    if vae_urls is None:
+        vae_urls = []
+    if not isinstance(vae_urls, list):
+        vae_urls = [vae_urls]
+    for url in vae_urls:
+        if isinstance(url, str) and len(url) > 0:
+            _append_expected_file_entry(entries, seen, url)
+
+    model_loras = deps.get_model_recursive_prop(model_type, "loras", return_list=True)
+    if model_loras is None:
+        model_loras = []
+    if not isinstance(model_loras, list):
+        model_loras = [model_loras]
+    lora_dir = deps.get_lora_dir(model_type)
+    for url in model_loras:
+        if not isinstance(url, str) or len(url) == 0:
+            continue
+        basename = os.path.basename(url)
+        if len(basename) == 0:
+            continue
+        _append_expected_local_path_entry(entries, seen, os.path.join(lora_dir, basename))
+
+    return entries
+
+
 def has_secondary_model_files_for_status(deps, model_type, quantization, dtype_policy):
     model_def = deps.get_model_def(model_type)
     if model_def is None:
@@ -149,8 +260,7 @@ def has_secondary_model_files_for_status(deps, model_type, quantization, dtype_p
 
 
 def get_model_download_status(deps, model_type):
-    quantization = deps.server_config.get("transformer_quantization", deps.transformer_quantization)
-    dtype_policy = deps.server_config.get("transformer_dtype_policy", deps.transformer_dtype_policy)
+    quantization, dtype_policy = _get_status_quantization_and_dtype(deps)
     model_def = deps.get_model_def(model_type)
     expected_filenames = []
     expected_filename = deps.get_model_filename(model_type, quantization=quantization, dtype_policy=dtype_policy)

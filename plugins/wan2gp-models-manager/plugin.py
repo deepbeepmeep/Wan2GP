@@ -10,6 +10,7 @@ from mmgp import quant_router
 
 VARIANT_LABEL_OTHER_NON_SHARED = "Other Non Shared"
 VARIANT_LABEL_OTHER_SHARED = "Other Shared"
+VARIANT_LABEL_MISSING = "Missing"
 
 
 class modelsManagerPlugin(WAN2GPPlugin):
@@ -36,6 +37,10 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self._stats_by_drive = []
         self._errors = []
         self._repo_root = os.path.abspath(os.getcwd())
+        self._expanded_nodes = set()
+        self._current_tree_mode = "full"
+        self._current_filter_text = ""
+        self._last_rendered_nodes_count = 0
 
     def setup_ui(self):
         self.request_global("get_model_def")
@@ -260,13 +265,38 @@ class modelsManagerPlugin(WAN2GPPlugin):
         };
 
         window.handlemodelRowClick = function(evt, row) {
-            if (evt) evt.stopPropagation();
+            if (evt) {
+                evt.stopPropagation();
+                evt.preventDefault();
+            }
             if (!row) return;
             const nodeId = row.dataset.nodeId;
             if (!nodeId) return;
             const payload = JSON.stringify({
                 action: "view",
                 node_id: nodeId,
+                ts: Date.now()
+            });
+            window.updatemodelInput("model_action_input", payload);
+        };
+
+        window.handlemodelSummaryClick = function(evt, summary) {
+            if (!summary) return;
+            if (evt) {
+                evt.stopPropagation();
+                evt.preventDefault();
+            }
+            const details = summary.closest('details');
+            if (!details) return;
+            const nodeId = details.dataset.nodeId;
+            if (!nodeId) return;
+            const row = summary.querySelector('.ckpt-row');
+            const nodeType = row ? (row.dataset.nodeType || '') : '';
+            const payload = JSON.stringify({
+                action: "toggle_node",
+                node_id: nodeId,
+                open: !details.open,
+                view: nodeType === "model",
                 ts: Date.now()
             });
             window.updatemodelInput("model_action_input", payload);
@@ -545,6 +575,9 @@ class modelsManagerPlugin(WAN2GPPlugin):
 
     def _build_tree(self):
         self._build_cache()
+        self._expanded_nodes = set()
+        self._current_tree_mode = "full"
+        self._current_filter_text = ""
         tree_html = self._build_tree_html()
         view_html = self._build_empty_view_html()
         view_visible = gr.update(value=view_html, visible=True)
@@ -560,6 +593,9 @@ class modelsManagerPlugin(WAN2GPPlugin):
             return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         self._build_cache()
+        self._expanded_nodes = set()
+        self._current_tree_mode = "filtered"
+        self._current_filter_text = text
         tree_html = self._build_filtered_tree_html(text)
         view_html = self._build_empty_view_html()
         view_visible = gr.update(value=view_html, visible=True)
@@ -587,6 +623,28 @@ class modelsManagerPlugin(WAN2GPPlugin):
         if action == "view":
             view_html = self._build_view_html(node_id)
             return gr.update(), gr.update(value=view_html, visible=True), gr.update(), gr.update(), gr.update()
+
+        if action == "toggle_node":
+            if node_id not in self._node_map:
+                return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            if data.get("open"):
+                self._expanded_nodes.add(node_id)
+            else:
+                self._expanded_nodes.discard(node_id)
+            if self._current_tree_mode == "filtered" and len(self._current_filter_text) >= 3:
+                tree_html = self._build_filtered_tree_html(self._current_filter_text)
+            else:
+                tree_html = self._build_tree_html()
+            if data.get("view"):
+                view_html = self._build_view_html(node_id)
+                return (
+                    gr.update(value=tree_html),
+                    gr.update(value=view_html, visible=True),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                )
+            return gr.update(value=tree_html), gr.update(), gr.update(), gr.update(), gr.update()
 
         if action == "delete":
             delete_shared = bool(data.get("delete_shared"))
@@ -691,32 +749,77 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self._compute_global_stats()
         self._build_tree_structure(model_types)
 
+    def _build_dropdown_deps(self, model_types):
+        if not model_types:
+            return None
+        fallback_type = model_types[0]
+        return model_dropdowns.DropdownDeps(
+            transformer_types=list(model_types),
+            displayed_model_types=list(model_types),
+            transformer_type=fallback_type,
+            three_levels_hierarchy=True,
+            families_infos=self.families_infos,
+            server_config=self.server_config,
+            transformer_quantization=self.transformer_quantization,
+            transformer_dtype_policy=self.transformer_dtype_policy,
+            text_encoder_quantization=self.text_encoder_quantization,
+            get_model_def=self.get_model_def,
+            get_model_recursive_prop=self.get_model_recursive_prop,
+            get_model_filename=self.get_model_filename,
+            get_local_model_filename=self.get_local_model_filename,
+            get_lora_dir=self.get_lora_dir,
+            get_parent_model_type=self.get_parent_model_type,
+            get_base_model_type=self.get_base_model_type,
+            get_model_family=self.get_model_family,
+            get_model_name=self.get_model_name,
+            get_transformer_dtype=self.get_transformer_dtype,
+        )
+
+    def _resolve_expected_entry_path(self, entry):
+        if not isinstance(entry, dict):
+            return None
+        local_path = entry.get("path", None)
+        if isinstance(local_path, str) and len(local_path) > 0:
+            return self._normalize_path(local_path)
+        filename = entry.get("filename", "")
+        extra_paths = entry.get("extra_paths", None)
+        return self._resolve_path(filename, force_folder=extra_paths)
+
+    def _collect_expected_missing_files(self, model_type):
+        deps = self._build_dropdown_deps([model_type])
+        if deps is None:
+            return set()
+        missing_paths = set()
+        try:
+            expected_entries = []
+            expected_entries.extend(model_dropdowns.get_expected_core_file_entries_for_status(deps, model_type))
+            expected_entries.extend(model_dropdowns.get_expected_secondary_file_entries_for_status(deps, model_type))
+        except Exception as exc:
+            self._errors.append(f"Missing file check failed for {model_type}: {exc}")
+            return set()
+
+        model_def = self.get_model_def(model_type)
+        if isinstance(model_def, dict):
+            try:
+                for resolved_path in self._collect_handler_file_paths(model_type, model_def):
+                    if resolved_path and not os.path.isfile(resolved_path):
+                        missing_paths.add(resolved_path)
+            except Exception as exc:
+                self._errors.append(f"Missing handler file check failed for {model_type}: {exc}")
+
+        for entry in expected_entries:
+            resolved_path = self._resolve_expected_entry_path(entry)
+            if resolved_path and not os.path.isfile(resolved_path):
+                missing_paths.add(resolved_path)
+        return missing_paths
+
     def _compute_model_status_maps(self, model_types):
         if not model_types:
             return {}, {}
         try:
-            fallback_type = model_types[0]
-            deps = model_dropdowns.DropdownDeps(
-                transformer_types=list(model_types),
-                displayed_model_types=list(model_types),
-                transformer_type=fallback_type,
-                three_levels_hierarchy=True,
-                families_infos=self.families_infos,
-                server_config=self.server_config,
-                transformer_quantization=self.transformer_quantization,
-                transformer_dtype_policy=self.transformer_dtype_policy,
-                text_encoder_quantization=self.text_encoder_quantization,
-                get_model_def=self.get_model_def,
-                get_model_recursive_prop=self.get_model_recursive_prop,
-                get_model_filename=self.get_model_filename,
-                get_local_model_filename=self.get_local_model_filename,
-                get_lora_dir=self.get_lora_dir,
-                get_parent_model_type=self.get_parent_model_type,
-                get_base_model_type=self.get_base_model_type,
-                get_model_family=self.get_model_family,
-                get_model_name=self.get_model_name,
-                get_transformer_dtype=self.get_transformer_dtype,
-            )
+            deps = self._build_dropdown_deps(model_types)
+            if deps is None:
+                return {}, {}
             direct_status_map, aggregated_parent_status_map = model_dropdowns.get_model_download_status_maps(
                 deps, dropdown_types=list(model_types)
             )
@@ -836,6 +939,19 @@ class modelsManagerPlugin(WAN2GPPlugin):
         model_files = set()
         for variant in variants:
             model_files.update(variant.get("files", set()))
+        missing_files = self._collect_expected_missing_files(model_type)
+        if missing_files:
+            missing_id = self._make_variant_id(model_type, "missing", "missing")
+            variants.append(
+                {
+                    "id": missing_id,
+                    "label": VARIANT_LABEL_MISSING,
+                    "type": "missing",
+                    "files": set(),
+                    "missing_files": missing_files,
+                    "primary_paths": [],
+                }
+            )
 
         return {
             "variants": variants,
@@ -1803,7 +1919,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             self._add_file(files, text_encoder_filename, force_folder=text_encoder_folder)
         return files
 
-    def _collect_handler_files(self, model_type, model_def):
+    def _collect_handler_file_paths(self, model_type, model_def):
         handler = self.get_model_handler(model_type)
         query = getattr(handler, "query_model_files", None)
         if query is None:
@@ -1850,7 +1966,11 @@ class modelsManagerPlugin(WAN2GPPlugin):
                         target_folder, source_folder, filename
                     )
                     files.add(self._resolve_download_relpath(rel_path))
-        return {path for path in files if path and os.path.isfile(path)}
+        return {path for path in files if path}
+
+    def _collect_handler_files(self, model_type, model_def):
+        files = self._collect_handler_file_paths(model_type, model_def)
+        return {path for path in files if os.path.isfile(path)}
 
     def _build_tree_structure(self, model_types):
         families = defaultdict(list)
@@ -1924,21 +2044,23 @@ class modelsManagerPlugin(WAN2GPPlugin):
                         path_label=model_path,
                     )
                     variant_children = []
-                    for variant in self._model_variants.get(child_model, []):
+                    for variant in self._ordered_variants_for_display(child_model):
                         variant_id = variant["id"]
                         variant_label = variant["label"]
+                        variant_type = variant.get("type", "variant")
                         variant_path = f"{model_path} / {variant_label}"
                         self._register_node(
                             variant_id,
                             variant_label,
-                            "variant",
+                            variant_type,
                             {child_model},
                             variant.get("files", set()),
+                            missing_files=variant.get("missing_files", set()),
                             primary_paths=variant.get("primary_paths", []),
                             path_label=variant_path,
                         )
                         variant_children.append(
-                            {"id": variant_id, "label": variant_label, "type": "variant"}
+                            {"id": variant_id, "label": variant_label, "type": variant_type}
                         )
                     child_nodes.append(
                         {
@@ -1989,6 +2111,14 @@ class modelsManagerPlugin(WAN2GPPlugin):
             files.update(self._usage_files.get(usage_id, set()))
         return files
 
+    def _ordered_variants_for_display(self, model_type):
+        variants = list(self._model_variants.get(model_type, []))
+        if not variants:
+            return []
+        non_missing = [variant for variant in variants if variant.get("type") != "missing"]
+        missing = [variant for variant in variants if variant.get("type") == "missing"]
+        return non_missing + missing
+
     def _register_node(
         self,
         node_id,
@@ -1996,9 +2126,14 @@ class modelsManagerPlugin(WAN2GPPlugin):
         node_type,
         model_set,
         files_set,
+        missing_files=None,
         primary_paths=None,
         path_label=None,
     ):
+        files_set = set(files_set or set())
+        missing_files = set(missing_files or set())
+        missing_files.difference_update(files_set)
+        missing_files = {path for path in missing_files if path and not os.path.isfile(path)}
         unique_files, shared_files = self._split_files_by_shared(files_set, model_set)
         unique_size = self._sum_sizes(unique_files)
         shared_size = self._sum_sizes(shared_files)
@@ -2013,6 +2148,8 @@ class modelsManagerPlugin(WAN2GPPlugin):
             "unique_size": unique_size,
             "shared_size": shared_size,
             "total_size": unique_size + shared_size,
+            "missing_files": missing_files,
+            "missing_count": len(missing_files),
             "primary_paths": primary_paths or [],
             "path_label": path_label or label,
         }
@@ -2125,6 +2262,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         return sorted(labels, key=lambda value: value.lower())
 
     def _build_tree_html(self):
+        self._last_rendered_nodes_count = 0
         css = """
         <style>
         .ckpt-wrap { display: flex; flex-direction: column; gap: 12px; }
@@ -2138,12 +2276,17 @@ class modelsManagerPlugin(WAN2GPPlugin):
         .ckpt-row.clickable { cursor: pointer; transition: background 0.15s ease; }
         .ckpt-row.clickable:hover { background: rgba(127,127,127,0.08); }
         .ckpt-label { flex: 1; font-weight: 600; color: inherit; }
+        .ckpt-label-missing { color: #c62828; }
+        .ckpt-row[data-node-type="missing"] .ckpt-label { color: #c62828 !important; font-weight: 700; }
         .ckpt-sizes { display: flex; flex-direction: column; align-items: stretch; min-width: 128px; width: 128px; font-size: 0.85em; font-variant-numeric: tabular-nums; gap: 4px; }
         .ckpt-size-unique { color: inherit; }
         .ckpt-size-shared { color: inherit; }
+        .ckpt-sizes-missing { justify-content: center; }
+        .ckpt-size-missing { font-size: 0.82em; color: #c62828; text-align: center; font-weight: 600; }
         .ckpt-badge { padding: 3px 8px; border-radius: 999px; font-weight: 600; font-size: 0.82em; font-variant-numeric: tabular-nums; min-width: 84px; width: 100%; display: inline-flex; align-items: center; justify-content: center; }
         .ckpt-badge-unique { background: rgba(64, 120, 255, 0.18); color: #2f5bd4; border: 1px solid rgba(64, 120, 255, 0.4); }
         .ckpt-badge-shared { background: rgba(240, 200, 40, 0.25); color: #a66a00; border: 1px solid rgba(240, 200, 40, 0.5); }
+        .ckpt-badge-missing { background: rgba(220, 60, 60, 0.18); color: #b71c1c; border: 1px solid rgba(220, 60, 60, 0.45); min-width: auto; width: auto; }
         .ckpt-actions { display: flex; gap: 18px; }
         .ckpt-action-btn { padding: 3px 12px; height: 30px; border: 1px solid var(--border-color-primary); border-radius: 6px; cursor: pointer; font-size: 0.85em; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; background: transparent; color: inherit; }
         .ckpt-action-btn:hover { box-shadow: var(--shadow-drop, 0 2px 6px rgba(0,0,0,0.12)); }
@@ -2162,6 +2305,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         .ckpt-muted { opacity: 0.75; }
         .ckpt-stats { display: flex; flex-direction: column; gap: 6px; }
         .ckpt-stat-main { font-weight: 600; font-size: 0.95em; }
+        .ckpt-stat-assumption { font-size: 0.82em; opacity: 0.85; }
         .ckpt-drive-list { display: flex; flex-wrap: wrap; gap: 8px; }
         .ckpt-drive { padding: 4px 8px; border-radius: 999px; background: var(--background-fill-primary); border: 1px solid var(--border-color-primary); font-size: 0.82em; }
         .ckpt-file-tree { display: flex; flex-direction: column; gap: 6px; max-height: none; overflow: visible; }
@@ -2179,6 +2323,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         .ckpt-file-row.shared { position: relative; }
         .ckpt-file-row.shared { color: #a66a00; background: rgba(240, 200, 40, 0.12); border-radius: 6px; padding: 2px 6px; }
         .ckpt-file-row.unique { background: rgba(64, 120, 255, 0.12); border-radius: 6px; padding: 2px 6px; }
+        .ckpt-file-row.missing-only { color: #b71c1c; background: rgba(220, 60, 60, 0.16); border-radius: 6px; padding: 2px 6px; }
         .ckpt-file-row.missing { opacity: 0.6; }
         .ckpt-file-name { flex: 1; word-break: break-all; }
         .ckpt-file-size { min-width: 70px; text-align: right; color: inherit; opacity: 0.75; font-variant-numeric: tabular-nums; }
@@ -2190,6 +2335,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         .ckpt-folder.shared summary:hover .ckpt-shared-tooltip { opacity: 1; visibility: visible; transform: translateY(0); transition-delay: 2s; }
         .ckpt-path { font-size: 0.82em; color: inherit; opacity: 0.8; margin-bottom: 6px; word-break: break-all; }
         .ckpt-primary { font-size: 0.82em; color: inherit; opacity: 0.8; margin-bottom: 8px; word-break: break-all; }
+        .ckpt-missing-summary { margin: 10px 0; }
         .ckpt-errors { padding: 8px 10px; border: 1px solid rgba(220, 80, 80, 0.4); background: var(--background-fill-primary); border-radius: 8px; font-size: 0.85em; }
         .ckpt-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: none; align-items: center; justify-content: center; z-index: 9999; }
         .ckpt-modal { width: min(420px, 90vw); background: var(--background-fill-primary); border: 1px solid var(--border-color-primary); border-radius: 14px; padding: 18px; box-shadow: 0 12px 28px rgba(0,0,0,0.25); display: flex; flex-direction: column; gap: 12px; }
@@ -2211,9 +2357,11 @@ class modelsManagerPlugin(WAN2GPPlugin):
 
         tree_parts.append("<div class='ckpt-panel'><div class='ckpt-panel-inner'>")
         tree_parts.append(self._build_stats_html())
-        tree_parts.append("<div class='ckpt-tree'>")
+        rendered_nodes_html = []
         for family in self._tree_data:
-            tree_parts.append(self._render_node(family, is_family=True))
+            rendered_nodes_html.append(self._render_node(family, is_family=True))
+        tree_parts.append("<div class='ckpt-tree'>")
+        tree_parts.extend(rendered_nodes_html)
         tree_parts.append("</div></div></div></div>")
         return "".join(tree_parts)
 
@@ -2229,6 +2377,8 @@ class modelsManagerPlugin(WAN2GPPlugin):
 
     def _build_filtered_tree_html(self, filter_text):
         query = str(filter_text).strip()
+        self._current_tree_mode = "filtered"
+        self._current_filter_text = query
         query_lower = query.casefold()
         matches = []
         for node_id, info in self._node_map.items():
@@ -2247,20 +2397,29 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 model_type, model_dropdowns.MODEL_FILE_STATUS_MISSING
             )
             display_label = self._decorate_status_label(model_name, status)
-            matches.append((model_name, display_label, node_id, info, model_type))
+            matches.append((model_name, display_label, node_id, model_type))
 
         matches.sort(key=lambda item: item[0].casefold())
 
         css = self._get_tree_css_block()
+        self._last_rendered_nodes_count = 0
         title = (
             f"Filtered Finetunes for '{html.escape(query)}' "
             f"<span class='ckpt-muted'>({len(matches)} match{'es' if len(matches) != 1 else ''})</span>"
+        )
+        transformer_quantization = self.server_config.get("transformer_quantization", self.transformer_quantization)
+        text_encoder_quantization = self.text_encoder_quantization
+        cfg_line = (
+            "Missing files assume config: "
+            f"transformer qtype={html.escape(str(transformer_quantization))}, "
+            f"text-encoder qtype={html.escape(str(text_encoder_quantization))}"
         )
         parts = [
             css,
             "<div id='ckpt_tree_root' data-status='ready' class='ckpt-wrap'>",
             "<div class='ckpt-panel'><div class='ckpt-panel-inner'>",
             f"<div class='ckpt-loading-message'>{title}</div>",
+            f"<div class='ckpt-stat-assumption'>{cfg_line}</div>",
             "<div class='ckpt-tree'>",
         ]
         if not matches:
@@ -2269,40 +2428,35 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 "<div class='ckpt-label'>No finetune matches your filter.</div>"
                 "</div></div>"
             )
-        for _, display_label, node_id, info, model_type in matches:
-            unique = self._format_gb(info.get("unique_size", 0))
-            shared = self._format_gb(info.get("shared_size", 0))
-            unique_label = self._format_size(info.get("unique_size", 0))
-            shared_label = self._format_size(info.get("shared_size", 0))
-            total_label = self._format_size(info.get("total_size", 0))
-            row_html = self._render_row(
-                display_label,
-                node_id,
-                unique,
-                shared,
-                unique_label,
-                shared_label,
-                total_label,
-                "model",
-                click_view=True,
-            )
+        for _, display_label, node_id, model_type in matches:
             variant_children = [
-                {"id": variant["id"], "label": variant["label"], "type": "variant", "children": []}
-                for variant in self._model_variants.get(model_type, [])
+                {
+                    "id": variant["id"],
+                    "label": variant["label"],
+                    "type": variant.get("type", "variant"),
+                    "children": [],
+                }
+                for variant in self._ordered_variants_for_display(model_type)
             ]
-            if variant_children:
-                child_html = "".join(self._render_node(child) for child in variant_children)
-                parts.append(
-                    f"<details class='ckpt-node'><summary>{row_html}</summary>"
-                    f"<div class='ckpt-children'>{child_html}</div></details>"
-                )
-            else:
-                parts.append(f"<div class='ckpt-leaf'>{row_html}</div>")
+            model_node = {
+                "id": node_id,
+                "label": display_label,
+                "type": "model",
+                "children": variant_children,
+            }
+            parts.append(self._render_node(model_node))
         parts.extend(["</div></div></div></div>"])
         return "".join(parts)
 
     def _build_stats_html(self):
         total_label = self._format_gb(self._stats_total)
+        transformer_quantization = self.server_config.get("transformer_quantization", self.transformer_quantization)
+        text_encoder_quantization = self.text_encoder_quantization
+        cfg_line = (
+            "Missing files assume config: "
+            f"transformer qtype={html.escape(str(transformer_quantization))}, "
+            f"text-encoder qtype={html.escape(str(text_encoder_quantization))}"
+        )
         drive_html = ""
         if len(self._stats_by_drive) > 1:
             drive_items = []
@@ -2314,13 +2468,15 @@ class modelsManagerPlugin(WAN2GPPlugin):
         return (
             "<div class='ckpt-stats'>"
             f"<div class='ckpt-stat-main'>Total Used: {total_label}</div>"
+            f"<div class='ckpt-stat-assumption'>{cfg_line}</div>"
             f"{drive_html}</div>"
         )
 
     def _render_node(self, node, is_family=False):
+        self._last_rendered_nodes_count += 1
         node_id = node["id"]
         info = self._node_map.get(node_id, {})
-        label = info.get("label", node.get("label", node_id))
+        label = node.get("label", info.get("label", node_id))
         unique_size_value = info.get("unique_size", 0)
         shared_size_value = info.get("shared_size", 0)
         unique = self._format_gb(unique_size_value)
@@ -2328,10 +2484,11 @@ class modelsManagerPlugin(WAN2GPPlugin):
         unique_label = self._format_size(unique_size_value)
         shared_label = self._format_size(shared_size_value)
         total_label = self._format_size(unique_size_value + shared_size_value)
+        missing_count = int(info.get("missing_count", 0) or 0)
         node_type = info.get("type", node.get("type", ""))
 
         children = node.get("children", [])
-        click_view = node_type in ("model", "variant")
+        click_view = node_type in ("variant", "missing")
         row_html = self._render_row(
             label,
             node_id,
@@ -2341,12 +2498,19 @@ class modelsManagerPlugin(WAN2GPPlugin):
             shared_label,
             total_label,
             node_type,
+            missing_count=missing_count,
             click_view=click_view,
         )
         if children:
-            child_html = "".join(self._render_node(child) for child in children)
+            node_id_attr = html.escape(node_id, quote=True)
+            is_open = node_id in self._expanded_nodes
+            open_attr = " open" if is_open else ""
+            child_html = ""
+            if is_open:
+                child_html = "".join(self._render_node(child) for child in children)
             return (
-                f"<details class='ckpt-node'><summary>{row_html}</summary>"
+                f"<details class='ckpt-node' data-node-id=\"{node_id_attr}\"{open_attr}>"
+                f"<summary onclick='handlemodelSummaryClick(event, this);'>{row_html}</summary>"
                 f"<div class='ckpt-children'>{child_html}</div></details>"
             )
         return f"<div class='ckpt-leaf'>{row_html}</div>"
@@ -2361,6 +2525,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
         shared_label,
         total_label,
         node_type,
+        missing_count=0,
         click_view=False,
     ):
         label_display = html.escape(label)
@@ -2371,19 +2536,40 @@ class modelsManagerPlugin(WAN2GPPlugin):
         row_onclick = (
             "onclick='handlemodelRowClick(event, this);'" if click_view else ""
         )
-        unique_badge = f"<span class='ckpt-badge ckpt-badge-unique'>{unique}</span>"
-        shared_badge = f"<span class='ckpt-badge ckpt-badge-shared'>{shared}</span>"
+        label_class = "ckpt-label ckpt-label-missing" if node_type == "missing" else "ckpt-label"
+        if node_type == "missing":
+            file_count_label = f"{missing_count} file" if missing_count == 1 else f"{missing_count} files"
+            sizes_html = (
+                "<div class='ckpt-sizes ckpt-sizes-missing'>"
+                f"<div class='ckpt-size-missing'>{html.escape(file_count_label)}</div>"
+                "</div>"
+            )
+        else:
+            unique_badge = f"<span class='ckpt-badge ckpt-badge-unique'>{unique}</span>"
+            shared_badge = f"<span class='ckpt-badge ckpt-badge-shared'>{shared}</span>"
+            sizes_html = (
+                "<div class='ckpt-sizes'>"
+                f"<div class='ckpt-size-unique' title='Unique size'>{unique_badge}</div>"
+                f"<div class='ckpt-size-shared' title='Shared size'>{shared_badge}</div>"
+                "</div>"
+            )
+        show_view_button = node_type not in ("variant", "missing")
+        show_delete_button = node_type != "missing"
+        action_buttons = []
+        if show_view_button:
+            action_buttons.append(
+                f"<button class='ckpt-action-btn ckpt-view-btn' data-node-id=\"{node_id_attr}\" data-node-label=\"{label_attr}\" data-node-type=\"{type_attr}\" data-unique-size=\"{unique_label}\" data-shared-size=\"{shared_label}\" data-total-size=\"{total_label}\" onclick='event.preventDefault(); event.stopPropagation(); handlemodelAction(this, \"view\");'>View</button>"
+            )
+        if show_delete_button:
+            action_buttons.append(
+                f"<button class='ckpt-action-btn ckpt-delete' data-node-id=\"{node_id_attr}\" data-node-label=\"{label_attr}\" data-node-type=\"{type_attr}\" data-unique-size=\"{unique_label}\" data-shared-size=\"{shared_label}\" data-total-size=\"{total_label}\" onclick='event.preventDefault(); event.stopPropagation(); handlemodelAction(this, \"delete\");'>Delete</button>"
+            )
+        actions_html = f"<div class='ckpt-actions'>{''.join(action_buttons)}</div>"
         return (
             f"<div class='{row_class}' data-node-id=\"{node_id_attr}\" data-node-label=\"{label_attr}\" data-node-type=\"{type_attr}\" {row_onclick}>"
-            f"<div class='ckpt-label'>{label_display}</div>"
-            "<div class='ckpt-sizes'>"
-            f"<div class='ckpt-size-unique' title='Unique size'>{unique_badge}</div>"
-            f"<div class='ckpt-size-shared' title='Shared size'>{shared_badge}</div>"
-            "</div>"
-            "<div class='ckpt-actions'>"
-            f"<button class='ckpt-action-btn ckpt-view-btn' data-node-id=\"{node_id_attr}\" data-node-label=\"{label_attr}\" data-node-type=\"{type_attr}\" data-unique-size=\"{unique_label}\" data-shared-size=\"{shared_label}\" data-total-size=\"{total_label}\" onclick='event.stopPropagation(); handlemodelAction(this, \"view\");'>View</button>"
-            f"<button class='ckpt-action-btn ckpt-delete' data-node-id=\"{node_id_attr}\" data-node-label=\"{label_attr}\" data-node-type=\"{type_attr}\" data-unique-size=\"{unique_label}\" data-shared-size=\"{shared_label}\" data-total-size=\"{total_label}\" onclick='event.stopPropagation(); handlemodelAction(this, \"delete\");'>Delete</button>"
-            "</div>"
+            f"<div class='{label_class}'>{label_display}</div>"
+            f"{sizes_html}"
+            f"{actions_html}"
             "</div>"
         )
 
@@ -2407,6 +2593,8 @@ class modelsManagerPlugin(WAN2GPPlugin):
         node = self._node_map.get(node_id)
         if node is None:
             return self._build_empty_view_html()
+        if node.get("type") == "missing":
+            return self._build_missing_view_html(node)
 
         files = sorted(node["files"])
         model_set = set(node.get("models", set()))
@@ -2438,19 +2626,62 @@ class modelsManagerPlugin(WAN2GPPlugin):
             f"<span class='ckpt-muted'>{unique_count} files</span> | unique {unique_badge} "
             f"<span class='ckpt-muted'>{shared_count} files</span> | shared {shared_badge}"
         )
+        missing_files = self._collect_missing_files_for_node(node)
         primary_paths = node.get("primary_paths", [])
         primary_html = ""
         if primary_paths:
             label = "model path" if len(primary_paths) == 1 else "model paths"
             lines = "<br>".join(html.escape(path) for path in primary_paths)
             primary_html = f"<div class='ckpt-primary'><strong>{label}:</strong><br>{lines}</div>"
+        missing_html = self._render_missing_files_block(missing_files) if node.get("type") == "model" and missing_files else ""
         return (
             "<div class='ckpt-view-sticky'><div class='ckpt-view'>"
             f"<h4><strong>{header}</strong></h4>"
             f"{primary_html}"
             f"<div class='ckpt-view-summary'>{summary}</div>"
+            f"{file_tree_html}{missing_html}</div></div>"
+        )
+
+    def _build_missing_view_html(self, node):
+        missing_files = self._collect_missing_files_for_node(node)
+        label_text = node["label"]
+        path_label = node.get("path_label") or label_text
+        header = html.escape(path_label)
+        file_tree_html = self._render_missing_files_block(missing_files, show_title=True)
+        return (
+            "<div class='ckpt-view-sticky'><div class='ckpt-view'>"
+            f"<h4><strong>{header}</strong></h4>"
             f"{file_tree_html}</div></div>"
         )
+
+    def _collect_missing_files_for_node(self, node):
+        missing_files = set(node.get("missing_files", set()))
+        if node.get("type") == "model":
+            model_types = list(node.get("models", set()))
+            if len(model_types) == 1:
+                model_type = model_types[0]
+                for variant in self._ordered_variants_for_display(model_type):
+                    missing_files.update(variant.get("missing_files", set()))
+        return sorted(missing_files, key=lambda path: self._display_path(path).lower())
+
+    def _render_missing_files_block(self, missing_files, show_title=True):
+        if not missing_files:
+            return "<div class='ckpt-file-tree'><div class='ckpt-muted'>No missing files.</div></div>"
+        file_rows = []
+        for path in missing_files:
+            display_path = html.escape(self._display_path(path))
+            full_path = html.escape(path)
+            file_rows.append(
+                f"<div class='ckpt-file-row missing-only' title='{full_path}'>"
+                f"<span class='ckpt-file-name'>{display_path}</span>"
+                "</div>"
+            )
+        title_html = (
+            f"<div class='ckpt-view-summary ckpt-missing-summary'><span class='ckpt-muted'>{len(missing_files)} files</span> | missing</div>"
+            if show_title
+            else ""
+        )
+        return f"{title_html}<div class='ckpt-file-tree'>{''.join(file_rows)}</div>"
 
     def _build_file_tree(self, files, shared_set, shared_info=None):
         if shared_info is None:

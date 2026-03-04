@@ -481,7 +481,19 @@ def _nvfp4_linear(input, weight, bias=None, op=None):
         if _is_fake_tensor(input):
             return input.new_empty((*input.shape[:-1], weight.size(0)))
         return _nvfp4_linear_cuda(input, weight, bias=bias)
-    raise RuntimeError("NVFP4 kernel path required but this layer is kernel-incompatible.")
+    _nvfp4_note_fallback()
+    if _is_fake_tensor(input):
+        return input.new_empty((*input.shape[:-1], weight.size(0)))
+
+    if torch.is_tensor(input):
+        qweight = weight.dequantize(dtype=input.dtype, device=input.device)
+        bias_arg = bias
+        if bias_arg is not None and torch.is_tensor(bias_arg):
+            if bias_arg.device != input.device or bias_arg.dtype != input.dtype:
+                bias_arg = bias_arg.to(device=input.device, dtype=input.dtype)
+        return torch.nn.functional.linear(input, qweight, bias=bias_arg)
+
+    return torch.nn.functional.linear(input, weight.dequantize(), bias=bias)
 
 
 def _is_float8_dtype(dtype):

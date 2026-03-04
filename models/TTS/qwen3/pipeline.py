@@ -386,7 +386,7 @@ class Qwen3TTSPipeline:
     def _normalize_audio_prompt_type(value) -> str:
         mode = str(value or "A").strip().upper()
         if mode not in ("A", "AB"):
-            raise ValueError(f"Unsupported audio prompt mode '{mode}'. Use 'A' (one speaker) or 'AB' (two speakers).")
+            raise ValueError(f" prompt mode '{mode}'. Use 'A' (one speaker) or 'AB' (two speakers).")
         return mode
 
     @staticmethod
@@ -681,6 +681,7 @@ class Qwen3TTSPipeline:
         temperature: float = 0.9,
         seed: int = -1,
         callback=None,
+        audio_prompt_type="A",
         **kwargs,
     ):
         self._interrupt = False
@@ -710,7 +711,6 @@ class Qwen3TTSPipeline:
                 top_k = int(top_k)
             except (TypeError, ValueError):
                 top_k = None
-        audio_prompt_type = self._normalize_audio_prompt_type(kwargs.get("audio_prompt_type", "A"))
         audio_guide2 = kwargs.get("audio_guide2", None)
         pause_seconds = kwargs.get("pause_seconds", 0.5)
         auto_split_seconds = self._resolve_auto_split_seconds(kwargs)
@@ -720,7 +720,7 @@ class Qwen3TTSPipeline:
             else None
         )
 
-        if self.base_model_type == "qwen3_tts_base" and audio_prompt_type == "AB":
+        if self.base_model_type == "qwen3_tts_base" and "B" in audio_prompt_type:
             if not audio_guide:
                 raise ValueError("Speaker 1 reference audio is required for Qwen3 Base voice clone.")
             if not audio_guide2:

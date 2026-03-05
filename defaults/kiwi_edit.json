@@ -1,0 +1,21 @@
+{
+    "model": {
+        "name": "Kiwi Edit Instruct-Reference 5B",
+        "architecture": "kiwi_edit",
+        "description": "Kiwi-Edit expects Prompt instructionss to Edit an existing video (for instance adding or removing objects or persons). You can reference an image to use it as a background or an object .",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_kiwi_edit_5B_mbf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/wan2.2_kiwi_edit_5B_quanto_mbf16_int8.safetensors"
+        ],
+        "text_encoder_URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/kiwi_mllm_encoder_instruct_reference/instruct_reference_mllm_encoder_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/kiwi_mllm_encoder_instruct_reference/instruct_reference_mllm_encoder_quanto_bf16_int8.safetensors"
+        ],
+        "text_encoder_folder": "kiwi_mllm_encoder_instruct_reference"
+    },
+    "prompt": "Change the woman's dress to a vivid red while preserving her pose, face, and the room lighting.",
+    "video_length": 81,
+    "flow_shift": 5,
+    "num_inference_steps": 30,
+    "resolution": "1280x704"
+}

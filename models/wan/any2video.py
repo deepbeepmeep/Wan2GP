@@ -41,7 +41,7 @@ from shared.utils.vace_preprocessor import VaceVideoProcessor
 from shared.utils.basic_flowmatch import FlowMatchScheduler
 from shared.utils.euler_scheduler import EulerScheduler
 from shared.utils.lcm_scheduler import LCMScheduler
-from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
+from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image, fit_image_into_canvas
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
 from .wanmove.trajectory import replace_feature, create_pos_feature_map
 from .alpha.utils import load_gauss_mask, apply_alpha_shift
@@ -103,19 +103,16 @@ class WanAny2V:
         self.model2 = None
         self.transformer_switch = model_def.get("URLs2", None) is not None
         self.is_mocha = model_def.get("mocha_mode", False)
-        text_encoder_folder = model_def.get("text_encoder_folder")
-        if text_encoder_folder:
-            tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
-        else:
-            tokenizer_path = os.path.dirname(text_encoder_filename)
-        self.text_encoder = T5EncoderModel(
-            text_len=config.text_len,
-            dtype=config.t5_dtype,
-            device=torch.device('cpu'),
-            checkpoint_path=text_encoder_filename,
-            tokenizer_path=tokenizer_path,
-            shard_fn= None)
-        self.text_encoder_cache = TextEncoderCache()
+        self.text_encoder = None
+        self.text_encoder_cache = None
+        if base_model_type != "kiwi_edit":
+            text_encoder_folder = model_def.get("text_encoder_folder")
+            if text_encoder_folder:
+                tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
+            else:
+                tokenizer_path = os.path.dirname(text_encoder_filename)
+            self.text_encoder = T5EncoderModel(text_len=config.text_len, dtype=config.t5_dtype, device=torch.device('cpu'), checkpoint_path=text_encoder_filename, tokenizer_path=tokenizer_path, shard_fn=None)
+            self.text_encoder_cache = TextEncoderCache()
         if hasattr(config, "clip_checkpoint") and not model_def.get("i2v_2_2", False) or base_model_type in ["animate"]:
             self.clip = CLIPModel(
                 dtype=config.clip_dtype,
@@ -166,7 +163,7 @@ class WanAny2V:
         #     config = json.load(f)
         # sd = safetensors2.torch_load_file(xmodel_filename)
         # model_filename = "c:/temp/wan2.2i2v/low/diffusion_pytorch_model-00001-of-00006.safetensors"
-        base_config_file = f"models/wan/configs/{base_model_type}.json"
+        base_config_file = model_def.get("config_file", f"models/wan/configs/{base_model_type}.json")
         forcedConfigPath = base_config_file if len(model_filename) > 1 else None
         # forcedConfigPath = base_config_file = f"configs/flf2v_720p.json"
         # model_filename[1] = xmodel_filename
@@ -243,6 +240,22 @@ class WanAny2V:
 
         self.model.apply_post_init_changes()
         if self.model2 is not None: self.model2.apply_post_init_changes()
+        
+        self.kiwi_mllm = None
+        self.kiwi_source_embedder_file = None
+        self.kiwi_ref_embedder_file = None
+        if base_model_type == "kiwi_edit":
+            from .kiwi.mllm import KiwiMLLMContextEncoder
+            self.kiwi_mllm = KiwiMLLMContextEncoder(
+                mllm_root_folder=model_def.get("kiwi_mllm_folder", "kiwi_mllm_encoder_instruct_reference"),
+                qwen_weights_path=text_encoder_filename,
+                any_ref=model_def.get("any_kiwi_ref", True),
+                device=self.device,
+                dtype=self.dtype,
+                offload_after_encode=True,
+            )
+            self.kiwi_source_embedder_file = model_def.get("kiwi_source_embedder_file", None)
+            self.kiwi_ref_embedder_file = model_def.get("kiwi_ref_embedder_file", None)
         
         self.num_timesteps = 1000 
         self.use_timestep_transform = True 
@@ -527,19 +540,31 @@ class WanAny2V:
         if self._interrupt:
             return None
         # Text Encoder
+        kiwi_edit = model_type in ["kiwi_edit"]
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
         text_len = self.model.text_len
         any_guidance_at_all = guide_scale > 1 or guide2_scale > 1 and guide_phases >=2 or guide3_scale > 1 and guide_phases >=3
-        encode_fn = lambda prompts: self.text_encoder(prompts, self.device)
-        context = self.text_encoder_cache.encode(encode_fn, [input_prompt], device=self.device)[0].to(self.dtype)
-        context = torch.cat([context, context.new_zeros(text_len -context.size(0), context.size(1)) ]).unsqueeze(0)
-        if NAG_scale > 1 or any_guidance_at_all:      
-            context_null = self.text_encoder_cache.encode(encode_fn, [n_prompt], device=self.device)[0].to(self.dtype)
-            context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0)
-        else:
-            context_null = None
+        context_null = context = None
         if input_video is not None: height, width = input_video.shape[-2:]
+
+        if kiwi_edit:
+            from .kiwi.embedders import build_kiwi_conditions
+            kiwi_ref_images = original_input_ref_images[0] if original_input_ref_images is not None and len(original_input_ref_images) else None
+            kiwi_state = build_kiwi_conditions(vae=self.vae, source_frames=input_frames, ref_images=kiwi_ref_images, width=width, height=height, batch_size=batch_size, device=self.device, dtype=self.dtype, source_embedder_file=self.kiwi_source_embedder_file, ref_embedder_file=self.kiwi_ref_embedder_file, vae_tile_size=VAE_tile_size)
+            context = self.kiwi_mllm.encode_from_inputs(input_prompt, input_frames, kiwi_ref_images, use_ref_image=self.kiwi_ref_embedder_file is not None, max_frames=16)
+            context = [context]
+            if any_guidance_at_all or NAG_scale > 1:
+                context_null = self.kiwi_mllm.encode_from_inputs(n_prompt, input_frames, kiwi_ref_images, use_ref_image=self.kiwi_ref_embedder_file is not None, max_frames=16)
+                context_null = [context_null]
+        else:
+            text_len = self.model.text_len
+            encode_fn = lambda prompts: self.text_encoder(prompts, self.device)
+            context = self.text_encoder_cache.encode(encode_fn, [input_prompt], device=self.device)[0].to(self.dtype)
+            context = torch.cat([context, context.new_zeros(text_len -context.size(0), context.size(1)) ]).unsqueeze(0)
+            if NAG_scale > 1 or any_guidance_at_all:      
+                context_null = self.text_encoder_cache.encode(encode_fn, [n_prompt], device=self.device)[0].to(self.dtype)
+                context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0)
 
         # NAG_prompt =  "static, low resolution, blurry"
         # context_NAG = self.text_encoder([NAG_prompt], self.device)[0]
@@ -928,6 +953,16 @@ class WanAny2V:
                 lat_input_ref_images_neg = torch.zeros_like(lat_input_ref_images)
                 ref_images_count = trim_frames = lat_input_ref_images.shape[1]
 
+        # Kiwi Edit
+        if kiwi_edit:
+            if kiwi_state["source_condition"] is not None:
+                kwargs["kiwi_source_condition"] = kiwi_state["source_condition"]
+            if kiwi_state["ref_condition"] is not None:
+                kwargs["kiwi_ref_condition"] = kiwi_state["ref_condition"]
+                kwargs["kiwi_ref_pad_first"] = self.model_def.get("kiwi_ref_pad_first", False) 
+                inner_latent_frames = 1
+            input_video = None
+
         if ti2v:
             if input_video is None:
                 height, width = (height // 32) * 32, (width // 32) * 32 
@@ -1250,6 +1285,12 @@ class WanAny2V:
                             "multitalk_audio": [audio_proj, audio_proj, [torch.zeros_like(audio_proj[0][-1:]), torch.zeros_like(audio_proj[1][-1:])]],
                             "multitalk_masks": [token_ref_target_masks, token_ref_target_masks, None]
                         }
+                elif kiwi_edit:
+                    if guide_scale == 1:
+                        any_guidance = False
+                        gen_args = {"x": [latent_model_input], "context": context}
+                    else:
+                        gen_args = {"x": [latent_model_input, latent_model_input], "context": context + context_null}
                 else:
                     gen_args = {
                         "x" : [latent_model_input, latent_model_input],

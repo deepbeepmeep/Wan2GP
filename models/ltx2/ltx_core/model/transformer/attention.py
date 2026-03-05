@@ -180,6 +180,7 @@ class Attention(torch.nn.Module):
         norm_eps: float = 1e-6,
         rope_type: LTXRopeType = LTXRopeType.INTERLEAVED,
         attention_function: AttentionCallable | AttentionFunction = AttentionFunction.DEFAULT,
+        apply_gated_attention: bool = False,
     ) -> None:
         super().__init__()
         self.rope_type = rope_type
@@ -197,6 +198,7 @@ class Attention(torch.nn.Module):
         self.to_q = torch.nn.Linear(query_dim, inner_dim, bias=True)
         self.to_k = torch.nn.Linear(context_dim, inner_dim, bias=True)
         self.to_v = torch.nn.Linear(context_dim, inner_dim, bias=True)
+        self.to_gate_logits = torch.nn.Linear(query_dim, heads, bias=True) if apply_gated_attention else None
 
         self.to_out = torch.nn.Sequential(torch.nn.Linear(inner_dim, query_dim, bias=True), torch.nn.Identity())
 
@@ -219,6 +221,7 @@ class Attention(torch.nn.Module):
         k_pe: torch.Tensor | None = None,
     ) -> torch.Tensor:
         x = x_list[0]
+        gate_input = x
         x_list.clear()
         context = None
         if context_list is not None:
@@ -252,6 +255,11 @@ class Attention(torch.nn.Module):
             version=attention_version,
             cross_attn=cross_attn
         )
+        if self.to_gate_logits is not None:
+            gate_logits = self.to_gate_logits(gate_input)
+            gates = 2.0 * torch.sigmoid(gate_logits).to(dtype=out.dtype)
+            out.mul_(gates.unsqueeze(-1))
+        gate_input = None
         out = out.flatten(2, 3)
         out = self.to_out(out)
         return out

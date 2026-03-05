@@ -26,7 +26,7 @@ KIWI_VARIANT_MAP = {
         "kiwi_mllm_repo_id": KIWI_REPO_ID,
         "kiwi_mllm_folder": "kiwi_mllm_encoder_reference_only",
         "kiwi_text_encoder_file": "reference_only_mllm_encoder_bf16.safetensors",
-        "kiwi_source_embedder_file": None,
+        "kiwi_source_embedder_file": "wan2.2_kiwi_edit_5B_reference_only_source_embedder.safetensors",
         "kiwi_ref_embedder_file": "wan2.2_kiwi_edit_5B_reference_only_ref_embedder.safetensors",
         "config_file": "models/wan/configs/kiwi_edit_reference_only.json",
     },

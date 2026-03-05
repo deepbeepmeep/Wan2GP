@@ -16,6 +16,5 @@
     "prompt": "Apply the style from the reference image.",
     "video_length": 81,
     "flow_shift": 5,
-    "num_inference_steps": 30,
-    "resolution": "1280x704"
+    "num_inference_steps": 30
 }

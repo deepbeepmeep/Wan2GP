@@ -27,6 +27,8 @@ class TransformerArgs:
     cross_scale_shift_timestep: torch.Tensor | None
     cross_gate_timestep: torch.Tensor | None
     enabled: bool
+    prompt_timestep: torch.Tensor | None = None
+    self_attention_mask: torch.Tensor | None = None
 
 
 def _can_broadcast_timesteps(frame_indices: torch.Tensor | None, frame_count: int) -> bool:
@@ -68,7 +70,7 @@ class TransformerArgsPreprocessor:
         self,
         patchify_proj: torch.nn.Linear,
         adaln: AdaLayerNormSingle,
-        caption_projection: PixArtAlphaTextProjection,
+        caption_projection: PixArtAlphaTextProjection | None,
         inner_dim: int,
         max_pos: list[int],
         num_attention_heads: int,
@@ -77,10 +79,12 @@ class TransformerArgsPreprocessor:
         double_precision_rope: bool,
         positional_embedding_theta: float,
         rope_type: LTXRopeType,
+        prompt_adaln: AdaLayerNormSingle | None = None,
     ) -> None:
         self.patchify_proj = patchify_proj
         self.adaln = adaln
         self.caption_projection = caption_projection
+        self.prompt_adaln = prompt_adaln
         self.inner_dim = inner_dim
         self.max_pos = max_pos
         self.num_attention_heads = num_attention_heads
@@ -93,6 +97,7 @@ class TransformerArgsPreprocessor:
     def _prepare_timestep(
         self,
         timestep: torch.Tensor,
+        adaln: AdaLayerNormSingle,
         batch_size: int,
         hidden_dtype: torch.dtype,
         frame_indices: torch.Tensor | None = None,
@@ -101,12 +106,17 @@ class TransformerArgsPreprocessor:
 
         timestep = timestep * self.timestep_scale_multiplier
         timestep = _maybe_compress_timesteps(timestep, frame_indices, batch_size)
-        timestep, embedded_timestep = self.adaln(
+        timestep, embedded_timestep = adaln(
             timestep.flatten(),
             hidden_dtype=hidden_dtype,
         )
         timestep = timestep.view(batch_size, -1, timestep.shape[-1])
         embedded_timestep = embedded_timestep.view(batch_size, -1, embedded_timestep.shape[-1])
+
+        # Batch-level timesteps (for example prompt sigma in cross-attn AdaLN) are shared
+        # across all tokens and must not be gathered with per-token frame indices.
+        if timestep.shape[1] == 1:
+            return timestep, embedded_timestep
 
         if frame_indices is None or _can_broadcast_timesteps(frame_indices, timestep.shape[1]):
             return timestep, embedded_timestep
@@ -124,7 +134,8 @@ class TransformerArgsPreprocessor:
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Prepare context for transformer blocks."""
         batch_size = x.shape[0]
-        context = self.caption_projection(context)
+        if self.caption_projection is not None:
+            context = self.caption_projection(context)
         context = context.view(batch_size, -1, x.shape[-1])
 
         return context, attention_mask
@@ -186,10 +197,20 @@ class TransformerArgsPreprocessor:
         x = self.patchify_proj(latent)
         timestep, embedded_timestep = self._prepare_timestep(
             modality.timesteps,
+            self.adaln,
             x.shape[0],
             latent_dtype,
             frame_indices=modality.frame_indices,
         )
+        prompt_timestep = None
+        if self.prompt_adaln is not None:
+            prompt_timestep, _ = self._prepare_timestep(
+                modality.sigma,
+                self.prompt_adaln,
+                x.shape[0],
+                latent_dtype,
+                frame_indices=modality.frame_indices,
+            )
         context, attention_mask = self._prepare_context(modality.context, x, modality.context_mask)
         attention_mask = self._prepare_attention_mask(attention_mask, latent_dtype)
         pe = self._prepare_positional_embeddings(
@@ -212,6 +233,7 @@ class TransformerArgsPreprocessor:
             cross_scale_shift_timestep=None,
             cross_gate_timestep=None,
             enabled=modality.enabled,
+            prompt_timestep=prompt_timestep,
         )
 
 
@@ -220,7 +242,7 @@ class MultiModalTransformerArgsPreprocessor:
         self,
         patchify_proj: torch.nn.Linear,
         adaln: AdaLayerNormSingle,
-        caption_projection: PixArtAlphaTextProjection,
+        caption_projection: PixArtAlphaTextProjection | None,
         cross_scale_shift_adaln: AdaLayerNormSingle,
         cross_gate_adaln: AdaLayerNormSingle,
         inner_dim: int,
@@ -234,6 +256,7 @@ class MultiModalTransformerArgsPreprocessor:
         positional_embedding_theta: float,
         rope_type: LTXRopeType,
         av_ca_timestep_scale_multiplier: int,
+        prompt_adaln: AdaLayerNormSingle | None = None,
     ) -> None:
         self.simple_preprocessor = TransformerArgsPreprocessor(
             patchify_proj=patchify_proj,
@@ -247,6 +270,7 @@ class MultiModalTransformerArgsPreprocessor:
             double_precision_rope=double_precision_rope,
             positional_embedding_theta=positional_embedding_theta,
             rope_type=rope_type,
+            prompt_adaln=prompt_adaln,
         )
         self.cross_scale_shift_adaln = cross_scale_shift_adaln
         self.cross_gate_adaln = cross_gate_adaln

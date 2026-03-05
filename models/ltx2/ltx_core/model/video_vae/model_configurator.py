@@ -13,7 +13,9 @@ class VideoEncoderConfigurator(ModelConfigurator[VideoEncoder]):
         convolution_dimensions = config.get("dims", 3)
         in_channels = config.get("in_channels", 3)
         latent_channels = config.get("latent_channels", 128)
-        encoder_spatial_padding_mode = PaddingModeType(config.get("encoder_spatial_padding_mode", "zeros"))
+        encoder_spatial_padding_mode = PaddingModeType(
+            config.get("spatial_padding_mode", config.get("encoder_spatial_padding_mode", "zeros"))
+        )
         encoder_blocks = config.get("encoder_blocks", [])
         patch_size = config.get("patch_size", 4)
         norm_layer_str = config.get("norm_layer", "pixel_norm")
@@ -39,7 +41,9 @@ class VideoDecoderConfigurator(ModelConfigurator[VideoDecoder]):
         config = config.get("vae", {})
         convolution_dimensions = config.get("dims", 3)
         latent_channels = config.get("latent_channels", 128)
-        decoder_spatial_padding_mode = PaddingModeType(config.get("decoder_spatial_padding_mode", "reflect"))
+        decoder_spatial_padding_mode = PaddingModeType(
+            config.get("spatial_padding_mode", config.get("decoder_spatial_padding_mode", "reflect"))
+        )
         out_channels = config.get("out_channels", 3)
         decoder_blocks = config.get("decoder_blocks", [])
         patch_size = config.get("patch_size", 4)
@@ -47,6 +51,7 @@ class VideoDecoderConfigurator(ModelConfigurator[VideoDecoder]):
         causal = config.get("causal_decoder", False)
         timestep_conditioning = config.get("timestep_conditioning", True)
         temporal_chunk_on_gpu = config.get("decode_temporal_chunk_on_gpu", True)
+        base_channels = config.get("decoder_base_channels", 128)
 
         return VideoDecoder(
             convolution_dimensions=convolution_dimensions,
@@ -59,6 +64,7 @@ class VideoDecoderConfigurator(ModelConfigurator[VideoDecoder]):
             timestep_conditioning=timestep_conditioning,
             temporal_chunk_on_gpu=temporal_chunk_on_gpu,
             decoder_spatial_padding_mode=decoder_spatial_padding_mode,
+            base_channels=base_channels,
         )
 
 

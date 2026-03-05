@@ -11,6 +11,6 @@
   "num_layers": 30,
   "out_dim": 48,
   "text_len": 512,
-  "any_kiwi_source": false,
+  "any_kiwi_source": true,
   "any_kiwi_ref": true
 }

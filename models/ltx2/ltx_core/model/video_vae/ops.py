@@ -70,9 +70,6 @@ class PerChannelStatistics(nn.Module):
         super().__init__()
         self.register_buffer("std-of-means", torch.empty(latent_channels))
         self.register_buffer("mean-of-means", torch.empty(latent_channels))
-        self.register_buffer("mean-of-stds", torch.empty(latent_channels))
-        self.register_buffer("mean-of-stds_over_std-of-means", torch.empty(latent_channels))
-        self.register_buffer("channel", torch.empty(latent_channels))
 
     def un_normalize(self, x: torch.Tensor) -> torch.Tensor:
         return (x * self.get_buffer("std-of-means").view(1, -1, 1, 1, 1).to(x)) + self.get_buffer("mean-of-means").view(

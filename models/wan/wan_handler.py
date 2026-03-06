@@ -458,21 +458,20 @@ class family_handler():
 
         if base_model_type == "kiwi_edit":
             extra_model_def["keep_frames_video_guide_not_supported"] = True
-            extra_model_def["guide_preprocessing"] = {
-                    "selection": ["UV"],
-                    "labels" : { "UV": "Control Video"},
-                    "visible": False,
-                }
-            if extra_model_def.get("kiwi_ref_embedder", True):
-                # Only reference-capable Kiwi variants should expose image-reference UI.
-                extra_model_def["image_ref_choices"] = {
-                        "choices": [
-                            ("No Reference Image", ""),
-                            ("Reference Image", "I"),
-                        ],
-                        "letters_filter": "I",
-                        "show_label": False,
-                }
+            kiwi_ref_embedder = extra_model_def.get("kiwi_ref_embedder", True)
+            extra_model_def["guide_custom_choices"] = {
+            "choices":[
+                ("Control", "UVI" if kiwi_ref_embedder else "UV"),
+            ],
+            "default": "UVI" if kiwi_ref_embedder else "UV",
+            "letters_filter": "UVI",
+            "label": "Type of Process",
+            "scale": 3,
+            "show_label" : False,
+            }
+            if kiwi_ref_embedder:
+                extra_model_def["one_image_ref_needed"] = True
+
             # Upstream Kiwi uses full reference images; avoid background-matting path by default.
             extra_model_def["no_background_removal"] = True
             extra_model_def["fit_into_canvas_image_refs"] = 0
@@ -1019,8 +1018,12 @@ class family_handler():
                     "remove_background_images_ref": 0,
                     "guidance_scale": 1,
                 })
+                
+                ui_defaults.update({
+                    "video_prompt_type": "UVI" if model_def.get("kiwi_ref_embedder", True) else "UV", 
+                })
 
-        if base_model_type in ["recam_1.3B", "lucy_edit", "kiwi_edit"]: 
+        if base_model_type in ["recam_1.3B", "lucy_edit"]: 
             ui_defaults.update({
                 "video_prompt_type": "UV", 
             })

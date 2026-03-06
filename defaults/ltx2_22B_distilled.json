@@ -4,8 +4,8 @@
         "architecture": "ltx2_22B",
         "description": "LTX-2.3 distilled checkpoint (22B) with faster generation.",
         "URLs": [
-            "https://huggingface.co/DeepBeepMeep/LTX-2.3/resolve/main/ltx-2.3-22b-distilled_diffusion_model.safetensors",
-            "https://huggingface.co/DeepBeepMeep/LTX-2.3/resolve/main/ltx-2.3-22b-distilled_diffusion_model_quanto_int8.safetensors"
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled_diffusion_model.safetensors",
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled_diffusion_model_quanto_int8.safetensors"
         ],
         "preload_URLs": "ltx2_22B",
         "ltx2_pipeline": "distilled"

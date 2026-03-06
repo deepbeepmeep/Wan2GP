@@ -33,6 +33,17 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### March 6th 2026: WanGP v10.98, Expecting an Update ? 
+
+- **LTX-2 2.3**: 0 day delivery of LTX 2 latest version with better *audio*, *image 2 video* and *greater details*. This model is bigger (22B versus 19B), but with WanGP VRAM usage will be still ridiculously low. Try it at 720p or 1080p, this is where it will shine the most !
+
+- **Kiwi Edit**: a great model that lets you edit video and / or inject objects in a video. It exists in 3 flavours depending on what you want to do
+
+- **Upgraded Models Selector** with *already Downloaded indicator*: Next to each model or finetune, you will find a square: *Blue* = fully downloaded & available, *Yellow* = partially downloaded & *Black* = not downloaded at all. Please note that the square color will depend on your current choices of requested model quantization.
+
+- **Upgraded Models Manager**: color square has been also added so that you can see in glance what has already been downloaded. New filter for a quick model lookout. List of missing files per finetune.
+
+
 ### February 19th 2026: WanGP v10.951, Breaking the Sound Barrier, Mach 2
 Here comes the (last ?) missing bit in WanGP of the *Text To Speech* offering: **emotions**
 

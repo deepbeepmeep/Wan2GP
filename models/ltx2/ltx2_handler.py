@@ -25,7 +25,7 @@ _ARCH_SPECS = {
         "lora_dir": "ltx2",
     },
     "ltx2_22B": {
-        "repo_id": "DeepBeepMeep/LTX-2.3",
+        "repo_id": "DeepBeepMeep/LTX-2",
         "config_file": "ltx2_22b_config.json",
         "spatial_upscaler": "ltx-2.3-spatial-upscaler-x2-1.0.safetensors",
         "temporal_upscaler": "ltx-2.3-temporal-upscaler-x2-1.0.safetensors",

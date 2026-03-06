@@ -208,17 +208,17 @@ class family_handler:
             default=None,
             help=f"Path to a directory that contains LTX-2 LoRAs (default: {os.path.join(lora_root, 'ltx2')})",
         )
-        parser.add_argument(
-            "--lora-dir-ltx2-22b",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains LTX-2.3 22B LoRAs (default: {os.path.join(lora_root, 'ltx2_22B')})",
-        )
+        # parser.add_argument(
+        #     "--lora-dir-ltx2-22b",
+        #     type=str,
+        #     default=None,
+        #     help=f"Path to a directory that contains LTX-2.3 22B LoRAs (default: {os.path.join(lora_root, 'ltx2_22B')})",
+        # )
 
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
-        if base_model_type == "ltx2_22B":
-            return getattr(args, "lora_dir_ltx2_22b", None) or os.path.join(lora_root, "ltx2_22B")
+        # if base_model_type == "ltx2_22B":
+        #     return getattr(args, "lora_dir_ltx2_22b", None) or os.path.join(lora_root, "ltx2_22B")
         return getattr(args, "lora_dir_ltx2", None) or os.path.join(lora_root, "ltx2")
 
     @staticmethod

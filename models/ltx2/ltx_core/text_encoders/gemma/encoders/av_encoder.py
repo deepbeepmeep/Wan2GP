@@ -6,6 +6,7 @@ from transformers.models.gemma3 import Gemma3ForConditionalGeneration
 from ....loader.sd_ops import SDOps
 from ....model.model_protocol import ModelConfigurator
 from ..embeddings_connector import (
+    AudioEmbeddings1DConnectorConfigurator,
     Embeddings1DConnector,
     Embeddings1DConnectorConfigurator,
 )
@@ -100,7 +101,7 @@ class AVGemmaTextEncoderModelConfigurator(ModelConfigurator[AVGemmaTextEncoderMo
     def from_config(cls: type["AVGemmaTextEncoderModel"], config: dict) -> "AVGemmaTextEncoderModel":
         feature_extractor_linear = GemmaFeaturesExtractorProjLinear.from_config(config)
         embeddings_connector = Embeddings1DConnectorConfigurator.from_config(config)
-        audio_embeddings_connector = Embeddings1DConnectorConfigurator.from_config(config)
+        audio_embeddings_connector = AudioEmbeddings1DConnectorConfigurator.from_config(config)
         return AVGemmaTextEncoderModel(
             feature_extractor_linear=feature_extractor_linear,
             embeddings_connector=embeddings_connector,
@@ -124,7 +125,7 @@ class GemmaTextEmbeddingsConnectorModelConfigurator(ModelConfigurator[GemmaTextE
     @classmethod
     def from_config(cls: type["GemmaTextEmbeddingsConnectorModel"], config: dict) -> "GemmaTextEmbeddingsConnectorModel":
         video_embeddings_connector = Embeddings1DConnectorConfigurator.from_config(config)
-        audio_embeddings_connector = Embeddings1DConnectorConfigurator.from_config(config)
+        audio_embeddings_connector = AudioEmbeddings1DConnectorConfigurator.from_config(config)
         return GemmaTextEmbeddingsConnectorModel(
             video_embeddings_connector=video_embeddings_connector,
             audio_embeddings_connector=audio_embeddings_connector,
@@ -150,7 +151,9 @@ AV_GEMMA_TEXT_ENCODER_KEY_OPS = (
 TEXT_EMBEDDING_PROJECTION_KEY_OPS = (
     SDOps("TEXT_EMBEDDING_PROJECTION_KEY_OPS")
     .with_matching(prefix="text_embedding_projection.")
+    .with_matching(prefix="feature_extractor.")
     .with_replacement("text_embedding_projection.", "")
+    .with_replacement("feature_extractor.", "")
 )
 
 TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS = (
@@ -159,8 +162,12 @@ TEXT_EMBEDDINGS_CONNECTOR_KEY_OPS = (
     .with_matching(prefix="model.diffusion_model.video_embeddings_connector.")
     .with_matching(prefix="diffusion_model.audio_embeddings_connector.")
     .with_matching(prefix="diffusion_model.video_embeddings_connector.")
+    .with_matching(prefix="audio_connector.")
+    .with_matching(prefix="video_connector.")
     .with_replacement("model.diffusion_model.audio_embeddings_connector.", "audio_embeddings_connector.")
     .with_replacement("model.diffusion_model.video_embeddings_connector.", "video_embeddings_connector.")
     .with_replacement("diffusion_model.audio_embeddings_connector.", "audio_embeddings_connector.")
     .with_replacement("diffusion_model.video_embeddings_connector.", "video_embeddings_connector.")
+    .with_replacement("audio_connector.", "audio_embeddings_connector.")
+    .with_replacement("video_connector.", "video_embeddings_connector.")
 )

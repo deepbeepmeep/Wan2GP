@@ -529,21 +529,17 @@ class family_handler:
             if one_prompt is None or len(str(one_prompt).strip()) == 0:
                 return "Prompt text cannot be empty for Qwen3 Base voice clone."
             audio_prompt_type = str(inputs.get("audio_prompt_type", "A") or "A").upper()
-            if audio_prompt_type not in ("A", "AB"):
-                return "Unsupported audio prompt mode for Qwen3 Base. Use one speaker or two speakers."
             if inputs.get("audio_guide") is None:
                 return "Qwen3 Base requires Speaker 1 reference audio."
             prompt_text = str(one_prompt)
             has_speaker_syntax = re.search(r"Speaker\s*\d+\s*:", prompt_text, flags=re.IGNORECASE) is not None
-            if audio_prompt_type == "AB":
+            if "B" in audio_prompt_type:
                 if inputs.get("audio_guide2") is None:
                     return "Two-speaker mode requires Speaker 2 reference audio."
                 speaker_matches = list(re.finditer(r"Speaker\s*(\d+)\s*:", prompt_text, flags=re.IGNORECASE))
                 if not speaker_matches:
                     return (
                         "Two-speaker mode requires prompt lines using Speaker 1: and Speaker 2: "
-                        "(or any two numeric speaker IDs). For headless settings, keep "
-                        "'multi_prompts_gen_type' = 2 so dialogue lines stay in one prompt."
                     )
                 speaker_ids = sorted({int(m.group(1)) for m in speaker_matches})
                 if len(speaker_ids) != 2:

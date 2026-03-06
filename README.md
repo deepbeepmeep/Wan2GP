@@ -33,6 +33,17 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### March 6th 2026: WanGP v10.98, Expecting an Update ? 
+
+- **LTX-2 2.3**: 0 day delivery of LTX 2 latest version with better *audio*, *image 2 video* and *greater details*. This model is bigger (22B versus 19B), but with WanGP VRAM usage will be still ridiculously low. Try it at 720p or 1080p, this is where it will shine the most !
+
+- **Kiwi Edit**: a great model that lets you edit video and / or inject objects in a video. It exists in 3 flavours depending on what you want to do
+
+- **Upgraded Models Selector** with *already Downloaded indicator*: Next to each model or finetune, you will find a colored square: *Blue* = fully downloaded & available, *Yellow* = partially downloaded & *Black* = not downloaded at all. Please note that the square color will depend on your current choices of requested model quantization.
+
+- **Upgraded Models Manager**: colors squares have also been added so that you can see in glance what has already been downloaded. New filter for a quick model lookout. List of missing files per finetune.
+
+
 ### February 19th 2026: WanGP v10.951, Breaking the Sound Barrier, Mach 2
 Here comes the (last ?) missing bit in WanGP of the *Text To Speech* offering: **emotions**
 
@@ -146,7 +157,7 @@ Once we are all there it will be much easier to provide precompiled kernels for 
 So please follow the *manual upgrade instructions below* (no Pinokio auto upgrade for the moment) and let me know on Discord if it works with all generations of GPUs (starting from GTX10xx to RTX50xx).
 You will find the kernels for this new setup in the **guides/INSTALLATION.md**.
 
-- **Wan Motion Self Refiner**: You will have to thank **Steve Jabz** (*Tophness*) for this one as he has been a big sponsor of the *Self Refiner* and did some extensive study to show me its beauty. The *Self Refiner* should improve the quality of the motion (find it in the *Quality Tab*). It relies on a *Refiner Plan* which indicate which steps should be refined for instance: "2-5:3" (default plan suits well for *light2xv* 4 steps) means steps 2-3 will be refined 3 times (that is 3 denoising attempts will be made to improve each of them, so if the self refiner is used the gen will be up to 3x slower). For the moment the *Self Refiner* is enabled only on Wan t2v & i2v. If you are happy with it, we will support more models.
+- **Wan Motion Self Refiner**: You will have to thank **Steve Jabz** (*Tophness*) for this one as he has been a big sponsor of the *Self Refiner* and did some extensive study to show me its beauty. The *Self Refiner* should improve the quality of the motion (find it in the *Quality Tab*). It relies on a *Refiner Plan* which indicate which steps should be refined for instance: "2-5:3" (default plan suits well for *lightx2v* 4 steps) means steps 2-3 will be refined 3 times (that is 3 denoising attempts will be made to improve each of them, so if the self refiner is used the gen will be up to 3x slower). For the moment the *Self Refiner* is enabled only on Wan t2v & i2v. If you are happy with it, we will support more models.
 
 
 **Note that PyTorch 2.10 represents at last a decent upgrade, no memory leak when switching models (pytorch 2.8) and bad perfs / VRAM peaks with VAE decoding (pytorch 2.9).**

@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "LTX-2 Distilled 19B",
+        "name": "LTX-2 2.0 Distilled 19B",
         "architecture": "ltx2_19B",
         "description": "LTX-2 distilled checkpoint with faster generation.",
         "URLs": [

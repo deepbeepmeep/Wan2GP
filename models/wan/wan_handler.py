@@ -467,6 +467,7 @@ class family_handler():
             "letters_filter": "UVI",
             "label": "Type of Process",
             "scale": 3,
+            "visible": False,
             "show_label" : False,
             }
             if kiwi_ref_embedder:

@@ -1446,7 +1446,7 @@ class WanModel(ModelMixin, ConfigMixin):
         real_step_no = 0,
         x_id= 0,
         max_steps = 0, 
-        slg_layers=None,
+        perturbation_layers=None,
         callback = None,
         cam_emb: torch.Tensor = None,
         fps = None,
@@ -1798,7 +1798,7 @@ class WanModel(ModelMixin, ConfigMixin):
                     if not standin_cache_enabled: get_cache("standin").clear()
                     standin_x = block(standin_x, context = None, grid_sizes = None, e= standin_e0, freqs = standin_freqs, standin_phase = 1)
 
-                if slg_layers is not None and block_idx in slg_layers:
+                if perturbation_layers is not None and block_idx in perturbation_layers:
                     if x_id != 0 or not x_should_calc[0]:
                         continue
                     x_list[0] = block(x_list[0], context = context_list[0], audio_scale= audio_scale_list[0], e= e0, **kwargs)

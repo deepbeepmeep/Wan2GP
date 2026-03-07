@@ -36,6 +36,7 @@ from .utils.helpers import (
     prepare_mask_injection,
     simple_denoising_func,
     video_conditionings_by_keyframe,
+    video_conditionings_by_reference_latent,
 )
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
@@ -163,6 +164,7 @@ class DistilledPipeline:
         images: list[tuple[str, int, float]],
         alt_guidance_scale: float = 1.0,
         video_conditioning: list[tuple[str, float]] | None = None,
+        video_conditioning_downscale_factor: int = 1,
         latent_conditioning_stage2: torch.Tensor | None = None,
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
@@ -313,16 +315,29 @@ class DistilledPipeline:
             tiling_config=tiling_config,
         )
         if video_conditioning:
-            stage_1_conditionings += video_conditionings_by_keyframe(
-                video_conditioning=video_conditioning,
-                height=stage_1_output_shape.height,
-                width=stage_1_output_shape.width,
-                num_frames=num_frames,
-                video_encoder=video_encoder,
-                dtype=dtype,
-                device=self.device,
-                tiling_config=tiling_config,
-            )
+            if int(video_conditioning_downscale_factor or 1) > 1:
+                stage_1_conditionings += video_conditionings_by_reference_latent(
+                    video_conditioning=video_conditioning,
+                    height=stage_1_output_shape.height,
+                    width=stage_1_output_shape.width,
+                    num_frames=num_frames,
+                    video_encoder=video_encoder,
+                    dtype=dtype,
+                    device=self.device,
+                    downscale_factor=video_conditioning_downscale_factor,
+                    tiling_config=tiling_config,
+                )
+            else:
+                stage_1_conditionings += video_conditionings_by_keyframe(
+                    video_conditioning=video_conditioning,
+                    height=stage_1_output_shape.height,
+                    width=stage_1_output_shape.width,
+                    num_frames=num_frames,
+                    video_encoder=video_encoder,
+                    dtype=dtype,
+                    device=self.device,
+                    tiling_config=tiling_config,
+                )
 
         mask_context = prepare_mask_injection(
             masking_source=masking_source,

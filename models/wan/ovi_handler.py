@@ -48,7 +48,7 @@ class family_handler:
             "sliding_window": False,
             "multiple_submodels": False,
             "guidance_max_phases": 1,
-            "skip_layer_guidance": True,
+            "perturbation": True,
             "returns_audio": True,
             "sample_solvers": [
                 ("unipc", "unipc"),
@@ -143,10 +143,10 @@ class family_handler:
                         "guidance_scale":  4.0,
                         "audio_guidance_scale": 3.0,
                         "num_inference_steps": 50,
-                        "slg_switch": 1,
+                        "perturbation_switch": 1,
                         "sliding_window_size": 121,
                         "video_length": 121,
-                        "slg_layers" : [11]
+                        "perturbation_layers" : [11]
         })
 
 

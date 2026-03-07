@@ -37,6 +37,7 @@ from .utils.helpers import (
     prepare_mask_injection,
     simple_denoising_func,
     video_conditionings_by_keyframe,
+    video_conditionings_by_reference_latent,
 )
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
@@ -129,16 +130,19 @@ class TI2VidTwoStagesPipeline:
         num_inference_steps: int,
         cfg_guidance_scale: float,
         images: list[tuple[str, int, float]],
+        audio_cfg_guidance_scale: float | None = None,
         cfg_star_switch: int = 0,
         apg_switch: int = 0,
-        slg_switch: int = 0,
-        slg_layers: list[int] | None = None,
-        slg_start: float = 0.0,
-        slg_end: float = 1.0,
+        perturbation_switch: int = 0,
+        perturbation_layers: list[int] | None = None,
+        perturbation_start: float = 0.0,
+        perturbation_end: float = 1.0,
         alt_guidance_scale: float = 1.0,
+        alt_scale: float = 0.0,
         guiding_images: list[tuple[str, int, float]] | None = None,
         images_stage2: list[tuple[str, int, float]] | None = None,
         video_conditioning: list[tuple[str, float]] | None = None,
+        video_conditioning_downscale_factor: int = 1,
         latent_conditioning_stage2: torch.Tensor | None = None,
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
@@ -199,12 +203,14 @@ class TI2VidTwoStagesPipeline:
                     self_refiner_certain_percentage,
                     channel_dim=-1,
                 )
+        audio_cfg_guidance_scale = cfg_guidance_scale if audio_cfg_guidance_scale is None else audio_cfg_guidance_scale
+        guider_cls = CFGGuider
         if apg_switch:
-            cfg_guider = LtxAPGGuider(cfg_guidance_scale)
+            guider_cls = LtxAPGGuider
         elif cfg_star_switch:
-            cfg_guider = CFGStarRescalingGuider(cfg_guidance_scale)
-        else:
-            cfg_guider = CFGGuider(cfg_guidance_scale)
+            guider_cls = CFGStarRescalingGuider
+        video_cfg_guider = guider_cls(cfg_guidance_scale)
+        audio_cfg_guider = guider_cls(audio_cfg_guidance_scale)
         dtype = torch.bfloat16
 
         text_encoder = self._get_stage_model(1, "text_encoder")
@@ -271,17 +277,19 @@ class TI2VidTwoStagesPipeline:
                 audio_state=audio_state,
                 stepper=stepper,
                 denoise_fn=guider_denoising_func(
-                    cfg_guider,
+                    video_cfg_guider,
+                    audio_cfg_guider,
                     v_context_p,
                     v_context_n,
                     a_context_p,
                     a_context_n,
                     transformer=transformer,  # noqa: F821
                     alt_guidance_scale=alt_guidance_scale,
-                    slg_switch=slg_switch,
-                    slg_layers=slg_layers,
-                    slg_start=slg_start,
-                    slg_end=slg_end,
+                    alt_scale=alt_scale,
+                    perturbation_switch=perturbation_switch,
+                    perturbation_layers=perturbation_layers,
+                    perturbation_start=perturbation_start,
+                    perturbation_end=perturbation_end,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
@@ -321,16 +329,29 @@ class TI2VidTwoStagesPipeline:
                 tiling_config=tiling_config,
             )
         if video_conditioning:
-            stage_1_conditionings += video_conditionings_by_keyframe(
-                video_conditioning=video_conditioning,
-                height=stage_1_output_shape.height,
-                width=stage_1_output_shape.width,
-                num_frames=num_frames,
-                video_encoder=video_encoder,
-                dtype=dtype,
-                device=self.device,
-                tiling_config=tiling_config,
-            )
+            if int(video_conditioning_downscale_factor or 1) > 1:
+                stage_1_conditionings += video_conditionings_by_reference_latent(
+                    video_conditioning=video_conditioning,
+                    height=stage_1_output_shape.height,
+                    width=stage_1_output_shape.width,
+                    num_frames=num_frames,
+                    video_encoder=video_encoder,
+                    dtype=dtype,
+                    device=self.device,
+                    downscale_factor=video_conditioning_downscale_factor,
+                    tiling_config=tiling_config,
+                )
+            else:
+                stage_1_conditionings += video_conditionings_by_keyframe(
+                    video_conditioning=video_conditioning,
+                    height=stage_1_output_shape.height,
+                    width=stage_1_output_shape.width,
+                    num_frames=num_frames,
+                    video_encoder=video_encoder,
+                    dtype=dtype,
+                    device=self.device,
+                    tiling_config=tiling_config,
+                )
         mask_context = prepare_mask_injection(
             masking_source=masking_source,
             masking_strength=masking_strength,

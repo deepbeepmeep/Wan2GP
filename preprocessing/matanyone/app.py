@@ -44,7 +44,7 @@ GPU_process_was_running = False
 def acquire_GPU(state):
     global GPU_process_was_running
     GPU_process_was_running = any_GPU_process_running(state, "matanyone")
-    acquire_GPU_ressources(state, "matanyone", "MatAnyone", gr= gr)      
+    acquire_GPU_ressources(state, "matanyone", "MatAnyone", gr= gr)
 def release_GPU(state):
     release_GPU_ressources(state, "matanyone")
     if GPU_process_was_running:
@@ -837,7 +837,7 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
 
     # download assets
 
-    gr.Markdown("<B>Mast Edition is provided by MatAnyone, VRAM optimizations & Extended Masks by DeepBeepMeep</B>")
+    gr.Markdown("<B>Mask Edition is provided by MatAnyone v2, VRAM optimizations & Extended Masks by DeepBeepMeep</B>")
     gr.Markdown("If you have some trouble creating the perfect mask, be aware of these tips:")
     gr.Markdown("- Using the Matanyone Settings you can also define Negative Point Prompts to remove parts of the current selection.")
     gr.Markdown("- Sometime it is very hard to fit everything you want in a single mask, it may be much easier to combine multiple independent sub Masks before producing the Matting : each sub Mask is created by selecting an  area of an image and by clicking the Add Mask button. Sub masks can then be enabled / disabled in the Matanyone settings.")

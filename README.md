@@ -33,16 +33,27 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### March 6th 2026: WanGP v10.98, Expecting an Update ? 
+### March 7th 2026: WanGP v10.981, Expecting an Update ? 
 
 - **LTX-2 2.3**: 0 day delivery of LTX 2 latest version with better *audio*, *image 2 video* and *greater details*. This model is bigger (22B versus 19B), but with WanGP VRAM usage will be still ridiculously low. Try it at 720p or 1080p, this is where it will shine the most !
 
+*Control Video Support* (*Ic lora Union Control*) will let you transfer *Human Motion*, *Edges*, ... in your new video.
+
+For expert users, *Dev* finetune offers extra new configurable settings (*modality guidance*, *audio guidance*, *STG pertubation/skip self attention *, *guidance rescaling*). LTX team suggests: Cfg=3, Audio cfg=7, Modality Cfg=3, Rescale=0.7, STG Perturbation Skip Attention on all steps.
+
+I recommend to stick to the *Distilled* finetune for higher resolutions (see sample video below) as it seems to have been distilled from a higher quality model (pro model?).
+
 - **Kiwi Edit**: a great model that lets you edit video and / or inject objects in a video. It exists in 3 flavours depending on what you want to do
+
+- **SVI PRO2 End Frames**: this should allow in theory to generate very long shots by splitting one shot into sub shots (sliding windows) by inserting key frames (the *End Frames*). This is an alternative to the *Infinitalk* references frames method (see my old release notes). I am waiting for your feedback to know which method is the best one.
 
 - **Upgraded Models Selector** with *already Downloaded indicator*: Next to each model or finetune, you will find a colored square: *Blue* = fully downloaded & available, *Yellow* = partially downloaded & *Black* = not downloaded at all. Please note that the square color will depend on your current choices of requested model quantization.
 
 - **Upgraded Models Manager**: colors squares have also been added so that you can see in glance what has already been downloaded. New filter for a quick model lookout. List of missing files per finetune.
 
+- **Matanyone 2**: everyone favorite Mask extractor has been been updated and is now more precise
+
+*update 10.981*: LTX2.3 Ic Lora Support & expert settings, Matanyone 2, SVI Pro end frames
 
 ### February 19th 2026: WanGP v10.951, Breaking the Sound Barrier, Mach 2
 Here comes the (last ?) missing bit in WanGP of the *Text To Speech* offering: **emotions**

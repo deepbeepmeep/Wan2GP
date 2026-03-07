@@ -1,5 +1,5 @@
 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/
-mmgp==3.7.5
+mmgp==3.7.6
 # Core AI stack
 diffusers==0.36.0
 transformers==4.54.0 #4.53.1

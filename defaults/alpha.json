@@ -9,7 +9,7 @@
 			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan_alpha_2.1_vae_rgb_channel.safetensors", 
 			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan_alpha_2.1_vae_alpha_channel.safetensors"
 			],
-		"loras": [
+		"loras": [ 
 			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan_alpha_2.1_dora.safetensors"
 			],		
 		"loras_multipliers": [ 1 ]	

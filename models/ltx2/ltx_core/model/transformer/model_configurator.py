@@ -7,6 +7,7 @@ from ..model_protocol import ModelConfigurator
 from .attention import AttentionFunction
 from .model import LTXModel, LTXModelType
 from .rope import LTXRopeType
+from .text_projection import create_caption_projection
 from ...utils import check_config_value
 
 
@@ -18,6 +19,7 @@ class LTXModelConfigurator(ModelConfigurator[LTXModel]):
 
     @classmethod
     def from_config(cls: type[LTXModel], config: dict) -> LTXModel:
+        caption_projection, audio_caption_projection = _build_caption_projections(config, is_av=True)
         config = config.get("transformer", {})
 
         check_config_value(config, "dropout", 0.0)
@@ -63,6 +65,10 @@ class LTXModelConfigurator(ModelConfigurator[LTXModel]):
             av_ca_timestep_scale_multiplier=config.get("av_ca_timestep_scale_multiplier", 1),
             rope_type=LTXRopeType(config.get("rope_type", "interleaved")),
             double_precision_rope=config.get("frequencies_precision", False) == "float64",
+            apply_gated_attention=config.get("apply_gated_attention", False),
+            caption_projection=caption_projection,
+            audio_caption_projection=audio_caption_projection,
+            cross_attention_adaln=config.get("cross_attention_adaln", False),
         )
 
 
@@ -74,6 +80,7 @@ class LTXVideoOnlyModelConfigurator(ModelConfigurator[LTXModel]):
 
     @classmethod
     def from_config(cls: type[LTXModel], config: dict) -> LTXModel:
+        caption_projection, _ = _build_caption_projections(config, is_av=False)
         config = config.get("transformer", {})
 
         check_config_value(config, "dropout", 0.0)
@@ -109,7 +116,20 @@ class LTXVideoOnlyModelConfigurator(ModelConfigurator[LTXModel]):
             use_middle_indices_grid=config.get("use_middle_indices_grid", True),
             rope_type=LTXRopeType(config.get("rope_type", "interleaved")),
             double_precision_rope=config.get("frequencies_precision", False) == "float64",
+            apply_gated_attention=config.get("apply_gated_attention", False),
+            caption_projection=caption_projection,
+            cross_attention_adaln=config.get("cross_attention_adaln", False),
         )
+
+
+def _build_caption_projections(config: dict, is_av: bool) -> tuple[torch.nn.Module | None, torch.nn.Module | None]:
+    transformer_config = config.get("transformer", {})
+    if transformer_config.get("caption_proj_before_connector", False):
+        return None, None
+    with torch.device("meta"):
+        caption_projection = create_caption_projection(transformer_config)
+        audio_caption_projection = create_caption_projection(transformer_config, audio=True) if is_av else None
+    return caption_projection, audio_caption_projection
 
 
 def _naive_weight_or_bias_downcast(key: str, value: torch.Tensor) -> list[KeyValueOperationResult]:

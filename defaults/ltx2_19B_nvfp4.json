@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "LTX-2 Dev 19B NVFP4",
+        "name": "LTX-2 2.0 Dev NVFP4 19B",
         "architecture": "ltx2_19B",
         "description": "NVFP4-quantized LTX-2 Dev 19B weights. For full speed, a sm120+ GPU is needed (RTX 50xx) and the comfy-kitchen NVFP4 kernels must be installed.",
         "URLs": [

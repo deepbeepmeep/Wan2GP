@@ -511,6 +511,11 @@ class ACEStep15Pipeline:
         return "# Languages\n{}\n\n# Lyric\n{}<|endoftext|>".format(language, lyrics)
 
     @staticmethod
+    def _is_instrumental_lyrics(lyrics: str) -> bool:
+        lyrics_text = str(lyrics or "").strip().lower()
+        return lyrics_text in {"[inst]", "[instrumental]"}
+
+    @staticmethod
     def _parse_model_mode(model_mode) -> int:
         if model_mode is None:
             return _ACE_STEP15_MODEL_MODE_DEFAULT
@@ -1702,12 +1707,13 @@ class ACEStep15Pipeline:
         seed=None,
         batch_size=1,
         custom_settings=None,
-        language="en",
+        language="unknown",
         top_p=0.9,
         top_k=None,
         callback=None,
         audio_codes=None,
         audio_code_hints=None,
+        alt_guide_scale=None,
         lm_negative_prompt="NO USER INPUT",
         lm_cfg_scale=None,
         offloadobj=None,
@@ -1730,7 +1736,9 @@ class ACEStep15Pipeline:
         lyrics = (input_prompt or "").strip()
         if not lyrics:
             raise ValueError("Lyrics prompt cannot be empty for ACE-Step 1.5.")
-        instrumental_only = lyrics.lower() == "[instrumental]"
+        instrumental_only = self._is_instrumental_lyrics(lyrics)
+        if instrumental_only:
+            lyrics = "[Instrumental]"
 
         tags = "" if alt_prompt is None else str(alt_prompt)
 
@@ -1746,6 +1754,9 @@ class ACEStep15Pipeline:
 
         if guidance_scale is None:
             guidance_scale = 7.0
+
+        if lm_cfg_scale is None:
+            lm_cfg_scale = alt_guide_scale
 
         _ = scheduler_type
         model_mode_value = self._parse_model_mode(model_mode)
@@ -1805,7 +1816,7 @@ class ACEStep15Pipeline:
             user_language = str(user_language).strip().lower()
             if len(user_language) == 0:
                 user_language = None
-        if user_language is None and instrumental_only:
+        if instrumental_only:
             user_language = "unknown"
         use_ref = "A" in (audio_prompt_type or "")
         has_src_audio = bool(use_ref and audio_guide)
@@ -1848,7 +1859,7 @@ class ACEStep15Pipeline:
                 keyscale = str(keyscale).strip()
                 if len(keyscale) == 0:
                     keyscale = _ACE_STEP15_DEFAULT_KEYSCALE
-                language = phase1_metadata["language"] if phase1_metadata["language"] is not None else "en"
+                language = phase1_metadata["language"] if phase1_metadata["language"] is not None else "unknown"
             else:
                 if not self.enable_lm:
                     raise RuntimeError("ACE-Step 1.5 model mode 1/2/3/4 requires an LM definition (text_encoder_URLs).")

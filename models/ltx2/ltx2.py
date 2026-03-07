@@ -59,7 +59,7 @@ def _normalize_config(config_value):
     return {}
 
 
-def _load_config_from_checkpoint(path):
+def _load_config_from_checkpoint(path, fallback_config_path: str | None = None):
     from mmgp import quant_router
 
     if isinstance(path, (list, tuple)):
@@ -68,15 +68,31 @@ def _load_config_from_checkpoint(path):
         path = path[0]
     if not path:
         return {}
-    _, metadata = quant_router.load_metadata_state_dict(path)
-    if not metadata:
+
+    def _read_config_metadata(one_path: str) -> dict:
+        if not one_path:
+            return {}
+        _, metadata = quant_router.load_metadata_state_dict(one_path)
+        if not metadata:
+            return {}
+        return _normalize_config(metadata.get("config"))
+
+    config = _read_config_metadata(path)
+    if config:
+        return config
+    if not fallback_config_path:
         return {}
-    return _normalize_config(metadata.get("config"))
+    try:
+        with open(fallback_config_path, "r", encoding="utf-8") as reader:
+            return _normalize_config(json.load(reader))
+    except Exception:
+        return {}
 
 
 def _strip_model_prefix(key: str) -> str:
-    if key.startswith("model."):
-        return key[len("model.") :]
+    for prefix in ("model.", "velocity_model."):
+        if key.startswith(prefix):
+            return _strip_model_prefix(key[len(prefix) :])
     return key
 
 
@@ -441,7 +457,13 @@ class LTX2:
         gemma_root = text_encoder_filepath if text_encoder_filename is None else text_encoder_filename
         if not gemma_root:
             raise ValueError("Missing Gemma text encoder path.")
-        spatial_upsampler_path = fl.locate_file(_SPATIAL_UPSCALER_FILENAME)
+        if component_paths:
+            spatial_upsampler_path = component_paths.get("spatial_upsampler")
+        else:
+            spatial_upsampler_path = None
+        if not spatial_upsampler_path:
+            spatial_upsampler_name = model_def.get("ltx2_spatial_upscaler_file", _SPATIAL_UPSCALER_FILENAME)
+            spatial_upsampler_path = fl.locate_file(spatial_upsampler_name)
 
         # Internal FP8 handling is disabled; mmgp manages quantization/dtypes.
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
@@ -475,7 +497,8 @@ class LTX2:
     ):
         from mmgp import offload as mmgp_offload
 
-        base_config = _load_config_from_checkpoint(transformer_path)
+        fallback_config_path = component_paths.get("model_config") if component_paths else None
+        base_config = _load_config_from_checkpoint(transformer_path, fallback_config_path=fallback_config_path)
         if not base_config:
             raise ValueError("Missing config in transformer checkpoint.")
 
@@ -488,7 +511,7 @@ class LTX2:
             return transformer_path
 
         def _component_config(path):
-            config = _load_config_from_checkpoint(path)
+            config = _load_config_from_checkpoint(path, fallback_config_path=fallback_config_path)
             return config or base_config
 
         def _load_component(model, path, sd_ops=None, postprocess=None):
@@ -1037,10 +1060,11 @@ class LTX2:
         if audio_np is not None and audio_np.ndim == 2:
             if audio_np.shape[0] in (1, 2) and audio_np.shape[1] > audio_np.shape[0]:
                 audio_np = audio_np.T
+        output_audio_sampling_rate = int(getattr(self.vocoder, "output_sampling_rate", AUDIO_SAMPLE_RATE))
         result = {
             "x": video_tensor,
             "audio": audio_np,
-            "audio_sampling_rate": AUDIO_SAMPLE_RATE,
+            "audio_sampling_rate": output_audio_sampling_rate,
         }
         if latent_slice is not None:
             result["latent_slice"] = latent_slice

@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "LTX-2 Distilled GGUF Q8_0 19B ",
+        "name": "LTX-2 2.0 Distilled GGUF Q8_0 19B ",
         "architecture": "ltx2_19B",
         "description": "LTX-2 distilled GGUF Q8_0 checkpoint for llama.cpp-backed quantization.",
         "URLs": [

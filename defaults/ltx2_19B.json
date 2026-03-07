@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "LTX-2 Dev 19B",
+        "name": "LTX-2 2.0 Dev 19B",
         "architecture": "ltx2_19B",
         "description": "LTX-2 generates video up to 20s with an audio soundtrack. Supports start/end keyframes and sliding-window continuation. You can force the audio soundtrack by providing an Audio Prompt.",
         "URLs": [

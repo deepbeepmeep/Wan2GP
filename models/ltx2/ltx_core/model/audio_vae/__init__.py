@@ -10,7 +10,7 @@ from .model_configurator import (
     VocoderConfigurator,
 )
 from .ops import AudioProcessor
-from .vocoder import Vocoder
+from .vocoder import Vocoder, VocoderWithBWE
 
 __all__ = [
     "AUDIO_VAE_DECODER_COMFY_KEYS_FILTER",
@@ -22,6 +22,7 @@ __all__ = [
     "AudioEncoderConfigurator",
     "AudioProcessor",
     "Vocoder",
+    "VocoderWithBWE",
     "VocoderConfigurator",
     "decode_audio",
 ]

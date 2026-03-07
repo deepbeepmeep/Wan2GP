@@ -324,7 +324,7 @@ These kernels will offer optimized INT4 / FP4 dequantization.
 **Please Note FP4 support is hardware dependent and will work only with RTX 50xx / sm120+ GPUs**
 
 
-### Light2xv NVP4 Kernels Wheels for Python 3.11 / Pytorch 2.10 / Cuda 13 (RTX 50xx / sm120+ only !)
+### Lightx2v NVP4 Kernels Wheels for Python 3.11 / Pytorch 2.10 / Cuda 13 (RTX 50xx / sm120+ only !)
 - Windows
    ```
   pip install https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.2+torch2.10.0-cp311-abi3-win_amd64.whl
@@ -356,5 +356,5 @@ These kernels will offer optimized INT4 / FP4 dequantization.
 
 - Linux 
    ```
-  pip install https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp310-cp310-linux_x86_64.whl
+  pip install https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp311-cp311-linux_x86_64.whl
    ```

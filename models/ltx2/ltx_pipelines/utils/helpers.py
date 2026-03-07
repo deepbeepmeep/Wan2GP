@@ -795,13 +795,23 @@ def modality_from_latent_state(
     from the denoise mask and sigma, positions, and the provided context.
     """
     timesteps, frame_indices = timesteps_from_mask(state.denoise_mask, sigma, positions=state.positions)
+    sigma_tensor = sigma if torch.is_tensor(sigma) else torch.tensor(sigma, device=state.latent.device)
+    sigma_tensor = sigma_tensor.to(device=state.latent.device, dtype=state.latent.dtype)
+    if sigma_tensor.ndim == 0:
+        sigma_tensor = sigma_tensor.expand(state.latent.shape[0])
+    elif sigma_tensor.ndim == 1 and sigma_tensor.shape[0] == 1:
+        sigma_tensor = sigma_tensor.expand(state.latent.shape[0])
+    elif sigma_tensor.ndim > 1:
+        sigma_tensor = sigma_tensor.reshape(state.latent.shape[0], -1)[:, 0]
     return Modality(
         enabled=enabled,
         latent=state.latent,
+        sigma=sigma_tensor,
         timesteps=timesteps,
         positions=state.positions,
         context=context,
         context_mask=None,
+        attention_mask=None,
         frame_indices=frame_indices,
     )
 

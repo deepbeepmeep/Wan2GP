@@ -679,7 +679,7 @@ class LTX2:
             trans = self.model
         return trans, None
 
-    def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, base_model_type=None, **kwargs):
+    def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, base_model_type=None, model_def = None, **kwargs):
         control_map = {
             "P": "pose",
             "D": "depth",
@@ -687,7 +687,7 @@ class LTX2:
         }
         loras = []
         video_prompt_type = video_prompt_type or ""
-        if (get_model_recursive_prop(model_type, "ltx2_pipeline") or "two_stage") != "distilled":
+        if model_def.get("ltx2_pipeline","two_stage") != "distilled":
             return [], []
         preload_urls = get_model_recursive_prop(model_type, "preload_URLs")
         if (base_model_type or self.base_model_type) == "ltx2_22B":

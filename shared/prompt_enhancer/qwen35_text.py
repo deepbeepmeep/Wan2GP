@@ -626,6 +626,8 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_safe_legacy = safe_legacy_mode
     model._prompt_enhancer_use_vllm = engine_name == "vllm"
     model._prompt_enhancer_vllm_force_eager = engine_name == "vllm" and engine_detail != "cuda graph"
+    if engine_name == "vllm":
+        model._budget = 0
     print(f"[Prompt Enhancer][{spec['display_name']}] Text generation engine: {engine_name} ({engine_detail})")
     model.generate_messages = types.MethodType(_generate_messages, model)
     model.unload = types.MethodType(_unload_prompt_enhancer_text_runtime, model)

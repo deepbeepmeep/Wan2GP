@@ -52,7 +52,9 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 - **LTX Desktop WanGP**: as a sample app (made just for fun) that uses WanGP API, you may try LTX Desktop. This app offers Video / Audio nice editing capabilities but will require 32+ VRAM to run. As now it uses WanGP as its core engine, VRAM requirements are much smaller. It will use LTX 2.3 for Video Gen & Z Image turbo fo Image gen. You can reuse (in theory) your current WanGP install with *LTX Destop WanGP*. https://github.com/deepbeepmeep/LTX-Desktop-WanGP
 
-Please note as people preferred mataynone v1 over v2 I have added an option to select matanyone version in the Config / Extension tab
+- **New Audio Ouput formats in mp4**: audio stored in video file can now be of higher quality (*AAC192 - AAC356*) or *ALAC* (lossless). Please note that you wont be able listen to ALAC audio track directly in the webapp.
+
+Also note as people preferred mataynone v1 over v2 I have added an option to select matanyone version in the Config / Extension tab
 
 ### March 7th 2026: WanGP v10.981, Expecting an Update ? 
 

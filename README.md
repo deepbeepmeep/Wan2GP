@@ -33,6 +33,23 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### March 10th 2026: WanGP v10.987, Prompt Enhancer has just Been Abliterated
+
+- **Qwen3.5 VL Abliterated Prompt Enhancer**: new choice of Prompt Enhancer
+   * Based on widely acclaimed *Qwen3.5 model* that has just been released
+   * *Uncensored* thanks to the *Abliterating* process that nullifies any *LLM will* to decline any of your request
+   * 4 choices of models: depending on how much VRAM you have *4B & 9B models*, and *GGUF Q4* or *Int8*
+   * *vllm accelerated* x5 faster, if Flash Attention 2 & Triton are installed (please check docs/INSTALLATION.md) 
+   
+- **GGUF CUDA Kernels**: 15% speed gain when using GGUF on Diffusion Video Models & x3 speed with GGUF LLM (*Qwen 3.5 VL GGUF* for instance). GGUF Kernels are for the moment only available for Windows (please check docs/INSTALLATION.md).
+
+- **LTX2.3 Improvements**
+   * *End Frame without Start Frame*: you know how your story ends but want to see how it started, just give an End Frame (no start Frame) 
+   *  New GGUF Checkpoints
+   *  VAE Decoding hopefully should expose less banding
+
+
+
 ### March 7th 2026: WanGP v10.981, Expecting an Update ? 
 
 - **LTX-2 2.3**: 0 day delivery of LTX 2 latest version with better *audio*, *image 2 video* and *greater details*. This model is bigger (22B versus 19B), but with WanGP VRAM usage will be still ridiculously low. Try it at 720p or 1080p, this is where it will shine the most !

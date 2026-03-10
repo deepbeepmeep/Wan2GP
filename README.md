@@ -52,6 +52,8 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 - **LTX Desktop WanGP**: as a sample app (made just for fun) that uses WanGP API, you may try LTX Desktop. This app offers Video / Audio nice editing capabilities but will require 32+ VRAM to run. As now it uses WanGP as its core engine, VRAM requirements are much smaller. It will use LTX 2.3 for Video Gen & Z Image turbo fo Image gen. You can reuse (in theory) your current WanGP install with *LTX Destop WanGP*.
 
+Please note as people preferred mataynone v1 over v2 I have added an option to select matanyone version in the Config / Extension tab
+
 ### March 7th 2026: WanGP v10.981, Expecting an Update ? 
 
 - **LTX-2 2.3**: 0 day delivery of LTX 2 latest version with better *audio*, *image 2 video* and *greater details*. This model is bigger (22B versus 19B), but with WanGP VRAM usage will be still ridiculously low. Try it at 720p or 1080p, this is where it will shine the most !

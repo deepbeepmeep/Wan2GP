@@ -29,6 +29,7 @@ enhancer_quantization_SAFETENSORS = "safetensors"
 enhancer_quantization_QUANTO_INT8 = "quanto_int8"
 QWEN35_GGUF_LLAMACPP_ENV = "WGP_GGUF_LLAMACPP_CUDA"
 QWEN35_TEXT_GGUF_FILENAME = "Qwen3.5-9B-Abliterated-text-Q4_K_M.gguf"
+QWEN35_TEXT_INT8_FILENAME = "Qwen3.5-9B-Abliterated_quanto_bf16_int8.safetensors"
 QWEN35_VISION_FILENAME = "Qwen3.5-9B-vision_bf16.safetensors"
 QWEN35_PROMPT_MIN_NEW_TOKENS = 4
 QWEN35_ABLITERATED_REPO = "DeepBeepMeep/Wan2.1"
@@ -62,7 +63,7 @@ QWEN35_VARIANT_SPECS = {
         ],
         "text_repo": QWEN35_ABLITERATED_REPO,
         "text_required_files": list(QWEN35_ABLITERATED_TEXT_REQUIRED_FILES),
-        "text_int8_filename": "Qwen3.5-9B-abliterated_quanto_bf16_int8.safetensors",
+        "text_int8_filename": QWEN35_TEXT_INT8_FILENAME,
         "gguf_repo": QWEN35_ABLITERATED_REPO,
         "text_gguf_filename": QWEN35_TEXT_GGUF_FILENAME,
         "vision_filename": QWEN35_VISION_FILENAME,

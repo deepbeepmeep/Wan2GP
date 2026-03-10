@@ -340,7 +340,7 @@ These kernels are only useful for GGUF models.
 
 - Windows
    ```
-  # placeholder: Windows GGUF wheel for Python 3.10 / PyTorch 2.7.1 / CUDA 12.8 not published yet
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch271cu128py310-cp310-cp310-win_amd64.whl
    ```
 
 - Linux

@@ -73,6 +73,7 @@ session = init(
     callbacks=MyCallbacks(),                        # optional
     cli_args=["--attention", "sdpa"],              # optional
     console_output=True,                           # optional, default=True
+    console_isatty=True,                           # optional, default=True
 )
 ```
 
@@ -100,6 +101,11 @@ session = init(
   - Enables or disables writing WanGP stdout/stderr to the real console.
   - Default: `True`
   - The stream object always receives a copy of stdout/stderr, regardless of this setting.
+
+- `console_isatty`
+  - Controls the TTY capability reported by the API's console capture wrapper.
+  - Default: `True`
+  - Keep this enabled if you want tqdm or other terminal-style progress output to behave like a live console stream even when WanGP is called from another Python process.
 
 ## Accepted Input Shapes
 

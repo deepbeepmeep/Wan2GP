@@ -123,14 +123,29 @@ class SessionStream:
 
 
 class _OutputCapture(io.TextIOBase):
-    def __init__(self, stream_name: str, emit_line, console: io.TextIOBase | None = None) -> None:
+    def __init__(
+        self,
+        stream_name: str,
+        emit_line,
+        console: io.TextIOBase | None = None,
+        *,
+        console_isatty: bool = True,
+    ) -> None:
         self._stream_name = stream_name
         self._emit_line = emit_line
         self._console = console
+        self._console_isatty = bool(console_isatty)
         self._buffer = ""
 
     def writable(self) -> bool:
         return True
+
+    @property
+    def encoding(self) -> str:
+        return str(getattr(self._console, "encoding", "utf-8"))
+
+    def isatty(self) -> bool:
+        return self._console_isatty
 
     def write(self, text: str) -> int:
         if not text:
@@ -225,6 +240,7 @@ class WanGPSession:
         callbacks: object | None = None,
         cli_args: Sequence[str] = (),
         console_output: bool = True,
+        console_isatty: bool = True,
     ) -> None:
         self._root = Path(root or Path(__file__).resolve().parents[1]).resolve()
         self._config_path = Path(config_path).resolve() if config_path is not None else (self._root / "wgp_config.json").resolve()
@@ -232,6 +248,7 @@ class WanGPSession:
         self._callbacks = callbacks
         self._cli_args = tuple(str(arg) for arg in cli_args)
         self._console_output = bool(console_output)
+        self._console_isatty = bool(console_isatty)
         self._state = self._create_headless_state()
         self._active_job: SessionJob | None = None
         self._job_lock = threading.Lock()
@@ -345,11 +362,13 @@ class WanGPSession:
                         "stdout",
                         lambda stream_name, line: self._emit_stream(job, stream_name, line),
                         console=sys.__stdout__ if self._console_output else None,
+                        console_isatty=self._console_isatty,
                     )
                     stderr_capture = _OutputCapture(
                         "stderr",
                         lambda stream_name, line: self._emit_stream(job, stream_name, line),
                         console=sys.__stderr__ if self._console_output else None,
+                        console_isatty=self._console_isatty,
                     )
                     try:
                         with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):

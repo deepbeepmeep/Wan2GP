@@ -99,5 +99,6 @@
 	"audio_guide": null,
 	"audio_guide2": null,
 	"custom_guide": null,
-	"audio_source": null
+	"audio_source": null,
+	"matanyone_version": "v1"
 }

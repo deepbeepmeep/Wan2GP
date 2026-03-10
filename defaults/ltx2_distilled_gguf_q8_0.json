@@ -2,7 +2,7 @@
     "model": {
         "name": "LTX-2 2.0 Distilled GGUF Q8_0 19B ",
         "architecture": "ltx2_19B",
-        "description": "LTX-2 distilled GGUF Q8_0 checkpoint for llama.cpp-backed quantization.",
+        "description": "LTX-2 distilled GGUF Q8_0 checkpoint made by Kijai.",
         "URLs": [
             "https://huggingface.co/Kijai/LTXV2_comfy/resolve/main/diffusion_models/ltx-2-19b-distilled_Q8_0.gguf"
         ],

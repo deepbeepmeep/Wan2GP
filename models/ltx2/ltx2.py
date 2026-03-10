@@ -249,7 +249,10 @@ class _LTX2VAEHelper:
         mixed_precision: bool,
         output_height: int | None = None,
         output_width: int | None = None,
-    ) -> int:
+    ) -> int | tuple[int, int]:
+        if vae_config >= 4:
+            vae_config = 0
+
         if vae_config == 0:
             if mixed_precision:
                 device_mem_capacity = device_mem_capacity / 1.5
@@ -266,13 +269,15 @@ class _LTX2VAEHelper:
         if ref_size is not None and ref_size > 480:
             use_vae_config += 1
 
+        spatial_tile_size = 128
         if use_vae_config <= 1:
-            return 0
-        if use_vae_config == 2:
-            return 512
-        if use_vae_config == 3:
-            return 256
-        return 128
+            spatial_tile_size = 0
+        elif use_vae_config == 2:
+            spatial_tile_size = 512
+        elif use_vae_config == 3:
+            spatial_tile_size = 256
+
+        return spatial_tile_size
 
 
 def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
@@ -376,11 +381,15 @@ def _normalize_temporal_overlap(overlap_frames: int, tile_frames: int) -> int:
 
 
 def _build_tiling_config(tile_size: int | tuple | list | None, fps: float | None) -> TilingConfig | None:
+    temporal_tiling_divisor = 1
     spatial_config = None
     if isinstance(tile_size, (tuple, list)):
         if len(tile_size) == 0:
             tile_size = None
-        tile_size = tile_size[-1]
+        else:
+            if len(tile_size) > 1:
+                temporal_tiling_divisor = max(1, int(tile_size[0] or 1))
+            tile_size = tile_size[-1]
     if tile_size is not None:
         tile_size = _normalize_tiling_size(tile_size)
         if tile_size > 0:
@@ -392,7 +401,8 @@ def _build_tiling_config(tile_size: int | tuple | list | None, fps: float | None
 
     temporal_config = None
     if fps is not None and fps > 0:
-        tile_frames = _normalize_temporal_tiling_size(int(math.ceil(float(fps) * 5.0)))
+        temporal_tiling_divisor = max(1, temporal_tiling_divisor)
+        tile_frames = _normalize_temporal_tiling_size(int(math.ceil(float(fps) * 5.0 / temporal_tiling_divisor)))
         if tile_frames > 0:
             overlap_frames = int(round(tile_frames * 3 / 8))
             overlap_frames = _normalize_temporal_overlap(overlap_frames, tile_frames)
@@ -568,7 +578,7 @@ class LTX2:
         transformer_sd_ops = LTXV_MODEL_COMFY_RENAMING_MAP
         with init_empty_weights():
             velocity_model = LTXModelConfigurator.from_config(base_config)
-        velocity_model = _load_component(velocity_model, transformer_path, transformer_sd_ops)
+        velocity_model = _load_component(velocity_model, transformer_path, transformer_sd_ops, ignore_unused_weights=True)
         transformer = X0Model(velocity_model)
         transformer.eval().requires_grad_(False)
         VAE_URLs = self.model_def.get("VAE_URLs", None)

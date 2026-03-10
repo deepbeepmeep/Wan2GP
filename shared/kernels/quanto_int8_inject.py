@@ -39,7 +39,7 @@ _TIME_PROFILE_CPU_MS = 0.0
 _TIME_PROFILE_CALLS = 0
 _DEBUG_OVERRIDE: Optional[bool] = None
 
-_PATCH_STATE = SimpleNamespace(enabled=False, orig_forward=None)
+_PATCH_STATE = SimpleNamespace(enabled=False, orig_forward=None, orig_embedding_forward=None)
 _OPS_REGISTERED = False
 _OPS_NAMESPACE = "wan2gp_int8"
 _OPS_LIBS = []
@@ -83,7 +83,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _log(msg: str) -> None:
-    print(f"[WAN2GP][INT8][quanto] {msg}")
+    print(f"[Quanto][INT8] {msg}")
 
 
 def _debug(msg: str) -> None:
@@ -518,6 +518,68 @@ def _use_int8_kernel(input: torch.Tensor, other: torch.Tensor) -> bool:
     return input.is_cuda and input.dtype in (torch.bfloat16, torch.float16, torch.float32)
 
 
+def _use_int8_embedding_kernel(module, input: torch.Tensor) -> bool:
+    if _RUNTIME_DISABLED:
+        return False
+    if _TRITON_MODULE is None:
+        return False
+    if not torch.is_tensor(input):
+        return False
+    qweight = getattr(module, "qweight", None)
+    if not _is_weight_qbytes(qweight):
+        return False
+    if qweight._data.dtype != torch.int8:
+        return False
+    if getattr(module, "max_norm", None) is not None:
+        return False
+    if bool(getattr(module, "scale_grad_by_freq", False)) or bool(getattr(module, "sparse", False)):
+        return False
+    if input.device != qweight._data.device:
+        return False
+    scale = getattr(qweight, "_scale", None)
+    if not torch.is_tensor(scale) or scale.device != input.device:
+        return False
+    return True
+
+
+def _gather_embedding_scale(qweight, input: torch.Tensor) -> torch.Tensor:
+    scale = qweight._scale
+    if scale.ndim == 0 or scale.numel() == 1:
+        return scale
+    if scale.ndim == 1:
+        if scale.shape[0] != qweight._data.shape[0]:
+            raise RuntimeError("Quanto embedding scale length mismatch.")
+        scale = scale.unsqueeze(-1)
+    elif scale.ndim == 2:
+        if scale.shape[0] != qweight._data.shape[0]:
+            raise RuntimeError("Quanto embedding scale row count mismatch.")
+        if scale.shape[1] != 1:
+            raise RuntimeError("Quanto embedding fast path only supports per-row scales.")
+    else:
+        raise RuntimeError("Quanto embedding fast path only supports scalar or per-row scales.")
+    return torch.nn.functional.embedding(input, scale)
+
+
+def _int8_embedding_forward(module, input: torch.Tensor) -> torch.Tensor:
+    qweight = module.qweight
+    gathered = torch.nn.functional.embedding(
+        input,
+        qweight._data,
+        module.padding_idx,
+        None,
+        module.norm_type,
+        False,
+        False,
+    )
+    gathered = gathered.to(qweight._scale.dtype)
+    scale = _gather_embedding_scale(qweight, input)
+    if torch.is_tensor(scale):
+        if scale.ndim == gathered.ndim - 1:
+            scale = scale.unsqueeze(-1)
+        return gathered * scale
+    return gathered * scale
+
+
 def _activation_rows(input_shape: torch.Size) -> int:
     rows = 1
     for dim in input_shape[:-1]:
@@ -643,6 +705,11 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
     except Exception as exc:
         _debug(f"cannot import optimum.quanto qbytes ({exc})")
         return False
+    try:
+        from mmgp import offload as _mmgp_offload
+    except Exception as exc:
+        _debug(f"cannot import mmgp.offload ({exc})")
+        return False
 
     if triton_mod is None:
         triton_mod, _ = _probe_triton_backend()
@@ -655,6 +722,7 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
     _ensure_compile_safe_ops()
 
     orig_forward = _qbytes.WeightQBytesLinearFunction.forward
+    orig_embedding_forward = _mmgp_offload.QEmbedding.forward
 
     def forward(ctx, input, other, bias=None):
         dense_hot_path = (
@@ -706,9 +774,30 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
                 f"Full Triton error details:\n{full_detail}"
             ) from exc
 
+    def embedding_forward(self, input):
+        if not _use_int8_embedding_kernel(self, input):
+            return orig_embedding_forward(self, input)
+        try:
+            return _int8_embedding_forward(self, input)
+        except Exception as exc:
+            short_reason = _summarize_kernel_error(exc)
+            if _allow_runtime_fallback():
+                _disable_runtime(short_reason)
+                _debug(f"Full embedding fast-path failure detail:\n{_format_exception_detail(exc)}")
+                return orig_embedding_forward(self, input)
+            full_detail = _format_exception_detail(exc)
+            raise RuntimeError(
+                "Injected Quanto int8 embedding fast path failed. "
+                f"Set {_ENV_ALLOW_RUNTIME_FALLBACK}=1 to force fallback to non-injected Quanto path. "
+                f"Reason: {short_reason}\n"
+                f"Full error details:\n{full_detail}"
+            ) from exc
+
     _qbytes.WeightQBytesLinearFunction.forward = staticmethod(forward)
+    _mmgp_offload.QEmbedding.forward = embedding_forward
     _PATCH_STATE.enabled = True
     _PATCH_STATE.orig_forward = orig_forward
+    _PATCH_STATE.orig_embedding_forward = orig_embedding_forward
     return True
 
 
@@ -721,8 +810,12 @@ def disable_quanto_int8_kernel(notify_disabled = False) -> bool:
     from optimum.quanto.tensor.weights import qbytes as _qbytes
 
     _qbytes.WeightQBytesLinearFunction.forward = staticmethod(_PATCH_STATE.orig_forward)
+    from mmgp import offload as _mmgp_offload
+    if _PATCH_STATE.orig_embedding_forward is not None:
+        _mmgp_offload.QEmbedding.forward = _PATCH_STATE.orig_embedding_forward
     _PATCH_STATE.enabled = False
     _PATCH_STATE.orig_forward = None
+    _PATCH_STATE.orig_embedding_forward = None
     _FUSED_LAUNCH_CACHE = {}
     _FUSED_LAUNCH_CACHE_FIFO = []
     _SCALED_LAUNCH_CACHE = {}

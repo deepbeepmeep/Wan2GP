@@ -104,6 +104,18 @@ def _get_audio_codec_settings(codec_key):
     return settings.get(codec_key, settings["wav"])
 
 
+def get_mp4_audio_codec_settings(codec_key):
+    codec_key = "aac_128" if not codec_key else str(codec_key).lower()
+    settings = {
+        "aac_128": {"codec": "aac", "bitrate": "128k", "ext": ".aac"},
+        "aac_192": {"codec": "aac", "bitrate": "192k", "ext": ".aac"},
+        "aac_256": {"codec": "aac", "bitrate": "256k", "ext": ".aac"},
+        "aac_320": {"codec": "aac", "bitrate": "320k", "ext": ".aac"},
+        "alac": {"codec": "alac", "bitrate": None, "ext": ".m4a"},
+    }
+    return settings.get(codec_key, settings["aac_128"])
+
+
 def get_audio_codec_extension(codec_key):
     return _get_audio_codec_settings(codec_key)["ext"]
 
@@ -151,9 +163,9 @@ def extract_audio_track_to_wav(video_path, output_path):
 
 
 
-def extract_audio_tracks(source_video, verbose=False, query_only=False):
+def extract_audio_tracks(source_video, verbose=False, query_only=False, codec_key="aac_128", temp_format=None):
     """
-    Extract all audio tracks from a source video into temporary AAC files.
+    Extract all audio tracks from a source video into temporary audio files.
 
     Returns:
         Tuple:
@@ -195,9 +207,13 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False):
 
     file_paths = []
     metadata = []
+    if temp_format == "wav":
+        audio_settings = {"codec": "pcm_s16le", "bitrate": None, "ext": ".wav"}
+    else:
+        audio_settings = get_mp4_audio_codec_settings(codec_key)
 
     for i, stream in enumerate(audio_streams):
-        fd, temp_path = tempfile.mkstemp(suffix=f'_track{i}.aac', prefix='audio_')
+        fd, temp_path = tempfile.mkstemp(suffix=f'_track{i}{audio_settings["ext"]}', prefix='audio_')
         os.close(fd)
 
         file_paths.append(temp_path)
@@ -209,10 +225,10 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False):
             'language': stream.get('tags', {}).get('language', None)
         })
 
-        ffmpeg.input(source_video).output(
-            temp_path,
-            **{f'map': f'0:a:{i}', 'acodec': 'aac', 'b:a': '128k'}
-        ).overwrite_output().run(quiet=not verbose)
+        output_kwargs = {f'map': f'0:a:{i}', 'acodec': audio_settings["codec"]}
+        if audio_settings["bitrate"]:
+            output_kwargs['b:a'] = audio_settings["bitrate"]
+        ffmpeg.input(source_video).output(temp_path, **output_kwargs).overwrite_output().run(quiet=not verbose)
 
     return file_paths, metadata
 
@@ -224,10 +240,12 @@ def combine_and_concatenate_video_with_audio_tracks(
     source_audio_duration, audio_sampling_rate,
     new_audio_from_start=False,
     source_audio_metadata=None,
-    audio_bitrate='128k',
-    audio_codec='aac',
+    audio_codec_key="aac_128",
     verbose = False
 ):
+    audio_settings = get_mp4_audio_codec_settings(audio_codec_key)
+    audio_codec = audio_settings["codec"]
+    audio_bitrate = audio_settings["bitrate"]
     inputs, filters, maps, idx = ['-i', video_path], [], ['-map', '0:v'], 1
     metadata_args = []
     sources = source_audio_tracks or []
@@ -290,10 +308,11 @@ def combine_and_concatenate_video_with_audio_tracks(
            *maps, *metadata_args,
            '-c:v', 'copy',
            '-c:a', audio_codec,
-           '-b:a', audio_bitrate,
            '-ar', str(audio_sampling_rate),
            '-ac', '1',
            '-shortest', save_path_tmp]
+    if audio_bitrate:
+        cmd[-6:-6] = ['-b:a', audio_bitrate]
 
     if verbose:
         print(f"ffmpeg command: {cmd}")

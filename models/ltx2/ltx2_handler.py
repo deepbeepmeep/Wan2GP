@@ -145,6 +145,7 @@ class family_handler:
             "frames_steps": 8,
             "sliding_window": True,
             "image_prompt_types_allowed": "TSEV",
+            "end_frames_always_enabled": True,
             "returns_audio": True,
             "any_audio_prompt": True,
             "audio_prompt_choices": True,

@@ -5,10 +5,11 @@ import re
 import torch
 from torch.utils import _pytree as pytree
 
-from optimum.quanto import QModuleMixin
+from optimum.quanto import QModuleMixin, register_qmodule
 from optimum.quanto.tensor.qtensor import QTensor
 from optimum.quanto.tensor.qtype import qtype as _quanto_qtype, qtypes as _quanto_qtypes
 from collections import OrderedDict
+from mmgp.offload import QEmbedding as BaseQEmbedding
 
 
 HANDLER_NAME = "gguf"
@@ -33,6 +34,11 @@ _GGUF_QTYPE = _quanto_qtypes[_GGUF_QTYPE_NAME]
 
 _GGUF_DEFAULT_DTYPE = None
 _GGUF_LABEL_CACHE = {}
+_GGUF_RUNTIME_LOGGED = set()
+_GGUF_CUDA_KERNELS_ENV = "WGP_GGUF_LLAMACPP_CUDA"
+_GGUF_CUDA_KERNELS_ENABLED_CACHE = None
+_GGUF_CUDA_MODULE = None
+_GGUF_CUDA_LOAD_ERROR = None
 
 
 def _normalize_gguf_path(file_path):
@@ -59,6 +65,97 @@ def _resolve_default_dtype(dtype, fallback=None):
     if _GGUF_DEFAULT_DTYPE is not None and fallback is not None and dtype == fallback:
         return _GGUF_DEFAULT_DTYPE
     return dtype
+
+
+def _gguf_log_once(key, message):
+    if key in _GGUF_RUNTIME_LOGGED:
+        return
+    _GGUF_RUNTIME_LOGGED.add(key)
+    print(message)
+
+
+def _gguf_cuda_env_enabled():
+    raw = str(os.environ.get(_GGUF_CUDA_KERNELS_ENV, "1")).strip().lower()
+    return raw in ("1", "true", "yes", "y", "on")
+
+
+def _validate_gguf_cuda_module(module):
+    import numpy as np
+
+    if gguf is None:
+        raise RuntimeError("gguf package is unavailable")
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is not available")
+    if not module.may_support_linear_qtype_name("Q4_0"):
+        raise RuntimeError("Q4_0 linear is not supported by the installed GGUF CUDA package")
+
+    weight = np.linspace(-1.0, 1.0, 32, dtype=np.float32).reshape(1, 32)
+    quantized_weight = gguf.quants.quantize(weight, gguf.GGMLQuantizationType.Q4_0)
+    raw_weight = torch.from_numpy(quantized_weight).contiguous().cuda()
+    input_tensor = torch.linspace(-0.5, 0.5, 64, dtype=torch.float32, device="cuda").reshape(2, 32)
+    fast_out = module.linear(raw_weight, "Q4_0", [1, 32], input_tensor, None, torch.float32)
+    dense_weight = torch.from_numpy(gguf.quants.dequantize(quantized_weight, gguf.GGMLQuantizationType.Q4_0)).to(device=input_tensor.device, dtype=torch.float32)
+    ref_out = torch.nn.functional.linear(input_tensor, dense_weight, None)
+    torch.cuda.synchronize()
+    if fast_out.shape != ref_out.shape:
+        raise RuntimeError(f"Q4 self-test shape mismatch: {tuple(fast_out.shape)} vs {tuple(ref_out.shape)}")
+    if not torch.allclose(fast_out, ref_out, atol=2e-2, rtol=2e-2):
+        max_diff = float((fast_out - ref_out).abs().max().item())
+        raise RuntimeError(f"Q4 self-test output mismatch (max diff {max_diff:.6f})")
+
+
+def _probe_gguf_cuda_runtime(force=False):
+    global _GGUF_CUDA_KERNELS_ENABLED_CACHE, _GGUF_CUDA_MODULE, _GGUF_CUDA_LOAD_ERROR
+    if not force and not _gguf_cuda_env_enabled():
+        _GGUF_CUDA_KERNELS_ENABLED_CACHE = False
+        _GGUF_CUDA_MODULE = None
+        _GGUF_CUDA_LOAD_ERROR = None
+        return False
+    try:
+        import llamacpp_gguf_cuda as gguf_cuda_module
+        _validate_gguf_cuda_module(gguf_cuda_module)
+    except Exception as exc:
+        _GGUF_CUDA_KERNELS_ENABLED_CACHE = False
+        _GGUF_CUDA_MODULE = None
+        _GGUF_CUDA_LOAD_ERROR = exc
+        _gguf_log_once("gguf_cuda_probe_failed", f"[GGUF][llama.cpp CUDA] kernels unavailable, using fallback: {exc}")
+        return False
+    _GGUF_CUDA_KERNELS_ENABLED_CACHE = True
+    _GGUF_CUDA_MODULE = gguf_cuda_module
+    _GGUF_CUDA_LOAD_ERROR = None
+    _gguf_log_once("gguf_cuda_probe_ok", "[GGUF][llama.cpp CUDA] kernels available.")
+    return True
+
+
+def _gguf_cuda_kernels_enabled():
+    global _GGUF_CUDA_KERNELS_ENABLED_CACHE
+    if _GGUF_CUDA_KERNELS_ENABLED_CACHE is not None:
+        return _GGUF_CUDA_KERNELS_ENABLED_CACHE
+    return _probe_gguf_cuda_runtime()
+
+
+def _gguf_cuda_module():
+    if not _gguf_cuda_kernels_enabled():
+        return None
+    return _GGUF_CUDA_MODULE
+
+
+def set_gguf_cuda_kernels_enabled(enabled=None):
+    global _GGUF_CUDA_KERNELS_ENABLED_CACHE, _GGUF_CUDA_MODULE, _GGUF_CUDA_LOAD_ERROR
+    if enabled is False:
+        _GGUF_CUDA_KERNELS_ENABLED_CACHE = False
+        _GGUF_CUDA_MODULE = None
+        _GGUF_CUDA_LOAD_ERROR = None
+        return
+    _GGUF_CUDA_KERNELS_ENABLED_CACHE = None
+    _GGUF_CUDA_MODULE = None
+    _GGUF_CUDA_LOAD_ERROR = None
+    if enabled is None:
+        return _probe_gguf_cuda_runtime()
+    return _probe_gguf_cuda_runtime(force=True)
+
+
+_probe_gguf_cuda_runtime()
 
 def get_file_metadata(file_path):
     if gguf is None:
@@ -290,6 +387,39 @@ class GGUFSourceTensor(torch.Tensor):
         torch.utils.swap_tensors(self, data)
 
 
+def materialize_source_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    if not isinstance(tensor, GGUFSourceTensor):
+        return tensor
+    with torch._C.DisableTorchFunctionSubclass():
+        plain = torch.empty_strided(
+            tuple(tensor.shape),
+            tuple(tensor.stride()),
+            dtype=tensor.dtype,
+            device=tensor.device,
+        )
+        plain.copy_(tensor)
+    return plain
+
+
+def materialize_module_source_tensors(module: torch.nn.Module) -> int:
+    converted = 0
+    for submodule in module.modules():
+        for name, param in list(submodule._parameters.items()):
+            if param is None or not isinstance(param, GGUFSourceTensor):
+                continue
+            submodule._parameters[name] = torch.nn.Parameter(
+                materialize_source_tensor(param),
+                requires_grad=param.requires_grad,
+            )
+            converted += 1
+        for name, buf in list(submodule._buffers.items()):
+            if buf is None or not isinstance(buf, GGUFSourceTensor):
+                continue
+            submodule._buffers[name] = materialize_source_tensor(buf)
+            converted += 1
+    return converted
+
+
 def _split_gguf_tensor(src, *, dim, split_sizes, context):
     if not torch.is_tensor(src):
         return None
@@ -343,6 +473,76 @@ def _gguf_qtype_name(qtype_obj):
     if qtype_obj is None:
         return None
     return getattr(qtype_obj, "name", None) or str(qtype_obj)
+
+
+def _try_llamacpp_cuda_linear(weight_tensor, input_tensor, bias, target_dtype):
+    if not _gguf_cuda_kernels_enabled():
+        return None
+    if not torch.is_tensor(input_tensor) or input_tensor.device.type != "cuda":
+        return None
+    raw = getattr(weight_tensor, "_data", None)
+    if not torch.is_tensor(raw) or raw.device.type != "cuda" or not raw.is_contiguous():
+        return None
+    qtype_name = _gguf_qtype_name(getattr(weight_tensor, "_tensor_type", None))
+    try:
+        gguf_llamacpp_cuda = _gguf_cuda_module()
+        if gguf_llamacpp_cuda is None or not gguf_llamacpp_cuda.may_support_linear_qtype_name(qtype_name):
+            return None
+        return gguf_llamacpp_cuda.linear(raw, qtype_name, tuple(getattr(weight_tensor, "_tensor_shape", weight_tensor.shape)), input_tensor, bias, target_dtype)
+    except Exception as exc:
+        _gguf_log_once(f"llamacpp_cuda_linear_{qtype_name}", f"[GGUF][llama.cpp CUDA] linear GGUF CUDA kernels failed for {qtype_name}, using fallback: {exc}")
+        return None
+
+
+def _try_llamacpp_cuda_embedding(weight_tensor, index_tensor, target_dtype):
+    if not _gguf_cuda_kernels_enabled():
+        return None
+    if not torch.is_tensor(index_tensor) or index_tensor.device.type != "cuda":
+        return None
+    raw = getattr(weight_tensor, "_data", None)
+    if not torch.is_tensor(raw) or raw.device.type != "cuda" or not raw.is_contiguous():
+        return None
+    qtype_name = _gguf_qtype_name(getattr(weight_tensor, "_tensor_type", None))
+    try:
+        gguf_llamacpp_cuda = _gguf_cuda_module()
+        if gguf_llamacpp_cuda is None or not gguf_llamacpp_cuda.may_support_embedding_qtype_name(qtype_name):
+            return None
+        return gguf_llamacpp_cuda.embedding(raw, qtype_name, tuple(getattr(weight_tensor, "_tensor_shape", weight_tensor.shape)), index_tensor, target_dtype)
+    except Exception as exc:
+        _gguf_log_once(f"llamacpp_cuda_embedding_{qtype_name}", f"[GGUF][llama.cpp CUDA] embedding GGUF CUDA kernels failed for {qtype_name}, using fallback: {exc}")
+        return None
+
+
+def _may_try_llamacpp_cuda_linear(weight_tensor, input_tensor):
+    if not _gguf_cuda_kernels_enabled():
+        return False
+    if not torch.is_tensor(input_tensor) or input_tensor.device.type != "cuda":
+        return False
+    raw = getattr(weight_tensor, "_data", None)
+    if not torch.is_tensor(raw) or raw.device.type != "cuda" or not raw.is_contiguous():
+        return False
+    qtype_name = _gguf_qtype_name(getattr(weight_tensor, "_tensor_type", None))
+    try:
+        gguf_llamacpp_cuda = _gguf_cuda_module()
+        return gguf_llamacpp_cuda is not None and gguf_llamacpp_cuda.may_support_linear_qtype_name(qtype_name)
+    except Exception:
+        return False
+
+
+def _may_try_llamacpp_cuda_embedding(weight_tensor, index_tensor):
+    if not _gguf_cuda_kernels_enabled():
+        return False
+    if not torch.is_tensor(index_tensor) or index_tensor.device.type != "cuda":
+        return False
+    raw = getattr(weight_tensor, "_data", None)
+    if not torch.is_tensor(raw) or raw.device.type != "cuda" or not raw.is_contiguous():
+        return False
+    qtype_name = _gguf_qtype_name(getattr(weight_tensor, "_tensor_type", None))
+    try:
+        gguf_llamacpp_cuda = _gguf_cuda_module()
+        return gguf_llamacpp_cuda is not None and gguf_llamacpp_cuda.may_support_embedding_qtype_name(qtype_name)
+    except Exception:
+        return False
 
 
 def _guess_variant_from_filename(filename):
@@ -725,6 +925,10 @@ class GGUFWeightTensor(QTensor):
         else:
             target_dtype = _resolve_default_dtype(self._gguf_default_dtype, fallback=self.dtype)
             target_device = self.device
+        if _may_try_llamacpp_cuda_linear(self, input):
+            fast_out = _try_llamacpp_cuda_linear(self, input, bias, target_dtype)
+            if fast_out is not None:
+                return fast_out
         weight = self.dequantize(dtype=target_dtype, device=target_device)
         if torch.is_tensor(input) and input.dtype != weight.dtype:
             input = input.to(weight.dtype)
@@ -968,6 +1172,267 @@ class QLinearGGUF(QModuleMixin, torch.nn.Linear):
                 self.output_scale = torch.ones((), dtype=scale_dtype, device=scale_device)
 
         return
+
+
+@register_qmodule(torch.nn.Conv1d)
+class QConv1dGGUF(QModuleMixin, torch.nn.Conv1d):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        padding=0,
+        dilation=1,
+        groups=1,
+        bias=True,
+        padding_mode="zeros",
+        device=None,
+        dtype=None,
+        weights=None,
+        activations=None,
+        optimizer=None,
+        quantize_input=True,
+    ):
+        super().__init__(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            bias=bias,
+            padding_mode=padding_mode,
+            device=device,
+            dtype=dtype,
+            weights=weights,
+            activations=activations,
+            optimizer=optimizer,
+            quantize_input=quantize_input,
+        )
+        self._gguf_default_dtype = dtype
+
+    @classmethod
+    def qcreate(cls, module, weights, activations=None, optimizer=None, device=None):
+        if torch.is_tensor(module.weight) and module.weight.dtype.is_floating_point:
+            weight_dtype = module.weight.dtype
+        elif torch.is_tensor(getattr(module, "bias", None)) and module.bias.dtype.is_floating_point:
+            weight_dtype = module.bias.dtype
+        else:
+            weight_dtype = torch.float16
+        return cls(
+            module.in_channels,
+            module.out_channels,
+            module.kernel_size,
+            stride=module.stride,
+            padding=module.padding,
+            dilation=module.dilation,
+            groups=module.groups,
+            bias=module.bias is not None,
+            padding_mode=module.padding_mode,
+            device=device,
+            dtype=weight_dtype,
+            weights=weights,
+            activations=activations,
+            optimizer=optimizer,
+            quantize_input=True,
+        )
+
+    def set_default_dtype(self, dtype):
+        self._gguf_default_dtype = dtype
+
+    @property
+    def qweight(self):
+        if self.weight_qtype == _GGUF_QTYPE:
+            return self.weight
+        return super().qweight
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        qweight = self.qweight
+        if isinstance(qweight, GGUFWeightTensor):
+            target_dtype = _resolve_default_dtype(self._gguf_default_dtype, fallback=input.dtype)
+            weight = qweight.dequantize(dtype=target_dtype, device=input.device)
+            bias = _maybe_cast_bias(self.bias, weight.dtype)
+            if input.dtype != weight.dtype:
+                input = input.to(weight.dtype)
+            return torch.nn.functional.conv1d(
+                input,
+                weight,
+                bias=bias,
+                stride=self.stride,
+                padding=self.padding,
+                dilation=self.dilation,
+                groups=self.groups,
+            )
+        return torch.nn.functional.conv1d(
+            input,
+            qweight,
+            bias=self.bias,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            groups=self.groups,
+        )
+
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ):
+        if self.weight_qtype != _GGUF_QTYPE:
+            return super()._load_from_state_dict(
+                state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+            )
+
+        weight_key = prefix + "weight"
+        bias_key = prefix + "bias"
+        input_scale_key = prefix + "input_scale"
+        output_scale_key = prefix + "output_scale"
+
+        weight_raw = state_dict.pop(weight_key, None)
+        bias = state_dict.pop(bias_key, None)
+        input_scale = state_dict.pop(input_scale_key, None)
+        output_scale = state_dict.pop(output_scale_key, None)
+
+        if weight_raw is None:
+            missing_keys.append(weight_key)
+
+        target_dtype = _resolve_default_dtype(self._gguf_default_dtype, fallback=self.weight.dtype)
+        if weight_raw is not None:
+            gguf_weight = GGUFWeightTensor.create(
+                raw_tensor=weight_raw,
+                size=self.weight.size(),
+                stride=self.weight.stride(),
+                dtype=target_dtype,
+                device=weight_raw.device,
+                requires_grad=False,
+            )
+            self.weight = torch.nn.Parameter(gguf_weight, requires_grad=False)
+
+        if bias is not None:
+            self.bias = torch.nn.Parameter(bias, requires_grad=False)
+
+        if torch.is_tensor(weight_raw):
+            scale_device = weight_raw.device
+        elif torch.is_tensor(self.weight):
+            scale_device = self.weight.device
+        elif torch.is_tensor(bias):
+            scale_device = bias.device
+        else:
+            scale_device = torch.device("cpu")
+
+        if input_scale is not None:
+            self.input_scale = input_scale.to(scale_device)
+        elif not hasattr(self, "input_scale") or self.input_scale.is_meta:
+            scale_dtype = self.input_scale.dtype if hasattr(self, "input_scale") else torch.float32
+            self.input_scale = torch.ones((), dtype=scale_dtype, device=scale_device)
+
+        if output_scale is not None:
+            self.output_scale = output_scale.to(scale_device)
+        elif not hasattr(self, "output_scale") or self.output_scale.is_meta:
+            scale_dtype = self.output_scale.dtype if hasattr(self, "output_scale") else torch.float32
+            self.output_scale = torch.ones((), dtype=scale_dtype, device=scale_device)
+
+        return
+
+
+@register_qmodule(torch.nn.Embedding)
+class QEmbeddingGGUF(BaseQEmbedding):
+    def __init__(
+        self,
+        num_embeddings,
+        embedding_dim,
+        padding_idx=None,
+        max_norm=None,
+        norm_type=2.0,
+        scale_grad_by_freq=False,
+        sparse=False,
+        device=None,
+        dtype=None,
+        weights=None,
+        activations=None,
+        optimizer=None,
+        quantize_input=True,
+    ):
+        super().__init__(
+            num_embeddings,
+            embedding_dim,
+            padding_idx=padding_idx,
+            max_norm=max_norm,
+            norm_type=norm_type,
+            scale_grad_by_freq=scale_grad_by_freq,
+            sparse=sparse,
+            device=device,
+            dtype=dtype,
+            weights=weights,
+            activations=activations,
+            optimizer=optimizer,
+            quantize_input=quantize_input,
+        )
+        self._gguf_default_dtype = dtype
+
+    def set_default_dtype(self, dtype):
+        self._gguf_default_dtype = dtype
+
+    @property
+    def qweight(self):
+        if self.weight_qtype == _GGUF_QTYPE:
+            return self.weight
+        return super().qweight
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        qweight = self.qweight
+        if isinstance(qweight, GGUFWeightTensor):
+            target_dtype = _resolve_default_dtype(self._gguf_default_dtype, fallback=torch.float16)
+            if self.max_norm is None and not self.scale_grad_by_freq and not self.sparse:
+                if _may_try_llamacpp_cuda_embedding(qweight, input):
+                    fast_out = _try_llamacpp_cuda_embedding(qweight, input, target_dtype)
+                    if fast_out is not None:
+                        return fast_out
+            weight = qweight.dequantize(dtype=target_dtype, device=input.device)
+            return torch.nn.functional.embedding(
+                input,
+                weight,
+                self.padding_idx,
+                self.max_norm,
+                self.norm_type,
+                self.scale_grad_by_freq,
+                self.sparse,
+            )
+        return super().forward(input)
+
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ):
+        if self.weight_qtype != _GGUF_QTYPE:
+            return super()._load_from_state_dict(
+                state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+            )
+
+        weight_key = prefix + "weight"
+        weight_raw = state_dict.pop(weight_key, None)
+        if weight_raw is None:
+            missing_keys.append(weight_key)
+            return
+
+        target_dtype = _resolve_default_dtype(self._gguf_default_dtype, fallback=self.weight.dtype)
+        gguf_weight = GGUFWeightTensor.create(
+            raw_tensor=weight_raw,
+            size=self.weight.size(),
+            stride=self.weight.stride(),
+            dtype=target_dtype,
+            device=weight_raw.device,
+            requires_grad=False,
+        )
+        self.weight = torch.nn.Parameter(gguf_weight, requires_grad=False)
+        scale_device = weight_raw.device if torch.is_tensor(weight_raw) else torch.device("cpu")
+        if not hasattr(self, "input_scale") or self.input_scale is None or self.input_scale.is_meta:
+            self.input_scale = torch.ones((), dtype=torch.float32, device=scale_device)
+        else:
+            self.input_scale = self.input_scale.to(scale_device)
+        if not hasattr(self, "output_scale") or self.output_scale is None or self.output_scale.is_meta:
+            self.output_scale = torch.ones((), dtype=torch.float32, device=scale_device)
+        else:
+            self.output_scale = self.output_scale.to(scale_device)
 
 
 def _collect_gguf_specs(state_dict):

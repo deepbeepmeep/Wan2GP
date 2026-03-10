@@ -166,9 +166,19 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.VAE_precision_choice = gr.Dropdown(choices=[("16-bit (faster, less VRAM)", "16"), ("32-bit (slower, better for sliding window)", "32")], value=self.server_config.get("vae_precision", "16"), label="VAE Encoding/Decoding Precision")
                     self.compile_choice = gr.Dropdown(choices=[("On (up to 20% faster, requires Triton)", "transformer"), ("Off", "")], value=self.compile, label="Compile Transformer Model (slight speed again, but first generation is slower and potential compatibility issues with some GPUs/Models)", interactive=not self.args.lock_config)
                     self.depth_anything_v2_variant_choice = gr.Dropdown(choices=[("Large (more precise, slower)", "vitl"), ("Big (less precise, faster)", "vitb")], value=self.server_config.get("depth_anything_v2_variant", "vitl"), label="Depth Anything v2 VACE Preprocessor")
-                    self.vae_config_choice = gr.Dropdown(choices=[("Auto", 0), ("Disabled (fastest, high VRAM)", 1), ("256x256 Tiles (for >=8GB VRAM)", 2), ("128x128 Tiles (for >=6GB VRAM)", 3)], value=self.vae_config, label="VAE Tiling (to reduce VRAM usage)")
+                    vae_config_value = self.vae_config if self.vae_config in [0, 1, 2, 3] else 0
+                    self.vae_config_choice = gr.Dropdown(
+                        choices=[
+                            ("Auto", 0),
+                            ("Spatial / Temporal Tiling Preset for 16GB+", 1),
+                            ("Spatial / Temporal Tiling Preset for 8GB+", 2),
+                            ("Spatial / Temporal Tiling Preset for 6GB+", 3),
+                        ],
+                        value=vae_config_value,
+                        label="VAE Tiling (higher presets use less VRAM and may increase artifacts like banding)",
+                    )
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
-                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled", 1)], value=self.server_config.get("enable_int8_kernels", 0), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
+                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled if Triton availabe", 1)], value=self.server_config.get("enable_int8_kernels", 1), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
                     self.video_profile_choice = gr.Dropdown(
                         choices=self.memory_profile_choices,
                         value=self.default_profile_video,
@@ -196,7 +206,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
                 with gr.Tab("Extensions"):
                     with gr.Group():
-                        self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1), ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires 8-14GB extra download)")
+                        self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1), ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2), ("Qwen3.5VL Abliterated 4B (captioning + uncensored text enhancement, vllm accelerated if available)", 3), ("Qwen3.5VL Abliterated 9B (captioning + uncensored high end text enhancement, vllm accelerated if available)", 4)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires extra model files)")
+                        self.enhancer_quantization_choice = gr.Dropdown(
+                            choices=[("Quanto Int8 (better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")],
+                            value=self.server_config.get("prompt_enhancer_quantization", "quanto_int8"),
+                            label="Prompt Enhancer Qwen3.5 LLM Quantization",
+                        )
                         self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
                     with gr.Row():
                         self.prompt_enhancer_temperature_choice = gr.Slider(
@@ -245,11 +260,28 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         label="RIFE Temporal Upsampling Model",
                         interactive=not self.args.lock_config
                     )
+                    self.matanyone_version_choice = gr.Dropdown(
+                        choices=[("MatAnyone v1 (original, default)", "v1"), ("MatAnyone v2", "v2")],
+                        value=self.server_config.get("matanyone_version", "v1"),
+                        label="MatAnyone Video Mask Model",
+                        interactive=not self.args.lock_config
+                    )
 
                 with gr.Tab("Outputs"):
                     self.video_output_codec_choice = gr.Dropdown(choices=[("x265 CRF 28 (Balanced)", 'libx265_28'), ("x264 Level 8 (Balanced)", 'libx264_8'), ("x265 CRF 8 (High Quality)", 'libx265_8'), ("x264 Level 10 (High Quality)", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], value=self.server_config.get("video_output_codec", "libx264_8"), label="Video Codec")
                     self.image_output_codec_choice = gr.Dropdown(choices=[("JPEG Q85", 'jpeg_85'), ("WEBP Q85", 'webp_85'), ("JPEG Q95", 'jpeg_95'), ("WEBP Q95", 'webp_95'), ("WEBP Lossless", 'webp_lossless'), ("PNG Lossless", 'png')], value=self.server_config.get("image_output_codec", "jpeg_95"), label="Image Codec")
-                    self.audio_output_codec_choice = gr.Dropdown(choices=[("AAC 128 kbit", 'aac_128')], value=self.server_config.get("audio_output_codec", "aac_128"), visible=True, label="Audio Codec to use for mp4 container")
+                    self.audio_output_codec_choice = gr.Dropdown(
+                        choices=[
+                            ("AAC 128 kbps", "aac_128"),
+                            ("AAC 192 kbps", "aac_192"),
+                            ("AAC 256 kbps (High Quality, Recommended)", "aac_256"),
+                            ("AAC 320 kbps (Very High Quality)", "aac_320"),
+                            ("ALAC Lossless (preview/playback compatibility may be limited)", "alac"),
+                        ],
+                        value=self.server_config.get("audio_output_codec", "aac_128"),
+                        visible=True,
+                        label="Audio Codec to use for mp4 container",
+                    )
                     audio_standalone_default = self.server_config.get("audio_stand_alone_output_codec", "wav")
                     if audio_standalone_default == "mp3":
                         audio_standalone_default = "mp3_192"
@@ -296,9 +328,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.depth_anything_v2_variant_choice, self.vae_config_choice, self.boost_choice, self.enable_int8_kernels_choice,
             self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice,
             self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
-            self.enhancer_enabled_choice, self.enhancer_mode_choice,
+            self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_mode_choice,
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
-            self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.rife_version_choice,
+            self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.rife_version_choice, self.matanyone_version_choice,
             self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
@@ -349,9 +381,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
             depth_anything_v2_variant_choice, vae_config_choice, boost_choice, enable_int8_kernels_choice,
             video_profile_choice, image_profile_choice, audio_profile_choice,
             preload_in_VRAM_choice, max_reserved_loras_choice,
-            enhancer_enabled_choice, enhancer_mode_choice,
+            enhancer_enabled_choice, enhancer_quantization_choice, enhancer_mode_choice,
             prompt_enhancer_temperature_choice, prompt_enhancer_top_p_choice, prompt_enhancer_randomize_seed_choice,
-            mmaudio_mode_choice, mmaudio_persistence_choice, rife_version_choice,
+            mmaudio_mode_choice, mmaudio_persistence_choice, rife_version_choice, matanyone_version_choice,
             video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice,
@@ -381,9 +413,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "boost": boost_choice, "enable_int8_kernels": enable_int8_kernels_choice, "clear_file_list": clear_file_list_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
             "fit_canvas": fit_canvas_choice, "enhancer_enabled": enhancer_enabled_choice,
+            "prompt_enhancer_quantization": enhancer_quantization_choice,
             "enhancer_mode": enhancer_mode_choice, "mmaudio_mode": mmaudio_mode_choice,
             "mmaudio_persistence": mmaudio_persistence_choice, "mmaudio_enabled": mmaudio_enabled_choice,
-            "rife_version": rife_version_choice,
+            "rife_version": rife_version_choice, "matanyone_version": matanyone_version_choice,
             "prompt_enhancer_temperature": prompt_enhancer_temperature_choice,
             "prompt_enhancer_top_p": prompt_enhancer_top_p_choice,
             "prompt_enhancer_randomize_seed": prompt_enhancer_randomize_seed_choice,
@@ -426,8 +459,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "attention_mode", "vae_config", "boost", "enable_int8_kernels", "save_path", "image_save_path", "audio_save_path",
             "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
-            "mmaudio_persistence", "mmaudio_enabled", "rife_version",
-            "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed",
+            "mmaudio_persistence", "mmaudio_enabled", "rife_version", "matanyone_version",
+            "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization",
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
@@ -458,7 +491,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("reload_needed", needs_reload)
         self.server_config.update(new_server_config)
 
-        if "enhancer_enabled" in changes or "enhancer_mode" in changes:
+        if "enhancer_enabled" in changes or "enhancer_mode" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes:
             self.reset_prompt_enhancer()
         if "enable_int8_kernels" in changes:
             self.apply_int8_kernel_setting(new_server_config["enable_int8_kernels"], True)

@@ -73,6 +73,7 @@ peft==0.17.0 # 0.15.0
 vector-quantize-pytorch
 matplotlib
 gguf==0.17.1
+flash-linear-attention==0.4.1
 
 # Utilities
 ftfy

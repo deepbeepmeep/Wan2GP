@@ -164,6 +164,7 @@ def generate_cinematic_prompt(
     top_p: Optional[float] = None,
     top_k: Optional[int] = None,
     seed: Optional[int] = None,
+    post_image_caption_hook = None,
 ) -> List[str]:
     prompts = [prompt] if isinstance(prompt, str) else prompt
 
@@ -200,6 +201,7 @@ def generate_cinematic_prompt(
             top_p,
             top_k,
             seed,
+            post_image_caption_hook=post_image_caption_hook,
         )
 
     return prompts
@@ -232,6 +234,17 @@ def _generate_t2v_prompt(
         ]
         for p in prompts
     ]
+
+    if hasattr(prompt_enhancer_model, "generate_messages"):
+        return prompt_enhancer_model.generate_messages(
+            messages,
+            max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            seed=seed,
+        )
 
     texts = [
         prompt_enhancer_tokenizer.apply_chat_template(
@@ -276,10 +289,20 @@ def _generate_i2v_prompt(
     top_p: Optional[float],
     top_k: Optional[int],
     seed: Optional[int],
+    post_image_caption_hook = None,
 ) -> List[str]:
-    image_captions = _generate_image_captions(
-        image_caption_model, image_caption_processor, first_frames
-    )
+    if hasattr(image_caption_model, "generate_image_captions"):
+        image_captions = image_caption_model.generate_image_captions(first_frames)
+    else:
+        image_captions = _generate_image_captions(
+            image_caption_model, image_caption_processor, first_frames
+        )
+    if callable(post_image_caption_hook):
+        if bool(getattr(prompt_enhancer_model, "_prompt_enhancer_use_vllm", False)):
+            unload_runtime = getattr(prompt_enhancer_model, "unload", None)
+            if callable(unload_runtime):
+                unload_runtime()
+        post_image_caption_hook()
     if len(image_captions) == 1 and len(image_captions) < len(prompts):
         image_captions *= len(prompts)
     messages = [
@@ -289,6 +312,17 @@ def _generate_i2v_prompt(
         ]
         for p, c in zip(prompts, image_captions)
     ]
+
+    if hasattr(prompt_enhancer_model, "generate_messages"):
+        return prompt_enhancer_model.generate_messages(
+            messages,
+            max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            seed=seed,
+        )
 
     texts = [
         prompt_enhancer_tokenizer.apply_chat_template(

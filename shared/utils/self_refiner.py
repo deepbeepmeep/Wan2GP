@@ -110,7 +110,15 @@ def ensure_refiner_list(plan_data):
 
 def add_refiner_rule(current_rules, range_val, steps_val):
     current_rules = ensure_refiner_list(current_rules)
-    new_start, new_end = int(range_val[0]), int(range_val[1])
+    if isinstance(range_val, str):
+        raw_range = range_val.strip().replace(",", "-").replace(":", "-")
+        if "-" in raw_range:
+            start_s, end_s = raw_range.split("-", 1)
+        else:
+            start_s = end_s = raw_range
+        new_start, new_end = int(start_s.strip()), int(end_s.strip())
+    else:
+        new_start, new_end = int(range_val[0]), int(range_val[1])
     
     if new_start > new_end:
          new_start, new_end = new_end, new_start

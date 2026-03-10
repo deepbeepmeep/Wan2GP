@@ -16,9 +16,8 @@ from datetime import datetime
 from .tools.painter import mask_painter
 from .tools.interact_tools import SamControler
 from .tools.misc import get_device
-from .tools.download_util import load_file_from_url
 from .tools.base_segmenter import set_image_encoder_patch
-from .utils.get_default_model import get_matanyone_model
+from .utils.model_assets import ensure_selected_matanyone_assets, get_matanyone_title_html, get_selected_matanyone_version, load_selected_matanyone_model
 from .matanyone.inference.inference_core import InferenceCore
 from .matanyone_wrapper import matanyone
 from shared.utils.audio_video import save_video, save_image
@@ -37,6 +36,8 @@ model_in_GPU = False
 matanyone_in_GPU = False
 bfloat16_supported = False
 PlugIn = None
+server_config_ref = None
+loaded_matanyone_version = None
 
 # SAM generator
 import copy
@@ -688,7 +689,7 @@ def restart():
 
 def select_matanyone(state):
     global matanyone_in_GPU, model_in_GPU 
-    if matanyone_model is None: 
+    if matanyone_model is None or loaded_matanyone_version != get_selected_matanyone_version(server_config_ref):
         load_unload_models(state, True, True)
     if matanyone_in_GPU: return
     model.samcontroler.sam_controler.model.to("cpu")
@@ -699,7 +700,7 @@ def select_matanyone(state):
 
 def select_SAM(state):
     global matanyone_in_GPU, model_in_GPU 
-    if matanyone_model is None: 
+    if matanyone_model is None or loaded_matanyone_version != get_selected_matanyone_version(server_config_ref):
         load_unload_models(state, True, True)
     if model_in_GPU: return
     matanyone_model.to("cpu")
@@ -713,9 +714,13 @@ load_in_progress = False
 def load_unload_models(state = None, selected = True, force = False):
     global model_loaded, load_in_progress
     global model
-    global matanyone_model, matanyone_processor, matanyone_in_GPU , model_in_GPU, bfloat16_supported
+    global matanyone_model, matanyone_processor, matanyone_in_GPU , model_in_GPU, bfloat16_supported, loaded_matanyone_version
 
     if selected:
+        selected_version = get_selected_matanyone_version(server_config_ref)
+        if model_loaded and loaded_matanyone_version != selected_version:
+            load_unload_models(state, False, True)
+
         if (not force) and any_GPU_process_running(state, "matanyone"):
             return
 
@@ -725,8 +730,7 @@ def load_unload_models(state = None, selected = True, force = False):
             return
         # print("Matanyone Tab Selected")
         if model_loaded or load_in_progress:
-            pass
-            # load_sam()
+            return
         else:
             load_in_progress = True
             # args, defined in track_anything.py
@@ -740,6 +744,7 @@ def load_unload_models(state = None, selected = True, force = False):
 
             # sam_checkpoint = load_file_from_url(sam_checkpoint_url_dict[arg_sam_model_type], ".")
             sam_checkpoint = None
+            ensure_selected_matanyone_assets(server_config_ref)
 
             transfer_stream = torch.cuda.Stream()
             with torch.cuda.stream(transfer_stream):
@@ -753,9 +758,7 @@ def load_unload_models(state = None, selected = True, force = False):
                 model = MaskGenerator(sam_checkpoint, "cpu")
                 model.samcontroler.sam_controler.model.to("cpu").to(torch.bfloat16).to(arg_device)
                 model_in_GPU = True
-                from .matanyone.model.matanyone import MatAnyone
-                # matanyone_model = MatAnyone.from_pretrained("PeiqingYang/MatAnyone")
-                matanyone_model = MatAnyone.from_pretrained(fl.locate_folder("mask"))
+                matanyone_model, loaded_matanyone_version, _ = load_selected_matanyone_model(server_config_ref)
                 # pipe ={"mat" : matanyone_model, "sam" :model.samcontroler.sam_controler.model }
                 # offload.profile(pipe)
                 matanyone_model = matanyone_model.to("cpu").eval()
@@ -770,6 +773,7 @@ def load_unload_models(state = None, selected = True, force = False):
         # model.samcontroler.sam_controler.model.to("cpu")
         # matanyone_model.to("cpu")
         model = matanyone_model = matanyone_processor = None
+        loaded_matanyone_version = None
         matanyone_in_GPU = model_in_GPU = False
         gc.collect()
         torch.cuda.empty_cache()
@@ -778,6 +782,14 @@ def load_unload_models(state = None, selected = True, force = False):
 
 def get_vmc_event_handler():
     return load_unload_models
+
+
+def ensure_selected_assets(server_config=None):
+    return ensure_selected_matanyone_assets(server_config if server_config is not None else server_config_ref)
+
+
+def get_title_markdown():
+    return get_matanyone_title_html(server_config_ref)
 
 
 def export_image(state, image_output):
@@ -814,8 +826,9 @@ def teleport_to_video_tab(tab_state, state):
 
 def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_current_model_settings_fn): #,  vace_video_input, vace_image_input, vace_video_mask, vace_image_mask, vace_image_refs):
     # my_tab.select(fn=load_unload_models, inputs=[], outputs=[])
-    global image_output_codec, video_output_codec, get_current_model_settings
+    global image_output_codec, video_output_codec, get_current_model_settings, server_config_ref
     get_current_model_settings = get_current_model_settings_fn
+    server_config_ref = server_config
 
     image_output_codec = server_config.get("image_output_codec", None)
     video_output_codec = server_config.get("video_output_codec", None)
@@ -837,7 +850,8 @@ def display(tabs, tab_state, state, refresh_form_trigger, server_config, get_cur
 
     # download assets
 
-    gr.Markdown("<B>Mask Edition is provided by MatAnyone v2, VRAM optimizations & Extended Masks by DeepBeepMeep</B>")
+    matanyone_title_md = gr.Markdown(get_title_markdown())
+    refresh_form_trigger.change(fn=get_title_markdown, inputs=[], outputs=[matanyone_title_md], show_progress="hidden")
     gr.Markdown("If you have some trouble creating the perfect mask, be aware of these tips:")
     gr.Markdown("- Using the Matanyone Settings you can also define Negative Point Prompts to remove parts of the current selection.")
     gr.Markdown("- Sometime it is very hard to fit everything you want in a single mask, it may be much easier to combine multiple independent sub Masks before producing the Matting : each sub Mask is created by selecting an  area of an image and by clicking the Add Mask button. Sub masks can then be enabled / disabled in the Matanyone settings.")

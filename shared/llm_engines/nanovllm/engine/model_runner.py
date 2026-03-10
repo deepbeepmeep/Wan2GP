@@ -128,9 +128,19 @@ class ModelRunner:
             raise RuntimeError("LLM model object is not available.")
         self._tie_word_embeddings_if_needed()
         self.allocate_kv_cache()
+        self._prepare_model_sequence_state()
         if not self.enforce_eager:
             self.capture_cudagraph()
         self._runtime_ready = True
+
+    def _prepare_model_sequence_state(self):
+        if self.model is None:
+            return
+        model_device = self._get_model_device()
+        for module in self.model.modules():
+            prepare = getattr(module, "prepare_sequence_state", None)
+            if callable(prepare):
+                prepare(self.config.max_num_seqs, model_device, self.dtype)
 
     def _get_tied_embeddings(self):
         if self.model is None:
@@ -167,6 +177,18 @@ class ModelRunner:
                 for module in self.model.modules():
                     if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
                         module.k_cache = module.v_cache = torch.tensor([])
+                    release_sequence_state = getattr(module, "release_sequence_state", None)
+                    if callable(release_sequence_state):
+                        release_sequence_state()
+                        continue
+                    reset_sequence_state = getattr(module, "reset_sequence_state", None)
+                    if callable(reset_sequence_state):
+                        reset_sequence_state()
+                    else:
+                        if hasattr(module, "conv_state"):
+                            module.conv_state = None
+                        if hasattr(module, "recurrent_state"):
+                            module.recurrent_state = None
         except Exception:
             pass
         if hasattr(self, "kv_cache"):
@@ -181,14 +203,21 @@ class ModelRunner:
         except Exception:
             pass
         try:
-            self.graphs = {}
-            self.graph_vars = {}
-            self.graph_bs = []
-            self.graph_pool = None
+            for attr_name in ("graphs", "graph_vars", "graph_bs", "graph_pool"):
+                if hasattr(self, attr_name):
+                    delattr(self, attr_name)
+        except Exception:
+            pass
+        try:
+            torch.cuda.synchronize()
         except Exception:
             pass
         try:
             torch.cuda.empty_cache()
+        except Exception:
+            pass
+        try:
+            torch.cuda.ipc_collect()
         except Exception:
             pass
         self._logits_bias_cache.clear()
@@ -354,6 +383,10 @@ class ModelRunner:
         if not self.enforce_eager:
             if hasattr(self, "graphs"):
                 del self.graphs
+            if hasattr(self, "graph_vars"):
+                del self.graph_vars
+            if hasattr(self, "graph_bs"):
+                del self.graph_bs
             if hasattr(self, "graph_pool"):
                 del self.graph_pool
         try:
@@ -362,6 +395,10 @@ class ModelRunner:
             pass
         try:
             torch.cuda.empty_cache()
+        except Exception:
+            pass
+        try:
+            torch.cuda.ipc_collect()
         except Exception:
             pass
         if dist.is_initialized():
@@ -456,8 +493,13 @@ class ModelRunner:
         return block_tables
 
     def prepare_prefill(self, seqs: list[Sequence]):
+        use_prompt_embeds = any(getattr(seq, "prompt_embeds", None) is not None for seq in seqs)
+        if use_prompt_embeds and not all(getattr(seq, "prompt_embeds", None) is not None for seq in seqs):
+            raise RuntimeError("Mixed embedded/non-embedded prefill batches are not supported.")
         input_ids = []
         positions = []
+        prompt_embeds = []
+        prompt_position_ids = []
         cu_seqlens_q = [0]
         cu_seqlens_k = [0]
         max_seqlen_q = 0
@@ -467,9 +509,27 @@ class ModelRunner:
         for seq in seqs:
             seqlen = len(seq)
             input_ids.extend(seq[seq.num_cached_tokens:])
-            positions.extend(list(range(seq.num_cached_tokens, seqlen)))
             seqlen_q = seqlen - seq.num_cached_tokens
             seqlen_k = seqlen
+            if use_prompt_embeds:
+                seq_prompt_embeds = getattr(seq, "prompt_embeds", None)
+                seq_position_ids = getattr(seq, "prompt_position_ids", None)
+                if seq_prompt_embeds is None or seq_position_ids is None:
+                    raise RuntimeError("Embedded prefill requires both prompt_embeds and prompt_position_ids.")
+                seq_prompt_embeds = seq_prompt_embeds[seq.num_cached_tokens:seqlen]
+                if seq_prompt_embeds.ndim != 2 or seq_prompt_embeds.shape[0] != seqlen_q:
+                    raise RuntimeError("Embedded prefill prompt_embeds shape does not match uncached prompt length.")
+                if seq_position_ids.ndim == 3:
+                    seq_position_ids = seq_position_ids[:, 0]
+                if seq_position_ids.ndim != 2 or seq_position_ids.shape[0] != 3:
+                    raise RuntimeError("Embedded prefill prompt_position_ids must have shape [3, seq_len].")
+                seq_position_ids = seq_position_ids[:, seq.num_cached_tokens:seqlen]
+                if seq_position_ids.shape[1] != seqlen_q:
+                    raise RuntimeError("Embedded prefill prompt_position_ids shape does not match uncached prompt length.")
+                prompt_embeds.append(seq_prompt_embeds)
+                prompt_position_ids.append(seq_position_ids)
+            else:
+                positions.extend(list(range(seq.num_cached_tokens, seqlen)))
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
@@ -486,13 +546,19 @@ class ModelRunner:
                 slot_mapping.extend(list(range(start, end)))
         if cu_seqlens_k[-1] > cu_seqlens_q[-1]:    # prefix cache
             block_tables = self.prepare_block_tables(seqs)
-        input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
-        positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        if use_prompt_embeds:
+            input_ids = None
+            positions = torch.cat(prompt_position_ids, dim=1).unsqueeze(1).contiguous()
+            inputs_embeds = torch.cat(prompt_embeds, dim=0).unsqueeze(0).contiguous()
+        else:
+            input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+            positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+            inputs_embeds = None
         cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         set_context(True, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, slot_mapping, None, block_tables)
-        return input_ids, positions
+        return input_ids, positions, inputs_embeds
 
     def prepare_decode(self, seqs: list[Sequence]):
         """Optimized decode preparation using pre-allocated buffers."""
@@ -501,7 +567,7 @@ class ModelRunner:
         # Use pre-allocated CPU buffers
         for i, seq in enumerate(seqs):
             self._cpu_input_ids[i] = seq.last_token
-            self._cpu_positions[i] = len(seq) - 1
+            self._cpu_positions[i] = len(seq) - 1 + int(getattr(seq, "position_offset", 0) or 0)
             self._cpu_context_lens[i] = len(seq)
             self._cpu_slot_mapping[i] = seq.block_table[-1] * self.block_size + seq.last_block_num_tokens - 1
         
@@ -550,11 +616,15 @@ class ModelRunner:
         return temperatures, cfg_scales, top_ks, top_ps, repetition_penalties
 
     @torch.inference_mode()
-    def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool):
-        if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
-            return self.model.compute_logits(self.model(input_ids, positions))
+    def run_model(self, input_ids: torch.Tensor | None, positions: torch.Tensor, is_prefill: bool, inputs_embeds: torch.Tensor | None = None):
+        decode_batch_size = input_ids.size(0) if input_ids is not None else int(inputs_embeds.shape[0])
+        model_kwargs = {"input_ids": input_ids, "positions": positions}
+        if inputs_embeds is not None:
+            model_kwargs["inputs_embeds"] = inputs_embeds
+        if is_prefill or self.enforce_eager or decode_batch_size > 512:
+            return self.model.compute_logits(self.model(**model_kwargs))
         else:
-            bs = input_ids.size(0)
+            bs = decode_batch_size
             context = get_context()
             
             # Check if block_tables size exceeds pre-allocated buffer size
@@ -567,7 +637,7 @@ class ModelRunner:
                     "cudagraph_fallback_block_table_cols",
                     f"requested={context.block_tables.size(1)} max={max_num_blocks}",
                 )
-                return self.model.compute_logits(self.model(input_ids, positions))
+                return self.model.compute_logits(self.model(**model_kwargs))
             
             # Fix: Also check if block_tables row count matches batch size
             # Dimension mismatch can cause CUDA illegal memory access during graph replay
@@ -577,7 +647,7 @@ class ModelRunner:
                     "cudagraph_fallback_block_table_rows",
                     f"rows={context.block_tables.size(0)} bs={bs}",
                 )
-                return self.model.compute_logits(self.model(input_ids, positions))
+                return self.model.compute_logits(self.model(**model_kwargs))
             
             # Fix: Verify slot_mapping and context_lens dimensions match batch size
             if context.slot_mapping.size(0) != bs or context.context_lens.size(0) != bs:
@@ -586,7 +656,7 @@ class ModelRunner:
                     "cudagraph_fallback_context_shape",
                     f"slot={context.slot_mapping.size(0)} ctx={context.context_lens.size(0)} bs={bs}",
                 )
-                return self.model.compute_logits(self.model(input_ids, positions))
+                return self.model.compute_logits(self.model(**model_kwargs))
             
             graph = self.graphs[next(x for x in self.graph_bs if x >= bs)]
             graph_vars = self.graph_vars
@@ -616,7 +686,11 @@ class ModelRunner:
             # uncond_seqs = seqs[num_cond:]
             
             # Prepare inputs for both conditional and unconditional (they're already in the batch)
-            input_ids, positions = (self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs))
+            if is_prefill:
+                input_ids, positions, inputs_embeds = self.prepare_prefill(seqs)
+            else:
+                input_ids, positions = self.prepare_decode(seqs)
+                inputs_embeds = None
             sample_params = self.prepare_sample(seqs, is_cfg_batch=True) if self.rank == 0 else None
             if sample_params is not None:
                 temperatures, cfg_scales, top_ks, top_ps, repetition_penalties = sample_params
@@ -624,7 +698,10 @@ class ModelRunner:
                 temperatures = cfg_scales = top_ks = top_ps = repetition_penalties = None
             
             # Run model forward (processes entire batch: cond + uncond)
-            logits_all = self.run_model(input_ids, positions, is_prefill)
+            logits_all = self.run_model(input_ids, positions, is_prefill, inputs_embeds=inputs_embeds)
+            if is_prefill:
+                for seq in seqs:
+                    seq.clear_prompt_data()
             reset_context()
             
             if self.rank == 0:
@@ -698,14 +775,20 @@ class ModelRunner:
                 return None
         else:
             # Normal batch (non-CFG)
-            input_ids, positions = (self.prepare_prefill(seqs) if is_prefill 
-                                   else self.prepare_decode(seqs))
+            if is_prefill:
+                input_ids, positions, inputs_embeds = self.prepare_prefill(seqs)
+            else:
+                input_ids, positions = self.prepare_decode(seqs)
+                inputs_embeds = None
             sample_params = self.prepare_sample(seqs, is_cfg_batch=False) if self.rank == 0 else None
             if sample_params is not None:
                 temperatures, cfg_scales, top_ks, top_ps, repetition_penalties = sample_params
             else:
                 temperatures = cfg_scales = top_ks = top_ps = repetition_penalties = None
-            logits = self.run_model(input_ids, positions, is_prefill)
+            logits = self.run_model(input_ids, positions, is_prefill, inputs_embeds=inputs_embeds)
+            if is_prefill:
+                for seq in seqs:
+                    seq.clear_prompt_data()
             reset_context()
             
             if self.rank == 0:
@@ -797,7 +880,12 @@ class ModelRunner:
         context_lens = torch.zeros(max_bs, dtype=torch.int32, device=model_device)
         block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32, device=model_device)
         outputs = torch.zeros(max_bs, hf_config.hidden_size, device=model_device)
-        self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
+        base_graph_bs = [1, 2, 4, 8]
+        self.graph_bs = [bs for bs in base_graph_bs if bs <= max_bs]
+        if max_bs > 8:
+            self.graph_bs.extend(range(16, max_bs + 1, 16))
+        if not self.graph_bs:
+            self.graph_bs = [max_bs]
         self.graphs = {}
         self.graph_pool = None
 

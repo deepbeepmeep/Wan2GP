@@ -140,7 +140,8 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
                                 msg = msg[:220] + "..."
                             reasons.append(f"{check_name}={msg}")
                 reason_text = "; ".join(reasons) if len(reasons) > 0 else "unknown reason"
-                print(f"[LM] Requested decoder engine 'vllm' is not supported at startup ({reason_text}).")
+                # print(f"[LM] Requested decoder engine 'vllm' is not supported at startup ({reason_text}).")
+                print(f"[LM] Requested decoder engine 'vllm' is not supported (triton & flash attention 2 are needed).")
                 _WARNED_REQUESTED_VLLM_NOT_SUPPORTED = True
             return default_engine
     if requested_engine == "":

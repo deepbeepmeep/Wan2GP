@@ -10,6 +10,13 @@ except Exception:  # pragma: no cover
     triton = None
     tl = None
 
+_USE_TRITON_RMSNORM = triton is not None and tl is not None
+
+
+def configure_layernorm_safe_legacy_kernels(enabled: bool) -> None:
+    global _USE_TRITON_RMSNORM
+    _USE_TRITON_RMSNORM = (not enabled) and triton is not None and tl is not None
+
 
 if triton is not None:
     @triton.jit
@@ -67,9 +74,10 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.use_triton_rmsnorm = _USE_TRITON_RMSNORM
 
     def _can_use_triton(self, x: torch.Tensor, residual: torch.Tensor | None = None) -> bool:
-        if triton is None or tl is None:
+        if not self.use_triton_rmsnorm or triton is None or tl is None:
             return False
         if not x.is_cuda or self.weight.device.type != "cuda":
             return False

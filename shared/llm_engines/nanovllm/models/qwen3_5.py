@@ -67,6 +67,10 @@ _CU_SEQLENS_CACHE: dict[tuple[tuple[int, ...], str], torch.Tensor] = {}
 _MROPE_FREQ_CACHE: dict[tuple[str, int, int, float], torch.Tensor] = {}
 
 
+def _safe_legacy_kernels_enabled(config) -> bool:
+    return bool(getattr(config, "_prompt_enhancer_safe_legacy", False))
+
+
 def _get_tp_size() -> int:
     if dist.is_available() and dist.is_initialized():
         return dist.get_world_size()
@@ -397,8 +401,9 @@ def _flash_attention(
     query_lengths: list[int],
     key_lengths: list[int],
     scaling: float,
+    flash_attention_fn,
 ) -> torch.Tensor:
-    if flash_attn_varlen_func is not None and query_states.is_cuda:
+    if flash_attention_fn is not None and query_states.is_cuda:
         q_chunks = [query_states[idx, : q_len] for idx, q_len in enumerate(query_lengths) if q_len > 0]
         k_chunks = [key_states[idx, : k_len] for idx, k_len in enumerate(key_lengths) if k_len > 0]
         v_chunks = [value_states[idx, : k_len] for idx, k_len in enumerate(key_lengths) if k_len > 0]
@@ -407,7 +412,7 @@ def _flash_attention(
         v_flat = torch.cat(v_chunks, dim=0)
         cu_q = _build_cu_seqlens(query_lengths, query_states.device)
         cu_k = _build_cu_seqlens(key_lengths, query_states.device)
-        out_flat = flash_attn_varlen_func(
+        out_flat = flash_attention_fn(
             q_flat,
             k_flat,
             v_flat,
@@ -453,9 +458,12 @@ def _flash_attention(
 class Qwen3_5Block(nn.Module):
     def __init__(self, config, layer_idx: int):
         super().__init__()
+        safe_legacy_kernels = _safe_legacy_kernels_enabled(config)
         self.layer_type = str(config.layer_types[layer_idx])
         self.attn_norm = RMSNorm(int(config.hidden_size), eps=float(config.rms_norm_eps))
         self.post_attention_norm = RMSNorm(int(config.hidden_size), eps=float(config.rms_norm_eps))
+        self.attn_norm.use_triton_rmsnorm = not safe_legacy_kernels
+        self.post_attention_norm.use_triton_rmsnorm = not safe_legacy_kernels
         self.ffn_gate = ColumnParallelLinear(int(config.hidden_size), int(config.intermediate_size), bias=False)
         self.ffn_up = ColumnParallelLinear(int(config.hidden_size), int(config.intermediate_size), bias=False)
         self.ffn_down = RowParallelLinear(int(config.intermediate_size), int(config.hidden_size), bias=False)
@@ -494,9 +502,19 @@ class Qwen3_5Block(nn.Module):
                 bias=bool(config.attention_bias),
             )
             self.attn = Attention(self.num_heads, self.head_dim, self.scaling, self.num_kv_heads)
+            if safe_legacy_kernels:
+                self.attn.flash_attn_varlen_func = None
+                self.attn.flash_attn_with_kvcache = None
+                self.attn.use_triton_kv_cache = False
             self.attn_q_norm = RMSNorm(self.head_dim, eps=float(config.rms_norm_eps))
             self.attn_k_norm = RMSNorm(self.head_dim, eps=float(config.rms_norm_eps))
+            self.attn_q_norm.use_triton_rmsnorm = not safe_legacy_kernels
+            self.attn_k_norm.use_triton_rmsnorm = not safe_legacy_kernels
+            self._flash_attn_varlen_func = None if safe_legacy_kernels else _DEFAULT_FLASH_ATTN_VARLEN_FUNC
         else:
+            self._short_convolution_cls = None if safe_legacy_kernels else _DEFAULT_SHORT_CONVOLUTION
+            self._fast_recurrent_gated_delta_rule = None if safe_legacy_kernels else _DEFAULT_FAST_RECURRENT_GATED_DELTA_RULE
+            self._fast_chunk_gated_delta_rule = None if safe_legacy_kernels else _DEFAULT_FAST_CHUNK_GATED_DELTA_RULE
             self.num_v_heads = int(config.linear_num_value_heads)
             self.num_k_heads = int(config.linear_num_key_heads)
             self.head_k_dim = int(config.linear_key_head_dim)
@@ -511,8 +529,8 @@ class Qwen3_5Block(nn.Module):
             self.ssm_beta = ColumnParallelLinear(hidden_size, self.num_v_heads, bias=False)
             self.ssm_dt = nn.Parameter(torch.zeros(self.num_v_heads))
             self.ssm_a = nn.Parameter(-torch.ones(self.num_v_heads))
-            if ShortConvolution is not None:
-                self.ssm_conv1d = ShortConvolution(
+            if self._short_convolution_cls is not None:
+                self.ssm_conv1d = self._short_convolution_cls(
                     hidden_size=self.key_dim * 2 + self.value_dim,
                     kernel_size=self.conv_kernel_size,
                     bias=False,
@@ -529,8 +547,8 @@ class Qwen3_5Block(nn.Module):
                     padding=self.conv_kernel_size - 1,
                 )
                 self._use_short_convolution = False
-            if FusedRMSNormGated is not None:
-                self.ssm_norm = FusedRMSNormGated(self.head_v_dim, eps=float(config.rms_norm_eps))
+            if not safe_legacy_kernels and _DEFAULT_FUSED_RMSNORM_GATED is not None:
+                self.ssm_norm = _DEFAULT_FUSED_RMSNORM_GATED(self.head_v_dim, eps=float(config.rms_norm_eps))
                 self._use_fused_rmsnorm_gated = True
             else:
                 self.ssm_norm = Qwen3_5RMSNormGated(self.head_v_dim, eps=float(config.rms_norm_eps))
@@ -635,6 +653,7 @@ class Qwen3_5Block(nn.Module):
                 query_lengths=[int(seq_len)] * batch_size,
                 key_lengths=[int(key_states.shape[1])] * batch_size,
                 scaling=self.scaling,
+                flash_attention_fn=self._flash_attn_varlen_func,
             ).reshape(batch_size, seq_len, -1)
         else:
             attn_output = self.attn(
@@ -675,7 +694,11 @@ class Qwen3_5Block(nn.Module):
             b = _interleave_last_dim_halves(b)
             a = _interleave_last_dim_halves(a)
 
-        use_short_convolution = self._use_short_convolution and ShortConvolution is not None and isinstance(self.ssm_conv1d, ShortConvolution)
+        use_short_convolution = (
+            self._use_short_convolution
+            and self._short_convolution_cls is not None
+            and isinstance(self.ssm_conv1d, self._short_convolution_cls)
+        )
 
         if use_short_convolution:
             short_conv_cache = conv_state if has_previous_state and conv_state is not None else None
@@ -760,8 +783,8 @@ class Qwen3_5Block(nn.Module):
             key = key.repeat_interleave(repeat_factor, dim=2)
 
         if use_precomputed_states:
-            if fast_recurrent_gated_delta_rule is not None and hidden_states.is_cuda:
-                core_attn_out, last_recurrent_state = fast_recurrent_gated_delta_rule(
+            if self._fast_recurrent_gated_delta_rule is not None and hidden_states.is_cuda:
+                core_attn_out, last_recurrent_state = self._fast_recurrent_gated_delta_rule(
                     query,
                     key,
                     value,
@@ -782,8 +805,8 @@ class Qwen3_5Block(nn.Module):
                     output_final_state=True,
                 )
         else:
-            if fast_chunk_gated_delta_rule is not None and hidden_states.is_cuda:
-                core_attn_out, last_recurrent_state = fast_chunk_gated_delta_rule(
+            if self._fast_chunk_gated_delta_rule is not None and hidden_states.is_cuda:
+                core_attn_out, last_recurrent_state = self._fast_chunk_gated_delta_rule(
                     query,
                     key,
                     value,
@@ -844,10 +867,12 @@ class Qwen3_5ForCausalLM(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()
         self.config = config
+        safe_legacy_kernels = _safe_legacy_kernels_enabled(config)
         self.token_embd = nn.Embedding(int(config.vocab_size), int(config.hidden_size))
         self.rotary_emb = Qwen3_5TextRotaryEmbedding(config)
         self.blk = nn.ModuleList([Qwen3_5Block(config, idx) for idx in range(int(config.num_hidden_layers))])
         self.output_norm = RMSNorm(int(config.hidden_size), eps=float(config.rms_norm_eps))
+        self.output_norm.use_triton_rmsnorm = not safe_legacy_kernels
         self.output = nn.Linear(int(config.hidden_size), int(config.vocab_size), bias=False)
 
     @property

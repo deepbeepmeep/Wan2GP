@@ -879,7 +879,7 @@ class ModelRunner:
         slot_mapping = torch.zeros(max_bs, dtype=torch.int32, device=model_device)
         context_lens = torch.zeros(max_bs, dtype=torch.int32, device=model_device)
         block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32, device=model_device)
-        outputs = torch.zeros(max_bs, hf_config.hidden_size, device=model_device)
+        outputs = torch.zeros(max_bs, hf_config.hidden_size, device=model_device, dtype=self.dtype)
         base_graph_bs = [1, 2, 4, 8]
         self.graph_bs = [bs for bs in base_graph_bs if bs <= max_bs]
         if max_bs > 8:

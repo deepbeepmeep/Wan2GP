@@ -110,6 +110,10 @@ def _normalize_torch_dtype(dtype_value):
     return getattr(torch, normalized_name, dtype_value)
 
 
+def _safe_legacy_kernels_enabled(config) -> bool:
+    return bool(getattr(config, "_prompt_enhancer_safe_legacy", False))
+
+
 class Qwen3_5DynamicCache:
     """
     A dynamic cache that can handle both the attention cache (which has a seq_len dimension) and the linear attention
@@ -489,6 +493,7 @@ def torch_recurrent_gated_delta_rule(
 class Qwen3_5GatedDeltaNet(nn.Module):
     def __init__(self, config: Qwen3_5Config, layer_idx: int):
         super().__init__()
+        safe_legacy_kernels = _safe_legacy_kernels_enabled(config)
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.linear_num_value_heads
         self.num_k_heads = config.linear_num_key_heads
@@ -521,7 +526,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         A = torch.empty(self.num_v_heads).uniform_(0, 16)
         self.A_log = nn.Parameter(torch.log(A))
 
-        if FusedRMSNormGated is None:
+        fused_rmsnorm_gated_cls = None if safe_legacy_kernels else _DEFAULT_FUSED_RMSNORM_GATED
+        if fused_rmsnorm_gated_cls is None:
             self.norm = Qwen3_5RMSNormGated(self.head_v_dim, eps=self.layer_norm_epsilon)
         else:
             fused_norm_kwargs = {
@@ -533,14 +539,14 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             }
             if torch.cuda.is_available():
                 fused_norm_kwargs["device"] = torch.device("cuda", torch.cuda.current_device())
-            self.norm = FusedRMSNormGated(self.head_v_dim, **fused_norm_kwargs)
+            self.norm = fused_rmsnorm_gated_cls(self.head_v_dim, **fused_norm_kwargs)
 
         self.out_proj = nn.Linear(self.value_dim, self.hidden_size, bias=False)
 
         self.causal_conv1d_fn = causal_conv1d_fn
         self.causal_conv1d_update = causal_conv1d_update or torch_causal_conv1d_update
-        self.chunk_gated_delta_rule = chunk_gated_delta_rule or torch_chunk_gated_delta_rule
-        self.recurrent_gated_delta_rule = fused_recurrent_gated_delta_rule or torch_recurrent_gated_delta_rule
+        self.chunk_gated_delta_rule = (None if safe_legacy_kernels else _DEFAULT_CHUNK_GATED_DELTA_RULE) or torch_chunk_gated_delta_rule
+        self.recurrent_gated_delta_rule = (None if safe_legacy_kernels else _DEFAULT_FUSED_RECURRENT_GATED_DELTA_RULE) or torch_recurrent_gated_delta_rule
 
         # if not is_fast_path_available:
         #     logger.warning_once(

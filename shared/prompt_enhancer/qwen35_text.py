@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gc
-import importlib
 import json
 import os
 import re
@@ -13,11 +12,10 @@ from mmgp import offload
 from tqdm.auto import tqdm
 from shared.utils import files_locator as fl
 from shared.llm_engines.nanovllm import SamplingParams
-from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5DynamicCache, Qwen3_5ForCausalLM, clear_qwen35_runtime_caches
+from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5ForCausalLM, clear_qwen35_runtime_caches
 from shared.llm_engines.nanovllm.utils.context import reset_context
 from shared.llm_engines.nanovllm.vllm_support import (
     NanoVllmTextEngine,
-    probe_vllm_runtime,
     resolve_lm_decoder_engine,
 )
 from shared.qtypes.gguf import materialize_module_source_tensors
@@ -64,10 +62,6 @@ def _resolve_gguf_model_path(model_path: str | None, assets_dir: str, variant: s
     if os.path.isfile(exact_path):
         return exact_path
     raise FileNotFoundError(f"Missing expected Qwen3.5 GGUF checkpoint: {exact_path}")
-
-
-def _configure_qwen35_text_safe_legacy_kernels(enabled: bool) -> None:
-    importlib.import_module("shared.llm_engines.nanovllm.models.qwen3_5").configure_qwen35_safe_legacy_kernels(bool(enabled))
 
 
 def get_qwen35_text_assets_dir(assets_dir: str, variant: str | None = None) -> str:
@@ -141,26 +135,6 @@ def _clean_generated_text(text: str) -> str:
     return "\n".join(line for line in lines if line).strip()
 
 
-def _apply_top_k_top_p(logits: torch.Tensor, top_k: int | None, top_p: float | None) -> torch.Tensor:
-    logits = logits.clone()
-
-    if top_k is not None and top_k > 0 and top_k < logits.shape[-1]:
-        threshold = torch.topk(logits, int(top_k), dim=-1).values[..., -1, None]
-        logits = logits.masked_fill(logits < threshold, float("-inf"))
-
-    if top_p is not None and 0.0 < float(top_p) < 1.0:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-        sorted_probs = torch.softmax(sorted_logits, dim=-1)
-        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-        sorted_mask = cumulative_probs > float(top_p)
-        sorted_mask[..., 1:] = sorted_mask[..., :-1].clone()
-        sorted_mask[..., 0] = False
-        sorted_logits = sorted_logits.masked_fill(sorted_mask, float("-inf"))
-        logits.scatter_(dim=-1, index=sorted_indices, src=sorted_logits)
-
-    return logits
-
-
 class _PresencePenaltyState:
     def __init__(self, presence_penalty: float | None):
         if presence_penalty is None or float(presence_penalty) <= 0:
@@ -199,53 +173,6 @@ class _PresencePenaltyState:
         return logits
 
 
-def _prepare_sampling_logits(logits: torch.Tensor, suppress_token_ids: set[int] | None = None, presence_penalty_state: _PresencePenaltyState | None = None) -> torch.Tensor:
-    if (presence_penalty_state is None or not presence_penalty_state.enabled() or len(presence_penalty_state._seen_token_ids) == 0) and not suppress_token_ids:
-        return logits
-    logits = logits.clone()
-    if presence_penalty_state is not None:
-        presence_penalty_state.apply_(logits)
-    if suppress_token_ids:
-        blocked = [token_id for token_id in suppress_token_ids if 0 <= token_id < logits.shape[-1]]
-        if blocked:
-            logits[..., blocked] = float("-inf")
-    return logits
-
-
-def _sample_next_token(
-    logits: torch.Tensor,
-    do_sample: bool,
-    temperature: float | None,
-    top_p: float | None,
-    top_k: int | None,
-    generator: torch.Generator | None,
-    suppress_token_ids: set[int] | None = None,
-    presence_penalty_state: _PresencePenaltyState | None = None,
-) -> torch.Tensor:
-    logits = _prepare_sampling_logits(logits, suppress_token_ids=suppress_token_ids, presence_penalty_state=presence_penalty_state)
-    if not do_sample or temperature is None or float(temperature) <= 0:
-        return torch.argmax(logits, dim=-1, keepdim=True)
-    logits = logits / float(temperature)
-    logits = _apply_top_k_top_p(logits, top_k=top_k, top_p=top_p)
-    probs = torch.softmax(logits, dim=-1)
-    return torch.multinomial(probs, num_samples=1, generator=generator)
-
-
-def _last_step_logits(logits: torch.Tensor) -> torch.Tensor:
-    if logits.ndim == 3:
-        return logits[:, -1, :]
-    return logits
-
-
-def _make_sampling_generator(device: torch.device, seed_value: int | None) -> torch.Generator | None:
-    if seed_value is None:
-        return None
-    if device.type == "cuda":
-        generator = torch.Generator(device="cuda")
-    else:
-        generator = torch.Generator()
-    generator.manual_seed(int(seed_value))
-    return generator
 
 
 def _build_chat_prompt(tokenizer, message):
@@ -266,11 +193,6 @@ def _resolve_prompt_presence_penalty(model) -> float | None:
         return None
     presence_penalty = float(presence_penalty)
     return presence_penalty if presence_penalty > 0 else None
-
-
-def _build_prompt_presence_penalty_state(model) -> _PresencePenaltyState | None:
-    state = _PresencePenaltyState(_resolve_prompt_presence_penalty(model))
-    return state if state.enabled() else None
 
 
 def _build_presence_penalty_logits_processor(presence_penalty: float | None):
@@ -305,83 +227,6 @@ def _build_suppressed_token_logits_bias(model):
     return bias
 
 
-def _generate_messages_legacy(
-    self,
-    messages,
-    max_new_tokens,
-    do_sample=True,
-    temperature=None,
-    top_p=None,
-    top_k=None,
-    seed=None,
-):
-    reset_context()
-    outputs = []
-    tokenizer = self._prompt_enhancer_tokenizer
-    stop_token_ids = getattr(self, "_prompt_enhancer_stop_token_ids", None)
-    if stop_token_ids is None:
-        stop_token_ids = _collect_stop_token_ids(tokenizer, self.config)
-        self._prompt_enhancer_stop_token_ids = stop_token_ids
-    stop_token_ids = set(stop_token_ids)
-    suppress_token_ids = set(getattr(self, "_prompt_enhancer_suppress_token_ids", []) or [])
-    presence_penalty_state = _build_prompt_presence_penalty_state(self)
-
-    for idx, message in enumerate(tqdm(messages, total=len(messages), desc="Qwen3.5 prompt enhancement", dynamic_ncols=True, leave=False)):
-        text = _build_chat_prompt(tokenizer, message)
-        model_inputs = tokenizer(text, return_tensors="pt")
-        input_ids = model_inputs["input_ids"].to(self.device)
-        position_ids = torch.arange(input_ids.shape[1], device=self.device, dtype=torch.long).unsqueeze(0)
-        past_key_values = Qwen3_5DynamicCache(self.config)
-        generated_tokens = []
-        with torch.inference_mode():
-            hidden_states = self(input_ids, positions=position_ids, past_key_values=past_key_values)
-            logits = _last_step_logits(self.compute_logits(hidden_states))
-            generator = _make_sampling_generator(logits.device, int(seed) + idx if seed is not None else None)
-
-            min_new_tokens = int(getattr(self, "_prompt_enhancer_min_new_tokens", 0) or 0)
-            step_iter = tqdm(
-                range(int(max_new_tokens)),
-                total=int(max_new_tokens),
-                desc="Qwen3.5 prompt enhancement tokens",
-                unit="tok",
-                dynamic_ncols=True,
-                leave=False,
-            )
-            for step in step_iter:
-                step_suppress = suppress_token_ids | stop_token_ids if step < min_new_tokens else suppress_token_ids
-                next_token = _sample_next_token(
-                    logits,
-                    do_sample=bool(do_sample),
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    generator=generator,
-                    suppress_token_ids=step_suppress,
-                    presence_penalty_state=presence_penalty_state,
-                )
-                token_id = int(next_token.item())
-                generated_tokens.append(token_id)
-                if presence_penalty_state is not None:
-                    presence_penalty_state.update(token_id)
-                if token_id in stop_token_ids:
-                    break
-                next_position = torch.tensor([[input_ids.shape[1] + len(generated_tokens) - 1]], device=self.device, dtype=torch.long)
-                hidden_states = self(next_token, positions=next_position, past_key_values=past_key_values)
-                logits = _last_step_logits(self.compute_logits(hidden_states))
-
-        outputs.append(
-            _clean_generated_text(
-                tokenizer.decode(
-                    generated_tokens,
-                    skip_special_tokens=False,
-                    clean_up_tokenization_spaces=False,
-                )
-            )
-        )
-
-    return outputs
-
-
 def _normalize_vllm_sampling(do_sample, temperature, top_p, top_k):
     if not do_sample:
         return 1.0, None, 1
@@ -401,40 +246,33 @@ def _resolve_prompt_top_k(model, top_k):
         return None
     default_top_k = int(default_top_k)
     return default_top_k if default_top_k > 0 else None
-
-
-def _format_vllm_probe_failure(probe_result) -> str:
-    checks = probe_result.get("checks", {}) if isinstance(probe_result, dict) else {}
-    reasons = []
-    if isinstance(checks, dict):
-        for check_name, check_data in checks.items():
-            if not isinstance(check_data, dict) or bool(check_data.get("ok", False)):
-                continue
-            msg = str(check_data.get("message", "failed")).replace("\n", " ").strip()
-            if len(msg) > 160:
-                msg = msg[:160] + "..."
-            reasons.append(f"{check_name}={msg}")
-    return "; ".join(reasons) if len(reasons) > 0 else "runtime probe failed"
-
-
 def _resolve_prompt_enhancer_engine(backend: str, requested_lm_engine: str, runtime_model_path: str | None):
+    del backend
     if runtime_model_path is None:
-        return "legacy", "vllm runtime path is not configured"
+        return "legacy", "vllm runtime path is not configured", False, False
     if not _env_enabled(QWEN35_TEXT_VLLM_SWITCH_ENV, default=True):
-        return "legacy", f"disabled by {QWEN35_TEXT_VLLM_SWITCH_ENV}"
+        return "legacy", f"disabled by {QWEN35_TEXT_VLLM_SWITCH_ENV}", False, False
     requested_lm_engine = str(requested_lm_engine or "").strip().lower()
-    resolved_engine = resolve_lm_decoder_engine(requested_lm_engine, ["vllm"])
-    if resolved_engine != "vllm":
-        requested_label = requested_lm_engine or "auto"
-        if requested_lm_engine in ("", "vllm"):
-            return "legacy", f"lm_decoder_engine={requested_label}; {_format_vllm_probe_failure(probe_vllm_runtime())}"
-        return "legacy", f"lm_decoder_engine={requested_label}"
-    probe_result = probe_vllm_runtime()
-    if bool(probe_result.get("supported", False)):
-        if _env_enabled(QWEN35_TEXT_VLLM_CUDAGRAPH_ENV, default=True):
-            return "vllm", "cuda graph"
-        return "vllm", "eager"
-    return "legacy", _format_vllm_probe_failure(probe_result)
+    requested_label = requested_lm_engine or "auto"
+    resolved_engine = resolve_lm_decoder_engine(requested_lm_engine, ["cg", "vllm"])
+    enable_cudagraph = _env_enabled(QWEN35_TEXT_VLLM_CUDAGRAPH_ENV, default=True)
+
+    if resolved_engine == "legacy":
+        detail = f"lm_decoder_engine={requested_label}"
+        if requested_lm_engine in ("", "cg", "vllm"):
+            detail = f"lm_decoder_engine={requested_label} -> legacy"
+        return "legacy", detail, False, False
+
+    if resolved_engine == "cg":
+        detail = "cuda graph only" if enable_cudagraph else f"eager only; disabled by {QWEN35_TEXT_VLLM_CUDAGRAPH_ENV}"
+        if requested_lm_engine != "cg":
+            detail = f"lm_decoder_engine={requested_label} -> cg" #; {detail}"
+        return "cg", detail, enable_cudagraph, False
+
+    detail = "cuda graph + vllm kernels" if enable_cudagraph else f"eager + vllm kernels; disabled by {QWEN35_TEXT_VLLM_CUDAGRAPH_ENV}"
+    if requested_lm_engine == "":
+        detail = f"lm_decoder_engine=auto -> vllm" #; {detail}"
+    return "vllm", detail, enable_cudagraph, True
 
 
 def _use_vllm_prompt_enhancer(model) -> bool:
@@ -444,8 +282,11 @@ def _use_vllm_prompt_enhancer(model) -> bool:
         return False
     if not torch.cuda.is_available():
         return False
-    probe_result = probe_vllm_runtime()
-    return bool(probe_result.get("supported", False))
+    return True
+
+
+def _use_legacy_cuda_runner_prompt_enhancer(model) -> bool:
+    return bool(getattr(model, "_prompt_enhancer_use_legacy_cuda_runner", False)) and torch.cuda.is_available()
 
 
 def _get_or_create_vllm_engine(model, usage_mode: str | None = None):
@@ -470,8 +311,7 @@ def _get_or_create_vllm_engine(model, usage_mode: str | None = None):
         raise RuntimeError("Qwen3.5 prompt enhancer vLLM runtime path is not configured.")
     if tokenizer is None:
         raise RuntimeError("Qwen3.5 prompt enhancer tokenizer is not configured.")
-    force_eager = bool(getattr(model, "_prompt_enhancer_vllm_force_eager", False))
-    enable_cudagraph = (not force_eager) and _env_enabled(QWEN35_TEXT_VLLM_CUDAGRAPH_ENV, default=True)
+    enable_cudagraph = bool(getattr(model, "_prompt_enhancer_enable_cudagraph", False))
 
     engine = NanoVllmTextEngine(
         model=model,
@@ -513,7 +353,12 @@ def _generate_messages_vllm(
 
     engine = _get_or_create_vllm_engine(self, usage_mode="text")
     outputs = []
-    for idx, message in enumerate(tqdm(messages, total=len(messages), desc="Qwen3.5 prompt enhancement (vllm)", dynamic_ncols=True, leave=False)):
+    progress_desc = (
+        "Qwen3.5 prompt enhancement (legacy)"
+        if _use_legacy_cuda_runner_prompt_enhancer(self)
+        else f"Qwen3.5 prompt enhancement ({getattr(self, '_prompt_enhancer_engine_name', 'vllm')})"
+    )
+    for idx, message in enumerate(tqdm(messages, total=len(messages), desc=progress_desc, dynamic_ncols=True, leave=False)):
         prompt = _build_chat_prompt(tokenizer, message)
         try:
             prompt_len = len(tokenizer.encode(prompt))
@@ -586,7 +431,7 @@ def _generate_messages(
     seed=None,
 ):
     top_k = _resolve_prompt_top_k(self, top_k)
-    if _use_vllm_prompt_enhancer(self):
+    if _use_vllm_prompt_enhancer(self) or _use_legacy_cuda_runner_prompt_enhancer(self):
         return _generate_messages_vllm(
             self,
             messages,
@@ -597,16 +442,7 @@ def _generate_messages(
             top_k=top_k,
             seed=seed,
         )
-    return _generate_messages_legacy(
-        self,
-        messages,
-        max_new_tokens,
-        do_sample=do_sample,
-        temperature=temperature,
-        top_p=top_p,
-        top_k=top_k,
-        seed=seed,
-    )
+    raise RuntimeError("Qwen3.5 prompt enhancer text runtime is not configured with an available decode engine.")
 
 
 def _unload_prompt_enhancer_text_runtime(self):
@@ -643,8 +479,10 @@ def _load_local_text_model(
     config_path: str,
     preprocess_sd=None,
     default_dtype: torch.dtype = torch.float16,
+    safe_legacy_mode: bool = False,
 ):
     config = _load_text_config(config_path)
+    config._prompt_enhancer_safe_legacy = bool(safe_legacy_mode)
     with torch.device("meta"):
         model = Qwen3_5ForCausalLM(config)
 
@@ -657,6 +495,12 @@ def _load_local_text_model(
     )
     materialize_module_source_tensors(model)
     return model
+
+
+def _resolve_legacy_text_execution_device() -> torch.device:
+    if not torch.cuda.is_available():
+        raise RuntimeError("Qwen3.5 legacy prompt enhancement now requires CUDA.")
+    return torch.device("cuda", torch.cuda.current_device())
 
 
 def _configure_qwen35_gguf_text_model(model, model_dtype: torch.dtype):
@@ -707,13 +551,12 @@ def load_qwen35_text_prompt_enhancer(
         preprocess_sd = None
         runtime_model_path = text_assets_dir
 
-    engine_name, engine_detail = _resolve_prompt_enhancer_engine(
+    engine_name, _engine_detail, enable_cudagraph, allow_vllm_kernels = _resolve_prompt_enhancer_engine(
         backend=backend,
         requested_lm_engine=requested_lm_engine,
         runtime_model_path=runtime_model_path,
     )
-    safe_legacy_mode = engine_name == "legacy"
-    _configure_qwen35_text_safe_legacy_kernels(safe_legacy_mode)
+    safe_legacy_mode = not allow_vllm_kernels
 
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Qwen3.5 text checkpoint not found: {model_path}")
@@ -723,7 +566,10 @@ def load_qwen35_text_prompt_enhancer(
         text_config_path,
         preprocess_sd=preprocess_sd,
         default_dtype=default_dtype,
+        safe_legacy_mode=safe_legacy_mode,
     )
+    if engine_name == "legacy":
+        model = model.to(_resolve_legacy_text_execution_device())
     if backend == enhancer_quantization_GGUF:
         _configure_qwen35_gguf_text_model(model, default_dtype)
 
@@ -740,15 +586,19 @@ def load_qwen35_text_prompt_enhancer(
         else 0
     )
     model._prompt_enhancer_use_vllm = False
+    model._prompt_enhancer_use_legacy_cuda_runner = False
+    model._prompt_enhancer_engine_name = engine_name
+    model._prompt_enhancer_enable_cudagraph = bool(enable_cudagraph and engine_name in ("cg", "vllm"))
+    model._prompt_enhancer_allow_vllm_kernels = bool(allow_vllm_kernels)
     model._prompt_enhancer_vllm_model_path = runtime_model_path
     model._prompt_enhancer_vllm_engine = None
     model._prompt_enhancer_vllm_mode = None
     model._prompt_enhancer_safe_legacy = safe_legacy_mode
-    model._prompt_enhancer_use_vllm = engine_name == "vllm"
-    model._prompt_enhancer_vllm_force_eager = engine_name == "vllm" and engine_detail != "cuda graph"
-    if engine_name == "vllm":
+    model._prompt_enhancer_use_vllm = engine_name in ("cg", "vllm")
+    model._prompt_enhancer_use_legacy_cuda_runner = engine_name == "legacy"
+    if model._prompt_enhancer_use_vllm or model._prompt_enhancer_use_legacy_cuda_runner:
         model._budget = 0
-    print(f"[Prompt Enhancer][{spec['display_name']}] Text generation engine: {engine_name} ({engine_detail})")
+    print(f"[Prompt Enhancer][{spec['display_name']}] Text generation engine: {engine_name}")
     model.generate_messages = types.MethodType(_generate_messages, model)
     model.unload = types.MethodType(_unload_prompt_enhancer_text_runtime, model)
     model._offload_hooks = ["forward"]

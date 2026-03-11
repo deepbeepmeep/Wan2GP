@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import re
@@ -42,11 +41,6 @@ QWEN35_4B_VISION_FILENAME = "Qwen3.5-4B-vision_bf16.safetensors"
 QWEN35_4B_TEXT_INT8_FILENAME = "Qwen3.5-4B-Abliterated_quanto_bf16_int8.safetensors"
 QWEN35_VARIANT_9B = "9b"
 QWEN35_VARIANT_4B = "4b"
-
-
-def _configure_qwen35_vl_safe_legacy_kernels(enabled: bool) -> None:
-    importlib.import_module("shared.prompt_enhancer.qwen3_5.modeling_qwen3_5").configure_qwen35_vl_safe_legacy_kernels(bool(enabled))
-
 QWEN35_VARIANT_SPECS = {
     QWEN35_VARIANT_9B: {
         "display_name": "Qwen3.5-9B Abliterated",
@@ -812,7 +806,6 @@ def load_qwen35_vl_prompt_enhancer(
     if text_model is None:
         raise ValueError("A loaded Qwen3.5 text model is required to build the multimodal prompt enhancer.")
     legacy_safe_mode = bool(getattr(text_model, "_prompt_enhancer_safe_legacy", False))
-    _configure_qwen35_vl_safe_legacy_kernels(legacy_safe_mode)
     if legacy_safe_mode:
         attn_implementation = "sdpa"
 
@@ -836,8 +829,10 @@ def load_qwen35_vl_prompt_enhancer(
 
     model_class = load_qwen35_model_class(modeling_path, class_name="Qwen3_5ForConditionalGeneration")
     config = AutoConfig.from_pretrained(assets_dir, trust_remote_code=True)
+    config._prompt_enhancer_safe_legacy = legacy_safe_mode
     config._attn_implementation = attn_implementation
     if hasattr(config, "text_config") and config.text_config is not None:
+        config.text_config._prompt_enhancer_safe_legacy = legacy_safe_mode
         config.text_config._attn_implementation = attn_implementation
     if hasattr(config, "vision_config") and config.vision_config is not None:
         config.vision_config._attn_implementation = attn_implementation

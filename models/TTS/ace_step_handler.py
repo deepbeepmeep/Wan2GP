@@ -326,7 +326,7 @@ class family_handler:
                 "duration_slider": dict(ACE_STEP15_DURATION_SLIDER),
                 "custom_settings": [one.copy() for one in ACE_STEP15_CUSTOM_SETTINGS],
                 "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
-                "text_prompt_enhancer_max_tokens": 512,
+                "text_prompt_enhancer_max_tokens": 1024,
                 "prompt_enhancer_button_label": "Compose Lyrics",
             }
             if _ace_step15_has_lm_definition(model_def):

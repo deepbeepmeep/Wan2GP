@@ -157,7 +157,7 @@ def generate_cinematic_prompt(
     images: Optional[List] = None,
     video_prompt= True,
     text_prompt = False,
-    max_new_tokens: int = 256,
+    max_new_tokens: int = 512,
     prompt_enhancer_instructions = None,
     do_sample: bool = True,
     temperature: Optional[float] = None,

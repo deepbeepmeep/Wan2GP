@@ -41,6 +41,10 @@ QWEN35_TEXT_VLLM_SWITCH_ENV = "WGP_QWEN35_PROMPT_ENHANCER_VLLM"
 QWEN35_TEXT_VLLM_CUDAGRAPH_ENV = "WGP_QWEN35_PROMPT_ENHANCER_VLLM_CUDAGRAPH"
 QWEN35_GGUF_LLAMACPP_ENV = "WGP_GGUF_LLAMACPP_CUDA"
 QWEN35_PROMPT_MIN_NEW_TOKENS = 4
+QWEN35_PROMPT_DEFAULT_TOP_K = 20
+QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY = True
+QWEN35_PROMPT_PRESENCE_PENALTY = 1.5
+QWEN35_PROMPT_SUPPRESS_LOGITS_BIAS = -1e4
 
 
 def _env_enabled(name: str, default: bool = True) -> bool:
@@ -157,6 +161,57 @@ def _apply_top_k_top_p(logits: torch.Tensor, top_k: int | None, top_p: float | N
     return logits
 
 
+class _PresencePenaltyState:
+    def __init__(self, presence_penalty: float | None):
+        if presence_penalty is None or float(presence_penalty) <= 0:
+            self.penalty = None
+        else:
+            self.penalty = float(presence_penalty)
+        self._seen_token_ids = set()
+        self._bias_cache = {}
+
+    def enabled(self) -> bool:
+        return self.penalty is not None
+
+    def update(self, token_id: int) -> None:
+        if self.penalty is None:
+            return
+        token_id = int(token_id)
+        if token_id < 0 or token_id in self._seen_token_ids:
+            return
+        self._seen_token_ids.add(token_id)
+        for (vocab_size, _, _), bias in self._bias_cache.items():
+            if token_id < vocab_size:
+                bias[token_id] = -self.penalty
+
+    def apply_(self, logits: torch.Tensor) -> torch.Tensor:
+        if self.penalty is None or len(self._seen_token_ids) == 0:
+            return logits
+        cache_key = (logits.shape[-1], logits.device, logits.dtype)
+        bias = self._bias_cache.get(cache_key)
+        if bias is None:
+            bias = logits.new_zeros(logits.shape[-1])
+            valid_token_ids = [token_id for token_id in self._seen_token_ids if token_id < logits.shape[-1]]
+            if len(valid_token_ids) > 0:
+                bias[torch.tensor(valid_token_ids, device=logits.device, dtype=torch.long)] = -self.penalty
+            self._bias_cache[cache_key] = bias
+        logits.add_(bias)
+        return logits
+
+
+def _prepare_sampling_logits(logits: torch.Tensor, suppress_token_ids: set[int] | None = None, presence_penalty_state: _PresencePenaltyState | None = None) -> torch.Tensor:
+    if (presence_penalty_state is None or not presence_penalty_state.enabled() or len(presence_penalty_state._seen_token_ids) == 0) and not suppress_token_ids:
+        return logits
+    logits = logits.clone()
+    if presence_penalty_state is not None:
+        presence_penalty_state.apply_(logits)
+    if suppress_token_ids:
+        blocked = [token_id for token_id in suppress_token_ids if 0 <= token_id < logits.shape[-1]]
+        if blocked:
+            logits[..., blocked] = float("-inf")
+    return logits
+
+
 def _sample_next_token(
     logits: torch.Tensor,
     do_sample: bool,
@@ -165,18 +220,11 @@ def _sample_next_token(
     top_k: int | None,
     generator: torch.Generator | None,
     suppress_token_ids: set[int] | None = None,
+    presence_penalty_state: _PresencePenaltyState | None = None,
 ) -> torch.Tensor:
-    if suppress_token_ids:
-        blocked = [token_id for token_id in suppress_token_ids if 0 <= token_id < logits.shape[-1]]
-        if blocked:
-            logits = logits.clone()
-            logits[..., blocked] = float("-inf")
-    if not do_sample:
+    logits = _prepare_sampling_logits(logits, suppress_token_ids=suppress_token_ids, presence_penalty_state=presence_penalty_state)
+    if not do_sample or temperature is None or float(temperature) <= 0:
         return torch.argmax(logits, dim=-1, keepdim=True)
-
-    if temperature is None or float(temperature) <= 0:
-        return torch.argmax(logits, dim=-1, keepdim=True)
-
     logits = logits / float(temperature)
     logits = _apply_top_k_top_p(logits, top_k=top_k, top_p=top_p)
     probs = torch.softmax(logits, dim=-1)
@@ -210,6 +258,53 @@ def _build_chat_prompt(tokenizer, message):
     return text.rstrip() + "\n"
 
 
+def _resolve_prompt_presence_penalty(model) -> float | None:
+    if not bool(getattr(model, "_prompt_enhancer_enable_presence_penalty", QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY)):
+        return None
+    presence_penalty = getattr(model, "_prompt_enhancer_presence_penalty", QWEN35_PROMPT_PRESENCE_PENALTY)
+    if presence_penalty is None:
+        return None
+    presence_penalty = float(presence_penalty)
+    return presence_penalty if presence_penalty > 0 else None
+
+
+def _build_prompt_presence_penalty_state(model) -> _PresencePenaltyState | None:
+    state = _PresencePenaltyState(_resolve_prompt_presence_penalty(model))
+    return state if state.enabled() else None
+
+
+def _build_presence_penalty_logits_processor(presence_penalty: float | None):
+    state = _PresencePenaltyState(presence_penalty)
+    if not state.enabled():
+        return None, None
+
+    def logits_processor(_input_ids, logits):
+        state.apply_(logits)
+        return logits
+
+    def update_state(token_id: int):
+        state.update(token_id)
+
+    return logits_processor, update_state
+
+
+def _build_suppressed_token_logits_bias(model):
+    cached_bias = getattr(model, "_prompt_enhancer_suppress_logits_bias", None)
+    if torch.is_tensor(cached_bias):
+        return cached_bias
+    suppress_token_ids = list(getattr(model, "_prompt_enhancer_suppress_token_ids", []) or [])
+    vocab_size = int(getattr(getattr(model, "config", None), "vocab_size", 0) or 0)
+    if vocab_size <= 0 or len(suppress_token_ids) == 0:
+        return None
+    valid_token_ids = [int(token_id) for token_id in suppress_token_ids if 0 <= int(token_id) < vocab_size]
+    if len(valid_token_ids) == 0:
+        return None
+    bias = torch.zeros(vocab_size, dtype=torch.float32)
+    bias[torch.tensor(valid_token_ids, dtype=torch.long)] = float(QWEN35_PROMPT_SUPPRESS_LOGITS_BIAS)
+    model._prompt_enhancer_suppress_logits_bias = bias
+    return bias
+
+
 def _generate_messages_legacy(
     self,
     messages,
@@ -229,6 +324,7 @@ def _generate_messages_legacy(
         self._prompt_enhancer_stop_token_ids = stop_token_ids
     stop_token_ids = set(stop_token_ids)
     suppress_token_ids = set(getattr(self, "_prompt_enhancer_suppress_token_ids", []) or [])
+    presence_penalty_state = _build_prompt_presence_penalty_state(self)
 
     for idx, message in enumerate(tqdm(messages, total=len(messages), desc="Qwen3.5 prompt enhancement", dynamic_ncols=True, leave=False)):
         text = _build_chat_prompt(tokenizer, message)
@@ -261,9 +357,12 @@ def _generate_messages_legacy(
                     top_k=top_k,
                     generator=generator,
                     suppress_token_ids=step_suppress,
+                    presence_penalty_state=presence_penalty_state,
                 )
                 token_id = int(next_token.item())
                 generated_tokens.append(token_id)
+                if presence_penalty_state is not None:
+                    presence_penalty_state.update(token_id)
                 if token_id in stop_token_ids:
                     break
                 next_position = torch.tensor([[input_ids.shape[1] + len(generated_tokens) - 1]], device=self.device, dtype=torch.long)
@@ -291,6 +390,17 @@ def _normalize_vllm_sampling(do_sample, temperature, top_p, top_k):
     normalized_top_p = top_p if top_p is not None and 0.0 < float(top_p) < 1.0 else None
     normalized_top_k = int(top_k) if top_k is not None and int(top_k) > 0 else None
     return float(temperature), normalized_top_p, normalized_top_k
+
+
+def _resolve_prompt_top_k(model, top_k):
+    if top_k is not None:
+        resolved_top_k = int(top_k)
+        return resolved_top_k if resolved_top_k > 0 else None
+    default_top_k = getattr(model, "_prompt_enhancer_default_top_k", QWEN35_PROMPT_DEFAULT_TOP_K)
+    if default_top_k is None:
+        return None
+    default_top_k = int(default_top_k)
+    return default_top_k if default_top_k > 0 else None
 
 
 def _format_vllm_probe_failure(probe_result) -> str:
@@ -431,6 +541,8 @@ def _generate_messages_vllm(
             top_k=top_k,
         )
         sample_seed = None if seed is None else int(seed) + idx
+        logits_bias = _build_suppressed_token_logits_bias(self)
+        logits_processor, logits_processor_update_state = _build_presence_penalty_logits_processor(_resolve_prompt_presence_penalty(self))
         sampling_params = SamplingParams(
             temperature=temp,
             max_tokens=int(max_new_tokens),
@@ -438,6 +550,9 @@ def _generate_messages_vllm(
             top_k=normalized_top_k,
             top_p=normalized_top_p,
             ignore_eos=False,
+            logits_processor=logits_processor,
+            logits_processor_update_state=logits_processor_update_state,
+            logits_bias=logits_bias,
             seed=sample_seed,
         )
 
@@ -470,6 +585,7 @@ def _generate_messages(
     top_k=None,
     seed=None,
 ):
+    top_k = _resolve_prompt_top_k(self, top_k)
     if _use_vllm_prompt_enhancer(self):
         return _generate_messages_vllm(
             self,
@@ -614,6 +730,10 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_tokenizer = tokenizer
     model._prompt_enhancer_stop_token_ids = _collect_stop_token_ids(tokenizer, model.config)
     model._prompt_enhancer_suppress_token_ids = _collect_suppressed_token_ids(tokenizer)
+    model._prompt_enhancer_suppress_logits_bias = None
+    model._prompt_enhancer_default_top_k = QWEN35_PROMPT_DEFAULT_TOP_K
+    model._prompt_enhancer_enable_presence_penalty = QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY
+    model._prompt_enhancer_presence_penalty = QWEN35_PROMPT_PRESENCE_PENALTY
     model._prompt_enhancer_min_new_tokens = (
         QWEN35_PROMPT_MIN_NEW_TOKENS
         if backend == enhancer_quantization_GGUF and _env_enabled(QWEN35_GGUF_LLAMACPP_ENV, default=True)

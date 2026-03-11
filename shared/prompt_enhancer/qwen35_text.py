@@ -156,7 +156,7 @@ class _PresencePenaltyState:
         self._seen_token_ids.add(token_id)
         for (vocab_size, _, _), bias in self._bias_cache.items():
             if token_id < vocab_size:
-                bias[token_id] = -self.penalty
+                bias[token_id] = bias.new_tensor(-self.penalty)
 
     def apply_(self, logits: torch.Tensor) -> torch.Tensor:
         if self.penalty is None or len(self._seen_token_ids) == 0:
@@ -167,7 +167,7 @@ class _PresencePenaltyState:
             bias = logits.new_zeros(logits.shape[-1])
             valid_token_ids = [token_id for token_id in self._seen_token_ids if token_id < logits.shape[-1]]
             if len(valid_token_ids) > 0:
-                bias[torch.tensor(valid_token_ids, device=logits.device, dtype=torch.long)] = -self.penalty
+                bias.index_fill_(0, torch.tensor(valid_token_ids, device=logits.device, dtype=torch.long), bias.new_tensor(-self.penalty))
             self._bias_cache[cache_key] = bias
         logits.add_(bias)
         return logits
@@ -568,8 +568,6 @@ def load_qwen35_text_prompt_enhancer(
         default_dtype=default_dtype,
         safe_legacy_mode=safe_legacy_mode,
     )
-    if engine_name == "legacy":
-        model = model.to(_resolve_legacy_text_execution_device())
     if backend == enhancer_quantization_GGUF:
         _configure_qwen35_gguf_text_model(model, default_dtype)
 

@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### March 10th 2026: WanGP v10.9871, Prompt Enhancer has just Been Abliterated
+### March 10th 2026: WanGP v10.9872, Prompt Enhancer has just Been Abliterated
 
 - **Qwen3.5 VL Abliterated Prompt Enhancer**: new choice of Prompt Enhancer
    * Based on widely acclaimed *Qwen3.5 model* that has just been released
@@ -42,12 +42,15 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
    * *vllm accelerated* x5 faster, if Flash Attention 2 & Triton are installed (please check docs/INSTALLATION.md) 
    * *Think Mode*: for complex prompt queries
    
+   Also you can now expand or override a *System Prompt prompt Enhancer* with add @ or @@ (check new doc *PROMPTS.md*)
+
 - **GGUF CUDA Kernels**: 15% speed gain when using GGUF on Diffusion Video Models & x3 speed with GGUF LLM (*Qwen 3.5 VL GGUF* for instance). GGUF Kernels are for the moment only available for Windows (please check docs/INSTALLATION.md).
 
 - **LTX2.3 Improvements**
    * *End Frame without Start Frame*: you know how your story ends but want to see how it started, just give an End Frame (no start Frame) 
-   *  New GGUF Checkpoints
-   *  VAE Decoding hopefully should expose less banding
+   * New GGUF Checkpoints
+   * VAE Decoding hopefully should expose less banding
+   * *Multiple Frames Injections*: inject at different positions the reference frames of your choice (works for LTX-2.0 too)
 
 - **WanGP API**: rejoice developers (or agents) among you ! WanGP offers now an internal API that allows you to use WanGP as a backend for your apps. It is subject to compliance to the terms & conditions of WanGP license and more specifically to inform the users of your app that WanGP is working behind the scene.
 
@@ -58,6 +61,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 Also note as people preferred mataynone v1 over v2 I have added an option to select matanyone version in the Config / Extension tab
 
 *update 10.9871*: Improved Qwen3.5 GGUF Prompt Enhancer Output Quality & added Think mode
+*update 10.9872*: Added LTX 2.0/2.3 frames injection
 
 ### March 7th 2026: WanGP v10.981, Expecting an Update ? 
 

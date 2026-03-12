@@ -729,8 +729,10 @@ class LTX2:
         prefix_frames_count: int = 0,
         input_frames=None,
         input_frames2=None,
+        input_ref_images=None,
         input_masks=None,
         input_masks2=None,
+        frames_relative_positions_list=None,
         masking_strength: float | None = None,
         input_video_strength: float | None = None,
         return_latent_slice=None,
@@ -769,6 +771,18 @@ class LTX2:
 
         image_start = _coerce_image_list(image_start)
         image_end = _coerce_image_list(image_end)
+        if input_ref_images is None:
+            input_ref_images = []
+        elif isinstance(input_ref_images, (list, tuple)):
+            input_ref_images = list(input_ref_images)
+        else:
+            input_ref_images = [input_ref_images]
+        if frames_relative_positions_list is None:
+            frames_relative_positions_list = []
+        elif isinstance(frames_relative_positions_list, (list, tuple)):
+            frames_relative_positions_list = list(frames_relative_positions_list)
+        else:
+            frames_relative_positions_list = [frames_relative_positions_list]
 
         prefix_frames_count = int(prefix_frames_count or 0)
         video_prompt_type = video_prompt_type or ""
@@ -834,7 +848,8 @@ class LTX2:
 
         video_conditioning = None
         masking_source = None
-        if input_frames is not None or input_frames2 is not None:
+        injected_ref_count = min(len(input_ref_images), len(frames_relative_positions_list))
+        if input_frames is not None or input_frames2 is not None or injected_ref_count > 0:
             control_start_frame = int(prefix_frames_count)
             expected_guide_frames = max(1, int(frame_num) - control_start_frame + (1 if prefix_frames_count > 1 else 0))
             if prefix_frames_count > 1:
@@ -857,6 +872,8 @@ class LTX2:
                 conditioning_entries.append((input_frames, control_start_frame, control_strength))
             if input_frames2 is not None:
                 conditioning_entries.append((input_frames2, control_start_frame, control_strength))
+            for ref_image, frame_idx in zip(input_ref_images[:injected_ref_count], frames_relative_positions_list[:injected_ref_count]):
+                conditioning_entries.append((ref_image, int(frame_idx), control_strength))
             if conditioning_entries:
                 video_conditioning = conditioning_entries
             if masking_strength > 0.0:

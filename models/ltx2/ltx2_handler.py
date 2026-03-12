@@ -133,6 +133,7 @@ class family_handler:
         if distilled:
             audio_prompt_labels["K"] = "Generate Video based on Control Video + its Audio Track and Text Prompt"
 
+
         extra_model_def = {
             "text_encoder_folder": _GEMMA_FOLDER,
             "text_encoder_URLs": [
@@ -168,16 +169,17 @@ class family_handler:
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"] = True
         extra_model_def["input_video_strength"] = "Image / Source Video Strength (you may try values lower value than 1 to get more motion)"
-        if distilled:
-            extra_model_def["guide_preprocessing"] = {
-                "selection": ["", "PVG", "DVG", "EVG", "VG"],
-                "labels": {
-                    "PVG": "Transfer Human Motion",
-                    "DVG": "Transfer Depth",
-                    "EVG": "Transfer Canny Edges",
-                    "VG": "Use LTX-2 raw format",
-                },
-            }
+        
+        control_choices = [("No Video Process", ""), ("Transfer Human Motion", "PVG") , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("Use LTX-2 raw format Control Video", "VG")] if distilled else []
+        control_choices +=   [("Inject Frames", "KFI")]
+        extra_model_def["guide_custom_choices"] = {
+            "choices": control_choices,
+            "letters_filter": "PDEVGKFI",
+            "label": "Control Video / Frames Injection"
+        }
+
+        extra_model_def["custom_frames_injection"] = True
+
         extra_model_def["mask_preprocessing"] = {
             "selection": ["", "A", "NA", "XA", "XNA"],
         }
@@ -218,6 +220,19 @@ class family_handler:
         extra_model_def["guidance_max_phases"] = 2
         extra_model_def["visible_phases"] = 0 if distilled else 1
         extra_model_def["lock_guidance_phases"] = True
+
+        # extra_model_def["custom_video_selection"] = {
+        #     "choices":[
+        #         ("None", ""),
+        #         ("Inject Frames", "FI"),
+        #     ],
+        #     "label": "Inject Frames",
+        #     "type": "checkbox",
+        #     "letters_filter": "FI",
+        #     "show_label" : False,
+        #     "scale": 1,
+        #     }
+
         return extra_model_def
 
     @staticmethod

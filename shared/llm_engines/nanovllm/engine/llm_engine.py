@@ -241,6 +241,7 @@ class LLMEngine:
         # This prevents 'deque index out of range' errors from accumulated block leaks
         if not self.is_finished():
             self.reset()
+        self.model_runner.reset_generation_state()
         
         if use_tqdm:
             pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True)
@@ -314,6 +315,7 @@ class LLMEngine:
             )
         if not self.is_finished():
             self.reset()
+        self.model_runner.reset_generation_state()
         if not isinstance(sampling_params, list):
             sampling_params = [sampling_params] * len(prompts)
         if prompt_position_ids is None:

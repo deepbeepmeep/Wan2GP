@@ -40,6 +40,7 @@ class Sequence:
         self.cfg_scale = sampling_params.cfg_scale
         self.top_k = sampling_params.top_k
         self.top_p = sampling_params.top_p
+        self.min_p = sampling_params.min_p
         self.repetition_penalty = sampling_params.repetition_penalty
         # For CFG: mark if this is an unconditional sequence
         self.is_unconditional = is_unconditional

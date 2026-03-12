@@ -94,6 +94,7 @@ class ModelRunner:
         self._graph_cache_order = []
         self._logits_bias_cache = {}
         self._sampling_generator = None
+        self._runtime_signature = None
         self._guard_counts = {}
         self._guard_seen_details = set()
         torch.set_default_dtype(config_dtype)
@@ -123,7 +124,16 @@ class ModelRunner:
 
     def ensure_runtime_ready(self):
         if self._runtime_ready:
-            return
+            # In eager mode MMGP may move parameter storage between CPU/GPU after prefill.
+            # That changes data_ptr() without invalidating the live KV cache or sequence state.
+            # Resetting here drops the prompt context and makes legacy decode drift off-topic.
+            if self.enforce_eager:
+                return
+            current_sig = self._get_graph_capture_signature()
+            if current_sig == self._runtime_signature:
+                return
+            self._note_guard("runtime_reprepare_signature_change")
+            self.reset_runtime_state()
         if self.model is None:
             raise RuntimeError("LLM model object is not available.")
         self._tie_word_embeddings_if_needed()
@@ -132,6 +142,25 @@ class ModelRunner:
         if not self.enforce_eager:
             self.capture_cudagraph()
         self._runtime_ready = True
+        self._runtime_signature = self._get_graph_capture_signature()
+
+    def reset_generation_state(self):
+        if self.model is None:
+            return
+        try:
+            for module in self.model.modules():
+                reset_sequence_state = getattr(module, "reset_sequence_state", None)
+                if callable(reset_sequence_state):
+                    reset_sequence_state()
+                    continue
+                if hasattr(module, "conv_state"):
+                    module.conv_state = None
+                if hasattr(module, "recurrent_state"):
+                    module.recurrent_state = None
+        except Exception:
+            pass
+        self._logits_bias_cache.clear()
+        reset_context()
 
     def _prepare_model_sequence_state(self):
         if self.model is None:
@@ -222,6 +251,7 @@ class ModelRunner:
             pass
         self._logits_bias_cache.clear()
         self._sampling_generator = None
+        self._runtime_signature = None
         self._runtime_ready = False
         gc.collect()
 
@@ -316,6 +346,7 @@ class ModelRunner:
         self._cpu_cfg_scales = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=True)
         self._cpu_top_ks = torch.zeros(max_bs, dtype=torch.int32, device="cpu", pin_memory=True)
         self._cpu_top_ps = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=True)
+        self._cpu_min_ps = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=True)
         self._cpu_repetition_penalties = torch.zeros(max_bs, dtype=torch.float32, device="cpu", pin_memory=True)
         
         # Pre-allocate decode buffers on CPU with pinned memory
@@ -343,6 +374,7 @@ class ModelRunner:
             "_cpu_cfg_scales",
             "_cpu_top_ks",
             "_cpu_top_ps",
+            "_cpu_min_ps",
             "_cpu_repetition_penalties",
             "_cpu_input_ids",
             "_cpu_positions",
@@ -487,10 +519,15 @@ class ModelRunner:
                 layer_id += 1
 
     def prepare_block_tables(self, seqs: list[Sequence]):
+        bs = len(seqs)
         max_len = max(len(seq.block_table) for seq in seqs)
-        block_tables = [seq.block_table + [-1] * (max_len - len(seq.block_table)) for seq in seqs]
-        block_tables = torch.tensor(block_tables, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        return block_tables
+        block_tables = self._cpu_block_tables[:bs, :max_len]
+        block_tables.fill_(-1)
+        for row, seq in enumerate(seqs):
+            if not seq.block_table:
+                continue
+            block_tables[row, :len(seq.block_table)] = torch.tensor(seq.block_table, dtype=torch.int32, device="cpu")
+        return block_tables.cuda(non_blocking=True)
 
     def prepare_prefill(self, seqs: list[Sequence]):
         use_prompt_embeds = any(getattr(seq, "prompt_embeds", None) is not None for seq in seqs)
@@ -592,6 +629,7 @@ class ModelRunner:
         # Fill pre-allocated CPU buffers
         top_ks_is_zero = True
         top_ps_is_one = True
+        min_ps_is_zero = True
         repetition_penalties_is_one = True
         for i, seq in enumerate(target_seqs):
             self._cpu_temperatures[i] = seq.temperature
@@ -602,6 +640,9 @@ class ModelRunner:
             self._cpu_top_ps[i] = seq.top_p if seq.top_p is not None else 1.0
             if seq.top_p is not None and seq.top_p != 1.0:
                 top_ps_is_one = False
+            self._cpu_min_ps[i] = seq.min_p if seq.min_p is not None else 0.0
+            if seq.min_p is not None and seq.min_p > 0.0:
+                min_ps_is_zero = False
             self._cpu_repetition_penalties[i] = seq.repetition_penalty if seq.repetition_penalty is not None else 1.0
             if seq.repetition_penalty is not None and seq.repetition_penalty != 1.0:
                 repetition_penalties_is_one = False
@@ -611,9 +652,10 @@ class ModelRunner:
         cfg_scales = self._cpu_cfg_scales[:num_seqs].cuda(non_blocking=True)
         top_ks = self._cpu_top_ks[:num_seqs].cuda(non_blocking=True) if not top_ks_is_zero else None
         top_ps = self._cpu_top_ps[:num_seqs].cuda(non_blocking=True) if not top_ps_is_one else None
+        min_ps = self._cpu_min_ps[:num_seqs].cuda(non_blocking=True) if not min_ps_is_zero else None
         repetition_penalties = self._cpu_repetition_penalties[:num_seqs].cuda(non_blocking=True) if not repetition_penalties_is_one else None
         
-        return temperatures, cfg_scales, top_ks, top_ps, repetition_penalties
+        return temperatures, cfg_scales, top_ks, top_ps, min_ps, repetition_penalties
 
     @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor | None, positions: torch.Tensor, is_prefill: bool, inputs_embeds: torch.Tensor | None = None):
@@ -693,9 +735,9 @@ class ModelRunner:
                 inputs_embeds = None
             sample_params = self.prepare_sample(seqs, is_cfg_batch=True) if self.rank == 0 else None
             if sample_params is not None:
-                temperatures, cfg_scales, top_ks, top_ps, repetition_penalties = sample_params
+                temperatures, cfg_scales, top_ks, top_ps, min_ps, repetition_penalties = sample_params
             else:
-                temperatures = cfg_scales = top_ks = top_ps = repetition_penalties = None
+                temperatures = cfg_scales = top_ks = top_ps = min_ps = repetition_penalties = None
             
             # Run model forward (processes entire batch: cond + uncond)
             logits_all = self.run_model(input_ids, positions, is_prefill, inputs_embeds=inputs_embeds)
@@ -758,6 +800,7 @@ class ModelRunner:
                     temperatures,
                     top_ks=top_ks if top_ks is not None else None,
                     top_ps=top_ps if top_ps is not None else None,
+                    min_ps=min_ps if min_ps is not None else None,
                     repetition_penalties=None,  # Already applied above
                     generator=self._sampling_generator,
                     # input_ids=cond_input_ids,
@@ -782,9 +825,9 @@ class ModelRunner:
                 inputs_embeds = None
             sample_params = self.prepare_sample(seqs, is_cfg_batch=False) if self.rank == 0 else None
             if sample_params is not None:
-                temperatures, cfg_scales, top_ks, top_ps, repetition_penalties = sample_params
+                temperatures, cfg_scales, top_ks, top_ps, min_ps, repetition_penalties = sample_params
             else:
-                temperatures = cfg_scales = top_ks = top_ps = repetition_penalties = None
+                temperatures = cfg_scales = top_ks = top_ps = min_ps = repetition_penalties = None
             logits = self.run_model(input_ids, positions, is_prefill, inputs_embeds=inputs_embeds)
             if is_prefill:
                 for seq in seqs:
@@ -837,6 +880,7 @@ class ModelRunner:
                     temperatures,
                     top_ks=top_ks if top_ks is not None else None,
                     top_ps=top_ps if top_ps is not None else None,
+                    min_ps=min_ps if min_ps is not None else None,
                     repetition_penalties=None,  # Already applied above
                     generator=self._sampling_generator,
                     # input_ids=seq_input_ids,

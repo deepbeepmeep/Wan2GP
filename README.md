@@ -452,6 +452,7 @@ For detailed installation instructions for different GPU generations:
 ### Basic Usage
 - **[Getting Started Guide](docs/GETTING_STARTED.md)** - First steps and basic usage
 - **[Models Overview](docs/MODELS.md)** - Available models and their capabilities
+- **[Prompts Guide](docs/PROMPTS.md)** - How WanGP interprets prompts, images as prompts, enhancers, and macros
 
 ### Advanced Features
 - **[Loras Guide](docs/LORAS.md)** - Using and managing Loras for customization

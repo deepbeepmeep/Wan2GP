@@ -59,6 +59,30 @@ def apply_top_k_top_p(
     return logits.squeeze(0) if squeezed else logits
 
 
+def apply_min_p(
+    logits: torch.Tensor,
+    min_p: Optional[torch.Tensor],
+) -> torch.Tensor:
+    if min_p is None:
+        return logits
+    squeezed = False
+    if logits.ndim == 1:
+        logits = logits.unsqueeze(0)
+        squeezed = True
+    min_p = min_p.reshape(-1)
+    active_mask = min_p > 0
+    if not torch.any(active_mask):
+        return logits.squeeze(0) if squeezed else logits
+    probs = logits.softmax(dim=-1)
+    max_probs, max_idx = probs.max(dim=-1, keepdim=True)
+    threshold = max_probs * min_p.unsqueeze(1)
+    mask = probs < threshold
+    mask.scatter_(1, max_idx, False)
+    mask &= active_mask.unsqueeze(1)
+    logits.masked_fill_(mask, float("-inf"))
+    return logits.squeeze(0) if squeezed else logits
+
+
 def apply_top_k_only(
     logits: torch.Tensor,
     k: torch.Tensor,
@@ -111,6 +135,7 @@ class Sampler(nn.Module):
         temperatures: torch.Tensor,
         top_ks: Optional[torch.Tensor] = None,
         top_ps: Optional[torch.Tensor] = None,
+        min_ps: Optional[torch.Tensor] = None,
         repetition_penalties: Optional[torch.Tensor] = None,
         input_ids: Optional[torch.Tensor] = None,
         generator: Optional[torch.Generator] = None,
@@ -129,6 +154,7 @@ class Sampler(nn.Module):
             top_ks,
             top_ps,
         )
+        logits = apply_min_p(logits, min_ps)
         if _SAMPLER_NUMERIC_GUARD:
             logits = torch.nan_to_num(logits, nan=float("-inf"))
             invalid_rows = ~torch.isfinite(logits).any(dim=-1)

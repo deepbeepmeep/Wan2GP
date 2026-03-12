@@ -98,7 +98,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "10.987"
+WanGP_version = "10.9871"
 settings_version = 2.55
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -5467,6 +5467,7 @@ def process_prompt_enhancer(model_def, prompt_enhancer, original_prompts,  image
             top_p = enhancer_top_p,
             seed = enhancer_seed,
             post_image_caption_hook = post_image_caption_hook,
+            thinking_enabled = "K" in prompt_enhancer_mode,
         )
         return prompts
 
@@ -8972,6 +8973,20 @@ def del_in_sequence(source_str, letters):
             ret = ret.replace(letter, "")
     return ret    
 
+def get_prompt_enhancer_letters_filter(prompt_enhancer_def, prompt_enhancer_choices):
+    if isinstance(prompt_enhancer_def, dict):
+        letters_filter = prompt_enhancer_def.get("letters_filter", "")
+        if len(letters_filter): return letters_filter
+    letters_filter = ""
+    for _label, value in prompt_enhancer_choices:
+        letters_filter = add_to_sequence(letters_filter, str(value or ""))
+    return letters_filter
+
+def build_prompt_enhancer_value(prompt_enhancer_mode, prompt_enhancer_think):
+    if prompt_enhancer_think and len(prompt_enhancer_mode):
+        prompt_enhancer_mode = add_to_sequence(prompt_enhancer_mode, "K")
+    return prompt_enhancer_mode
+
 def refresh_audio_prompt_type_remux(state, audio_prompt_type, remux):
     audio_prompt_type = del_in_sequence(audio_prompt_type, "R")
     audio_prompt_type = add_to_sequence(audio_prompt_type, remux)
@@ -10087,9 +10102,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 wizard_variables_var = gr.Text(wizard_variables, visible = False)
             with gr.Row(visible= server_config.get("enhancer_enabled", 0) > 0  ) as prompt_enhancer_row:
                 on_demand_prompt_enhancer = server_config.get("enhancer_mode", 0) == 1
-                prompt_enhancer_value = ui_get("prompt_enhancer")
+                prompt_enhancer_value = str(ui_get("prompt_enhancer") or "")
                 prompt_enhancer_btn_label = str(model_def.get("prompt_enhancer_button_label", "Enhance Prompt"))
-                prompt_enhancer_btn = gr.Button( value =prompt_enhancer_btn_label, visible= on_demand_prompt_enhancer, size="lg",  elem_classes="btn_centered")
+                prompt_enhancer_btn = gr.Button( value =prompt_enhancer_btn_label, visible= on_demand_prompt_enhancer, size="lg", scale=1, elem_classes="btn_centered")
                 prompt_enhancer_choices = [] if on_demand_prompt_enhancer else [("Disabled", "")]
                 prompt_enhancer_default = ""
                 prompt_enhancer_default_labels = {
@@ -10127,26 +10142,34 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         display_label = prompt_enhancer_default_labels.get(selection_value, selection_value)
                         prompt_enhancer_choices.append((display_label, selection_value))
 
+                prompt_enhancer_letters_filter = get_prompt_enhancer_letters_filter(prompt_enhancer_def, prompt_enhancer_choices)
                 prompt_enhancer_values = [value for _, value in prompt_enhancer_choices]
-                if prompt_enhancer_value not in prompt_enhancer_values:
+                prompt_enhancer_mode_value = filter_letters(prompt_enhancer_value, prompt_enhancer_letters_filter, prompt_enhancer_default)
+                prompt_enhancer_mode_value = get_default_value(prompt_enhancer_choices, prompt_enhancer_mode_value, prompt_enhancer_default)
+                if prompt_enhancer_mode_value not in prompt_enhancer_values:
                     if prompt_enhancer_default in prompt_enhancer_values:
-                        prompt_enhancer_value = prompt_enhancer_default
+                        prompt_enhancer_mode_value = prompt_enhancer_default
                     elif len(prompt_enhancer_values) > 0:
-                        prompt_enhancer_value = prompt_enhancer_values[0]
+                        prompt_enhancer_mode_value = prompt_enhancer_values[0]
                     else:
-                        prompt_enhancer_value = ""
-                elif len(prompt_enhancer_value) == 0 and on_demand_prompt_enhancer and len(prompt_enhancer_values) > 0:
+                        prompt_enhancer_mode_value = ""
+                elif len(prompt_enhancer_mode_value) == 0 and on_demand_prompt_enhancer and len(prompt_enhancer_values) > 0:
                     if prompt_enhancer_default in prompt_enhancer_values:
-                        prompt_enhancer_value = prompt_enhancer_default
+                        prompt_enhancer_mode_value = prompt_enhancer_default
                     else:
-                        prompt_enhancer_value = prompt_enhancer_values[0]
+                        prompt_enhancer_mode_value = prompt_enhancer_values[0]
 
-                prompt_enhancer = gr.Dropdown(
+                prompt_enhancer_think_visible = server_config.get("enhancer_enabled", 0) in (3, 4)
+                prompt_enhancer_think_value = prompt_enhancer_think_visible and "K" in prompt_enhancer_value and len(prompt_enhancer_mode_value) > 0
+                prompt_enhancer_value = build_prompt_enhancer_value(prompt_enhancer_mode_value, prompt_enhancer_think_value)
+                prompt_enhancer = gr.Text(value=prompt_enhancer_value, visible=False)
+                prompt_enhancer_mode_dropdown = gr.Dropdown(
                     choices=prompt_enhancer_choices,
-                    value=prompt_enhancer_value,
+                    value=prompt_enhancer_mode_value,
                     label=model_def.get("prompt_enhancer_button_label", "Enhance Prompt using a LLM") , scale = 5,
                     visible= True, show_label= not on_demand_prompt_enhancer,
                 )
+                prompt_enhancer_think = gr.Checkbox(label="Think", value=prompt_enhancer_think_value, visible=prompt_enhancer_think_visible, scale=1, elem_classes="cbx_centered")
             alt_prompt_def = model_def.get("alt_prompt", None)
             alt_prompt_label = None
             alt_prompt_placeholder = ""
@@ -10888,7 +10911,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       video_buttons_row, deleted_video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab, PP_MMAudio_col, PP_MMAudio_setting, PP_MMAudio_row, PP_custom_audio_row, 
                                       audio_buttons_row, deleted_audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_eject_audio_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
-                                      NAG_col, audio_options_row, remove_background_sound, normalize_audio_volumes, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, 
+                                      NAG_col, audio_options_row, remove_background_sound, normalize_audio_volumes, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, prompt_enhancer_mode_dropdown, prompt_enhancer_think,
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, *custom_settings_rows, top_pk_row, 
                                       number_frames_row, negative_prompt_row,
                                       self_refiner_col, pause_row]+\
@@ -10916,6 +10939,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             remove_background_sound.change(fn=refresh_remove_background_sound, inputs=[state, audio_prompt_type, remove_background_sound], outputs=[audio_prompt_type])
             normalize_audio_volumes.change(fn=refresh_normalize_audio_volumes, inputs=[state, audio_prompt_type, normalize_audio_volumes], outputs=[audio_prompt_type])
             audio_prompt_type_sources.change(fn=refresh_audio_prompt_type_sources, inputs=[state, audio_prompt_type, audio_prompt_type_sources], outputs=[audio_prompt_type, audio_guide, audio_guide2, speakers_locations_row, remove_background_sound, normalize_audio_volumes, audio_options_row, audio_guide_row])
+            prompt_enhancer_mode_dropdown.input(fn=build_prompt_enhancer_value, inputs=[prompt_enhancer_mode_dropdown, prompt_enhancer_think], outputs=[prompt_enhancer], show_progress="hidden")
+            prompt_enhancer_think.input(fn=build_prompt_enhancer_value, inputs=[prompt_enhancer_mode_dropdown, prompt_enhancer_think], outputs=[prompt_enhancer], show_progress="hidden")
             image_prompt_type_radio.change(fn=refresh_image_prompt_type_radio, inputs=[state, image_prompt_type, image_prompt_type_radio], outputs=[image_prompt_type, image_start_row, image_end_row, video_source, input_video_strength, keep_frames_video_source, image_prompt_type_endcheckbox], show_progress="hidden" ) 
             image_prompt_type_endcheckbox.change(fn=refresh_image_prompt_type_endcheckbox, inputs=[state, image_prompt_type, image_prompt_type_radio, image_prompt_type_endcheckbox], outputs=[image_prompt_type, image_end_row] ) 
             video_prompt_type_image_refs.input(fn=refresh_video_prompt_type_image_refs, inputs = [state, video_prompt_type, video_prompt_type_image_refs,image_mode], outputs = [video_prompt_type, image_refs_row, remove_background_images_ref,  image_refs_relative_size, frames_positions,video_guide_outpainting_col], show_progress="hidden")

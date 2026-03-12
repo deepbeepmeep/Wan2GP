@@ -94,7 +94,9 @@ class RMSNorm(nn.Module):
         orig_dtype = x.dtype
         x_float = x.float()
         var = x_float.pow(2).mean(dim=-1, keepdim=True)
-        return (x_float * torch.rsqrt(var + self.eps)).to(orig_dtype) * self.weight
+        normed = x_float * torch.rsqrt(var + self.eps)
+        normed *= self.weight
+        return normed.to(orig_dtype)
 
     def _fallback_add_rms_forward(
         self,
@@ -105,8 +107,9 @@ class RMSNorm(nn.Module):
         summed = x.float() + residual.float()
         residual_out = summed.to(orig_dtype)
         var = summed.pow(2).mean(dim=-1, keepdim=True)
-        normed = (summed * torch.rsqrt(var + self.eps)).to(orig_dtype) * self.weight
-        return normed, residual_out
+        normed = summed * torch.rsqrt(var + self.eps)
+        normed *= self.weight
+        return normed.to(orig_dtype), residual_out
 
     def _triton_rms_forward(self, x: torch.Tensor) -> torch.Tensor:
         x_2d = x.reshape(-1, x.shape[-1])

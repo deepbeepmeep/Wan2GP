@@ -27,8 +27,10 @@ enhancer_quantization_GGUF = "gguf"
 enhancer_quantization_SAFETENSORS = "safetensors"
 enhancer_quantization_QUANTO_INT8 = "quanto_int8"
 QWEN35_GGUF_LLAMACPP_ENV = "WGP_GGUF_LLAMACPP_CUDA"
+QWEN35_TEXT_GGUF_FILENAME = "Qwen3.5-9B-abliterated-Q4_K_M_bis.gguf"
 QWEN35_TEXT_GGUF_FILENAME = "Qwen3.5-9B-Abliterated-text-Q4_K_M.gguf"
 QWEN35_TEXT_INT8_FILENAME = "Qwen3.5-9B-Abliterated_quanto_bf16_int8.safetensors"
+# QWEN35_TEXT_INT8_FILENAME = "Qwen3.5-9B-Abliterated_bf16.safetensors"
 QWEN35_VISION_FILENAME = "Qwen3.5-9B-vision_bf16.safetensors"
 QWEN35_PROMPT_MIN_NEW_TOKENS = 4
 QWEN35_ABLITERATED_REPO = "DeepBeepMeep/Wan2.1"
@@ -135,14 +137,31 @@ def _resolve_qwen35_asset_file(
     variant: str | None = None,
     error_if_none: bool = True,
 ) -> str | None:
-    resolved_assets_dir = _resolve_qwen35_assets_dir(assets_dir, variant=variant, error_if_none=error_if_none)
-    if resolved_assets_dir is None:
+    del variant
+    if assets_dir is None:
         return None
-    path = os.path.join(resolved_assets_dir, filename)
-    located = fl.locate_file(path, error_if_none=False)
-    if located is None and error_if_none:
+    path = os.path.join(assets_dir, filename)
+    if not os.path.isfile(path) and error_if_none:
         raise FileNotFoundError(f"Missing Qwen3.5 asset: {path}")
-    return located
+    return path if os.path.isfile(path) else None
+
+
+def _resolve_qwen35_checkpoint_file(
+    assets_dir: str | None,
+    filename: str,
+    variant: str | None = None,
+    error_if_none: bool = True,
+) -> str | None:
+    del variant
+    if assets_dir is None:
+        return None
+    resolved = fl.locate_file(filename, error_if_none=False, extra_paths=[assets_dir])
+    if resolved is not None:
+        return resolved
+    fallback_path = os.path.join(assets_dir, filename)
+    if error_if_none:
+        raise FileNotFoundError(f"Missing Qwen3.5 checkpoint: {fallback_path}")
+    return fallback_path
 
 
 def get_qwen35_modeling_path() -> str:
@@ -163,7 +182,6 @@ def ensure_qwen35_prompt_enhancer_assets(process_files_def, backend: str = enhan
 
 
 def _load_qwen35_tokenizer(assets_dir: str):
-    assets_dir = _resolve_qwen35_assets_dir(assets_dir)
     tokenizer_config_path = _resolve_qwen35_asset_file(assets_dir, "tokenizer_config.json")
     tokenizer_class = None
     tokenizer_config = {}
@@ -205,7 +223,6 @@ def _load_qwen35_tokenizer(assets_dir: str):
 
 
 def _load_qwen35_chat_template(assets_dir: str) -> str | None:
-    assets_dir = _resolve_qwen35_assets_dir(assets_dir)
     chat_template_path = _resolve_qwen35_asset_file(assets_dir, "chat_template.jinja", error_if_none=False)
     if chat_template_path is None or not os.path.isfile(chat_template_path):
         return None
@@ -214,7 +231,6 @@ def _load_qwen35_chat_template(assets_dir: str) -> str | None:
 
 
 def _load_qwen35_image_processor(assets_dir: str):
-    assets_dir = _resolve_qwen35_assets_dir(assets_dir)
     preprocessor_config_path = _resolve_qwen35_asset_file(assets_dir, "preprocessor_config.json", error_if_none=False)
     if preprocessor_config_path is not None:
         return Qwen2VLImageProcessorFast.from_pretrained(assets_dir)
@@ -229,9 +245,8 @@ def _load_qwen35_image_processor(assets_dir: str):
 
 
 def get_qwen35_text_gguf_path(assets_dir: str, variant: str | None = None) -> str:
-    assets_dir = _resolve_qwen35_assets_dir(assets_dir, variant=variant)
     filename = get_qwen35_variant_spec(variant)["text_gguf_filename"]
-    return _resolve_qwen35_asset_file(assets_dir, filename, variant=variant, error_if_none=False) or os.path.join(assets_dir, filename)
+    return _resolve_qwen35_checkpoint_file(assets_dir, filename, variant=variant, error_if_none=False)
 def _build_qwen35_vl_gguf_preprocess_sd(patch_shape):
     def preprocess_sd(sd, quant_map=None, tied_map=None):
         new_sd = OrderedDict()
@@ -700,13 +715,6 @@ def _generate_image_captions_vllm(self, images):
         engine._ensure_llm()
         if engine._llm is None:
             raise RuntimeError("Qwen3.5 caption vLLM runtime is not available.")
-        engine.release_runtime_allocations()
-        qwen35_text_mod._reset_vllm_sequence_state(text_model)
-        engine._llm.model_runner.ensure_runtime_ready()
-        try:
-            engine._llm.reset()
-        except Exception:
-            pass
         temp, normalized_top_p, normalized_top_k = qwen35_text_mod._normalize_vllm_sampling(
             do_sample=False,
             temperature=None,
@@ -724,7 +732,7 @@ def _generate_image_captions_vllm(self, images):
             cfg_scale=1.0,
             seed=None,
             use_tqdm=True,
-            release_vram_after=True,
+            release_vram_after=False,
             ignore_eos=False,
             position_offset=position_offset,
         )
@@ -789,9 +797,8 @@ def _unload_prompt_enhancer_vl_runtime(self):
 
 
 def get_qwen35_vision_path(assets_dir: str, variant: str | None = None) -> str:
-    assets_dir = _resolve_qwen35_assets_dir(assets_dir, variant=variant)
     filename = get_qwen35_variant_spec(variant)["vision_filename"]
-    return _resolve_qwen35_asset_file(assets_dir, filename, variant=variant, error_if_none=False) or os.path.join(assets_dir, filename)
+    return _resolve_qwen35_checkpoint_file(assets_dir, filename, variant=variant, error_if_none=False)
 
 
 def load_qwen35_vl_prompt_enhancer(

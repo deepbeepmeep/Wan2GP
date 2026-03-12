@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### March 10th 2026: WanGP v10.9872, Prompt Enhancer has just Been Abliterated
+### March 12th 2026: WanGP v10.9872, Prompt Enhancer has just Been Abliterated
 
 - **Qwen3.5 VL Abliterated Prompt Enhancer**: new choice of Prompt Enhancer
    * Based on widely acclaimed *Qwen3.5 model* that has just been released

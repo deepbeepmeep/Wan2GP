@@ -20,6 +20,10 @@ from shared.llm_engines.nanovllm.vllm_support import (
     resolve_lm_decoder_engine,
 )
 from shared.qtypes.gguf import GGUFWeightTensor, materialize_module_source_tensors
+try:
+    from optimum.quanto.tensor.weights.qbytes import WeightQBytesTensor
+except Exception:  # pragma: no cover
+    WeightQBytesTensor = None
 
 from .qwen3_5 import register_qwen35_config
 from .qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
@@ -743,6 +747,34 @@ def _concat_linear_weights(weights):
                 tensor_type=tensor_type,
                 tensor_shape=(out_features, in_features),
             )
+    if WeightQBytesTensor is not None and isinstance(first, WeightQBytesTensor):
+        qtype = getattr(first, "qtype", getattr(first, "_qtype", None))
+        axis = getattr(first, "axis", getattr(first, "_axis", None))
+        activation_qtype = getattr(first, "activation_qtype", None)
+        scale_ndim = int(first._scale.ndim)
+        if all(
+            isinstance(weight, WeightQBytesTensor)
+            and getattr(weight, "qtype", getattr(weight, "_qtype", None)) == qtype
+            and getattr(weight, "axis", getattr(weight, "_axis", None)) == axis
+            and getattr(weight, "activation_qtype", None) == activation_qtype
+            and int(weight.shape[1]) == int(first.shape[1])
+            and int(weight._scale.ndim) == scale_ndim
+            for weight in weights
+        ):
+            raw_data = torch.cat([weight._data for weight in weights], dim=0)
+            raw_scale = torch.cat([weight._scale for weight in weights], dim=0)
+            out_features = sum(int(weight.shape[0]) for weight in weights)
+            in_features = int(first.shape[1])
+            return WeightQBytesTensor.create(
+                qtype,
+                axis,
+                size=(out_features, in_features),
+                stride=(in_features, 1),
+                data=raw_data,
+                scale=raw_scale,
+                activation_qtype=activation_qtype,
+                requires_grad=False,
+            )
     return torch.cat([weight.detach() for weight in weights], dim=0)
 
 
@@ -792,12 +824,18 @@ def _build_fused_column_linear(modules):
     return fused
 
 
-def _apply_qwen35_gguf_projection_fusions(model) -> None:
+def _apply_qwen35_projection_fusions(model) -> None:
     for block in getattr(model, "blk", ()):
+        if getattr(block, "ffn_gate_up", None) is None and all(
+            getattr(block, name, None) is not None for name in ("ffn_gate", "ffn_up")
+        ):
+            block.ffn_gate_up = _build_fused_column_linear([block.ffn_gate, block.ffn_up])
+            block.ffn_gate = None
+            block.ffn_up = None
         if getattr(block, "layer_type", None) != "linear_attention":
             continue
         # Real prompt-enhancer benchmarks only kept this fusion: it removes two extra
-        # GGUF matmul launches from the hottest decode block without changing the decode path.
+        # decode-time matmul launches from the hottest linear-attention block.
         if getattr(block, "attn_gate_ab", None) is None and all(
             getattr(block, name, None) is not None for name in ("attn_gate", "ssm_alpha", "ssm_beta")
         ):
@@ -878,7 +916,7 @@ def load_qwen35_text_prompt_enhancer(
             ssm_param_reordered=gguf_ssm_param_reordered,
             interleave_ssm_ab=gguf_interleave_ssm_ab,
         )
-        _apply_qwen35_gguf_projection_fusions(model)
+    _apply_qwen35_projection_fusions(model)
 
     model._prompt_enhancer_tokenizer = tokenizer
     model._prompt_enhancer_gguf_v_head_reordered = bool(gguf_v_head_reordered)

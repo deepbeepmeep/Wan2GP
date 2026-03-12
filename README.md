@@ -33,13 +33,14 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### March 10th 2026: WanGP v10.987, Prompt Enhancer has just Been Abliterated
+### March 10th 2026: WanGP v10.9871, Prompt Enhancer has just Been Abliterated
 
 - **Qwen3.5 VL Abliterated Prompt Enhancer**: new choice of Prompt Enhancer
    * Based on widely acclaimed *Qwen3.5 model* that has just been released
    * *Uncensored* thanks to the *Abliterating* process that nullifies any *LLM will* to decline any of your request
    * 4 choices of models: depending on how much VRAM you have *4B & 9B models*, and *GGUF Q4* or *Int8*
    * *vllm accelerated* x5 faster, if Flash Attention 2 & Triton are installed (please check docs/INSTALLATION.md) 
+   * *Think Mode*: for complex prompt queries
    
 - **GGUF CUDA Kernels**: 15% speed gain when using GGUF on Diffusion Video Models & x3 speed with GGUF LLM (*Qwen 3.5 VL GGUF* for instance). GGUF Kernels are for the moment only available for Windows (please check docs/INSTALLATION.md).
 
@@ -55,6 +56,8 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 - **New Audio Ouput formats in mp4**: audio stored in video file can now be of higher quality (*AAC192 - AAC320*) or *ALAC* (lossless). Please note that you wont be able listen to ALAC audio track directly in the webapp.
 
 Also note as people preferred mataynone v1 over v2 I have added an option to select matanyone version in the Config / Extension tab
+
+*update 10.9871*: Improved Qwen3.5 GGUF Prompt Enhancer Output Quality & added Think mode
 
 ### March 7th 2026: WanGP v10.981, Expecting an Update ? 
 

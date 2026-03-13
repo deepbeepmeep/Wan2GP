@@ -393,18 +393,38 @@ Once that is enabled, the generation screen shows the Prompt Enhancer row near t
 Depending on your configuration, it either:
 
 - runs automatically during generation
+
+
 - or appears as a button you click manually before generation
+
 
 ### Automatic Versus On-Demand
 
-Automatic mode:
+**Automatic mode:**
+
+The enhanced prompt will appear in the generation preview on the right. 
 
 - Pros: fastest workflow, no extra click, good when you always want prompt rewriting
 - Pros: useful for models where the enhancer is almost part of the workflow, such as `Wan2.1 Chrono Edit 14B`
 - Cons: you do not review the rewritten prompt before generation
 - Cons: if the enhancer over-interprets your idea, you only notice it after the run starts or in the saved metadata
 
-On-demand mode:
+**On-demand mode:**
+
+The original prompt will be commented and an enhanced prompt will appear below. If you are not happy with the enhanced prompt you can request for another and it will overwrite automatically the one that was generated previously.
+Alternatively you can modify the original prompt which is in the comment and the new instructions will be taken into account (no need to remove the # comments prefix).
+
+For instance if you got after the first prompt enhancement request:
+```text
+#!PROMPT!: Jensen Huang is talking on stage and says "Welcome guys, we are going to have a lot of fun today."
+Jensen Huang steps into the spotlight, black leather jacket creaking slightly as he shifts his weight. His glasses reflect the stage lights ...
+```
+
+Modify the prompt in the comment:
+```text
+#!PROMPT!: A woman is talking on stage and says "Welcome guys, we are going to have a lot of fun today."
+She steps onto the dimly lit stage, spotlight cutting through haze. "Welcome guys. We're going to have a lot of fun"...
+```
 
 - Pros: you can inspect and edit the rewritten prompt before generating
 - Pros: best for strict prompt formats, edits, lyrics, or dialogue where you want manual control

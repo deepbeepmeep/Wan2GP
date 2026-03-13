@@ -109,7 +109,15 @@ class family_handler:
 
     @staticmethod
     def query_family_maps():
-        return {}, {}
+
+        models_eqv_map = {
+            "ltx2_19B" : "ltx2_22B",
+        }
+
+        models_comp_map = { 
+                    "ltx2_19B" : [ "ltx2_22B"],
+                    }
+        return models_eqv_map, models_comp_map
 
     @staticmethod
     def query_model_family():

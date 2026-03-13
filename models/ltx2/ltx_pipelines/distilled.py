@@ -31,6 +31,7 @@ from .utils.helpers import (
     euler_denoising_loop,
     generate_enhanced_prompt,
     get_device,
+    image_conditionings_by_adding_guiding_latent,
     image_conditionings_by_replacing_latent,
     latent_conditionings_by_latent_sequence,
     prepare_mask_injection,
@@ -162,6 +163,8 @@ class DistilledPipeline:
         num_frames: int,
         frame_rate: float,
         images: list[tuple[str, int, float]],
+        guiding_images: list[tuple] | None = None,
+        guiding_images_stage2: list[tuple] | None = None,
         alt_guidance_scale: float = 1.0,
         video_conditioning: list[tuple[str, float]] | None = None,
         video_conditioning_downscale_factor: int = 1,
@@ -314,6 +317,16 @@ class DistilledPipeline:
             device=self.device,
             tiling_config=tiling_config,
         )
+        if guiding_images:
+            stage_1_conditionings += image_conditionings_by_adding_guiding_latent(
+                images=guiding_images,
+                height=stage_1_output_shape.height,
+                width=stage_1_output_shape.width,
+                video_encoder=video_encoder,
+                dtype=dtype,
+                device=self.device,
+                tiling_config=tiling_config,
+            )
         if video_conditioning:
             if int(video_conditioning_downscale_factor or 1) > 1:
                 stage_1_conditionings += video_conditionings_by_reference_latent(
@@ -440,6 +453,16 @@ class DistilledPipeline:
             device=self.device,
             tiling_config=tiling_config,
         )
+        if guiding_images_stage2:
+            stage_2_conditionings += image_conditionings_by_adding_guiding_latent(
+                images=guiding_images_stage2,
+                height=stage_2_output_shape.height,
+                width=stage_2_output_shape.width,
+                video_encoder=video_encoder,
+                dtype=dtype,
+                device=self.device,
+                tiling_config=tiling_config,
+            )
         if latent_conditioning_stage2 is not None:
             stage_2_conditionings += latent_conditionings_by_latent_sequence(
                 latent_conditioning_stage2,

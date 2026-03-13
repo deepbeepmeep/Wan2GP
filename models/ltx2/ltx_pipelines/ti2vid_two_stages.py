@@ -140,6 +140,7 @@ class TI2VidTwoStagesPipeline:
         alt_guidance_scale: float = 1.0,
         alt_scale: float = 0.0,
         guiding_images: list[tuple[str, int, float]] | None = None,
+        guiding_images_stage2: list[tuple] | None = None,
         images_stage2: list[tuple[str, int, float]] | None = None,
         video_conditioning: list[tuple[str, float]] | None = None,
         video_conditioning_downscale_factor: int = 1,
@@ -453,6 +454,16 @@ class TI2VidTwoStagesPipeline:
             device=self.device,
             tiling_config=tiling_config,
         )
+        if guiding_images_stage2:
+            stage_2_conditionings += image_conditionings_by_adding_guiding_latent(
+                images=guiding_images_stage2,
+                height=stage_2_output_shape.height,
+                width=stage_2_output_shape.width,
+                video_encoder=video_encoder,
+                dtype=dtype,
+                device=self.device,
+                tiling_config=tiling_config,
+            )
         if latent_conditioning_stage2 is not None:
             stage_2_conditionings += latent_conditionings_by_latent_sequence(
                 latent_conditioning_stage2,

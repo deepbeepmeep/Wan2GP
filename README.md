@@ -63,7 +63,7 @@ Also note as people preferred mataynone v1 over v2 I have added an option to sel
 
 *update 10.9871*: Improved Qwen3.5 GGUF Prompt Enhancer Output Quality & added Think mode\
 *update 10.9872*: Added LTX 2.0/2.3 frames injection\
-*update 10.9873*: Fixed low fidelity LTX2 injected frames + added Image Strenght slider for end & injected frames
+*update 10.9873*: Fixed low fidelity LTX2 injected frames + added Image Strength slider for end & injected frames
 
 ### March 7th 2026: WanGP v10.981, Expecting an Update ? 
 

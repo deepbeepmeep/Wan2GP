@@ -1040,6 +1040,8 @@ def encode_video(
         tiling_config.spatial_config is None and tiling_config.temporal_config is None
     ):
         return video_encoder(video)
+    if video.shape[2] == 1 and tiling_config.spatial_config is not None:
+        tiling_config = replace(tiling_config, spatial_config=None)
 
     b, _, frames, height, width = video.shape
     scale = VIDEO_SCALE_FACTORS

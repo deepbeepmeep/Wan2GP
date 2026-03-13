@@ -29,7 +29,7 @@ from ...ltx_core.model.transformer import Modality, X0Model
 from ...ltx_core.model.video_vae import VideoEncoder, TilingConfig, encode_video as vae_encode_video
 from ...ltx_core.text_encoders.gemma import GemmaTextEncoderModelBase
 from ...ltx_core.tools import AudioLatentTools, LatentTools, VideoLatentTools
-from ...ltx_core.types import AudioLatentShape, LatentState, VideoLatentShape, VideoPixelShape
+from ...ltx_core.types import AudioLatentShape, LatentState, TimestepCompressionPlan, VideoLatentShape, VideoPixelShape
 from ...ltx_core.utils import to_denoised, to_velocity
 from .media_io import decode_image, load_image_conditioning, load_video_conditioning, resize_aspect_ratio_preserving
 from .types import (
@@ -841,7 +841,10 @@ def modality_from_latent_state(
     Constructs a Modality object with the latent state's data, timesteps derived
     from the denoise mask and sigma, positions, and the provided context.
     """
-    timesteps, frame_indices = timesteps_from_mask(state.denoise_mask, sigma, positions=state.positions)
+    runtime_cache = state.runtime_cache
+    if runtime_cache.timestep_plan is None:
+        runtime_cache.timestep_plan = build_timestep_compression_plan(state.denoise_mask, state.positions)
+    timesteps, frame_indices = timesteps_from_mask(state.denoise_mask, sigma, plan=runtime_cache.timestep_plan)
     sigma_tensor = sigma if torch.is_tensor(sigma) else torch.tensor(sigma, device=state.latent.device)
     sigma_tensor = sigma_tensor.to(device=state.latent.device, dtype=state.latent.dtype)
     if sigma_tensor.ndim == 0:
@@ -860,6 +863,7 @@ def modality_from_latent_state(
         context_mask=None,
         attention_mask=None,
         frame_indices=frame_indices,
+        runtime_cache=runtime_cache,
     )
 
 
@@ -953,15 +957,12 @@ def _rescale_prediction(cond: torch.Tensor | None, pred: torch.Tensor | None, re
     return pred * factor
 
 
-def timesteps_from_mask(
-    denoise_mask: torch.Tensor, sigma: float | torch.Tensor, positions: torch.Tensor | None = None
-) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """Compute timesteps from a denoise mask and sigma value.
-    Multiplies the denoise mask by sigma to produce timesteps for each position
-    in the latent state. Areas where the mask is 0 will have zero timesteps.
-    """
+def build_timestep_compression_plan(
+    denoise_mask: torch.Tensor,
+    positions: torch.Tensor | None = None,
+) -> TimestepCompressionPlan:
     if positions is None or positions.ndim < 4 or positions.shape[1] != 3:
-        return denoise_mask * sigma, None
+        return TimestepCompressionPlan()
 
     token_mask = denoise_mask
     if token_mask.ndim > 2:
@@ -969,36 +970,54 @@ def timesteps_from_mask(
 
     batch_size = token_mask.shape[0]
     frame_times = positions[:, 0, :, 0]
-
-    frame_indices_list = []
+    run_lengths = None
+    quantum = 0
     frame_masks = []
+    frame_indices = []
+    token_count = frame_times.shape[1]
     for b in range(batch_size):
-        unique_times, inverse = torch.unique(frame_times[b], sorted=True, return_inverse=True)
-        frame_indices_list.append(inverse)
+        changes = torch.nonzero(frame_times[b, 1:] != frame_times[b, :-1]).flatten() + 1
+        bounds = torch.cat([changes.new_zeros(1), changes, changes.new_full((1,), token_count)])
+        lengths = (bounds[1:] - bounds[:-1]).tolist()
+        if run_lengths is None:
+            run_lengths = lengths
+            quantum = run_lengths[0]
+            for length in run_lengths[1:]:
+                quantum = math.gcd(quantum, length)
+        elif lengths != run_lengths:
+            return TimestepCompressionPlan()
 
-        frame_count = unique_times.numel()
-        frame_min = torch.full(
-            (frame_count,),
-            torch.finfo(token_mask.dtype).max,
-            device=token_mask.device,
-            dtype=token_mask.dtype,
-        )
-        frame_max = torch.full(
-            (frame_count,),
-            torch.finfo(token_mask.dtype).min,
-            device=token_mask.device,
-            dtype=token_mask.dtype,
-        )
-        frame_min.scatter_reduce_(0, inverse, token_mask[b], reduce="amin", include_self=True)
-        frame_max.scatter_reduce_(0, inverse, token_mask[b], reduce="amax", include_self=True)
+        group_values = []
+        group_indices = []
+        group_idx = 0
+        for start, end, length in zip(bounds[:-1].tolist(), bounds[1:].tolist(), run_lengths):
+            run_mask = token_mask[b, start:end]
+            if not torch.allclose(run_mask, run_mask[:1], atol=1e-6):
+                return TimestepCompressionPlan()
+            repeat = length // quantum
+            group_values.append(run_mask[:1].expand(repeat))
+            group_indices.append(
+                torch.arange(group_idx, group_idx + repeat, device=token_mask.device).repeat_interleave(quantum)
+            )
+            group_idx += repeat
+        frame_masks.append(torch.cat(group_values))
+        frame_indices.append(torch.cat(group_indices))
 
-        if not torch.allclose(frame_min, frame_max, atol=1e-6):
-            return denoise_mask * sigma, None
-        frame_masks.append(frame_min)
+    return TimestepCompressionPlan(frame_mask=torch.stack(frame_masks, dim=0), frame_indices=torch.stack(frame_indices, dim=0))
 
-    frame_timesteps = torch.stack(frame_masks, dim=0) * sigma
-    frame_indices = torch.stack(frame_indices_list, dim=0)
-    return frame_timesteps, frame_indices
+
+def timesteps_from_mask(
+    denoise_mask: torch.Tensor,
+    sigma: float | torch.Tensor,
+    positions: torch.Tensor | None = None,
+    plan: TimestepCompressionPlan | None = None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Compute timesteps from a denoise mask and sigma value."""
+    if plan is None:
+        plan = build_timestep_compression_plan(denoise_mask, positions)
+    if plan.frame_mask is None or plan.frame_indices is None:
+        return denoise_mask * sigma, None
+    return plan.frame_mask * sigma, plan.frame_indices
 
 
 def simple_denoising_func(

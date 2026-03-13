@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 import torch
@@ -157,6 +157,18 @@ class AudioLatentShape(NamedTuple):
 
 
 @dataclass(frozen=True)
+class TimestepCompressionPlan:
+    frame_mask: torch.Tensor | None = None
+    frame_indices: torch.Tensor | None = None
+
+
+@dataclass
+class LatentStateRuntimeCache:
+    timestep_plan: TimestepCompressionPlan | None = None
+    rope_caches: dict[tuple, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class LatentState:
     """
     State of latents during the diffusion denoising process.
@@ -171,6 +183,7 @@ class LatentState:
     denoise_mask: torch.Tensor
     positions: torch.Tensor
     clean_latent: torch.Tensor
+    runtime_cache: LatentStateRuntimeCache = field(default_factory=LatentStateRuntimeCache, compare=False, repr=False)
 
     def clone(self) -> "LatentState":
         return LatentState(

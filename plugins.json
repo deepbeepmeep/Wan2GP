@@ -70,5 +70,18 @@
     "url": "https://github.com/Tophness/wan2gp-queue-editor",
     "date": "",
     "wan2gp_version": ""
+  },
+  {
+    "name": "Video queue notifications",
+    "author": "Javier-bat",
+    "version": "1.1.0",
+    "description": "Logs queue task status and can send notifications via Apprise.",
+    "url": "https://github.com/Javier-bat/wan2gp-notifier",
+    "date": "",
+    "wan2gp_version": ""
   }
+
+
+  
+
 ]

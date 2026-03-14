@@ -6,16 +6,91 @@ import threading
 import atexit
 from contextlib import contextmanager
 from collections import deque
+from pathlib import Path
 import psutil
-import pynvml
 
-# Initialize NVIDIA Management Library (NVML) for GPU monitoring
-try:
-    pynvml.nvmlInit()
-    nvml_initialized = True
-except pynvml.NVMLError:
-    print("Warning: Could not initialize NVML. GPU stats will not be available.")
-    nvml_initialized = False
+
+class GpuBackend:
+    """Base class for GPU stat providers."""
+    def query(self):
+        """Returns (gpu_percent, vram_used_bytes, vram_total_bytes)."""
+        raise NotImplementedError
+
+
+class NvmlBackend(GpuBackend):
+    def __init__(self):
+        import pynvml
+        pynvml.nvmlInit()
+        self._nvml = pynvml
+        self._handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+
+    def query(self):
+        util = self._nvml.nvmlDeviceGetUtilizationRates(self._handle)
+        mem = self._nvml.nvmlDeviceGetMemoryInfo(self._handle)
+        return util.gpu, mem.used, mem.total
+
+
+class AmdsmiBackend(GpuBackend):
+    def __init__(self):
+        import amdsmi
+        amdsmi.amdsmi_init()
+        devices = amdsmi.amdsmi_get_processor_handles()
+        if not devices:
+            raise RuntimeError("No AMD GPU found via amdsmi")
+        self._amdsmi = amdsmi
+        self._handle = devices[0]
+
+    def query(self):
+        a = self._amdsmi
+        busy = a.amdsmi_get_gpu_activity(self._handle)
+        gpu_percent = busy.get("gfx_activity", 0) or 0
+        vram_info = a.amdsmi_get_gpu_vram_usage(self._handle)
+        vram_used = vram_info.get("vram_used", 0) or 0
+        vram_total = vram_info.get("vram_total", 0) or 0
+        return gpu_percent, vram_used, vram_total
+
+
+class SysfsBackend(GpuBackend):
+    """Linux sysfs fallback for AMD GPUs."""
+    def __init__(self):
+        drm = Path("/sys/class/drm")
+        for card in sorted(drm.glob("card[0-9]*")):
+            vendor = card / "device" / "vendor"
+            if vendor.exists() and vendor.read_text().strip() == "0x1002":
+                dev = card / "device"
+                if (dev / "gpu_busy_percent").exists():
+                    self._device = dev
+                    return
+        raise RuntimeError("No AMD sysfs GPU found")
+
+    def query(self):
+        d = self._device
+        gpu_pct = int((d / "gpu_busy_percent").read_text().strip())
+        used = int((d / "mem_info_vram_used").read_text().strip())
+        total = int((d / "mem_info_vram_total").read_text().strip())
+        return gpu_pct, used, total
+
+
+def init_gpu_backend():
+    """Try backends in order: NVML (NVIDIA), sysfs (AMD, safe), amdsmi (AMD, native)."""
+    backends = [
+        ("NVML", NvmlBackend),
+        ("sysfs", SysfsBackend),
+        ("amdsmi", AmdsmiBackend),
+    ]
+    for name, cls in backends:
+        try:
+            instance = cls()
+            instance.query()
+            print(f"GPU backend: {name}")
+            return instance
+        except Exception:
+            continue
+    print("Warning: No supported GPU backend found. GPU stats will not be available.")
+    return None
+
+
+gpu_backend = init_gpu_backend()
 
 class SystemStatsApp:
     def __init__(self):
@@ -72,22 +147,17 @@ class SystemStatsApp:
         # Calculate the bar height as a percentage of our defined max speed
         ssd_bar_height = min(100.0, (total_disk_speed / MAX_SSD_SPEED_MB_S) * 100)
 
-        # Get GPU stats if the library was initialized successfully
-        if nvml_initialized:
+        # Get GPU stats
+        gpu_percent, vram_percent, vram_used_gb, vram_total_gb = 0, 0, 0, 0
+
+        if gpu_backend is not None:
             try:
-                handle = pynvml.nvmlDeviceGetHandleByIndex(0) # Assuming GPU 0
-                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                gpu_percent = util.gpu
-                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                vram_percent = (mem_info.used / mem_info.total) * 100
-                vram_used_gb = mem_info.used / (1024**3)
-                vram_total_gb = mem_info.total / (1024**3)
-            except pynvml.NVMLError:
-                # Handle cases where GPU might be asleep or driver issues
-                gpu_percent, vram_percent, vram_used_gb, vram_total_gb = 0, 0, 0, 0
-        else:
-            # Set default values if NVML failed to load
-            gpu_percent, vram_percent, vram_used_gb, vram_total_gb = 0, 0, 0, 0
+                gpu_percent, vram_used, vram_total = gpu_backend.query()
+                vram_used_gb = vram_used / (1024**3)
+                vram_total_gb = vram_total / (1024**3)
+                vram_percent = (vram_used / vram_total) * 100 if vram_total else 0
+            except Exception:
+                pass
 
         stats_html = f"""
         <style>

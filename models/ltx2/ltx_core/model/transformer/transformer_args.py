@@ -22,8 +22,8 @@ class TransformerArgs:
     context_mask: torch.Tensor
     timesteps: torch.Tensor
     embedded_timestep: torch.Tensor
-    positional_embeddings: torch.Tensor | RopeCache | tuple[torch.Tensor, torch.Tensor]
-    cross_positional_embeddings: torch.Tensor | RopeCache | tuple[torch.Tensor, torch.Tensor] | None
+    positional_embeddings: RopeCache
+    cross_positional_embeddings: RopeCache | None
     cross_scale_shift_timestep: torch.Tensor | None
     cross_gate_timestep: torch.Tensor | None
     enabled: bool
@@ -94,6 +94,28 @@ class TransformerArgsPreprocessor:
         self.positional_embedding_theta = positional_embedding_theta
         self.rope_type = rope_type
 
+    def _rope_cache_key(
+        self,
+        inner_dim: int,
+        max_pos: list[int],
+        use_middle_indices_grid: bool,
+        num_attention_heads: int,
+        x_dtype: torch.dtype,
+        rope_axes: tuple[int, ...] | None,
+        rope_max_pos: list[int] | None,
+    ) -> tuple:
+        resolved_axes = tuple(range(len(max_pos))) if rope_axes is None else rope_axes
+        resolved_max = tuple(max_pos[axis] for axis in resolved_axes) if rope_max_pos is None else tuple(rope_max_pos)
+        return (
+            inner_dim,
+            tuple(max_pos),
+            use_middle_indices_grid,
+            num_attention_heads,
+            x_dtype,
+            resolved_axes,
+            resolved_max,
+        )
+
     def _prepare_timestep(
         self,
         timestep: torch.Tensor,
@@ -157,13 +179,19 @@ class TransformerArgsPreprocessor:
         use_middle_indices_grid: bool,
         num_attention_heads: int,
         x_dtype: torch.dtype,
-        frame_indices: torch.Tensor | None = None,
         rope_axes: tuple[int, ...] | None = None,
         rope_max_pos: list[int] | None = None,
-    ) -> RopeCache | tuple[torch.Tensor, torch.Tensor]:
+        runtime_cache=None,
+    ) -> RopeCache:
         """Prepare positional embeddings."""
+        rope_caches = None if runtime_cache is None else runtime_cache.rope_caches
+        key = self._rope_cache_key(inner_dim, max_pos, use_middle_indices_grid, num_attention_heads, x_dtype, rope_axes, rope_max_pos)
+        if rope_caches is not None:
+            cached = rope_caches.get(key)
+            if cached is not None:
+                return cached
         freq_grid_generator = generate_freq_grid_np if self.double_precision_rope else generate_freq_grid_pytorch
-        return build_rope_cache(
+        cache = build_rope_cache(
             positions=positions,
             dim=inner_dim,
             out_dtype=x_dtype,
@@ -173,10 +201,12 @@ class TransformerArgsPreprocessor:
             num_attention_heads=num_attention_heads,
             rope_type=self.rope_type,
             rope_axes=rope_axes,
-            frame_indices=frame_indices,
             rope_max_pos=rope_max_pos,
             freq_grid_generator=freq_grid_generator,
         )
+        if rope_caches is not None:
+            rope_caches[key] = cache
+        return cache
 
     def prepare(
         self,
@@ -220,7 +250,7 @@ class TransformerArgsPreprocessor:
             use_middle_indices_grid=self.use_middle_indices_grid,
             num_attention_heads=self.num_attention_heads,
             x_dtype=latent_dtype,
-            frame_indices=modality.frame_indices,
+            runtime_cache=modality.runtime_cache,
         )
         return TransformerArgs(
             x=x,
@@ -290,9 +320,9 @@ class MultiModalTransformerArgsPreprocessor:
             use_middle_indices_grid=True,
             num_attention_heads=self.simple_preprocessor.num_attention_heads,
             x_dtype=modality.latent.dtype,
-            frame_indices=modality.frame_indices,
             rope_axes=(0,),
             rope_max_pos=[self.cross_pe_max_pos],
+            runtime_cache=modality.runtime_cache,
         )
 
         cross_scale_shift_timestep, cross_gate_timestep = self._prepare_cross_attention_timestep(

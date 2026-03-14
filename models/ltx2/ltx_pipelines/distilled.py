@@ -31,11 +31,13 @@ from .utils.helpers import (
     euler_denoising_loop,
     generate_enhanced_prompt,
     get_device,
+    image_conditionings_by_adding_guiding_latent,
     image_conditionings_by_replacing_latent,
     latent_conditionings_by_latent_sequence,
     prepare_mask_injection,
     simple_denoising_func,
     video_conditionings_by_keyframe,
+    video_conditionings_by_reference_latent,
 )
 from .utils.media_io import encode_video
 from .utils.types import PipelineComponents
@@ -161,8 +163,11 @@ class DistilledPipeline:
         num_frames: int,
         frame_rate: float,
         images: list[tuple[str, int, float]],
+        guiding_images: list[tuple] | None = None,
+        guiding_images_stage2: list[tuple] | None = None,
         alt_guidance_scale: float = 1.0,
         video_conditioning: list[tuple[str, float]] | None = None,
+        video_conditioning_downscale_factor: int = 1,
         latent_conditioning_stage2: torch.Tensor | None = None,
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
@@ -312,17 +317,40 @@ class DistilledPipeline:
             device=self.device,
             tiling_config=tiling_config,
         )
-        if video_conditioning:
-            stage_1_conditionings += video_conditionings_by_keyframe(
-                video_conditioning=video_conditioning,
+        if guiding_images:
+            stage_1_conditionings += image_conditionings_by_adding_guiding_latent(
+                images=guiding_images,
                 height=stage_1_output_shape.height,
                 width=stage_1_output_shape.width,
-                num_frames=num_frames,
                 video_encoder=video_encoder,
                 dtype=dtype,
                 device=self.device,
                 tiling_config=tiling_config,
             )
+        if video_conditioning:
+            if int(video_conditioning_downscale_factor or 1) > 1:
+                stage_1_conditionings += video_conditionings_by_reference_latent(
+                    video_conditioning=video_conditioning,
+                    height=stage_1_output_shape.height,
+                    width=stage_1_output_shape.width,
+                    num_frames=num_frames,
+                    video_encoder=video_encoder,
+                    dtype=dtype,
+                    device=self.device,
+                    downscale_factor=video_conditioning_downscale_factor,
+                    tiling_config=tiling_config,
+                )
+            else:
+                stage_1_conditionings += video_conditionings_by_keyframe(
+                    video_conditioning=video_conditioning,
+                    height=stage_1_output_shape.height,
+                    width=stage_1_output_shape.width,
+                    num_frames=num_frames,
+                    video_encoder=video_encoder,
+                    dtype=dtype,
+                    device=self.device,
+                    tiling_config=tiling_config,
+                )
 
         mask_context = prepare_mask_injection(
             masking_source=masking_source,
@@ -425,6 +453,16 @@ class DistilledPipeline:
             device=self.device,
             tiling_config=tiling_config,
         )
+        if guiding_images_stage2:
+            stage_2_conditionings += image_conditionings_by_adding_guiding_latent(
+                images=guiding_images_stage2,
+                height=stage_2_output_shape.height,
+                width=stage_2_output_shape.width,
+                video_encoder=video_encoder,
+                dtype=dtype,
+                device=self.device,
+                tiling_config=tiling_config,
+            )
         if latent_conditioning_stage2 is not None:
             stage_2_conditionings += latent_conditionings_by_latent_sequence(
                 latent_conditioning_stage2,

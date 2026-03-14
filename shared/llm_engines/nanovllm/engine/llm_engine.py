@@ -125,7 +125,18 @@ class LLMEngine:
             return
         runner.clear_graph_cache()
 
-    def add_request(self, prompt: str | list[int], sampling_params: SamplingParams, unconditional_prompt: str | list[int] | None = None):
+    def add_request(
+        self,
+        prompt: str | list[int],
+        sampling_params: SamplingParams,
+        unconditional_prompt: str | list[int] | None = None,
+        prompt_embeds=None,
+        prompt_position_ids=None,
+        position_offset: int = 0,
+        unconditional_prompt_embeds=None,
+        unconditional_prompt_position_ids=None,
+        unconditional_position_offset: int = 0,
+    ):
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
         # For CFG: if cfg_scale > 1.0, create both conditional and unconditional sequences
@@ -142,15 +153,36 @@ class LLMEngine:
             if isinstance(unconditional_prompt, str):
                 unconditional_prompt = self.tokenizer.encode(unconditional_prompt)
             # Create unconditional sequence first (so we can reference it from conditional)
-            uncond_seq = Sequence(unconditional_prompt, sampling_params, is_unconditional=True)
+            uncond_seq = Sequence(
+                unconditional_prompt,
+                sampling_params,
+                is_unconditional=True,
+                prompt_embeds=unconditional_prompt_embeds,
+                prompt_position_ids=unconditional_prompt_position_ids,
+                position_offset=unconditional_position_offset,
+            )
             # Create conditional sequence with reference to unconditional
-            cond_seq = Sequence(prompt, sampling_params, is_unconditional=False, conditional_seq=uncond_seq)
+            cond_seq = Sequence(
+                prompt,
+                sampling_params,
+                is_unconditional=False,
+                conditional_seq=uncond_seq,
+                prompt_embeds=prompt_embeds,
+                prompt_position_ids=prompt_position_ids,
+                position_offset=position_offset,
+            )
             uncond_seq.paired_seq = cond_seq  # Link them bidirectionally
             # Add both sequences to scheduler
             self.scheduler.add(cond_seq)
             self.scheduler.add(uncond_seq)
         else:
-            seq = Sequence(prompt, sampling_params)
+            seq = Sequence(
+                prompt,
+                sampling_params,
+                prompt_embeds=prompt_embeds,
+                prompt_position_ids=prompt_position_ids,
+                position_offset=position_offset,
+            )
             self.scheduler.add(seq)
 
     def step(self):
@@ -209,6 +241,7 @@ class LLMEngine:
         # This prevents 'deque index out of range' errors from accumulated block leaks
         if not self.is_finished():
             self.reset()
+        self.model_runner.reset_generation_state()
         
         if use_tqdm:
             pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True)
@@ -256,6 +289,84 @@ class LLMEngine:
             if use_tqdm:
                 pbar.close()
         
+        outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())]
+        outputs = [{"text": self.tokenizer.decode(token_ids), "token_ids": token_ids} for token_ids in outputs]
+        return outputs
+
+    def generate_embedded(
+        self,
+        prompts: list[list[int]],
+        prompt_embeds: list,
+        prompt_position_ids: list | None,
+        sampling_params: SamplingParams | list[SamplingParams],
+        position_offsets: list[int] | None = None,
+        use_tqdm: bool = True,
+    ):
+        if self.scheduler is None:
+            raise RuntimeError("LLM engine is closed.")
+        self.model_runner.ensure_runtime_ready()
+        if (
+            self.config.num_kvcache_blocks > 0
+            and len(self.scheduler.block_manager.blocks) != self.config.num_kvcache_blocks
+        ):
+            self.scheduler.block_manager = BlockManager(
+                self.config.num_kvcache_blocks,
+                self.config.kvcache_block_size,
+            )
+        if not self.is_finished():
+            self.reset()
+        self.model_runner.reset_generation_state()
+        if not isinstance(sampling_params, list):
+            sampling_params = [sampling_params] * len(prompts)
+        if prompt_position_ids is None:
+            prompt_position_ids = [None] * len(prompts)
+        if position_offsets is None:
+            position_offsets = [0] * len(prompts)
+        if use_tqdm:
+            pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True)
+        seed_to_apply = None
+        for sp in sampling_params:
+            seed_val = getattr(sp, "seed", None)
+            if seed_val is not None:
+                try:
+                    seed_to_apply = int(seed_val)
+                    break
+                except Exception:
+                    seed_to_apply = None
+        self.model_runner.call("set_sampling_seed", seed_to_apply)
+        for prompt, embeds, pos_ids, pos_offset, sp in zip(prompts, prompt_embeds, prompt_position_ids, position_offsets, sampling_params):
+            self.add_request(
+                prompt,
+                sp,
+                prompt_embeds=embeds,
+                prompt_position_ids=pos_ids,
+                position_offset=pos_offset,
+            )
+        outputs = {}
+        prefill_throughput = decode_throughput = 0.0
+        try:
+            while not self.is_finished():
+                t = perf_counter()
+                output, num_tokens = self.step()
+                if use_tqdm:
+                    if num_tokens > 0:
+                        prefill_throughput = num_tokens / (perf_counter() - t)
+                    else:
+                        decode_throughput = -num_tokens / (perf_counter() - t)
+                    pbar.set_postfix({
+                        "Prefill": f"{int(prefill_throughput)}tok/s",
+                        "Decode": f"{int(decode_throughput)}tok/s",
+                    })
+                for seq_id, token_ids in output:
+                    outputs[seq_id] = token_ids
+                    if use_tqdm:
+                        pbar.update(1)
+        except Exception:
+            self.reset()
+            raise
+        finally:
+            if use_tqdm:
+                pbar.close()
         outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())]
         outputs = [{"text": self.tokenizer.decode(token_ids), "token_ids": token_ids} for token_ids in outputs]
         return outputs

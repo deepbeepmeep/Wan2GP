@@ -443,9 +443,9 @@ class WanAny2V:
         enable_RIFLEx = None,
         VAE_tile_size = 0,
         joint_pass = False,
-        slg_layers = None,
-        slg_start = 0.0,
-        slg_end = 1.0,
+        perturbation_layers = None,
+        perturbation_start = 0.0,
+        perturbation_end = 1.0,
         cfg_star_switch = True,
         cfg_zero_step = 5,
         audio_scale=None,
@@ -664,14 +664,14 @@ class WanAny2V:
                 img_end_frame = image_end.unsqueeze(1).to(self.device)
             clip_image_start, clip_image_end = image_start, image_end
 
-            if any_end_frame:
+            remaining_frames = frame_num - control_pre_frames_count
+            if any_end_frame and not svi_pro:
                 enc= torch.concat([
                         control_video,
                         torch.zeros( (3, frame_num-control_pre_frames_count-1,  height, width), device=self.device, dtype= self.VAE_dtype),
                         img_end_frame,
                 ], dim=1).to(self.device)
             else:
-                remaining_frames = frame_num - control_pre_frames_count
                 if svi_pro or svi_mode and svi_ref_pad_num != 0:
                     use_extended_overlapped_latents = False
                     if input_ref_images is None or len(input_ref_images)==0:                        
@@ -694,6 +694,8 @@ class WanAny2V:
                             lat_y = torch.concat([image_ref_latents, pad_latents], dim=1).to(self.device)
                         else:
                             lat_y = torch.concat([image_ref_latents, overlapped_latents.squeeze(0), pad_latents], dim=1).to(self.device)
+                        if any_end_frame:
+                            lat_y[:, -1:] = self.vae.encode([img_end_frame], VAE_tile_size)[0][:, -1:]
                         image_ref_latents = None
                     else:
                         svi_ref_pad_num = remaining_frames if svi_ref_pad_num == -1 else min(svi_ref_pad_num, remaining_frames)  
@@ -711,7 +713,7 @@ class WanAny2V:
 
             msk = torch.ones(1, frame_num + ref_images_count * 4, lat_h, lat_w, device=self.device)
             if any_end_frame:
-                msk[:, control_pre_frames_count: -1] = 0
+                msk[:, (1 if svi_mode else control_pre_frames_count):-1] = 0
                 if add_frames_for_end_image:
                     msk = torch.concat([ torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:-1], torch.repeat_interleave(msk[:, -1:], repeats=4, dim=1) ], dim=1)
                 else:
@@ -1191,7 +1193,7 @@ class WanAny2V:
                 timestep[:source_latents.shape[2]] = 0
                         
             kwargs.update({"t": timestep, "current_step_no": i, "real_step_no": start_step_no + i })  
-            kwargs["slg_layers"] = slg_layers if int(slg_start * sampling_steps) <= i < int(slg_end * sampling_steps) else None
+            kwargs["perturbation_layers"] = perturbation_layers if int(perturbation_start * sampling_steps) <= i < int(perturbation_end * sampling_steps) else None
 
             if denoising_strength < 1 and i <= injection_denoising_step:
                 sigma = t / 1000

@@ -250,7 +250,8 @@
     "out_channels": 3,
     "patch_size": 4,
     "scaling_factor": 1.0,
-    "spatial_padding_mode": "zeros",
+    "encoder_spatial_padding_mode": "zeros",
+    "decoder_spatial_padding_mode": "reflect",
     "timestep_conditioning": false,
     "use_quant_conv": false
   },

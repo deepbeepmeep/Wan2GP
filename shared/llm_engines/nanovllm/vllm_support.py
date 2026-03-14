@@ -140,7 +140,8 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
                                 msg = msg[:220] + "..."
                             reasons.append(f"{check_name}={msg}")
                 reason_text = "; ".join(reasons) if len(reasons) > 0 else "unknown reason"
-                print(f"[LM] Requested decoder engine 'vllm' is not supported at startup ({reason_text}).")
+                # print(f"[LM] Requested decoder engine 'vllm' is not supported at startup ({reason_text}).")
+                print(f"[LM] Requested decoder engine 'vllm' is not supported (triton & flash attention 2 are needed).")
                 _WARNED_REQUESTED_VLLM_NOT_SUPPORTED = True
             return default_engine
     if requested_engine == "":
@@ -153,13 +154,29 @@ def resolve_lm_decoder_engine(requested_engine, engines_available = []):
     return "legacy"
 
 
+def _clear_inductor_cuda_pools():
+    try:
+        from torch._inductor import cudagraph_trees as cgt
+    except Exception:
+        return
+
+    clear_cublass_cache = getattr(cgt, "clear_cublass_cache", None)
+    if callable(clear_cublass_cache):
+        try:
+            clear_cublass_cache()
+        except Exception:
+            pass
+
+
 class NanoVllmTextEngine:
     keep_loaded_for_phase2 = True
 
-    def __init__(self, model, model_path: str, tokenizer):
+    def __init__(self, model, model_path: str, tokenizer, enforce_eager: bool = False):
         self.model = model
         self.model_path = model_path
         self.tokenizer = tokenizer
+        self.enforce_eager = bool(enforce_eager)
+        self.hf_config = getattr(model, "config", None)
         self._llm = None
         self._sampling_params_cls = None
         self._max_model_len_hint = None
@@ -223,11 +240,12 @@ class NanoVllmTextEngine:
         max_num_batched_tokens = self._max_num_batched_tokens_hint or (max_model_len * max_num_seqs)
         self._llm = LLM(
             model=self.model_path,
-            enforce_eager=False,
+            enforce_eager=self.enforce_eager,
             tensor_parallel_size=1,
             max_model_len=max_model_len,
             max_num_seqs=max_num_seqs,
             max_num_batched_tokens=max_num_batched_tokens,
+            hf_config=self.hf_config,
             tokenizer=self.tokenizer,
             model_object=self.model,
         )
@@ -268,6 +286,10 @@ class NanoVllmTextEngine:
             except Exception:
                 pass
         self._sampling_params_cls = None
+        try:
+            _clear_inductor_cuda_pools()
+        except Exception:
+            pass
 
     def __del__(self):
         self.close()
@@ -406,5 +428,83 @@ class NanoVllmTextEngine:
                 denoising_extra=f"{progress_label} {max_tokens}/{max_tokens}",
                 progress_unit="tokens",
             )
+
+        return {"token_ids": token_ids, "text": text}
+
+    def generate_embedded(
+        self,
+        prompt_token_ids: list[int],
+        prompt_embeds,
+        prompt_position_ids,
+        max_tokens: int,
+        temperature: Optional[float],
+        top_p: Optional[float],
+        top_k: Optional[int],
+        cfg_scale: float,
+        seed: Optional[int],
+        use_tqdm: bool = True,
+        release_vram_after: bool = True,
+        ignore_eos: bool = False,
+        position_offset: int = 0,
+    ):
+        req_model_len, req_num_seqs, req_num_batched = self._compute_runtime_hints(
+            prompt_len=len(prompt_token_ids),
+            max_tokens=max_tokens,
+            cfg_scale=cfg_scale,
+        )
+        self._ensure_runtime_capacity(req_model_len, req_num_seqs, req_num_batched)
+        self._ensure_llm()
+        if self._llm is None:
+            return None
+        try:
+            self._llm.reset()
+        except Exception:
+            pass
+
+        seed_value = None
+        if seed is not None:
+            try:
+                seed_value = int(seed)
+            except Exception:
+                seed_value = None
+            if seed_value is not None and seed_value < 0:
+                seed_value = None
+
+        temp = temperature if temperature is not None and temperature > 0 else 1e-5
+        sampling_params = self._sampling_params_cls(
+            temperature=temp,
+            max_tokens=max_tokens,
+            cfg_scale=max(cfg_scale, 1.0),
+            top_k=top_k if top_k is not None and top_k > 0 else None,
+            top_p=top_p if top_p is not None and 0.0 < top_p < 1.0 else None,
+            ignore_eos=bool(ignore_eos),
+            seed=seed_value,
+        )
+
+        text = ""
+        token_ids: list[int] = []
+        try:
+            outputs = self._llm.generate_embedded(
+                prompts=[prompt_token_ids],
+                prompt_embeds=[prompt_embeds],
+                prompt_position_ids=[prompt_position_ids],
+                position_offsets=[int(position_offset)],
+                sampling_params=sampling_params,
+                use_tqdm=use_tqdm,
+            )
+            if outputs:
+                text, token_ids = self._extract_text_and_tokens(outputs[0])
+            if (not text) and token_ids:
+                try:
+                    text = self.tokenizer.decode(token_ids, skip_special_tokens=False)
+                except Exception:
+                    text = ""
+            self._last_failure_reason = ""
+        except Exception as exc:
+            self._last_failure_reason = str(exc)
+            raise
+        finally:
+            if release_vram_after:
+                self.release_runtime_allocations()
 
         return {"token_ids": token_ids, "text": text}

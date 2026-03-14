@@ -2,10 +2,13 @@
     "model": {
         "name": "LTX-2 2.3 Dev 22B",
         "architecture": "ltx2_22B",
-        "description": "LTX-2.3 dev checkpoint (22B) for video+audio generation with start/end keyframes and sliding-window continuation.",
+        "description": "LTX-2.3 generates video up to 20s with an audio soundtrack. Supports start/end keyframes and sliding-window continuation. You can force the audio soundtrack by providing an Audio Prompt..",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-dev_diffusion_model.safetensors",
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-dev_diffusion_model_quanto_int8.safetensors"
+        ],
+        "preload_URLs": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors"
         ],
         "loras": [
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-lora-384.safetensors"
@@ -18,5 +21,14 @@
     "num_inference_steps": 30,
     "video_length": 241,
     "resolution": "1280x720",
-    "guidance_scale": 3.0
+    "guidance_scale": 3.0,
+    "audio_guidance_scale": 7.0,
+    "alt_guidance_scale": 3.0,
+    "alt_scale": 0.7,
+    "perturbation_switch": 2,
+    "perturbation_layers": [28],
+    "perturbation_start_perc": 0,
+    "perturbation_end_perc": 100,
+    "apg_switch": 0,
+    "cfg_star_switch": 0
 }

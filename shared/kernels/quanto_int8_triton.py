@@ -36,6 +36,7 @@ _ENV_AUTOTUNE_MAX_REL_ERR = "WAN2GP_QUANTO_INT8_AUTOTUNE_MAX_REL_ERR"
 _ENV_AUTOTUNE_LOCK_FUSED_BLOCK_K = "WAN2GP_QUANTO_INT8_AUTOTUNE_LOCK_FUSED_BLOCK_K"
 _IS_AVAILABLE = None
 _CONFIG_LEN = 5
+_AUTOTUNE_CACHE_VERSION = 2
 _AUTOTUNE_CACHE_LOADED = False
 _AUTOTUNE_CACHE_DIRTY = False
 _AUTOTUNE_CONFIG_CACHE: dict[str, tuple[int, int, int, int, int]] = {}
@@ -94,6 +95,7 @@ _AUTOTUNE_SLOT_REPS = {
     "large_n_ge_2048": ((512, 4096, 4096), (3840, 3840, 4096)),
     "large_default": ((128, 4096, 1024), (192, 3072, 1536)),
 }
+_RUNTIME_PROBE_MAX_N = 4096
 
 
 def _env_flag(name: str, default: str = "1") -> bool:
@@ -303,7 +305,7 @@ def _save_autotune_cache() -> None:
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = Path(f"{cache_path}.tmp")
-        payload = {"version": 1, "entries": {key: list(cfg) for key, cfg in _AUTOTUNE_CONFIG_CACHE.items()}}
+        payload = {"version": _AUTOTUNE_CACHE_VERSION, "entries": {key: list(cfg) for key, cfg in _AUTOTUNE_CONFIG_CACHE.items()}}
         tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
         tmp_path.replace(cache_path)
         _AUTOTUNE_CACHE_DIRTY = False
@@ -322,7 +324,7 @@ def _device_fingerprint(device_index: int) -> str:
     triton_ver = getattr(triton, "__version__", "0.0")
     return (
         f"{props.name}|cc={props.major}.{props.minor}|sm={props.multi_processor_count}|"
-        f"torch={torch.__version__}|triton={triton_ver}"
+        f"torch={torch.__version__}|triton={triton_ver}|wan2gp_int8_cache_v={_AUTOTUNE_CACHE_VERSION}"
     )
 
 
@@ -358,6 +360,7 @@ def _set_cached_config(device_index: int, kernel_kind: str, slot_id: str, cfg: t
         return
     _AUTOTUNE_CONFIG_CACHE[key] = cfg
     _AUTOTUNE_CACHE_DIRTY = True
+    _save_autotune_cache()
 
 
 def _drop_cached_config(device_index: int, kernel_kind: str, slot_id: str, m: int, k: int, n: int) -> None:
@@ -385,6 +388,32 @@ def _config_compatible_with_baseline(
         # Fused blockscale kernel computes row scales per K-chunk; changing block_k changes numerics.
         return int(cfg[2]) == int(baseline[2])
     return True
+
+
+def _runtime_probe_shape(
+    kind: str,
+    m: int,
+    k: int,
+    n: int,
+    baseline: tuple[int, int, int, int, int],
+) -> tuple[int, int, int, tuple[int, int, int, int, int]]:
+    if n <= _RUNTIME_PROBE_MAX_N:
+        return m, k, n, baseline
+    probe_candidates = []
+    for probe_n in (_RUNTIME_PROBE_MAX_N, 3072, 2048, 1536, 1024, 768, 512, 256, 128, 64):
+        if probe_n >= n:
+            continue
+        if probe_n % 8 != 0:
+            continue
+        probe_candidates.append(probe_n)
+    for probe_n in probe_candidates:
+        probe_baseline = _select_static_triton_int8_config(m, k, probe_n)
+        if not _config_compatible_with_baseline(kind, baseline, probe_baseline):
+            continue
+        if not _config_compatible_with_baseline(kind, probe_baseline, baseline):
+            continue
+        return m, k, probe_n, probe_baseline
+    return m, k, n, baseline
 
 
 def _candidate_configs(
@@ -594,9 +623,10 @@ def _ensure_compile_compatible_config(
 ) -> tuple[tuple[int, int, int, int, int], Optional[Exception]]:
     device = torch.device("cuda", device_index)
     _ = rep_shapes
-    # Probing the current shape is enough to catch tile compile incompatibilities while
-    # keeping allocations low for large representative shapes.
-    probe_shapes = ((m, k, n),)
+    probe_m, probe_k, probe_n, _ = _runtime_probe_shape(kind, m, k, n, baseline)
+    # Probe a reduced runtime-compatible shape when possible so compile validation does
+    # not allocate fake giant heads (for example lm_head with 248k vocab rows).
+    probe_shapes = ((probe_m, probe_k, probe_n),)
     tensors_by_shape = {shape: _create_bench_tensors(kind, device, *shape) for shape in probe_shapes}
     candidates = _compile_recovery_candidates(kind, baseline, preferred, m, k, n)
     last_error: Optional[Exception] = None
@@ -754,7 +784,8 @@ def _autotune_config(
     device = torch.device("cuda", device_index)
     cached = _get_cached_config(device_index, kind, slot_id, m, k, n)
     if cached is not None:
-        if _validate_config(kind, device, m, k, n, baseline, cached):
+        probe_m, probe_k, probe_n, probe_baseline = _runtime_probe_shape(kind, m, k, n, baseline)
+        if _validate_config(kind, device, probe_m, probe_k, probe_n, probe_baseline, cached):
             return cached
         _drop_cached_config(device_index, kind, slot_id, m, k, n)
     slot_key = (device_index, kind, slot_id)
@@ -794,7 +825,8 @@ def _autotune_config(
     min_speedup = max(1.0, _env_float(_ENV_AUTOTUNE_MIN_SPEEDUP, 1.02))
     use_best = best_cfg != baseline and best_ms > 0.0 and (baseline_ms / best_ms) >= min_speedup
     picked = best_cfg if use_best else baseline
-    if not _validate_config(kind, device, m, k, n, baseline, picked):
+    probe_m, probe_k, probe_n, probe_baseline = _runtime_probe_shape(kind, m, k, n, baseline)
+    if not _validate_config(kind, device, probe_m, probe_k, probe_n, probe_baseline, picked):
         picked = baseline
     _set_cached_config(device_index, kind, slot_id, picked)
     if use_best:
@@ -830,13 +862,11 @@ def _select_triton_int8_config(
     cached = _AUTOTUNE_SESSION_CACHE.get(session_key)
     if cached is not None:
         return cached
+    cached_cfg = _get_cached_config(device_index, kernel_kind, slot_id, m, k, n)
+    if cached_cfg is not None and _config_compatible_with_baseline(kernel_kind, baseline, cached_cfg):
+        _AUTOTUNE_SESSION_CACHE[session_key] = cached_cfg
+        return cached_cfg
     if _is_stream_capturing():
-        _load_autotune_cache()
-        slot_key = _autotune_slot_cache_key(device_index, kernel_kind, slot_id)
-        cached_cfg = _AUTOTUNE_CONFIG_CACHE.get(slot_key)
-        if cached_cfg is not None and _config_compatible_with_baseline(kernel_kind, baseline, cached_cfg):
-            _AUTOTUNE_SESSION_CACHE[session_key] = cached_cfg
-            return cached_cfg
         # During graph capture we must avoid autotune/probing allocations. Do not populate
         # session cache with the baseline fallback, so a later non-capture call can autotune.
         return baseline

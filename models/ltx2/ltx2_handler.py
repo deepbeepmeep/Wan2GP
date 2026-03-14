@@ -30,6 +30,7 @@ _ARCH_SPECS = {
         "spatial_upscaler": "ltx-2.3-spatial-upscaler-x2-1.0.safetensors",
         "temporal_upscaler": "ltx-2.3-temporal-upscaler-x2-1.0.safetensors",
         "distilled_lora": "ltx-2.3-22b-distilled-lora-384.safetensors",
+        "union_control_lora": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
         "video_vae": "ltx-2.3-22b_vae.safetensors",
         "audio_vae": "ltx-2.3-22b_audio_vae.safetensors",
         "vocoder": "ltx-2.3-22b_vocoder.safetensors",
@@ -45,8 +46,25 @@ def _get_arch_spec(base_model_type: str | None) -> dict:
     return _ARCH_SPECS.get(base_model_type or "", _ARCH_SPECS["ltx2_19B"])
 
 
-def _default_slg_layers(base_model_type: str | None) -> list[int]:
+def _default_perturbation_layers(base_model_type: str | None) -> list[int]:
     return [28] if base_model_type == "ltx2_22B" else [29]
+
+
+def _default_dev_settings(base_model_type: str | None) -> dict:
+    return {
+        "num_inference_steps": 30 if base_model_type == "ltx2_22B" else 40,
+        "guidance_scale": 3.0,
+        # "audio_guidance_scale": 7.0,
+        # "alt_guidance_scale": 3.0,
+        # "alt_scale": 0.7,
+        # "perturbation_switch": 2,
+        "perturbation_layers": _default_perturbation_layers(base_model_type),
+        "perturbation_start_perc": 0,
+        "perturbation_end_perc": 100,
+        "apg_switch": 0,
+        "cfg_star_switch": 0,
+        "guidance_phases": 2,
+    }
 
 
 def _get_embeddings_connector_filename(model_def, base_model_type):
@@ -91,7 +109,15 @@ class family_handler:
 
     @staticmethod
     def query_family_maps():
-        return {}, {}
+
+        models_eqv_map = {
+            "ltx2_19B" : "ltx2_22B",
+        }
+
+        models_comp_map = { 
+                    "ltx2_19B" : [ "ltx2_22B"],
+                    }
+        return models_eqv_map, models_comp_map
 
     @staticmethod
     def query_model_family():
@@ -105,16 +131,16 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         spec = _get_arch_spec(base_model_type)
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
-        is_ltx23 = base_model_type == "ltx2_22B"
 
         distilled = pipeline_kind == "distilled"
-        audio_prompt_selection = ["", "A"] if is_ltx23 else ["", "A", "K"]
+        audio_prompt_selection = ["", "A", "K"] if distilled else ["", "A"]
         audio_prompt_labels = {
             "": "Generate Video & Soundtrack based on Text Prompt",
             "A": "Generate Video based on Soundtrack and Text Prompt",
         }
-        if not is_ltx23:
+        if distilled:
             audio_prompt_labels["K"] = "Generate Video based on Control Video + its Audio Track and Text Prompt"
+
 
         extra_model_def = {
             "text_encoder_folder": _GEMMA_FOLDER,
@@ -128,6 +154,7 @@ class family_handler:
             "frames_steps": 8,
             "sliding_window": True,
             "image_prompt_types_allowed": "TSEV",
+            "end_frames_always_enabled": True,
             "returns_audio": True,
             "any_audio_prompt": True,
             "audio_prompt_choices": True,
@@ -141,7 +168,7 @@ class family_handler:
             },
             "audio_guide_window_slicing": True,
             "output_audio_is_input_audio": True,
-            "custom_denoising_strength": True,
+            "custom_denoising_strength": distilled,
             "profiles_dir": [spec["profiles_dir"]],
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],
             "self_refiner": True,
@@ -150,16 +177,17 @@ class family_handler:
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"] = True
         extra_model_def["input_video_strength"] = "Image / Source Video Strength (you may try values lower value than 1 to get more motion)"
-        if not is_ltx23:
-            extra_model_def["guide_preprocessing"] = {
-                "selection": ["", "PVG", "DVG", "EVG", "VG"],
-                "labels": {
-                    "PVG": "Transfer Human Motion",
-                    "DVG": "Transfer Depth",
-                    "EVG": "Transfer Canny Edges",
-                    "VG": "Use LTX-2 raw format",
-                },
-            }
+        
+        control_choices = [("No Video Process", ""), ("Transfer Human Motion", "PVG") , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("Use LTX-2 raw format Control Video", "VG")] if distilled else []
+        control_choices +=   [("Inject Frames", "KFI")]
+        extra_model_def["guide_custom_choices"] = {
+            "choices": control_choices,
+            "letters_filter": "PDEVGKFI",
+            "label": "Control Video / Frames Injection"
+        }
+
+        extra_model_def["custom_frames_injection"] = True
+
         extra_model_def["mask_preprocessing"] = {
             "selection": ["", "A", "NA", "XA", "XNA"],
         }
@@ -183,15 +211,36 @@ class family_handler:
         else:
             extra_model_def.update(
                 {
+                    "audio_guidance": True,
                     "adaptive_projected_guidance": True,
                     "cfg_star": True,
-                    "skip_layer_guidance": True,
+                    "perturbation": True,
                     "alt_guidance": "Modality Guidance",
+                    "alt_scale": "Guidance Rescale",
+                    "perturbation_choices": [
+                        ("Off", 0),
+                        ("Skip Layer Guidance", 1),
+                        ("Skip Self Attention", 2),
+                    ],
+                    "perturbation_layers_max": 48,
                 }
             )
         extra_model_def["guidance_max_phases"] = 2
         extra_model_def["visible_phases"] = 0 if distilled else 1
         extra_model_def["lock_guidance_phases"] = True
+
+        # extra_model_def["custom_video_selection"] = {
+        #     "choices":[
+        #         ("None", ""),
+        #         ("Inject Frames", "FI"),
+        #     ],
+        #     "label": "Inject Frames",
+        #     "type": "checkbox",
+        #     "letters_filter": "FI",
+        #     "show_label" : False,
+        #     "scale": 1,
+        #     }
+
         return extra_model_def
 
     @staticmethod
@@ -337,7 +386,7 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
-        default_slg_layers = _default_slg_layers(base_model_type)
+        default_perturbation_layers = _default_perturbation_layers(base_model_type)
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
         if pipeline_kind != "distilled" and ui_defaults.get("guidance_phases", 0) < 2:
             ui_defaults["guidance_phases"] = 2
@@ -354,7 +403,7 @@ class family_handler:
             ui_defaults.update(
                 {
                     "alt_guidance_scale": 1.0,
-                    "slg_layers": default_slg_layers,
+                    "perturbation_layers": default_perturbation_layers,
                 }
             )
 
@@ -365,6 +414,15 @@ class family_handler:
                 }
             )
 
+        if settings_version < 2.55 and pipeline_kind != "distilled":
+            ui_defaults.update({
+                "audio_guidance_scale": 1.0,
+                "alt_guidance_scale": 1.0,
+                "alt_scale": 0.0,
+                })
+
+                # _default_dev_settings(base_model_type)
+
         if settings_version < 2.52:
             plan = ui_defaults.get("self_refiner_plan")
             if isinstance(plan, list):
@@ -373,7 +431,7 @@ class family_handler:
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
-        default_slg_layers = _default_slg_layers(base_model_type)
+        default_perturbation_layers = _default_perturbation_layers(base_model_type)
         ui_defaults.update(
             {
                 "sliding_window_size": 481,
@@ -381,14 +439,12 @@ class family_handler:
                 "denoising_strength": 1.0,
                 "masking_strength": 0,
                 "audio_prompt_type": "",
-                "alt_guidance_scale": 1.0,
-                "slg_layers": default_slg_layers,
+                "perturbation_layers": default_perturbation_layers,
 	            }
         )
         ui_defaults.setdefault("audio_scale", 1.0)
-        ui_defaults.setdefault("alt_guidance_scale", 1.0)
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
         if pipeline_kind != "distilled":
-            ui_defaults.setdefault("guidance_phases", 2)
+            ui_defaults.update(_default_dev_settings(base_model_type))
         else:
             ui_defaults.setdefault("guidance_phases", 1)

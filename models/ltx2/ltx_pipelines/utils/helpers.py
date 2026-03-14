@@ -17,6 +17,7 @@ from ...ltx_core.conditioning import (
     ConditioningItem,
     VideoConditionByKeyframeIndex,
     VideoConditionByLatentIndex,
+    VideoConditionByReferenceLatent,
 )
 from ...ltx_core.guidance.perturbations import (
     BatchedPerturbationConfig,
@@ -28,7 +29,7 @@ from ...ltx_core.model.transformer import Modality, X0Model
 from ...ltx_core.model.video_vae import VideoEncoder, TilingConfig, encode_video as vae_encode_video
 from ...ltx_core.text_encoders.gemma import GemmaTextEncoderModelBase
 from ...ltx_core.tools import AudioLatentTools, LatentTools, VideoLatentTools
-from ...ltx_core.types import AudioLatentShape, LatentState, VideoLatentShape, VideoPixelShape
+from ...ltx_core.types import AudioLatentShape, LatentState, TimestepCompressionPlan, VideoLatentShape, VideoPixelShape
 from ...ltx_core.utils import to_denoised, to_velocity
 from .media_io import decode_image, load_image_conditioning, load_video_conditioning, resize_aspect_ratio_preserving
 from .types import (
@@ -160,6 +161,52 @@ def video_conditionings_by_keyframe(
         cond =VideoConditionByKeyframeIndex(keyframes=encoded_video, frame_idx=frame_idx, strength=strength)
         conditionings.append(cond)
 
+    return conditionings
+
+
+def video_conditionings_by_reference_latent(
+    video_conditioning: list[tuple],
+    height: int,
+    width: int,
+    num_frames: int,
+    video_encoder: VideoEncoder,
+    dtype: torch.dtype,
+    device: torch.device,
+    downscale_factor: int = 1,
+    tiling_config: TilingConfig | None = None,
+) -> list[ConditioningItem]:
+    scale = max(1, int(downscale_factor))
+    if scale > 1 and (height % scale != 0 or width % scale != 0):
+        raise ValueError(f"Output dimensions ({height}x{width}) must be divisible by reference downscale factor {scale}.")
+
+    ref_height = height // scale
+    ref_width = width // scale
+    conditionings = []
+    for entry in video_conditioning:
+        if len(entry) == 2:
+            video_path, strength = entry
+            frame_idx = 0
+        elif len(entry) == 3:
+            video_path, frame_idx, strength = entry
+        else:
+            raise ValueError("Video conditioning entries must be (video, strength) or (video, frame_idx, strength).")
+        video = load_video_conditioning(
+            video_path=video_path,
+            height=ref_height,
+            width=ref_width,
+            frame_cap=num_frames,
+            dtype=dtype,
+            device=device,
+        )
+        encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+        conditionings.append(
+            VideoConditionByReferenceLatent(
+                latent=encoded_video,
+                frame_idx=frame_idx,
+                strength=strength,
+                downscale_factor=scale,
+            )
+        )
     return conditionings
 
 
@@ -794,7 +841,10 @@ def modality_from_latent_state(
     Constructs a Modality object with the latent state's data, timesteps derived
     from the denoise mask and sigma, positions, and the provided context.
     """
-    timesteps, frame_indices = timesteps_from_mask(state.denoise_mask, sigma, positions=state.positions)
+    runtime_cache = state.runtime_cache
+    if runtime_cache.timestep_plan is None:
+        runtime_cache.timestep_plan = build_timestep_compression_plan(state.denoise_mask, state.positions)
+    timesteps, frame_indices = timesteps_from_mask(state.denoise_mask, sigma, plan=runtime_cache.timestep_plan)
     sigma_tensor = sigma if torch.is_tensor(sigma) else torch.tensor(sigma, device=state.latent.device)
     sigma_tensor = sigma_tensor.to(device=state.latent.device, dtype=state.latent.dtype)
     if sigma_tensor.ndim == 0:
@@ -813,6 +863,7 @@ def modality_from_latent_state(
         context_mask=None,
         attention_mask=None,
         frame_indices=frame_indices,
+        runtime_cache=runtime_cache,
     )
 
 
@@ -837,26 +888,32 @@ def _cross_attn_perturbations(batch_size: int) -> BatchedPerturbationConfig:
     return BatchedPerturbationConfig(perts)
 
 
-def _normalize_slg_layers(slg_layers) -> list[int] | None:
-    if slg_layers is None:
+PERTURBATION_perturbation = 1
+PERTURBATION_SKIP_SELF_ATTENTION = 2
+
+
+def _normalize_perturbation_layers(perturbation_layers) -> list[int] | None:
+    if perturbation_layers is None:
         return None
-    if isinstance(slg_layers, (list, tuple)):
-        return [int(layer) for layer in slg_layers if str(layer).strip() != ""]
-    if isinstance(slg_layers, (int, float)):
-        return [int(slg_layers)]
-    if isinstance(slg_layers, str):
-        return [int(layer.strip()) for layer in slg_layers.split(",") if layer.strip()]
+    if isinstance(perturbation_layers, (list, tuple)):
+        return [int(layer) for layer in perturbation_layers if str(layer).strip() != ""]
+    if isinstance(perturbation_layers, (int, float)):
+        return [int(perturbation_layers)]
+    if isinstance(perturbation_layers, str):
+        return [int(layer.strip()) for layer in perturbation_layers.split(",") if layer.strip()]
     return None
 
 
-def _slg_perturbations(batch_size: int, slg_layers: list[int]) -> BatchedPerturbationConfig:
+def _legacy_perturbation_layer_configs(
+    batch_size: int, perturbation_layers: list[int] | None
+) -> BatchedPerturbationConfig:
     perts = [
         PerturbationConfig(
             [
-                Perturbation(PerturbationType.SKIP_VIDEO_SELF_ATTN, slg_layers),
-                Perturbation(PerturbationType.SKIP_AUDIO_SELF_ATTN, slg_layers),
-                Perturbation(PerturbationType.SKIP_A2V_CROSS_ATTN, slg_layers),
-                Perturbation(PerturbationType.SKIP_V2A_CROSS_ATTN, slg_layers),
+                Perturbation(PerturbationType.SKIP_VIDEO_SELF_ATTN, perturbation_layers),
+                Perturbation(PerturbationType.SKIP_AUDIO_SELF_ATTN, perturbation_layers),
+                Perturbation(PerturbationType.SKIP_A2V_CROSS_ATTN, perturbation_layers),
+                Perturbation(PerturbationType.SKIP_V2A_CROSS_ATTN, perturbation_layers),
             ]
         )
         for _ in range(batch_size)
@@ -864,15 +921,48 @@ def _slg_perturbations(batch_size: int, slg_layers: list[int]) -> BatchedPerturb
     return BatchedPerturbationConfig(perts)
 
 
-def timesteps_from_mask(
-    denoise_mask: torch.Tensor, sigma: float | torch.Tensor, positions: torch.Tensor | None = None
-) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """Compute timesteps from a denoise mask and sigma value.
-    Multiplies the denoise mask by sigma to produce timesteps for each position
-    in the latent state. Areas where the mask is 0 will have zero timesteps.
-    """
+def _self_attn_perturbation_configs(
+    batch_size: int, perturbation_layers: list[int] | None
+) -> BatchedPerturbationConfig:
+    perts = [
+        PerturbationConfig(
+            [
+                Perturbation(PerturbationType.SKIP_VIDEO_SELF_ATTN, perturbation_layers),
+                Perturbation(PerturbationType.SKIP_AUDIO_SELF_ATTN, perturbation_layers),
+            ]
+        )
+        for _ in range(batch_size)
+    ]
+    return BatchedPerturbationConfig(perts)
+
+
+def _perturbation_active(
+    step_index: int,
+    sigmas: torch.Tensor,
+    perturbation_start: float,
+    perturbation_end: float,
+) -> bool:
+    total_steps = max(len(sigmas) - 1, 1)
+    start_step = int(perturbation_start * total_steps)
+    end_step = int(perturbation_end * total_steps)
+    return start_step <= step_index < end_step
+
+
+def _rescale_prediction(cond: torch.Tensor | None, pred: torch.Tensor | None, rescale_scale: float) -> torch.Tensor | None:
+    if cond is None or pred is None or math.isclose(rescale_scale, 0.0):
+        return pred
+    pred_std = pred.std().clamp_min(1e-6)
+    factor = cond.std() / pred_std
+    factor = rescale_scale * factor + (1.0 - rescale_scale)
+    return pred * factor
+
+
+def build_timestep_compression_plan(
+    denoise_mask: torch.Tensor,
+    positions: torch.Tensor | None = None,
+) -> TimestepCompressionPlan:
     if positions is None or positions.ndim < 4 or positions.shape[1] != 3:
-        return denoise_mask * sigma, None
+        return TimestepCompressionPlan()
 
     token_mask = denoise_mask
     if token_mask.ndim > 2:
@@ -880,36 +970,54 @@ def timesteps_from_mask(
 
     batch_size = token_mask.shape[0]
     frame_times = positions[:, 0, :, 0]
-
-    frame_indices_list = []
+    run_lengths = None
+    quantum = 0
     frame_masks = []
+    frame_indices = []
+    token_count = frame_times.shape[1]
     for b in range(batch_size):
-        unique_times, inverse = torch.unique(frame_times[b], sorted=True, return_inverse=True)
-        frame_indices_list.append(inverse)
+        changes = torch.nonzero(frame_times[b, 1:] != frame_times[b, :-1]).flatten() + 1
+        bounds = torch.cat([changes.new_zeros(1), changes, changes.new_full((1,), token_count)])
+        lengths = (bounds[1:] - bounds[:-1]).tolist()
+        if run_lengths is None:
+            run_lengths = lengths
+            quantum = run_lengths[0]
+            for length in run_lengths[1:]:
+                quantum = math.gcd(quantum, length)
+        elif lengths != run_lengths:
+            return TimestepCompressionPlan()
 
-        frame_count = unique_times.numel()
-        frame_min = torch.full(
-            (frame_count,),
-            torch.finfo(token_mask.dtype).max,
-            device=token_mask.device,
-            dtype=token_mask.dtype,
-        )
-        frame_max = torch.full(
-            (frame_count,),
-            torch.finfo(token_mask.dtype).min,
-            device=token_mask.device,
-            dtype=token_mask.dtype,
-        )
-        frame_min.scatter_reduce_(0, inverse, token_mask[b], reduce="amin", include_self=True)
-        frame_max.scatter_reduce_(0, inverse, token_mask[b], reduce="amax", include_self=True)
+        group_values = []
+        group_indices = []
+        group_idx = 0
+        for start, end, length in zip(bounds[:-1].tolist(), bounds[1:].tolist(), run_lengths):
+            run_mask = token_mask[b, start:end]
+            if not torch.allclose(run_mask, run_mask[:1], atol=1e-6):
+                return TimestepCompressionPlan()
+            repeat = length // quantum
+            group_values.append(run_mask[:1].expand(repeat))
+            group_indices.append(
+                torch.arange(group_idx, group_idx + repeat, device=token_mask.device).repeat_interleave(quantum)
+            )
+            group_idx += repeat
+        frame_masks.append(torch.cat(group_values))
+        frame_indices.append(torch.cat(group_indices))
 
-        if not torch.allclose(frame_min, frame_max, atol=1e-6):
-            return denoise_mask * sigma, None
-        frame_masks.append(frame_min)
+    return TimestepCompressionPlan(frame_mask=torch.stack(frame_masks, dim=0), frame_indices=torch.stack(frame_indices, dim=0))
 
-    frame_timesteps = torch.stack(frame_masks, dim=0) * sigma
-    frame_indices = torch.stack(frame_indices_list, dim=0)
-    return frame_timesteps, frame_indices
+
+def timesteps_from_mask(
+    denoise_mask: torch.Tensor,
+    sigma: float | torch.Tensor,
+    positions: torch.Tensor | None = None,
+    plan: TimestepCompressionPlan | None = None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Compute timesteps from a denoise mask and sigma value."""
+    if plan is None:
+        plan = build_timestep_compression_plan(denoise_mask, positions)
+    if plan.frame_mask is None or plan.frame_indices is None:
+        return denoise_mask * sigma, None
+    return plan.frame_mask * sigma, plan.frame_indices
 
 
 def simple_denoising_func(
@@ -965,18 +1073,23 @@ def simple_denoising_func(
 
 
 def guider_denoising_func(
-    guider: GuiderProtocol,
+    video_guider: GuiderProtocol,
+    audio_guider: GuiderProtocol,
     v_context_p: torch.Tensor,
     v_context_n: torch.Tensor,
     a_context_p: torch.Tensor,
     a_context_n: torch.Tensor,
     transformer: X0Model,
     alt_guidance_scale: float = 1.0,
-    slg_switch: int = 0,
-    slg_layers: list[int] | None = None,
-    slg_start: float = 0.0,
-    slg_end: float = 1.0,
+    alt_scale: float = 0.0,
+    perturbation_switch: int = 0,
+    perturbation_layers: list[int] | None = None,
+    perturbation_start: float = 0.0,
+    perturbation_end: float = 1.0,
 ) -> DenoisingFunc:
+    perturb_all_layers = perturbation_layers is None
+    perturbation_layers_norm = _normalize_perturbation_layers(perturbation_layers)
+
     def guider_denoising_step(
         video_state: LatentState, audio_state: LatentState, sigmas: torch.Tensor, step_index: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -986,38 +1099,48 @@ def guider_denoising_func(
 
         if transformer is not None:
             offload.set_step_no_for_lora(transformer, step_index)
-        use_cfg = guider.enabled()
+        use_video_cfg = video_guider.enabled()
+        use_audio_cfg = audio_guider.enabled()
+        use_cfg = use_video_cfg or use_audio_cfg
         use_alt = not math.isclose(alt_guidance_scale, 1.0)
-        if use_cfg or use_alt:
+        use_perturbation = _perturbation_active(step_index, sigmas, perturbation_start, perturbation_end)
+        has_perturbation_layers = perturb_all_layers or bool(perturbation_layers_norm)
+        use_legacy_perturbation = (
+            perturbation_switch == PERTURBATION_perturbation and use_cfg and use_perturbation and has_perturbation_layers
+        )
+        use_stg = (
+            perturbation_switch == PERTURBATION_SKIP_SELF_ATTENTION and use_perturbation and has_perturbation_layers
+        )
+        selected_layers = None if perturb_all_layers else perturbation_layers_norm
+        if use_cfg or use_alt or use_stg:
+            batch_size = _get_batch_size(video_state, audio_state)
             video_list = [pos_video]
             audio_list = [pos_audio]
             perturbations: list[BatchedPerturbationConfig | None] = [None]
             neg_index = None
+            stg_index = None
             alt_index = None
+
             if use_cfg:
-                neg_video = modality_from_latent_state(video_state, v_context_n, sigma)
-                neg_audio = modality_from_latent_state(audio_state, a_context_n, sigma)
+                neg_video_context = v_context_n if use_video_cfg else v_context_p
+                neg_audio_context = a_context_n if use_audio_cfg else a_context_p
                 neg_index = len(video_list)
-                video_list.append(neg_video)
-                audio_list.append(neg_audio)
-                batch_size = _get_batch_size(video_state, audio_state)
-                slg_layers_norm = _normalize_slg_layers(slg_layers)
-                use_slg = False
-                if slg_switch and slg_layers_norm:
-                    total_steps = max(len(sigmas) - 1, 1)
-                    start_step = int(slg_start * total_steps)
-                    end_step = int(slg_end * total_steps)
-                    use_slg = start_step <= step_index < end_step
+                video_list.append(modality_from_latent_state(video_state, neg_video_context, sigma))
+                audio_list.append(modality_from_latent_state(audio_state, neg_audio_context, sigma))
                 perturbations.append(
-                    _slg_perturbations(batch_size, slg_layers_norm) if use_slg else None
+                    _legacy_perturbation_layer_configs(batch_size, selected_layers) if use_legacy_perturbation else None
                 )
+
+            if use_stg:
+                stg_index = len(video_list)
+                video_list.append(modality_from_latent_state(video_state, v_context_p, sigma))
+                audio_list.append(modality_from_latent_state(audio_state, a_context_p, sigma))
+                perturbations.append(_self_attn_perturbation_configs(batch_size, selected_layers))
+
             if use_alt:
-                alt_video = modality_from_latent_state(video_state, v_context_p, sigma)
-                alt_audio = modality_from_latent_state(audio_state, a_context_p, sigma)
                 alt_index = len(video_list)
-                video_list.append(alt_video)
-                audio_list.append(alt_audio)
-                batch_size = _get_batch_size(video_state, audio_state)
+                video_list.append(modality_from_latent_state(video_state, v_context_p, sigma))
+                audio_list.append(modality_from_latent_state(audio_state, a_context_p, sigma))
                 perturbations.append(_cross_attn_perturbations(batch_size))
 
             denoised_video_list, denoised_audio_list = transformer(
@@ -1029,18 +1152,28 @@ def guider_denoising_func(
                 return None, None
             pos_denoised_video = denoised_video_list[0]
             pos_denoised_audio = denoised_audio_list[0]
-            neg_denoised_video = denoised_video_list[neg_index] if neg_index is not None else None
-            neg_denoised_audio = denoised_audio_list[neg_index] if neg_index is not None else None
             if pos_denoised_video is None and pos_denoised_audio is None:
                 return None, None
 
             denoised_video = pos_denoised_video
             denoised_audio = pos_denoised_audio
+
             if use_cfg and neg_index is not None:
-                if denoised_video is not None and neg_denoised_video is not None:
-                    denoised_video = denoised_video + guider.delta(denoised_video, neg_denoised_video)
-                if denoised_audio is not None and neg_denoised_audio is not None:
-                    denoised_audio = denoised_audio + guider.delta(denoised_audio, neg_denoised_audio)
+                neg_denoised_video = denoised_video_list[neg_index]
+                neg_denoised_audio = denoised_audio_list[neg_index]
+                if denoised_video is not None and neg_denoised_video is not None and use_video_cfg:
+                    denoised_video = denoised_video + video_guider.delta(pos_denoised_video, neg_denoised_video)
+                if denoised_audio is not None and neg_denoised_audio is not None and use_audio_cfg:
+                    denoised_audio = denoised_audio + audio_guider.delta(pos_denoised_audio, neg_denoised_audio)
+
+            if use_stg and stg_index is not None:
+                stg_denoised_video = denoised_video_list[stg_index]
+                stg_denoised_audio = denoised_audio_list[stg_index]
+                if denoised_video is not None and stg_denoised_video is not None:
+                    denoised_video = denoised_video + (pos_denoised_video - stg_denoised_video)
+                if denoised_audio is not None and stg_denoised_audio is not None:
+                    denoised_audio = denoised_audio + (pos_denoised_audio - stg_denoised_audio)
+
             if use_alt and alt_index is not None:
                 alt_denoised_video = denoised_video_list[alt_index]
                 alt_denoised_audio = denoised_audio_list[alt_index]
@@ -1052,11 +1185,15 @@ def guider_denoising_func(
                     denoised_audio = denoised_audio + (alt_guidance_scale - 1.0) * (
                         pos_denoised_audio - alt_denoised_audio
                     )
-            neg_video = neg_audio = neg_denoised_video = neg_denoised_audio = None
         else:
             denoised_video, denoised_audio = transformer(video=pos_video, audio=pos_audio, perturbations=None)
             if denoised_video is None and denoised_audio is None:
                 return None, None
+            pos_denoised_video = denoised_video
+            pos_denoised_audio = denoised_audio
+
+        denoised_video = _rescale_prediction(pos_denoised_video, denoised_video, alt_scale)
+        denoised_audio = _rescale_prediction(pos_denoised_audio, denoised_audio, alt_scale)
 
         pos_video = pos_audio = None
         return denoised_video, denoised_audio

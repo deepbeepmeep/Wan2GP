@@ -2,6 +2,8 @@ from dataclasses import dataclass
 
 import torch
 
+from ...types import LatentStateRuntimeCache
+
 
 @dataclass(frozen=True)
 class Modality:
@@ -24,3 +26,4 @@ class Modality:
     context_mask: torch.Tensor | None = None
     attention_mask: torch.Tensor | None = None
     frame_indices: torch.Tensor | None = None
+    runtime_cache: LatentStateRuntimeCache | None = None

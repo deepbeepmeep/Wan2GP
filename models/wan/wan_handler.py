@@ -284,7 +284,7 @@ class family_handler():
         "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "t2v_2_2", "fantasy", "animate", "lynx"] or test_class_i2v(base_model_type) or test_wan_5B(base_model_type) or vace_class,  #"ti2v_2_2",
         "multiple_submodels" : multiple_submodels,
         "guidance_max_phases" : 3,
-        "skip_layer_guidance" : True,
+        "perturbation" : True,
         "flow_shift": True,
         "cfg_zero" : True,
         "cfg_star" : True,
@@ -673,8 +673,10 @@ class family_handler():
             image_prompt_types_allowed = "TSVL"
         elif base_model_type in ["lucy_edit", "kiwi_edit"]:
             image_prompt_types_allowed = "TVL"
-        elif multitalk or base_model_type in ["fantasy", "steadydancer", "scail"] or svi2pro:
+        elif multitalk or base_model_type in ["fantasy", "steadydancer", "scail"]:
             image_prompt_types_allowed = "SVL"
+        elif svi2pro:
+            image_prompt_types_allowed = "SEVL"
         elif i2v:
             image_prompt_types_allowed = "SEVL"
         else:

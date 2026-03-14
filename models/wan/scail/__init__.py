@@ -113,6 +113,7 @@ class ScailPoseProcessor:
         # Lazy-loaded for multi-person mode.
         self._sam_segmenter = None
         self._matanyone_model = None
+        self._matanyone_version = None
 
     def unload(self):
         """Release NLF model from memory (RAM and VRAM)."""
@@ -143,6 +144,7 @@ class ScailPoseProcessor:
             except Exception:
                 pass
             self._matanyone_model = None
+            self._matanyone_version = None
 
         # Force garbage collection and empty CUDA cache
         gc.collect()
@@ -157,11 +159,18 @@ class ScailPoseProcessor:
         self._sam_segmenter = BaseSegmenter(SAM_checkpoint=None, model_type="vit_h", device=f"cuda:{self.gpu_id}")
 
     def _ensure_matanyone_loaded(self) -> None:
-        if self._matanyone_model is not None:
-            return
-        from preprocessing.matanyone.matanyone.model.matanyone import MatAnyone
+        from preprocessing.matanyone.utils.model_assets import get_selected_matanyone_version, load_selected_matanyone_model
 
-        self._matanyone_model = MatAnyone.from_pretrained(fl.locate_folder("mask")).eval()
+        selected_version = get_selected_matanyone_version()
+        if self._matanyone_model is not None and self._matanyone_version == selected_version:
+            return
+        if self._matanyone_model is not None:
+            self._matanyone_model.to("cpu")
+            self._matanyone_model = None
+            torch.cuda.empty_cache()
+
+        self._matanyone_model, self._matanyone_version, _ = load_selected_matanyone_model()
+        self._matanyone_model = self._matanyone_model.eval()
         self._matanyone_model.to(f"cuda:{self.gpu_id}")
 
     def _extract_and_render_multi(
@@ -257,6 +266,7 @@ class ScailPoseProcessor:
             self._matanyone_model.to("cpu")
             del self._matanyone_model
             self._matanyone_model = None
+            self._matanyone_version = None
             torch.cuda.empty_cache()
 
         # 4) Run NLF per segmented person-video.

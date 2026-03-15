@@ -12,7 +12,7 @@ _ARCH_SPECS = {
     "ltx2_19B": {
         "repo_id": "DeepBeepMeep/LTX-2",
         "config_file": "ltx2_19b_config.json",
-        "spatial_upscaler": "ltx-2-spatial-upscaler-x2-1.1.safetensors",
+        "spatial_upscaler": "ltx-2-spatial-upscaler-x2-1.0.safetensors",
         "temporal_upscaler": "ltx-2-temporal-upscaler-x2-1.0.safetensors",
         "distilled_lora": "ltx-2-19b-distilled-lora-384.safetensors",
         "video_vae": "ltx-2-19b_vae.safetensors",
@@ -27,7 +27,7 @@ _ARCH_SPECS = {
     "ltx2_22B": {
         "repo_id": "DeepBeepMeep/LTX-2",
         "config_file": "ltx2_22b_config.json",
-        "spatial_upscaler": "ltx-2.3-spatial-upscaler-x2-1.0.safetensors",
+        "spatial_upscaler": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
         "temporal_upscaler": "ltx-2.3-temporal-upscaler-x2-1.0.safetensors",
         "distilled_lora": "ltx-2.3-22b-distilled-lora-384.safetensors",
         "union_control_lora": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",

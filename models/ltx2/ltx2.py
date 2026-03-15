@@ -594,7 +594,7 @@ class LTX2:
         video_config_vae["spatial_padding_mode"] = "reflect"
         video_config_vae["encoder_spatial_padding_mode"] = "reflect"
         video_config_vae["decoder_spatial_padding_mode"] = "reflect"
-        print("[LTX2 VAE Config] forcing encoder/decoder spatial_padding_mode=reflect")
+        # print("[LTX2 VAE Config] forcing encoder/decoder spatial_padding_mode=reflect")
         with init_empty_weights():
             video_encoder = VideoEncoderConfigurator.from_config(video_config)
             video_decoder = VideoDecoderConfigurator.from_config(video_config)

@@ -1,14 +1,7 @@
 import os
 import torch
 from omegaconf import OmegaConf
-from shared.utils import files_locator as fl
-
-
-def get_kandinsky_text_encoder_filename(text_encoder_quantization):
-    text_encoder_filename = "Qwen2.5-VL-7B-Instruct/Qwen2.5-VL-7B-Instruct_bf16.safetensors"
-    if text_encoder_quantization == "int8":
-        text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8")
-    return fl.locate_file(text_encoder_filename, True)
+from shared.utils.hf import build_hf_url
 
 
 _MAGCACHE_RATIOS_CACHE = {}
@@ -107,46 +100,46 @@ class family_handler:
         }
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-kandinsky5",
             type=str,
-            default=os.path.join("loras", "kandinsky5"),
-            help="Base path for Kandinsky 5 loras (per-architecture subfolders are used).",
+            default=None,
+            help=f"Base path for Kandinsky 5 loras (per-architecture subfolders are used). Default: {os.path.join(lora_root, 'kandinsky5')}.",
         )
         parser.add_argument(
             "--lora-dir-k5-lite-t2v",
             type=str,
-            default=os.path.join("loras", "k5_lite_t2v"),
-            help="Path to a directory that contains Kandinsky 5 Lite T2V loras.",
+            default=None,
+            help=f"Path to a directory that contains Kandinsky 5 Lite T2V loras (default: {os.path.join(lora_root, 'k5_lite_t2v')}).",
         )
         parser.add_argument(
             "--lora-dir-k5-lite-i2v",
             type=str,
-            default=os.path.join("loras", "k5_lite_i2v"),
-            help="Path to a directory that contains Kandinsky 5 Lite I2V loras.",
+            default=None,
+            help=f"Path to a directory that contains Kandinsky 5 Lite I2V loras (default: {os.path.join(lora_root, 'k5_lite_i2v')}).",
         )
         parser.add_argument(
             "--lora-dir-k5-pro-t2v",
             type=str,
-            default=os.path.join("loras", "k5_pro_t2v"),
-            help="Path to a directory that contains Kandinsky 5 Pro T2V loras.",
+            default=None,
+            help=f"Path to a directory that contains Kandinsky 5 Pro T2V loras (default: {os.path.join(lora_root, 'k5_pro_t2v')}).",
         )
         parser.add_argument(
             "--lora-dir-k5-pro-i2v",
             type=str,
-            default=os.path.join("loras", "k5_pro_i2v"),
-            help="Path to a directory that contains Kandinsky 5 Pro I2V loras.",
+            default=None,
+            help=f"Path to a directory that contains Kandinsky 5 Pro I2V loras (default: {os.path.join(lora_root, 'k5_pro_i2v')}).",
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
-        base_dir = getattr(args, "lora_dir_kandinsky5", None) or os.path.join("loras", "kandinsky5")
+    def get_lora_dir(base_model_type, args, lora_root):
+        base_dir = getattr(args, "lora_dir_kandinsky5", None) or os.path.join(lora_root, "kandinsky5")
         per_arch = {
-            "k5_lite_t2v": getattr(args, "lora_dir_k5_lite_t2v", None) or os.path.join("loras", "k5_lite_t2v"),
-            "k5_lite_i2v": getattr(args, "lora_dir_k5_lite_i2v", None) or os.path.join("loras", "k5_lite_i2v"),
-            "k5_pro_t2v": getattr(args, "lora_dir_k5_pro_t2v", None) or os.path.join("loras", "k5_pro_t2v"),
-            "k5_pro_i2v": getattr(args, "lora_dir_k5_pro_i2v", None) or os.path.join("loras", "k5_pro_i2v"),
+            "k5_lite_t2v": getattr(args, "lora_dir_k5_lite_t2v", None) or os.path.join(lora_root, "k5_lite_t2v"),
+            "k5_lite_i2v": getattr(args, "lora_dir_k5_lite_i2v", None) or os.path.join(lora_root, "k5_lite_i2v"),
+            "k5_pro_t2v": getattr(args, "lora_dir_k5_pro_t2v", None) or os.path.join(lora_root, "k5_pro_t2v"),
+            "k5_pro_i2v": getattr(args, "lora_dir_k5_pro_i2v", None) or os.path.join(lora_root, "k5_pro_i2v"),
         }
         if base_model_type in per_arch:
             return per_arch[base_model_type]
@@ -196,6 +189,12 @@ class family_handler:
             "mag_cache": True,
             "profiles_dir": [profiles_dir],
         }
+        text_encoder_folder = "Qwen2.5-VL-7B-Instruct"
+        extra_model_def["text_encoder_URLs"] = [
+            build_hf_url("DeepBeepMeep/Qwen_image", text_encoder_folder, "Qwen2.5-VL-7B-Instruct_bf16.safetensors"),
+            build_hf_url("DeepBeepMeep/Qwen_image", text_encoder_folder, "Qwen2.5-VL-7B-Instruct_quanto_bf16_int8.safetensors"),
+        ]
+        extra_model_def["text_encoder_folder"] = text_encoder_folder
 
         if is_video:
             extra_model_def.update(
@@ -222,8 +221,7 @@ class family_handler:
         return extra_model_def
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = get_kandinsky_text_encoder_filename(text_encoder_quantization)
+    def query_model_files(computeList, base_model_type, model_def=None):
         return [
             {
                 "repoId": "DeepBeepMeep/Qwen_image",
@@ -238,8 +236,7 @@ class family_handler:
                         "video_preprocessor_config.json",
                         "preprocessor_config.json",
                         "chat_template.json",
-                    ]
-                    + computeList(text_encoder_filename),
+                    ],
                 ],
             },
             {
@@ -247,7 +244,7 @@ class family_handler:
                 "sourceFolderList": ["clip_vit_large_patch14", ""],
                 "fileList": [
                     [
-                        "config.json",
+                        "text_config.json",
                         "merges.txt",
                         "model.safetensors",
                         "preprocessor_config.json",
@@ -277,7 +274,7 @@ class family_handler:
         mixed_precision_transformer=False,
         save_quantized=False,
         submodel_no_list=None,
-        override_text_encoder=None,
+        text_encoder_filename=None,
         **kwargs,
     ):
         from .kandinsky_main import model_factory
@@ -288,7 +285,7 @@ class family_handler:
             model_type=model_type,
             model_def=model_def,
             base_model_type=base_model_type,
-            text_encoder_filename=override_text_encoder,
+            text_encoder_filename=text_encoder_filename,
             quantizeTransformer=quantizeTransformer,
             dtype=dtype,
             VAE_dtype=VAE_dtype,

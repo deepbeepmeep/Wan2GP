@@ -1,4 +1,5 @@
 import torch
+from shared.utils.hf import build_hf_url
 
 class family_handler():
 
@@ -14,6 +15,12 @@ class family_handler():
     @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {}
+        text_encoder_folder = "umt5-xxl"
+        extra_model_def["text_encoder_URLs"] = [
+            build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-bf16.safetensors"),
+            build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-quanto_int8.safetensors"),
+        ]
+        extra_model_def["text_encoder_folder"] = text_encoder_folder
         if base_model_type in ["sky_df_14B"]:
             fps = 24
         else:
@@ -23,7 +30,7 @@ class family_handler():
         extra_model_def["frames_steps"] = 20
         extra_model_def["latent_size"] = 4
         extra_model_def["sliding_window"] = True
-        extra_model_def["skip_layer_guidance"] = True
+        extra_model_def["perturbation"] = True
         extra_model_def["tea_cache"] = True
         extra_model_def["guidance_max_phases"] = 1
         extra_model_def["flow_shift"] = True
@@ -68,16 +75,16 @@ class family_handler():
         return {}
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         from .wan_handler import family_handler as wan_family_handler
 
-        return wan_family_handler.register_lora_cli_args(parser)
+        return wan_family_handler.register_lora_cli_args(parser, lora_root)
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
+    def get_lora_dir(base_model_type, args, lora_root):
         from .wan_handler import family_handler as wan_family_handler
 
-        return wan_family_handler.get_lora_dir(base_model_type, args)
+        return wan_family_handler.get_lora_dir(base_model_type, args, lora_root)
 
     @staticmethod
     def get_rgb_factors(base_model_type ):
@@ -86,14 +93,13 @@ class family_handler():
         return latent_rgb_factors, latent_rgb_factors_bias
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
+    def query_model_files(computeList, base_model_type, model_def=None):
         from .wan_handler import family_handler
-        return family_handler.query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization)
+        return family_handler.query_model_files(computeList, base_model_type,  model_def)
     
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, override_text_encoder = None):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, text_encoder_filename = None, **kwargs):
         from .configs import WAN_CONFIGS
-        from .wan_handler import family_handler
         cfg = WAN_CONFIGS['t2v-14B']
         from . import DTT2V
         wan_model = DTT2V(
@@ -103,7 +109,7 @@ class family_handler():
             model_type = model_type,        
             model_def = model_def,
             base_model_type=base_model_type,
-            text_encoder_filename= family_handler.get_wan_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filename= text_encoder_filename,
             quantizeTransformer = quantizeTransformer,
             dtype = dtype,
             VAE_dtype = VAE_dtype, 

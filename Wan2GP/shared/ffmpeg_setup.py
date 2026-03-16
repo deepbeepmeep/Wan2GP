@@ -29,16 +29,52 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
     bin_dir.mkdir(parents=True, exist_ok=True)
     repo_root = bin_dir.parent
 
+    def _candidate_name(name: str) -> str:
+        if os.name == "nt" and not name.endswith(".exe"):
+            return f"{name}.exe"
+        return name
+
+    def _quarantine_root_ffmpeg():
+        root_ffmpeg = repo_root / _candidate_name("ffmpeg")
+        if not root_ffmpeg.is_file():
+            return
+        quarantine_dir = repo_root / "ffmpeg_quarantine"
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        target_path = quarantine_dir / root_ffmpeg.name
+        if target_path.exists():
+            stem = target_path.stem
+            suffix = target_path.suffix
+            idx = 1
+            while True:
+                candidate = quarantine_dir / f"{stem}_{idx}{suffix}"
+                if not candidate.exists():
+                    target_path = candidate
+                    break
+                idx += 1
+        shutil.move(str(root_ffmpeg), str(target_path))
+        print(
+            f"[FFmpeg] Quarantined root binary: {root_ffmpeg} -> {target_path}. "
+            "Reason: ffmpeg.exe in the project root can be picked from CWD and break TorchCodec DLL loading on Windows. Quarantined file can be deleted if unused."
+        )
+
     def _ensure_bin_dir_on_path():
         current_path = os.environ.get("PATH", "")
         path_parts = current_path.split(os.pathsep) if current_path else []
-        dirs_to_add = []
-        # Add ffmpeg_bins and repo root to PATH
+
+        def _normalize(p: str) -> str:
+            p = os.path.normpath(p)
+            return os.path.normcase(p) if os.name == "nt" else p
+
+        prioritized = []
+        seen = set()
         for d in [bin_dir, repo_root]:
-            if str(d) not in path_parts:
-                dirs_to_add.append(str(d))
-        if dirs_to_add:
-            os.environ["PATH"] = os.pathsep.join(dirs_to_add + path_parts)
+            key = _normalize(str(d))
+            if key not in seen:
+                prioritized.append(str(d))
+                seen.add(key)
+
+        filtered = [p for p in path_parts if _normalize(p) not in seen]
+        os.environ["PATH"] = os.pathsep.join(prioritized + filtered)
 
     def _ensure_library_path():
         if os.name == "nt":
@@ -48,13 +84,9 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
         if str(bin_dir) not in ld_parts:
             os.environ["LD_LIBRARY_PATH"] = os.pathsep.join([str(bin_dir)] + ld_parts) if current_ld else str(bin_dir)
 
+    _quarantine_root_ffmpeg()
     _ensure_bin_dir_on_path()
     _ensure_library_path()
-
-    def _candidate_name(name: str) -> str:
-        if os.name == "nt" and not name.endswith(".exe"):
-            return f"{name}.exe"
-        return name
 
     def _resolve_path(name: str) -> typing.Optional[Path]:
         # Check ffmpeg_bins folder first
@@ -72,6 +104,10 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
 
     def _binary_exists(name: str) -> bool:
         return _resolve_path(name) is not None
+
+    def _local_binary_exists(name: str) -> bool:
+        candidate = bin_dir / _candidate_name(name)
+        return candidate.exists()
 
     def _libs_present() -> bool:
         if os.name == "nt":
@@ -93,8 +129,12 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
         if ffplay_path:
             os.environ["FFPLAY_BINARY"] = str(ffplay_path)
 
-    missing = [binary for binary in required_binaries if not _binary_exists(binary)]
-    libs_ok = _libs_present()
+    if os.name == "nt":
+        missing = [binary for binary in required_binaries if not _local_binary_exists(binary)]
+        libs_ok = True
+    else:
+        missing = [binary for binary in required_binaries if not _binary_exists(binary)]
+        libs_ok = _libs_present()
     if not missing and libs_ok:
         _set_env_vars()
         return
@@ -218,9 +258,14 @@ def download_ffmpeg(bin_directory: typing.Optional[typing.Union[str, Path]] = No
         print(f"Failed to download FFmpeg binaries automatically: {exc}")
         return
 
-    if not all(_binary_exists(binary) for binary in required_binaries):
-        print("FFmpeg binaries are still missing after download; please install them manually.")
-        return
+    if os.name == "nt":
+        if not all(_local_binary_exists(binary) for binary in required_binaries):
+            print("FFmpeg binaries are still missing after download; please install them manually.")
+            return
+    else:
+        if not all(_binary_exists(binary) for binary in required_binaries):
+            print("FFmpeg binaries are still missing after download; please install them manually.")
+            return
 
     _ensure_bin_dir_on_path()
     _ensure_library_path()

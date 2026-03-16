@@ -12,7 +12,10 @@ import json
 import tempfile
 from pathlib import Path
 
-from ..utils import prepare_output_path_with_upload
+from ..utils import (
+    prepare_output_path_with_upload,
+    upload_and_get_final_output_location as resolve_final_output_location,
+)
 from ..media.visualization.comparison import create_travel_visualization
 from source.core.log import task_logger
 
@@ -105,8 +108,7 @@ def _handle_create_visualization_task(
         shutil.copy2(viz_path, final_path)
 
         # Handle upload and get final DB location
-        from ..utils import upload_and_get_final_output_location
-        output_location = upload_and_get_final_output_location(
+        output_location = resolve_final_output_location(
             local_file_path=Path(final_path),
             initial_db_location=initial_db_location)
 

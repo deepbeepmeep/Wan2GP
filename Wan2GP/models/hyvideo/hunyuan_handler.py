@@ -1,22 +1,9 @@
 import os
 import torch
-from shared.utils import files_locator as fl 
+from shared.utils.hf import build_hf_url
 
 def test_hunyuan_1_5(base_model_type):
     return base_model_type in ["hunyuan_1_5_t2v", "hunyuan_1_5_i2v", "hunyuan_1_5_upsampler"]
-
-def get_hunyuan_text_encoder_filename(base_model_type, text_encoder_quantization):
-    if test_hunyuan_1_5(base_model_type):
-        text_encoder_filename = "Qwen2.5-VL-7B-Instruct/Qwen2.5-VL-7B-Instruct_bf16.safetensors"
-        if text_encoder_quantization =="int8":
-            text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8") 
-    else:
-        if text_encoder_quantization =="int8":
-            text_encoder_filename = "llava-llama-3-8b/llava-llama-3-8b-v1_1_vlm_quanto_int8.safetensors"
-        else:
-            text_encoder_filename = "llava-llama-3-8b/llava-llama-3-8b-v1_1_vlm_fp16.safetensors"
-
-    return fl.locate_file(text_encoder_filename, True)
 
 class family_handler():
 
@@ -50,6 +37,21 @@ class family_handler():
     @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {}
+
+        if test_hunyuan_1_5(base_model_type):
+            text_encoder_folder = "Qwen2.5-VL-7B-Instruct"
+            extra_model_def["text_encoder_URLs"] = [
+                build_hf_url("DeepBeepMeep/Qwen_image", text_encoder_folder, "Qwen2.5-VL-7B-Instruct_bf16.safetensors"),
+                build_hf_url("DeepBeepMeep/Qwen_image", text_encoder_folder, "Qwen2.5-VL-7B-Instruct_quanto_bf16_int8.safetensors"),
+            ]
+            extra_model_def["text_encoder_folder"] = text_encoder_folder
+        else:
+            text_encoder_folder = "llava-llama-3-8b"
+            extra_model_def["text_encoder_URLs"] = [
+                build_hf_url("DeepBeepMeep/HunyuanVideo", text_encoder_folder, "llava-llama-3-8b-v1_1_vlm_fp16.safetensors"),
+                build_hf_url("DeepBeepMeep/HunyuanVideo", text_encoder_folder, "llava-llama-3-8b-v1_1_vlm_quanto_int8.safetensors"),
+            ]
+            extra_model_def["text_encoder_folder"] = text_encoder_folder
 
         if base_model_type in ["hunyuan_avatar", "hunyuan_custom_audio"]:
             fps = 25
@@ -163,36 +165,35 @@ class family_handler():
         return {"hunyuan":(20, "Hunyuan Video"), "hunyuan_1_5":(21, "Hunyuan Video 1.5")}
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-hunyuan",
             type=str,
-            default=os.path.join("loras", "hunyuan"),
-            help="Path to a directory that contains Hunyuan Video t2v Loras"
+            default=None,
+            help=f"Path to a directory that contains Hunyuan Video t2v Loras (default: {os.path.join(lora_root, 'hunyuan')})"
         )
         parser.add_argument(
             "--lora-dir-hunyuan-i2v",
             type=str,
-            default=os.path.join("loras", "hunyuan_i2v"),
-            help="Path to a directory that contains Hunyuan Video i2v Loras"
+            default=None,
+            help=f"Path to a directory that contains Hunyuan Video i2v Loras (default: {os.path.join(lora_root, 'hunyuan_i2v')})"
         )
         parser.add_argument(
             "--lora-dir-hunyuan-1-5",
             type=str,
-            default=os.path.join("loras", "hunyuan_1_5"),
-            help="Path to a directory that contains Hunyuan Video 1.5 Loras"
+            default=None,
+            help=f"Path to a directory that contains Hunyuan Video 1.5 Loras (default: {os.path.join(lora_root, 'hunyuan_1_5')})"
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
+    def get_lora_dir(base_model_type, args, lora_root):
         if test_hunyuan_1_5(base_model_type):
-            return args.lora_dir_hunyuan_1_5
+            return getattr(args, "lora_dir_hunyuan_1_5", None) or os.path.join(lora_root, "hunyuan_1_5")
             
         elif "i2v" in base_model_type:
-            return args.lora_dir_hunyuan_i2v
+            return getattr(args, "lora_dir_hunyuan_i2v", None) or os.path.join(lora_root, "hunyuan_i2v")
 
-        root_lora_dir = args.lora_dir_hunyuan
-        return root_lora_dir
+        return getattr(args, "lora_dir_hunyuan", None) or os.path.join(lora_root, "hunyuan")
 
     @staticmethod
     def get_rgb_factors(base_model_type ):
@@ -201,14 +202,12 @@ class family_handler():
         return latent_rgb_factors, latent_rgb_factors_bias
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = get_hunyuan_text_encoder_filename(base_model_type,text_encoder_quantization)    
-
+    def query_model_files(computeList, base_model_type, model_def=None):
         if test_hunyuan_1_5(base_model_type):
             download_def = [{  
             "repoId" : "DeepBeepMeep/Qwen_image", 
             "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
-            "fileList" : [ ["qwen_vae.safetensors", "qwen_vae_config.json"], ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"] + computeList(text_encoder_filename)  ]
+            "fileList" : [ ["qwen_vae.safetensors", "qwen_vae_config.json"], ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"]  ]
             },
             {  
             "repoId" : "DeepBeepMeep/HunyuanVideo1.5", 
@@ -216,7 +215,7 @@ class family_handler():
             "fileList" :[ ["color_idx.json", "multilingual_10-lang_idx.json"] ,
                         [ "config.json", "model.safetensors", "byt5_model.safetensors"], # "byt5_model.pt", "pytorch_model.bin"],
                         [ "model.safetensors", "config.json", "preprocessor_config.json"],
-                        [  "hunyuan_video_1_5_VAE_fp32.safetensors", "hunyuan_video_1_5_VAE.json"] + computeList(model_filename)  ,
+                        [  "hunyuan_video_1_5_VAE_fp32.safetensors", "hunyuan_video_1_5_VAE.json"] ,
                         ]
             } ]
 
@@ -224,17 +223,17 @@ class family_handler():
             download_def= {  
             "repoId" : "DeepBeepMeep/HunyuanVideo", 
             "sourceFolderList" :  [ "llava-llama-3-8b", "clip_vit_large_patch14",  "whisper-tiny" , "det_align", ""  ],
-            "fileList" :[ ["config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "preprocessor_config.json"] + computeList(text_encoder_filename) ,
-                            ["config.json", "merges.txt", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"],
+            "fileList" :[ ["config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "preprocessor_config.json"],
+                            ["text_config.json", "merges.txt", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"],
                             ["config.json", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer_config.json"],
                             ["detface.pt"],
-                            [ "hunyuan_video_720_quanto_int8_map.json", "hunyuan_video_custom_VAE_fp32.safetensors", "hunyuan_video_custom_VAE_config.json", "hunyuan_video_VAE_fp32.safetensors", "hunyuan_video_VAE_config.json" , "hunyuan_video_720_quanto_int8_map.json"   ] + computeList(model_filename)  
+                            [ "hunyuan_video_720_quanto_int8_map.json", "hunyuan_video_custom_VAE_fp32.safetensors", "hunyuan_video_custom_VAE_config.json", "hunyuan_video_VAE_fp32.safetensors", "hunyuan_video_VAE_config.json" , "hunyuan_video_720_quanto_int8_map.json"   ]  
                             ]
             }
         return download_def 
 
     @staticmethod
-    def load_model(model_filename, model_type = None,  base_model_type = None, model_def = None, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None):
+    def load_model(model_filename, model_type = None,  base_model_type = None, model_def = None, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, text_encoder_filename = None, **kwargs):
         from .hunyuan import HunyuanVideoSampler
         from mmgp import offload
 
@@ -243,7 +242,7 @@ class family_handler():
             model_type = model_type, 
             base_model_type = base_model_type,
             model_def = model_def,
-            text_encoder_filepath = get_hunyuan_text_encoder_filename(base_model_type, text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filepath = text_encoder_filename,
             dtype = dtype,
             quantizeTransformer = quantizeTransformer,
             VAE_dtype = VAE_dtype, 

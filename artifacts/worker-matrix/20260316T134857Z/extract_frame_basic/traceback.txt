@@ -1,0 +1,19 @@
+Traceback (most recent call last):
+  File "/Users/peteromalley/Documents/Headless-Wan2GP/scripts/run_worker_matrix.py", line 421, in run_case
+    stack.enter_context(patcher)
+  File "/Users/peteromalley/.pyenv/versions/3.11.11/lib/python3.11/contextlib.py", line 517, in enter_context
+    result = _enter(cm)
+             ^^^^^^^^^^
+  File "/Users/peteromalley/.pyenv/versions/3.11.11/lib/python3.11/unittest/mock.py", line 1430, in __enter__
+    self.target = self.getter()
+                  ^^^^^^^^^^^^^
+  File "/Users/peteromalley/.pyenv/versions/3.11.11/lib/python3.11/pkgutil.py", line 700, in resolve_name
+    mod = importlib.import_module(modname)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/.pyenv/versions/3.11.11/lib/python3.11/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1140, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'source'

@@ -85,6 +85,8 @@ For dynamic effects over generation steps, use comma-separated values:
 
 With models like Wan 2.2 that uses internally two diffusion models (*High noise* / *Low Noise*) you can specify which Loras you want to be applied for a specific phase by separating each phase with a ";".
 
+Like LTX 2 models have two passes the ";" can be used to specify the multiplier for each pass.
+
 For instance, if you want to disable a lora for phase *High Noise* and enables it only for phase *Low Noise*:
 ```
 0;1
@@ -316,42 +318,6 @@ https://huggingface.co/Kijai/WanVideo_comfy/blob/main/Wan21_T2V_14B_lightx2v_cfg
 - **OneTrainer** - Alternative training solution
 - **Custom datasets** - Train on your own content
 
-## Macro System (Advanced)
-
-Create multiple prompts from templates using macros. This allows you to generate variations of a sentence by defining lists of values for different variables.
-
-**Syntax Rule:**
-
-Define your variables on a single line starting with `!`. Each complete variable definition, including its name and values, **must be separated by a colon (`:`)**.
-
-**Format:**
-
-```
-! {Variable1}="valueA","valueB" : {Variable2}="valueC","valueD"
-This is a template using {Variable1} and {Variable2}.
-```
-
-**Example:**
-
-The following macro will generate three distinct prompts by cycling through the values for each variable.
-
-**Macro Definition:**
-
-```
-! {Subject}="cat","woman","man" : {Location}="forest","lake","city" : {Possessive}="its","her","his"
-In the video, a {Subject} is presented. The {Subject} is in a {Location} and looks at {Possessive} watch.
-```
-
-**Generated Output:**
-
-```
-In the video, a cat is presented. The cat is in a forest and looks at its watch.
-In the video, a woman is presented. The woman is in a lake and looks at her watch.
-In the video, a man is presented. The man is in a city and looks at his watch.
-```
-
-
-## Troubleshooting
 
 ### Lora Not Working
 0. If it is a lora accelerator, Guidance should be set to 1

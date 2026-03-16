@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import random
+import time
 import sys
 import types
 import math
@@ -30,17 +31,27 @@ from .modules.clip import CLIPModel
 from shared.utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps)
 from shared.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-from .modules.posemb_layers import get_rotary_pos_embed, get_nd_rotary_pos_embed
+from .modules.posemb_layers import (
+    get_rotary_pos_embed,
+    get_nd_rotary_pos_embed,
+    set_rope_freqs_dtype,
+    set_use_fp32_rope_freqs,
+)
 from shared.utils.vace_preprocessor import VaceVideoProcessor
 from shared.utils.basic_flowmatch import FlowMatchScheduler
+from shared.utils.euler_scheduler import EulerScheduler
 from shared.utils.lcm_scheduler import LCMScheduler
-from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
+from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image, fit_image_into_canvas
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
 from .wanmove.trajectory import replace_feature, create_pos_feature_map
 from .alpha.utils import load_gauss_mask, apply_alpha_shift
 from shared.utils.audio_video import save_video
+from shared.utils.text_encoder_cache import TextEncoderCache
+from shared.utils.self_refiner import PnPHandler, create_self_refiner_handler
 from mmgp import safetensors2
 from shared.utils import files_locator as fl 
+
+WAN_USE_FP32_ROPE_FREQS = True
 
 def optimized_scale(positive_flat, negative_flat):
 
@@ -92,13 +103,16 @@ class WanAny2V:
         self.model2 = None
         self.transformer_switch = model_def.get("URLs2", None) is not None
         self.is_mocha = model_def.get("mocha_mode", False)
-        self.text_encoder = T5EncoderModel(
-            text_len=config.text_len,
-            dtype=config.t5_dtype,
-            device=torch.device('cpu'),
-            checkpoint_path=text_encoder_filename,
-            tokenizer_path=fl.locate_folder("umt5-xxl"),
-            shard_fn= None)
+        self.text_encoder = None
+        self.text_encoder_cache = None
+        if base_model_type != "kiwi_edit":
+            text_encoder_folder = model_def.get("text_encoder_folder")
+            if text_encoder_folder:
+                tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
+            else:
+                tokenizer_path = os.path.dirname(text_encoder_filename)
+            self.text_encoder = T5EncoderModel(text_len=config.text_len, dtype=config.t5_dtype, device=torch.device('cpu'), checkpoint_path=text_encoder_filename, tokenizer_path=tokenizer_path, shard_fn=None)
+            self.text_encoder_cache = TextEncoderCache()
         if hasattr(config, "clip_checkpoint") and not model_def.get("i2v_2_2", False) or base_model_type in ["animate"]:
             self.clip = CLIPModel(
                 dtype=config.clip_dtype,
@@ -109,13 +123,18 @@ class WanAny2V:
         ignore_unused_weights = model_def.get("ignore_unused_weights", False)
         vae_upsampler_factor = 1
         vae_checkpoint2 = None
-        if model_def.get("wan_5B_class", False):
+        vae_checkpoint = model_def.get("VAE_URLs", None )
+        vae = WanVAE
+        self.vae_stride = config.vae_stride            
+        if isinstance(vae_checkpoint, str):
+            pass
+        elif isinstance(vae_checkpoint, list) and len(vae_checkpoint):
+            vae_checkpoint = fl.locate_file(vae_checkpoint[0])
+        elif model_def.get("wan_5B_class", False):
             self.vae_stride = (4, 16, 16)
             vae_checkpoint = "Wan2.2_VAE.safetensors"
             vae = Wan2_2_VAE
         else:
-            vae = WanVAE
-            self.vae_stride = config.vae_stride            
             if VAE_upsampling is not None:
                 vae_upsampler_factor = 2
                 vae_checkpoint ="Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
@@ -144,7 +163,7 @@ class WanAny2V:
         #     config = json.load(f)
         # sd = safetensors2.torch_load_file(xmodel_filename)
         # model_filename = "c:/temp/wan2.2i2v/low/diffusion_pytorch_model-00001-of-00006.safetensors"
-        base_config_file = f"models/wan/configs/{base_model_type}.json"
+        base_config_file = model_def.get("config_file", f"models/wan/configs/{base_model_type}.json")
         forcedConfigPath = base_config_file if len(model_filename) > 1 else None
         # forcedConfigPath = base_config_file = f"configs/flf2v_720p.json"
         # model_filename[1] = xmodel_filename
@@ -215,8 +234,28 @@ class WanAny2V:
                 save_quantized_model(self.model2, model_type, model_filename[1], dtype, base_config_file, submodel_no=2)
         self.sample_neg_prompt = config.sample_neg_prompt
 
+        self.use_fp32_rope_freqs = bool(model_def.get("wan_rope_freqs_fp32", WAN_USE_FP32_ROPE_FREQS))
+        set_use_fp32_rope_freqs(self.use_fp32_rope_freqs)
+        set_rope_freqs_dtype(self.dtype)
+
         self.model.apply_post_init_changes()
         if self.model2 is not None: self.model2.apply_post_init_changes()
+        
+        self.kiwi_mllm = None
+        self.kiwi_source_embedder_file = None
+        self.kiwi_ref_embedder_file = None
+        if base_model_type == "kiwi_edit":
+            from .kiwi.mllm import KiwiMLLMContextEncoder
+            self.kiwi_mllm = KiwiMLLMContextEncoder(
+                mllm_root_folder=model_def.get("kiwi_mllm_folder", "kiwi_mllm_encoder_instruct_reference"),
+                qwen_weights_path=text_encoder_filename,
+                any_ref=model_def.get("any_kiwi_ref", True),
+                device=self.device,
+                dtype=self.dtype,
+                offload_after_encode=True,
+            )
+            self.kiwi_source_embedder_file = model_def.get("kiwi_source_embedder_file", None)
+            self.kiwi_ref_embedder_file = model_def.get("kiwi_ref_embedder_file", None)
         
         self.num_timesteps = 1000 
         self.use_timestep_transform = True 
@@ -315,7 +354,8 @@ class WanAny2V:
         if any_guidance:
             vae_feat_uncond = self.vae.encode([ref_images[0] * 0], tile_size = tile_size) * len(ref_images)
             vae_feat_uncond = torch.cat( vae_feat_uncond, dim=1).unsqueeze(0)
-        context = self.text_encoder([ref_prompt], self.device)[0].to(self.dtype)
+        encode_fn = lambda prompts: self.text_encoder(prompts, self.device)
+        context = self.text_encoder_cache.encode(encode_fn, [ref_prompt], device=self.device)[0].to(self.dtype)
         context = torch.cat([context, context.new_zeros(self.model.text_len -context.size(0), context.size(1)) ]).unsqueeze(0) 
         clear_caches()
         get_cache("lynx_ref_buffer").update({ 0: {}, 1: {} })
@@ -365,79 +405,55 @@ class WanAny2V:
 
         return mocha_latents, (torch.cat(cos_parts, dim=0), torch.cat(sin_parts, dim=0))
 
-    # ========== UNI3C: Guide Video Loading & Encoding ==========
-    
     def _load_uni3c_guide_video(
         self,
         guide_video_path: str,
         target_height: int,
         target_width: int,
         target_frames: int,
-        frame_policy: str = "fit"
+        frame_policy: str = "fit",
     ) -> torch.Tensor:
-        """
-        Load and preprocess guide video for Uni3C.
-        
-        Args:
-            guide_video_path: Path to the guide video file
-            target_height: Target height in pixels
-            target_width: Target width in pixels
-            target_frames: Target number of frames (should match generation frame_num)
-            frame_policy: How to align frames - "fit", "trim", "loop", or "off"
-        
-        Returns:
-            Tensor of shape [C, F, H, W] ready for VAE encoding (values in [-1, 1])
-        """
         import cv2
-        
+
         print(f"[UNI3C] any2video: Loading guide video from {guide_video_path}")
-        
-        # Load video frames
+
         cap = cv2.VideoCapture(guide_video_path)
         if not cap.isOpened():
             raise ValueError(f"[UNI3C] Could not open guide video: {guide_video_path}")
-        
+
         frames = []
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            # BGR -> RGB
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            # Resize to target resolution
             frame = cv2.resize(frame, (target_width, target_height))
             frames.append(frame)
         cap.release()
-        
+
         if len(frames) == 0:
             raise ValueError(f"[UNI3C] No frames loaded from guide video: {guide_video_path}")
-        
+
         print(f"[UNI3C] any2video: Loaded {len(frames)} frames from guide video")
-        
-        # Apply frame policy
         frames = self._apply_uni3c_frame_policy(frames, target_frames, frame_policy)
         print(f"[UNI3C] any2video: After frame policy '{frame_policy}': {len(frames)} frames (target: {target_frames})")
-        
-        # Stack and normalize: [F, H, W, C] -> [C, F, H, W], range [0,255] -> [-1, 1]
-        video = np.stack(frames, axis=0)  # [F, H, W, C]
-        video = video.astype(np.float32)
-        video = (video / 127.5) - 1.0  # [-1, 1] (Wan2GP convention)
-        video = torch.from_numpy(video).permute(3, 0, 1, 2)  # [C, F, H, W]
-        
+
+        video = np.stack(frames, axis=0).astype(np.float32)
+        video = (video / 127.5) - 1.0
+        video = torch.from_numpy(video).permute(3, 0, 1, 2)
+
         print(f"[UNI3C] any2video: Guide video tensor shape: {tuple(video.shape)}, dtype: {video.dtype}")
         print(f"[UNI3C] any2video:   value range: [{video.min().item():.2f}, {video.max().item():.2f}]")
-        
         return video
 
     def _apply_uni3c_frame_policy(
         self,
         frames: list,
         target_frames: int,
-        policy: str
+        policy: str,
     ) -> list:
-        """Apply frame alignment policy to match target frame count."""
         current = len(frames)
-        
+
         if policy == "off":
             if current != target_frames:
                 raise ValueError(
@@ -445,169 +461,111 @@ class WanAny2V:
                     f"target is {target_frames}. Use a different frame_policy."
                 )
             return frames
-        
-        elif policy == "fit":
-            # Resample to exact target count (linear interpolation of indices)
+
+        if policy == "fit":
             if current == target_frames:
                 return frames
             indices = np.linspace(0, current - 1, target_frames).astype(int)
             return [frames[i] for i in indices]
-        
-        elif policy == "trim":
+
+        if policy == "trim":
             if current >= target_frames:
                 return frames[:target_frames]
-            else:
-                # Hold last frame to fill
-                return frames + [frames[-1]] * (target_frames - current)
-        
-        elif policy == "loop":
+            return frames + [frames[-1]] * (target_frames - current)
+
+        if policy == "loop":
             if current >= target_frames:
                 return frames[:target_frames]
-            else:
-                # Loop until filled
-                result = []
-                while len(result) < target_frames:
-                    result.extend(frames)
-                return result[:target_frames]
-        
-        else:
-            raise ValueError(f"[UNI3C] Unknown frame_policy: {policy}")
+            result = []
+            while len(result) < target_frames:
+                result.extend(frames)
+            return result[:target_frames]
+
+        raise ValueError(f"[UNI3C] Unknown frame_policy: {policy}")
 
     def _detect_empty_frames(
         self,
         guide_video: torch.Tensor,
-        threshold: float = 0.02
+        threshold: float = 0.02,
     ) -> list:
-        """
-        Detect which frames in the guide video are "empty" (black/near-black).
-        
-        Empty frames should become zeros in latent space for true "no control"
-        rather than VAE-encoded black which would bias toward black output.
-        
-        Args:
-            guide_video: Tensor [C, F, H, W] in [-1, 1] range
-            threshold: Threshold in *normalized space* for “close to black”.
-                For the expected [-1, 1] range, black is -1.0. We treat a frame as empty if
-                mean(|frame - (-1)|) < threshold (default 0.02).
-        
-        Returns:
-            List of booleans, True = frame is empty
-        """
-        # Expected guide_video range for Wan2GP is [-1, 1] where black == -1.
-        # We detect “emptiness” as closeness to -1, not “low brightness”, to avoid
-        # accidentally treating dark-but-valid motion as empty.
-        #
-        # Vectorized: per-frame mean over (C,H,W) of |frame - (-1)|.
         with torch.no_grad():
-            delta_from_black = (guide_video + 1.0).abs()  # black -> 0
-            per_frame_delta = delta_from_black.mean(dim=(0, 2, 3))  # [F]
-            empty = (per_frame_delta < threshold)
+            delta_from_black = (guide_video + 1.0).abs()
+            per_frame_delta = delta_from_black.mean(dim=(0, 2, 3))
+            empty = per_frame_delta < threshold
         return [bool(x) for x in empty.tolist()]
-    
+
     def _map_pixel_frames_to_latent_frames(
         self,
         num_pixel_frames: int,
-        num_latent_frames: int
+        num_latent_frames: int,
     ) -> list:
-        """
-        Map pixel frame indices to latent frame indices.
-        
-        VAE uses 4:1 temporal compression, so pixel frames 0-3 → latent frame 0, etc.
-        
-        Returns:
-            List where index is latent frame, value is list of corresponding pixel frames
-        """
-        # Simple 4:1 mapping
         mapping = []
         for lat_f in range(num_latent_frames):
-            # Which pixel frames map to this latent frame?
             start_pix = lat_f * 4
             end_pix = min(start_pix + 4, num_pixel_frames)
             mapping.append(list(range(start_pix, end_pix)))
         return mapping
-    
+
     def _encode_uni3c_guide(
         self,
         guide_video: torch.Tensor,
         VAE_tile_size: int,
         expected_channels: int = 20,
-        zero_empty_frames: bool = True
+        zero_empty_frames: bool = True,
     ) -> torch.Tensor:
-        """
-        VAE-encode guide video and optionally pad channels.
-        
-        Detects "empty" (black) frames and replaces their latents with zeros,
-        ensuring true "no control" rather than "control toward black".
-        
-        Args:
-            guide_video: Tensor [C, F, H, W] in [-1, 1]
-            VAE_tile_size: Tile size for VAE encoding
-            expected_channels: Expected channel count from ControlNet (16 or 20)
-            zero_empty_frames: If True, detect black frames and zero their latents
-        
-        Returns:
-            render_latent: Tensor [1, C_lat, F_lat, H_lat, W_lat]
-        """
         num_pixel_frames = guide_video.shape[1]
-        
-        # Step 1: Detect empty frames BEFORE encoding
         empty_pixel_mask = []
         if zero_empty_frames:
             empty_pixel_mask = self._detect_empty_frames(guide_video)
             num_empty = sum(empty_pixel_mask)
             if num_empty > 0:
                 print(f"[UNI3C] any2video: Detected {num_empty}/{num_pixel_frames} empty pixel frames")
-                # Log ranges for debugging
                 ranges = []
                 start = None
                 for i, is_empty in enumerate(empty_pixel_mask):
                     if is_empty and start is None:
                         start = i
                     elif not is_empty and start is not None:
-                        ranges.append(f"{start}-{i-1}" if i-1 > start else str(start))
+                        ranges.append(f"{start}-{i-1}" if i - 1 > start else str(start))
                         start = None
                 if start is not None:
-                    ranges.append(f"{start}-{num_pixel_frames-1}" if num_pixel_frames-1 > start else str(start))
+                    ranges.append(f"{start}-{num_pixel_frames-1}" if num_pixel_frames - 1 > start else str(start))
                 if ranges:
                     print(f"[UNI3C] any2video:   Empty frame ranges: {', '.join(ranges)}")
-        
-        # Step 2: VAE encode the whole video (VAE needs temporal context)
+
         guide_video = guide_video.to(device=self.device, dtype=self.VAE_dtype)
         latent = self.vae.encode([guide_video], tile_size=VAE_tile_size)[0]
-        # Keep as float32 to preserve precision - dtype conversion happens later in controlnet
-        render_latent = latent.unsqueeze(0)  # [1, C, F, H, W] - stays float32
+        render_latent = latent.unsqueeze(0)
 
         print(f"[UNI3C] any2video: VAE encoded render_latent shape: {tuple(render_latent.shape)}")
         print(f"[UNI3C] any2video:   Expected channels: {expected_channels}, actual: {render_latent.shape[1]}")
-        # Diagnostic: log latent statistics to detect encoding issues
-        print(f"[UNI3C_DIAG] Latent stats: mean={render_latent.mean().item():.4f}, std={render_latent.std().item():.4f}")
-        print(f"[UNI3C_DIAG] Latent range: min={render_latent.min().item():.4f}, max={render_latent.max().item():.4f}")
-        
-        # Step 3: Zero out latent frames that correspond to empty pixel frames
+        print(
+            f"[UNI3C_DIAG] Latent stats: mean={render_latent.mean().item():.4f}, "
+            f"std={render_latent.std().item():.4f}"
+        )
+        print(
+            f"[UNI3C_DIAG] Latent range: min={render_latent.min().item():.4f}, "
+            f"max={render_latent.max().item():.4f}"
+        )
+
         if zero_empty_frames and any(empty_pixel_mask):
             num_latent_frames = render_latent.shape[2]
             pixel_to_latent = self._map_pixel_frames_to_latent_frames(num_pixel_frames, num_latent_frames)
-            
             zeroed_count = 0
             for lat_f, pixel_indices in enumerate(pixel_to_latent):
-                # Zero this latent frame if ALL its corresponding pixel frames are empty
                 if all(empty_pixel_mask[p] for p in pixel_indices if p < len(empty_pixel_mask)):
                     render_latent[:, :, lat_f, :, :] = 0.0
                     zeroed_count += 1
-            
             if zeroed_count > 0:
                 print(f"[UNI3C] any2video: Zeroed {zeroed_count}/{num_latent_frames} latent frames (no control signal)")
-        
-        # Pad 16 -> 20 if needed (Kijai "T2V workaround")
+
         if render_latent.shape[1] == 16 and expected_channels == 20:
-            print(f"[UNI3C] any2video: Padding channels 16 -> 20")
+            print("[UNI3C] any2video: Padding channels 16 -> 20")
             padding = torch.zeros_like(render_latent[:, :4])
             render_latent = torch.cat([render_latent, padding], dim=1)
             print(f"[UNI3C] any2video:   After padding: {tuple(render_latent.shape)}")
-        
-        return render_latent
 
-    # ========== END UNI3C ==========
+        return render_latent
 
     def generate(self,
         input_prompt,
@@ -647,9 +605,9 @@ class WanAny2V:
         enable_RIFLEx = None,
         VAE_tile_size = 0,
         joint_pass = False,
-        slg_layers = None,
-        slg_start = 0.0,
-        slg_end = 1.0,
+        perturbation_layers = None,
+        perturbation_start = 0.0,
+        perturbation_end = 1.0,
         cfg_star_switch = True,
         cfg_zero_step = 5,
         audio_scale=None,
@@ -685,35 +643,33 @@ class WanAny2V:
         control_scale_alt = 1.,
         motion_amplitude = 1.,
         window_start_frame_no = 0,
-        latent_noise_mask_strength = 0.0,  # 0.0 = disabled, 1.0 = full latent noise masking
-        vid2vid_init_video = None,  # Path to video for vid2vid initialization (gap frames)
-        vid2vid_init_strength = 0.7,  # 0.0 = pure vid2vid (keep original), 1.0 = pure txt2vid (random noise)
-        # Uni3C ControlNet parameters
-        use_uni3c = False,  # Master enable flag
-        uni3c_guide_video = None,  # Path to guide video (or URL to orchestrator-preprocessed video)
-        uni3c_strength = 1.0,  # Strength multiplier (0.0 = no effect, 1.0 = full)
-        uni3c_start_percent = 0.0,  # Start applying at this % of denoising
-        uni3c_end_percent = 1.0,  # Stop applying at this % of denoising
-        uni3c_keep_on_gpu = False,  # If True, don't offload ControlNet between steps
-        uni3c_frame_policy = "fit",  # Frame alignment: "fit", "trim", "loop", "off"
-        uni3c_guidance_frame_offset = 0,  # Frame offset for orchestrator-preprocessed video (travel_orchestrator only)
-        uni3c_controlnet = None,  # Pre-loaded WanControlNet instance (optional)
-        uni3c_zero_empty_frames = True,  # Zero latents for black guide frames (true "no control")
-        uni3c_blackout_last_frame = False,  # Blackout last frame for i2v end anchor (last segment only)
+        use_uni3c = False,
+        uni3c_guide_video = None,
+        uni3c_strength = 1.0,
+        uni3c_start_percent = 0.0,
+        uni3c_end_percent = 1.0,
+        uni3c_keep_on_gpu = False,
+        uni3c_frame_policy = "fit",
+        uni3c_guidance_frame_offset = 0,
+        uni3c_controlnet = None,
+        uni3c_zero_empty_frames = True,
+        uni3c_blackout_last_frame = False,
+        self_refiner_setting=0,
+        self_refiner_plan="",
+        self_refiner_f_uncertainty = 0.0,
+        self_refiner_certain_percentage = 0.999,
         **bbargs
                 ):
         
         model_def = self.model_def
 
         if sample_solver =="euler":
-            # prepare timesteps
-            timesteps = list(np.linspace(self.num_timesteps, 1, sampling_steps, dtype=np.float32))
-            timesteps.append(0.)
-            timesteps = [torch.tensor([t], device=self.device) for t in timesteps]
-            if self.use_timestep_transform:
-                timesteps = [timestep_transform(t, shift=shift, num_timesteps=self.num_timesteps) for t in timesteps][:-1]
-            timesteps = torch.tensor(timesteps)
-            sample_scheduler = None                  
+            sample_scheduler = EulerScheduler(
+                num_train_timesteps=self.num_timesteps,
+                use_timestep_transform=self.use_timestep_transform,
+            )
+            sample_scheduler.set_timesteps(sampling_steps, device=self.device, shift=shift)
+            timesteps = sample_scheduler.timesteps
         elif sample_solver == 'causvid':
             sample_scheduler = FlowMatchScheduler(num_inference_steps=sampling_steps, shift=shift, sigma_min=0, extra_one_step=True)
             timesteps = torch.tensor([1000, 934, 862, 756, 603, 410, 250, 140, 74])[:sampling_steps].to(self.device)
@@ -727,17 +683,6 @@ class WanAny2V:
         elif sample_solver == 'dpm++':
             sample_scheduler = FlowDPMSolverMultistepScheduler(
                 num_train_timesteps=self.num_train_timesteps,
-                shift=1,
-                use_dynamic_shifting=False)
-            sampling_sigmas = get_sampling_sigmas(sampling_steps, shift)
-            timesteps, _ = retrieve_timesteps(
-                sample_scheduler,
-                device=self.device,
-                sigmas=sampling_sigmas)
-        elif sample_solver == 'dpm++_sde':
-            sample_scheduler = FlowDPMSolverMultistepScheduler(
-                num_train_timesteps=self.num_train_timesteps,
-                algorithm_type="sde-dpmsolver++",
                 shift=1,
                 use_dynamic_shifting=False)
             sampling_sigmas = get_sampling_sigmas(sampling_steps, shift)
@@ -768,18 +713,31 @@ class WanAny2V:
         if self._interrupt:
             return None
         # Text Encoder
+        kiwi_edit = model_type in ["kiwi_edit"]
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
         text_len = self.model.text_len
         any_guidance_at_all = guide_scale > 1 or guide2_scale > 1 and guide_phases >=2 or guide3_scale > 1 and guide_phases >=3
-        context = self.text_encoder([input_prompt], self.device)[0].to(self.dtype)
-        context = torch.cat([context, context.new_zeros(text_len -context.size(0), context.size(1)) ]).unsqueeze(0)
-        if NAG_scale > 1 or any_guidance_at_all:      
-            context_null = self.text_encoder([n_prompt], self.device)[0].to(self.dtype)
-            context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0) 
-        else:
-            context_null = None
+        context_null = context = None
         if input_video is not None: height, width = input_video.shape[-2:]
+
+        if kiwi_edit:
+            from .kiwi.embedders import build_kiwi_conditions
+            kiwi_ref_images = original_input_ref_images[0] if original_input_ref_images is not None and len(original_input_ref_images) else None
+            kiwi_state = build_kiwi_conditions(vae=self.vae, source_frames=input_frames, ref_images=kiwi_ref_images, width=width, height=height, batch_size=batch_size, device=self.device, dtype=self.dtype, source_embedder_file=self.kiwi_source_embedder_file, ref_embedder_file=self.kiwi_ref_embedder_file, vae_tile_size=VAE_tile_size)
+            context = self.kiwi_mllm.encode_from_inputs(input_prompt, input_frames, kiwi_ref_images, use_ref_image=self.kiwi_ref_embedder_file is not None, max_frames=16)
+            context = [context]
+            if any_guidance_at_all or NAG_scale > 1:
+                context_null = self.kiwi_mllm.encode_from_inputs(n_prompt, input_frames, kiwi_ref_images, use_ref_image=self.kiwi_ref_embedder_file is not None, max_frames=16)
+                context_null = [context_null]
+        else:
+            text_len = self.model.text_len
+            encode_fn = lambda prompts: self.text_encoder(prompts, self.device)
+            context = self.text_encoder_cache.encode(encode_fn, [input_prompt], device=self.device)[0].to(self.dtype)
+            context = torch.cat([context, context.new_zeros(text_len -context.size(0), context.size(1)) ]).unsqueeze(0)
+            if NAG_scale > 1 or any_guidance_at_all:      
+                context_null = self.text_encoder_cache.encode(encode_fn, [n_prompt], device=self.device)[0].to(self.dtype)
+                context_null = torch.cat([context_null, context_null.new_zeros(text_len -context_null.size(0), context_null.size(1)) ]).unsqueeze(0)
 
         # NAG_prompt =  "static, low resolution, blurry"
         # context_NAG = self.text_encoder([NAG_prompt], self.device)[0]
@@ -812,33 +770,8 @@ class WanAny2V:
         steadydancer = model_type in ["steadydancer"]
         wanmove = model_type in ["wanmove"]
         scail = model_type in ["scail"] 
-        # Check model_def first, then fallback to kwargs (allows headless to override)
         svi_pro = model_def.get("svi2pro", False)
-        if not svi_pro and bbargs.get("svi2pro", False):
-            svi_pro = True
-            print(f"[SVI_STATUS] svi2pro=True from kwargs (model_def didn't have it)")
-        svi_mode = 2 if svi_pro  else 0
-        
-        # CRITICAL: Always log SVI status for debugging brown frame issues
-        print(f"[SVI_ENCODING_STATUS] ═══════════════════════════════════════════════════════")
-        print(f"[SVI_ENCODING_STATUS] svi_pro={svi_pro} | model_def.svi2pro={model_def.get('svi2pro', 'NOT_SET')}")
-        print(f"[SVI_ENCODING_STATUS] model_type={model_type} | input_video_shape={input_video.shape if input_video is not None else 'None'}")
-        print(f"[SVI_ENCODING_STATUS] model_def id={id(model_def)} | self.model_def id={id(self.model_def)}")
-        print(f"[SVI_ENCODING_STATUS] model_def keys with 'svi': {[k for k in model_def.keys() if 'svi' in k.lower()]}")
-        print(f"[SVI_ENCODING_STATUS] Will use SVI encoding path: {svi_pro}")
-        print(f"[SVI_ENCODING_STATUS] ═══════════════════════════════════════════════════════")
-        # Write critical SVI diagnostics to a file for debugging
-        try:
-            with open("/workspace/Headless-Wan2GP/svi_debug.txt", "a") as f:
-                f.write(f"[ANY2VIDEO_SVI_DIAG] svi_pro={svi_pro}\n")
-                f.write(f"[ANY2VIDEO_SVI_DIAG] model_def.svi2pro={model_def.get('svi2pro', 'NOT_SET')}\n")
-                f.write(f"[ANY2VIDEO_SVI_DIAG] input_video_shape={input_video.shape if input_video is not None else 'None'}\n")
-                f.write(f"[ANY2VIDEO_SVI_DIAG] prefix_video_shape={prefix_video.shape if prefix_video is not None else 'None'}\n")
-        except: pass
-        
-        # Early SVI status log (always shown when debug mode, helps trace if patching worked)
-        if getattr(offload, 'default_verboseLevel', 0) >= 2:
-            print(f"[SVI_STATUS] svi_pro={svi_pro} (model_def={model_def.get('svi2pro', False)}, kwargs={bbargs.get('svi2pro', False)}), any_end_frame will be checked later") 
+        svi_mode = 2 if svi_pro  else 0 
         svi_ref_pad_num = 0
         start_step_no = 0
         ref_images_count = inner_latent_frames = 0
@@ -847,7 +780,6 @@ class WanAny2V:
         last_latent_preview = False
         extended_overlapped_latents = clip_image_start = clip_image_end = image_mask_latents = latent_slice = freqs = post_freqs = None
         use_extended_overlapped_latents = True
-        vae_end_frame_mode = False  # Default: no special VAE end-frame encoding (only Wan 2.1 i2v uses this)
         # SCAIL uses a fixed ref latent frame that should not be noised.
         no_noise_latents_injection = infinitetalk or scail
         timestep_injection = False
@@ -887,22 +819,11 @@ class WanAny2V:
                 image_start = input_video[:, -1]
                 control_pre_frames_count = preframes_count
                 control_video = input_video
-                # Write critical control frame diagnostic
-                try:
-                    with open("/workspace/Headless-Wan2GP/svi_debug.txt", "a") as f:
-                        f.write(f"[ANY2VIDEO_CONTROL] control_pre_frames_count={control_pre_frames_count}\n")
-                        f.write(f"[ANY2VIDEO_CONTROL] preframes_count={preframes_count}\n")
-                        f.write(f"[ANY2VIDEO_CONTROL] input_video.shape={input_video.shape}\n")
-                except: pass
 
             color_reference_frame = image_start.unsqueeze(1).clone()
 
             any_end_frame = image_end is not None 
-            # add_frames_for_end_image: Only Wan 2.1 (i2v) adjusts frame_num and uses special VAE end-frame mode.
-            # Wan 2.2 (i2v_2_2) does NOT use the VAE end-frame mode - it handles end frames differently.
-            # Previous commit 3085732 incorrectly enabled vae_end_frame_mode for i2v_2_2 which broke non-SVI end frames.
             add_frames_for_end_image = any_end_frame and model_type == "i2v"
-            vae_end_frame_mode = add_frames_for_end_image  # Only Wan 2.1 uses VAE end-frame special encoding
             if any_end_frame:
                 color_correction_strength = 0 #disable color correction as transition frames between shots may have a complete different color level than the colors of the new shot
                 if add_frames_for_end_image:
@@ -916,206 +837,15 @@ class WanAny2V:
                 img_end_frame = image_end.unsqueeze(1).to(self.device)
             clip_image_start, clip_image_end = image_start, image_end
 
-            # SVI Pro encoding path - kijai-style approach:
-            # Pixel-space concatenation with single VAE encode for better temporal coherence.
-            # Empty frames are zeros by default (like kijai), optionally padded with anchor.
-            # Mask controls what the model generates vs preserves.
-            if svi_pro:
-                use_extended_overlapped_latents = False
-                remaining_frames = frame_num - control_pre_frames_count
-                
-                # CRITICAL: Always log when we enter SVI encoding path
-                print(f"[SVI_ENCODING_PATH] ✅ ENTERED SVI_PRO ENCODING PATH")
-                print(f"[SVI_ENCODING_PATH] control_pre_frames_count={control_pre_frames_count}, remaining_frames={remaining_frames}")
-                print(f"[SVI_ENCODING_PATH] any_end_frame={any_end_frame}, frame_num={frame_num}")
-                
-                # Debug logging for SVI path - enabled via --verbose 2 or higher
-                _svi_debug = getattr(offload, 'default_verboseLevel', 0) >= 2
-                
-                if _svi_debug:
-                    print(f"[SVI_DEBUG] ========== ENTERED SVI_PRO PATH ==========")
-                    print(f"[SVI_DEBUG] any_end_frame={any_end_frame}, remaining_frames={remaining_frames}")
-                
-                # Get anchor/reference image
-                if input_ref_images is None or len(input_ref_images)==0:                        
-                    if pre_video_frame is None: raise Exception("Missing Reference Image")
-                    image_ref = pre_video_frame
-                else:
-                    image_ref = input_ref_images[ min(window_no, len(input_ref_images))-1 ]
-                image_ref = convert_image_to_tensor(image_ref).unsqueeze(1).to(device=self.device, dtype=self.VAE_dtype)
-                
-                # Track how many start frames we have (for mask construction)
-                svi_start_frame_count = 1  # Default: just anchor
-                
-                if any_end_frame:
-                    # ============================================================
-                    # kijai-style SVI + END FRAME: Pixel-space concatenation
-                    # Build [start_frames | zeros_or_anchor | end_frame] in pixels
-                    # Then single VAE encode with end_=True
-                    # ============================================================
-                    
-                    # [SVI_BROWN_FRAME_DIAG] ALWAYS log critical SVI+end-frame path info
-                    print(f"[SVI_BROWN_FRAME_DIAG] ═══════════════════════════════════════════════════════════════")
-                    print(f"[SVI_BROWN_FRAME_DIAG] SVI + END FRAME ENCODING PATH")
-                    print(f"[SVI_BROWN_FRAME_DIAG] frame_num={frame_num}, height={height}, width={width}")
-                    print(f"[SVI_BROWN_FRAME_DIAG] image_ref.shape={image_ref.shape}")
-                    print(f"[SVI_BROWN_FRAME_DIAG] img_end_frame.shape={img_end_frame.shape if img_end_frame is not None else 'None'}")
-                    print(f"[SVI_BROWN_FRAME_DIAG] prefix_video={'None' if prefix_video is None else f'shape={prefix_video.shape}'}")
-                    print(f"[SVI_BROWN_FRAME_DIAG] overlap_size={overlap_size}, vae_end_frame_mode={vae_end_frame_mode}")
-                    print(f"[SVI_BROWN_FRAME_DIAG] Condition for continuation: prefix_video.shape[1] >= {5 + overlap_size}")
-                    if prefix_video is not None:
-                        print(f"[SVI_BROWN_FRAME_DIAG]   → prefix_video.shape[1]={prefix_video.shape[1]}, threshold={5 + overlap_size}")
-                        print(f"[SVI_BROWN_FRAME_DIAG]   → Will use CONTINUATION mode: {prefix_video.shape[1] >= (5 + overlap_size)}")
-                        # Pixel value diagnostics for prefix_video
-                        print(f"[SVI_BROWN_FRAME_DIAG]   → prefix_video pixel range: min={prefix_video.min().item():.3f}, max={prefix_video.max().item():.3f}")
-                        print(f"[SVI_BROWN_FRAME_DIAG]   → prefix_video dtype={prefix_video.dtype}, device={prefix_video.device}")
-                    else:
-                        print(f"[SVI_BROWN_FRAME_DIAG]   → Will use FIRST SEGMENT mode (single anchor frame)")
-                    
-                    if _svi_debug:
-                        print(f"[SVI_DEBUG] ========== SVI + END FRAME PATH (kijai-style) ==========")
-                        print(f"[SVI_DEBUG] frame_num={frame_num}, height={height}, width={width}")
-                        print(f"[SVI_DEBUG] image_ref.shape={image_ref.shape}, img_end_frame.shape={img_end_frame.shape}")
-                        print(f"[SVI_DEBUG] prefix_video={'None' if prefix_video is None else prefix_video.shape}")
-                        print(f"[SVI_DEBUG] overlap_size={overlap_size}, vae_end_frame_mode={vae_end_frame_mode}")
-                    
-                    # Determine start portion (pixels)
-                    # IMPORTANT: For overlap stitching, SVI is supposed to PRESERVE only `overlap_size` frames.
-                    # In our headless pipeline `control_video`/`input_video` already contains those overlap frames
-                    # (e.g. 4 frames), and `control_pre_frames_count` reflects that.
-                    #
-                    # The original Wan2GP any_end_frame path encodes ONLY `control_video` (not a 5+overlap prefix),
-                    # then masks `msk[:, control_pre_frames_count:-1] = 0` to generate the middle frames.
-                    #
-                    # So: use `control_video` as start_pixels here, keep preserve count = control_pre_frames_count.
-                    start_pixels = control_video.to(device=self.device, dtype=self.VAE_dtype)
-                    svi_start_frame_count = control_pre_frames_count
-                    post_decode_pre_trim = 1
-
-                    # [SVI_BROWN_FRAME_DIAG] Log start_pixels selection
-                    print(f"[SVI_BROWN_FRAME_DIAG] Using control_video for SVI+end-frame start pixels")
-                    print(f"[SVI_BROWN_FRAME_DIAG]   control_pre_frames_count={control_pre_frames_count}, overlap_size={overlap_size}")
-                    print(f"[SVI_BROWN_FRAME_DIAG]   start_pixels.shape={start_pixels.shape}")
-                    print(f"[SVI_BROWN_FRAME_DIAG]   start_pixels pixel range: min={start_pixels.min().item():.3f}, max={start_pixels.max().item():.3f}")
-                    
-                    # Calculate empty frame count
-                    # For Wan 2.2, we repeat the end frame 4x to fill the entire last latent frame.
-                    # This ensures the mask (msk[:, -4:] = 1) aligns with actual end frame content,
-                    # not zeros. For Wan 2.1, we keep single end frame since it uses different expansion.
-                    end_frame_repeat_count = 4 if model_type == "i2v_2_2" else 1
-                    empty_frame_count = frame_num - svi_start_frame_count - end_frame_repeat_count
-                    
-                    # Build empty pixels.
-                    # By default kijai uses ZERO frames here. In practice, for very low step counts (e.g. 6-step lightning),
-                    # a long run of constant pixels (all zeros OR all-anchor) can produce washed/grey middles or frozen frames.
-                    #
-                    # We support 3 modes:
-                    # - zeros  : original style (all 0 pixels)
-                    # - anchor : fill with the anchor image (can look "frozen" by definition)
-                    # - noise  : fill with random pixels in [-1, 1] (gives diffusion a non-degenerate init)
-                    svi_empty_frames_mode = str(model_def.get("svi_empty_frames_mode", "zeros")).lower()
-                    if empty_frame_count > 0:
-                        empty_pixels = image_ref.new_zeros((image_ref.shape[0], empty_frame_count, height, width))
-                        if svi_empty_frames_mode == "anchor":
-                            # Closest analogue to kijai's empty_frame_pad_image: use anchor as the pad image.
-                            empty_pixels = image_ref.expand(-1, empty_frame_count, -1, -1).clone()
-                        elif svi_empty_frames_mode == "noise":
-                            noise_type = str(model_def.get("svi_empty_frames_noise_type", "uniform")).lower()
-                            if noise_type == "normal":
-                                empty_pixels = torch.randn_like(empty_pixels).clamp(-1, 1)
-                            else:
-                                # uniform in [-1, 1]
-                                empty_pixels = (torch.rand_like(empty_pixels) * 2 - 1).clamp(-1, 1)
-                    else:
-                        empty_pixels = image_ref[:, :0]  # Empty tensor with correct shape
-                    
-                    if _svi_debug:
-                        print(f"[SVI_DEBUG] empty_frame_count={empty_frame_count}, svi_empty_frames_mode={svi_empty_frames_mode}")
-                        _content = "ZEROS" if svi_empty_frames_mode == "zeros" else "ANCHOR_PADDED" if svi_empty_frames_mode == "anchor" else "NOISE"
-                        print(f"[SVI_DEBUG] empty_pixels.shape={empty_pixels.shape}, empty_pixels content={_content}")
-                    
-                    # Build concatenated pixel tensor: [start | zeros_or_anchor | end]
-                    # For Wan 2.2, repeat end frame to fill entire last latent (aligns with mask fix)
-                    if end_frame_repeat_count > 1:
-                        end_pixels = img_end_frame.expand(-1, end_frame_repeat_count, -1, -1)
-                    else:
-                        end_pixels = img_end_frame
-                    concatenated = torch.cat([start_pixels, empty_pixels, end_pixels], dim=1).to(self.device)
-                    
-                    # [SVI_BROWN_FRAME_DIAG] Comprehensive concatenated tensor diagnostics
-                    print(f"[SVI_BROWN_FRAME_DIAG] ═══════════════════════════════════════════════════════════════")
-                    print(f"[SVI_BROWN_FRAME_DIAG] CONCATENATED PIXEL TENSOR FOR VAE ENCODE")
-                    print(f"[SVI_BROWN_FRAME_DIAG] concatenated.shape={concatenated.shape} (expected: [3, {frame_num}, {height}, {width}])")
-                    print(f"[SVI_BROWN_FRAME_DIAG]   breakdown: start[:{svi_start_frame_count}] + empty[{svi_start_frame_count}:{svi_start_frame_count+empty_frame_count}] + end_repeated({end_frame_repeat_count})[{svi_start_frame_count+empty_frame_count}:]")
-                    print(f"[SVI_BROWN_FRAME_DIAG] Pixel value ranges (expected: -1 to 1):")
-                    print(f"[SVI_BROWN_FRAME_DIAG]   start_pixels: min={start_pixels.min().item():.3f}, max={start_pixels.max().item():.3f}")
-                    print(f"[SVI_BROWN_FRAME_DIAG]   empty_pixels: min={empty_pixels.min().item():.3f}, max={empty_pixels.max().item():.3f}")
-                    print(f"[SVI_BROWN_FRAME_DIAG]   end_pixels({end_frame_repeat_count}x): min={end_pixels.min().item():.3f}, max={end_pixels.max().item():.3f}")
-                    print(f"[SVI_BROWN_FRAME_DIAG]   concatenated: min={concatenated.min().item():.3f}, max={concatenated.max().item():.3f}")
-                    print(f"[SVI_BROWN_FRAME_DIAG] dtype={concatenated.dtype}, device={concatenated.device}")
-                    
-                    # Warn if pixel values look wrong
-                    _cat_min, _cat_max = concatenated.min().item(), concatenated.max().item()
-                    if _cat_min < -1.1 or _cat_max > 1.1:
-                        print(f"[SVI_BROWN_FRAME_DIAG] ⚠️  WARNING: Pixel values outside expected -1 to 1 range!")
-                    if _cat_min >= 0 and _cat_max <= 1:
-                        print(f"[SVI_BROWN_FRAME_DIAG] ⚠️  WARNING: Pixel values in 0-1 range, may need -1 to 1 normalization!")
-                    if _cat_min >= 0 and _cat_max > 1:
-                        print(f"[SVI_BROWN_FRAME_DIAG] ⚠️  WARNING: Pixel values suggest 0-255 range, needs normalization!")
-                    
-                    if _svi_debug:
-                        print(f"[SVI_DEBUG] concatenated pixel tensor: {concatenated.shape}")
-                        print(f"[SVI_DEBUG]   breakdown: start[:{svi_start_frame_count}] + empty[{svi_start_frame_count}:{svi_start_frame_count+empty_frame_count}] + end[{svi_start_frame_count+empty_frame_count}:]")
-                        print(f"[SVI_DEBUG]   total pixel frames: {concatenated.shape[1]} (expected: {frame_num})")
-                    
-                    # Single VAE encode - end frame mode only for Wan 2.1 (matching non-SVI path)
-                    print(f"[SVI_BROWN_FRAME_DIAG] Calling VAE encode with any_end_frame={vae_end_frame_mode}")
-                    lat_y = self.vae.encode([concatenated], VAE_tile_size, any_end_frame=vae_end_frame_mode)[0]
-                    print(f"[SVI_BROWN_FRAME_DIAG] VAE encode complete: lat_y.shape={lat_y.shape}")
-                    
-                    if _svi_debug:
-                        print(f"[SVI_DEBUG] VAE encoded: lat_y.shape={lat_y.shape}")
-                        print(f"[SVI_DEBUG]   expected latent frames: {(frame_num - 1) // 4 + 1}")
-                    
-                    # For continuation compatibility, extract overlapped_latents from encoded result
-                    # This is used by downstream code for temporal continuity
-                    if prefix_video is not None and prefix_video.shape[1] >= (5 + overlap_size):
-                        start_latent_count = (svi_start_frame_count - 1) // 4 + 1
-                        overlapped_latents = lat_y[:, :start_latent_count].clone().unsqueeze(0)
-                        if _svi_debug:
-                            print(f"[SVI_DEBUG] Extracted overlapped_latents for continuation: {overlapped_latents.shape}")
-                    
-                    del concatenated, empty_pixels, start_pixels
-                else:
-                    # No end frame - use original SVI approach with zero latent padding
-                    if overlapped_latents is not None:
-                        post_decode_pre_trim = 1
-                    elif prefix_video is not None and prefix_video.shape[1] >= (5 + overlap_size):
-                        overlapped_latents = self.vae.encode([torch.cat([prefix_video[:, -(5 + overlap_size):]], dim=1)], VAE_tile_size)[0][:, -overlap_size//4:].unsqueeze(0)
-                        post_decode_pre_trim = 1
-                    
-                    image_ref_latents = self.vae.encode([image_ref], VAE_tile_size)[0]
-                    
-                    pad_len = lat_frames + ref_images_count - image_ref_latents.shape[1] - (overlapped_latents.shape[2] if overlapped_latents is not None else 0)
-                    pad_latents = torch.zeros(image_ref_latents.shape[0], pad_len, lat_h, lat_w, device=image_ref_latents.device, dtype=image_ref_latents.dtype)
-                    if overlapped_latents is None:
-                        lat_y = torch.concat([image_ref_latents, pad_latents], dim=1).to(self.device)
-                    else:
-                        lat_y = torch.concat([image_ref_latents, overlapped_latents.squeeze(0), pad_latents], dim=1).to(self.device)
-                    image_ref_latents = None
-                padded_frames = None
-                
-            # Non-SVI paths (original logic)
-            elif any_end_frame:
+            remaining_frames = frame_num - control_pre_frames_count
+            if any_end_frame and not svi_pro:
                 enc= torch.concat([
                         control_video,
                         torch.zeros( (3, frame_num-control_pre_frames_count-1,  height, width), device=self.device, dtype= self.VAE_dtype),
                         img_end_frame,
                 ], dim=1).to(self.device)
-                padded_frames = None
             else:
-                remaining_frames = frame_num - control_pre_frames_count
-                if svi_mode and svi_ref_pad_num != 0:
+                if svi_pro or svi_mode and svi_ref_pad_num != 0:
                     use_extended_overlapped_latents = False
                     if input_ref_images is None or len(input_ref_images)==0:                        
                         if pre_video_frame is None: raise Exception("Missing Reference Image")
@@ -1123,89 +853,40 @@ class WanAny2V:
                     else:
                         image_ref = input_ref_images[ min(window_no, len(input_ref_images))-1 ]
                     image_ref = convert_image_to_tensor(image_ref).unsqueeze(1).to(device=self.device, dtype=self.VAE_dtype)
-                    svi_ref_pad_num = remaining_frames if svi_ref_pad_num == -1 else min(svi_ref_pad_num, remaining_frames)  
-                    padded_frames = image_ref.expand(-1, svi_ref_pad_num, -1, -1)
-                    if remaining_frames > svi_ref_pad_num:
-                        padded_frames = torch.cat([padded_frames, torch.zeros((3, remaining_frames - svi_ref_pad_num, height, width), device=self.device, dtype=self.VAE_dtype)], dim=1)
-                    enc = torch.concat([control_video, padded_frames], dim=1).to(self.device)
+                    if svi_pro:
+                        if overlapped_latents is not None:
+                            post_decode_pre_trim = 1
+                        elif prefix_video is not None and prefix_video.shape[1] >= (5 + overlap_size):
+                            overlapped_latents = self.vae.encode([torch.cat( [prefix_video[:, -(5 + overlap_size):]], dim=1)], VAE_tile_size)[0][:, -overlap_size//4: ].unsqueeze(0)
+                            post_decode_pre_trim = 1
+                            
+                        image_ref_latents = self.vae.encode([image_ref], VAE_tile_size)[0]
+                        pad_len = lat_frames + ref_images_count - image_ref_latents.shape[1] - (overlapped_latents.shape[2] if overlapped_latents is not None else 0)
+                        pad_latents = torch.zeros(image_ref_latents.shape[0], pad_len, lat_h, lat_w, device=image_ref_latents.device, dtype=image_ref_latents.dtype)
+                        if overlapped_latents is None:
+                            lat_y = torch.concat([image_ref_latents, pad_latents], dim=1).to(self.device)
+                        else:
+                            lat_y = torch.concat([image_ref_latents, overlapped_latents.squeeze(0), pad_latents], dim=1).to(self.device)
+                        if any_end_frame:
+                            lat_y[:, -1:] = self.vae.encode([img_end_frame], VAE_tile_size)[0][:, -1:]
+                        image_ref_latents = None
+                    else:
+                        svi_ref_pad_num = remaining_frames if svi_ref_pad_num == -1 else min(svi_ref_pad_num, remaining_frames)  
+                        padded_frames = image_ref.expand(-1, svi_ref_pad_num, -1, -1)
+                        if remaining_frames > svi_ref_pad_num:
+                            padded_frames = torch.cat([padded_frames, torch.zeros((3, remaining_frames - svi_ref_pad_num, height, width), device=self.device, dtype=self.VAE_dtype)], dim=1)
+                        enc = torch.concat([control_video, padded_frames], dim=1).to(self.device)
                 else:
                     enc= torch.concat([ control_video, torch.zeros( (3, remaining_frames, height, width), device=self.device, dtype= self.VAE_dtype) ], dim=1).to(self.device)
                 padded_frames = None
 
             if not svi_pro:
-                # Standard VAE encode - end-frame mode only for Wan 2.1 (add_frames_for_end_image)
-                print(f"[SVI_ENCODING_PATH] ❌ NOT using SVI encoding (svi_pro=False) - using standard VAE encode")
-                lat_y = self.vae.encode([enc], VAE_tile_size, any_end_frame=vae_end_frame_mode)[0]
+                lat_y = self.vae.encode([enc], VAE_tile_size, any_end_frame= any_end_frame and add_frames_for_end_image)[0]
 
 
             msk = torch.ones(1, frame_num + ref_images_count * 4, lat_h, lat_w, device=self.device)
-            
-            # [SVI_BROWN_FRAME_DIAG] Log mask construction parameters
-            print(f"[SVI_BROWN_FRAME_DIAG] ═══════════════════════════════════════════════════════════════")
-            print(f"[SVI_BROWN_FRAME_DIAG] MASK CONSTRUCTION")
-            print(f"[SVI_BROWN_FRAME_DIAG] svi_pro={svi_pro}, any_end_frame={any_end_frame}")
-            print(f"[SVI_BROWN_FRAME_DIAG] frame_num={frame_num}, ref_images_count={ref_images_count}")
-            print(f"[SVI_BROWN_FRAME_DIAG] control_pre_frames_count={control_pre_frames_count}")
-            print(f"[SVI_BROWN_FRAME_DIAG] lat_y.shape={lat_y.shape if 'lat_y' in dir() and lat_y is not None else 'not_set_yet'}")
-            
-            if svi_pro and any_end_frame:
-                # IMPORTANT (brown/grey middle frames): for SVI continuations we commonly have
-                # start frames (prefix context) + empty placeholder frames + an end frame.
-                #
-                # In this case, we want:
-                # - known/preserved frames => 1 (start frames + end frame)
-                # - frames to generate     => 0 (the in-between frames)
-                #
-                # Mask expansion must match the model type:
-                # - Wan 2.1 (i2v): expand BOTH first AND last frame to 4 subframes
-                # - Wan 2.2 (i2v_2_2): expand ONLY first frame (end frame handled differently by VAE)
-                msk = torch.ones(1, frame_num + ref_images_count * 4, lat_h, lat_w, device=self.device, dtype=lat_y.dtype)
-                
-                # [SVI_BROWN_FRAME_DIAG] Log pre-modification mask
-                print(f"[SVI_BROWN_FRAME_DIAG] Initial mask shape: {msk.shape}, all ones")
-                print(f"[SVI_BROWN_FRAME_DIAG] Setting msk[:, {control_pre_frames_count}:-1] = 0 (frames to GENERATE)")
-                
-                msk[:, control_pre_frames_count:-1] = 0
-                
-                # [SVI_BROWN_FRAME_DIAG] Log after zeroing
-                _known_before_expand = int((msk[0, :, 0, 0] > 0.5).sum().item())
-                _total_before_expand = msk.shape[1]
-                print(f"[SVI_BROWN_FRAME_DIAG] After zeroing: {_known_before_expand} known / {_total_before_expand} total")
-                print(f"[SVI_BROWN_FRAME_DIAG]   Known frames: indices 0:{control_pre_frames_count} (start) + index -1 (end)")
-                print(f"[SVI_BROWN_FRAME_DIAG]   Generate frames: indices {control_pre_frames_count}:-1")
-                
-                # Match the standard any_end_frame path: use add_frames_for_end_image to decide expansion
-                if add_frames_for_end_image:
-                    # Wan 2.1: expand both first AND last
-                    msk = torch.concat([
-                        torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1),
-                        msk[:, 1:-1],
-                        torch.repeat_interleave(msk[:, -1:], repeats=4, dim=1)
-                    ], dim=1)
-                    print(f"[SVI_BROWN_FRAME_DIAG] After first+last frame expansion (Wan 2.1): msk.shape={msk.shape}")
-                else:
-                    # Wan 2.2: expand only first frame (VAE handles end frame differently)
-                    msk = torch.concat([
-                        torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1),
-                        msk[:, 1:]
-                    ], dim=1)
-                    print(f"[SVI_BROWN_FRAME_DIAG] After first-frame-only expansion (Wan 2.2): msk.shape={msk.shape}")
-                    
-                    # CRITICAL FIX: Mark the ENTIRE last latent group as "known" (1)
-                    # Without this, only 1/4 of the end frame is protected (position -1 out of 4 in the group)
-                    # This causes the end frame to be distorted during generation.
-                    # By setting msk[:, -4:] = 1, all 4 positions of the last latent frame are preserved.
-                    msk[:, -4:] = 1
-                    print(f"[SVI_BROWN_FRAME_DIAG] Applied end-frame protection fix: msk[:, -4:] = 1 (all 4 positions of last latent frame now known)")
-                
-                try:
-                    known = int((msk[0, :, 0, 0] > 0.5).sum().item())
-                    total = int(msk.shape[1])
-                    print(f"[SVI_MASK_FIX] Applied standard end-frame mask packing for SVI_PRO. known={known}/{total} (1=preserve, 0=generate), control_pre_frames_count={control_pre_frames_count}")
-                except Exception:
-                    print(f"[SVI_MASK_FIX] Applied standard end-frame mask packing for SVI_PRO (summary unavailable)")
-            elif any_end_frame:
-                msk[:, control_pre_frames_count: -1] = 0
+            if any_end_frame:
+                msk[:, (1 if svi_mode else control_pre_frames_count):-1] = 0
                 if add_frames_for_end_image:
                     msk = torch.concat([ torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:-1], torch.repeat_interleave(msk[:, -1:], repeats=4, dim=1) ], dim=1)
                 else:
@@ -1215,23 +896,6 @@ class WanAny2V:
                 msk = torch.concat([ torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:] ], dim=1)
             msk = msk.view(1, msk.shape[1] // 4, 4, lat_h, lat_w)
             msk = msk.transpose(1, 2)[0]
-            
-            # [SVI_BROWN_FRAME_DIAG] Final mask summary
-            try:
-                _final_mask_known = int((msk.flatten() > 0.5).sum().item())
-                _final_mask_total = msk.numel()
-                _final_mask_generate = _final_mask_total - _final_mask_known
-                print(f"[SVI_BROWN_FRAME_DIAG] ═══════════════════════════════════════════════════════════════")
-                print(f"[SVI_BROWN_FRAME_DIAG] FINAL MASK SUMMARY")
-                print(f"[SVI_BROWN_FRAME_DIAG] msk.shape={msk.shape}")
-                print(f"[SVI_BROWN_FRAME_DIAG] Known (preserve) elements: {_final_mask_known}")
-                print(f"[SVI_BROWN_FRAME_DIAG] Generate elements: {_final_mask_generate}")
-                print(f"[SVI_BROWN_FRAME_DIAG] Ratio: {_final_mask_known}/{_final_mask_total} = {_final_mask_known/_final_mask_total*100:.1f}% known")
-                if _final_mask_generate == 0:
-                    print(f"[SVI_BROWN_FRAME_DIAG] ⚠️  WARNING: No frames marked for generation! Model will preserve all frames!")
-                print(f"[SVI_BROWN_FRAME_DIAG] ═══════════════════════════════════════════════════════════════")
-            except Exception as e:
-                print(f"[SVI_BROWN_FRAME_DIAG] Could not compute mask summary: {e}")
 
             image_start = image_end = img_end_frame = image_ref = control_video = None
 
@@ -1464,6 +1128,16 @@ class WanAny2V:
                 lat_input_ref_images_neg = torch.zeros_like(lat_input_ref_images)
                 ref_images_count = trim_frames = lat_input_ref_images.shape[1]
 
+        # Kiwi Edit
+        if kiwi_edit:
+            if kiwi_state["source_condition"] is not None:
+                kwargs["kiwi_source_condition"] = kiwi_state["source_condition"]
+            if kiwi_state["ref_condition"] is not None:
+                kwargs["kiwi_ref_condition"] = kiwi_state["ref_condition"]
+                kwargs["kiwi_ref_pad_first"] = self.model_def.get("kiwi_ref_pad_first", False) 
+                inner_latent_frames = 1
+            input_video = None
+
         if ti2v:
             if input_video is None:
                 height, width = (height // 32) * 32, (width // 32) * 32 
@@ -1489,7 +1163,7 @@ class WanAny2V:
                 if True:
                     with init_empty_weights():
                         arc_resampler = Resampler( depth=4, dim=1280, dim_head=64, embedding_dim=512, ff_mult=4, heads=20, num_queries=16, output_dim=2048 if lynx_lite else 5120 )
-                    offload.load_model_data(arc_resampler, fl.locate_file("wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"))
+                    offload.load_model_data(arc_resampler, fl.locate_file("wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"), writable_tensors=False)
                     arc_resampler.to(self.device)
                     arcface_embed = face_arc_embeds[None,None,:].to(device=self.device, dtype=torch.float) 
                     ip_hidden_states = arc_resampler(arcface_embed).to(self.dtype)
@@ -1548,25 +1222,6 @@ class WanAny2V:
                     mm0[:, 0:1] = mmbg
                 zz0 = mm0 = zzbg = mmbg = None
             z = [torch.cat([zz, mm], dim=0) for zz, mm in zip(z0, m0)]
-            
-            # Latent noise mask: Store original latents and mask for blending during denoising
-            # z0[0] shape: [32, frames, h, w] where first 16 channels are inactive, last 16 are reactive
-            # m0[0] shape: [64, frames, h, w] - the mask in latent space (0=preserve, 1=generate)
-            latent_noise_mask_original = None
-            latent_noise_mask_blend = None
-            latent_noise_mask_noise = None
-            if latent_noise_mask_strength > 0:
-                # Get the inactive latents (first 16 channels of z0) - these are the preserved regions
-                latent_noise_mask_original = z0[0][:16].clone().unsqueeze(0)  # [1, 16, frames, h, w]
-                # Get the mask from m0 - average across the 64 channels to get a single mask
-                # m0 values: 0 = preserve (black in mask video), 1 = generate (white in mask video)
-                latent_noise_mask_blend = m0[0].mean(dim=0, keepdim=True).unsqueeze(0)  # [1, 1, frames, h, w]
-                # Store noise once for consistent blending across all denoising steps
-                latent_noise_mask_noise = torch.randn_like(latent_noise_mask_original)
-                print(f"[LATENT_NOISE_MASK] Enabled with strength={latent_noise_mask_strength}")
-                print(f"[LATENT_NOISE_MASK] Original latents shape: {latent_noise_mask_original.shape}")
-                print(f"[LATENT_NOISE_MASK] Mask blend shape: {latent_noise_mask_blend.shape}")
-            
             ref_images_count = len(input_ref_images) if input_ref_images is not None and input_ref_images is not None else 0
             context_scale = context_scale if context_scale != None else [1.0] * len(z)
             kwargs.update({'vace_context' : z, 'vace_context_scale' : context_scale, "ref_images_count": ref_images_count })
@@ -1599,11 +1254,6 @@ class WanAny2V:
         if self._interrupt:
             return None
 
-        # Initialize latent noise mask variables (used only when VACE + latent_noise_mask_strength > 0)
-        latent_noise_mask_original = None
-        latent_noise_mask_blend = None
-        latent_noise_mask_noise = None  # stored once for consistent blending across steps
-
         expand_shape = [batch_size] + [-1] * len(target_shape)
         # Ropes
         if freqs is not None:
@@ -1620,11 +1270,10 @@ class WanAny2V:
 
         kwargs["freqs"] = freqs
 
-        # ========== UNI3C: Build uni3c_data if enabled ==========
         if use_uni3c:
             if uni3c_guide_video is None:
                 raise ValueError("[UNI3C] use_uni3c=True but uni3c_guide_video not provided")
-            
+
             print(f"[UNI3C] any2video: Initializing Uni3C ControlNet")
             print(f"[UNI3C] any2video:   guide_video: {uni3c_guide_video}")
             print(f"[UNI3C] any2video:   strength: {uni3c_strength}")
@@ -1632,36 +1281,27 @@ class WanAny2V:
             print(f"[UNI3C] any2video:   frame_policy: {uni3c_frame_policy}")
             print(f"[UNI3C] any2video:   keep_on_gpu: {uni3c_keep_on_gpu}")
             print(f"[UNI3C] any2video:   zero_empty_frames: {uni3c_zero_empty_frames}")
-            
-            # Load or use provided controlnet
+
             if uni3c_controlnet is not None:
                 controlnet = uni3c_controlnet
-                print(f"[UNI3C] any2video: Using pre-loaded controlnet")
+                print("[UNI3C] any2video: Using pre-loaded controlnet")
             else:
-                # Load controlnet on demand - optimized path loads directly to GPU as fp16
                 from .uni3c import load_uni3c_controlnet
-                import os
+
                 ckpts_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "ckpts")
                 controlnet = load_uni3c_controlnet(ckpts_dir=ckpts_dir, device="cuda", dtype=torch.float16)
-            
-            # Determine expected in_channels from controlnet
+
             expected_channels = getattr(controlnet, "in_channels", 20)
-            
-            # Check if using orchestrator-preprocessed video (composite from travel_orchestrator)
-            # Triggers when: frame_offset > 0, OR path contains "structure_composite" (local or URL)
             is_orchestrator_composite = "structure_composite" in uni3c_guide_video
+
             if uni3c_guidance_frame_offset > 0 or is_orchestrator_composite:
-                # Orchestrator mode: extract this segment's portion from pre-computed video
-                print(f"[UNI3C] any2video: Using orchestrator-preprocessed guide video")
+                print("[UNI3C] any2video: Using orchestrator-preprocessed guide video")
                 print(f"[UNI3C] any2video:   Frame offset: {uni3c_guidance_frame_offset}")
                 print(f"[UNI3C] any2video:   Extracting {frame_num} frames")
 
-                # Use structure_video_guidance downloader to extract segment's frames
                 from pathlib import Path
                 import tempfile
-                import sys
 
-                # Ensure project root is on sys.path for source imports
                 _project_root = str(Path(__file__).parent.parent.parent.parent)
                 if _project_root not in sys.path:
                     sys.path.insert(0, _project_root)
@@ -1674,39 +1314,34 @@ class WanAny2V:
                     frame_start=uni3c_guidance_frame_offset,
                     frame_count=frame_num,
                     download_dir=temp_dir,
-                    dprint=print
+                    dprint=print,
                 )
 
                 print(f"[UNI3C] any2video: Extracted {len(guidance_frames)} frames from orchestrator video")
 
-                # Blackout last frame if requested (for i2v end anchor - last segment only)
                 if uni3c_blackout_last_frame and len(guidance_frames) > 0:
                     guidance_frames[-1] = np.zeros_like(guidance_frames[-1])
                     print(f"[UNI3C] any2video: Blacked out last frame (idx {len(guidance_frames)-1}) for i2v end anchor")
 
-                # Convert frames to tensor: [F, H, W, C] -> [C, F, H, W], range [0,255] -> [-1, 1]
-                # Resize if needed
                 import cv2
+
                 resized_frames = []
                 for frame in guidance_frames:
                     if frame.shape[:2] != (height, width):
                         frame = cv2.resize(frame, (width, height))
                     resized_frames.append(frame)
 
-                video = np.stack(resized_frames, axis=0)  # [F, H, W, C]
-                video = video.astype(np.float32)
-                video = (video / 127.5) - 1.0  # [-1, 1] (Wan2GP convention)
-                guide_video_tensor = torch.from_numpy(video).permute(3, 0, 1, 2)  # [C, F, H, W]
-
+                video = np.stack(resized_frames, axis=0).astype(np.float32)
+                video = (video / 127.5) - 1.0
+                guide_video_tensor = torch.from_numpy(video).permute(3, 0, 1, 2)
                 print(f"[UNI3C] any2video: Guide video tensor shape: {tuple(guide_video_tensor.shape)}, dtype: {guide_video_tensor.dtype}")
             else:
-                # Standard mode: download full video and apply frame policy
-                # Download guide video if URL (handles non-travel mode tasks)
                 if uni3c_guide_video.startswith(("http://", "https://")):
                     import tempfile
                     import urllib.request
                     from pathlib import Path
-                    print(f"[UNI3C] any2video: Downloading guide video from URL...")
+
+                    print("[UNI3C] any2video: Downloading guide video from URL...")
                     url_filename = Path(uni3c_guide_video).name or "uni3c_guide.mp4"
                     temp_dir = tempfile.gettempdir()
                     local_path = os.path.join(temp_dir, f"uni3c_{url_filename}")
@@ -1717,36 +1352,33 @@ class WanAny2V:
                         print(f"[UNI3C] any2video: Using cached {local_path}")
                     uni3c_guide_video = local_path
 
-                # Load and encode guide video
                 guide_video_tensor = self._load_uni3c_guide_video(
                     uni3c_guide_video,
                     target_height=height,
                     target_width=width,
                     target_frames=frame_num,
-                    frame_policy=uni3c_frame_policy
+                    frame_policy=uni3c_frame_policy,
                 )
-            
+
             render_latent = self._encode_uni3c_guide(
                 guide_video_tensor,
                 VAE_tile_size=VAE_tile_size,
                 expected_channels=expected_channels,
-                zero_empty_frames=uni3c_zero_empty_frames
+                zero_empty_frames=uni3c_zero_empty_frames,
             )
-            
-            # Build uni3c_data dict
-            uni3c_data = {
+
+            kwargs["uni3c_data"] = {
                 "controlnet": controlnet,
                 "controlnet_weight": uni3c_strength,
                 "start": uni3c_start_percent,
                 "end": uni3c_end_percent,
                 "render_latent": render_latent,
-                "render_mask": None,  # Not implemented
-                "camera_embedding": None,  # Not implemented
+                "render_mask": None,
+                "camera_embedding": None,
                 "offload": not uni3c_keep_on_gpu,
             }
-            kwargs["uni3c_data"] = uni3c_data
             print(f"[UNI3C] any2video: uni3c_data ready, render_latent shape: {tuple(render_latent.shape)}")
-        # ========== END UNI3C ==========
+
 
         # Steps Skipping
         skip_steps_cache = self.model.cache
@@ -1816,70 +1448,6 @@ class WanAny2V:
             gauss_mask = load_gauss_mask(fl.locate_file("gauss_mask"))
             latents = apply_alpha_shift(latents, gauss_mask, 0.03)
         if "G" in video_prompt_type: randn = latents
-        
-        # Vid2vid initialization: Use provided video as starting point instead of pure noise
-        # This is useful for VACE replace mode where we want to refine existing frames
-        if vid2vid_init_video is not None and vid2vid_init_strength < 1.0:
-            try:
-                import cv2
-                # NOTE: numpy is already imported at module scope as `np`.
-                # Re-importing it here makes `np` a *local* variable which can crash earlier code paths.
-                
-                print(f"[VID2VID_INIT] Loading video for initialization: {vid2vid_init_video}")
-                print(f"[VID2VID_INIT] Strength: {vid2vid_init_strength} (0=keep original, 1=random noise)")
-                
-                # Load video frames
-                cap = cv2.VideoCapture(str(vid2vid_init_video))
-                vid2vid_frames = []
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    # Convert BGR to RGB and normalize to [-1, 1]
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    frame_tensor = torch.from_numpy(frame_rgb).float().div_(127.5).sub_(1)
-                    vid2vid_frames.append(frame_tensor)
-                cap.release()
-                
-                if len(vid2vid_frames) > 0:
-                    # Stack frames: [F, H, W, C] -> [C, F, H, W]
-                    vid2vid_tensor = torch.stack(vid2vid_frames, dim=0).permute(3, 0, 1, 2).to(self.device)
-                    print(f"[VID2VID_INIT] Loaded {len(vid2vid_frames)} frames, shape: {vid2vid_tensor.shape}")
-                    
-                    # Encode with VAE
-                    with torch.no_grad():
-                        vid2vid_latents = self.vae.encode([vid2vid_tensor], tile_size=VAE_tile_size)[0]
-                    print(f"[VID2VID_INIT] Encoded to latent shape: {vid2vid_latents.shape}")
-                    
-                    # Handle frame count mismatch
-                    target_lat_frames = target_shape[1]
-                    vid2vid_lat_frames = vid2vid_latents.shape[1]
-                    
-                    if vid2vid_lat_frames != target_lat_frames:
-                        print(f"[VID2VID_INIT] Frame count mismatch: vid2vid has {vid2vid_lat_frames}, target has {target_lat_frames}")
-                        if vid2vid_lat_frames > target_lat_frames:
-                            vid2vid_latents = vid2vid_latents[:, :target_lat_frames]
-                        else:
-                            pad_size = target_lat_frames - vid2vid_lat_frames
-                            padding = torch.randn(vid2vid_latents.shape[0], pad_size, *vid2vid_latents.shape[2:], 
-                                                  device=self.device, dtype=vid2vid_latents.dtype)
-                            vid2vid_latents = torch.cat([vid2vid_latents, padding], dim=1)
-                    
-                    if vid2vid_latents.dim() == 4:
-                        vid2vid_latents = vid2vid_latents.unsqueeze(0)
-                    
-                    # Blend: latents = strength * noise + (1 - strength) * encoded
-                    print(f"[VID2VID_INIT] Blending latents with strength {vid2vid_init_strength}")
-                    latents = vid2vid_init_strength * latents + (1.0 - vid2vid_init_strength) * vid2vid_latents.to(latents.dtype)
-                    print(f"[VID2VID_INIT] Vid2vid initialization complete, final latent shape: {latents.shape}")
-                else:
-                    print(f"[VID2VID_INIT] Warning: Could not load any frames from {vid2vid_init_video}")
-                    
-            except Exception as e:
-                print(f"[VID2VID_INIT] Error during vid2vid initialization: {e}")
-                import traceback
-                traceback.print_exc()
-        
         if apg_switch != 0:  
             apg_momentum = -0.75
             apg_norm_threshold = 55
@@ -1890,6 +1458,11 @@ class WanAny2V:
         torch.cuda.empty_cache()
         # denoising
         trans = self.model
+        if self_refiner_setting > 0:
+            self_refiner_handler = create_self_refiner_handler(self_refiner_plan, self_refiner_f_uncertainty, self_refiner_setting, self_refiner_certain_percentage)
+        else:
+            self_refiner_handler = None
+
         for i, t in enumerate(tqdm(timesteps)):
             guide_scale, guidance_switch_done, trans, denoising_extra = update_guidance(i, t, guide_scale, guide2_scale, guidance_switch_done, switch_threshold, trans, 2, denoising_extra)
             guide_scale, guidance_switch2_done, trans, denoising_extra = update_guidance(i, t, guide_scale, guide3_scale, guidance_switch2_done, switch2_threshold, trans, 3, denoising_extra)
@@ -1902,7 +1475,7 @@ class WanAny2V:
                 timestep[:source_latents.shape[2]] = 0
                         
             kwargs.update({"t": timestep, "current_step_no": i, "real_step_no": start_step_no + i })  
-            kwargs["slg_layers"] = slg_layers if int(slg_start * sampling_steps) <= i < int(slg_end * sampling_steps) else None
+            kwargs["perturbation_layers"] = perturbation_layers if int(perturbation_start * sampling_steps) <= i < int(perturbation_end * sampling_steps) else None
 
             if denoising_strength < 1 and i <= injection_denoising_step:
                 sigma = t / 1000
@@ -1915,7 +1488,7 @@ class WanAny2V:
                     latents = noisy_image
                     noisy_image = None
                 else:
-                    latents = randn * sigma + (1 - sigma) * source_latents
+                    latents[...] = randn * sigma + (1 - sigma) * source_latents
 
             if extended_overlapped_latents != None:
                 if no_noise_latents_injection:
@@ -1928,174 +1501,180 @@ class WanAny2V:
                     for zz in z:
                         zz[0:16, ref_images_count:extended_overlapped_latents.shape[2] ]   = extended_overlapped_latents[0, :, ref_images_count:]  * (1.0 - overlap_noise_factor) + torch.randn_like(extended_overlapped_latents[0, :, ref_images_count:] ) * overlap_noise_factor 
 
-            if extended_input_dim > 0:
-                latent_model_input = torch.cat([latents, extended_latents.expand(*expand_shape)], dim=extended_input_dim)
-            else:
-                latent_model_input = latents
+            def denoise_with_cfg_fn(latents):
 
-            any_guidance = guide_scale != 1
-            if phantom:
-                gen_args = {
-                    "x" : ([ torch.cat([latent_model_input[:,:, :-ref_images_count], lat_input_ref_images.unsqueeze(0).expand(*expand_shape)], dim=2) ] * 2 + 
-                        [ torch.cat([latent_model_input[:,:, :-ref_images_count], lat_input_ref_images_neg.unsqueeze(0).expand(*expand_shape)], dim=2)]),
-                    "context": [context, context_null, context_null] ,
-                }
-            elif fantasy:
-                gen_args = {
-                    "x" : [latent_model_input, latent_model_input, latent_model_input],
-                    "context" : [context, context_null, context_null],
-                    "audio_scale": [audio_scale, None, None ]
-                }
-            elif animate:
-                gen_args = {
-                    "x" : [latent_model_input, latent_model_input],
-                    "context" : [context, context_null],
-                    # "face_pixel_values": [face_pixel_values, None]
-                    "face_pixel_values": [face_pixel_values, face_pixel_values] # seems to look better this way
-                }
-            elif wanmove:
-                gen_args = {
-                    "x" : [latent_model_input, latent_model_input],
-                    "context" : [context, context_null],
-                    "y" : [y_cond, y_uncond],
-                }
-            elif lynx:
-                gen_args = {
-                    "x" : [latent_model_input, latent_model_input],
-                    "context" : [context, context_null],
-                    "lynx_ip_embeds": [ip_hidden_states, ip_hidden_states_uncond]
-                }
-                if model_type in ["lynx", "vace_lynx_14B"]:
-                    gen_args["lynx_ref_buffer"] = [lynx_ref_buffer, lynx_ref_buffer_uncond]
-                    
-            elif steadydancer:
-                # DC-CFG: pose guidance only in [10%, 50%] of denoising steps
-                apply_cond_cfg = 0.1 <= i / sampling_steps < 0.5 and condition_guide_scale != 1
-                x_list, ctx_list, cond_list = [latent_model_input], [context], [conditions]
-                if guide_scale != 1:
-                    x_list.append(latent_model_input); ctx_list.append(context_null); cond_list.append(conditions)
-                if apply_cond_cfg:
-                    x_list.append(latent_model_input); ctx_list.append(context); cond_list.append(conditions_null)
-                gen_args = {"x": x_list, "context": ctx_list, "steadydancer_condition": cond_list}
-                any_guidance = len(x_list) > 1
-            elif multitalk and audio_proj != None:
-                if guide_scale == 1:
-                    gen_args = {
-                        "x" : [latent_model_input, latent_model_input],
-                        "context" : [context, context],
-                        "multitalk_audio": [audio_proj, [torch.zeros_like(audio_proj[0][-1:]), torch.zeros_like(audio_proj[1][-1:])]],
-                        "multitalk_masks": [token_ref_target_masks, None]
-                    }
-                    any_guidance = audio_cfg_scale != 1
+                if extended_input_dim > 0:
+                    latent_model_input = torch.cat([latents, extended_latents.expand(*expand_shape)], dim=extended_input_dim)
                 else:
+                    latent_model_input = latents
+
+                any_guidance = guide_scale != 1
+                if phantom:
+                    gen_args = {
+                        "x" : ([ torch.cat([latent_model_input[:,:, :-ref_images_count], lat_input_ref_images.unsqueeze(0).expand(*expand_shape)], dim=2) ] * 2 + 
+                            [ torch.cat([latent_model_input[:,:, :-ref_images_count], lat_input_ref_images_neg.unsqueeze(0).expand(*expand_shape)], dim=2)]),
+                        "context": [context, context_null, context_null] ,
+                    }
+                elif fantasy:
                     gen_args = {
                         "x" : [latent_model_input, latent_model_input, latent_model_input],
                         "context" : [context, context_null, context_null],
-                        "multitalk_audio": [audio_proj, audio_proj, [torch.zeros_like(audio_proj[0][-1:]), torch.zeros_like(audio_proj[1][-1:])]],
-                        "multitalk_masks": [token_ref_target_masks, token_ref_target_masks, None]
+                        "audio_scale": [audio_scale, None, None ]
                     }
-            else:
-                gen_args = {
-                    "x" : [latent_model_input, latent_model_input],
-                    "context": [context, context_null]
-                }
-
-            if joint_pass and any_guidance:
-                ret_values = trans( **gen_args , **kwargs)
-                if self._interrupt:
-                    return clear()               
-            else:
-                size = len(gen_args["x"]) if any_guidance else 1 
-                ret_values = [None] * size
-                for x_id in range(size):
-                    sub_gen_args = {k : [v[x_id]] for k, v in gen_args.items() }
-                    ret_values[x_id] = trans( **sub_gen_args, x_id= x_id , **kwargs)[0]
-                    if self._interrupt:
-                        return clear()         
-                sub_gen_args = None
-            if not any_guidance:
-                noise_pred = ret_values[0]       
-            elif phantom:
-                guide_scale_img= 5.0
-                guide_scale_text= guide_scale #7.5
-                pos_it, pos_i, neg = ret_values
-                noise_pred = neg + guide_scale_img * (pos_i - neg) + guide_scale_text * (pos_it - pos_i)
-                pos_it = pos_i = neg = None
-            elif fantasy:
-                noise_pred_cond, noise_pred_noaudio, noise_pred_uncond = ret_values
-                noise_pred = noise_pred_uncond + guide_scale * (noise_pred_noaudio - noise_pred_uncond) + audio_cfg_scale * (noise_pred_cond  - noise_pred_noaudio) 
-                noise_pred_noaudio = None
-            elif steadydancer:
-                noise_pred_cond = ret_values[0]
-                if guide_scale == 1:  # only condition CFG (ret_values[1] = uncond_condition)
-                    noise_pred = ret_values[1] + condition_guide_scale * (noise_pred_cond - ret_values[1])
-                else:  # text CFG + optionally condition CFG (ret_values[1] = uncond_context)
-                    noise_pred = ret_values[1] + guide_scale * (noise_pred_cond - ret_values[1])
+                elif animate:
+                    gen_args = {
+                        "x" : [latent_model_input, latent_model_input],
+                        "context" : [context, context_null],
+                        # "face_pixel_values": [face_pixel_values, None]
+                        "face_pixel_values": [face_pixel_values, face_pixel_values] # seems to look better this way
+                    }
+                elif wanmove:
+                    gen_args = {
+                        "x" : [latent_model_input, latent_model_input],
+                        "context" : [context, context_null],
+                        "y" : [y_cond, y_uncond],
+                    }
+                elif lynx:
+                    gen_args = {
+                        "x" : [latent_model_input, latent_model_input],
+                        "context" : [context, context_null],
+                        "lynx_ip_embeds": [ip_hidden_states, ip_hidden_states_uncond]
+                    }
+                    if model_type in ["lynx", "vace_lynx_14B"]:
+                        gen_args["lynx_ref_buffer"] = [lynx_ref_buffer, lynx_ref_buffer_uncond]
+                        
+                elif steadydancer:
+                    # DC-CFG: pose guidance only in [10%, 50%] of denoising steps
+                    apply_cond_cfg = 0.1 <= i / sampling_steps < 0.5 and condition_guide_scale != 1
+                    x_list, ctx_list, cond_list = [latent_model_input], [context], [conditions]
+                    if guide_scale != 1:
+                        x_list.append(latent_model_input); ctx_list.append(context_null); cond_list.append(conditions)
                     if apply_cond_cfg:
-                        noise_pred = noise_pred + condition_guide_scale * (noise_pred_cond - ret_values[2])
-                noise_pred_cond = None
-
-            elif multitalk and audio_proj != None:
-                if apg_switch != 0:
+                        x_list.append(latent_model_input); ctx_list.append(context); cond_list.append(conditions_null)
+                    gen_args = {"x": x_list, "context": ctx_list, "steadydancer_condition": cond_list}
+                    any_guidance = len(x_list) > 1
+                elif multitalk and audio_proj != None:
                     if guide_scale == 1:
-                        noise_pred_cond, noise_pred_drop_audio  = ret_values
-                        noise_pred = noise_pred_cond + (audio_cfg_scale - 1)* adaptive_projected_guidance(noise_pred_cond - noise_pred_drop_audio, 
-                                                                                        noise_pred_cond, 
-                                                                                        momentum_buffer=audio_momentumbuffer, 
-                                                                                        norm_threshold=apg_norm_threshold)
-
+                        gen_args = {
+                            "x" : [latent_model_input, latent_model_input],
+                            "context" : [context, context],
+                            "multitalk_audio": [audio_proj, [torch.zeros_like(audio_proj[0][-1:]), torch.zeros_like(audio_proj[1][-1:])]],
+                            "multitalk_masks": [token_ref_target_masks, None]
+                        }
+                        any_guidance = audio_cfg_scale != 1
                     else:
-                        noise_pred_cond, noise_pred_drop_text, noise_pred_uncond = ret_values
-                        noise_pred = noise_pred_cond + (guide_scale - 1) * adaptive_projected_guidance(noise_pred_cond - noise_pred_drop_text, 
+                        gen_args = {
+                            "x" : [latent_model_input, latent_model_input, latent_model_input],
+                            "context" : [context, context_null, context_null],
+                            "multitalk_audio": [audio_proj, audio_proj, [torch.zeros_like(audio_proj[0][-1:]), torch.zeros_like(audio_proj[1][-1:])]],
+                            "multitalk_masks": [token_ref_target_masks, token_ref_target_masks, None]
+                        }
+                elif kiwi_edit:
+                    if guide_scale == 1:
+                        any_guidance = False
+                        gen_args = {"x": [latent_model_input], "context": context}
+                    else:
+                        gen_args = {"x": [latent_model_input, latent_model_input], "context": context + context_null}
+                else:
+                    gen_args = {
+                        "x" : [latent_model_input, latent_model_input],
+                        "context": [context, context_null]
+                    }
+
+                if joint_pass and any_guidance:
+                    ret_values = trans( **gen_args , **kwargs)
+                    if self._interrupt:
+                        return clear()               
+                else:
+                    size = len(gen_args["x"]) if any_guidance else 1 
+                    ret_values = [None] * size
+                    for x_id in range(size):
+                        sub_gen_args = {k : [v[x_id]] for k, v in gen_args.items() }
+                        ret_values[x_id] = trans( **sub_gen_args, x_id= x_id , **kwargs)[0]
+                        if self._interrupt:
+                            return clear()         
+                    sub_gen_args = None
+                if not any_guidance:
+                    noise_pred = ret_values[0]       
+                elif phantom:
+                    guide_scale_img= 5.0
+                    guide_scale_text= guide_scale #7.5
+                    pos_it, pos_i, neg = ret_values
+                    noise_pred = neg + guide_scale_img * (pos_i - neg) + guide_scale_text * (pos_it - pos_i)
+                    pos_it = pos_i = neg = None
+                elif fantasy:
+                    noise_pred_cond, noise_pred_noaudio, noise_pred_uncond = ret_values
+                    noise_pred = noise_pred_uncond + guide_scale * (noise_pred_noaudio - noise_pred_uncond) + audio_cfg_scale * (noise_pred_cond  - noise_pred_noaudio) 
+                    noise_pred_noaudio = None
+                elif steadydancer:
+                    noise_pred_cond = ret_values[0]
+                    if guide_scale == 1:  # only condition CFG (ret_values[1] = uncond_condition)
+                        noise_pred = ret_values[1] + condition_guide_scale * (noise_pred_cond - ret_values[1])
+                    else:  # text CFG + optionally condition CFG (ret_values[1] = uncond_context)
+                        noise_pred = ret_values[1] + guide_scale * (noise_pred_cond - ret_values[1])
+                        if apply_cond_cfg:
+                            noise_pred = noise_pred + condition_guide_scale * (noise_pred_cond - ret_values[2])
+                    noise_pred_cond = None
+
+                elif multitalk and audio_proj != None:
+                    if apg_switch != 0:
+                        if guide_scale == 1:
+                            noise_pred_cond, noise_pred_drop_audio  = ret_values
+                            noise_pred = noise_pred_cond + (audio_cfg_scale - 1)* adaptive_projected_guidance(noise_pred_cond - noise_pred_drop_audio, 
+                                                                                            noise_pred_cond, 
+                                                                                            momentum_buffer=audio_momentumbuffer, 
+                                                                                            norm_threshold=apg_norm_threshold)
+
+                        else:
+                            noise_pred_cond, noise_pred_drop_text, noise_pred_uncond = ret_values
+                            noise_pred = noise_pred_cond + (guide_scale - 1) * adaptive_projected_guidance(noise_pred_cond - noise_pred_drop_text, 
+                                                                                                                noise_pred_cond, 
+                                                                                                                momentum_buffer=text_momentumbuffer, 
+                                                                                                                norm_threshold=apg_norm_threshold) \
+                                    + (audio_cfg_scale - 1) * adaptive_projected_guidance(noise_pred_drop_text - noise_pred_uncond, 
+                                                                                            noise_pred_cond, 
+                                                                                            momentum_buffer=audio_momentumbuffer, 
+                                                                                            norm_threshold=apg_norm_threshold)
+                    else:
+                        if guide_scale == 1:
+                            noise_pred_cond, noise_pred_drop_audio  = ret_values
+                            noise_pred = noise_pred_drop_audio + audio_cfg_scale* (noise_pred_cond - noise_pred_drop_audio)  
+                        else:
+                            noise_pred_cond, noise_pred_drop_text, noise_pred_uncond = ret_values
+                            noise_pred = noise_pred_uncond + guide_scale * (noise_pred_cond - noise_pred_drop_text) + audio_cfg_scale * (noise_pred_drop_text - noise_pred_uncond)  
+                        noise_pred_uncond = noise_pred_cond = noise_pred_drop_text = noise_pred_drop_audio = None
+                else:
+                    noise_pred_cond, noise_pred_uncond = ret_values
+                    if apg_switch != 0:
+                        noise_pred = noise_pred_cond + (guide_scale - 1) * adaptive_projected_guidance(noise_pred_cond - noise_pred_uncond, 
                                                                                                             noise_pred_cond, 
                                                                                                             momentum_buffer=text_momentumbuffer, 
-                                                                                                            norm_threshold=apg_norm_threshold) \
-                                + (audio_cfg_scale - 1) * adaptive_projected_guidance(noise_pred_drop_text - noise_pred_uncond, 
-                                                                                        noise_pred_cond, 
-                                                                                        momentum_buffer=audio_momentumbuffer, 
-                                                                                        norm_threshold=apg_norm_threshold)
-                else:
-                    if guide_scale == 1:
-                        noise_pred_cond, noise_pred_drop_audio  = ret_values
-                        noise_pred = noise_pred_drop_audio + audio_cfg_scale* (noise_pred_cond - noise_pred_drop_audio)  
+                                                                                                            norm_threshold=apg_norm_threshold)
                     else:
-                        noise_pred_cond, noise_pred_drop_text, noise_pred_uncond = ret_values
-                        noise_pred = noise_pred_uncond + guide_scale * (noise_pred_cond - noise_pred_drop_text) + audio_cfg_scale * (noise_pred_drop_text - noise_pred_uncond)  
-                    noise_pred_uncond = noise_pred_cond = noise_pred_drop_text = noise_pred_drop_audio = None
-            else:
-                noise_pred_cond, noise_pred_uncond = ret_values
-                if apg_switch != 0:
-                    noise_pred = noise_pred_cond + (guide_scale - 1) * adaptive_projected_guidance(noise_pred_cond - noise_pred_uncond, 
-                                                                                                        noise_pred_cond, 
-                                                                                                        momentum_buffer=text_momentumbuffer, 
-                                                                                                        norm_threshold=apg_norm_threshold)
-                else:
-                    noise_pred_text = noise_pred_cond
-                    if cfg_star_switch:
-                        # CFG Zero *. Thanks to https://github.com/WeichenFan/CFG-Zero-star/
-                        positive_flat = noise_pred_text.view(batch_size, -1)  
-                        negative_flat = noise_pred_uncond.view(batch_size, -1)  
+                        noise_pred_text = noise_pred_cond
+                        if cfg_star_switch:
+                            # CFG Zero *. Thanks to https://github.com/WeichenFan/CFG-Zero-star/
+                            positive_flat = noise_pred_text.view(batch_size, -1)  
+                            negative_flat = noise_pred_uncond.view(batch_size, -1)  
 
-                        alpha = optimized_scale(positive_flat,negative_flat)
-                        alpha = alpha.view(batch_size, 1, 1, 1)
+                            alpha = optimized_scale(positive_flat,negative_flat)
+                            alpha = alpha.view(batch_size, 1, 1, 1)
 
-                        if (i <= cfg_zero_step):
-                            noise_pred = noise_pred_text*0. # it would be faster not to compute noise_pred...
-                        else:
-                            noise_pred_uncond *= alpha
-                    noise_pred = noise_pred_uncond + guide_scale * (noise_pred_text - noise_pred_uncond)            
-            ret_values = noise_pred_uncond = noise_pred_cond = noise_pred_text = neg  = None
-            
-            if sample_solver == "euler":
-                dt = timesteps[i] if i == len(timesteps)-1 else (timesteps[i] - timesteps[i + 1])
-                dt = dt.item() / self.num_timesteps
-                latents = latents - noise_pred * dt
+                            if (i <= cfg_zero_step):
+                                noise_pred = noise_pred_text*0. # it would be faster not to compute noise_pred...
+                            else:
+                                noise_pred_uncond *= alpha
+                        noise_pred = noise_pred_uncond + guide_scale * (noise_pred_text - noise_pred_uncond)            
+                ret_values = noise_pred_uncond = noise_pred_cond = noise_pred_text = neg  = None
+                return noise_pred
+
+            noise_pred = denoise_with_cfg_fn(latents) 
+            if noise_pred is None: return clear()
+            if self_refiner_handler:
+                latents, sample_scheduler = self_refiner_handler.step(i, latents, noise_pred, t, timesteps, target_shape, seed_g, sample_scheduler, scheduler_kwargs, denoise_with_cfg_fn)
+                if latents is None: return clear()
             else:
-                latents = sample_scheduler.step(
-                    noise_pred[:, :, :target_shape[1]],
-                    t,
-                    latents,
-                    **scheduler_kwargs)[0]
+                latents = sample_scheduler.step( noise_pred[:, :, :target_shape[1]], t, latents, **scheduler_kwargs)[0]
 
 
             if image_mask_latents is not None and i< masked_steps:
@@ -2103,37 +1682,6 @@ class WanAny2V:
                 noisy_image = randn[:, :, :source_latents.shape[2]] * sigma + (1 - sigma) * source_latents
                 latents[:, :, :source_latents.shape[2]] = noisy_image * (1-image_mask_latents) + image_mask_latents * latents[:, :, :source_latents.shape[2]]  
 
-            # Latent Noise Mask: Blend denoised latents with noised original for preserved regions
-            # This ensures preserved regions stay closer to the original throughout denoising.
-            # (Restores behavior from our pre-upgrade implementation.)
-            if (
-                latent_noise_mask_strength > 0
-                and latent_noise_mask_original is not None
-                and latent_noise_mask_blend is not None
-                and latent_noise_mask_noise is not None
-            ):
-                # Get next timestep (for calculating noise level at next step)
-                next_t = timesteps[i + 1] if i < len(timesteps) - 1 else torch.tensor([0.0], device=self.device)
-                latent_noise_factor = (
-                    next_t.item() / 1000.0 if hasattr(next_t, "item") else float(next_t) / 1000.0
-                )
-
-                # Account for ref_images if present
-                orig_start = ref_images_count if ref_images_before and ref_images_count > 0 else 0
-                orig_latents = latent_noise_mask_original[:, :, orig_start : orig_start + latents.shape[2]]
-                stored_noise = latent_noise_mask_noise[:, :, orig_start : orig_start + latents.shape[2]]
-                mask_blend = latent_noise_mask_blend[:, :, orig_start : orig_start + latents.shape[2]]
-
-                # Ensure shapes match
-                if orig_latents.shape[2:] == latents.shape[2:]:
-                    # Create noised version of original using stored noise (consistent across all steps)
-                    noised_original = orig_latents * (1.0 - latent_noise_factor) + stored_noise * latent_noise_factor
-
-                    # mask=1 (white) = generate new content (use denoised latents)
-                    # mask=0 (black) = preserve original (use noised original)
-                    preserve_weight = (1.0 - mask_blend) * latent_noise_mask_strength
-                    latents = latents * (1.0 - preserve_weight) + noised_original * preserve_weight
-                    noised_original = None
 
             if callback is not None:
                 latents_preview = latents
@@ -2174,11 +1722,10 @@ class WanAny2V:
         if image_outputs :
             x0 = [x[:,:1] for x in x0 ]
 
-        # Match encode: if we used end-frame-special VAE encode, use end-frame-special decode too.
-        videos = self.vae.decode(x0, VAE_tile_size, any_end_frame=vae_end_frame_mode)
+        videos = self.vae.decode(x0, VAE_tile_size)
         any_vae2= self.vae2 is not None
         if any_vae2:
-            videos2 = self.vae2.decode(x0, VAE_tile_size, any_end_frame=vae_end_frame_mode)
+            videos2 = self.vae2.decode(x0, VAE_tile_size)
 
         if image_outputs:
             videos = torch.cat([video[:,:1] for video in videos], dim=1) if len(videos) > 1 else videos[0][:,:1]

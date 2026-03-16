@@ -1,0 +1,20 @@
+Traceback (most recent call last):
+  File "/Users/peteromalley/Documents/Headless-Wan2GP/scripts/run_worker_matrix.py", line 429, in run_case
+    raw_result = worker_mod.process_single_task(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/Documents/Headless-Wan2GP/worker.py", line 150, in process_single_task
+    result = TaskRegistry.dispatch(task_type, context)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/Documents/Headless-Wan2GP/source/task_handlers/tasks/task_registry.py", line 1202, in dispatch
+    return handlers[task_type]()
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/Documents/Headless-Wan2GP/source/task_handlers/tasks/task_registry.py", line 1183, in <lambda>
+    "extract_frame": lambda: handle_extract_frame_task(
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/Documents/Headless-Wan2GP/source/task_handlers/extract_frame.py", line 56, in handle_extract_frame_task
+    success = save_frame_from_video(
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/peteromalley/Documents/Headless-Wan2GP/source/utils/frame_utils.py", line 234, in save_frame_from_video
+    if not input_video_path.exists() or input_video_path.stat().st_size == 0:
+           ^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'str' object has no attribute 'exists'

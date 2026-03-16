@@ -113,20 +113,6 @@ def update_loras_slists(trans, slists_dict, num_inference_steps, phase_switch_st
     sz = len(slists_dict["phase1"])
     slists = [ expand_slist(slists_dict, i, num_inference_steps, phase_switch_step, phase_switch_step2 ) for i in range(sz)  ]
     nos = [str(l) for l in range(sz)]
-    
-    # [LORA_STEP_MULTIPLIERS] Log the actual per-step multipliers being set for each LoRA
-    print(f"[LORA_STEP_MULTIPLIERS] ═══════════════════════════════════════════════════════")
-    print(f"[LORA_STEP_MULTIPLIERS] Setting per-step LoRA multipliers for {sz} LoRAs, {num_inference_steps} steps")
-    print(f"[LORA_STEP_MULTIPLIERS] phase_switch_step={phase_switch_step}, phase_switch_step2={phase_switch_step2}")
-    for lora_idx, slist in enumerate(slists):
-        if isinstance(slist, list):
-            # Per-step multipliers
-            print(f"[LORA_STEP_MULTIPLIERS] LoRA[{lora_idx}]: {slist}")
-        else:
-            # Constant multiplier across all steps
-            print(f"[LORA_STEP_MULTIPLIERS] LoRA[{lora_idx}]: constant={slist} for all steps")
-    print(f"[LORA_STEP_MULTIPLIERS] ═══════════════════════════════════════════════════════")
-    
     offload.activate_loras(trans, nos, slists ) 
 
 

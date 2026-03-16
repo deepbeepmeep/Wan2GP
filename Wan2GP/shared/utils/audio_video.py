@@ -12,6 +12,8 @@ import torch
 from PIL import Image
 import os.path as osp
 import json
+import numpy as np
+import soundfile as sf
 
 def rand_name(length=8, suffix=''):
     name = binascii.b2a_hex(os.urandom(length)).decode('utf-8')
@@ -22,10 +24,148 @@ def rand_name(length=8, suffix=''):
     return name
 
 
+def _prepare_audio_array(audio_data):
+    if torch.is_tensor(audio_data):
+        audio_data = audio_data.detach().cpu().float().numpy()
+    else:
+        audio_data = np.asarray(audio_data, dtype=np.float32)
+    if audio_data.ndim == 2 and audio_data.shape[0] <= 8 and audio_data.shape[1] > audio_data.shape[0]:
+        audio_data = audio_data.T
+    return audio_data
 
-def extract_audio_tracks(source_video, verbose=False, query_only=False):
+
+def write_wav_file(path, audio_data, sample_rate):
+    audio_array = _prepare_audio_array(audio_data)
+    sf.write(path, audio_array, int(sample_rate))
+    return path
+
+
+def _compute_active_abs_amplitude(audio_data):
+    abs_audio = np.abs(np.asarray(audio_data, dtype=np.float32)).reshape(-1)
+    if abs_audio.size == 0:
+        return 0.0, 0.0
+    avg_abs = float(abs_audio.mean())
+    if avg_abs <= 0.0:
+        return 0.0, 0.0
+    threshold = 0.1 * avg_abs
+    active_mask = abs_audio > threshold
+    active_avg_abs = float(abs_audio[active_mask].mean()) if np.any(active_mask) else avg_abs
+    return avg_abs, active_avg_abs
+
+
+def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_dir=None, prefix="audio_norm_"):
+    audio1, sr1 = sf.read(os.fspath(audio_path1), dtype="float32", always_2d=False)
+    audio2, sr2 = sf.read(os.fspath(audio_path2), dtype="float32", always_2d=False)
+
+    avg1, active1 = _compute_active_abs_amplitude(audio1)
+    avg2, active2 = _compute_active_abs_amplitude(audio2)
+    midpoint = 0.5 * (active1 + active2)
+    eps = 1e-8
+    gain1 = midpoint / active1 if active1 > eps else 1.0
+    gain2 = midpoint / active2 if active2 > eps else 1.0
+
+    norm1 = np.clip(np.asarray(audio1, dtype=np.float32) * float(gain1), -1.0, 1.0)
+    norm2 = np.clip(np.asarray(audio2, dtype=np.float32) * float(gain2), -1.0, 1.0)
+
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+
+    fd1, out1 = tempfile.mkstemp(prefix=prefix + "1_", suffix=".wav", dir=output_dir)
+    os.close(fd1)
+    fd2, out2 = tempfile.mkstemp(prefix=prefix + "2_", suffix=".wav", dir=output_dir)
+    os.close(fd2)
+    sf.write(out1, norm1, int(sr1))
+    sf.write(out2, norm2, int(sr2))
+
+    stats = {
+        "audio1_avg_abs": float(avg1),
+        "audio2_avg_abs": float(avg2),
+        "audio1_active_avg_abs": float(active1),
+        "audio2_active_avg_abs": float(active2),
+        "target_active_avg_abs": float(midpoint),
+        "audio1_gain": float(gain1),
+        "audio2_gain": float(gain2),
+    }
+    return out1, out2, stats
+
+
+def _get_audio_codec_settings(codec_key):
+    if not codec_key:
+        codec_key = "wav"
+    codec_key = str(codec_key).lower()
+    if codec_key == "mp3":
+        codec_key = "mp3_192"
+    settings = {
+        "wav": {"ext": "wav", "format": "wav"},
+        "mp3_128": {"ext": "mp3", "format": "mp3", "bitrate": "128k"},
+        "mp3_192": {"ext": "mp3", "format": "mp3", "bitrate": "192k"},
+        "mp3_320": {"ext": "mp3", "format": "mp3", "bitrate": "320k"},
+    }
+    return settings.get(codec_key, settings["wav"])
+
+
+def get_mp4_audio_codec_settings(codec_key):
+    codec_key = "aac_128" if not codec_key else str(codec_key).lower()
+    settings = {
+        "aac_128": {"codec": "aac", "bitrate": "128k", "ext": ".aac"},
+        "aac_192": {"codec": "aac", "bitrate": "192k", "ext": ".aac"},
+        "aac_256": {"codec": "aac", "bitrate": "256k", "ext": ".aac"},
+        "aac_320": {"codec": "aac", "bitrate": "320k", "ext": ".aac"},
+        "alac": {"codec": "alac", "bitrate": None, "ext": ".m4a"},
+    }
+    return settings.get(codec_key, settings["aac_128"])
+
+
+def get_audio_codec_extension(codec_key):
+    return _get_audio_codec_settings(codec_key)["ext"]
+
+
+def _run_ffmpeg_encode(input_path, output_path, codec, bitrate=None, sample_rate=None, drop_video=False):
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", input_path]
+    if drop_video:
+        cmd.append("-vn")
+    cmd += ["-c:a", codec]
+    if bitrate:
+        cmd += ["-b:a", bitrate]
+    if sample_rate:
+        cmd += ["-ar", str(int(sample_rate))]
+    cmd.append(output_path)
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
+def save_audio_file(path, audio_data, sample_rate, codec_key="wav"):
+    settings = _get_audio_codec_settings(codec_key)
+    ext = settings["ext"]
+    if not path.lower().endswith(f".{ext}"):
+        path = osp.splitext(path)[0] + f".{ext}"
+    if settings["format"] == "wav":
+        return write_wav_file(path, audio_data, sample_rate)
+    fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="audio_")
+    os.close(fd)
+    try:
+        write_wav_file(tmp_path, audio_data, sample_rate)
+        _run_ffmpeg_encode(tmp_path, path, "libmp3lame", bitrate=settings.get("bitrate"), sample_rate=sample_rate)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+    return path
+
+
+def extract_audio_track_to_wav(video_path, output_path):
+    if not video_path:
+        return None
+    video_path = os.fspath(video_path)
+    import ffmpeg
+    ffmpeg.input(video_path).output(output_path, **{"map": "0:a:0", "acodec": "pcm_s16le"}).overwrite_output().run(quiet=True)
+    return output_path
+
+
+
+def extract_audio_tracks(source_video, verbose=False, query_only=False, codec_key="aac_128", temp_format=None):
     """
-    Extract all audio tracks from a source video into temporary AAC files.
+    Extract all audio tracks from a source video into temporary audio files.
 
     Returns:
         Tuple:
@@ -67,9 +207,13 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False):
 
     file_paths = []
     metadata = []
+    if temp_format == "wav":
+        audio_settings = {"codec": "pcm_s16le", "bitrate": None, "ext": ".wav"}
+    else:
+        audio_settings = get_mp4_audio_codec_settings(codec_key)
 
     for i, stream in enumerate(audio_streams):
-        fd, temp_path = tempfile.mkstemp(suffix=f'_track{i}.aac', prefix='audio_')
+        fd, temp_path = tempfile.mkstemp(suffix=f'_track{i}{audio_settings["ext"]}', prefix='audio_')
         os.close(fd)
 
         file_paths.append(temp_path)
@@ -81,10 +225,10 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False):
             'language': stream.get('tags', {}).get('language', None)
         })
 
-        ffmpeg.input(source_video).output(
-            temp_path,
-            **{f'map': f'0:a:{i}', 'acodec': 'aac', 'b:a': '128k'}
-        ).overwrite_output().run(quiet=not verbose)
+        output_kwargs = {f'map': f'0:a:{i}', 'acodec': audio_settings["codec"]}
+        if audio_settings["bitrate"]:
+            output_kwargs['b:a'] = audio_settings["bitrate"]
+        ffmpeg.input(source_video).output(temp_path, **output_kwargs).overwrite_output().run(quiet=not verbose)
 
     return file_paths, metadata
 
@@ -96,10 +240,12 @@ def combine_and_concatenate_video_with_audio_tracks(
     source_audio_duration, audio_sampling_rate,
     new_audio_from_start=False,
     source_audio_metadata=None,
-    audio_bitrate='128k',
-    audio_codec='aac',
+    audio_codec_key="aac_128",
     verbose = False
 ):
+    audio_settings = get_mp4_audio_codec_settings(audio_codec_key)
+    audio_codec = audio_settings["codec"]
+    audio_bitrate = audio_settings["bitrate"]
     inputs, filters, maps, idx = ['-i', video_path], [], ['-map', '0:v'], 1
     metadata_args = []
     sources = source_audio_tracks or []
@@ -162,10 +308,11 @@ def combine_and_concatenate_video_with_audio_tracks(
            *maps, *metadata_args,
            '-c:v', 'copy',
            '-c:a', audio_codec,
-           '-b:a', audio_bitrate,
            '-ar', str(audio_sampling_rate),
            '-ac', '1',
            '-shortest', save_path_tmp]
+    if audio_bitrate:
+        cmd[-6:-6] = ['-b:a', audio_bitrate]
 
     if verbose:
         print(f"ffmpeg command: {cmd}")
@@ -263,27 +410,46 @@ def save_video(tensor,
     error = None
     for _ in range(retry):
         try:
-            if torch.is_tensor(tensor):
-                # Preprocess tensor
-                tensor = tensor.clamp(min(value_range), max(value_range))
-                tensor = torch.stack([
-                    torchvision.utils.make_grid(u, nrow=nrow, normalize=normalize, value_range=value_range)
-                    for u in tensor.unbind(2)
-                ], dim=1).permute(1, 2, 3, 0)
-                tensor = (tensor * 255).type(torch.uint8).cpu()
-                arrays = tensor.numpy()
-            else:
-                arrays = tensor
-
             # Write video (silence ffmpeg logs)
             writer = imageio.get_writer(cache_file, fps=fps, ffmpeg_log_level='error', **codec_params)
-            for frame in arrays:
-                writer.append_data(frame)
-        
-            writer.close()
+            try:
+                if torch.is_tensor(tensor):
+                    # Stream frames to avoid materializing the full video on CPU.
+                    if tensor.dtype == torch.uint8 and tensor.ndim == 5 and tensor.shape[0] == 1 and nrow == 1:
+                        frames = tensor[0].permute(1, 2, 3, 0)
+                        for frame in frames:
+                            writer.append_data(frame.cpu().numpy())
+                    else:
+                        if tensor.dtype == torch.uint8:
+                            tensor = tensor.float().div_(127.5).sub_(1.0)
+                        for u in tensor.unbind(2):
+                            u = u.clamp(min(value_range), max(value_range))
+                            grid = torchvision.utils.make_grid(
+                                u, nrow=nrow, normalize=normalize, value_range=value_range
+                            )
+                            frame = grid.mul(255).type(torch.uint8).permute(1, 2, 0).cpu().numpy()
+                            writer.append_data(frame)
+                elif isinstance(tensor, (list, tuple)) and tensor and torch.is_tensor(tensor[0]):
+                    for chunk in tensor:
+                        if chunk is None:
+                            continue
+                        if chunk.ndim == 4:
+                            if chunk.shape[-1] in (1, 3, 4):
+                                frames = chunk
+                            else:
+                                frames = chunk.permute(1, 2, 3, 0)
+                            for frame in frames:
+                                writer.append_data(frame.cpu().numpy())
+                        else:
+                            writer.append_data(chunk)
+                else:
+                    for frame in tensor:
+                        writer.append_data(frame)
+            finally:
+                writer.close()
 
             return cache_file
-            
+
         except Exception as e:
             error = e
             print(f"error saving {save_file}: {e}")
@@ -445,3 +611,4 @@ def read_image_metadata(image_path):
             return None
     except Exception as e:
         print(f"Error reading metadata: {e}"); return None
+

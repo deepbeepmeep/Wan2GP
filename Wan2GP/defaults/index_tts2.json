@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "TTS Index TTS 2",
+        "architecture": "index_tts2",
+        "description": "IndexTTS2 zero-shot speech synthesis with optional emotion guidance from text or a second reference audio. It supports two-speakers dialogue by starting lines with 'Speaker 1:' and 'Speaker 2:' tags. Emotion is automatically detected in each paragraph or set manually using [].", 
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/index_tts2_gpt_fp16.safetensors"
+        ]
+    },
+    "prompt": "[fear] At the very beginning I was so afraid to speak.\n[sadness] Nobody would talk to me. I felt so alone.\n[disgust] They would just ignore me and pretend that I didnt exist\n[happy] By chance I discovered this wonderful App, and now everything is different.\n[anger] I have a new voice and now everybody will have no choice but to listen to my words !!!",
+    "alt_prompt": "",
+    "duration_seconds": 25,
+    "pause_seconds": 0.2,
+    "multi_prompts_gen_type": 2,
+    "temperature": 0.8,
+    "top_p": 0.8,
+    "top_k": 30
+}

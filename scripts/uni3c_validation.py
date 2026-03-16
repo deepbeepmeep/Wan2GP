@@ -20,16 +20,23 @@ Usage:
 """
 
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
 
+def run_subprocess(cmd, **kwargs):
+    """Small indirection for subprocess execution so tests can stub probes/extraction."""
+    return subprocess.run(cmd, **kwargs)
+
+
 def extract_frames_from_video(
     video_path: str,
     num_frames: int = 5,
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
+    allow_fallbacks: bool = False,
 ) -> List[str]:
     """
     Extract evenly-spaced frames from a video using ffmpeg.
@@ -55,13 +62,15 @@ def extract_frames_from_video(
     
     # Get video duration using ffprobe
     try:
-        result = subprocess.run(
+        result = run_subprocess(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
             capture_output=True, text=True, check=True, timeout=300
         )
         duration = float(result.stdout.strip())
     except (subprocess.SubprocessError, OSError, ValueError) as e:
+        if not allow_fallbacks and "ffprobe" in str(e).lower():
+            raise RuntimeError(f"Could not resolve duration for {video_path}") from e
         print(f"[UNI3C_VAL] Warning: Could not get duration, using 5s default: {e}")
         duration = 5.0
     
@@ -78,7 +87,7 @@ def extract_frames_from_video(
         frame_path = out_dir / f"{video_name}_frame_{i:02d}.jpg"
         
         try:
-            subprocess.run(
+            run_subprocess(
                 ["ffmpeg", "-y", "-ss", str(ts), "-i", str(video_path),
                  "-vframes", "1", "-q:v", "2", str(frame_path)],
                 capture_output=True, check=True, timeout=300
@@ -86,8 +95,14 @@ def extract_frames_from_video(
             if frame_path.exists():
                 frame_paths.append(str(frame_path))
         except (subprocess.SubprocessError, OSError) as e:
+            if not allow_fallbacks:
+                print(f"[UNI3C_VAL] Warning: Failed to extract frame at {ts}s: {e}")
+                continue
             print(f"[UNI3C_VAL] Warning: Failed to extract frame at {ts}s: {e}")
-    
+
+    if not frame_paths:
+        raise RuntimeError(f"Failed to extract any frames from {video_path}")
+
     return frame_paths
 
 
@@ -187,7 +202,8 @@ def create_uni3c_comparison(
     uni3c_output: str,
     output_dir: str = "./test_results/uni3c_validation",
     num_frames: int = 5,
-    task_id: str = "unknown"
+    task_id: str = "unknown",
+    allow_fallbacks: bool = False,
 ) -> str:
     """
     Create a comparison image grid for VLM validation.
@@ -220,9 +236,24 @@ def create_uni3c_comparison(
     frames_dir = output_dir / "frames" / task_id
     frames_dir.mkdir(parents=True, exist_ok=True)
     
-    guide_frames = extract_frames_from_video(guide_video, num_frames, str(frames_dir / "guide"))
-    baseline_frames = extract_frames_from_video(baseline_output, num_frames, str(frames_dir / "baseline"))
-    uni3c_frames = extract_frames_from_video(uni3c_output, num_frames, str(frames_dir / "uni3c"))
+    guide_frames = extract_frames_from_video(
+        guide_video,
+        num_frames,
+        str(frames_dir / "guide"),
+        allow_fallbacks=allow_fallbacks,
+    )
+    baseline_frames = extract_frames_from_video(
+        baseline_output,
+        num_frames,
+        str(frames_dir / "baseline"),
+        allow_fallbacks=allow_fallbacks,
+    )
+    uni3c_frames = extract_frames_from_video(
+        uni3c_output,
+        num_frames,
+        str(frames_dir / "uni3c"),
+        allow_fallbacks=allow_fallbacks,
+    )
     
     print(f"[UNI3C_VAL] Extracted frames: guide={len(guide_frames)}, baseline={len(baseline_frames)}, uni3c={len(uni3c_frames)}")
     
@@ -311,21 +342,31 @@ Image path: {comparison_image_path}
 """
 
 
-# CLI interface for testing
-if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) < 4:
-        print("Usage: python uni3c_validation.py <guide_video> <baseline_output> <uni3c_output> [task_id]")
+def main(argv: Optional[List[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    allow_fallbacks = False
+    if "--allow-fallbacks" in argv:
+        argv.remove("--allow-fallbacks")
+        allow_fallbacks = True
+
+    if len(argv) < 4:
+        print("Usage: python uni3c_validation.py <guide_video> <baseline_output> <uni3c_output> <task_id> [--allow-fallbacks]")
         print("\nCreates a comparison image for VLM validation of Uni3C motion guidance.")
-        sys.exit(1)
-    
-    guide = sys.argv[1]
-    baseline = sys.argv[2]
-    uni3c = sys.argv[3]
-    task_id = sys.argv[4] if len(sys.argv) > 4 else "test"
-    
-    comparison_path = create_uni3c_comparison(guide, baseline, uni3c, task_id=task_id)
+        return 1
+
+    guide, baseline, uni3c, task_id = argv[:4]
+    comparison_path = create_uni3c_comparison(
+        guide,
+        baseline,
+        uni3c,
+        task_id=task_id,
+        allow_fallbacks=allow_fallbacks,
+    )
     print(f"\n✅ Comparison image created: {comparison_path}")
     print(f"\n📋 VLM Prompt:\n{create_vlm_validation_prompt(comparison_path)}")
+    return 0
 
+
+# CLI interface for testing
+if __name__ == "__main__":
+    raise SystemExit(main())

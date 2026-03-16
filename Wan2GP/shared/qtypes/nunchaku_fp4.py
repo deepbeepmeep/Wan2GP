@@ -13,6 +13,7 @@ from optimum.quanto.tensor.qtype import qtype as _quanto_qtype, qtypes as _quant
 
 
 HANDLER_NAME = "nunchaku_fp4"
+HANDLER_PRIORITY = 2
 
 _NUNCHAKU_FP4_QTYPE_NAME = "nunchaku_fp4"
 if _NUNCHAKU_FP4_QTYPE_NAME not in _quanto_qtypes:
@@ -28,6 +29,7 @@ if _NUNCHAKU_FP4_QTYPE_NAME not in _quanto_qtypes:
 _NUNCHAKU_FP4_QTYPE = _quanto_qtypes[_NUNCHAKU_FP4_QTYPE_NAME]
 _NUNCHAKU_OPS = None
 _NUNCHAKU_FALLBACK_NOTICE = False
+_NUNCHAKU_KERNEL_NOTICE = False
 _NUNCHAKU_SPLIT_FIELDS = {
     "qweight": 0,
     "wscales": 1,
@@ -69,6 +71,19 @@ def make_nunchaku_splitter(split_map):
             **split_kwargs,
         )
     return _split
+
+
+def split_fused_weights(state_dict, fused_split_map, quantization_map=None, allowed_bases=None, default_dtype=None, verboseLevel=1):
+    from mmgp import offload
+    split_kwargs = get_nunchaku_split_kwargs()
+    return offload.sd_split_linear(
+        state_dict,
+        fused_split_map,
+        verboseLevel=verboseLevel,
+        allowed_bases=allowed_bases,
+        return_split_bases=True,
+        **split_kwargs,
+    )
 
 
 def _install_nunchaku_shim(candidate_root):
@@ -150,6 +165,18 @@ def _notify_nunchaku_fallback(reason):
         return
     print(f"[nunchaku_fp4] {reason}")
     _NUNCHAKU_FALLBACK_NOTICE = True
+
+
+def _notify_nunchaku_kernel_status(verboseLevel=1):
+    global _NUNCHAKU_KERNEL_NOTICE
+    if _NUNCHAKU_KERNEL_NOTICE:
+        return
+    ops = _load_nunchaku_ops()
+    if ops:
+        print("[nunchaku_fp4] Using Nunchaku kernels.")
+    elif not _NUNCHAKU_FALLBACK_NOTICE:
+        print("[nunchaku_fp4] Nunchaku kernels unavailable; using Python fallback.")
+    _NUNCHAKU_KERNEL_NOTICE = True
 
 
 def _is_float8_dtype(dtype):
@@ -400,8 +427,10 @@ def _unpack_nunchaku_fp4_weight(qweight, out_features, in_features):
     k_tiles = in_features // mem_k
     packed_i32 = qweight.view(torch.int32)
     packed_i32 = packed_i32.view(n_tiles, k_tiles, 1, 8, 8, 4, 2, 2, 1)
-    shifts = torch.tensor([0, 4, 8, 12, 16, 20, 24, 28], device=packed_i32.device, dtype=torch.int32)
-    vals = (packed_i32.unsqueeze(-1) >> shifts) & 0xF
+    vals = torch.stack(
+        [(packed_i32 >> shift) & 0xF for shift in (0, 4, 8, 12, 16, 20, 24, 28)],
+        dim=-1,
+    )
     vals = vals.permute(0, 3, 6, 4, 8, 1, 2, 7, 5, 9).contiguous()
     vals = vals.view(out_features, in_features).to(torch.int16)
     return vals
@@ -428,9 +457,7 @@ def _unpack_int4_from_int32(qweight, out_features, in_features):
 
     q = qweight.view(torch.int32).reshape(out_features, in_features // 8)
     q = q.to(torch.int64) & 0xFFFFFFFF
-    shifts = torch.arange(0, 32, 4, device=q.device, dtype=torch.int64)
-    mask = torch.tensor(0x0F, device=q.device, dtype=torch.int64)
-    vals = (q.unsqueeze(-1) >> shifts) & mask
+    vals = torch.stack([(q >> shift) & 0xF for shift in range(0, 32, 4)], dim=-1)
     return vals.reshape(out_features, in_features)
 
 
@@ -476,6 +503,55 @@ def _nunchaku_qfallback(callable, *args, **kwargs):
 class NunchakuBaseWeightTensor(QTensor):
     def __init__(self, qtype, axis):
         super().__init__(qtype, axis)
+
+    def __repr__(self):
+        cls_name = self.__class__.__name__
+        try:
+            shape = tuple(self.shape)
+        except Exception:
+            shape = "<?>"
+        try:
+            dtype = str(self.dtype).replace("torch.", "")
+        except Exception:
+            dtype = "<?>"
+        try:
+            device = str(self.device)
+        except Exception:
+            device = "<?>"
+        qtype = getattr(self, "_qtype", None)
+        qtype_name = getattr(qtype, "name", None) or str(qtype) if qtype is not None else "<?>"
+        parts = [
+            f"shape={shape}",
+            f"dtype={dtype}",
+            f"device={device}",
+            f"qtype={qtype_name}",
+        ]
+        group_size = getattr(self, "_group_size", None)
+        if group_size is not None:
+            parts.append(f"group_size={group_size}")
+        field_parts = []
+        for name in (
+            "_qweight",
+            "_wscales",
+            "_wzeros",
+            "_wtscale",
+            "_wcscales",
+            "_smooth_factor",
+            "_proj_down",
+            "_proj_up",
+        ):
+            if not hasattr(self, name):
+                continue
+            value = getattr(self, name)
+            if torch.is_tensor(value):
+                field_parts.append(f"{name[1:]}={tuple(value.shape)}:{value.dtype}")
+            else:
+                field_parts.append(f"{name[1:]}={value}")
+        if field_parts:
+            parts.append("fields={" + ", ".join(field_parts) + "}")
+        return f"{cls_name}(" + ", ".join(parts) + ")"
+
+    __str__ = __repr__
 
     def get_quantized_subtensors(self):
         raise NotImplementedError
@@ -697,7 +773,14 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
         out = out[: x.shape[0]]
         return out.reshape(*input.shape[:-1], self.shape[0])
 
+    @torch.compiler.disable()
     def linear(self, input, bias=None):
+        if torch.is_tensor(input):
+            from torch._subclasses.fake_tensor import is_fake
+
+            if is_fake(input):
+                out_shape = (*input.shape[:-1], self.shape[0])
+                return torch.empty(out_shape, device=input.device, dtype=input.dtype)
         if torch.is_tensor(input) and input.device.type == "cuda":
             return self._linear_cuda(input, bias=bias)
         return self._linear_fallback(input, bias=bias)
@@ -994,7 +1077,14 @@ class NunchakuAWQWeightTensor(NunchakuBaseWeightTensor):
             out.add_(bias.view(view_shape))
         return out.reshape(*input.shape[:-1], out.shape[-1])
 
+    @torch.compiler.disable()
     def linear(self, input, bias=None):
+        if torch.is_tensor(input):
+            from torch._subclasses.fake_tensor import is_fake
+
+            if is_fake(input):
+                out_shape = (*input.shape[:-1], self.shape[0])
+                return torch.empty(out_shape, device=input.device, dtype=input.dtype)
         if torch.is_tensor(input) and input.device.type == "cuda":
             return self._linear_cuda(input, bias=bias)
         return self._linear_fallback(input, bias=bias)
@@ -1189,6 +1279,7 @@ class QLinearNunchakuFp4(QModuleMixin, torch.nn.Linear):
     def set_default_dtype(self, dtype):
         self._nunchaku_default_dtype = dtype
 
+    @torch.compiler.disable()
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         qweight = self.qweight
         if isinstance(qweight, NunchakuBaseWeightTensor):
@@ -1503,6 +1594,7 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None)
     specs = _collect_nunchaku_specs(state_dict)
     if not specs:
         return {"state_dict": state_dict, "quant_map": {}}
+    _notify_nunchaku_kernel_status(verboseLevel=verboseLevel)
     quant_map = {spec["name"]: {"weights": "nunchaku_fp4", "activations": "none"} for spec in specs}
     return {"state_dict": state_dict, "quant_map": quant_map}
 

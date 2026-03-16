@@ -6,7 +6,9 @@ import numpy as np
 import gradio as gr
 import cv2
 from PIL import Image
-from shared.utils import files_locator as fl 
+from shared.utils.hf import build_hf_url
+from shared.utils import files_locator as fl
+from .kiwi.variant_config import get_kiwi_variant_model_def
 
 def test_vace(base_model_type):
     return base_model_type in ["vace_14B", "vace_14B_2_2", "vace_1.3B", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B", "vace_ditto_14B"]     
@@ -36,7 +38,7 @@ def test_alpha(base_model_type):
     return base_model_type in ["alpha", "alpha2", "alpha_lynx"]
 
 def test_wan_5B(base_model_type):
-    return base_model_type in ["ti2v_2_2", "lucy_edit"]
+    return base_model_type in ["ti2v_2_2", "lucy_edit", "kiwi_edit"]
 
 def test_i2v_2_2(base_model_type):
     return base_model_type in ["i2v_2_2", "i2v_2_2_multitalk", "i2v_2_2_svi2pro"]
@@ -51,7 +53,7 @@ class family_handler():
         return ["multitalk", "infinitetalk", "fantasy", "vace_14B", "vace_14B_2_2", "vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B",
                     "t2v_1.3B", "standin", "lynx_lite", "lynx", "t2v", "t2v_2_2", "vace_1.3B", "vace_ditto_14B", "phantom_1.3B", "phantom_14B",
                     "recam_1.3B", "animate", "alpha", "alpha2", "alpha_lynx", "chrono_edit",
-                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "i2v_2_2_svi2pro"]
+                    "i2v", "i2v_2_2", "i2v_2_2_multitalk", "ti2v_2_2", "lucy_edit", "kiwi_edit", "flf2v_720p", "fun_inp_1.3B", "fun_inp", "mocha", "steadydancer", "wanmove", "scail", "i2v_2_2_svi2pro"]
 
 
     @staticmethod
@@ -69,6 +71,7 @@ class family_handler():
             "vace_standin_14B" : "vace_14B",
             "vace_lynx_14B" : "vace_14B",
             "vace_14B_2_2": "vace_14B",
+            "kiwi_edit": "ti2v_2_2",
         }
 
         models_comp_map = { 
@@ -89,51 +92,51 @@ class family_handler():
         return {"wan":(0, "Wan2.1"), "wan2_2":(1, "Wan2.2") }
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-i2v",
             type=str,
-            default=os.path.join("loras", "wan_i2v"),
-            help="Path to a directory that contains Wan i2v Loras "
+            default=None,
+            help=f"Path to a directory that contains Wan i2v Loras (default: {os.path.join(lora_root, 'wan_i2v')})"
         )
         parser.add_argument(
             "--lora-dir",
             type=str,
-            default=os.path.join("loras", "wan"),
-            help="Path to a directory that contains Wan t2v Loras"
+            default=None,
+            help=f"Path to a directory that contains Wan t2v Loras (default: {os.path.join(lora_root, 'wan')})"
         )
         parser.add_argument(
             "--lora-dir-wan-1-3b",
             type=str,
-            default=os.path.join("loras", "wan_1.3B"),
-            help="Path to a directory that contains Wan 1.3B Loras"
+            default=None,
+            help=f"Path to a directory that contains Wan 1.3B Loras (default: {os.path.join(lora_root, 'wan_1.3B')})"
         )
         parser.add_argument(
             "--lora-dir-wan-5b",
             type=str,
-            default=os.path.join("loras", "wan_5B"),
-            help="Path to a directory that contains Wan 5B Loras"
+            default=None,
+            help=f"Path to a directory that contains Wan 5B Loras (default: {os.path.join(lora_root, 'wan_5B')})"
         )
         parser.add_argument(
             "--lora-dir-wan-i2v",
             type=str,
-            default=os.path.join("loras", "wan_i2v"),
-            help="Path to a directory that contains Wan i2v Loras"
+            default=None,
+            help=f"Path to a directory that contains Wan i2v Loras (default: {os.path.join(lora_root, 'wan_i2v')})"
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
+    def get_lora_dir(base_model_type, args, lora_root):
         i2v = test_class_i2v(base_model_type) and not test_i2v_2_2(base_model_type)
-        wan_dir = getattr(args, "lora_dir_wan", None) or getattr(args, "lora_dir", None) or os.path.join("loras", "wan")
-        wan_i2v_dir = getattr(args, "lora_dir_wan_i2v", None) or getattr(args, "lora_dir_i2v", None) or os.path.join("loras", "wan_i2v")
-        wan_1_3b_dir = getattr(args, "lora_dir_wan_1_3b", None) or os.path.join("loras", "wan_1.3B")
-        wan_5b_dir = getattr(args, "lora_dir_wan_5b", None) or os.path.join("loras", "wan_5B")
+        wan_dir = getattr(args, "lora_dir_wan", None) or getattr(args, "lora_dir", None) or os.path.join(lora_root, "wan")
+        wan_i2v_dir = getattr(args, "lora_dir_wan_i2v", None) or getattr(args, "lora_dir_i2v", None) or os.path.join(lora_root, "wan_i2v")
+        wan_1_3b_dir = getattr(args, "lora_dir_wan_1_3b", None) or os.path.join(lora_root, "wan_1.3B")
+        wan_5b_dir = getattr(args, "lora_dir_wan_5b", None) or os.path.join(lora_root, "wan_5B")
 
         if i2v:
             return wan_i2v_dir
         if "1.3B" in base_model_type:
             return wan_1_3b_dir
-        if base_model_type in ["ti2v_2_2", "ovi"]:
+        if test_wan_5B(base_model_type) or base_model_type in ["ovi"]:
             return wan_5b_dir
         return wan_dir
 
@@ -183,17 +186,18 @@ class family_handler():
             skip_steps_cache.coefficients = coefficients
 
     @staticmethod
-    def get_wan_text_encoder_filename(text_encoder_quantization):
-        text_encoder_filename =  "umt5-xxl/models_t5_umt5-xxl-enc-bf16.safetensors"
-        if text_encoder_quantization =="int8":
-            text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_int8") 
-        return  fl.locate_file(text_encoder_filename, True)
-
-    @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {}
+        override_text_encoder_urls = model_def.get("text_encoder_URLs", None)
+        override_text_encoder_folder = model_def.get("text_encoder_folder", None)
         if "URLs2" in model_def:
             extra_model_def["no_steps_skipping"] = True
+            extra_model_def["compile"] = ["transformer","transformer2"]
+        text_encoder_folder = "umt5-xxl"
+        text_encoder_urls = [
+            build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-bf16.safetensors"),
+            build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-quanto_int8.safetensors"),
+        ]
         extra_model_def["i2v_class"] = i2v =  test_class_i2v(base_model_type)
         extra_model_def["t2v_class"] = t2v =  test_class_t2v(base_model_type)
         extra_model_def["multitalk_class"] = multitalk = test_multitalk(base_model_type)
@@ -205,6 +209,22 @@ class family_handler():
         extra_model_def["color_correction"] = True
         extra_model_def["svi2pro"] = svi2pro = test_svi2pro(base_model_type)
         extra_model_def["i2v_2_2"] = i2v_2_2 = test_i2v_2_2(base_model_type)
+        if base_model_type == "kiwi_edit":
+            extra_model_def.update(get_kiwi_variant_model_def(model_def))
+            text_encoder_folder = override_text_encoder_folder or extra_model_def["kiwi_text_encoder_folder"]
+            kiwi_mllm_repo_id = extra_model_def["kiwi_mllm_repo_id"]
+            if override_text_encoder_urls is None:
+                text_encoder_urls = [
+                    build_hf_url(kiwi_mllm_repo_id, text_encoder_folder, extra_model_def["kiwi_text_encoder_file"]),
+                    build_hf_url(kiwi_mllm_repo_id, text_encoder_folder, extra_model_def["kiwi_text_encoder_quanto_file"]),
+                ]
+            else:
+                text_encoder_urls = override_text_encoder_urls
+        elif override_text_encoder_urls is not None or override_text_encoder_folder is not None:
+            text_encoder_folder = override_text_encoder_folder or text_encoder_folder
+            text_encoder_urls = override_text_encoder_urls or text_encoder_urls
+        extra_model_def["text_encoder_URLs"] = text_encoder_urls
+        extra_model_def["text_encoder_folder"] = text_encoder_folder
 
         
         if multitalk or base_model_type in ["fantasy"]:
@@ -214,6 +234,9 @@ class family_handler():
 
         if base_model_type in ["vace_multitalk_14B", "vace_standin_14B", "vace_lynx_14B"]:
             extra_model_def["parent_model_type"] = "vace_14B"
+
+        if base_model_type in ["alpha2"]:
+            extra_model_def["parent_model_type"] = "alpha"
 
         group = "wan"
         if base_model_type in ["t2v_2_2", "vace_14B_2_2"] or test_i2v_2_2(base_model_type):
@@ -261,7 +284,7 @@ class family_handler():
         "sliding_window" : base_model_type in ["multitalk", "infinitetalk", "t2v", "t2v_2_2", "fantasy", "animate", "lynx"] or test_class_i2v(base_model_type) or test_wan_5B(base_model_type) or vace_class,  #"ti2v_2_2",
         "multiple_submodels" : multiple_submodels,
         "guidance_max_phases" : 3,
-        "skip_layer_guidance" : True,
+        "perturbation" : True,
         "flow_shift": True,
         "cfg_zero" : True,
         "cfg_star" : True,
@@ -276,6 +299,8 @@ class family_handler():
                             ("flowmatch causvid", "causvid"),
                             ("lcm + ltx", "lcm"), ]
         })
+
+        extra_model_def["self_refiner"] = True
 
         if i2v:
             extra_model_def["motion_amplitude"] = True
@@ -306,6 +331,7 @@ class family_handler():
                         "show_label" : False,
                 }
                 extra_model_def["all_image_refs_are_background_ref"] = True
+                extra_model_def["no_background_removal"] = True
                 extra_model_def["parent_model_type"] = "i2v_2_2"
 
 
@@ -422,13 +448,35 @@ class family_handler():
 
 
             # extra_model_def["at_least_one_image_ref_needed"] = True
-        if base_model_type in ["lucy_edit"]:
+        if base_model_type == "lucy_edit":
             extra_model_def["keep_frames_video_guide_not_supported"] = True
             extra_model_def["guide_preprocessing"] = {
                     "selection": ["UV"],
                     "labels" : { "UV": "Control Video"},
                     "visible": False,
                 }
+
+        if base_model_type == "kiwi_edit":
+            extra_model_def["keep_frames_video_guide_not_supported"] = True
+            kiwi_ref_embedder = extra_model_def.get("kiwi_ref_embedder", True)
+            extra_model_def["guide_custom_choices"] = {
+            "choices":[
+                ("Control", "UVI" if kiwi_ref_embedder else "UV"),
+            ],
+            "default": "UVI" if kiwi_ref_embedder else "UV",
+            "letters_filter": "UVI",
+            "label": "Type of Process",
+            "scale": 3,
+            "visible": False,
+            "show_label" : False,
+            }
+            if kiwi_ref_embedder:
+                extra_model_def["one_image_ref_needed"] = True
+
+            # Upstream Kiwi uses full reference images; avoid background-matting path by default.
+            extra_model_def["no_background_removal"] = True
+            extra_model_def["fit_into_canvas_image_refs"] = 0
+            extra_model_def["guidance_max_phases"] = 0            
 
         if base_model_type in ["animate"]:
             extra_model_def["guide_custom_choices"] = {
@@ -623,10 +671,12 @@ class family_handler():
             image_prompt_types_allowed = "TSVL"
         elif base_model_type in ["ti2v_2_2"]:
             image_prompt_types_allowed = "TSVL"
-        elif base_model_type in ["lucy_edit"]:
+        elif base_model_type in ["lucy_edit", "kiwi_edit"]:
             image_prompt_types_allowed = "TVL"
-        elif multitalk or base_model_type in ["fantasy", "steadydancer", "scail"] or svi2pro:
+        elif multitalk or base_model_type in ["fantasy", "steadydancer", "scail"]:
             image_prompt_types_allowed = "SVL"
+        elif svi2pro:
+            image_prompt_types_allowed = "SEVL"
         elif i2v:
             image_prompt_types_allowed = "SEVL"
         else:
@@ -673,28 +723,21 @@ class family_handler():
         return latent_rgb_factors, latent_rgb_factors_bias
     
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = family_handler.get_wan_text_encoder_filename(text_encoder_quantization)
-
-        if test_wan_5B(base_model_type):
-            wan_files = []
+    def query_model_files(computeList, base_model_type, model_def=None):
+        download_def = []
+        if base_model_type == "kiwi_edit":
+            kiwi_mllm_repo_id = model_def.get("kiwi_mllm_repo_id", "DeepBeepMeep/Wan2.2")
+            kiwi_mllm_folder = model_def.get("kiwi_mllm_folder", "kiwi_mllm_encoder_instruct_reference")
+            kiwi_mllm_files = ["config.json", "diffusion_pytorch_model.safetensors", "added_tokens.json", "chat_template.jinja", "merges.txt", "preprocessor_config.json", "qwen_config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "video_preprocessor_config.json", "vocab.json"]
+            download_def.append({"repoId": kiwi_mllm_repo_id, "sourceFolderList": [kiwi_mllm_folder], "fileList": [kiwi_mllm_files]})
+            embedder_files = [f for f in (model_def.get("kiwi_source_embedder_file"), model_def.get("kiwi_ref_embedder_file")) if f]
+            if embedder_files: download_def.append({"repoId": kiwi_mllm_repo_id, "sourceFolderList": [""], "fileList": [embedder_files]})
         else:
-            wan_files = ["Wan2.1_VAE.safetensors",  "fantasy_proj_model.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]
-        download_def  = [{
-            "repoId" : "DeepBeepMeep/Wan2.1", 
-            "sourceFolderList" :  ["xlm-roberta-large", "umt5-xxl", ""  ],
-            "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] + computeList(text_encoder_filename) , wan_files +  computeList(model_filename)  ]   
-        }]
-
-        if base_model_type == "scail":
-            # SCAIL pose extraction (NLFPose torchscript). Kept separate so it isn't downloaded for every model.
-            download_def += [
-                {
-                    "repoId": "DeepBeepMeep/Wan2.1",
-                    "sourceFolderList": ["pose"],
-                    "fileList": [["nlf_l_multi_0.3.2.eager.safetensors", "nlf_l_multi_0.3.2.eager.meta.json"]],
-                }
-            ]
+            download_def  += [{
+                "repoId" : "DeepBeepMeep/Wan2.1", 
+                "sourceFolderList" :  ["umt5-xxl" ],
+                "fileList" : [ ["special_tokens_map.json", "spiece.model", "tokenizer.json", "tokenizer_config.json"] ]   
+            }]
 
         if test_wan_5B(base_model_type):
             download_def += [    {
@@ -702,6 +745,24 @@ class family_handler():
                 "sourceFolderList" :  [""],
                 "fileList" : [ [ "Wan2.2_VAE.safetensors"]  ]
             }]
+        else:
+            wan_files = ["Wan2.1_VAE.safetensors", "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]
+            if base_model_type in ["fantasy"]:
+                wan_files.append("fantasy_proj_model.safetensors")
+            download_def += [{
+                "repoId" : "DeepBeepMeep/Wan2.1", 
+                "sourceFolderList" :  ["xlm-roberta-large", ""  ],
+                "fileList" : [ [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "sentencepiece.bpe.model", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json"], wan_files ]   
+            }]
+
+        if base_model_type == "scail":
+            download_def += [
+                {
+                    "repoId": "DeepBeepMeep/Wan2.1",
+                    "sourceFolderList": ["pose"],
+                    "fileList": [["nlf_l_multi_0.3.2.eager.safetensors", "nlf_l_multi_0.3.2.eager.meta.json"]],
+                }
+            ]
 
         return download_def
 
@@ -745,7 +806,7 @@ class family_handler():
 
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, override_text_encoder = None, VAE_upsampling = None, **kwargs):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized= False, submodel_no_list = None, text_encoder_filename = None, VAE_upsampling = None, **kwargs):
         from .configs import WAN_CONFIGS
 
         if test_class_i2v(base_model_type):
@@ -762,7 +823,7 @@ class family_handler():
             model_type = model_type,        
             model_def = model_def,
             base_model_type=base_model_type,
-            text_encoder_filename= family_handler.get_wan_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filename= text_encoder_filename,
             quantizeTransformer = quantizeTransformer,
             dtype = dtype,
             VAE_dtype = VAE_dtype, 
@@ -771,7 +832,16 @@ class family_handler():
             VAE_upsampling = VAE_upsampling,            
         )
 
-        pipe = {"transformer": wan_model.model, "text_encoder" : wan_model.text_encoder.model, "vae": wan_model.vae.model }
+        pipe = {"transformer": wan_model.model, "vae": wan_model.vae.model}
+        if base_model_type == "kiwi_edit":
+            if getattr(wan_model, "kiwi_mllm", None) is None:
+                raise RuntimeError("Kiwi MLLM encoder is required but not initialized.")
+            wan_model.kiwi_mllm.prepare_for_mmgp()
+            if wan_model.kiwi_mllm.encoder is None:
+                raise RuntimeError("Kiwi MLLM encoder failed to load.")
+            pipe["text_encoder"] = wan_model.kiwi_mllm.encoder
+        else:
+            pipe["text_encoder"] = wan_model.text_encoder.model
         if wan_model.vae2 is not None:
             pipe["vae2"] = wan_model.vae2.model             
         if hasattr(wan_model,"model2") and wan_model.model2 is not None:
@@ -784,7 +854,7 @@ class family_handler():
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
         if ui_defaults.get("sample_solver", "") == "": 
             ui_defaults["sample_solver"] = "unipc"
-
+        
         if settings_version < 2.24:
             if (model_def.get("multiple_submodels", False) or ui_defaults.get("switch_threshold", 0) > 0) and ui_defaults.get("guidance_phases",0)<2:
                 ui_defaults["guidance_phases"] = 2
@@ -860,6 +930,18 @@ class family_handler():
                 "sliding_window_overlap" : 4,
             })
 
+        if model_def.get("self_refiner",False) and settings_version < 2.47:
+            ui_defaults["self_refiner_setting"] = 0
+            ui_defaults["self_refiner_plan"] = ""
+        if model_def.get("self_refiner",False) and settings_version < 2.48:
+            ui_defaults["self_refiner_f_uncertainty"] = 0.1
+            ui_defaults["self_refiner_certain_percentage"] = 0.999
+        if settings_version < 2.52:
+            plan = ui_defaults.get("self_refiner_plan")
+            if isinstance(plan, list):
+                from shared.utils.self_refiner import convert_refiner_list_to_string
+                ui_defaults["self_refiner_plan"] = convert_refiner_list_to_string(plan)
+
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({
@@ -930,10 +1012,19 @@ class family_handler():
                 "sliding_window_discard_last_frames": 0,
             })
 
-        elif base_model_type in ["ti2v_2_2"]:
+        elif base_model_type in ["ti2v_2_2", "kiwi_edit"]:
             ui_defaults.update({
                 "image_prompt_type": "T", 
             })
+            if base_model_type == "kiwi_edit":
+                ui_defaults.update({
+                    "remove_background_images_ref": 0,
+                    "guidance_scale": 1,
+                })
+                
+                ui_defaults.update({
+                    "video_prompt_type": "UVI" if model_def.get("kiwi_ref_embedder", True) else "UV", 
+                })
 
         if base_model_type in ["recam_1.3B", "lucy_edit"]: 
             ui_defaults.update({
@@ -979,6 +1070,11 @@ class family_handler():
             ui_defaults.update({
                 "sliding_window_size": 81, 
                 "sliding_window_overlap" : 4,
+            })
+            
+        if test_wan_5B(base_model_type):
+            ui_defaults.update({
+                "sliding_window_size": 121, 
             })
 
         if base_model_type in ["i2v_2_2"]:

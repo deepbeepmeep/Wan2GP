@@ -57,10 +57,8 @@ class Wav2Vec2ModelWrapper(nn.Module):
 
         config.name_or_path = config_path
         config = copy.deepcopy(config)  # We do not want to modify the config inplace in from_pretrained.
-        try:
-            config = Wav2Vec2Mode._autoset_attn_implementation(config, use_flash_attention_2=False)
-        except TypeError:
-            config = Wav2Vec2Mode._autoset_attn_implementation(config)
+        config.attn_implementation = "eager"
+        config._attn_implementation = "eager"
 
         # init model
         with torch.device('meta'):

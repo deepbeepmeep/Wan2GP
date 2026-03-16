@@ -12,7 +12,9 @@
 	"repeat_generation": 1,
 	"video_length": 0,
 	"num_inference_steps": 0,
-	"pace": 0.5,
-	"exaggeration": 0.5,
+	"custom_settings": {
+		"exaggeration": 0.5,
+		"pace": 0.5
+	},
 	"temperature": 0.8
 }

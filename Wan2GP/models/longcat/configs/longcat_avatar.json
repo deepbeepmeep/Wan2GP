@@ -17,7 +17,7 @@
   "frequency_embedding_size": 256,
   "hidden_size": 4096,
   "in_channels": 16,
-  "text_tokens_zero_pad": true,
+  "text_tokens_zero_pad": true,  
   "mlp_ratio": 4,
   "num_heads": 32,
   "out_channels": 16,
@@ -30,7 +30,7 @@
   "intermediate_dim": 512,
   "output_dim": 768,
   "context_tokens": 32,
-  "vae_scale": 4,
+  "vae_scale": 4, 
   "audio_prenorm": false,
   "class_range": 24,
   "class_interval": 4

@@ -1,10 +1,10 @@
 {
     "model": {
-        "name": "Z-Image Turbo Fun ControlNet v2.1 8 Steps 6B",
+        "name": "Z-Image Turbo Fun ControlNet v2.1 8 Steps YYY 6B",
         "architecture": "z_image_control2_1",
         "modules": [
             [
-                "https://huggingface.co/DeepBeepMeep/Z-Image/resolve/main/Z-Image-Turbo-Fun-Controlnet-Union2.1-8steps_bf16.safetensors",
+                "https://huggingface.co/DeepBeepMeep/Z-Image/resolve/main/Z-Image-Turbo-Fun-Controlnet-Tile-2.1-2601-8_steps_bf16.safetensors",
                 "https://huggingface.co/DeepBeepMeep/Z-Image/resolve/main/Z-Image-Turbo-Fun-Controlnet-Union2.1-8steps_quanto_bf16_int8.safetensors"
             ]
         ],

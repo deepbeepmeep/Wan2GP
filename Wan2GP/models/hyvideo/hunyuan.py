@@ -259,7 +259,7 @@ class Inference(object):
         from mmgp import offload
 
         source =  model_def.get("source", None)
-        kwargs_light = dict(do_quantize= quantizeTransformer and not save_quantized, pinToMemory = pinToMemory, partialPinning = partialPinning)
+        kwargs_light = dict(do_quantize= quantizeTransformer and not save_quantized, pinToMemory = pinToMemory, partialPinning = partialPinning, writable_tensors=False)
         if source is not None:
             from wgp import save_model
             offload.load_model_data(model, fl.locate_file(source),  **kwargs_light)
@@ -338,7 +338,7 @@ class Inference(object):
             from accelerate import init_empty_weights
             with init_empty_weights():
                 vae = AutoencoderKLConv3D(**config)
-            offload.load_model_data(vae, vae_filepath )
+            offload.load_model_data(vae, vae_filepath, writable_tensors=False)
             vae = vae.to("cpu")
             s_ratio = t_ratio = 1
             vae._model_dtype =  torch.float32 if VAE_dtype == torch.float32 else  torch.float16
@@ -404,11 +404,20 @@ class Inference(object):
         prompt_template_video = PROMPT_TEMPLATE[prompt_template_video] if prompt_template_video is not None else None
         
 
+        text_encoder_folder = model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
+        elif text_encoder_filepath:
+            tokenizer_path = os.path.dirname(text_encoder_filepath)
+        else:
+            tokenizer_path = None
+
         text_encoder = text_encoder_cls(
             text_encoder_type=text_encoder,
             max_length=max_length,
             text_encoder_precision="fp16",
             tokenizer_type=tokenizer,
+            tokenizer_path=tokenizer_path,
             i2v_mode=i2v_mode,
             prompt_template=prompt_template,
             prompt_template_video=prompt_template_video,

@@ -1,0 +1,2 @@
+"""Legacy DB compatibility module."""
+

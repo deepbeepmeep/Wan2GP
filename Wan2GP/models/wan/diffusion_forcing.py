@@ -47,12 +47,17 @@ class DTT2V:
         self.num_train_timesteps = config.num_train_timesteps
         self.param_dtype = config.param_dtype
         self.text_len = config.text_len 
+        text_encoder_folder = (model_def or {}).get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = fl.locate_folder(text_encoder_folder)
+        else:
+            tokenizer_path = os.path.dirname(text_encoder_filename)
         self.text_encoder = T5EncoderModel(
             text_len=config.text_len,
             dtype=config.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=fl.locate_folder(config.t5_tokenizer),
+            tokenizer_path=tokenizer_path,
             shard_fn= None)
         self.model_def = model_def
         self.image_outputs = model_def.get("image_outputs", False)
@@ -218,9 +223,9 @@ class DTT2V:
         fps: int = 24,
         VAE_tile_size = 0,
         joint_pass = False,
-        slg_layers = None,
-        slg_start = 0.0,
-        slg_end = 1.0,
+        perturbation_layers = None,
+        perturbation_start = 0.0,
+        perturbation_end = 1.0,
         callback = None,
         loras_slists = None,
         **bbargs
@@ -346,7 +351,7 @@ class DTT2V:
         kwrags.update(i2v_extra_kwrags)
 
         for i, timestep_i in enumerate(tqdm(step_matrix)):
-            kwrags["slg_layers"] = slg_layers if int(slg_start * updated_num_steps) <= i < int(slg_end * updated_num_steps) else None
+            kwrags["perturbation_layers"] = perturbation_layers if int(perturbation_start * updated_num_steps) <= i < int(perturbation_end * updated_num_steps) else None
 
             offload.set_step_no_for_lora(self.model, i)
             update_mask_i = step_update_mask[i]

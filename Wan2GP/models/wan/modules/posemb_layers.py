@@ -3,6 +3,33 @@ from typing import Union, Tuple, List, Optional
 import numpy as np
 
 
+USE_FP32_ROPE_FREQS = True
+ROPE_FREQS_DTYPE = torch.bfloat16
+
+
+def set_use_fp32_rope_freqs(enabled: bool) -> None:
+    global USE_FP32_ROPE_FREQS
+    USE_FP32_ROPE_FREQS = bool(enabled)
+
+
+def set_rope_freqs_dtype(dtype: torch.dtype) -> None:
+    global ROPE_FREQS_DTYPE
+    ROPE_FREQS_DTYPE = dtype
+
+
+def _rope_freqs_dtype() -> torch.dtype:
+    return torch.float32 if USE_FP32_ROPE_FREQS else ROPE_FREQS_DTYPE
+
+
+def _coerce_rope_positions(pos):
+    rope_dtype = _rope_freqs_dtype()
+    if isinstance(pos, int):
+        return torch.arange(pos, dtype=rope_dtype)
+    if isinstance(pos, np.ndarray):
+        return torch.from_numpy(pos).to(dtype=rope_dtype)
+    return pos.to(dtype=rope_dtype)
+
+
 ###### Thanks to the RifleX project (https://github.com/thu-ml/RIFLEx/) for this alternative pos embed for long videos
 #  
 def get_1d_rotary_pos_embed_riflex(
@@ -34,13 +61,10 @@ def get_1d_rotary_pos_embed_riflex(
     """
     assert dim % 2 == 0
 
-    if isinstance(pos, int):
-        pos = torch.arange(pos)
-    if isinstance(pos, np.ndarray):
-        pos = torch.from_numpy(pos)  # type: ignore  # [S]
+    pos = _coerce_rope_positions(pos)
 
     freqs = 1.0 / (
-            theta ** (torch.arange(0, dim, 2, device=pos.device)[: (dim // 2)].float() / dim)
+            theta ** (torch.arange(0, dim, 2, device=pos.device, dtype=pos.dtype)[: (dim // 2)] / dim)
     )  # [D/2]
 
     # === Riflex modification start ===
@@ -53,8 +77,8 @@ def get_1d_rotary_pos_embed_riflex(
     freqs = torch.outer(pos, freqs)  # type: ignore   # [S, D/2]
 
     if use_real:
-        freqs_cos = freqs.cos().repeat_interleave(2, dim=1).float()  # [S, D]
-        freqs_sin = freqs.sin().repeat_interleave(2, dim=1).float()  # [S, D]
+        freqs_cos = freqs.cos().repeat_interleave(2, dim=1)  # [S, D]
+        freqs_sin = freqs.sin().repeat_interleave(2, dim=1)  # [S, D]
         return freqs_cos, freqs_sin
     else:
         # lumina
@@ -100,7 +124,7 @@ def _to_tuple(x, dim=2):
         raise ValueError(f"Expected length {dim} or int, but got {x}")
 
 
-def get_meshgrid_nd(start, *args, dim=2):
+def get_meshgrid_nd(start, *args, dim=2, dtype=None, device=None):
     """
     Get n-D meshgrid with start, stop and num.
 
@@ -115,6 +139,7 @@ def get_meshgrid_nd(start, *args, dim=2):
     Returns:
         grid (np.ndarray): [dim, ...]
     """
+    grid_dtype = torch.float32 if dtype is None else dtype
     if len(args) == 0:
         # start is grid_size
         num = _to_tuple(start, dim=dim)
@@ -138,9 +163,9 @@ def get_meshgrid_nd(start, *args, dim=2):
     for i in range(dim):
         a, b, n = start[i], stop[i], num[i]
         if a == b:
-            g = torch.tensor([a], dtype=torch.float32 )
+            g = torch.tensor([a], dtype=grid_dtype, device=device)
         else:
-            g = torch.linspace(a, b, n + 1, dtype=torch.float32)[:n]
+            g = torch.linspace(a, b, n + 1, dtype=grid_dtype, device=device)[:n]
         axis_grid.append(g)
     grid = torch.meshgrid(*axis_grid, indexing="ij")  # dim x [W, H, D]
     grid = torch.stack(grid, dim=0)  # [dim, W, H, D]
@@ -222,11 +247,26 @@ def reshape_for_broadcast(
         return freqs_cis.view(*shape)
 
 
-def rotate_half(x):
-    x_real, x_imag = (
-        x.float().reshape(*x.shape[:-1], -1, 2).unbind(-1)
-    )  # [B, S, H, D//2]
-    return torch.stack([-x_imag, x_real], dim=-1).flatten(3)
+
+def _apply_rope_inplace_inner(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> None:
+    x_view = x.view(*x.shape[:-1], -1, 2)
+    cos_view = cos.view(*cos.shape[:-1], -1, 2)
+    sin_view = sin.view(*sin.shape[:-1], -1, 2)
+    x0 = x_view[..., 0]
+    x1 = x_view[..., 1]
+    x0_orig = x0.clone()
+    x0.mul_(cos_view[..., 0]).addcmul_(x1, sin_view[..., 0], value=-1)
+    x1.mul_(cos_view[..., 1]).addcmul_(x0_orig, sin_view[..., 1])
+
+
+def _apply_rope_inplace(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, use_fp32: bool) -> torch.Tensor:
+    if use_fp32 and x.dtype != torch.float32:
+        x_work = x.to(torch.float32)
+        _apply_rope_inplace_inner(x_work, cos, sin)
+        x.copy_(x_work.to(x.dtype))
+        return x
+    _apply_rope_inplace_inner(x, cos, sin)
+    return x
 
 def apply_rotary_emb_single( qklist,
     freqs_cis: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
@@ -234,21 +274,15 @@ def apply_rotary_emb_single( qklist,
 ):
     xq = qklist[0]
     qklist.clear()
-    xk_out = None
     cos, sin = reshape_for_broadcast(freqs_cis, xq, head_first)  # [S, D]
-    cos, sin = cos.to(xq.device), sin.to(xq.device)
-    # real * cos - imag * sin
-    # imag * cos + real * sin
-    xq_dtype = xq.dtype
-    xq_out = xq.to(torch.float)
-    xq = None        
-    xq_rot = rotate_half(xq_out)
-    xq_out *= cos
-    xq_rot *= sin
-    xq_out += xq_rot
-    del xq_rot
-    xq_out = xq_out.to(xq_dtype)
-    return xq_out
+    use_fp32 = USE_FP32_ROPE_FREQS
+    target_dtype = torch.float32 if use_fp32 else xq.dtype
+    if cos.device != xq.device or cos.dtype != target_dtype:
+        cos = cos.to(device=xq.device, dtype=target_dtype)
+    if sin.device != xq.device or sin.dtype != target_dtype:
+        sin = sin.to(device=xq.device, dtype=target_dtype)
+    _apply_rope_inplace(xq, cos, sin, use_fp32)
+    return xq
 
 
 def apply_rotary_emb( qklist,
@@ -275,30 +309,18 @@ def apply_rotary_emb( qklist,
     """
     xq, xk = qklist
     qklist.clear()
-    xk_out = None
     if isinstance(freqs_cis, tuple):
         cos, sin = reshape_for_broadcast(freqs_cis, xq, head_first)  # [S, D]
-        cos, sin = cos.to(xq.device), sin.to(xq.device)
-        # real * cos - imag * sin
-        # imag * cos + real * sin
-        xq_dtype = xq.dtype
-        xq_out = xq.to(torch.float)
-        xq = None        
-        xq_rot = rotate_half(xq_out)
-        xq_out *= cos
-        xq_rot *= sin
-        xq_out += xq_rot
-        del xq_rot
-        xq_out = xq_out.to(xq_dtype)
-
-        xk_out = xk.to(torch.float)
-        xk = None
-        xk_rot = rotate_half(xk_out)
-        xk_out *= cos
-        xk_rot *= sin
-        xk_out += xk_rot
-        del xk_rot
-        xk_out = xk_out.to(xq_dtype)
+        use_fp32 = USE_FP32_ROPE_FREQS
+        target_dtype = torch.float32 if use_fp32 else xq.dtype
+        if cos.device != xq.device or cos.dtype != target_dtype:
+            cos = cos.to(device=xq.device, dtype=target_dtype)
+        if sin.device != xq.device or sin.dtype != target_dtype:
+            sin = sin.to(device=xq.device, dtype=target_dtype)
+        _apply_rope_inplace(xq, cos, sin, use_fp32)
+        _apply_rope_inplace(xk, cos, sin, use_fp32)
+        xq_out = xq
+        xk_out = xk
     else:
         # view_as_complex will pack [..., D/2, 2](real) to [..., D/2](complex)
         xq_ = torch.view_as_complex(
@@ -359,7 +381,7 @@ def get_nd_rotary_pos_embed(
     ), "sum(rope_dim_list) should equal to head_dim of attention layer"
 
     grid = get_meshgrid_nd(
-        start, *args, dim=len(rope_dim_list)
+        start, *args, dim=len(rope_dim_list), dtype=_rope_freqs_dtype()
     )  # [3, W, H, D] / [2, W, H]
 
     if isinstance(theta_rescale_factor, int) or isinstance(theta_rescale_factor, float):
@@ -437,8 +459,7 @@ def get_1d_rotary_pos_embed(
         freqs_cis: Precomputed frequency tensor with complex exponential. [S, D/2]
         freqs_cos, freqs_sin: Precomputed frequency tensor with real and imaginary parts separately. [S, D]
     """
-    if isinstance(pos, int):
-        pos = torch.arange(pos).float()
+    pos = _coerce_rope_positions(pos)
 
     # proposed by reddit user bloc97, to rescale rotary embeddings to longer sequence length without fine-tuning
     # has some connection to NTK literature
@@ -446,7 +467,7 @@ def get_1d_rotary_pos_embed(
         theta *= theta_rescale_factor ** (dim / (dim - 2))
 
     freqs = 1.0 / (
-        theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim)
+        theta ** (torch.arange(0, dim, 2, device=pos.device, dtype=pos.dtype)[: (dim // 2)] / dim)
     )  # [D/2]
     # assert interpolation_factor == 1.0, f"interpolation_factor: {interpolation_factor}"
     freqs = torch.outer(pos * interpolation_factor, freqs)  # [S, D/2]

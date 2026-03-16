@@ -1,8 +1,6 @@
 import json
 import os
-import sys
 import torch
-from pathlib import Path
 from accelerate import init_empty_weights
 from diffusers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import logging
@@ -13,13 +11,6 @@ from transformers import AutoTokenizer, Qwen3ForCausalLM
 from .autoencoder_kl import AutoencoderKL
 from .pipeline_z_image import ZImagePipeline
 from .z_image_transformer2d import ZImageTransformer2DModel
-
-# Add project root to path for hires utils
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from source.media.video.hires_utils import HiresFixHelper
 
 
 logger = logging.get_logger(__name__)
@@ -43,48 +34,20 @@ def conv_state_dict(sd: dict) -> dict:
     for key, tensor in sd.items():
         key = key.replace("model.diffusion_model.", "")
         
-        if key.endswith(".attention.qkv.weight"):
-            base = key[: -len(".attention.qkv.weight")]
-
-            total_dim = tensor.shape[0]
-            if total_dim % 3 != 0:
-                raise ValueError(
-                    f"{key}: qkv first dimension ({total_dim}) not divisible by 3"
-                )
-            d = total_dim // 3
-            q, k_w, v = torch.split(tensor, d, dim=0)
-
-            out_sd[base + ".attention.to_q.weight"] = q
-            out_sd[base + ".attention.to_k.weight"] = k_w
-            out_sd[base + ".attention.to_v.weight"] = v
-            continue
-
         new_key = key
-        for comfy_sub, orig_sub in inverse_replace.items():
-            new_key = new_key.replace(comfy_sub, orig_sub)
+        for ori_sub, orig_sub in inverse_replace.items():
+            new_key = new_key.replace(ori_sub, orig_sub)
         out_sd[new_key] = tensor
 
-    to_add = {}
-    for key, tensor in out_sd.items():
-        if key.endswith(".attention.to_out.0.weight"):
-            prefix = key[: -len(".attention.to_out.0.weight")]
-            bias_key = prefix + ".attention.to_out.0.bias"
-            if bias_key not in out_sd:
-                to_add[bias_key] = torch.zeros(tensor.shape[0], dtype=tensor.dtype)
-
-    out_sd.update(to_add)
     return out_sd
 
 
 _ZIMAGE_FUSED_SPLIT_MAP = {
     "attention.to_qkv": {"mapped_modules": ("attention.to_q", "attention.to_k", "attention.to_v")},
+    "attention.qkv": {"mapped_modules": ("attention.to_q", "attention.to_k", "attention.to_v")},
     "feed_forward.net.0.proj": {"mapped_modules": ("feed_forward.w3", "feed_forward.w1")},
     "feed_forward.net.2": {"mapped_modules": ("feed_forward.w2",)},
 }
-
-
-from shared.qtypes import nunchaku_int4 as _nunchaku_int4
-_split_nunchaku_fused = _nunchaku_int4.make_nunchaku_splitter(_ZIMAGE_FUSED_SPLIT_MAP)
 
 
 class model_factory:
@@ -104,8 +67,7 @@ class model_factory:
         is_control=False,
         **kwargs,
     ):
-        
-
+        model_def = model_def or {}
         source =  model_def.get("source", None)
         module_source =  model_def.get("module_source", None)
 
@@ -117,16 +79,16 @@ class model_factory:
 
         self.base_model_type = base_model_type
         self.is_control = is_control
+        self.model_def = model_def
 
         default_transformer_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", f"{base_model_type}.json")
 
-        def preprocess_sd(state_dict, verboseLevel=1):
-            state_dict = conv_state_dict(state_dict)
-            return _split_nunchaku_fused(state_dict, verboseLevel=verboseLevel)
+        def preprocess_sd(state_dict):
+            return conv_state_dict(state_dict)
 
         model_class = ZImageTransformer2DModel
 
-        kwargs_light= { "writable_tensors": False, "preprocess_sd": preprocess_sd }
+        kwargs_light= { "writable_tensors": False, "preprocess_sd": preprocess_sd, "fused_split_map": _ZIMAGE_FUSED_SPLIT_MAP }
         # model_filename contains all files to load (transformer + modules merged by loader)
         import json
         import accelerate
@@ -169,12 +131,16 @@ class model_factory:
         text_encoder = offload.fast_load_transformers_model( text_encoder_filename, writable_tensors=True, modelClass=Qwen3ForCausalLM,)
 
         # Tokenizer
-        tokenizer_path = os.path.join(os.path.dirname(text_encoder_filename))
+        text_encoder_folder = model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
+        else:
+            tokenizer_path = os.path.dirname(text_encoder_filename)
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
         # VAE
         vae_filename = fl.locate_file("ZImageTurbo_VAE_bf16.safetensors")
-        vae_config_path = os.path.join(os.path.dirname(vae_filename), "ZImageTurbo_VAE_bf16_config.json") 
+        vae_config_path = fl.locate_file("ZImageTurbo_VAE_bf16_config.json") 
 
         vae = offload.fast_load_transformers_model(
             vae_filename,
@@ -205,6 +171,7 @@ class model_factory:
         input_prompt: str = "",
         n_prompt: str | None = None,
         sampling_steps: int = 20,
+        sample_solver: str = "default",
         width: int = 1024,
         height: int = 1024,
         guide_scale: float = 0.0,
@@ -222,21 +189,8 @@ class model_factory:
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
         loras_slists=None,
-        denoising_strength: float = 1.0,
         **kwargs,
     ):
-        # Handle image_start parameter (WGP passes this for single-frame init images)
-        # Map it to input_frames if input_frames is not already set
-        image_start = kwargs.get('image_start')
-        image_end = kwargs.get('image_end')
-
-        if input_frames is None and image_start is not None:
-            print(f"[Z_IMAGE_MAIN] Mapping image_start → input_frames for img2img")
-            input_frames = image_start
-
-        if image_end is not None:
-            print(f"[Z_IMAGE_MAIN] Warning: image_end parameter not supported by z_image")
-
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
         if seed is None or seed < 0:
             generator.seed()
@@ -254,186 +208,42 @@ class model_factory:
             self.vae.tile_latent_min_height = tile_size
             self.vae.tile_latent_min_width = tile_size
 
-        guide_scale = 0
+        unified_solver = self.model_def.get("unified_solver", False)
+        if unified_solver:
+            sample_solver = "unified"
+        elif not sample_solver:
+            sample_solver = "default"
 
-        # Check for hires fix configuration
-        hires_config = kwargs.get("hires_config")
-        if hires_config and hires_config.get("enabled", False):
-            # === HIRES FIX MODE ===
-            hires_scale = hires_config.get("scale", 1.5)
-            hires_steps = hires_config.get("hires_steps", sampling_steps)
-            hires_denoise = hires_config.get("denoising_strength", 0.5)
+        if self.model_def.get("guidance_max_phases", 0) < 1:
+            guide_scale = 0
 
-            print(f"🔍 Hires fix enabled: {width}x{height} → {int(width*hires_scale)}x{int(height*hires_scale)}")
-            print(f"   Pass 1: {sampling_steps} steps | Pass 2: {hires_steps} steps @ {hires_denoise} denoise")
-
-            # Extract LoRA info from hires_config if available
-            original_lora_names = hires_config.get("lora_names", [])
-            phase_multipliers = hires_config.get("phase_lora_multipliers", [])
-
-            if original_lora_names:
-                print(f"💾 LoRA names from hires_config: {len(original_lora_names)} LoRAs for phase filtering")
-                for i, name in enumerate(original_lora_names):
-                    print(f"   LoRA {i+1}: {name}")
-
-            # === PASS 1: Generate at base resolution ===
-            # Determine if input_frames should be used for img2img or control
-            use_as_init_image = denoising_strength < 1.0 and input_frames is not None
-
-            latents = self.pipeline(
-                prompt=input_prompt,
-                negative_prompt=n_prompt,
-                num_inference_steps=sampling_steps,
-                guidance_scale=guide_scale,
-                num_images_per_prompt=batch_size,
-                generator=torch.Generator(device="cuda").manual_seed(seed),
-                height=height,
-                width=width,
-                max_sequence_length=max_sequence_length,
-                callback_on_step_end=None,
-                output_type="latent",  # Return latents for Pass 2
-                return_dict=False,
-                cfg_normalization=cfg_normalization,
-                cfg_truncation=cfg_truncation,
-                callback=callback,
-                pipeline=self.pipeline,
-                control_image=None if use_as_init_image else input_frames,
-                inpaint_mask=input_masks,
-                control_context_scale=None if context_scale is None else context_scale[0],
-                input_ref_images=input_ref_images,
-                NAG_scale=NAG_scale,
-                NAG_tau=NAG_tau,
-                NAG_alpha=NAG_alpha,
-                loras_slists=loras_slists,
-                init_image=input_frames if use_as_init_image else None,
-                denoising_strength=denoising_strength,
-            )
-
-            if latents is None:
-                return None
-
-            print(f"✅ Pass 1 complete: latents shape {latents.shape}")
-
-            # === UPSCALE LATENTS ===
-            latents_upscaled = HiresFixHelper.upscale_latents(
-                latents=latents,
-                scale_factor=hires_scale,
-                method=hires_config.get("upscale_method", "bicubic")
-            )
-
-            hires_height = int(height * hires_scale)
-            hires_width = int(width * hires_scale)
-            print(f"📐 Latents upscaled: {width}x{height} → {hires_width}x{hires_height}")
-
-            # === ADD NOISE FOR PASS 2 ===
-            hires_generator = torch.Generator(device="cuda").manual_seed(seed + 1)
-            latents_noised = HiresFixHelper.add_denoise_noise(
-                latents=latents_upscaled,
-                denoise_strength=hires_denoise,
-                generator=hires_generator
-            )
-            print(f"🌀 Pass 2 init noise: denoise={hires_denoise}")
-
-            # === FILTER LoRAs FOR PASS 2 ===
-            if phase_multipliers and original_lora_names:
-                print(f"🔍 Phase multipliers from config: {phase_multipliers}")
-
-                loras_slists_pass2, pass2_multipliers_all, active_count = HiresFixHelper.filter_loras_for_phase(
-                    lora_names=original_lora_names,
-                    phase_multipliers=phase_multipliers,
-                    phase_index=1,  # Pass 2 (0-indexed)
-                    num_phases=2,
-                    num_steps=hires_steps
-                )
-
-                if loras_slists_pass2 is not None:
-                    loras_slists = loras_slists_pass2
-                    print(f"✓ Successfully built Pass 2 loras_slists")
-
-                    HiresFixHelper.print_pass2_lora_summary(
-                        lora_names=original_lora_names,
-                        phase_values=pass2_multipliers_all,
-                        active_count=active_count
-                    )
-                else:
-                    print(f"⚠️ Failed to build Pass 2 loras_slists, using original")
-
-            # === PASS 2: Refine at higher resolution ===
-            print(f"🚀 Starting Pass 2 generation...")
-            images = self.pipeline(
-                prompt=input_prompt,
-                negative_prompt=n_prompt,
-                num_inference_steps=hires_steps,
-                guidance_scale=guide_scale,
-                num_images_per_prompt=batch_size,
-                generator=torch.Generator(device="cuda").manual_seed(seed + 1),
-                height=hires_height,
-                width=hires_width,
-                max_sequence_length=max_sequence_length,
-                latents=latents_noised,  # Pass noised upscaled latents
-                callback_on_step_end=None,
-                output_type="pt",
-                return_dict=True,
-                cfg_normalization=cfg_normalization,
-                cfg_truncation=cfg_truncation,
-                callback=callback,
-                pipeline=self.pipeline,
-                control_image=input_frames,
-                inpaint_mask=input_masks,
-                control_context_scale=None if context_scale is None else context_scale[0],
-                input_ref_images=input_ref_images,
-                NAG_scale=NAG_scale,
-                NAG_tau=NAG_tau,
-                NAG_alpha=NAG_alpha,
-                loras_slists=loras_slists,
-            )
-
-            print(f"✅ Hires fix complete: {hires_width}x{hires_height}")
-
-        else:
-            # === STANDARD MODE (NO HIRES FIX) ===
-            # Determine if input_frames should be used for img2img or control
-            # If denoising_strength < 1.0, treat as img2img init image
-            # Otherwise, treat as control image (default behavior)
-            use_as_init_image = denoising_strength < 1.0 and input_frames is not None
-
-            if input_frames is not None:
-                print(f"[Z_IMAGE_MAIN] input_frames provided: shape={input_frames.shape}, denoising_strength={denoising_strength:.2f}")
-                if use_as_init_image:
-                    print(f"[Z_IMAGE_MAIN] → Routing to init_image (img2img mode)")
-                else:
-                    print(f"[Z_IMAGE_MAIN] → Routing to control_image (control mode)")
-            else:
-                print(f"[Z_IMAGE_MAIN] No input_frames provided, using text-to-image mode")
-
-            images = self.pipeline(
-                prompt=input_prompt,
-                negative_prompt=n_prompt,
-                num_inference_steps=sampling_steps,
-                guidance_scale=guide_scale,
-                num_images_per_prompt=batch_size,
-                generator=generator,
-                height=height,
-                width=width,
-                max_sequence_length=max_sequence_length,
-                callback_on_step_end=None,
-                output_type="pt",
-                return_dict=True,
-                cfg_normalization=cfg_normalization,
-                cfg_truncation=cfg_truncation,
-                callback=callback,
-                pipeline=self.pipeline,
-                control_image=None if use_as_init_image else input_frames,
-                inpaint_mask=input_masks,
-                control_context_scale=None if context_scale is None else context_scale[0],
-                input_ref_images= input_ref_images,
-                NAG_scale=NAG_scale,
-                NAG_tau=NAG_tau,
-                NAG_alpha=NAG_alpha,
-                loras_slists=loras_slists,
-                init_image=input_frames if use_as_init_image else None,
-                denoising_strength=denoising_strength,
-            )
+        images = self.pipeline(
+            prompt=input_prompt,
+            negative_prompt=n_prompt,
+            num_inference_steps=sampling_steps,
+            sample_solver=sample_solver,
+            guidance_scale=guide_scale,
+            num_images_per_prompt=batch_size,
+            generator=generator,
+            height=height,
+            width=width,
+            max_sequence_length=max_sequence_length,
+            callback_on_step_end=None,
+            output_type="pt",
+            return_dict=True,
+            cfg_normalization=cfg_normalization,
+            cfg_truncation=cfg_truncation,
+            callback=callback,
+            pipeline=self.pipeline,
+            control_image=input_frames,
+            inpaint_mask=input_masks,
+            control_context_scale=None if context_scale is None else context_scale[0],
+            input_ref_images= input_ref_images,
+            NAG_scale=NAG_scale,
+            NAG_tau=NAG_tau,
+            NAG_alpha=NAG_alpha,
+            loras_slists=loras_slists,
+        )
 
         if images is None:
             return None

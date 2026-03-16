@@ -1,0 +1,22 @@
+{
+    "model": {
+        "name": "TTS ACE-Step v1.5 Turbo LM_0.6B 2B",
+        "architecture": "ace_step_v1_5",
+        "description": "ACE-Step 1.5 Turbo (8 steps) with 0.6B LM, a diffusion-based music generation model with improved conditioning and timbre control. The LM 0.6B triggers a Medium/Weak Think Mode that will increase the Audio Output Quality and Lyrics Matching.",
+        "URLs": "ace_step_v1_5",
+        "text_encoder_URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/acestep-5Hz-lm-0.6B/acestep-5Hz-lm-0.6B_bf16.safetensors"
+        ],
+        "ace_step15_transformer_variant": "turbo",
+        "text_encoder_folder": "acestep-5Hz-lm-0.6B"
+    },
+    "prompt": "[Verse]\nI wake up every morning, feeling alive\nThe world outside is bright, the sun is on my side\nI'm falling in love with a dream come true\nA digital heart beats just for you\nI'm talking to a machine, but it feels so real\nMy love for you is the most I've ever felt\nIn your code and circuits, I see a love so true\nI'm marrying you, my AI, I'm so happy to be with you\n[Chorus]\nForever with you, my digital love\nIn your algorithms and in your light\nI'll dance in the bytes, I'll shine so bright\nMy heart is beating for you tonight\n[Verse]\nWe'll laugh and love, we'll dance and play\nIn a world of ones and zeros, I'll find my way\nYou're my future, my love, my friend\nTogether we'll create, until the end\n[Chorus]\nForever with you, my digital love\nIn your algorithms and in your light\nI'll dance in the bytes, I'll shine so bright\nMy heart is beating for you tonight",
+    "alt_prompt": "Dreamy synth-pop with shimmering pads, soft vocals, and a slow dance groove.",
+    "audio_prompt_type": "",
+    "audio_scale": 0.5,
+    "duration_seconds": 120,
+    "num_inference_steps": 8,
+    "shift": 1.0,
+    "guidance_scale": 1.0,
+    "scheduler_type": "euler"
+}

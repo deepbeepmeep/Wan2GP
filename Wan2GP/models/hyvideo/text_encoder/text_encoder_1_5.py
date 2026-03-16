@@ -14,6 +14,7 @@
 # of rights and permissions under this agreement.
 # See the License for the specific language governing permissions and limitations under the License.
 
+import json
 import os
 from copy import deepcopy
 from dataclasses import dataclass
@@ -100,9 +101,8 @@ def load_text_encoder(
 
     # text_encoder = AutoModel.from_pretrained(text_encoder_path, low_cpu_mem_usage=True)
     
-    if hasattr(text_encoder, 'language_model'):
-        text_encoder = text_encoder.language_model
-    text_encoder.final_layer_norm = text_encoder.norm
+    lm = getattr(text_encoder, "language_model", None) or getattr(getattr(text_encoder, "model", None), "language_model", None)
+    text_encoder.final_layer_norm = lm.norm if lm is not None else text_encoder.norm
     
     # from_pretrained will ensure that the model is in eval mode.
     # if text_encoder_precision is not None:
@@ -126,15 +126,30 @@ def load_tokenizer(
         tokenizer_path = TOKENIZER_PATH[tokenizer_type]
 
     tokenizer = AutoTokenizer.from_pretrained(
-        os.path.dirname(tokenizer_path), padding_side=padding_side
+        tokenizer_path, padding_side=padding_side
     )
 
     # If the checkpoint ships a chat template separately, load it when missing.
     if getattr(tokenizer, "chat_template", None) in (None, ""):
-        jinja_path = os.path.join(os.path.dirname(tokenizer_path), "chat_template.json")
-        if os.path.exists(jinja_path):
-            with open(jinja_path, "r", encoding="utf-8") as f:
-                tokenizer.chat_template = f.read()
+        tokenizer_root = tokenizer_path if os.path.isdir(tokenizer_path) else os.path.dirname(tokenizer_path)
+        json_path = os.path.join(tokenizer_root, "chat_template.json")
+        jinja_path = os.path.join(tokenizer_root, "chat_template.jinja")
+        template_path = json_path if os.path.exists(json_path) else jinja_path
+        if os.path.exists(template_path):
+            with open(template_path, "r", encoding="utf-8") as f:
+                template_raw = f.read()
+            if template_path.endswith(".json"):
+                try:
+                    template_data = json.loads(template_raw)
+                except json.JSONDecodeError:
+                    template_data = None
+                tokenizer.chat_template = (
+                    template_data.get("chat_template", template_raw)
+                    if isinstance(template_data, dict)
+                    else template_raw
+                )
+            else:
+                tokenizer.chat_template = template_raw
 
     return tokenizer, tokenizer_path, processor
 

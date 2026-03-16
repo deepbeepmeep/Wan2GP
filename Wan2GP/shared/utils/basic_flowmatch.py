@@ -5,6 +5,7 @@ import torch
 
 
 class FlowMatchScheduler():
+    is_stateful = False
 
     def __init__(self, num_inference_steps=100, num_train_timesteps=1000, shift=3.0, sigma_max=1.0, sigma_min=0.003 / 1.002, inverse_timesteps=False, extra_one_step=False, reverse_sigmas=False):
         self.num_train_timesteps = num_train_timesteps

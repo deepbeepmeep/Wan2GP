@@ -8,9 +8,89 @@ startup/initialization logic.
 
 import os
 import sys
+import time
 import traceback
+from dataclasses import dataclass
 
 from source.core.log import is_debug_enabled
+from source.runtime.process_globals import get_runtime_context, temporary_process_globals
+
+
+@dataclass(frozen=True)
+class OrchestratorBootstrapState:
+    state: str
+    retry_after_seconds: float = 0.0
+    message: str | None = None
+
+
+def get_orchestrator_bootstrap_state(host) -> OrchestratorBootstrapState:
+    if getattr(host, "orchestrator", None) is not None:
+        return OrchestratorBootstrapState(state="ready")
+
+    now = time.monotonic()
+    next_retry = float(getattr(host, "_orchestrator_next_retry_monotonic", 0.0) or 0.0)
+    failures = int(getattr(host, "_orchestrator_consecutive_failures", 0) or 0)
+    fatal_threshold = int(getattr(host, "_orchestrator_fatal_failure_threshold", 5) or 5)
+    last_error = getattr(host, "_orchestrator_last_error", None)
+
+    if failures >= fatal_threshold and last_error:
+        return OrchestratorBootstrapState(
+            state="failed_fatal",
+            retry_after_seconds=max(0.0, next_retry - now),
+            message=str(last_error),
+        )
+
+    if next_retry > now:
+        return OrchestratorBootstrapState(
+            state="cooldown",
+            retry_after_seconds=max(0.0, next_retry - now),
+            message=str(last_error) if last_error else None,
+        )
+
+    if (getattr(host, "_orchestrator_init_attempted", False) or failures > 0) and last_error:
+        return OrchestratorBootstrapState(state="failed_transient", message=str(last_error))
+
+    return OrchestratorBootstrapState(state="not_started")
+
+
+def _attempt_orchestrator_bootstrap(host) -> None:
+    try:
+        host._ensure_orchestrator()
+        host._orchestrator_consecutive_failures = 0
+        host._orchestrator_last_error = None
+        host._orchestrator_next_retry_monotonic = 0.0
+    except Exception as exc:
+        failures = int(getattr(host, "_orchestrator_consecutive_failures", 0) or 0) + 1
+        backoff = float(getattr(host, "_orchestrator_retry_backoff_seconds", 15.0) or 15.0)
+        host._orchestrator_consecutive_failures = failures
+        host._orchestrator_last_error = str(exc)
+        host._orchestrator_next_retry_monotonic = time.monotonic() + backoff
+        raise
+
+
+def ensure_orchestrator_state(host) -> OrchestratorBootstrapState:
+    current = get_orchestrator_bootstrap_state(host)
+    if current.state in {"ready", "cooldown", "failed_fatal"}:
+        return current
+
+    try:
+        _attempt_orchestrator_bootstrap(host)
+    except Exception:
+        pass
+    return get_orchestrator_bootstrap_state(host)
+
+
+def ensure_orchestrator_bootstrap_state(host) -> OrchestratorBootstrapState:
+    return ensure_orchestrator_state(host)
+
+
+def ensure_orchestrator(host):
+    state = ensure_orchestrator_state(host)
+    if state.state == "ready":
+        return host.orchestrator
+    if state.state == "cooldown":
+        raise RuntimeError("cooldown active")
+    raise RuntimeError(state.message or "orchestrator bootstrap failed")
 
 
 class WgpInitMixin:
@@ -81,33 +161,28 @@ class WgpInitMixin:
         if is_debug_enabled():
             self.logger.info("[LAZY_INIT] Importing WanOrchestrator (this imports wgp and model modules)...")
 
-        # Protect sys.argv and working directory before importing headless_wgp which imports wgp
-        # wgp.py will try to parse sys.argv and will fail if it contains Supabase/database arguments
-        # wgp.py also uses relative paths for model loading and needs to run from Wan2GP directory
-        # CRITICAL: wgp.py loads models at MODULE-LEVEL (line 2260), so we MUST chdir BEFORE import
-        _saved_argv_for_import = sys.argv[:]
-        try:
-            sys.argv = ["headless_model_management.py"]  # Clean argv for wgp import
+        runtime_context = get_runtime_context(
+            "queue.orchestrator_import",
+            wan_root=self.wan_dir,
+            default_argv=["headless_model_management.py"],
+            require_cwd=True,
+        )
+        runtime_context.prepare()
 
-            # CRITICAL: Change to Wan2GP directory BEFORE importing/initializing WanOrchestrator
-            # wgp.py uses relative paths (defaults/*.json) and expects to run from Wan2GP/
-            if is_debug_enabled():
-                self.logger.info(f"[LAZY_INIT] Changing to Wan2GP directory: {self.wan_dir}")
-                self.logger.info(f"[LAZY_INIT] Current directory before chdir: {os.getcwd()}")
+        if is_debug_enabled():
+            self.logger.info(f"[LAZY_INIT] Runtime context prepared for Wan2GP directory: {self.wan_dir}")
 
-            os.chdir(self.wan_dir)
-
+        with temporary_process_globals(
+            cwd=self.wan_dir,
+            argv=["headless_model_management.py"],
+            prepend_sys_path=self.wan_dir,
+        ):
             actual_cwd = os.getcwd()
-            if is_debug_enabled():
-                self.logger.info(f"[LAZY_INIT] Changed directory to: {actual_cwd}")
-
-            # Verify the change worked
             if actual_cwd != self.wan_dir:
                 raise RuntimeError(
                     f"Directory change failed! Expected {self.wan_dir}, got {actual_cwd}"
                 )
 
-            # Verify critical structure exists
             if not os.path.isdir("defaults"):
                 raise RuntimeError(
                     f"defaults/ directory not found in {actual_cwd}. "
@@ -115,11 +190,10 @@ class WgpInitMixin:
                 )
 
             if is_debug_enabled():
-                self.logger.info(f"[LAZY_INIT] Now in Wan2GP directory, importing WanOrchestrator...")
+                self.logger.info("[LAZY_INIT] Runtime context active, importing WanOrchestrator...")
 
             from headless_wgp import WanOrchestrator
 
-            # Set mmgp verbose level for debug logging in any2video.py SVI path etc
             if is_debug_enabled():
                 try:
                     from mmgp import offload
@@ -129,10 +203,6 @@ class WgpInitMixin:
                     pass
 
             self.orchestrator = WanOrchestrator(self.wan_dir, main_output_dir=self.main_output_dir)
-        finally:
-            sys.argv = _saved_argv_for_import  # Restore original arguments
-            # NOTE: We do NOT restore the working directory - WGP expects to stay in Wan2GP/
-            # This ensures model downloads, file operations, etc. use correct paths
 
     def _init_wgp_integration(self):
         """

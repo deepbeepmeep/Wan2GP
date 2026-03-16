@@ -7,8 +7,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-from Wan2GP.postprocessing.rife.inference import temporal_interpolation
 from source.core.log import generation_logger
+from source.runtime.wgp_bridge import run_rife_temporal_interpolation
 from source.utils import (
     download_image_if_url,
     get_sequential_target_path,
@@ -73,7 +73,12 @@ def rife_interpolate_images_to_video(
 
         sample_in_for_rife = sample_in[0]
 
-        sample_out_from_rife = temporal_interpolation(flownet_ckpt, sample_in_for_rife, exp_val, device=device_for_rife)
+        sample_out_from_rife = run_rife_temporal_interpolation(
+            flownet_ckpt,
+            sample_in_for_rife,
+            exp_val,
+            device=device_for_rife,
+        )
 
         if sample_out_from_rife is None:
             generation_logger.error("RIFE process returned None.")

@@ -16,7 +16,7 @@
   "frequency_embedding_size": 256,
   "hidden_size": 4096,
   "in_channels": 16,
-  "text_tokens_zero_pad": true,
+  "text_tokens_zero_pad": true,  
   "mlp_ratio": 4,
   "num_heads": 32,
   "out_channels": 16,

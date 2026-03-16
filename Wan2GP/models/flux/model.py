@@ -317,8 +317,8 @@ class Flux(nn.Module):
             double_src = ["norm1.linear", "norm1_context.linear", "attn.norm_q",  "attn.norm_k", "ff.net.0.proj", "ff.net.2", "ff_context.net.0.proj", "ff_context.net.2", "attn.to_out.0" ,"attn.to_add_out", "attn.to_out", ".attn.to_", ".attn.add_q_proj.", ".attn.add_k_proj.", ".attn.add_v_proj.", ".ff_context.linear_out.", ".ff_context.linear_in.", ".ff.linear_out.", ".ff.linear_in." ] 
             double_tgt = ["img_mod.lin", "txt_mod.lin", "img_attn.norm.query_norm", "img_attn.norm.key_norm", "img_mlp.0", "img_mlp.2", "txt_mlp.0", "txt_mlp.2", "img_attn.proj", "txt_attn.proj", "img_attn.proj", ".img_attn.", ".txt_attn.q.", ".txt_attn.k.", ".txt_attn.v.", ".txt_mlp.2.", ".txt_mlp.0.", ".img_mlp.2.", ".img_mlp.0." ] 
 
-            single_src = ["norm.linear", "attn.norm_q", "attn.norm_k", "proj_out",".attn.to_q.", ".attn.to_k.", ".attn.to_v.", ".proj_mlp.", ".attn.to_out."]
-            single_tgt = ["modulation.lin","norm.query_norm", "norm.key_norm", "linear2", ".linear1_attn_q.", ".linear1_attn_k.", ".linear1_attn_v.", ".linear1_mlp.", ".linear2."]
+            single_src = ["norm.linear", "attn.norm_q", "attn.norm_k", "proj_out", ".attn.to_qkv_mlp_proj.", ".attn.to_q.", ".attn.to_k.", ".attn.to_v.", ".proj_mlp.", ".attn.to_out."]
+            single_tgt = ["modulation.lin","norm.query_norm", "norm.key_norm", "linear2", ".linear1.", ".linear1_attn_q.", ".linear1_attn_k.", ".linear1_attn_v.", ".linear1_mlp.", ".linear2."]
 
 
             for k,v in sd.items():
@@ -340,6 +340,11 @@ class Flux(nn.Module):
                         if "lora_B" in k:
                             v = swap_scale_shift(v)
                         k = k.replace("norm_out.linear", "final_layer.adaLN_modulation.1")
+                k = k.replace("double_stream_modulation_img.linear.", "double_stream_modulation_img.lin.")
+                k = k.replace("double_stream_modulation_txt.linear.", "double_stream_modulation_txt.lin.")
+                k = k.replace("single_stream_modulation.linear.", "single_stream_modulation.lin.")
+                k = k.replace(".lora.down.weight", ".lora_down.weight")
+                k = k.replace(".lora.up.weight", ".lora_up.weight")
                 if not k.startswith("diffusion_model."):
                     k = "diffusion_model." + k 
 
@@ -377,6 +382,7 @@ class Flux(nn.Module):
         pipeline =None,
         siglip_embedding = None,
         siglip_embedding_ids = None,
+        NAG: dict | None = None,
     ) -> Tensor:
 
         sz = len(txt_list)
@@ -430,6 +436,7 @@ class Flux(nn.Module):
             txt_ids_list = [torch.cat((siglip_embedding_ids, txt_id) , dim=1) for txt_id in txt_ids_list]
 
         pe_list = [self.pe_embedder(torch.cat((txt_ids, img_ids), dim=1)) for txt_ids in txt_ids_list] 
+        txt_len = txt_list[0].shape[1] if len(txt_list) > 0 else 0
 
         if self.is_flux2:
             double_vec_list = [ ( self.double_stream_modulation_img(base_vec_list[i]), self.double_stream_modulation_txt(base_vec_list[i]), ) for i in range(sz) ]
@@ -444,7 +451,7 @@ class Flux(nn.Module):
             if pipeline._interrupt:
                 return [None] * sz
             for img, txt, pe, vec in zip(img_list, txt_list, pe_list, vec_list):
-                img[...], txt[...] = block(img=img, txt=txt, vec=vec, pe=pe)
+                img[...], txt[...] = block(img=img, txt=txt, vec=vec, pe=pe, NAG=NAG)
                 img = txt = pe = vec= None
 
         img_list = [torch.cat((txt, img), 1) for txt, img in zip(txt_list, img_list)]
@@ -463,7 +470,7 @@ class Flux(nn.Module):
             if pipeline._interrupt:
                 return [None] * sz
             for img, pe, vec in zip(img_list, pe_list, vec_list):
-                img[...]= block(x=img, vec=vec, pe=pe)
+                img[...]= block(x=img, vec=vec, pe=pe, txt_len=txt_len, NAG=NAG)
                 img = pe = vec = None
         img_list = [img[:, txt.shape[1] : txt.shape[1] + img_len, ...] for img, txt in zip(img_list, txt_list)]
 

@@ -2,20 +2,10 @@
 from mmgp import offload
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Union
-import sys
-from pathlib import Path
 
 import numpy as np
 import torch, json, os
 import math
-
-# Add project root to path for imports
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from source.core.params.phase_multiplier_utils import get_phase_loras
-from source.media.video.hires_utils import HiresFixHelper
 
 from diffusers.image_processor import VaeImageProcessor
 from .transformer_qwenimage import QwenImageTransformer2DModel
@@ -25,7 +15,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, AutoTokenizer, Qwen2VLProcessor
 from .autoencoder_kl_qwenimage import AutoencoderKLQwenImage
 from diffusers import FlowMatchEulerDiscreteScheduler
-from .pipeline_qwenimage import QwenImagePipeline, calculate_shift, retrieve_timesteps
+from .pipeline_qwenimage import QwenImagePipeline
 from PIL import Image
 from shared.utils.utils import calculate_new_dimensions, convert_tensor_to_image
 from shared.utils import files_locator as fl 
@@ -34,10 +24,6 @@ _QWEN_FUSED_SPLIT_MAP = {
     "attn.to_qkv": {"mapped_modules": ("attn.to_q", "attn.to_k", "attn.to_v")},
     "attn.add_qkv_proj": {"mapped_modules": ("attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj")},
 }
-
-
-from shared.qtypes import nunchaku_int4 as _nunchaku_int4
-_split_nunchaku_fused_qkv = _nunchaku_int4.make_nunchaku_splitter(_QWEN_FUSED_SPLIT_MAP)
 
 
 def stitch_images(img1, img2):
@@ -73,9 +59,14 @@ class model_factory():
         transformer_filename = model_filename[0]
         processor = None
         tokenizer = None
+        text_encoder_folder = model_def.get("text_encoder_folder")
+        if text_encoder_folder:
+            tokenizer_path = fl.locate_folder(text_encoder_folder)
+        else:
+            tokenizer_path = os.path.dirname(text_encoder_filename)
         if base_model_type in ["qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B", "qwen_image_layered_20B"]:
-            processor = Qwen2VLProcessor.from_pretrained(fl.locate_folder("Qwen2.5-VL-7B-Instruct"))
-        tokenizer = AutoTokenizer.from_pretrained(fl.locate_folder("Qwen2.5-VL-7B-Instruct"))
+            processor = Qwen2VLProcessor.from_pretrained(tokenizer_path)
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
         self.base_model_type = base_model_type
 
         if base_model_type == "qwen_image_layered_20B":
@@ -96,9 +87,9 @@ class model_factory():
         source =  model_def.get("source", None)
 
         if source is not None:
-            offload.load_model_data(transformer, source, preprocess_sd=_split_nunchaku_fused_qkv)
+            offload.load_model_data(transformer, source, fused_split_map=_QWEN_FUSED_SPLIT_MAP, writable_tensors=False)
         else:
-            offload.load_model_data(transformer, transformer_filename, preprocess_sd=_split_nunchaku_fused_qkv)
+            offload.load_model_data(transformer, transformer_filename, fused_split_map=_QWEN_FUSED_SPLIT_MAP, writable_tensors=False)
         # transformer = offload.fast_load_transformers_model("transformer_quanto.safetensors", writable_tensors= True , modelClass=QwenImageTransformer2DModel, defaultConfigPath="transformer_config.json")
 
         if not source is None:
@@ -249,7 +240,7 @@ class model_factory():
             else:
                 n_prompt=  "text, watermark, copyright, blurry, low resolution"
 
-        image_mask = None if input_masks is None else convert_tensor_to_image(input_masks, mask_levels= True)
+        image_mask = None if input_masks is None else convert_tensor_to_image(input_masks, mask_levels= True) 
         if input_frames is not None:
             input_ref_images = [convert_tensor_to_image(input_frames) ] +  ([] if input_ref_images  is None else input_ref_images )
 
@@ -270,288 +261,6 @@ class model_factory():
 
         num_images_per_prompt = 1 if qwen_layered else batch_size
         layers = batch_size if qwen_layered else 1
-
-        # Extract hires config and system prompt from bbargs
-        hires_config = bbargs.get("hires_config", None)
-        system_prompt = bbargs.get("system_prompt", None)
-
-        # ========== TWO-PASS HIRES FIX ==========
-        if hires_config and hires_config.get("enabled"):
-            hires_scale = hires_config.get("scale", 2.0)
-            hires_steps = hires_config.get("hires_steps", 6)
-            hires_denoise = hires_config.get("denoising_strength", 0.5)
-            hires_upscale_method = hires_config.get("upscale_method", "bicubic")
-            hires_seed_offset = int(hires_config.get("seed_offset", 1))
-
-            print(f"🔍 Hires fix enabled: {width}x{height} → {int(width*hires_scale)}x{int(height*hires_scale)}")
-            print(f"   Pass 1: {sampling_steps} steps | Pass 2: {hires_steps} steps @ {hires_denoise} denoise")
-
-            # === Extract LoRA info from hires_config (set by qwen_handler.py) ===
-            # NOTE: activated_loras is NOT in bbargs - it's processed by wgp.py into loras_slists
-            # The handler stores LoRA names in hires_config for us to use
-            original_lora_names = hires_config.get("lora_names", [])
-            print(f"💾 LoRA names from hires_config: {len(original_lora_names)} LoRAs for phase filtering")
-            if original_lora_names:
-                for i, name in enumerate(original_lora_names):
-                    print(f"   LoRA {i+1}: {name}")
-
-            # === PASS 1: Generate at base resolution, output latents ===
-            latents = self.pipeline(
-                prompt=input_prompt,
-                negative_prompt=n_prompt,
-                image=input_ref_images,
-                image_mask=image_mask,
-                width=width,
-                height=height,
-                num_inference_steps=sampling_steps,
-                num_images_per_prompt=num_images_per_prompt,
-                layers=layers,
-                cfg_normalize=True,
-                true_cfg_scale=guide_scale,
-                callback=callback,
-                pipeline=self,
-                loras_slists=loras_slists,
-                joint_pass=joint_pass,
-                denoising_strength=denoising_strength,
-                masking_strength=masking_strength,
-                generator=torch.Generator(device="cuda").manual_seed(seed),
-                lora_inpaint=image_mask is not None and model_mode == 1,
-                outpainting_dims=outpainting_dims,
-                qwen_edit_plus=qwen_edit_plus,
-                VAE_tile_size=tile_size,
-                output_type="latent",  # Return latents, don't VAE decode yet
-            )
-            if latents is None:
-                return None
-
-            print(f"✅ Pass 1 complete: latents shape {latents.shape}")
-
-            # === DEBUG: Save Pass 1 output before upscaling ===
-            if os.getenv("DEBUG_HIRES_SAVE_PASS1", "0") == "1":
-                # convert_tensor_to_image already imported at module level
-                from shared.config import model_config
-                print("📸 Saving Pass 1 output for debugging...")
-                # Decode latents to image
-                latents_decoded = self.pipeline._unpack_latents(latents.clone(), height, width, self.pipeline.vae_scale_factor)
-                latents_decoded = latents_decoded.to(self.pipeline.vae.dtype)
-                latents_mean = (
-                    torch.tensor(self.pipeline.vae.config.latents_mean)
-                    .view(1, self.pipeline.vae.config.z_dim, 1, 1, 1)
-                    .to(latents_decoded.device, latents_decoded.dtype)
-                )
-                latents_std = 1.0 / torch.tensor(self.pipeline.vae.config.latents_std).view(
-                    1, self.pipeline.vae.config.z_dim, 1, 1, 1
-                ).to(latents_decoded.device, latents_decoded.dtype)
-                latents_decoded = latents_decoded / latents_std + latents_mean
-                pass1_image = self.pipeline.vae.decode(latents_decoded, return_dict=False)[0][:, :, 0]
-
-                # Save to file using the same output directory as final images
-                import datetime
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_dir = model_config.get("image_save_path", "outputs/")
-                debug_path = os.path.join(output_dir, f"debug_pass1_{timestamp}.png")
-                os.makedirs(output_dir, exist_ok=True)
-                convert_tensor_to_image(pass1_image[0]).save(debug_path)
-                print(f"   Saved Pass 1 output to: {debug_path}")
-
-            # === UPSCALE LATENTS ===
-            latents, new_height, new_width = QwenImagePipeline._upscale_latents(
-                latents, height, width,
-                self.pipeline.vae_scale_factor,
-                hires_scale,
-                hires_upscale_method
-            )
-            print(f"📐 Latents upscaled: {width}x{height} → {new_width}x{new_height}")
-
-            # === DEBUG: Save upscaled latents (before adding noise) ===
-            if os.getenv("DEBUG_HIRES_SAVE_PASS1", "0") == "1":
-                # convert_tensor_to_image already imported at module level
-                from shared.config import model_config
-                print("📸 Saving upscaled latents (pre-noise) for debugging...")
-                # Decode upscaled latents to image
-                latents_upscaled_decoded = self.pipeline._unpack_latents(latents.clone(), new_height, new_width, self.pipeline.vae_scale_factor)
-                latents_upscaled_decoded = latents_upscaled_decoded.to(self.pipeline.vae.dtype)
-                latents_mean = (
-                    torch.tensor(self.pipeline.vae.config.latents_mean)
-                    .view(1, self.pipeline.vae.config.z_dim, 1, 1, 1)
-                    .to(latents_upscaled_decoded.device, latents_upscaled_decoded.dtype)
-                )
-                latents_std = 1.0 / torch.tensor(self.pipeline.vae.config.latents_std).view(
-                    1, self.pipeline.vae.config.z_dim, 1, 1, 1
-                ).to(latents_upscaled_decoded.device, latents_upscaled_decoded.dtype)
-                latents_upscaled_decoded = latents_upscaled_decoded / latents_std + latents_mean
-                upscaled_image = self.pipeline.vae.decode(latents_upscaled_decoded, return_dict=False)[0][:, :, 0]
-
-                # Save to file using the same output directory as final images
-                import datetime
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_dir = model_config.get("image_save_path", "outputs/")
-                debug_path = os.path.join(output_dir, f"debug_upscaled_prenoise_{timestamp}.png")
-                os.makedirs(output_dir, exist_ok=True)
-                convert_tensor_to_image(upscaled_image[0]).save(debug_path)
-                print(f"   Saved upscaled latents (pre-noise) to: {debug_path}")
-
-            # === PASS 2: Refine at higher resolution ===
-            # Reset scheduler for second pass
-            self.scheduler = FlowMatchEulerDiscreteScheduler(**scheduler_config)
-            self.pipeline.scheduler = self.scheduler
-
-            # Build sigma/timestep schedule so pass 2 starts at the correct noise level.
-            # NOTE: In this codebase, timestep is on a 0..1000 scale, so sigma ≈ timestep/1000.
-            device = "cuda"
-
-            # FIX: Create a full schedule with enough steps to support the denoising strength
-            # e.g., if hires_steps=1 and denoise=0.5, we need at least 2 total steps to start halfway
-            total_steps_needed = max(hires_steps, math.ceil(hires_steps / max(hires_denoise, 0.01)))
-            sigmas_full = np.linspace(1.0, 1 / total_steps_needed, total_steps_needed).tolist()
-
-            hires_image_seq_len = int(latents.shape[1])
-            mu = calculate_shift(
-                hires_image_seq_len,
-                self.scheduler.config.get("base_image_seq_len", 256),
-                self.scheduler.config.get("max_image_seq_len", 4096),
-                self.scheduler.config.get("base_shift", 0.5),
-                self.scheduler.config.get("max_shift", 1.15),
-            )
-
-            timesteps_full, _ = retrieve_timesteps(
-                self.scheduler,
-                num_inference_steps=None,
-                device=device,
-                sigmas=sigmas_full,
-                mu=mu,
-            )
-
-            # Calculate where to start based on denoising strength
-            start_idx = int(len(timesteps_full) * (1.0 - float(hires_denoise)))
-            start_idx = max(0, min(start_idx, len(timesteps_full) - 1))
-
-            # Ensure we get exactly hires_steps by trimming from the start
-            # If total_steps_needed > hires_steps, take the last hires_steps
-            if len(sigmas_full) - start_idx > hires_steps:
-                start_idx = len(sigmas_full) - hires_steps
-
-            sigma0 = float(timesteps_full[start_idx].item()) / 1000.0
-            sigmas_trimmed = sigmas_full[start_idx:]
-
-            # === DEBUG: Log sigma schedule details ===
-            if os.getenv("DEBUG_HIRES_SAVE_PASS1", "0") == "1":
-                print(f"🔍 SIGMA SCHEDULE DEBUG:")
-                print(f"   total_steps_needed: {total_steps_needed}")
-                print(f"   hires_steps requested: {hires_steps}")
-                print(f"   hires_denoise: {hires_denoise}")
-                print(f"   sigmas_full: {sigmas_full}")
-                print(f"   timesteps_full: {[f'{t.item():.2f}' for t in timesteps_full]}")
-                print(f"   start_idx: {start_idx} / {len(timesteps_full)}")
-                print(f"   sigma0: {sigma0:.4f}")
-                print(f"   sigmas_trimmed: {sigmas_trimmed}")
-                print(f"   actual steps in pass 2: {len(sigmas_trimmed)}")
-                print(f"   noise mixing: latent * {1.0-sigma0:.4f} + noise * {sigma0:.4f}")
-
-            # Add noise to the (clean) upscaled latents so the scheduler starts at sigma0.
-            noise_gen = torch.Generator(device="cuda").manual_seed(int(seed) + hires_seed_offset)
-            noise = torch.randn(latents.shape, generator=noise_gen, device=latents.device, dtype=latents.dtype)
-            latents = latents * (1.0 - sigma0) + noise * sigma0
-            print(f"🌀 Pass 2 init noise: start_idx={start_idx}/{len(timesteps_full)} sigma0={sigma0:.4f} steps={len(sigmas_trimmed)}")
-
-            # === Apply Phase-Based LoRA Multipliers for Pass 2 ===
-            # Get phase-based multipliers from hires_config (set by qwen_handler.py)
-            phase_multipliers = hires_config.get("phase_lora_multipliers", [])
-
-            if phase_multipliers and original_lora_names:
-                # Use HiresFixHelper to filter LoRAs for Pass 2
-                print(f"🔍 Phase multipliers from config: {phase_multipliers}")
-
-                loras_slists_pass2, pass2_multipliers_all, active_count = HiresFixHelper.filter_loras_for_phase(
-                    lora_names=original_lora_names,
-                    phase_multipliers=phase_multipliers,
-                    phase_index=1,  # Pass 2 (0-indexed)
-                    num_phases=2,
-                    num_steps=hires_steps
-                )
-
-                if loras_slists_pass2 is not None:
-                    # Successfully filtered LoRAs for Pass 2
-                    loras_slists = loras_slists_pass2
-                    print(f"✓ Successfully built Pass 2 loras_slists")
-
-                    # Print formatted summary
-                    HiresFixHelper.print_pass2_lora_summary(
-                        lora_names=original_lora_names,
-                        phase_values=pass2_multipliers_all,
-                        active_count=active_count
-                    )
-                else:
-                    # Error occurred, fall back to original loras_slists
-                    print(f"⚠️ Failed to build Pass 2 loras_slists, using original")
-            else:
-                # No phase multipliers provided
-                if not original_lora_names:
-                    print(f"🔧 Pass 2: No LoRA names found in hires_config")
-                else:
-                    print(f"🔧 Pass 2: No phase multipliers found, using original loras_slists")
-
-            # Final verification before Pass 2 pipeline call
-            print(f"")
-            print(f"🚀 Starting Pass 2 generation...")
-            print(f"🔍 loras_slists being passed to pipeline: id={id(loras_slists)}, type={type(loras_slists)}")
-            if loras_slists:
-                print(f"🔍 loras_slists length: {len(loras_slists)}")
-            print(f"")
-
-            image = self.pipeline(
-                prompt=input_prompt,
-                negative_prompt=n_prompt,
-                image=None,  # No input image for pass 2 - we have latents
-                image_mask=None,
-                width=new_width,
-                height=new_height,
-                num_inference_steps=hires_steps,
-                sigmas=sigmas_trimmed,
-                num_images_per_prompt=num_images_per_prompt,
-                layers=layers,
-                cfg_normalize=True,
-                true_cfg_scale=guide_scale,
-                callback=callback,
-                pipeline=self,
-                loras_slists=loras_slists,
-                joint_pass=joint_pass,
-                denoising_strength=hires_denoise,  # (kept for compatibility; sigma schedule controls actual start)
-                masking_strength=masking_strength,
-                latents=latents,  # Pre-computed upscaled latents
-                generator=torch.Generator(device="cuda").manual_seed(int(seed) + hires_seed_offset),
-                lora_inpaint=False,
-                outpainting_dims=None,
-                qwen_edit_plus=qwen_edit_plus,
-                VAE_tile_size=tile_size,
-                output_type="pil",  # Now VAE decode to final image
-            )
-            if image is None:
-                return None
-
-            print(f"✅ Hires fix complete: {new_width}x{new_height}")
-
-            # === Save downscaled version (hires quality at original resolution) ===
-            import datetime
-            from PIL import Image as PILImage
-
-            # Convert tensor to PIL image
-            hires_image_pil = convert_tensor_to_image(image.transpose(0, 1)[0])
-
-            # Resize back to original Pass 1 dimensions
-            downscaled = hires_image_pil.resize((width, height), PILImage.Resampling.LANCZOS)
-
-            # Save downscaled version to outputs directory
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d-%Hh%Mm%Ss")
-            output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "outputs")
-            os.makedirs(output_dir, exist_ok=True)
-            downscaled_path = os.path.join(output_dir, f"{timestamp}_seed{seed}_hires_downscaled.png")
-            downscaled.save(downscaled_path)
-            print(f"💾 Saved hires-downscaled version ({width}x{height}): {downscaled_path}")
-
-            return image.transpose(0, 1)
-
-        # ========== STANDARD SINGLE-PASS (existing behavior) ==========
         image = self.pipeline(
             prompt=input_prompt,
             negative_prompt=n_prompt,
@@ -571,7 +280,7 @@ class model_factory():
             denoising_strength=denoising_strength,
             masking_strength=masking_strength,
             generator=torch.Generator(device="cuda").manual_seed(seed),
-            lora_inpaint = image_mask is not None and model_mode == 1,
+            model_mode = model_mode,
             outpainting_dims = outpainting_dims,
             qwen_edit_plus = qwen_edit_plus,
             VAE_tile_size = tile_size,

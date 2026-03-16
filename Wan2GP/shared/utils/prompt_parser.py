@@ -1,6 +1,6 @@
 import re
 
-def process_template(input_text, keep_comments = False):
+def process_template(input_text, keep_comments=False, keep_empty_lines=False):
     """
     Process a text template with macro instructions and variable substitution.
     Supports multiple values for variables to generate multiple output versions.
@@ -14,7 +14,8 @@ def process_template(input_text, keep_comments = False):
             - output_text: Processed output with variables substituted, or empty string if error
             - error_message: Error description and problematic line, or empty string if no error
     """
-    lines = input_text.strip().split('\n')
+    normalized_input = str(input_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized_input.split("\n") if keep_empty_lines else normalized_input.strip().split("\n")
     current_variables = {}
     current_template_lines = []
     all_output_lines = []
@@ -29,6 +30,8 @@ def process_template(input_text, keep_comments = False):
         
         # Skip empty lines or comments
         if not line:
+            if keep_empty_lines:
+                current_template_lines.append("")
             continue
 
         if line.startswith('#') and not keep_comments:

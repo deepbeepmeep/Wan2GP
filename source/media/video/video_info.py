@@ -8,10 +8,15 @@ import cv2
 from source.core.log import generation_logger
 
 __all__ = [
+    "VideoMetadataError",
     "get_video_frame_count_ffprobe",
     "get_video_fps_ffprobe",
     "get_video_frame_count_and_fps",
 ]
+
+
+class VideoMetadataError(RuntimeError):
+    """Raised when required video metadata cannot be determined."""
 
 
 def get_video_frame_count_ffprobe(input_video_path: str) -> int | None:

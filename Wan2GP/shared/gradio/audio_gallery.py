@@ -4,6 +4,18 @@ from datetime import datetime
 import os
 import json
 import uuid
+from collections import OrderedDict
+
+
+def _get_selected_idx(audio_infos, selected_idx):
+    selected_idx = int(selected_idx) if selected_idx is not None else 0
+    if selected_idx >= len(audio_infos):
+        selected_idx = len(audio_infos) -1
+    elif selected_idx < 0:
+        selected_idx = 0
+    if len(audio_infos) == 0:
+        selected_idx = -1
+    return selected_idx
 
 
 class AudioGallery:
@@ -19,7 +31,11 @@ class AudioGallery:
         update_only: If True, only render the inner HTML/Audio (internal use)
     """
 
-    def __init__(self, audio_paths=None, selected_index=0, max_thumbnails=10, height=400, label="Audio Gallery", update_only=False):
+    _timestamp_cache = OrderedDict()
+    _timestamp_cache_max_entries = 50
+    _gradio_upload_mtime_patch_installed = False
+
+    def __init__(self, audio_paths=None, selected_index=-1, max_thumbnails=10, height=400, label="Audio Gallery", update_only=False):
         self.audio_paths = audio_paths or []
         self.selected_index = selected_index
         self.max_thumbnails = max_thumbnails
@@ -46,6 +62,7 @@ const AG = window.__agNS;
 AG.state = AG.state || { manual: false, prevScroll: 0 };
 AG.init  = AG.init  || false;
 AG.moMap = AG.moMap || {}; // by element id, if needed later
+AG.uploadPatchInit = AG.uploadPatchInit || false;
 
 // Helpers scoped on the namespace
 AG.root = function () { return document.querySelector('#audio_gallery_html'); };
@@ -70,6 +87,40 @@ if (!AG.init) {
   });
 
   AG.init = true;
+}
+
+// Patch upload requests once to forward browser lastModified timestamps.
+if (!AG.uploadPatchInit) {
+  AG._origFetch = AG._origFetch || window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    let nextInit = init;
+    try {
+      const reqUrl = (typeof input === 'string')
+        ? input
+        : (input && input.url ? input.url : '');
+      const reqMethod = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+      const reqBody = init && init.body;
+      const isUploadRequest = reqMethod === 'POST' && typeof reqUrl === 'string' && (reqUrl.includes('/upload') || reqUrl.includes('/gradio_api/upload'));
+      if (isUploadRequest && reqBody instanceof FormData && reqBody.has('files')) {
+        const files = reqBody.getAll('files');
+        const lastModifiedValues = [];
+        for (const oneFile of files) {
+          if (typeof File !== 'undefined' && oneFile instanceof File) {
+            lastModifiedValues.push(Number(oneFile.lastModified || 0));
+          } else {
+            lastModifiedValues.push(0);
+          }
+        }
+        if (lastModifiedValues.length > 0) {
+          const headers = new Headers((init && init.headers) || {});
+          headers.set('x-wangp-file-last-modified', JSON.stringify(lastModifiedValues));
+          nextInit = Object.assign({}, init || {}, { headers });
+        }
+      }
+    } catch (_) {}
+    return AG._origFetch(input, nextInit);
+  };
+  AG.uploadPatchInit = true;
 }
 
 // Manual selection trigger (used by click handler and callable from elsewhere)
@@ -162,6 +213,69 @@ AG.tryInstall();
 // ===== end AudioGallery JS =====
 """
 
+    @classmethod
+    def install_gradio_upload_mtime_patch(cls):
+        """Monkey-patch Gradio multipart parser to keep browser file lastModified as temp-file mtime."""
+        if cls._gradio_upload_mtime_patch_installed:
+            return True
+        try:
+            from gradio.route_utils import GradioMultiPartParser, GradioUploadFile
+        except Exception:
+            return False
+
+        original_parse = getattr(GradioMultiPartParser, "parse", None)
+        if original_parse is None:
+            return False
+        if getattr(original_parse, "__wangp_upload_mtime_patch__", False):
+            cls._gradio_upload_mtime_patch_installed = True
+            return True
+
+        header_name = "x-wangp-file-last-modified"
+
+        async def patched_parse(parser_self, *args, **kwargs):
+            form = await original_parse(parser_self, *args, **kwargs)
+            try:
+                header_payload = None
+                if hasattr(parser_self, "headers") and parser_self.headers is not None:
+                    header_payload = parser_self.headers.get(header_name)
+                if not header_payload:
+                    return form
+
+                mtime_values = json.loads(header_payload)
+                if not isinstance(mtime_values, list) or len(mtime_values) == 0:
+                    return form
+
+                uploaded_files = form.getlist("files")
+                for idx, file_obj in enumerate(uploaded_files):
+                    if idx >= len(mtime_values):
+                        break
+                    ts_ms = mtime_values[idx]
+                    if isinstance(ts_ms, dict):
+                        ts_ms = ts_ms.get("lastModified", ts_ms.get("last_modified", 0))
+                    try:
+                        ts_ms = float(ts_ms)
+                    except Exception:
+                        continue
+                    if ts_ms <= 0:
+                        continue
+                    ts = ts_ms / 1000.0 if ts_ms > 100_000_000_000 else ts_ms
+
+                    tmp_path = None
+                    if isinstance(file_obj, GradioUploadFile):
+                        tmp_path = getattr(getattr(file_obj, "file", None), "name", None)
+                    elif hasattr(file_obj, "file"):
+                        tmp_path = getattr(file_obj.file, "name", None)
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.utime(tmp_path, (ts, ts))
+            except Exception:
+                pass
+            return form
+
+        patched_parse.__wangp_upload_mtime_patch__ = True
+        GradioMultiPartParser.parse = patched_parse
+        cls._gradio_upload_mtime_patch_installed = True
+        return True
+
     def get_state(self):
         """Get the state components for use in other Gradio events. Returns: (state_paths, state_selected, refresh_trigger)"""
         return self.state_paths, self.state_selected, self.refresh_trigger
@@ -204,8 +318,8 @@ AG.tryInstall();
         else:
             selected_idx = 0
 
-        if not audio_infos or selected_idx >= len(audio_infos) or selected_idx < 0:
-            selected_idx = 0
+        selected_idx = _get_selected_idx(audio_infos, selected_idx)
+
 
         # Trigger id to notify the frontend to refresh (observed via MutationObserver on HTML rerender)
         refresh_id = str(uuid.uuid4())
@@ -295,7 +409,7 @@ AG.tryInstall();
             self.refresh_trigger.change(
                 fn=self._refresh_gallery,
                 inputs=[self.refresh_trigger, self.state_paths, self.state_selected],
-                outputs=[self.audio_player, self.gallery_html],
+                outputs=[self.audio_player, self.gallery_html, self.state_selected],
                 show_progress="hidden",
             )
 
@@ -309,11 +423,12 @@ AG.tryInstall();
             audio_infos = self._process_audio_paths(paths)
 
             if not audio_infos:
-                return None, self._create_gallery_html([], 0), paths_json, 0, ""
+                return None, self._create_gallery_html([], 0), paths_json, -1, ""
 
             new_index = int(click_value)
             if 0 <= new_index < len(audio_infos):
                 selected_path = audio_infos[new_index]["path"]
+                if not os.path.exists(selected_path): selected_path = None
                 return (
                     selected_path,
                     self._create_gallery_html(audio_infos, new_index),
@@ -329,25 +444,23 @@ AG.tryInstall();
     def _refresh_gallery(self, refresh_id, paths_json, selected_idx):
         """Refresh gallery based on state (programmatic)."""
         if not refresh_id:
-            return self._render_from_state(paths_json, selected_idx)[:2]
+            return self._render_from_state(paths_json, selected_idx)[:2], selected_idx
 
         try:
             paths = json.loads(paths_json) if paths_json else []
             audio_infos = self._process_audio_paths(paths)
 
             if not audio_infos:
-                return None, self._create_gallery_html([], 0)
+                return None, self._create_gallery_html([], 0), -1
 
-            selected_idx = int(selected_idx) if selected_idx is not None else 0
-            if selected_idx >= len(audio_infos) or selected_idx < 0:
-                selected_idx = 0
+            selected_idx = _get_selected_idx(audio_infos, selected_idx)
 
             selected_path = audio_infos[selected_idx]["path"]
             gallery_html_content = self._create_gallery_html(audio_infos, selected_idx)
 
-            return selected_path, gallery_html_content
+            return selected_path, gallery_html_content, selected_idx
         except Exception:
-            return None, self._create_gallery_html([], 0)
+            return None, self._create_gallery_html([], 0), -1
 
     def _get_audio_duration(self, audio_path):
         """Get audio duration in seconds. Returns formatted string."""
@@ -382,25 +495,69 @@ AG.tryInstall();
         except Exception:
             return "0:00"
 
+    @classmethod
+    def _get_cached_creation_datetime(cls, audio_path):
+        try:
+            stat = os.stat(audio_path)
+            cache_key = (audio_path, int(stat.st_size), int(stat.st_mtime))
+        except Exception:
+            return None
+
+        cached_dt = cls._timestamp_cache.get(cache_key)
+        if cached_dt is not None:
+            cls._timestamp_cache.move_to_end(cache_key)
+            return cached_dt
+
+        dt = None
+        try:
+            from shared.utils.audio_metadata import read_audio_metadata, resolve_audio_creation_datetime
+            wangp_metadata = read_audio_metadata(audio_path)
+            dt = resolve_audio_creation_datetime(audio_path, wangp_metadata=wangp_metadata)
+        except Exception:
+            dt = None
+
+        if dt is None:
+            try:
+                if os.name == "nt":
+                    ts = os.path.getctime(audio_path)
+                else:
+                    stat = os.stat(audio_path)
+                    ts = stat.st_birthtime if hasattr(stat, "st_birthtime") else stat.st_mtime
+                dt = datetime.fromtimestamp(ts)
+            except Exception:
+                return None
+
+        cls._timestamp_cache[cache_key] = dt
+        while len(cls._timestamp_cache) > cls._timestamp_cache_max_entries:
+            cls._timestamp_cache.popitem(last=False)
+        return dt
+
     def _format_duration(self, seconds):
         """Format duration in seconds to MM:SS format."""
         mins = int(seconds // 60)
         secs = int(seconds % 60)
         return f"{mins}:{secs:02d}"
 
-    def _get_file_info(self, audio_path):
+    def _get_file_info(self, audio_path, not_found=False):
         """Get file information: basename, date/time, duration."""
         p = Path(audio_path)
         basename = p.name
 
-        # Get modification time
-        mtime = os.path.getmtime(audio_path)
-        dt = datetime.fromtimestamp(mtime)
-        date_str = dt.strftime("%Y-%m-%d")
-        time_str = dt.strftime("%H:%M:%S")
+        if not_found:
+            timestamp = ""
+            date_str = "Deleted"
+            time_str = "00:00:00"
+            duration = "0:00"
+        else:
+            dt = self._get_cached_creation_datetime(audio_path)
+            if dt is None:
+                dt = datetime.fromtimestamp(os.path.getmtime(audio_path))
+            date_str = dt.strftime("%Y-%m-%d")
+            time_str = dt.strftime("%H:%M:%S")
+            timestamp = dt.timestamp()
 
-        # Get duration
-        duration = self._get_audio_duration(audio_path)
+            # Get duration
+            duration = self._get_audio_duration(audio_path)
 
         return {
             "basename": basename,
@@ -408,7 +565,7 @@ AG.tryInstall();
             "time": time_str,
             "duration": duration,
             "path": audio_path,
-            "timestamp": mtime,
+            "timestamp": timestamp,
         }
 
     def _create_thumbnail_html(self, info, index, is_selected):
@@ -624,6 +781,8 @@ AG.tryInstall();
                 try:
                     if os.path.exists(path):
                         audio_infos.append(self._get_file_info(path))
+                    else:
+                        audio_infos.append(self._get_file_info(path, True))                        
                 except Exception:
                     continue
             audio_infos = audio_infos[: self.max_thumbnails]
@@ -636,15 +795,13 @@ AG.tryInstall();
             audio_infos = self._process_audio_paths(paths)
 
             if not audio_infos:
-                return None, self._create_gallery_html([], 0), paths_json, 0, ""
+                return None, self._create_gallery_html([], 0), paths_json, -1, ""
 
-            selected_idx = int(selected_idx) if selected_idx is not None else 0
-            if selected_idx >= len(audio_infos) or selected_idx < 0:
-                selected_idx = 0
-
-            selected_path = audio_infos[selected_idx]["path"]
+            selected_idx = _get_selected_idx(audio_infos, selected_idx)
+            selected_path = audio_infos[selected_idx]["path"] 
+            if not os.path.exists(selected_path): selected_path = None
             gallery_html_content = self._create_gallery_html(audio_infos, selected_idx)
 
             return selected_path, gallery_html_content, paths_json, selected_idx, ""
         except Exception:
-            return None, self._create_gallery_html([], 0), paths_json, 0, ""
+            return None, self._create_gallery_html([], 0), paths_json, -1, ""

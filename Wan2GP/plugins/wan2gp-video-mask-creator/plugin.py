@@ -14,8 +14,6 @@ class VideoMaskCreatorPlugin(WAN2GPPlugin):
         self.vmc_event_handler = self.matanyone_app.get_vmc_event_handler()
 
     def setup_ui(self):
-        self.request_global("download_shared_done")
-        self.request_global("download_models")
         self.request_global("server_config")
         self.request_global("get_current_model_settings")
         
@@ -43,8 +41,7 @@ class VideoMaskCreatorPlugin(WAN2GPPlugin):
 
     def on_tab_select(self, state: dict) -> None:
         # print("[VideoMaskCreatorPlugin] Tab selected. Loading models...")
-        if not self.download_shared_done:
-            self.download_models()
+        self.matanyone_app.ensure_selected_assets(self.server_config)
         self.vmc_event_handler(state, True)
         self._is_active = True
 

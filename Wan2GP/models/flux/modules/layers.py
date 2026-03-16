@@ -245,7 +245,7 @@ class DoubleStreamBlock(nn.Module):
                 nn.Linear(mlp_hidden_dim, hidden_size, bias=mlp_bias),
             )
 
-    def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor) -> tuple[Tensor, Tensor]:
+    def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, *, NAG: dict | None = None) -> tuple[Tensor, Tensor]:
         if self.shared_modulation:
             (img_mod1, img_mod2), (txt_mod1, txt_mod2) = vec
         else:
@@ -265,7 +265,7 @@ class DoubleStreamBlock(nn.Module):
 
 
         img_q= self.img_attn.norm(img_q, None, img_v)
-        img_k = self.img_attn.norm(None, img_k, img_v)
+        img_k= self.img_attn.norm(None, img_k, img_v)
 
         # prepare txt for attention
         txt_modulated = self.txt_norm1(txt)
@@ -292,23 +292,23 @@ class DoubleStreamBlock(nn.Module):
 
         qkv_list = [q, k, v]
         del q, k, v
-        attn = attention(qkv_list, pe=pe)
+        attn = attention(qkv_list, pe=pe, txt_len=txt.shape[1], NAG=NAG)
 
         txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
 
         # calculate the img blocks
-        img.addcmul_(self.img_attn.proj(img_attn), img_mod1.gate)
+        torch.addcmul(img, self.img_attn.proj(img_attn), img_mod1.gate, out=img)
         mod_img = self.img_norm2(img)
         mod_img.mul_(1 + img_mod2.scale)
         mod_img.add_(img_mod2.shift)
         mod_img = split_mlp(self.img_mlp, mod_img)
         # mod_img = self.img_mlp(mod_img)
-        img.addcmul_( mod_img, img_mod2.gate)
+        torch.addcmul(img, mod_img, img_mod2.gate, out=img)
         mod_img = None
 
         # calculate the txt blocks
-        txt.addcmul_(self.txt_attn.proj(txt_attn), txt_mod1.gate)
-        txt.addcmul_(self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift), txt_mod2.gate)
+        torch.addcmul(txt, self.txt_attn.proj(txt_attn), txt_mod1.gate, out=txt)
+        torch.addcmul(txt, self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift), txt_mod2.gate, out=txt)
         return img, txt
 
 
@@ -358,7 +358,7 @@ class SingleStreamBlock(nn.Module):
         else:
             self.modulation = None
 
-    def forward(self, x: Tensor, vec: Tensor, pe: Tensor) -> Tensor:
+    def forward(self, x: Tensor, vec: Tensor, pe: Tensor, *, txt_len: int | None = None, NAG: dict | None = None) -> Tensor:
         if self.shared_modulation:
             mod = vec
         elif self.modulation is not None:
@@ -384,7 +384,7 @@ class SingleStreamBlock(nn.Module):
         # compute attention
         qkv_list = [q, k, v]
         del q, k, v
-        attn = attention(qkv_list, pe=pe)
+        attn = attention(qkv_list, pe=pe, txt_len=txt_len, NAG=NAG)
         # compute activation in mlp stream, cat again and run second linear layer
 
         x_mod_shape = x_mod.shape
@@ -401,7 +401,7 @@ class SingleStreamBlock(nn.Module):
             x_chunk[...] = self.linear2(attn_mlp_chunk)
             del attn_mlp_chunk
         x_mod = x_mod.view(x_mod_shape)
-        x.addcmul_(x_mod, mod.gate)
+        torch.addcmul(x, x_mod, mod.gate, out=x)
         return x
 
 

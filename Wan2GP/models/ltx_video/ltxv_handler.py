@@ -1,13 +1,6 @@
 import os
 import torch
-from shared.utils import files_locator as fl 
-
-
-def get_ltxv_text_encoder_filename(text_encoder_quantization):
-    text_encoder_filename = "T5_xxl_1.1/T5_xxl_1.1_enc_bf16.safetensors"
-    if text_encoder_quantization =="int8":
-        text_encoder_filename = text_encoder_filename.replace("bf16", "quanto_bf16_int8") 
-    return fl.locate_file(text_encoder_filename, True)
+from shared.utils.hf import build_hf_url
 
 class family_handler():
     @staticmethod
@@ -21,6 +14,12 @@ class family_handler():
             "no_negative_prompt" : True,
         })
 
+        text_encoder_folder = "T5_xxl_1.1"
+        extra_model_def["text_encoder_URLs"] = [
+            build_hf_url("DeepBeepMeep/LTX_Video", text_encoder_folder, "T5_xxl_1.1_enc_bf16.safetensors"),
+            build_hf_url("DeepBeepMeep/LTX_Video", text_encoder_folder, "T5_xxl_1.1_enc_quanto_bf16_int8.safetensors"),
+        ]
+        extra_model_def["text_encoder_folder"] = text_encoder_folder
 
         extra_model_def["fps"] = 30
         extra_model_def["frames_minimum"] = 17
@@ -64,39 +63,38 @@ class family_handler():
         return {"ltxv":(30, "LTX Video")}
 
     @staticmethod
-    def register_lora_cli_args(parser):
+    def register_lora_cli_args(parser, lora_root):
         parser.add_argument(
             "--lora-dir-ltxv",
             type=str,
-            default=os.path.join("loras", "ltxv"),
-            help="Path to a directory that contains LTX Videos Loras"
+            default=None,
+            help=f"Path to a directory that contains LTX Videos Loras (default: {os.path.join(lora_root, 'ltxv')})"
         )
 
     @staticmethod
-    def get_lora_dir(base_model_type, args):
-        return args.lora_dir_ltxv
+    def get_lora_dir(base_model_type, args, lora_root):
+        return getattr(args, "lora_dir_ltxv", None) or os.path.join(lora_root, "ltxv")
 
     @staticmethod
     def get_vae_block_size(base_model_type):
         return 32
 
     @staticmethod
-    def query_model_files(computeList, base_model_type, model_filename, text_encoder_quantization):
-        text_encoder_filename = get_ltxv_text_encoder_filename(text_encoder_quantization)    
+    def query_model_files(computeList, base_model_type, model_def=None):
         return {
             "repoId" : "DeepBeepMeep/LTX_Video", 
             "sourceFolderList" :  ["T5_xxl_1.1",  ""  ],
-            "fileList" : [ ["added_tokens.json", "special_tokens_map.json", "spiece.model", "tokenizer_config.json"] + computeList(text_encoder_filename), ["ltxv_0.9.7_VAE.safetensors", "ltxv_0.9.7_spatial_upscaler.safetensors", "ltxv_scheduler.json"] + computeList(model_filename) ]   
+            "fileList" : [ ["added_tokens.json", "special_tokens_map.json", "spiece.model", "tokenizer_config.json"], ["ltxv_0.9.7_VAE.safetensors", "ltxv_0.9.7_spatial_upscaler.safetensors", "ltxv_scheduler.json"] ]   
         }
 
 
     @staticmethod
-    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, override_text_encoder = None):
+    def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, text_encoder_filename = None, **kwargs):
         from .ltxv import LTXV
 
         ltxv_model = LTXV(
             model_filepath = model_filename,
-            text_encoder_filepath = get_ltxv_text_encoder_filename(text_encoder_quantization) if override_text_encoder is None else override_text_encoder,
+            text_encoder_filepath = text_encoder_filename,
             model_type = model_type, 
             base_model_type = base_model_type,
             model_def = model_def,

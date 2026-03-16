@@ -46,6 +46,7 @@ from ...vae.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
 from ...text_encoder import TextEncoder
 from einops import rearrange
 from ...modules import HYVideoDiffusionTransformer
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -212,6 +213,7 @@ class HunyuanVideoAudioPipeline(DiffusionPipeline):
         )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
+        self.text_encoder_cache = TextEncoderCache()
         
     def encode_prompt(
         self,
@@ -294,28 +296,47 @@ class HunyuanVideoAudioPipeline(DiffusionPipeline):
             # textual inversion: process multi-vector tokens if necessary
             if isinstance(self, TextualInversionLoaderMixin):
                 prompt = self.maybe_convert_prompt(prompt, text_encoder.tokenizer)
-            text_inputs = text_encoder.text2tokens(prompt, data_type=data_type, name=name)
 
-            if pixel_value_llava is not None:
-                text_inputs['pixel_value_llava'] = pixel_value_llava
-                text_inputs['attention_mask'] = torch.cat([text_inputs['attention_mask'], torch.ones((1, 575 * len(pixel_value_llava))).to(text_inputs['attention_mask'])], dim=1)
+            use_cache = pixel_value_llava is None
+            if use_cache:
+                def encode_fn(prompts):
+                    text_inputs = text_encoder.text2tokens(prompts, data_type=data_type, name=name)
+                    if clip_skip is None:
+                        prompt_outputs = text_encoder.encode(text_inputs, data_type=data_type)
+                        prompt_embeds = prompt_outputs.hidden_state
+                    else:
+                        prompt_outputs = text_encoder.encode(text_inputs, output_hidden_states=True, data_type=data_type)
+                        prompt_embeds = prompt_outputs.hidden_states_list[-(clip_skip + 1)]
+                        prompt_embeds = text_encoder.model.text_model.final_layer_norm(prompt_embeds)
+                    attention_mask = prompt_outputs.attention_mask
+                    if attention_mask is None:
+                        return [(prompt_embeds[i], None) for i in range(prompt_embeds.shape[0])]
+                    return list(zip(prompt_embeds, attention_mask))
 
-            if clip_skip is None:
-                prompt_outputs = text_encoder.encode(text_inputs, data_type=data_type)
-                prompt_embeds = prompt_outputs.hidden_state
+                prompt_list = prompt if isinstance(prompt, list) else [prompt]
+                cache_keys = [(id(text_encoder), name, data_type, clip_skip, lora_scale, text) for text in prompt_list]
+                prompt_contexts = self.text_encoder_cache.encode(encode_fn, prompt_list, device=device, cache_keys=cache_keys)
+                prompt_embeds = torch.stack([ctx[0] for ctx in prompt_contexts], dim=0)
+                attention_mask = prompt_contexts[0][1]
+                if attention_mask is not None:
+                    attention_mask = torch.stack([ctx[1] for ctx in prompt_contexts], dim=0)
             else:
-                prompt_outputs = text_encoder.encode(text_inputs, output_hidden_states=True, data_type=data_type)
-                # Access the `hidden_states` first, that contains a tuple of
-                # all the hidden states from the encoder layers. Then index into
-                # the tuple to access the hidden states from the desired layer.
-                prompt_embeds = prompt_outputs.hidden_states_list[-(clip_skip + 1)]
-                # We also need to apply the final LayerNorm here to not mess with the
-                # representations. The `last_hidden_states` that we typically use for
-                # obtaining the final prompt representations passes through the LayerNorm
-                # layer.
-                prompt_embeds = text_encoder.model.text_model.final_layer_norm(prompt_embeds)
+                text_inputs = text_encoder.text2tokens(prompt, data_type=data_type, name=name)
 
-            attention_mask = prompt_outputs.attention_mask
+                if pixel_value_llava is not None:
+                    text_inputs['pixel_value_llava'] = pixel_value_llava
+                    text_inputs['attention_mask'] = torch.cat([text_inputs['attention_mask'], torch.ones((1, 575 * len(pixel_value_llava))).to(text_inputs['attention_mask'])], dim=1)
+
+                if clip_skip is None:
+                    prompt_outputs = text_encoder.encode(text_inputs, data_type=data_type)
+                    prompt_embeds = prompt_outputs.hidden_state
+                else:
+                    prompt_outputs = text_encoder.encode(text_inputs, output_hidden_states=True, data_type=data_type)
+                    prompt_embeds = prompt_outputs.hidden_states_list[-(clip_skip + 1)]
+                    prompt_embeds = text_encoder.model.text_model.final_layer_norm(prompt_embeds)
+
+                attention_mask = prompt_outputs.attention_mask
+
             if attention_mask is not None:
                 attention_mask = attention_mask.to(device)
                 bs_embed, seq_len = attention_mask.shape
@@ -366,15 +387,34 @@ class HunyuanVideoAudioPipeline(DiffusionPipeline):
             # textual inversion: process multi-vector tokens if necessary
             if isinstance(self, TextualInversionLoaderMixin):
                 uncond_tokens = self.maybe_convert_prompt(uncond_tokens, text_encoder.tokenizer)            
-            uncond_input = text_encoder.text2tokens(uncond_tokens, data_type=data_type)
-            if uncond_pixel_value_llava is not None:
-                uncond_input['pixel_value_llava'] = uncond_pixel_value_llava
-                uncond_input['attention_mask'] = torch.cat([uncond_input['attention_mask'], torch.ones((1, 575 * len(uncond_pixel_value_llava))).to(uncond_input['attention_mask'])], dim=1)
 
-            negative_prompt_outputs = text_encoder.encode(uncond_input, data_type=data_type)
-            negative_prompt_embeds = negative_prompt_outputs.hidden_state
+            use_cache = uncond_pixel_value_llava is None
+            if use_cache:
+                def encode_uncond_fn(prompts):
+                    uncond_input = text_encoder.text2tokens(prompts, data_type=data_type)
+                    negative_prompt_outputs = text_encoder.encode(uncond_input, data_type=data_type)
+                    negative_prompt_embeds = negative_prompt_outputs.hidden_state
+                    negative_attention_mask = negative_prompt_outputs.attention_mask
+                    if negative_attention_mask is None:
+                        return [(negative_prompt_embeds[i], None) for i in range(negative_prompt_embeds.shape[0])]
+                    return list(zip(negative_prompt_embeds, negative_attention_mask))
 
-            negative_attention_mask = negative_prompt_outputs.attention_mask
+                cache_keys = [("uncond", id(text_encoder), name, data_type, lora_scale, text) for text in uncond_tokens]
+                negative_contexts = self.text_encoder_cache.encode(encode_uncond_fn, uncond_tokens, device=device, cache_keys=cache_keys)
+                negative_prompt_embeds = torch.stack([ctx[0] for ctx in negative_contexts], dim=0)
+                negative_attention_mask = negative_contexts[0][1]
+                if negative_attention_mask is not None:
+                    negative_attention_mask = torch.stack([ctx[1] for ctx in negative_contexts], dim=0)
+            else:
+                uncond_input = text_encoder.text2tokens(uncond_tokens, data_type=data_type)
+                if uncond_pixel_value_llava is not None:
+                    uncond_input['pixel_value_llava'] = uncond_pixel_value_llava
+                    uncond_input['attention_mask'] = torch.cat([uncond_input['attention_mask'], torch.ones((1, 575 * len(uncond_pixel_value_llava))).to(uncond_input['attention_mask'])], dim=1)
+
+                negative_prompt_outputs = text_encoder.encode(uncond_input, data_type=data_type)
+                negative_prompt_embeds = negative_prompt_outputs.hidden_state
+                negative_attention_mask = negative_prompt_outputs.attention_mask
+
             if negative_attention_mask is not None:
                 negative_attention_mask = negative_attention_mask.to(device)
                 _, seq_len = negative_attention_mask.shape
@@ -446,31 +486,49 @@ class HunyuanVideoAudioPipeline(DiffusionPipeline):
             # textual inversion: process multi-vector tokens if necessary
             if isinstance(self, TextualInversionLoaderMixin):
                 prompt = self.maybe_convert_prompt(prompt, text_encoder.tokenizer)
-            text_inputs = text_encoder.text2tokens(prompt, data_type=data_type, name=name) # data_type: video, text_inputs: {'input_ids', 'attention_mask'}
-            
-            text_keys = ['input_ids', 'attention_mask']
-            
-            if pixel_value_llava is not None:
-                text_inputs['pixel_value_llava'] = pixel_value_llava
-                text_inputs['attention_mask'] = torch.cat([text_inputs['attention_mask'], torch.ones((1, 575)).to(text_inputs['attention_mask'])], dim=1)
 
-        
-            if clip_skip is None:
-                prompt_outputs = text_encoder.encode(text_inputs, data_type=data_type)
-                prompt_embeds = prompt_outputs.hidden_state
+            use_cache = pixel_value_llava is None
+            if use_cache:
+                def encode_fn(prompts):
+                    text_inputs = text_encoder.text2tokens(prompts, data_type=data_type, name=name)
+                    if clip_skip is None:
+                        prompt_outputs = text_encoder.encode(text_inputs, data_type=data_type)
+                        prompt_embeds = prompt_outputs.hidden_state
+                    else:
+                        prompt_outputs = text_encoder.encode(text_inputs, output_hidden_states=True, data_type=data_type)
+                        prompt_embeds = prompt_outputs.hidden_states_list[-(clip_skip + 1)]
+                        prompt_embeds = text_encoder.model.text_model.final_layer_norm(prompt_embeds)
+                    attention_mask = prompt_outputs.attention_mask
+                    if attention_mask is None:
+                        return [(prompt_embeds[i], None) for i in range(prompt_embeds.shape[0])]
+                    return list(zip(prompt_embeds, attention_mask))
+
+                prompt_list = prompt if isinstance(prompt, list) else [prompt]
+                cache_keys = [(id(text_encoder), name, data_type, clip_skip, lora_scale, text) for text in prompt_list]
+                prompt_contexts = self.text_encoder_cache.encode(encode_fn, prompt_list, device=device, cache_keys=cache_keys)
+                prompt_embeds = torch.stack([ctx[0] for ctx in prompt_contexts], dim=0)
+                attention_mask = prompt_contexts[0][1]
+                if attention_mask is not None:
+                    attention_mask = torch.stack([ctx[1] for ctx in prompt_contexts], dim=0)
             else:
-                prompt_outputs = text_encoder.encode(text_inputs, output_hidden_states=True, data_type=data_type)
-                # Access the `hidden_states` first, that contains a tuple of
-                # all the hidden states from the encoder layers. Then index into
-                # the tuple to access the hidden states from the desired layer.
-                prompt_embeds = prompt_outputs.hidden_states_list[-(clip_skip + 1)]
-                # We also need to apply the final LayerNorm here to not mess with the
-                # representations. The `last_hidden_states` that we typically use for
-                # obtaining the final prompt representations passes through the LayerNorm
-                # layer.
-                prompt_embeds = text_encoder.model.text_model.final_layer_norm(prompt_embeds)
+                text_inputs = text_encoder.text2tokens(prompt, data_type=data_type, name=name) # data_type: video, text_inputs: {'input_ids', 'attention_mask'}
+                
+                text_keys = ['input_ids', 'attention_mask']
+                
+                if pixel_value_llava is not None:
+                    text_inputs['pixel_value_llava'] = pixel_value_llava
+                    text_inputs['attention_mask'] = torch.cat([text_inputs['attention_mask'], torch.ones((1, 575)).to(text_inputs['attention_mask'])], dim=1)
 
-            attention_mask = prompt_outputs.attention_mask
+                if clip_skip is None:
+                    prompt_outputs = text_encoder.encode(text_inputs, data_type=data_type)
+                    prompt_embeds = prompt_outputs.hidden_state
+                else:
+                    prompt_outputs = text_encoder.encode(text_inputs, output_hidden_states=True, data_type=data_type)
+                    prompt_embeds = prompt_outputs.hidden_states_list[-(clip_skip + 1)]
+                    prompt_embeds = text_encoder.model.text_model.final_layer_norm(prompt_embeds)
+
+                attention_mask = prompt_outputs.attention_mask
+
             if attention_mask is not None:
                 attention_mask = attention_mask.to(device)
                 bs_embed, seq_len = attention_mask.shape
@@ -521,21 +579,35 @@ class HunyuanVideoAudioPipeline(DiffusionPipeline):
             # textual inversion: process multi-vector tokens if necessary
             if isinstance(self, TextualInversionLoaderMixin):
                 uncond_tokens = self.maybe_convert_prompt(uncond_tokens, text_encoder.tokenizer)            
-            # max_length = prompt_embeds.shape[1]
-            uncond_input = text_encoder.text2tokens(uncond_tokens, data_type=data_type, name=name)
 
-            # if hasattr(text_encoder.model.config, "use_attention_mask") and text_encoder.model.config.use_attention_mask:
-            #     attention_mask = uncond_input.attention_mask.to(device)
-            # else:
-            #     attention_mask = None
-            if uncond_pixel_value_llava is not None:
-                uncond_input['pixel_value_llava'] = uncond_pixel_value_llava
-                uncond_input['attention_mask'] = torch.cat([uncond_input['attention_mask'], torch.ones((1, 575)).to(uncond_input['attention_mask'])], dim=1)
+            use_cache = uncond_pixel_value_llava is None
+            if use_cache:
+                def encode_uncond_fn(prompts):
+                    uncond_input = text_encoder.text2tokens(prompts, data_type=data_type, name=name)
+                    negative_prompt_outputs = text_encoder.encode(uncond_input, data_type=data_type)
+                    negative_prompt_embeds = negative_prompt_outputs.hidden_state
+                    negative_attention_mask = negative_prompt_outputs.attention_mask
+                    if negative_attention_mask is None:
+                        return [(negative_prompt_embeds[i], None) for i in range(negative_prompt_embeds.shape[0])]
+                    return list(zip(negative_prompt_embeds, negative_attention_mask))
 
-            negative_prompt_outputs = text_encoder.encode(uncond_input, data_type=data_type)
-            negative_prompt_embeds = negative_prompt_outputs.hidden_state
+                cache_keys = [("uncond", id(text_encoder), name, data_type, lora_scale, text) for text in uncond_tokens]
+                negative_contexts = self.text_encoder_cache.encode(encode_uncond_fn, uncond_tokens, device=device, cache_keys=cache_keys)
+                negative_prompt_embeds = torch.stack([ctx[0] for ctx in negative_contexts], dim=0)
+                negative_attention_mask = negative_contexts[0][1]
+                if negative_attention_mask is not None:
+                    negative_attention_mask = torch.stack([ctx[1] for ctx in negative_contexts], dim=0)
+            else:
+                uncond_input = text_encoder.text2tokens(uncond_tokens, data_type=data_type, name=name)
 
-            negative_attention_mask = negative_prompt_outputs.attention_mask
+                if uncond_pixel_value_llava is not None:
+                    uncond_input['pixel_value_llava'] = uncond_pixel_value_llava
+                    uncond_input['attention_mask'] = torch.cat([uncond_input['attention_mask'], torch.ones((1, 575)).to(uncond_input['attention_mask'])], dim=1)
+
+                negative_prompt_outputs = text_encoder.encode(uncond_input, data_type=data_type)
+                negative_prompt_embeds = negative_prompt_outputs.hidden_state
+                negative_attention_mask = negative_prompt_outputs.attention_mask
+
             if negative_attention_mask is not None:
                 negative_attention_mask = negative_attention_mask.to(device)
                 _, seq_len = negative_attention_mask.shape

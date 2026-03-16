@@ -4,13 +4,18 @@ from torch.nn import functional as F
 # from .model.pytorch_msssim import ssim_matlab
 from .ssim import ssim_matlab
 
-from .RIFE_HDv3 import Model
+from .RIFE_HDv3 import Model as ModelV3
+from .RIFE_V4 import Model as ModelV4
 
 def get_frame(frames, frame_no):
     if frame_no >= frames.shape[1]:
         return None
-    frame = (frames[:, frame_no] + 1) /2
-    frame = frame.clip(0., 1.)
+    frame = frames[:, frame_no]
+    if frame.dtype == torch.uint8:
+        frame = frame.float().div_(255.0)
+    else:
+        frame = (frame + 1) / 2
+        frame = frame.clip(0., 1.)
     return frame
 
 def add_frame(frames, frame, h, w):
@@ -29,8 +34,14 @@ def process_frames(model, device, frames, exp):
     _,  h, w = lastframe.shape
     scale = 1
     fp16 = False
+    supports_timestep = getattr(model, "supports_timestep", False)
+    pad_mod = getattr(model, "pad_mod", 32)
 
     def make_inference(I0, I1, n):
+        if n <= 0:
+            return []
+        if supports_timestep:
+            return [model.inference(I0, I1, (i + 1) / (n + 1), scale) for i in range(n)]
         middle = model.inference(I0, I1, scale)
         if n == 1:
             return [middle]
@@ -41,7 +52,7 @@ def process_frames(model, device, frames, exp):
         else:
             return [*first_half, *second_half]
 
-    tmp = max(32, int(32 / scale))
+    tmp = max(pad_mod, int(pad_mod / scale))
     ph = ((h - 1) // tmp + 1) * tmp
     pw = ((w - 1) // tmp + 1) * tmp
     padding = (0, pw - w, 0, ph - h)
@@ -83,7 +94,10 @@ def process_frames(model, device, frames, exp):
                 temp = frame
             I1 = frame.to(device, non_blocking=True).unsqueeze(0)
             I1 = pad_image(I1)
-            I1 = model.inference(I0, I1, scale)
+            if supports_timestep:
+                I1 = model.inference(I0, I1, 0.5, scale)
+            else:
+                I1 = model.inference(I0, I1, scale)
             I1_small = F.interpolate(I1, (32, 32), mode='bilinear', align_corners=False)
             ssim = ssim_matlab(I0_small[:, :3], I1_small[:, :3])
             frame = I1[0][:, :h, :w]
@@ -105,15 +119,21 @@ def process_frames(model, device, frames, exp):
     add_frame(output_frames, lastframe, h, w)
     return torch.cat( output_frames, dim=1)
 
-def temporal_interpolation(model_path, frames, exp, device ="cuda"):
+def temporal_interpolation(model_path, frames, exp, device ="cuda", rife_version="v3"):
 
-    model = Model()
+    input_was_uint8 = frames.dtype == torch.uint8
+    if rife_version == "v4":
+        model = ModelV4()
+    else:
+        model = ModelV3()
     model.load_model(model_path, -1, device=device)
 
     model.eval()
     model.to(device=device)
 
     with torch.no_grad():    
-        output = process_frames(model, device, frames.float(), exp)
+        output = process_frames(model, device, frames, exp)
 
+    if input_was_uint8:
+        output = output.add_(1.0).mul_(127.5).clamp_(0, 255).to(torch.uint8)
     return output

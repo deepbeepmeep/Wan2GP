@@ -845,13 +845,11 @@ class WanVAE:
         """
         videos: A list of videos each with shape [C, T, H, W].
         """
-        scale = [u.to(device = self.device) for u in self.scale]
-        # Disable autocast during VAE encode to ensure full precision (matches Kijai's implementation)
-        with torch.autocast(device_type='cuda', enabled=False):
-            if tile_size > 0:
-                return [ self.model.spatial_tiled_encode(u.to(self.dtype).unsqueeze(0), scale, tile_size, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
-            else:
-                return [ self.model.encode(u.to(self.dtype).unsqueeze(0), scale, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
+        scale = [u.to(device = self.device) for u in self.scale]  
+        if tile_size > 0:
+            return [ self.model.spatial_tiled_encode(u.to(self.dtype).unsqueeze(0), scale, tile_size, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
+        else:
+            return [ self.model.encode(u.to(self.dtype).unsqueeze(0), scale, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
 
 
     def decode(self, zs, tile_size, any_end_frame = False):

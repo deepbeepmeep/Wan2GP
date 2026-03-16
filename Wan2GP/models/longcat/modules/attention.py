@@ -3,7 +3,7 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 
-from shared.attention import pay_attention, pay_sparse_attention
+from shared.attention import pay_attention #, pay_sparse_attention
 from .rope_3d import RotaryPositionalEmbedding
 from .blocks import RMSNorm_FP32
 

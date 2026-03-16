@@ -346,6 +346,12 @@ class BigVGAN(
             print("[INFO] Model already removed weight norm. Skipping!")
             pass
 
+    @classmethod
+    def from_config(cls, config: Dict):
+        config_data = dict(config)
+        use_cuda_kernel = config_data.pop("use_cuda_kernel", False)
+        return cls(AttrDict(config_data), use_cuda_kernel=use_cuda_kernel)
+
     # Additional methods for huggingface_hub support
     def _save_pretrained(self, save_directory: Path) -> None:
         """Save weights and config.json from a Pytorch model to a local directory."""

@@ -54,6 +54,13 @@ def build_passthrough_params(
     """
     task = {"id": 1, "params": {}, "repeats": 1}
     send_cmd = make_send_cmd()
+    custom_settings = resolved_params.get("custom_settings")
+    if not isinstance(custom_settings, dict):
+        custom_settings = {}
+    if "pace" in resolved_params and "pace" not in custom_settings:
+        custom_settings["pace"] = resolved_params["pace"]
+    if "exaggeration" in resolved_params and "exaggeration" not in custom_settings:
+        custom_settings["exaggeration"] = resolved_params["exaggeration"]
 
     wgp_params: Dict[str, Any] = {
         # Core parameters (fixed, not overridable)
@@ -65,9 +72,12 @@ def build_passthrough_params(
 
         # Required parameters with defaults
         'prompt': resolved_params.get('prompt', ''),
+        'alt_prompt': resolved_params.get('alt_prompt', ''),
         'negative_prompt': resolved_params.get('negative_prompt', ''),
         'resolution': resolved_params.get('resolution', '1280x720'),
         'video_length': resolved_params.get('video_length', 81),
+        'duration_seconds': resolved_params.get('duration_seconds', 0),
+        'pause_seconds': resolved_params.get('pause_seconds', 0),
         'batch_size': resolved_params.get('batch_size', 1),
         'seed': resolved_params.get('seed', 42),
         'force_fps': 'auto',
@@ -88,6 +98,7 @@ def build_passthrough_params(
 
         # Audio parameters
         'audio_guidance_scale': 1.0,
+        'audio_scale': resolved_params.get('audio_scale', 1.0),
         'embedded_guidance_scale': resolved_params.get('embedded_guidance_scale', 0.0),
         'repeat_generation': 1,
         'multi_prompts_gen_type': 0,
@@ -103,6 +114,7 @@ def build_passthrough_params(
         'model_mode': 0,
         'video_source': None,
         'keep_frames_video_source': '',
+        'input_video_strength': resolved_params.get('input_video_strength', 1.0),
         'image_refs': None,
         'frames_positions': '',
         'image_guide': None,
@@ -141,31 +153,34 @@ def build_passthrough_params(
         'NAG_scale': 0.0,
         'NAG_tau': 1.0,
         'NAG_alpha': 0.0,
-        'slg_switch': 0,
-        'slg_layers': '',
-        'slg_start_perc': 0.0,
-        'slg_end_perc': 100.0,
+        'perturbation_switch': resolved_params.get('perturbation_switch', 0),
+        'perturbation_layers': resolved_params.get('perturbation_layers', [9]),
+        'perturbation_start_perc': resolved_params.get('perturbation_start_perc', 10),
+        'perturbation_end_perc': resolved_params.get('perturbation_end_perc', 90),
         'apg_switch': 0,
         'cfg_star_switch': 0,
         'cfg_zero_step': 0,
         'prompt_enhancer': 0,
         'min_frames_if_references': 9,
         'override_profile': -1,
+        'override_attention': resolved_params.get('override_attention', ''),
+        'custom_settings': custom_settings or None,
+        'top_p': resolved_params.get('top_p', 0.9),
+        'top_k': resolved_params.get('top_k', 50),
+        'self_refiner_setting': resolved_params.get('self_refiner_setting', 0),
+        'self_refiner_plan': resolved_params.get('self_refiner_plan', ''),
+        'self_refiner_f_uncertainty': resolved_params.get('self_refiner_f_uncertainty', 0.0),
+        'self_refiner_certain_percentage': resolved_params.get('self_refiner_certain_percentage', 0.999),
 
         # New v9.1 required parameters
         'alt_guidance_scale': 0.0,
+        'alt_scale': resolved_params.get('alt_scale', 0.0),
         'masking_strength': 1.0,
         'control_net_weight_alt': 1.0,
         'motion_amplitude': 1.0,
         'custom_guide': None,
-        'pace': 0.5,
-        'exaggeration': 0.5,
         'temperature': 1.0,
         'output_filename': '',
-
-        # Hires config for two-pass generation (qwen models)
-        'hires_config': resolved_params.get('hires_config', None),
-        'system_prompt': resolved_params.get('system_prompt', ''),
 
         # Mode and filename
         'mode': 'generate',
@@ -219,6 +234,13 @@ def build_normal_params(
     model_switch_phase_value = resolved_params.get("model_switch_phase", 1)
     image_refs_relative_size_value = resolved_params.get("image_refs_relative_size", 50)
     override_profile_value = resolved_params.get("override_profile", -1)
+    custom_settings_value = resolved_params.get("custom_settings")
+    if not isinstance(custom_settings_value, dict):
+        custom_settings_value = {}
+    if "pace" in resolved_params and "pace" not in custom_settings_value:
+        custom_settings_value["pace"] = resolved_params["pace"]
+    if "exaggeration" in resolved_params and "exaggeration" not in custom_settings_value:
+        custom_settings_value["exaggeration"] = resolved_params["exaggeration"]
 
     wgp_params: Dict[str, Any] = {
         # Core parameters (fixed, not overridable)
@@ -227,9 +249,12 @@ def build_normal_params(
         'state': state,
         'model_type': current_model,
         'prompt': resolved_params.get("prompt", prompt),
+        'alt_prompt': resolved_params.get("alt_prompt", ""),
         'negative_prompt': resolved_params.get("negative_prompt", ""),
         'resolution': resolved_params.get("resolution", "1280x720"),
         'video_length': actual_video_length,
+        'duration_seconds': resolved_params.get("duration_seconds", 0),
+        'pause_seconds': resolved_params.get("pause_seconds", 0),
         'batch_size': actual_batch_size,
         'seed': resolved_params.get("seed", 42),
         'force_fps': "auto",
@@ -264,18 +289,14 @@ def build_normal_params(
 
         # New v9.1 required parameters
         'alt_guidance_scale': resolved_params.get("alt_guidance_scale", 0.0),
+        'alt_scale': resolved_params.get("alt_scale", 0.0),
+        'audio_scale': resolved_params.get("audio_scale", 1.0),
         'masking_strength': resolved_params.get("masking_strength", 1.0),
         'control_net_weight_alt': resolved_params.get("control_net_weight_alt", 1.0),
         'motion_amplitude': resolved_params.get("motion_amplitude", 1.0),
         'custom_guide': resolved_params.get("custom_guide", None),
-        'pace': resolved_params.get("pace", 0.5),
-        'exaggeration': resolved_params.get("exaggeration", 0.5),
         'temperature': resolved_params.get("temperature", 1.0),
         'output_filename': resolved_params.get("output_filename", ""),
-
-        # Hires config for two-pass generation (qwen models)
-        'hires_config': resolved_params.get("hires_config", None),
-        'system_prompt': resolved_params.get("system_prompt", ""),
     }
 
     # Standard defaults for other parameters
@@ -301,6 +322,7 @@ def build_normal_params(
         'model_mode': 0,
         'video_source': None,
         'keep_frames_video_source': "",
+        'input_video_strength': resolved_params.get("input_video_strength", 1.0),
         'keep_frames_video_guide': "",
         'video_guide_outpainting': "0 0 0 0",
         'mask_expand': 0,
@@ -338,16 +360,24 @@ def build_normal_params(
         'NAG_scale': 0.0,
         'NAG_tau': 1.0,
         'NAG_alpha': 0.0,
-        'slg_switch': 0,
-        'slg_layers': "",
-        'slg_start_perc': 0.0,
-        'slg_end_perc': 100.0,
+        'perturbation_switch': resolved_params.get("perturbation_switch", 0),
+        'perturbation_layers': resolved_params.get("perturbation_layers", [9]),
+        'perturbation_start_perc': resolved_params.get("perturbation_start_perc", 10),
+        'perturbation_end_perc': resolved_params.get("perturbation_end_perc", 90),
         'apg_switch': 0,
         'cfg_star_switch': 0,
         'cfg_zero_step': 0,
         'prompt_enhancer': 0,
         'min_frames_if_references': 9,
         'override_profile': override_profile_value,
+        'override_attention': resolved_params.get("override_attention", ""),
+        'custom_settings': custom_settings_value or None,
+        'top_p': resolved_params.get("top_p", 0.9),
+        'top_k': resolved_params.get("top_k", 50),
+        'self_refiner_setting': resolved_params.get("self_refiner_setting", 0),
+        'self_refiner_plan': resolved_params.get("self_refiner_plan", ""),
+        'self_refiner_f_uncertainty': resolved_params.get("self_refiner_f_uncertainty", 0.0),
+        'self_refiner_certain_percentage': resolved_params.get("self_refiner_certain_percentage", 0.999),
 
         # Mode and filename
         'mode': "generate",

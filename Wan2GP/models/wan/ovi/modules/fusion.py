@@ -294,7 +294,7 @@ class FusionModel(nn.Module):
         clip_fea_audio=None,
         y=None,
         first_frame_is_clean=False,
-        computed_slg_layers=None,
+        computed_perturbation_layers=None,
         callback = None,
         pipeline= None,
         x_id_list = 0,
@@ -333,7 +333,7 @@ class FusionModel(nn.Module):
             for x_id, one_vid, one_vid_e, one_audio, one_audio_e, one_kwargs in zip(x_id_list, vid_list, vid_e_list, audio_list, audio_e_list, kwargs_list):
                 if pipeline._interrupt:
                     return None, None
-                if x_id == 1 and computed_slg_layers is not None and i in computed_slg_layers:
+                if x_id == 1 and computed_perturbation_layers is not None and i in computed_perturbation_layers:
                     continue
                 # one_vid[...], one_audio[...] = self.single_fusion_block_forward(
                 a, b = self.single_fusion_block_forward(

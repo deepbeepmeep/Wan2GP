@@ -44,9 +44,11 @@ def _get_config_path(base_model_type):
     return os.path.join("models", "kandinsky5", "configs", f"{base_model_type}.yaml")
 
 
-def _select_qwen_checkpoint(path_hint=None):
+def _select_qwen_checkpoint(path_hint=None, folder_hint=None):
     if path_hint is not None:
         return path_hint
+    if folder_hint:
+        return fl.locate_folder(folder_hint)
     candidates = [
         os.path.join("Qwen2.5-VL-7B-Instruct", "Qwen2.5-VL-7B-Instruct_bf16.safetensors"),
         os.path.join("Qwen2.5-VL-7B-Instruct", "Qwen2.5-VL-7B-Instruct_quanto_bf16_int8.safetensors"),
@@ -121,7 +123,8 @@ class model_factory:
             model_filename = model_filename[0]
         conf.model.checkpoint_path = model_filename
 
-        qwen_path = _select_qwen_checkpoint(text_encoder_filename)
+        text_encoder_folder = self.model_def.get("text_encoder_folder")
+        qwen_path = _select_qwen_checkpoint(text_encoder_filename, text_encoder_folder)
         conf.model.text_embedder.qwen.checkpoint_path = qwen_path
         conf.model.text_embedder.clip.checkpoint_path = fl.locate_folder("clip_vit_large_patch14")
 

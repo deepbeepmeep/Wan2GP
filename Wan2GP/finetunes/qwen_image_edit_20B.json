@@ -1,8 +1,0 @@
-{
-    "model": {
-        "lightning_lora_strength_phase_1": 0.85,
-        "lightning_lora_strength_phase_2": 0.0,
-        "num_inference_steps": 12,
-        "guidance_scale": 1
-    }
-}

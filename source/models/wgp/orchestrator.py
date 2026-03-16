@@ -394,6 +394,9 @@ class WanOrchestrator:
 
     def _load_missing_model_definition(self, model_key: str, json_path: str):
         """Delegate to source.models.wgp.model_ops."""
+        runtime = getattr(self, "model_runtime", None)
+        if runtime is not None:
+            return runtime.load_missing_model_definition(model_key, json_path)
         return _load_missing_model_definition_impl(self, model_key, json_path)
 
     def load_model(self, model_key: str) -> bool:
@@ -401,14 +404,23 @@ class WanOrchestrator:
 
         Delegates to source.models.wgp.model_ops.load_model_impl.
         """
+        runtime = getattr(self, "model_runtime", None)
+        if runtime is not None:
+            return runtime.load_model(model_key)
         return _load_model_impl(self, model_key)
 
     def unload_model(self):
         """Unload the current model. Delegates to source.models.wgp.model_ops."""
+        runtime = getattr(self, "model_runtime", None)
+        if runtime is not None:
+            return runtime.unload_model()
         return _unload_model_impl(self)
 
     def _setup_loras_for_model(self, model_type: str):
         """Initialize LoRA discovery. Delegates to source.models.wgp.lora_setup."""
+        runtime = getattr(self, "model_runtime", None)
+        if runtime is not None:
+            return runtime.setup_loras_for_model(model_type)
         return _setup_loras_for_model_impl(self, model_type)
 
     def _create_vace_fixed_generate_video(self, original_generate_video):
@@ -417,38 +429,65 @@ class WanOrchestrator:
 
     def _is_vace(self) -> bool:
         """Check if current model is a VACE model. Delegates to source.models.wgp.generation_helpers."""
+        resolver = getattr(self, "media_resolver", None)
+        if resolver is not None:
+            return resolver.is_current_model_vace()
         return _is_vace_impl(self)
 
     def is_model_vace(self, model_name: str) -> bool:
         """Check if a given model name is a VACE model (model-agnostic). Delegates to source.models.wgp.generation_helpers."""
+        resolver = getattr(self, "media_resolver", None)
+        if resolver is not None:
+            return resolver.is_model_vace(model_name)
         return _is_model_vace_impl(self, model_name)
 
     def _is_flux(self) -> bool:
         """Check if current model is a Flux model. Delegates to source.models.wgp.generation_helpers."""
+        resolver = getattr(self, "media_resolver", None)
+        if resolver is not None:
+            return resolver.is_current_model_flux()
         return _is_flux_impl(self)
 
     def _is_t2v(self) -> bool:
         """Check if current model is a T2V model. Delegates to source.models.wgp.generation_helpers."""
+        resolver = getattr(self, "media_resolver", None)
+        if resolver is not None:
+            return resolver.is_current_model_t2v()
         return _is_t2v_impl(self)
 
     def _is_qwen(self) -> bool:
         """Check if current model is a Qwen image model. Delegates to source.models.wgp.generation_helpers."""
+        resolver = getattr(self, "media_resolver", None)
+        if resolver is not None:
+            return resolver.is_current_model_qwen()
         return _is_qwen_impl(self)
 
     def _get_or_load_uni3c_controlnet(self):
         """Get cached Uni3C controlnet. Delegates to source.models.wgp.model_ops."""
+        runtime = getattr(self, "model_runtime", None)
+        if runtime is not None:
+            return runtime.get_or_load_uni3c_controlnet()
         return _get_or_load_uni3c_controlnet_impl(self)
 
     def _load_image(self, path: Optional[str], mask: bool = False):
         """Load image from path. Delegates to source.models.wgp.generation_helpers."""
+        resolver = getattr(self, "media_resolver", None)
+        if resolver is not None:
+            return resolver.load_image(path, mask=mask)
         return _load_image_impl(self, path, mask=mask)
 
     def _resolve_media_path(self, path: Optional[str]) -> Optional[str]:
         """Resolve media paths. Delegates to source.models.wgp.generation_helpers."""
+        resolver = getattr(self, "media_resolver", None)
+        if resolver is not None:
+            return resolver.resolve_media_path(path)
         return _resolve_media_path_impl(self, path)
 
     def _resolve_parameters(self, model_type: str, task_params: dict) -> dict:
         """Resolve generation parameters. Delegates to source.models.wgp.param_resolution."""
+        resolver = getattr(self, "parameter_resolver", None)
+        if resolver is not None:
+            return resolver.resolve_parameters(model_type, task_params)
         return _resolve_parameters_impl(self, model_type, task_params)
 
     # ------------------------------------------------------------------

@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/Users/peteromalley/Documents/Headless-Wan2GP/scripts/run_worker_matrix.py", line 423, in run_case
+    worker_mod = __import__("worker")
+                 ^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'worker'

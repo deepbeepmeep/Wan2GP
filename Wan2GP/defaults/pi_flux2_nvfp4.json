@@ -1,0 +1,21 @@
+{
+    "model": {
+        "name": "pi-FLUX.2 Dev NVFP4 32B",
+        "architecture": "pi_flux2",
+        "description": "pi-FLUX.2 using the NVFP4 Flux 2 Dev checkpoint.",
+        "URLs": "flux2_dev_nvfp4",
+        "modules": [
+            [
+                "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/pi_flux2_heads_bf16.safetensors"
+            ]
+        ],
+        "preload_URLs": [
+            "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/gmflux2_k8_piid_4step_lora.safetensors"
+        ]
+    },
+    "prompt": "a beautiful sunset over the ocean with vibrant colors",
+    "resolution": "1024x1024",
+    "batch_size": 1,
+    "embedded_guidance_scale": 4,
+    "num_inference_steps": 4
+}

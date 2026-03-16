@@ -27,9 +27,11 @@ from diffusers.utils import logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 from mmgp import offload
 from .z_image_transformer2d import ZImageTransformer2DModel
+from .unified_sampler import UnifiedSampler
 from .pipeline_output import ZImagePipelineOutput
 from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, fit_image_into_canvas
 from shared.utils.loras_mutipliers import update_loras_slists
+from shared.utils.text_encoder_cache import TextEncoderCache
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -61,6 +63,12 @@ EXAMPLE_DOC_STRING = """
         >>> image.save("zimage.png")
         ```
 """
+
+# Default negative prompt for Z-Image when user input is empty.
+DEFAULT_NEGATIVE_PROMPT = (
+    "low quality, worst quality, blurry, pixelated, noisy, artifacts, watermark, text, logo, "
+    "bad anatomy, bad hands, extra limbs"
+)
 
 
 # Copied from diffusers.pipelines.flux.pipeline_flux.calculate_shift
@@ -137,6 +145,60 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
+_UNIFIED_SOLVERS = {"unified", "unified_2s", "unified_4s", "twinflow"}
+_UNIFIED_PRESET_GAP = {
+    "unified_2s": [0.001, 0.6],
+    "unified_4s": [0.001, 0.5],
+    "unified_mul": [0.001, 0.0],
+}
+
+
+class _UnifiedSamplerInterrupted(RuntimeError):
+    pass
+
+
+def _is_unified_solver(sample_solver: Optional[str]) -> bool:
+    solver = (sample_solver or "").strip().lower()
+    return solver in _UNIFIED_SOLVERS or solver.startswith("unified_")
+
+
+def _resolve_unified_sampler_config(
+    sample_solver: Optional[str],
+    num_inference_steps: int,
+    unified_sampler_config: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    solver = (sample_solver or "").strip().lower()
+    sampling_steps = max(int(num_inference_steps), 1)
+    if solver == "unified_2s":
+        sampling_steps = 2
+    elif solver == "unified_4s":
+        sampling_steps = 4
+
+    if sampling_steps <= 2:
+        preset_key = "unified_2s"
+        sampling_style = "few"
+    elif sampling_steps <= 4:
+        preset_key = "unified_4s"
+        sampling_style = "any"
+    else:
+        preset_key = "unified_mul"
+        sampling_style = "mul"
+
+    rfba_gap_steps = _UNIFIED_PRESET_GAP[preset_key]
+    config = {
+        "sampling_steps": sampling_steps,
+        "stochast_ratio": 1.0,
+        "extrapol_ratio": 0.0,
+        "sampling_order": 1,
+        "sampling_style": sampling_style,
+        "time_dist_ctrl": [1.0, 1.0, 1.0],
+        "rfba_gap_steps": list(rfba_gap_steps),
+    }
+    if unified_sampler_config:
+        config.update(unified_sampler_config)
+    return config
+
+
 class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
     model_cpu_offload_seq = "text_encoder->transformer->vae"
     _optional_components = []
@@ -163,6 +225,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             2 ** (len(self.vae.config.block_out_channels) - 1) if hasattr(self, "vae") and self.vae is not None else 8
         )
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
+        self.text_encoder_cache = TextEncoderCache()
 
     def encode_prompt(
         self,
@@ -189,9 +252,20 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
 
         if do_classifier_free_guidance:
             if negative_prompt is None:
-                negative_prompt = ["" for _ in prompt]
+                negative_prompt = [DEFAULT_NEGATIVE_PROMPT for _ in prompt]
+            elif isinstance(negative_prompt, str):
+                negative_prompt = (
+                    [DEFAULT_NEGATIVE_PROMPT for _ in prompt]
+                    if not negative_prompt.strip()
+                    else [negative_prompt]
+                )
             else:
-                negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+                # Keep list behavior but fill empty items when lengths match.
+                if len(negative_prompt) == len(prompt):
+                    negative_prompt = [
+                        DEFAULT_NEGATIVE_PROMPT if (p is None or (isinstance(p, str) and not p.strip())) else p
+                        for p in negative_prompt
+                    ]
             assert len(prompt) == len(negative_prompt)
             negative_prompt_embeds = self._encode_prompt(
                 prompt=negative_prompt,
@@ -223,41 +297,37 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         if isinstance(prompt, str):
             prompt = [prompt]
 
-        for i, prompt_item in enumerate(prompt):
-            messages = [
-                {"role": "user", "content": prompt_item},
-            ]
-            prompt_item = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=True,
+        def encode_fn(prompts):
+            formatted_prompts = []
+            for prompt_item in prompts:
+                messages = [
+                    {"role": "user", "content": prompt_item},
+                ]
+                formatted_prompts.append(
+                    self.tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        enable_thinking=True,
+                    )
+                )
+            text_inputs = self.tokenizer(
+                formatted_prompts,
+                padding="max_length",
+                max_length=max_sequence_length,
+                truncation=True,
+                return_tensors="pt",
             )
-            prompt[i] = prompt_item
+            text_input_ids = text_inputs.input_ids.to(device)
+            prompt_masks = text_inputs.attention_mask.to(device).bool()
+            prompt_embeds = self.text_encoder(input_ids=text_input_ids, attention_mask=prompt_masks, output_hidden_states=True).hidden_states[-2]
+            embeddings_list = []
+            for i in range(len(prompt_embeds)):
+                embeddings_list.append(prompt_embeds[i][prompt_masks[i]])
+            return embeddings_list
 
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=max_sequence_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-
-        text_input_ids = text_inputs.input_ids.to(device)
-        prompt_masks = text_inputs.attention_mask.to(device).bool()
-
-        prompt_embeds = self.text_encoder(
-            input_ids=text_input_ids,
-            attention_mask=prompt_masks,
-            output_hidden_states=True,
-        ).hidden_states[-2]
-
-        embeddings_list = []
-
-        for i in range(len(prompt_embeds)):
-            embeddings_list.append(prompt_embeds[i][prompt_masks[i]])
-
-        return embeddings_list
+        cache_keys = [(max_sequence_length, p) for p in prompt]
+        return self.text_encoder_cache.encode(encode_fn, prompt, device=device, cache_keys=cache_keys)
 
     def prepare_latents(
         self,
@@ -312,6 +382,8 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         width: Optional[int] = None,
         num_inference_steps: int = 50,
         sigmas: Optional[List[float]] = None,
+        sample_solver: str = "default",
+        unified_sampler_config: Optional[Dict[str, Any]] = None,
         guidance_scale: float = 5.0,
         cfg_normalization: bool = False,
         cfg_truncation: float = 1.0,
@@ -337,8 +409,6 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
         loras_slists = None,
-        init_image: Optional[torch.Tensor] = None,
-        denoising_strength: float = 1.0,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -358,6 +428,11 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 Custom sigmas to use for the denoising process with schedulers which support a `sigmas` argument in
                 their `set_timesteps` method. If not defined, the default behavior when `num_inference_steps` is passed
                 will be used.
+            sample_solver (`str`, *optional*, defaults to `"default"`):
+                Sampler selection. Use `"unified"` for the TwinFlow unified sampler (2-step vs 4-step preset is chosen
+                from `num_inference_steps`). `"unified_2s"`/`"unified_4s"` are still accepted for compatibility.
+            unified_sampler_config (`dict`, *optional*):
+                Optional overrides for unified sampler parameters.
             guidance_scale (`float`, *optional*, defaults to 5.0):
                 Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
                 `guidance_scale` is defined as `w` of equation 2. of [Imagen
@@ -435,7 +510,8 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         self._guidance_scale = guidance_scale
         kwargs = {}
         NAG = None
-        if NAG_scale > 1:
+        # NAG is only safe without CFG; skip it when guidance > 1.
+        if NAG_scale > 1 and guidance_scale <= 1:
             NAG = { "scale": NAG_scale, "tau": NAG_tau, "alpha": NAG_alpha, }
 
         dtype = (
@@ -514,105 +590,27 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         )
         image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
 
-        # 5. Prepare timesteps
-        mu = calculate_shift(
-            image_seq_len,
-            self.scheduler.config.get("base_image_seq_len", 256),
-            self.scheduler.config.get("max_image_seq_len", 4096),
-            self.scheduler.config.get("base_shift", 0.5),
-            self.scheduler.config.get("max_shift", 1.15),
-        )
-        self.scheduler.sigma_min = 0.0
-        scheduler_kwargs = {"mu": mu}
-        timesteps, num_inference_steps = retrieve_timesteps(
-            self.scheduler,
-            num_inference_steps,
-            device,
-            sigmas=sigmas,
-            **scheduler_kwargs,
-        )
-        num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
-        self._num_timesteps = len(timesteps)
-
-        # ============================================================================
-        # IMG2IMG: Encode init image and add noise for denoising
-        # ============================================================================
-        # Following diffusers FluxImg2ImgPipeline approach exactly
-        init_image_latents = None
-        first_step = 0
-        if init_image is not None and denoising_strength < 1.0:
-            print(f"[IMG2IMG] ✓ Using img2img mode with denoising_strength={denoising_strength:.2f}")
-            print(f"[IMG2IMG] Input image shape: {init_image.shape}, dtype: {init_image.dtype}")
-
-            # Encode init image to latents
-            init_image_tensor = init_image.to(device=device, dtype=self.vae.dtype)
-
-            # Handle different input formats
-            if init_image_tensor.dim() == 4 and init_image_tensor.shape[1] == 1:
-                # Video format [C, F=1, H, W] - squeeze frame dim and add batch dim
-                init_image_tensor = init_image_tensor.squeeze(1).unsqueeze(0)
-                print(f"[IMG2IMG] Converted from video format to image: {init_image_tensor.shape}")
-            elif init_image_tensor.dim() == 3:
-                # [C, H, W] - add batch dim
-                init_image_tensor = init_image_tensor.unsqueeze(0)
-                print(f"[IMG2IMG] Added batch dimension: {init_image_tensor.shape}")
-
-            # Encode to latent space
-            print(f"[IMG2IMG] Encoding image to latent space...")
-            init_image_latents = self.vae.encode(init_image_tensor).latent_dist.mode()
-            init_image_latents = (init_image_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
-            batch_size = init_image_latents.shape[0]
-            print(f"[IMG2IMG] Encoded latents shape: {init_image_latents.shape}, batch_size: {batch_size}")
-
-            # ─── Step 1: get_timesteps (matches diffusers exactly) ───
-            total_steps = len(timesteps)
-            init_timestep = min(total_steps * denoising_strength, total_steps)
-            t_start = int(max(total_steps - init_timestep, 0))
-
-            # Truncate timesteps
-            timesteps = timesteps[t_start * self.scheduler.order:]
-
-            # Set begin index (diffusers does this in get_timesteps)
-            if hasattr(self.scheduler, "set_begin_index"):
-                self.scheduler.set_begin_index(t_start * self.scheduler.order)
-
-            num_steps_to_run = len(timesteps)
-            first_step = t_start  # For LoRA step tracking
-
-            # ─── Step 2: Get latent_timestep (matches diffusers exactly) ───
-            # diffusers: latent_timestep = timesteps[:1].repeat(batch_size * num_images_per_prompt)
-            latent_timestep = timesteps[:1].repeat(batch_size)
-
-            # ─── Step 3: Generate noise ───
-            from diffusers.utils.torch_utils import randn_tensor
-            noise = randn_tensor(
-                init_image_latents.shape,
-                generator=generator,
-                device=init_image_latents.device,
-                dtype=init_image_latents.dtype
+        use_unified = _is_unified_solver(sample_solver)
+        if not use_unified:
+            # 5. Prepare timesteps
+            mu = calculate_shift(
+                image_seq_len,
+                self.scheduler.config.get("base_image_seq_len", 256),
+                self.scheduler.config.get("max_image_seq_len", 4096),
+                self.scheduler.config.get("base_shift", 0.5),
+                self.scheduler.config.get("max_shift", 1.15),
             )
-
-            # ─── Step 4: scale_noise (matches diffusers prepare_latents) ───
-            # diffusers: latents = self.scheduler.scale_noise(image_latents, timestep, noise)
-            latents = self.scheduler.scale_noise(init_image_latents, latent_timestep, noise)
-
-            # ─── Logging ───
-            print(f"[IMG2IMG] ═══════════════════════════════════════════════════════════════")
-            print(f"[IMG2IMG] Diffusers-style img2img:")
-            print(f"[IMG2IMG]   denoising_strength: {denoising_strength}")
-            print(f"[IMG2IMG]   total_steps: {total_steps}")
-            print(f"[IMG2IMG]   init_timestep: {init_timestep:.2f}")
-            print(f"[IMG2IMG]   t_start: {t_start}")
-            print(f"[IMG2IMG]   Steps to run: {num_steps_to_run} (from step {t_start})")
-            print(f"[IMG2IMG]   latent_timestep shape: {latent_timestep.shape}, value: {latent_timestep[0].item():.1f}")
-            print(f"[IMG2IMG]   Truncated timesteps: {[t.item() for t in timesteps[:5]]}{'...' if len(timesteps) > 5 else ''}")
-            print(f"[IMG2IMG] ═══════════════════════════════════════════════════════════════")
-        elif init_image is not None and denoising_strength >= 1.0:
-            print(f"[IMG2IMG] ⚠️  init_image provided but denoising_strength={denoising_strength:.2f} >= 1.0, treating as text-to-image")
-        elif init_image is None:
-            print(f"[IMG2IMG] Using text-to-image mode (no init_image)")
-        else:
-            print(f"[IMG2IMG] Unexpected state: init_image={init_image is not None}, denoising_strength={denoising_strength}")
+            self.scheduler.sigma_min = 0.0
+            scheduler_kwargs = {"mu": mu}
+            timesteps, num_inference_steps = retrieve_timesteps(
+                self.scheduler,
+                num_inference_steps,
+                device,
+                sigmas=sigmas,
+                **scheduler_kwargs,
+            )
+            num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
+            self._num_timesteps = len(timesteps)
 
         # Encode control image if provided and transformer supports it
         control_latent = control_image_tensor = None
@@ -674,27 +672,57 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 # v1 control: just use the control latent directly (16 channels)
                 control_latent_input = control_latent.unsqueeze(2)
 
-        callback(-1, None, True, len(timesteps))
+        if use_unified:
+            unified_cfg = _resolve_unified_sampler_config(sample_solver, num_inference_steps, unified_sampler_config)
+            sampler = UnifiedSampler()
+            sampling_steps = int(unified_cfg.get("sampling_steps", num_inference_steps))
+            sampling_order = int(unified_cfg.get("sampling_order", 1))
+            sampling_style = str(unified_cfg.get("sampling_style", "few")).lower()
+            stochast_ratio = unified_cfg.get("stochast_ratio", 0.0)
+            extrapol_ratio = unified_cfg.get("extrapol_ratio", 0.0)
+            time_dist_ctrl = unified_cfg.get("time_dist_ctrl", [1.0, 1.0, 1.0])
+            rfba_gap_steps = unified_cfg.get("rfba_gap_steps", [0.0, 0.0])
+            if sampling_style not in {"few", "mul", "any"}:
+                raise ValueError(f"Unknown unified sampling_style '{sampling_style}'")
 
-        # Initialize LoRA scales if multipliers are provided
-        if hasattr(self.transformer, 'loras_slists') and self.transformer.loras_slists is not None:
-            update_loras_slists(self.transformer, self.transformer.loras_slists, len(timesteps))
+            num_steps = (sampling_steps + 1) // 2 if sampling_order == 2 else sampling_steps
+            if (rfba_gap_steps[1] - 0.0) == 0.0:
+                num_steps += 1
+            t_steps = torch.linspace(
+                rfba_gap_steps[0],
+                1.0 - rfba_gap_steps[1],
+                num_steps,
+                dtype=torch.float64,
+            ).to(latents)
+            if (rfba_gap_steps[1] - 0.0) == 0.0:
+                t_steps = t_steps[:-1]
+            t_steps = sampler.kumaraswamy_transform(t_steps, *time_dist_ctrl)
+            t_steps = torch.cat([(1 - t_steps), torch.zeros_like(t_steps[:1])])
+            total_steps = max(int(t_steps.numel() - 1), 0)
+            self._num_timesteps = total_steps
 
-        # 6. Denoising loop
-        with self.progress_bar(total=num_inference_steps) as progress_bar:
-            for i, t in enumerate(timesteps):
-                # Set LoRA step number for dynamic weight updates (account for skipped steps in img2img)
-                offload.set_step_no_for_lora(self.transformer, first_step + i)
-                if self.interrupt:
-                    break
+            callback(-1, None, True, total_steps)
+            if hasattr(self.transformer, 'loras_slists') and self.transformer.loras_slists is not None:
+                update_loras_slists(self.transformer, self.transformer.loras_slists, total_steps)
 
-                # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-                timestep = t.expand(latents.shape[0])
-                timestep = (1000 - timestep) / 1000
-                # Normalized time for time-aware config (0 at start, 1 at end)
+            def model_fn(x_t, t, tt=None):
+                if self._interrupt:
+                    raise _UnifiedSamplerInterrupted()
+
+                t = t.flatten()
+                t_sign = t.sign()
+                t_abs = t.abs()
+                t_mapped = t_sign * (1.0 - t_abs)
+                timestep = t_mapped.expand(x_t.shape[0]).to(torch.float32)
                 t_norm = timestep[0].item()
+                target_timestep = None
+                if tt is not None:
+                    tt = tt.flatten()
+                    tt_sign = tt.sign()
+                    tt_abs = tt.abs()
+                    tt_mapped = tt_sign * (1.0 - tt_abs)
+                    target_timestep = tt_mapped.expand(x_t.shape[0]).to(torch.float32)
 
-                # Handle cfg truncation
                 current_guidance_scale = self.guidance_scale
                 if (
                     self.do_classifier_free_guidance
@@ -704,27 +732,25 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                     if t_norm > self._cfg_truncation:
                         current_guidance_scale = 0.0
 
-                # Run CFG only if configured AND scale is non-zero
                 apply_cfg = self.do_classifier_free_guidance and current_guidance_scale > 0
-
-                # Prepare latent list (same latents used for both pos and neg in CFG)
-                latent_model_input = latents if latents.dtype == dtype else latents.to(dtype)
+                latent_model_input = x_t if x_t.dtype == dtype else x_t.to(dtype)
                 latent_model_input = latent_model_input.unsqueeze(2)
 
                 if apply_cfg:
                     model_out_list = self.transformer(
                         [latent_model_input, latent_model_input],
                         timestep,
-                        [prompt_embeds[0], negative_prompt_embeds[0]] ,
+                        [prompt_embeds[0], negative_prompt_embeds[0]],
                         control_context_list=[control_latent_input, control_latent_input] if control_latent_input is not None else None,
                         control_context_scale=control_context_scale,
+                        target_timestep=target_timestep,
                         callback=callback,
                         pipeline=self,
                         **kwargs,
                     )
 
                     if model_out_list is None:
-                        return None
+                        raise _UnifiedSamplerInterrupted()
 
                     pos, neg = model_out_list
                     model_out_list = None
@@ -732,7 +758,6 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
 
                     noise_pred = pos + current_guidance_scale * (pos - neg)
 
-                    # Renormalization
                     if self._cfg_normalization and float(self._cfg_normalization) > 0.0:
                         ori_pos_norm = torch.linalg.vector_norm(pos)
                         new_pos_norm = torch.linalg.vector_norm(noise_pred)
@@ -741,39 +766,207 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                             noise_pred = noise_pred * (max_new_norm / new_pos_norm)
                     pos = neg = None
                 else:
-                    # Non-CFG mode: single forward pass
-
                     model_out_list = self.transformer(
                         [latent_model_input],
                         timestep,
                         [prompt_embeds[0]],
                         control_context_list=[control_latent_input] if control_latent_input is not None else None,
                         control_context_scale=control_context_scale,
+                        target_timestep=target_timestep,
                         callback=callback,
                         pipeline=self,
                         **kwargs,
                     )
 
                     if model_out_list is None:
-                        return None
+                        raise _UnifiedSamplerInterrupted()
                     noise_pred = model_out_list[0]
                     model_out_list = None
 
-
                 noise_pred = noise_pred.squeeze(2)
                 noise_pred = -noise_pred
+                return noise_pred
 
-                # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
-                assert latents.dtype == torch.float32
+            input_dtype = latents.dtype
+            x_cur = latents.to(torch.float64)
+            x_hats, z_hats = [], []
+            buffer_freq = 1
+            final_x_hat = None
 
-                if self._interrupt:
-                    break
-                if callback is not None:
-                    latents_preview = latents.unsqueeze(2)
-                    if len(latents_preview) > 1: latents_preview = latents_preview.transpose(0,2)
-                    callback(i, latents_preview[0], False)
-                    latents_preview = None
+            with self.progress_bar(total=total_steps) as progress_bar:
+                for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
+                    offload.set_step_no_for_lora(self.transformer, i)
+                    if self.interrupt:
+                        break
+
+                    if sampling_style == "few":
+                        t_tgt = torch.zeros_like(t_cur)
+                    elif sampling_style == "mul":
+                        t_tgt = t_cur
+                    else:
+                        t_tgt = t_next
+
+                    try:
+                        x_hat, z_hat, _, _ = sampler.forward(
+                            model_fn,
+                            x_cur.to(input_dtype),
+                            t_cur.to(input_dtype),
+                            t_tgt.to(input_dtype),
+                        )
+                    except _UnifiedSamplerInterrupted:
+                        self._interrupt = True
+                        break
+
+                    final_x_hat = x_hat.to(torch.float32)
+                    x_hat, z_hat = x_hat.to(torch.float64), z_hat.to(torch.float64)
+
+                    if buffer_freq > 0 and extrapol_ratio > 0:
+                        z_hats.append(z_hat)
+                        x_hats.append(x_hat)
+                        if i > buffer_freq:
+                            z_hat = z_hat + extrapol_ratio * (z_hat - z_hats[-buffer_freq - 1])
+                            x_hat = x_hat + extrapol_ratio * (x_hat - x_hats[-buffer_freq - 1])
+                            z_hats.pop(0)
+                            x_hats.pop(0)
+
+                    if stochast_ratio == "SDE":
+                        stochast_ratio = (
+                            torch.sqrt((t_next - t_cur).abs())
+                            * torch.sqrt(2 * sampler.alpha_in(t_cur))
+                            / sampler.alpha_in(t_next)
+                        )
+                        stochast_ratio = torch.clamp(stochast_ratio ** (1 / 0.50), min=0, max=1)
+                        noi = torch.randn(x_cur.size()).to(x_cur)
+                    else:
+                        noi = torch.randn(x_cur.size()).to(x_cur) if stochast_ratio > 0 else 0.0
+                    x_next = sampler.gamma_in(t_next) * x_hat + sampler.alpha_in(t_next) * (
+                        z_hat * ((1 - stochast_ratio) ** 0.5) + noi * (stochast_ratio**0.5)
+                    )
+
+                    if sampling_order == 2 and i < num_steps - 1:
+                        if sampling_style == "few":
+                            t_tgt = torch.zeros_like(t_next)
+                        elif sampling_style == "mul":
+                            t_tgt = t_next
+                        else:
+                            t_tgt = t_next
+                        x_pri, z_pri, _, _ = sampler.forward(
+                            model_fn,
+                            x_next.to(input_dtype),
+                            t_next.to(input_dtype),
+                            t_tgt.to(input_dtype),
+                        )
+                        x_pri, z_pri = x_pri.to(torch.float64), z_pri.to(torch.float64)
+
+                        x_next = x_cur * sampler.gamma_in(t_next) / sampler.gamma_in(t_cur) + (
+                            sampler.alpha_in(t_next)
+                            - sampler.gamma_in(t_next) * sampler.alpha_in(t_cur) / sampler.gamma_in(t_cur)
+                        ) * (0.5 * z_hat + 0.5 * z_pri)
+
+                    x_cur = x_next
+
+                    if self._interrupt:
+                        break
+                    if callback is not None and final_x_hat is not None:
+                        latents_preview = final_x_hat.unsqueeze(2)
+                        if len(latents_preview) > 1:
+                            latents_preview = latents_preview.transpose(0, 2)
+                        callback(i, latents_preview[0], False)
+                        latents_preview = None
+
+            if self._interrupt or final_x_hat is None:
+                return None
+
+            latents = final_x_hat
+        else:
+            callback(-1, None, True, len(timesteps))
+
+            if hasattr(self.transformer, 'loras_slists') and self.transformer.loras_slists is not None:
+                update_loras_slists(self.transformer, self.transformer.loras_slists, len(timesteps))
+
+            with self.progress_bar(total=num_inference_steps) as progress_bar:
+                for i, t in enumerate(timesteps):
+                    offload.set_step_no_for_lora(self.transformer, i)
+                    if self.interrupt:
+                        break
+
+                    timestep = t.expand(latents.shape[0])
+                    timestep = (1000 - timestep) / 1000
+                    t_norm = timestep[0].item()
+
+                    current_guidance_scale = self.guidance_scale
+                    if (
+                        self.do_classifier_free_guidance
+                        and self._cfg_truncation is not None
+                        and float(self._cfg_truncation) <= 1
+                    ):
+                        if t_norm > self._cfg_truncation:
+                            current_guidance_scale = 0.0
+
+                    apply_cfg = self.do_classifier_free_guidance and current_guidance_scale > 0
+
+                    latent_model_input = latents if latents.dtype == dtype else latents.to(dtype)
+                    latent_model_input = latent_model_input.unsqueeze(2)
+
+                    if apply_cfg:
+                        model_out_list = self.transformer(
+                            [latent_model_input, latent_model_input],
+                            timestep,
+                            [prompt_embeds[0], negative_prompt_embeds[0]] ,
+                            control_context_list=[control_latent_input, control_latent_input] if control_latent_input is not None else None,
+                            control_context_scale=control_context_scale,
+                            callback=callback,
+                            pipeline=self,
+                            **kwargs,
+                        )
+
+                        if model_out_list is None:
+                            return None
+
+                        pos, neg = model_out_list
+                        model_out_list = None
+                        pos, neg = pos.float(), neg.float()
+
+                        noise_pred = pos + current_guidance_scale * (pos - neg)
+
+                        if self._cfg_normalization and float(self._cfg_normalization) > 0.0:
+                            ori_pos_norm = torch.linalg.vector_norm(pos)
+                            new_pos_norm = torch.linalg.vector_norm(noise_pred)
+                            max_new_norm = ori_pos_norm * float(self._cfg_normalization)
+                            if new_pos_norm > max_new_norm:
+                                noise_pred = noise_pred * (max_new_norm / new_pos_norm)
+                        pos = neg = None
+                    else:
+                        model_out_list = self.transformer(
+                            [latent_model_input],
+                            timestep,
+                            [prompt_embeds[0]],
+                            control_context_list=[control_latent_input] if control_latent_input is not None else None,
+                            control_context_scale=control_context_scale,
+                            callback=callback,
+                            pipeline=self,
+                            **kwargs,
+                        )
+
+                        if model_out_list is None:
+                            return None
+                        noise_pred = model_out_list[0]
+                        model_out_list = None
+
+                    noise_pred = noise_pred.squeeze(2)
+                    noise_pred = -noise_pred
+
+                    latents = self.scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+                    assert latents.dtype == torch.float32
+
+                    if self._interrupt:
+                        break
+                    if callback is not None:
+                        latents_preview = latents.unsqueeze(2)
+                        if len(latents_preview) > 1:
+                            latents_preview = latents_preview.transpose(0, 2)
+                        callback(i, latents_preview[0], False)
+                        latents_preview = None
 
 
         if self._interrupt:

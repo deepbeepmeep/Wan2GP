@@ -1,0 +1,92 @@
+{
+  "cases": [
+    {
+      "builder": "vace_basic",
+      "case_id": "vace_cocktail_2_2_basic",
+      "default_enabled": true,
+      "description": "Direct queue VACE Cocktail 2.2 text-to-video smoke test using synthetic snapshot.",
+      "expected_outcome": "success",
+      "family": "direct_queue",
+      "requires": [],
+      "tags": ["default", "core", "video", "direct_queue", "vace"],
+      "task_type": "vace"
+    },
+    {
+      "builder": "wan22_individual_segment_db_like",
+      "case_id": "individual_travel_segment_wan22_i2v_baseline_2_2_2",
+      "default_enabled": true,
+      "description": "Exact DB-backed Wan 2.2 i2v travel-segment case using the dominant individual_travel_segment + wan_2_2_i2v_lightning_baseline_2_2_2 pair.",
+      "expected_outcome": "success",
+      "family": "travel_segment",
+      "requires": [],
+      "tags": ["default", "core", "video", "travel", "wan22"],
+      "task_type": "individual_travel_segment"
+    },
+    {
+      "builder": "ltx2_basic",
+      "case_id": "ltx2_22b_basic",
+      "default_enabled": true,
+      "description": "Direct queue LTX 2.3 representative smoke path using the ltx2 task family with model ltx2_22B.",
+      "expected_outcome": "success",
+      "family": "direct_queue",
+      "requires": [],
+      "tags": ["default", "core", "video", "direct_queue", "ltx"],
+      "task_type": "ltx2"
+    },
+    {
+      "builder": "ltx2_distilled",
+      "case_id": "ltx2_22b_distilled_basic",
+      "default_enabled": true,
+      "description": "Direct queue LTX 2.3 distilled 22B smoke path, the community's standard fast-gen workflow.",
+      "expected_outcome": "success",
+      "family": "direct_queue",
+      "requires": [],
+      "tags": ["default", "core", "video", "direct_queue", "ltx", "distilled"],
+      "task_type": "ltx2"
+    },
+    {
+      "builder": "z_image_turbo_basic",
+      "case_id": "z_image_turbo_db_task",
+      "default_enabled": true,
+      "description": "Exact DB-backed Z-Image turbo text-to-image case.",
+      "expected_outcome": "success",
+      "family": "direct_queue",
+      "requires": [],
+      "tags": ["default", "core", "image", "direct_queue"],
+      "task_type": "z_image_turbo"
+    },
+    {
+      "builder": "z_image_turbo_i2i_basic",
+      "case_id": "z_image_turbo_i2i_db_task",
+      "default_enabled": true,
+      "description": "Exact DB-backed Z-Image turbo image-to-image case with local fixture substitution for the source image.",
+      "expected_outcome": "success",
+      "family": "direct_queue",
+      "requires": [],
+      "tags": ["default", "core", "image", "direct_queue"],
+      "task_type": "z_image_turbo_i2i"
+    },
+    {
+      "builder": "qwen_image_basic",
+      "case_id": "qwen_image_style_db_task",
+      "default_enabled": true,
+      "description": "Exact DB-backed Qwen style-reference image generation case with local fixture substitution for reference assets.",
+      "expected_outcome": "success",
+      "family": "direct_queue",
+      "requires": [],
+      "tags": ["default", "core", "image", "direct_queue", "qwen"],
+      "task_type": "qwen_image_style"
+    },
+    {
+      "builder": "qwen_image_edit_basic",
+      "case_id": "qwen_image_edit_db_task",
+      "default_enabled": true,
+      "description": "Exact DB-backed Qwen image edit case with local fixture substitution for the source image.",
+      "expected_outcome": "success",
+      "family": "direct_queue",
+      "requires": [],
+      "tags": ["default", "core", "image", "direct_queue", "qwen"],
+      "task_type": "qwen_image_edit"
+    }
+  ]
+}

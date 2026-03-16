@@ -1,0 +1,318 @@
+{
+  "snapshots": {
+    "vace_basic": {
+      "snapshot_name": "vace_basic",
+      "source_created_at": "2026-03-16T00:00:00.000+00:00",
+      "source_task_id": "synthetic-vace-smoke-test",
+      "task_type": "vace",
+      "params": {
+        "prompt": "A cat walking across a sunlit garden path, cinematic lighting",
+        "model": "vace_14B_cocktail_2_2",
+        "resolution": "832x480",
+        "video_length": 81,
+        "num_inference_steps": 10,
+        "guidance_scale": 1,
+        "guidance2_scale": 1,
+        "flow_shift": 2,
+        "seed": 42,
+        "negative_prompt": "",
+        "embedded_guidance_scale": 6,
+        "guidance_phases": 2,
+        "switch_threshold": 875
+      }
+    },
+    "individual_travel_segment_wan22_i2v": {
+      "snapshot_name": "individual_travel_segment_wan22_i2v",
+      "source_created_at": "2026-03-06T14:37:17.464+00:00",
+      "source_task_id": "f12df812-a325-4666-b251-30ef15cd56c8",
+      "task_type": "individual_travel_segment",
+      "params": {
+        "additional_loras": {},
+        "advanced_mode": false,
+        "after_first_post_generation_brightness": 0,
+        "after_first_post_generation_saturation": 1,
+        "amount_of_motion": 0.5,
+        "base_prompt": "",
+        "cfg_star_switch": 0,
+        "cfg_zero_step": -1,
+        "contract_version": 1,
+        "debug_mode_enabled": false,
+        "flow_shift": 5,
+        "fps_helpers": 16,
+        "generation_source": "individual_segment",
+        "guidance2_scale": 1,
+        "guidance_phases": 2,
+        "guidance_scale": 1,
+        "individual_segment_params": {
+          "additional_loras": {},
+          "advanced_mode": false,
+          "after_first_post_generation_brightness": 0,
+          "after_first_post_generation_saturation": 1,
+          "amount_of_motion": 0.5,
+          "base_prompt": "",
+          "end_image_generation_id": "9370c981-d124-4558-8103-e836f971d603",
+          "end_image_url": "__FIXTURE_PATH__:wan22_end_image",
+          "input_image_paths_resolved": [
+            "__FIXTURE_PATH__:wan22_start_image",
+            "__FIXTURE_PATH__:wan22_end_image"
+          ],
+          "motion_mode": "basic",
+          "negative_prompt": "",
+          "num_frames": 50,
+          "pair_shot_generation_id": "7cb01a3b-7ebf-4e83-b14a-20483f4e4e84",
+          "phase_config": {
+            "flow_shift": 5,
+            "model_switch_phase": 1,
+            "num_phases": 2,
+            "phases": [
+              {
+                "guidance_scale": 1,
+                "loras": [
+                  {
+                    "multiplier": "1.2",
+                    "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors"
+                  }
+                ],
+                "phase": 1
+              },
+              {
+                "guidance_scale": 1,
+                "loras": [
+                  {
+                    "multiplier": "1.0",
+                    "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+                  }
+                ],
+                "phase": 2
+              }
+            ],
+            "sample_solver": "euler",
+            "steps_per_phase": [
+              3,
+              3
+            ]
+          },
+          "random_seed": true,
+          "seed_to_use": 2028555833,
+          "selected_phase_preset_id": "__builtin_default_i2v__",
+          "start_image_generation_id": "240c1322-31ef-4f25-a301-2008c4cd2bde",
+          "start_image_url": "__FIXTURE_PATH__:wan22_start_image"
+        },
+        "input_image_paths_resolved": [
+          "__FIXTURE_PATH__:wan22_start_image",
+          "__FIXTURE_PATH__:wan22_end_image"
+        ],
+        "is_first_segment": false,
+        "is_last_segment": false,
+        "lora_multipliers": [
+          {
+            "multiplier": 1.2,
+            "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors"
+          },
+          {
+            "multiplier": 1,
+            "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+          }
+        ],
+        "lora_names": [],
+        "make_primary_variant": true,
+        "model_name": "wan_2_2_i2v_lightning_baseline_2_2_2",
+        "model_switch_phase": 1,
+        "motion_mode": "basic",
+        "negative_prompt": "",
+        "num_frames": 50,
+        "num_inference_steps": 6,
+        "orchestrator_details": {
+          "additional_loras": {},
+          "advanced_mode": false,
+          "amount_of_motion": 0.5,
+          "flow_shift": 5,
+          "fps_helpers": 16,
+          "generation_source": "individual_segment",
+          "guidance2_scale": 1,
+          "guidance_phases": 2,
+          "guidance_scale": 1,
+          "input_image_paths_resolved": [
+            "__FIXTURE_PATH__:wan22_start_image",
+            "__FIXTURE_PATH__:wan22_end_image"
+          ],
+          "lora_multipliers": [
+            {
+              "multiplier": 1.2,
+              "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors"
+            },
+            {
+              "multiplier": 1,
+              "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+            }
+          ],
+          "model_name": "wan_2_2_i2v_lightning_baseline_2_2_2",
+          "model_switch_phase": 1,
+          "motion_mode": "basic",
+          "num_inference_steps": 6,
+          "parent_generation_id": "fdec152a-0e2e-4f6a-bc04-0cfae95cc6ab",
+          "parsed_resolution_wh": "576x768",
+          "phase_config": {
+            "flow_shift": 5,
+            "model_switch_phase": 1,
+            "num_phases": 2,
+            "phases": [
+              {
+                "guidance_scale": 1,
+                "loras": [
+                  {
+                    "multiplier": "1.2",
+                    "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors"
+                  }
+                ],
+                "phase": 1
+              },
+              {
+                "guidance_scale": 1,
+                "loras": [
+                  {
+                    "multiplier": "1.0",
+                    "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+                  }
+                ],
+                "phase": 2
+              }
+            ],
+            "sample_solver": "euler",
+            "steps_per_phase": [
+              3,
+              3
+            ]
+          },
+          "sample_solver": "euler",
+          "seed_base": 2028555833
+        },
+        "parent_generation_id": "fdec152a-0e2e-4f6a-bc04-0cfae95cc6ab",
+        "parsed_resolution_wh": "576x768",
+        "phase_config": {
+          "flow_shift": 5,
+          "model_switch_phase": 1,
+          "num_phases": 2,
+          "phases": [
+            {
+              "guidance_scale": 1,
+              "loras": [
+                {
+                  "multiplier": "1.2",
+                  "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors"
+                }
+              ],
+              "phase": 1
+            },
+            {
+              "guidance_scale": 1,
+              "loras": [
+                {
+                  "multiplier": "1.0",
+                  "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+                }
+              ],
+              "phase": 2
+            }
+          ],
+          "sample_solver": "euler",
+          "steps_per_phase": [
+            3,
+            3
+          ]
+        },
+        "sample_solver": "euler",
+        "seed_base": 2028555833,
+        "seed_to_use": 2028555833,
+        "segment_index": 20,
+        "shot_id": "b39d9bc4-0721-4a63-9fa7-609ef6975d15",
+        "task_family": "individual_travel_segment"
+      }
+    },
+    "qwen_image_edit": {
+      "snapshot_name": "qwen_image_edit",
+      "source_created_at": "2026-03-08T11:30:11.053+00:00",
+      "source_task_id": "acfd9304-9f0a-4c17-b9ac-76b744b4ff99",
+      "task_type": "qwen_image_edit",
+      "params": {
+        "add_in_position": false,
+        "based_on": "18a41b81-2255-4c59-aef2-70eaf1693dbe",
+        "enable_base64_output": false,
+        "enable_sync_mode": false,
+        "image": "__FIXTURE_PATH__:qwen_edit_input",
+        "max_wait_seconds": 300,
+        "num_inference_steps": 12,
+        "output_format": "jpeg",
+        "parent_generation_id": "18a41b81-2255-4c59-aef2-70eaf1693dbe",
+        "prompt": "make them sad",
+        "qwen_edit_model": "qwen-edit-2511",
+        "resolution": "657x1536",
+        "seed": 11111,
+        "source_variant_id": "64490ab1-d455-4d4f-acdd-040c2223b9a9",
+        "tool_type": "image-generation"
+      }
+    },
+    "qwen_image_style": {
+      "snapshot_name": "qwen_image_style",
+      "source_created_at": "2026-03-13T00:18:18.432+00:00",
+      "source_task_id": "ad37eb6a-3690-45b2-ace8-83412b8335e0",
+      "task_type": "qwen_image_style",
+      "params": {
+        "add_in_position": false,
+        "model": "qwen-image",
+        "prompt": "A friend surprising another friend with a birthday cake in a dimly lit room, party decorations and balloons visible in background",
+        "resolution": "1353x762",
+        "seed": 1072457449,
+        "steps": 12,
+        "style_reference_image": "__FIXTURE_PATH__:qwen_style_reference",
+        "style_reference_strength": 1.1,
+        "subject_description": "this character",
+        "subject_reference_image": "__FIXTURE_PATH__:qwen_style_reference",
+        "subject_strength": 0.5
+      }
+    },
+    "z_image_turbo": {
+      "snapshot_name": "z_image_turbo",
+      "source_created_at": "2026-02-12T18:01:50.133+00:00",
+      "source_task_id": "746db363-c75e-4f88-ba00-ea805ea8a000",
+      "task_type": "z_image_turbo",
+      "params": {
+        "add_in_position": false,
+        "hires_denoise": 0.6,
+        "hires_scale": 1.2,
+        "hires_steps": 10,
+        "lightning_lora_strength_phase_1": 0.8,
+        "lightning_lora_strength_phase_2": 0.3,
+        "model": "z-image",
+        "prompt": "A boy walking home from school with a backpack, snow falling gently around him, streetlights beginning to turn on as evening approaches, Norman Rockwell style",
+        "resolution": "1152x864",
+        "seed": 1396661648,
+        "steps": 12
+      }
+    },
+    "z_image_turbo_i2i": {
+      "snapshot_name": "z_image_turbo_i2i",
+      "source_created_at": "2026-02-09T13:18:55.882+00:00",
+      "source_task_id": "4e65a577-6f90-413f-9bb0-1133a199c768",
+      "task_type": "z_image_turbo_i2i",
+      "params": {
+        "acceleration": "high",
+        "add_in_position": false,
+        "based_on": "194f9c50-79a0-4bdc-a841-39859ac32ca1",
+        "enable_prompt_expansion": false,
+        "enable_safety_checker": true,
+        "image_size": "auto",
+        "image_url": "__FIXTURE_URL__:z_image_i2i_input",
+        "num_images": 1,
+        "num_inference_steps": 8,
+        "output_format": "png",
+        "prompt": "A Norman Rockwell-style winter scene depicting a gentle snowy hill with delicate white snowflakes drifting down from an overcast sky, capturing the nostalgic charm and warm atmosphere of small-town America in winter.",
+        "seed": 2141022172,
+        "shot_id": "bbdf9068-3403-4232-973d-577b9adb30f6",
+        "source_variant_id": "50ea713e-d13e-480e-ad6c-65c7a899e811",
+        "strength": 0.4,
+        "tool_type": "travel-between-images"
+      }
+    }
+  }
+}

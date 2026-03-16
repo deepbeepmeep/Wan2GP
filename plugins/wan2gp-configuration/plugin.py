@@ -488,7 +488,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("transformer_quantization", new_server_config["transformer_quantization"])
         self.set_global("transformer_dtype_policy", new_server_config["transformer_dtype_policy"])
         self.set_global("transformer_types", new_server_config["transformer_types"])
-        self.set_global("reload_needed", needs_reload)
+        if needs_reload: self.set_global("reload_needed", True)
         self.server_config.update(new_server_config)
 
         if "enhancer_enabled" in changes or "enhancer_mode" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes:

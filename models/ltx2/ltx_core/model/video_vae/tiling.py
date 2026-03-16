@@ -180,6 +180,26 @@ class Tile(NamedTuple):
     out_coords: Tuple[slice, ...]
     masks_1d: Tuple[Tuple[torch.Tensor, ...]]
 
+    @staticmethod
+    def _format_slice(axis_slice: slice) -> str:
+        start = "" if axis_slice.start is None else axis_slice.start
+        stop = "" if axis_slice.stop is None else axis_slice.stop
+        if axis_slice.step is None:
+            return f"{start}:{stop}"
+        return f"{start}:{stop}:{axis_slice.step}"
+
+    @staticmethod
+    def _format_mask(mask_1d: torch.Tensor | None) -> str:
+        if mask_1d is None:
+            return "None"
+        return f"len={mask_1d.numel()}"
+
+    def __repr__(self) -> str:
+        in_coords = ",".join(self._format_slice(axis_slice) for axis_slice in self.in_coords)
+        out_coords = ",".join(self._format_slice(axis_slice) for axis_slice in self.out_coords)
+        masks = ",".join(self._format_mask(mask_1d) for mask_1d in self.masks_1d)
+        return f"Tile(in=({in_coords}), out=({out_coords}), masks=({masks}))"
+
     @property
     def blend_mask(self) -> torch.Tensor:
         num_dims = len(self.out_coords)

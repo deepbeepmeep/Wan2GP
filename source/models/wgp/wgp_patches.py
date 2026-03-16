@@ -366,6 +366,30 @@ def apply_lora_caching_patch() -> bool:
         return False
 
 
+def apply_headless_app_stub(wgp_module: "types.ModuleType") -> bool:
+    """
+    Stub the 'app' global in wgp so plugin_manager checks are skipped.
+
+    Why: Upstream wgp.py references a global 'app' (WAN2GPApplication instance)
+    in prepare_inputs_dict() for plugin hooks. 'app' is only created when wgp.py
+    runs as __main__ (Gradio UI), not when imported. Without this stub,
+    headless generation crashes with 'NameError: name app is not defined'.
+
+    The stub is a SimpleNamespace with no plugin_manager attribute, so
+    hasattr(app, 'plugin_manager') returns False and the plugin path is skipped.
+    """
+    try:
+        from types import SimpleNamespace
+
+        if not hasattr(wgp_module, "app"):
+            wgp_module.app = SimpleNamespace()
+            model_logger.debug("[WGP_PATCHES] Stubbed wgp.app for headless mode (no plugin_manager)")
+        return True
+    except Exception as e:
+        model_logger.warning(f"[WGP_PATCHES] Failed to stub wgp.app: {e}")
+        return False
+
+
 def apply_all_wgp_patches(wgp_module: "types.ModuleType", wan_root: str) -> dict:
     """
     Apply all WGP patches for headless operation.
@@ -385,6 +409,7 @@ def apply_all_wgp_patches(wgp_module: "types.ModuleType", wan_root: str) -> dict
     results["qwen_inpainting_lora"] = apply_qwen_inpainting_lora_patch()
     results["lora_key_tolerance"] = apply_lora_key_tolerance_patch(wgp_module)
     results["lora_caching"] = apply_lora_caching_patch()
+    results["headless_app_stub"] = apply_headless_app_stub(wgp_module)
 
     # Log summary
     successful = [k for k, v in results.items() if v]

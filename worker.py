@@ -278,8 +278,8 @@ def main():
 
     # Supabase Setup
     try:
-        # Service key takes priority (RunPod workers), then fall back to anon key (local workers)
-        client_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or cli_args.supabase_anon_key or os.getenv("SUPABASE_ANON_KEY")
+        # Service key takes priority (RunPod workers), then access token, then anon key (local workers)
+        client_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or access_token or cli_args.supabase_anon_key or os.getenv("SUPABASE_ANON_KEY")
         if not client_key: raise ValueError("No Supabase key found")
         
         db_config.DB_TYPE = "supabase"

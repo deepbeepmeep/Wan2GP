@@ -234,7 +234,7 @@ class WanOrchestrator:
                 sys.argv = ["headless_wgp.py"]
                 from wgp import (
                     generate_video, get_base_model_type, get_model_family,
-                    test_vace_module, apply_changes
+                    test_vace_module,
                 )
 
                 # Verify directory didn't change during wgp import
@@ -245,7 +245,6 @@ class WanOrchestrator:
                 self._get_base_model_type = get_base_model_type
                 self._get_model_family = get_model_family
                 self._test_vace_module = test_vace_module
-                self._apply_changes = apply_changes
 
                 # Apply WGP monkeypatches for headless operation (Qwen support, LoRA fixes, etc.)
                 import wgp as wgp
@@ -339,38 +338,55 @@ class WanOrchestrator:
                 default_model_type = "t2v"
             self.state["model_type"] = default_model_type
 
-            # Upstream apply_changes signature accepts a single save_path_choice
+            # Apply headless defaults directly to wgp.server_config and module globals.
+            # (apply_changes was removed upstream; we set the same values it used to.)
             outputs_dir = "outputs/"
             try:
-                orchestrator_logger.debug("Calling wgp.apply_changes() to initialize defaults...")
-                self._apply_changes(
-                    self.state,
-                    transformer_types_choices=["t2v"],
-                    transformer_dtype_policy_choice="auto",
-                    text_encoder_quantization_choice="bf16",
-                    VAE_precision_choice="fp32",
-                    mixed_precision_choice=0,
-                    save_path_choice=outputs_dir,
-                    image_save_path_choice=outputs_dir,
-                    attention_choice="auto",
-                    compile_choice="",
-                    profile_choice=1,  # Profile 1 for 24GB+ VRAM (4090/3090)
-                    vae_config_choice="default",
-                    metadata_choice="none",
-                    quantization_choice="int8",
-                    preload_model_policy_choice=[]
-                )
-                orchestrator_logger.debug("wgp.apply_changes() completed successfully")
+                orchestrator_logger.debug("Applying headless WGP defaults to server_config...")
+                import wgp as _wgp_cfg
+                _cfg = _wgp_cfg.server_config
+                _cfg["transformer_types"] = ["t2v"]
+                _cfg["transformer_dtype_policy"] = "auto"
+                _cfg["text_encoder_quantization"] = "bf16"
+                _cfg["vae_precision"] = "fp32"
+                _cfg["mixed_precision"] = 0
+                _cfg["save_path"] = outputs_dir
+                _cfg["image_save_path"] = outputs_dir
+                _cfg["attention_mode"] = "auto"
+                _cfg["compile"] = ""
+                _cfg["profile"] = 1  # Profile 1 for 24GB+ VRAM (4090/3090)
+                _cfg["vae_config"] = "default"
+                _cfg["metadata_type"] = "none"
+                _cfg["transformer_quantization"] = "int8"
+                _cfg["preload_model_policy"] = []
+                # Sync module-level globals that other wgp code reads directly
+                for attr, val in [
+                    ("transformer_types", ["t2v"]),
+                    ("transformer_dtype_policy", "auto"),
+                    ("text_encoder_quantization", "bf16"),
+                    ("save_path", outputs_dir),
+                    ("image_save_path", outputs_dir),
+                    ("attention_mode", "auto"),
+                    ("compile", ""),
+                    ("default_profile", 1),
+                    ("vae_config", "default"),
+                    ("transformer_quantization", "int8"),
+                    ("preload_model_policy", []),
+                    ("boost", 1),
+                ]:
+                    if hasattr(_wgp_cfg, attr):
+                        setattr(_wgp_cfg, attr, val)
+                orchestrator_logger.debug("Headless WGP defaults applied successfully")
             except (RuntimeError, ValueError, TypeError, KeyError) as e:
-                orchestrator_logger.error(f"FATAL: wgp.apply_changes() failed: {e}\n{traceback.format_exc()}")
+                orchestrator_logger.error(f"FATAL: Failed to apply WGP defaults: {e}\n{traceback.format_exc()}")
                 raise RuntimeError(f"Failed to apply WGP defaults during orchestrator init: {e}") from e
 
-            # Verify directory after apply_changes (it may have done file operations)
-            _verify_wgp_directory(orchestrator_logger, "after apply_changes()")
+            # Verify directory after config update
+            _verify_wgp_directory(orchestrator_logger, "after applying headless defaults")
 
-            # Set output paths again (second call — after apply_changes)
+            # Set output paths again (second call — after config update)
             _set_wgp_output_paths(wgp, absolute_outputs_path)
-            orchestrator_logger.info(f"[OUTPUT_DIR] Re-applied output paths after apply_changes(): {absolute_outputs_path}")
+            orchestrator_logger.info(f"[OUTPUT_DIR] Re-applied output paths after config update: {absolute_outputs_path}")
 
         else:
             # Provide stubbed helpers for smoke mode

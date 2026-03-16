@@ -29,6 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST_PATH = REPO_ROOT / "scripts" / "worker_matrix_cases.json"
 DEFAULT_DB_SNAPSHOTS_PATH = REPO_ROOT / "scripts" / "worker_matrix_db_snapshots.json"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "artifacts" / "worker-matrix"
+_REAL_QUEUE: Any | None = None  # Set by main() when --real
 IMAGE_OUTPUT_TASK_TYPES = {
     "annotated_image_edit",
     "extract_frame",
@@ -312,10 +313,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--list-cases", action="store_true")
     parser.add_argument("--all-cases", action="store_true")
     parser.add_argument("--stop-on-failure", action="store_true")
+    parser.add_argument("--real", action="store_true", help="Use real HeadlessTaskQueue + GPU pipeline instead of fake queue")
+    parser.add_argument("--preload-model", type=str, default=None, help="Model to preload at startup (only with --real)")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _REAL_QUEUE
     ensure_repo_on_path()
     args = parse_args(argv)
     cases = load_case_definitions(args.manifest)
@@ -349,6 +353,13 @@ def main(argv: list[str] | None = None) -> int:
         print("No worker matrix cases selected.", file=sys.stderr)
         return 1
 
+    if args.real:
+        import torch
+
+        if not torch.cuda.is_available():
+            print("ERROR: --real requires CUDA but torch.cuda.is_available() is False", file=sys.stderr)
+            return 1
+
     started_at = _utc_timestamp()
     run_dir = args.output_dir / started_at
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -356,19 +367,41 @@ def main(argv: list[str] | None = None) -> int:
     manifest_snapshot = [asdict(case) for case in selected]
     _write_json(run_dir / "selected_cases.json", manifest_snapshot)
 
-    print(f"Running {len(selected)} worker matrix case(s) into {run_dir}")
+    mode = "real" if args.real else "fake"
+    print(f"Running {len(selected)} worker matrix case(s) [{mode} mode] into {run_dir}")
 
-    results: list[CaseResult] = []
-    for case in selected:
-        result = run_case(case, run_dir)
-        results.append(result)
-        print(f"[{result.status.upper():7}] {case.case_id} -> {result.actual_outcome}")
-        if args.stop_on_failure and result.status == "failed":
-            break
+    if args.real:
+        from source.task_handlers.queue.task_queue import HeadlessTaskQueue
+
+        wan_dir = str(REPO_ROOT / "Wan2GP")
+        queue = HeadlessTaskQueue(
+            wan_dir=wan_dir,
+            max_workers=1,
+            main_output_dir=str(run_dir / "real_outputs"),
+        )
+        queue.start(preload_model=args.preload_model)
+        _REAL_QUEUE = queue
+
+    try:
+        results: list[CaseResult] = []
+        for case in selected:
+            result = run_case(case, run_dir)
+            results.append(result)
+            print(f"[{result.status.upper():7}] {case.case_id} -> {result.actual_outcome}")
+            if args.stop_on_failure and result.status == "failed":
+                break
+    finally:
+        if _REAL_QUEUE is not None:
+            try:
+                _REAL_QUEUE.stop()
+            except Exception as exc:  # noqa: BLE001
+                print(f"Warning: queue.stop() failed: {exc}", file=sys.stderr)
+            _REAL_QUEUE = None
 
     summary_payload = {
         "started_at": started_at,
         "run_dir": str(run_dir),
+        "mode": mode,
         "results": [asdict(result) for result in results],
     }
     _write_json(run_dir / "summary.json", summary_payload)
@@ -470,6 +503,13 @@ def run_case(case: CaseDefinition, run_dir: Path) -> CaseResult:
                     for patcher in prepared.patchers:
                         stack.enter_context(patcher)
 
+                    # In real mode, redirect the queue's output dir to this case's outputs
+                    if _REAL_QUEUE is not None:
+                        case_output_dir = str(case_dir / "outputs")
+                        _REAL_QUEUE.main_output_dir = case_output_dir
+                        if _REAL_QUEUE.orchestrator is not None:
+                            _REAL_QUEUE.orchestrator.main_output_dir = case_output_dir
+
                     worker_mod = __import__("worker")
                     from source.core.log import enable_debug_mode
 
@@ -555,20 +595,25 @@ def _build_direct_queue_case(
     output_dir.mkdir(parents=True, exist_ok=True)
     case_params = copy.deepcopy(params)
     case_params.setdefault("task_id", f"{case.case_id}-task")
-    queue = FakeImmediateTaskQueue(
-        output_dir=output_dir,
-        task_type=case.task_type,
-        case_dir=case_dir,
-        expected_model=expected_model,
-        expected_parameters=expected_parameters,
-    )
+    if _REAL_QUEUE is not None:
+        queue = _REAL_QUEUE
+        effective_patchers = []
+    else:
+        queue = FakeImmediateTaskQueue(
+            output_dir=output_dir,
+            task_type=case.task_type,
+            case_dir=case_dir,
+            expected_model=expected_model,
+            expected_parameters=expected_parameters,
+        )
+        effective_patchers = list(patchers or [])
     return PreparedCase(
         definition=case,
         params=case_params,
         project_id=None,
         main_output_dir=output_dir,
         task_queue=queue,
-        patchers=patchers or [],
+        patchers=effective_patchers,
         notes=notes or {},
     )
 
@@ -647,13 +692,15 @@ def build_z_image_turbo_i2i_basic(case: CaseDefinition, case_dir: Path) -> Prepa
         def raise_for_status(self) -> None:
             return None
 
+    # Keep requests.get patcher even in real mode — the snapshot URL is fake,
+    # so the patcher provides real image bytes from the local fixture file.
     patchers = [
         patch(
             "requests.get",
             side_effect=lambda url, timeout=30: _Response(image_path.read_bytes()),
         )
     ]
-    return _build_direct_queue_case(
+    prepared = _build_direct_queue_case(
         case,
         case_dir,
         params=params,
@@ -662,6 +709,10 @@ def build_z_image_turbo_i2i_basic(case: CaseDefinition, case_dir: Path) -> Prepa
         patchers=patchers,
         notes=_snapshot_notes(snapshot),
     )
+    # Re-add the requests.get patcher in real mode (it was cleared by _build_direct_queue_case)
+    if _REAL_QUEUE is not None:
+        prepared.patchers = list(patchers)
+    return prepared
 
 
 def build_qwen_image_basic(case: CaseDefinition, case_dir: Path) -> PreparedCase:
@@ -712,13 +763,16 @@ def build_wan22_individual_segment_db_like(case: CaseDefinition, case_dir: Path)
     )
     output_dir = case_dir / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
-    queue = FakeImmediateTaskQueue(
-        output_dir=output_dir,
-        task_type="travel_segment",
-        case_dir=case_dir,
-        expected_model="wan_2_2_i2v_lightning_baseline_2_2_2",
-        expected_parameters={"video_length": 50},
-    )
+    if _REAL_QUEUE is not None:
+        queue = _REAL_QUEUE
+    else:
+        queue = FakeImmediateTaskQueue(
+            output_dir=output_dir,
+            task_type="travel_segment",
+            case_dir=case_dir,
+            expected_model="wan_2_2_i2v_lightning_baseline_2_2_2",
+            expected_parameters={"video_length": 50},
+        )
     return PreparedCase(
         definition=case,
         params=params,
@@ -849,6 +903,7 @@ def _module_available(module_name: str) -> bool:
 REQUIREMENT_CHECKERS: dict[str, Callable[[], bool]] = {
     "ffmpeg": lambda: shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None,
     "moviepy": lambda: _module_available("moviepy.editor"),
+    "cuda": lambda: __import__("torch").cuda.is_available(),
 }
 
 

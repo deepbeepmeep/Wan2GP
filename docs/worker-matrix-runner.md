@@ -61,6 +61,31 @@ Override manifest or output directory:
 python scripts/run_worker_matrix.py --manifest path/to/custom.json --output-dir path/to/output
 ```
 
+## Real Mode (GPU Generation)
+
+Pass `--real` to use the real `HeadlessTaskQueue` and GPU pipeline instead of the fake queue. This runs the full generation path — model loading, inference, output writing — without touching the production database.
+
+```bash
+# Fastest smoke test — z_image is the smallest model
+python scripts/run_worker_matrix.py --real --case-id z_image_turbo_db_task
+
+# With model preloading to avoid cold-start on first case
+python scripts/run_worker_matrix.py --real --preload-model z_image --case-id z_image_turbo_db_task
+```
+
+Requirements:
+- CUDA-capable GPU with `torch.cuda.is_available() == True`
+- Model weights accessible from the `Wan2GP/` directory
+
+Generated outputs land in each case's `outputs/` directory (e.g. `artifacts/worker-matrix/<run>/z_image_turbo_db_task/outputs/`).
+
+On failure, check:
+- `result.json` — structured error info
+- `worker.log` — full narrative log including model loading and generation progress
+- `traceback.txt` — Python stack trace (if the case crashed)
+
+The `summary.json` includes a `"mode": "real"` or `"mode": "fake"` field.
+
 ## Case Definitions and DB Snapshots
 
 Cases are defined in `scripts/worker_matrix_cases.json`. Each case references a builder function in the script, a task type, a family, tags, and an `expected_outcome` (`"success"` or `"failure"`). Cases can also declare `requires` (e.g. `ffmpeg`) and are auto-skipped when requirements are missing.

@@ -127,9 +127,16 @@ class HeadlessTaskQueue(WgpInitMixin):
             # Stub tkinter if not available
             if 'tkinter' not in sys.modules:
                 sys.modules['tkinter'] = types.ModuleType('tkinter')
-            # Stub preprocessing.matanyone.app with minimal interface
+            # Stub preprocessing.matanyone.app with minimal interface.
+            # IMPORTANT: dummy packages MUST have __path__ set so Python's
+            # import machinery can still traverse subpackages (e.g.
+            # preprocessing.matanyone.utils) when wgp.py is imported later.
+            _preprocessing_dir = os.path.join(self.wan_dir, 'preprocessing')
+            _matanyone_dir = os.path.join(_preprocessing_dir, 'matanyone')
             dummy_pkg = types.ModuleType('preprocessing')
+            dummy_pkg.__path__ = [_preprocessing_dir]
             dummy_matanyone = types.ModuleType('preprocessing.matanyone')
+            dummy_matanyone.__path__ = [_matanyone_dir]
             dummy_app = types.ModuleType('preprocessing.matanyone.app')
             def _noop_handler():
                 class _Dummy:

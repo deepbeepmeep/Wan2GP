@@ -1,6 +1,28 @@
 {
   "cases": [
     {
+      "builder": "ltx2_basic",
+      "case_id": "ltx2_22b_basic",
+      "default_enabled": true,
+      "description": "LTX 2.3 22B image-to-video with start/end image anchors (img_1 -> img_2).",
+      "expected_outcome": "success",
+      "family": "direct_queue",
+      "requires": [],
+      "tags": ["default", "core", "video", "direct_queue", "ltx", "i2v"],
+      "task_type": "ltx2"
+    },
+    {
+      "builder": "ltx2_distilled",
+      "case_id": "ltx2_22b_distilled_basic",
+      "default_enabled": true,
+      "description": "LTX 2.3 distilled 22B image-to-video with start/end image anchors (img_2 -> img_1).",
+      "expected_outcome": "success",
+      "family": "direct_queue",
+      "requires": [],
+      "tags": ["default", "core", "video", "direct_queue", "ltx", "distilled", "i2v"],
+      "task_type": "ltx2"
+    },
+    {
       "builder": "vace_basic",
       "case_id": "vace_cocktail_2_2_basic",
       "default_enabled": true,
@@ -21,28 +43,6 @@
       "requires": [],
       "tags": ["default", "core", "video", "travel", "wan22"],
       "task_type": "individual_travel_segment"
-    },
-    {
-      "builder": "ltx2_basic",
-      "case_id": "ltx2_22b_basic",
-      "default_enabled": true,
-      "description": "Direct queue LTX 2.3 representative smoke path using the ltx2 task family with model ltx2_22B.",
-      "expected_outcome": "success",
-      "family": "direct_queue",
-      "requires": [],
-      "tags": ["default", "core", "video", "direct_queue", "ltx"],
-      "task_type": "ltx2"
-    },
-    {
-      "builder": "ltx2_distilled",
-      "case_id": "ltx2_22b_distilled_basic",
-      "default_enabled": true,
-      "description": "Direct queue LTX 2.3 distilled 22B smoke path, the community's standard fast-gen workflow.",
-      "expected_outcome": "success",
-      "family": "direct_queue",
-      "requires": [],
-      "tags": ["default", "core", "video", "direct_queue", "ltx", "distilled"],
-      "task_type": "ltx2"
     },
     {
       "builder": "z_image_turbo_basic",

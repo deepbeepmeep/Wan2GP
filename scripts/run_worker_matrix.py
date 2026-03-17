@@ -29,6 +29,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST_PATH = REPO_ROOT / "scripts" / "worker_matrix_cases.json"
 DEFAULT_DB_SNAPSHOTS_PATH = REPO_ROOT / "scripts" / "worker_matrix_db_snapshots.json"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "artifacts" / "worker-matrix"
+REAL_IMAGE_1 = REPO_ROOT / "img_1.png"  # birthday party scene
+REAL_IMAGE_2 = REPO_ROOT / "img_2.png"  # pillow fight scene
 _REAL_QUEUE: Any | None = None  # Set by main() when --real
 IMAGE_OUTPUT_TASK_TYPES = {
     "annotated_image_edit",
@@ -509,6 +511,14 @@ def run_case(case: CaseDefinition, run_dir: Path) -> CaseResult:
                         _REAL_QUEUE.main_output_dir = case_output_dir
                         if _REAL_QUEUE.orchestrator is not None:
                             _REAL_QUEUE.orchestrator.main_output_dir = case_output_dir
+                        # Also update WGP module-level globals that generate_video reads
+                        # Only if wgp is already imported (it's lazily loaded by orchestrator)
+                        if 'wgp' in sys.modules:
+                            try:
+                                from source.models.wgp.orchestrator import _set_wgp_output_paths
+                                _set_wgp_output_paths(sys.modules['wgp'], case_output_dir)
+                            except (ImportError, AttributeError):
+                                pass
 
                     worker_mod = __import__("worker")
                     from source.core.log import enable_debug_mode
@@ -620,6 +630,18 @@ def _build_direct_queue_case(
 
 def build_vace_basic(case: CaseDefinition, case_dir: Path) -> PreparedCase:
     snapshot, params = _load_snapshot_params("vace_basic")
+    # VACE models require a video_guide — create one with image anchors
+    guide_video = _create_guide_video_from_images(
+        REAL_IMAGE_1,
+        REAL_IMAGE_2,
+        case_dir / "fixtures" / "vace_guide.mp4",
+        width=832,
+        height=480,
+        frames=81,
+    )
+    params["video_guide"] = str(guide_video)
+    # Mark all frames as active (unmasked) for the guide
+    params["mask_active_frames"] = list(range(81))
     return _build_direct_queue_case(
         case,
         case_dir,
@@ -631,18 +653,23 @@ def build_vace_basic(case: CaseDefinition, case_dir: Path) -> PreparedCase:
 
 
 def build_ltx2_basic(case: CaseDefinition, case_dir: Path) -> PreparedCase:
+    start_img = _copy_real_image(REAL_IMAGE_1, case_dir / "fixtures" / "ltx2_start.png")
+    end_img = _copy_real_image(REAL_IMAGE_2, case_dir / "fixtures" / "ltx2_end.png")
     return _build_direct_queue_case(
         case,
         case_dir,
         params={
             "model": "ltx2_22B",
-            "prompt": "worker matrix ltx2 dev smoke",
+            "prompt": "Two friends celebrating, animated illustration style",
             "resolution": "512x288",
             "video_length": 9,
             "num_inference_steps": 4,
             "guidance_scale": 3.0,
             "audio_guidance_scale": 7.0,
             "seed": 17,
+            "image_start": str(start_img),
+            "image_end": str(end_img),
+            "image_prompt_type": "SE",
         },
         expected_model="ltx2_22B",
         expected_parameters={"guidance_scale": 3.0, "audio_guidance_scale": 7.0},
@@ -650,16 +677,21 @@ def build_ltx2_basic(case: CaseDefinition, case_dir: Path) -> PreparedCase:
 
 
 def build_ltx2_distilled(case: CaseDefinition, case_dir: Path) -> PreparedCase:
+    start_img = _copy_real_image(REAL_IMAGE_2, case_dir / "fixtures" / "ltx2d_start.png")
+    end_img = _copy_real_image(REAL_IMAGE_1, case_dir / "fixtures" / "ltx2d_end.png")
     return _build_direct_queue_case(
         case,
         case_dir,
         params={
             "model": "ltx2_22B_distilled",
-            "prompt": "worker matrix ltx2 distilled smoke",
+            "prompt": "Kids having a pillow fight then a birthday party, animated illustration",
             "resolution": "512x288",
             "video_length": 9,
             "num_inference_steps": 8,
             "seed": 23,
+            "image_start": str(start_img),
+            "image_end": str(end_img),
+            "image_prompt_type": "SE",
         },
         expected_model="ltx2_22B_distilled",
         expected_parameters={"num_inference_steps": 8},
@@ -679,7 +711,7 @@ def build_z_image_turbo_basic(case: CaseDefinition, case_dir: Path) -> PreparedC
 
 
 def build_z_image_turbo_i2i_basic(case: CaseDefinition, case_dir: Path) -> PreparedCase:
-    image_path = _create_test_image(case_dir / "fixtures" / "z_i2i_input.png", text="Z")
+    image_path = _copy_real_image(REAL_IMAGE_1, case_dir / "fixtures" / "z_i2i_input.png")
     snapshot, params = _load_snapshot_params(
         "z_image_turbo_i2i",
         fixture_urls={"z_image_i2i_input": "https://worker-matrix.invalid/z-image-i2i-input.png"},
@@ -716,7 +748,7 @@ def build_z_image_turbo_i2i_basic(case: CaseDefinition, case_dir: Path) -> Prepa
 
 
 def build_qwen_image_basic(case: CaseDefinition, case_dir: Path) -> PreparedCase:
-    reference_image = _create_test_image(case_dir / "fixtures" / "qwen_style_ref.png", text="QS")
+    reference_image = _copy_real_image(REAL_IMAGE_1, case_dir / "fixtures" / "qwen_style_ref.png")
     snapshot, params = _load_snapshot_params(
         "qwen_image_style",
         fixture_paths={"qwen_style_reference": reference_image},
@@ -734,7 +766,7 @@ def build_qwen_image_basic(case: CaseDefinition, case_dir: Path) -> PreparedCase
 
 
 def build_qwen_image_edit_basic(case: CaseDefinition, case_dir: Path) -> PreparedCase:
-    image_path = _create_test_image(case_dir / "fixtures" / "qwen_edit_input.png", text="QE")
+    image_path = _copy_real_image(REAL_IMAGE_2, case_dir / "fixtures" / "qwen_edit_input.png")
     snapshot, params = _load_snapshot_params(
         "qwen_image_edit",
         fixture_paths={"qwen_edit_input": image_path},
@@ -752,8 +784,8 @@ def build_qwen_image_edit_basic(case: CaseDefinition, case_dir: Path) -> Prepare
 
 
 def build_wan22_individual_segment_db_like(case: CaseDefinition, case_dir: Path) -> PreparedCase:
-    start_image = _create_test_image(case_dir / "fixtures" / "wan22_start.png", text="W1")
-    end_image = _create_test_image(case_dir / "fixtures" / "wan22_end.png", text="W2")
+    start_image = _copy_real_image(REAL_IMAGE_1, case_dir / "fixtures" / "wan22_start.png")
+    end_image = _copy_real_image(REAL_IMAGE_2, case_dir / "fixtures" / "wan22_end.png")
     snapshot, params = _load_snapshot_params(
         "individual_travel_segment_wan22_i2v",
         fixture_paths={
@@ -804,6 +836,45 @@ def _create_test_image(path: Path, text: str) -> Path:
             pixels[x, y] = (180, 80, 32)
     image.save(path)
     return path
+
+
+def _copy_real_image(source: Path, dest: Path) -> Path:
+    """Copy a real image from the repo root into the fixture directory."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(source), str(dest))
+    return dest
+
+
+def _create_guide_video_from_images(
+    start_image: Path,
+    end_image: Path,
+    output_path: Path,
+    *,
+    width: int = 832,
+    height: int = 480,
+    frames: int = 81,
+    fps: int = 16,
+) -> Path:
+    """Create a VACE guide video with start/end image anchors and black in-between.
+
+    Frame 0 = start_image, Frame N-1 = end_image, middle frames = black.
+    This gives VACE clear anchor points to interpolate between.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    img_start = cv2.resize(cv2.imread(str(start_image)), (width, height))
+    img_end = cv2.resize(cv2.imread(str(end_image)), (width, height))
+    black = np.zeros((height, width, 3), dtype=np.uint8)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+    for i in range(frames):
+        if i == 0:
+            writer.write(img_start)
+        elif i == frames - 1:
+            writer.write(img_end)
+        else:
+            writer.write(black)
+    writer.release()
+    return output_path
 
 
 def _create_test_video(path: Path, *, width: int = 320, height: int = 180, frames: int = 6, fps: int = 16) -> Path:

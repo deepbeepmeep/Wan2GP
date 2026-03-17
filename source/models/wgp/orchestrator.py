@@ -355,7 +355,7 @@ class WanOrchestrator:
                 _cfg["attention_mode"] = "auto"
                 _cfg["compile"] = ""
                 _cfg["profile"] = 1  # Profile 1 for 24GB+ VRAM (4090/3090)
-                _cfg["vae_config"] = "default"
+                _cfg["vae_config"] = 0
                 _cfg["metadata_type"] = "none"
                 _cfg["transformer_quantization"] = "int8"
                 _cfg["preload_model_policy"] = []
@@ -369,7 +369,7 @@ class WanOrchestrator:
                     ("attention_mode", "auto"),
                     ("compile", ""),
                     ("default_profile", 1),
-                    ("vae_config", "default"),
+                    ("vae_config", 0),
                     ("transformer_quantization", "int8"),
                     ("preload_model_policy", []),
                     ("boost", 1),

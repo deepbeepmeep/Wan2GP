@@ -483,163 +483,144 @@ def euler_denoising_loop(
         A pair ``(video_state, audio_state)`` containing the final video and
         audio latent states after completing the denoising loop.
     """
-    for step_idx, _ in enumerate(tqdm(sigmas[:-1])):
-        if interrupt_check is not None and interrupt_check():
-            return None, None
+    prewarm = getattr(denoise_fn, "_prewarm", None)
+    cleanup = getattr(denoise_fn, "_cleanup", None)
+    if callable(prewarm):
+        prewarm(video_state, audio_state, sigmas)
 
-        offload.set_step_no_for_lora(transformer, step_idx)
-
-        denoised_video, denoised_audio = denoise_fn(video_state, audio_state, sigmas, step_idx)
-        if denoised_video is None or denoised_audio is None:
-            return None, None
-
-        denoised_video = post_process_latent(denoised_video, video_state.denoise_mask, video_state.clean_latent)
-        denoised_audio = post_process_latent(denoised_audio, audio_state.denoise_mask, audio_state.clean_latent)
-
-        refiner_steps = 0
-        if self_refiner_handler is not None:
-            self_refiner_handler.reset_buffer()
-            refiner_steps = self_refiner_handler.get_anneal_steps(step_idx)
-        if self_refiner_handler_audio is not None:
-            self_refiner_handler_audio.reset_buffer()
-            if refiner_steps == 0:
-                refiner_steps = self_refiner_handler_audio.get_anneal_steps(step_idx)
-
-        use_audio_refiner = (
-            self_refiner_handler is not None
-            and self_refiner_handler_audio is not None
-            and denoised_audio is not None
-        )
-
-        if use_audio_refiner and refiner_steps > 1:
-            current_sigma = float(sigmas[step_idx].item()) if torch.is_tensor(sigmas[step_idx]) else float(sigmas[step_idx])
-            next_sigma = (
-                float(sigmas[step_idx + 1].item())
-                if step_idx + 1 < len(sigmas)
-                else 0.0
-            )
-            refine_failed = False
-
-            def denoise_multi(latents_list):
-                nonlocal refine_failed
-                temp_video_state = replace(video_state, latent=latents_list[0])
-                temp_audio_state = replace(audio_state, latent=latents_list[1])
-                denoised_video_loop, denoised_audio_loop = denoise_fn(
-                    temp_video_state,
-                    temp_audio_state,
-                    sigmas,
-                    step_idx,
-                )
-                if denoised_video_loop is None and denoised_audio_loop is None:
-                    refine_failed = True
-                    return [denoised_video, denoised_audio]
-                if denoised_video_loop is None or denoised_audio_loop is None:
-                    refine_failed = True
-                    return [denoised_video, denoised_audio]
-                denoised_video_loop = post_process_latent(
-                    denoised_video_loop,
-                    temp_video_state.denoise_mask,
-                    temp_video_state.clean_latent,
-                )
-                denoised_audio_loop = post_process_latent(
-                    denoised_audio_loop,
-                    temp_audio_state.denoise_mask,
-                    temp_audio_state.clean_latent,
-                )
-                return [denoised_video_loop, denoised_audio_loop]
-
-            def step_func(noise_preds, latents_list):
-                latents_next_video = stepper.step(latents_list[0], noise_preds[0], sigmas, step_idx)
-                latents_next_audio = stepper.step(latents_list[1], noise_preds[1], sigmas, step_idx)
-                return [latents_next_video, latents_next_audio], noise_preds
-
-            refined_latents = run_refinement_loop_multi(
-                handlers=[self_refiner_handler, self_refiner_handler_audio],
-                latents_list=[video_state.latent, audio_state.latent],
-                noise_pred_list=[denoised_video, denoised_audio],
-                current_sigma=current_sigma,
-                next_sigma=next_sigma,
-                m_steps=refiner_steps,
-                denoise_func=denoise_multi,
-                step_func=step_func,
-                generators=[self_refiner_generator, self_refiner_generator],
-                devices=[video_state.latent.device, audio_state.latent.device],
-                noise_masks=[video_state.denoise_mask, audio_state.denoise_mask],
-            )
-            if refine_failed or refined_latents is None or any(latent is None for latent in refined_latents):
+    try:
+        for step_idx, _ in enumerate(tqdm(sigmas[:-1])):
+            if interrupt_check is not None and interrupt_check():
                 return None, None
-            video_state = replace(video_state, latent=refined_latents[0])
-            audio_state = replace(audio_state, latent=refined_latents[1])
-        elif self_refiner_handler is not None and refiner_steps > 1:
-            current_sigma = float(sigmas[step_idx].item()) if torch.is_tensor(sigmas[step_idx]) else float(sigmas[step_idx])
-            next_sigma = (
-                float(sigmas[step_idx + 1].item())
-                if step_idx + 1 < len(sigmas)
-                else 0.0
-            )
-            denoised_audio_final = denoised_audio
-            refine_failed = False
 
-            def denoise_video(latents_in):
-                nonlocal denoised_audio_final, refine_failed
-                temp_video_state = replace(video_state, latent=latents_in)
-                denoised_video_loop, denoised_audio_loop = denoise_fn(
-                    temp_video_state,
-                    audio_state,
-                    sigmas,
-                    step_idx,
-                )
-                if denoised_video_loop is None and denoised_audio_loop is None:
-                    refine_failed = True
-                    return denoised_video
-                if denoised_video_loop is None:
-                    refine_failed = True
-                    return denoised_video
-                denoised_video_loop = post_process_latent(
-                    denoised_video_loop,
-                    temp_video_state.denoise_mask,
-                    temp_video_state.clean_latent,
-                )
-                if denoised_audio_loop is not None:
-                    denoised_audio_loop = post_process_latent(
-                        denoised_audio_loop,
-                        audio_state.denoise_mask,
-                        audio_state.clean_latent,
+            offload.set_step_no_for_lora(transformer, step_idx)
+            denoised_video = denoised_audio = None
+            denoised_video, denoised_audio = denoise_fn(video_state, audio_state, sigmas, step_idx)
+            if denoised_video is None or denoised_audio is None:
+                return None, None
+
+            denoised_video = post_process_latent(denoised_video, video_state.denoise_mask, video_state.clean_latent)
+            denoised_audio = post_process_latent(denoised_audio, audio_state.denoise_mask, audio_state.clean_latent)
+
+            refiner_steps = 0
+            if self_refiner_handler is not None:
+                self_refiner_handler.reset_buffer()
+                refiner_steps = self_refiner_handler.get_anneal_steps(step_idx)
+            if self_refiner_handler_audio is not None:
+                self_refiner_handler_audio.reset_buffer()
+                if refiner_steps == 0:
+                    refiner_steps = self_refiner_handler_audio.get_anneal_steps(step_idx)
+
+            use_audio_refiner = (
+                self_refiner_handler is not None
+                and self_refiner_handler_audio is not None
+                and denoised_audio is not None
+            )
+
+            if use_audio_refiner and refiner_steps > 1:
+                current_sigma = float(sigmas[step_idx].item()) if torch.is_tensor(sigmas[step_idx]) else float(sigmas[step_idx])
+                next_sigma = float(sigmas[step_idx + 1].item()) if step_idx + 1 < len(sigmas) else 0.0
+                refine_failed = False
+
+                def denoise_multi(latents_list):
+                    nonlocal refine_failed
+                    temp_video_state = replace(video_state, latent=latents_list[0])
+                    temp_audio_state = replace(audio_state, latent=latents_list[1])
+                    denoised_video_loop, denoised_audio_loop = denoise_fn(temp_video_state, temp_audio_state, sigmas, step_idx)
+                    if denoised_video_loop is None and denoised_audio_loop is None:
+                        refine_failed = True
+                        return [denoised_video, denoised_audio]
+                    if denoised_video_loop is None or denoised_audio_loop is None:
+                        refine_failed = True
+                        return [denoised_video, denoised_audio]
+                    denoised_video_loop = post_process_latent(
+                        denoised_video_loop, temp_video_state.denoise_mask, temp_video_state.clean_latent
                     )
-                    denoised_audio_final = denoised_audio_loop
-                return denoised_video_loop
+                    denoised_audio_loop = post_process_latent(
+                        denoised_audio_loop, temp_audio_state.denoise_mask, temp_audio_state.clean_latent
+                    )
+                    return [denoised_video_loop, denoised_audio_loop]
 
-            def step_func(n_pred_in, latents_in):
-                latents_next = stepper.step(latents_in, n_pred_in, sigmas, step_idx)
-                return latents_next, n_pred_in
+                def step_func(noise_preds, latents_list):
+                    latents_next_video = stepper.step(latents_list[0], noise_preds[0], sigmas, step_idx)
+                    latents_next_audio = stepper.step(latents_list[1], noise_preds[1], sigmas, step_idx)
+                    return [latents_next_video, latents_next_audio], noise_preds
 
-            latents_refined = self_refiner_handler.run_refinement_loop(
-                latents=video_state.latent,
-                noise_pred=denoised_video,
-                current_sigma=current_sigma,
-                next_sigma=next_sigma,
-                m_steps=refiner_steps,
-                denoise_func=denoise_video,
-                step_func=step_func,
-                generator=self_refiner_generator,
-                device=video_state.latent.device,
-                noise_mask=video_state.denoise_mask,
-            )
-            if refine_failed or latents_refined is None:
-                return None, None
-            video_state = replace(video_state, latent=latents_refined)
-            audio_state = replace(
-                audio_state,
-                latent=stepper.step(audio_state.latent, denoised_audio_final, sigmas, step_idx),
-            )
-        else:
-            video_state = replace(video_state, latent=stepper.step(video_state.latent, denoised_video, sigmas, step_idx))
-            audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
-        if mask_context is not None:
-            _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-        _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
+                refined_latents = run_refinement_loop_multi(
+                    handlers=[self_refiner_handler, self_refiner_handler_audio],
+                    latents_list=[video_state.latent, audio_state.latent],
+                    noise_pred_list=[denoised_video, denoised_audio],
+                    current_sigma=current_sigma,
+                    next_sigma=next_sigma,
+                    m_steps=refiner_steps,
+                    denoise_func=denoise_multi,
+                    step_func=step_func,
+                    generators=[self_refiner_generator, self_refiner_generator],
+                    devices=[video_state.latent.device, audio_state.latent.device],
+                    noise_masks=[video_state.denoise_mask, audio_state.denoise_mask],
+                )
+                if refine_failed or refined_latents is None or any(latent is None for latent in refined_latents):
+                    return None, None
+                video_state = replace(video_state, latent=refined_latents[0])
+                audio_state = replace(audio_state, latent=refined_latents[1])
+            elif self_refiner_handler is not None and refiner_steps > 1:
+                current_sigma = float(sigmas[step_idx].item()) if torch.is_tensor(sigmas[step_idx]) else float(sigmas[step_idx])
+                next_sigma = float(sigmas[step_idx + 1].item()) if step_idx + 1 < len(sigmas) else 0.0
+                denoised_audio_final = denoised_audio
+                refine_failed = False
 
-    return (video_state, audio_state)
+                def denoise_video(latents_in):
+                    nonlocal denoised_audio_final, refine_failed
+                    temp_video_state = replace(video_state, latent=latents_in)
+                    denoised_video_loop, denoised_audio_loop = denoise_fn(temp_video_state, audio_state, sigmas, step_idx)
+                    if denoised_video_loop is None and denoised_audio_loop is None:
+                        refine_failed = True
+                        return denoised_video
+                    if denoised_video_loop is None:
+                        refine_failed = True
+                        return denoised_video
+                    denoised_video_loop = post_process_latent(
+                        denoised_video_loop, temp_video_state.denoise_mask, temp_video_state.clean_latent
+                    )
+                    if denoised_audio_loop is not None:
+                        denoised_audio_loop = post_process_latent(
+                            denoised_audio_loop, audio_state.denoise_mask, audio_state.clean_latent
+                        )
+                        denoised_audio_final = denoised_audio_loop
+                    return denoised_video_loop
+
+                def step_func(n_pred_in, latents_in):
+                    latents_next = stepper.step(latents_in, n_pred_in, sigmas, step_idx)
+                    return latents_next, n_pred_in
+
+                latents_refined = self_refiner_handler.run_refinement_loop(
+                    latents=video_state.latent,
+                    noise_pred=denoised_video,
+                    current_sigma=current_sigma,
+                    next_sigma=next_sigma,
+                    m_steps=refiner_steps,
+                    denoise_func=denoise_video,
+                    step_func=step_func,
+                    generator=self_refiner_generator,
+                    device=video_state.latent.device,
+                    noise_mask=video_state.denoise_mask,
+                )
+                if refine_failed or latents_refined is None:
+                    return None, None
+                video_state = replace(video_state, latent=latents_refined)
+                audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio_final, sigmas, step_idx))
+            else:
+                video_state = replace(video_state, latent=stepper.step(video_state.latent, denoised_video, sigmas, step_idx))
+                audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
+
+            if mask_context is not None:
+                _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
+            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
+
+        return video_state, audio_state
+    finally:
+        if callable(cleanup):
+            cleanup()
 
 
 def gradient_estimating_euler_denoising_loop(
@@ -675,6 +656,7 @@ def gradient_estimating_euler_denoising_loop(
 
     previous_audio_velocity = None
     previous_video_velocity = None
+    cleanup = getattr(denoise_fn, "_cleanup", None)
 
     def update_velocity_and_sample(
         noisy_sample: torch.Tensor, denoised_sample: torch.Tensor, sigma: float, previous_velocity: torch.Tensor | None
@@ -686,40 +668,44 @@ def gradient_estimating_euler_denoising_loop(
             denoised_sample = to_denoised(noisy_sample, total_velocity, sigma)
         return current_velocity, denoised_sample
 
-    for step_idx, _ in enumerate(tqdm(sigmas[:-1])):
-        if interrupt_check is not None and interrupt_check():
-            return None, None
-        denoised_video, denoised_audio = denoise_fn(video_state, audio_state, sigmas, step_idx)
-        if denoised_video is None or denoised_audio is None:
-            return None, None
+    try:
+        for step_idx, _ in enumerate(tqdm(sigmas[:-1])):
+            if interrupt_check is not None and interrupt_check():
+                return None, None
+            denoised_video, denoised_audio = denoise_fn(video_state, audio_state, sigmas, step_idx)
+            if denoised_video is None or denoised_audio is None:
+                return None, None
 
-        denoised_video = post_process_latent(denoised_video, video_state.denoise_mask, video_state.clean_latent)
-        denoised_audio = post_process_latent(denoised_audio, audio_state.denoise_mask, audio_state.clean_latent)
+            denoised_video = post_process_latent(denoised_video, video_state.denoise_mask, video_state.clean_latent)
+            denoised_audio = post_process_latent(denoised_audio, audio_state.denoise_mask, audio_state.clean_latent)
 
-        if sigmas[step_idx + 1] == 0:
-            _invoke_callback(
-                callback,
-                step_idx,
-                pass_no,
-                replace(video_state, latent=denoised_video),
-                preview_tools,
+            if sigmas[step_idx + 1] == 0:
+                _invoke_callback(
+                    callback,
+                    step_idx,
+                    pass_no,
+                    replace(video_state, latent=denoised_video),
+                    preview_tools,
+                )
+                return replace(video_state, latent=denoised_video), replace(audio_state, latent=denoised_audio)
+
+            previous_video_velocity, denoised_video = update_velocity_and_sample(
+                video_state.latent, denoised_video, sigmas[step_idx], previous_video_velocity
             )
-            return replace(video_state, latent=denoised_video), replace(audio_state, latent=denoised_audio)
+            previous_audio_velocity, denoised_audio = update_velocity_and_sample(
+                audio_state.latent, denoised_audio, sigmas[step_idx], previous_audio_velocity
+            )
 
-        previous_video_velocity, denoised_video = update_velocity_and_sample(
-            video_state.latent, denoised_video, sigmas[step_idx], previous_video_velocity
-        )
-        previous_audio_velocity, denoised_audio = update_velocity_and_sample(
-            audio_state.latent, denoised_audio, sigmas[step_idx], previous_audio_velocity
-        )
+            video_state = replace(video_state, latent=stepper.step(video_state.latent, denoised_video, sigmas, step_idx))
+            audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
+            if mask_context is not None:
+                _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
+            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
 
-        video_state = replace(video_state, latent=stepper.step(video_state.latent, denoised_video, sigmas, step_idx))
-        audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
-        if mask_context is not None:
-            _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-        _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
-
-    return (video_state, audio_state)
+        return video_state, audio_state
+    finally:
+        if callable(cleanup):
+            cleanup()
 
 
 def noise_video_state(
@@ -835,7 +821,12 @@ def post_process_latent(denoised: torch.Tensor, denoise_mask: torch.Tensor, clea
 
 
 def modality_from_latent_state(
-    state: LatentState, context: torch.Tensor, sigma: float | torch.Tensor, enabled: bool = True
+    state: LatentState,
+    context: torch.Tensor,
+    sigma: float | torch.Tensor,
+    enabled: bool = True,
+    step_index: int | None = None,
+    sigma_schedule: torch.Tensor | None = None,
 ) -> Modality:
     """Create a Modality from a latent state.
     Constructs a Modality object with the latent state's data, timesteps derived
@@ -864,6 +855,8 @@ def modality_from_latent_state(
         attention_mask=None,
         frame_indices=frame_indices,
         runtime_cache=runtime_cache,
+        step_index=step_index,
+        sigma_schedule=sigma_schedule,
     )
 
 
@@ -1020,18 +1013,73 @@ def timesteps_from_mask(
     return plan.frame_mask * sigma, plan.frame_indices
 
 
+def _prepare_conditioning_context(
+    transformer: X0Model | None,
+    state: LatentState,
+    context: torch.Tensor,
+    sigmas: torch.Tensor,
+    *,
+    is_audio: bool,
+):
+    if transformer is None:
+        return context
+    velocity_model = getattr(transformer, "velocity_model", transformer)
+    preprocessor_name = "audio_args_preprocessor" if is_audio else "video_args_preprocessor"
+    preprocessor = getattr(velocity_model, preprocessor_name, None)
+    if preprocessor is None or not hasattr(preprocessor, "build_prepared_conditioning"):
+        return context
+    seed_modality = modality_from_latent_state(state, context, sigmas[0], step_index=0, sigma_schedule=sigmas)
+    return preprocessor.build_prepared_conditioning(seed_modality)
+
+
+def _clear_phase_timestep_embedders(transformer: X0Model | None) -> None:
+    if transformer is None:
+        return
+    velocity_model = getattr(transformer, "velocity_model", transformer)
+    for preprocessor_name in ("video_args_preprocessor", "audio_args_preprocessor"):
+        preprocessor = getattr(velocity_model, preprocessor_name, None)
+        clear_fn = None if preprocessor is None else getattr(preprocessor, "clear_phase_timestep_embedders", None)
+        if callable(clear_fn):
+            clear_fn()
+
+
 def simple_denoising_func(
     video_context: torch.Tensor,
     audio_context: torch.Tensor,
     transformer: X0Model,
     alt_guidance_scale: float = 1.0,
 ) -> DenoisingFunc:
+    prepared_video_context = None
+    prepared_audio_context = None
+
+    def _prewarm(video_state: LatentState, audio_state: LatentState, sigmas: torch.Tensor) -> None:
+        nonlocal prepared_video_context, prepared_audio_context
+        if prepared_video_context is None:
+            prepared_video_context = _prepare_conditioning_context(
+                transformer, video_state, video_context, sigmas, is_audio=False
+            )
+        if prepared_audio_context is None:
+            prepared_audio_context = _prepare_conditioning_context(
+                transformer, audio_state, audio_context, sigmas, is_audio=True
+            )
+
+    def _cleanup() -> None:
+        nonlocal prepared_video_context, prepared_audio_context
+        prepared_video_context = None
+        prepared_audio_context = None
+        _clear_phase_timestep_embedders(transformer)
+
     def simple_denoising_step(
         video_state: LatentState, audio_state: LatentState, sigmas: torch.Tensor, step_index: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        _prewarm(video_state, audio_state, sigmas)
         sigma = sigmas[step_index]
-        pos_video = modality_from_latent_state(video_state, video_context, sigma)
-        pos_audio = modality_from_latent_state(audio_state, audio_context, sigma)
+        pos_video = modality_from_latent_state(
+            video_state, prepared_video_context, sigma, step_index=step_index, sigma_schedule=sigmas
+        )
+        pos_audio = modality_from_latent_state(
+            audio_state, prepared_audio_context, sigma, step_index=step_index, sigma_schedule=sigmas
+        )
 
         if transformer is not None:
             offload.set_step_no_for_lora(transformer, step_index)
@@ -1042,8 +1090,12 @@ def simple_denoising_func(
                 return None, None
             return denoised_video, denoised_audio
 
-        alt_video = modality_from_latent_state(video_state, video_context, sigma)
-        alt_audio = modality_from_latent_state(audio_state, audio_context, sigma)
+        alt_video = modality_from_latent_state(
+            video_state, prepared_video_context, sigma, step_index=step_index, sigma_schedule=sigmas
+        )
+        alt_audio = modality_from_latent_state(
+            audio_state, prepared_audio_context, sigma, step_index=step_index, sigma_schedule=sigmas
+        )
         batch_size = _get_batch_size(video_state, audio_state)
         perturbations = [None, _cross_attn_perturbations(batch_size)]
         denoised_video_list, denoised_audio_list = transformer(
@@ -1069,6 +1121,8 @@ def simple_denoising_func(
             )
         return denoised_video, denoised_audio
 
+    simple_denoising_step._prewarm = _prewarm
+    simple_denoising_step._cleanup = _cleanup
     return simple_denoising_step
 
 
@@ -1089,13 +1143,34 @@ def guider_denoising_func(
 ) -> DenoisingFunc:
     perturb_all_layers = perturbation_layers is None
     perturbation_layers_norm = _normalize_perturbation_layers(perturbation_layers)
+    prepared_v_context_p = prepared_v_context_n = None
+    prepared_a_context_p = prepared_a_context_n = None
+
+    def _prewarm(video_state: LatentState, audio_state: LatentState, sigmas: torch.Tensor) -> None:
+        nonlocal prepared_v_context_p, prepared_v_context_n, prepared_a_context_p, prepared_a_context_n
+        if prepared_v_context_p is None:
+            prepared_v_context_p = _prepare_conditioning_context(transformer, video_state, v_context_p, sigmas, is_audio=False)
+        if prepared_a_context_p is None:
+            prepared_a_context_p = _prepare_conditioning_context(transformer, audio_state, a_context_p, sigmas, is_audio=True)
+
+    def _cleanup() -> None:
+        nonlocal prepared_v_context_p, prepared_v_context_n, prepared_a_context_p, prepared_a_context_n
+        prepared_v_context_p = prepared_v_context_n = None
+        prepared_a_context_p = prepared_a_context_n = None
+        _clear_phase_timestep_embedders(transformer)
 
     def guider_denoising_step(
         video_state: LatentState, audio_state: LatentState, sigmas: torch.Tensor, step_index: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        nonlocal prepared_v_context_n, prepared_a_context_n
+        _prewarm(video_state, audio_state, sigmas)
         sigma = sigmas[step_index]
-        pos_video = modality_from_latent_state(video_state, v_context_p, sigma)
-        pos_audio = modality_from_latent_state(audio_state, a_context_p, sigma)
+        pos_video = modality_from_latent_state(
+            video_state, prepared_v_context_p, sigma, step_index=step_index, sigma_schedule=sigmas
+        )
+        pos_audio = modality_from_latent_state(
+            audio_state, prepared_a_context_p, sigma, step_index=step_index, sigma_schedule=sigmas
+        )
 
         if transformer is not None:
             offload.set_step_no_for_lora(transformer, step_index)
@@ -1122,25 +1197,45 @@ def guider_denoising_func(
             alt_index = None
 
             if use_cfg:
-                neg_video_context = v_context_n if use_video_cfg else v_context_p
-                neg_audio_context = a_context_n if use_audio_cfg else a_context_p
+                if use_video_cfg and prepared_v_context_n is None:
+                    prepared_v_context_n = _prepare_conditioning_context(
+                        transformer, video_state, v_context_n, sigmas, is_audio=False
+                    )
+                if use_audio_cfg and prepared_a_context_n is None:
+                    prepared_a_context_n = _prepare_conditioning_context(
+                        transformer, audio_state, a_context_n, sigmas, is_audio=True
+                    )
+                neg_video_context = prepared_v_context_n if use_video_cfg else prepared_v_context_p
+                neg_audio_context = prepared_a_context_n if use_audio_cfg else prepared_a_context_p
                 neg_index = len(video_list)
-                video_list.append(modality_from_latent_state(video_state, neg_video_context, sigma))
-                audio_list.append(modality_from_latent_state(audio_state, neg_audio_context, sigma))
+                video_list.append(
+                    modality_from_latent_state(video_state, neg_video_context, sigma, step_index=step_index, sigma_schedule=sigmas)
+                )
+                audio_list.append(
+                    modality_from_latent_state(audio_state, neg_audio_context, sigma, step_index=step_index, sigma_schedule=sigmas)
+                )
                 perturbations.append(
                     _legacy_perturbation_layer_configs(batch_size, selected_layers) if use_legacy_perturbation else None
                 )
 
             if use_stg:
                 stg_index = len(video_list)
-                video_list.append(modality_from_latent_state(video_state, v_context_p, sigma))
-                audio_list.append(modality_from_latent_state(audio_state, a_context_p, sigma))
+                video_list.append(
+                    modality_from_latent_state(video_state, prepared_v_context_p, sigma, step_index=step_index, sigma_schedule=sigmas)
+                )
+                audio_list.append(
+                    modality_from_latent_state(audio_state, prepared_a_context_p, sigma, step_index=step_index, sigma_schedule=sigmas)
+                )
                 perturbations.append(_self_attn_perturbation_configs(batch_size, selected_layers))
 
             if use_alt:
                 alt_index = len(video_list)
-                video_list.append(modality_from_latent_state(video_state, v_context_p, sigma))
-                audio_list.append(modality_from_latent_state(audio_state, a_context_p, sigma))
+                video_list.append(
+                    modality_from_latent_state(video_state, prepared_v_context_p, sigma, step_index=step_index, sigma_schedule=sigmas)
+                )
+                audio_list.append(
+                    modality_from_latent_state(audio_state, prepared_a_context_p, sigma, step_index=step_index, sigma_schedule=sigmas)
+                )
                 perturbations.append(_cross_attn_perturbations(batch_size))
 
             denoised_video_list, denoised_audio_list = transformer(
@@ -1198,6 +1293,8 @@ def guider_denoising_func(
         pos_video = pos_audio = None
         return denoised_video, denoised_audio
 
+    guider_denoising_step._prewarm = _prewarm
+    guider_denoising_step._cleanup = _cleanup
     return guider_denoising_step
 
 

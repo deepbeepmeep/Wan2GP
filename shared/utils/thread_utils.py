@@ -23,27 +23,34 @@ class Listener:
                 time.sleep(0.001)
                 continue
                 
-            func, args, kwargs = task
+            func, args, kwargs, thread_name = task
+            current_name = None
             try:
+                if thread_name:
+                    current_name = cls.thread.name
+                    cls.thread.name = thread_name
                 func(*args, **kwargs)
             except Exception as e:
                 tb = traceback.format_exc().split('\n')[:-1] 
                 print('\n'.join(tb))
 
                 # print(f"Error in listener thread: {e}")
+            finally:
+                if current_name is not None:
+                    cls.thread.name = current_name
     
     @classmethod
-    def add_task(cls, func, *args, **kwargs):
+    def add_task(cls, func, *args, thread_name=None, **kwargs):
         with cls.lock:
-            cls.task_queue.append((func, args, kwargs))
+            cls.task_queue.append((func, args, kwargs, thread_name))
 
         if cls.thread is None:
             cls.thread = Thread(target=cls._process_tasks, daemon=True)
             cls.thread.start()
 
 
-def async_run(func, *args, **kwargs):
-    Listener.add_task(func, *args, **kwargs)
+def async_run(func, *args, thread_name=None, **kwargs):
+    Listener.add_task(func, *args, thread_name=thread_name, **kwargs)
 
 
 class FIFOQueue:

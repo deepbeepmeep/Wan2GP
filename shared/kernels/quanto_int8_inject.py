@@ -40,6 +40,7 @@ _TIME_PROFILE_CALLS = 0
 _DEBUG_OVERRIDE: Optional[bool] = None
 
 _PATCH_STATE = SimpleNamespace(enabled=False, orig_forward=None, orig_embedding_forward=None)
+_BASE_PATCH_STATE = SimpleNamespace(enabled=False, orig_forward=None)
 _OPS_REGISTERED = False
 _OPS_NAMESPACE = "wan2gp_int8"
 _OPS_LIBS = []
@@ -165,6 +166,70 @@ def _disable_runtime(reason: str) -> None:
             "Runtime fallback to non-injected Quanto path is now active. Reason: "
             f"{_RUNTIME_DISABLE_REASON}"
         )
+
+
+def _reset_runtime_state(reset_triton_module: bool = True) -> None:
+    global _STARTUP_PRINTED, _RUNTIME_DISABLED, _RUNTIME_DISABLE_REASON, _RUNTIME_DISABLE_PRINTED
+    global _TRITON_MODULE, _TRITON_DIRECT_FUSED_READY, _TRITON_DIRECT_SCALED_READY, _KERNEL_USED_PRINTED
+    global _FUSED_LAUNCH_CACHE, _FUSED_LAUNCH_CACHE_FIFO, _SCALED_LAUNCH_CACHE, _SCALED_LAUNCH_CACHE_FIFO
+    global _SHAPE_COUNTS_FUSED, _SHAPE_COUNTS_SCALED, _TIME_PROFILE_EVENTS, _TIME_PROFILE_CPU_MS, _TIME_PROFILE_CALLS
+    global _NATIVE_FALLBACK_MAX_M
+
+    _STARTUP_PRINTED = False
+    _RUNTIME_DISABLED = False
+    _RUNTIME_DISABLE_REASON = ""
+    _RUNTIME_DISABLE_PRINTED = False
+    if reset_triton_module:
+        _TRITON_MODULE = None
+    _TRITON_DIRECT_FUSED_READY = False
+    _TRITON_DIRECT_SCALED_READY = False
+    _KERNEL_USED_PRINTED = False
+    _FUSED_LAUNCH_CACHE = {}
+    _FUSED_LAUNCH_CACHE_FIFO = []
+    _SCALED_LAUNCH_CACHE = {}
+    _SCALED_LAUNCH_CACHE_FIFO = []
+    _SHAPE_COUNTS_FUSED = {}
+    _SHAPE_COUNTS_SCALED = {}
+    _TIME_PROFILE_EVENTS = []
+    _TIME_PROFILE_CPU_MS = 0.0
+    _TIME_PROFILE_CALLS = 0
+    _NATIVE_FALLBACK_MAX_M = 0
+
+
+def _add_bias_in_place_or_fallback(output: torch.Tensor, bias: Optional[torch.Tensor]) -> torch.Tensor:
+    if bias is None:
+        return output
+    if bias.device != output.device or bias.dtype != output.dtype:
+        return output + bias
+    output.add_(bias)
+    return output
+
+
+def _default_quanto_qbytes_linear_forward(ctx, input, other, bias=None):
+    ctx.save_for_backward(input, other)
+    if _is_qbytes_tensor(input):
+        output = torch.ops.quanto.qbytes_mm(input._data, other._data, input._scale * other._scale)
+    else:
+        in_features = input.shape[-1]
+        out_features = other.shape[0]
+        output_shape = input.shape[:-1] + (out_features,)
+        output = torch.ops.quanto.qbytes_mm(input.reshape(-1, in_features), other._data, other._scale)
+        output = output.reshape(output_shape)
+    return _add_bias_in_place_or_fallback(output, bias)
+
+
+def _ensure_default_quanto_linear_patch() -> bool:
+    try:
+        from optimum.quanto.tensor.weights import qbytes as _qbytes
+    except Exception:
+        return False
+    _init_quanto_tensor_types()
+    current_forward = _qbytes.WeightQBytesLinearFunction.forward
+    if not _BASE_PATCH_STATE.enabled:
+        _BASE_PATCH_STATE.orig_forward = current_forward
+        _BASE_PATCH_STATE.enabled = True
+    _qbytes.WeightQBytesLinearFunction.forward = staticmethod(_default_quanto_qbytes_linear_forward)
+    return True
 
 
 def _init_quanto_tensor_types() -> bool:
@@ -633,7 +698,7 @@ def _int8_linear_forward_triton_dense_fast(ctx, input: torch.Tensor, other: torc
 
     out = out_2d.reshape(input_shape[:-1] + (out_features,))
     if bias is not None:
-        out = out + bias
+        out += bias
     return out
 
 
@@ -690,14 +755,24 @@ def _int8_linear_forward_triton(ctx, input: torch.Tensor, other: torch.Tensor, b
             out_2d = _fused_quant_scaled_mm_call(a_2d, b_int8, b_scale, output_dtype)
 
     out = out_2d.reshape(input_shape[:-1] + (out_features,))
-    if bias is not None:
-        out = out + bias
-    return out
+    return _add_bias_in_place_or_fallback(out, bias)
 
 
 def enable_quanto_int8_kernel(triton_mod=None) -> bool:
     global _TRITON_MODULE, _NATIVE_FALLBACK_MAX_M
     if _PATCH_STATE.enabled:
+        _reset_runtime_state(reset_triton_module=False)
+        if triton_mod is None:
+            triton_mod = _TRITON_MODULE
+        if triton_mod is None:
+            triton_mod, _ = _probe_triton_backend()
+        if triton_mod is None:
+            return False
+        _TRITON_MODULE = triton_mod
+        _refresh_triton_direct_kernel_flags()
+        _NATIVE_FALLBACK_MAX_M = _env_int(_ENV_NATIVE_FALLBACK_MAX_M, 0)
+        _init_quanto_tensor_types()
+        _ensure_compile_safe_ops()
         return True
 
     try:
@@ -714,7 +789,10 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
     if triton_mod is None:
         triton_mod, _ = _probe_triton_backend()
     if triton_mod is None:
+        _ensure_default_quanto_linear_patch()
         return False
+    _ensure_default_quanto_linear_patch()
+    _reset_runtime_state()
     _TRITON_MODULE = triton_mod
     _refresh_triton_direct_kernel_flags()
     _NATIVE_FALLBACK_MAX_M = _env_int(_ENV_NATIVE_FALLBACK_MAX_M, 0)
@@ -802,10 +880,9 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
 
 
 def disable_quanto_int8_kernel(notify_disabled = False) -> bool:
-    global _FUSED_LAUNCH_CACHE, _FUSED_LAUNCH_CACHE_FIFO, _SCALED_LAUNCH_CACHE, _SCALED_LAUNCH_CACHE_FIFO
-    global _TRITON_DIRECT_FUSED_READY, _TRITON_DIRECT_SCALED_READY, _STARTUP_PRINTED
-    
     if not _PATCH_STATE.enabled:
+        _ensure_default_quanto_linear_patch()
+        _reset_runtime_state()
         return False
     from optimum.quanto.tensor.weights import qbytes as _qbytes
 
@@ -816,13 +893,7 @@ def disable_quanto_int8_kernel(notify_disabled = False) -> bool:
     _PATCH_STATE.enabled = False
     _PATCH_STATE.orig_forward = None
     _PATCH_STATE.orig_embedding_forward = None
-    _FUSED_LAUNCH_CACHE = {}
-    _FUSED_LAUNCH_CACHE_FIFO = []
-    _SCALED_LAUNCH_CACHE = {}
-    _SCALED_LAUNCH_CACHE_FIFO = []
-    _TRITON_DIRECT_FUSED_READY = False
-    _TRITON_DIRECT_SCALED_READY = False
-    _STARTUP_PRINTED = False
+    _reset_runtime_state()
     if notify_disabled:
         _startup_status(False, f"disabled by User.")
     return True
@@ -841,11 +912,13 @@ def maybe_enable_quanto_int8_kernel(verbose_level: Optional[int] = None) -> bool
     set_kernel_debug(verbose_debug)
 
     if not _env_flag(_ENV_ENABLE, "1"):
+        _ensure_default_quanto_linear_patch()
         # _startup_status(False, f"disabled by {_ENV_ENABLE}=0; using non-injected Quanto path.")
         return False
 
     triton_mod, reason = _probe_triton_backend()
     if triton_mod is None:
+        _ensure_default_quanto_linear_patch()
         # _startup_status(False, f"{reason}; using non-injected Quanto path.")
         return False
     set_triton_debug = getattr(triton_mod, "set_autotune_debug", None)
@@ -853,6 +926,7 @@ def maybe_enable_quanto_int8_kernel(verbose_level: Optional[int] = None) -> bool
         set_triton_debug(verbose_debug)
 
     if not enable_quanto_int8_kernel(triton_mod=triton_mod):
+        _ensure_default_quanto_linear_patch()
         _startup_status(False, "failed to patch Quanto linear forward; using non-injected Quanto path.")
         return False
 

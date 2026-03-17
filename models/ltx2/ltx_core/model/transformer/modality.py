@@ -6,6 +6,12 @@ from ...types import LatentStateRuntimeCache
 
 
 @dataclass(frozen=True)
+class PreparedConditioning:
+    context: torch.Tensor
+    projected_context: torch.Tensor | None = None
+
+
+@dataclass(frozen=True)
 class Modality:
     """
     Input data for a single modality (video or audio) in the transformer.
@@ -21,9 +27,11 @@ class Modality:
     positions: (
         torch.Tensor
     )  # Shape: (B, 3, T) for video, where 3 is the number of dimensions and T is the number of tokens
-    context: torch.Tensor
+    context: torch.Tensor | PreparedConditioning
     enabled: bool = True
     context_mask: torch.Tensor | None = None
     attention_mask: torch.Tensor | None = None
     frame_indices: torch.Tensor | None = None
     runtime_cache: LatentStateRuntimeCache | None = None
+    step_index: int | None = None
+    sigma_schedule: torch.Tensor | None = None

@@ -178,7 +178,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         label="VAE Tiling (higher presets use less VRAM and may increase artifacts like banding)",
                     )
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
-                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled if Triton availabe", 1)], value=self.server_config.get("enable_int8_kernels", 1), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
+                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled if Triton available", 1)], value=self.server_config.get("enable_int8_kernels", 1), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
                     self.video_profile_choice = gr.Dropdown(
                         choices=self.memory_profile_choices,
                         value=self.default_profile_video,

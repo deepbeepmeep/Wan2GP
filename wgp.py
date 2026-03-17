@@ -98,7 +98,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "10.9874"
+WanGP_version = "10.9875"
 settings_version = 2.55
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -181,6 +181,7 @@ def release_model():
         offloadobj.release()
         offloadobj = None
     offload.flush_torch_caches()
+    gc.collect()
     reload_needed = True
 def get_unique_id():
     global unique_id  
@@ -2340,18 +2341,17 @@ if config_dir and not Path(server_config_filename).is_file():
     if Path(server_config_fallback).is_file():
         config_load_filename = server_config_fallback
 
-src_move = [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "models_t5_umt5-xxl-enc-bf16.safetensors", "models_t5_umt5-xxl-enc-quanto_int8.safetensors" ]
-tgt_move = [ "xlm-roberta-large", "umt5-xxl", "umt5-xxl"]
-for src,tgt in zip(src_move,tgt_move):
-    src = fl.locate_file(src, error_if_none= False)
-    tgt = fl.get_download_location(tgt)
+src_move = [ "ltx-2-19b-dev-fp4_diffusion_model.safetensors" ]
+tgt_move = [ "ltx-2-19b-dev-nvfp4_diffusion_model.safetensors" ]
+for src_name, tgt_name in zip(src_move, tgt_move):
+    src = fl.locate_file(src_name, error_if_none=False)
     if src is not None:
+        tgt = os.path.join(os.path.dirname(src), tgt_name)
         try:
             if os.path.isfile(tgt):
-                shutil.remove(src)
+                os.remove(src)
             else:
-                os.makedirs(os.path.dirname(tgt))
-                shutil.move(src, tgt)
+                os.replace(src, tgt)
         except:
             pass
     
@@ -7262,7 +7262,7 @@ def process_tasks(state):
         finally:
             send_cmd("worker_exit", None)
 
-    async_run(queue_worker_func)
+    async_run(queue_worker_func, thread_name="Generation")
 
     while True:
         cmd, data = com_stream.output_queue.next()               

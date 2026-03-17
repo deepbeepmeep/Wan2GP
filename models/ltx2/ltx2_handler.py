@@ -178,11 +178,13 @@ class family_handler:
         extra_model_def["dont_cat_preguide"] = True
         extra_model_def["input_video_strength"] = "Image / Source Video Strength (you may try values lower value than 1 to get more motion)"
         
-        control_choices = [("No Video Process", ""), ("Transfer Human Motion", "PVG") , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("Use LTX-2 raw format Control Video", "VG")] if distilled else []
+        control_choices = [("No Video Process", "")]
+        control_choices += [ ("Transfer Human Motion", "PVG") , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("Use LTX-2 raw format Control Video", "VG")] if distilled else []
         control_choices +=   [("Inject Frames", "KFI")]
         extra_model_def["guide_custom_choices"] = {
             "choices": control_choices,
             "letters_filter": "PDEVGKFI",
+            "default": "",
             "label": "Control Video / Frames Injection"
         }
 

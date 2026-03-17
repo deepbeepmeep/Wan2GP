@@ -77,12 +77,13 @@ except ImportError:
 @torch.compiler.disable()
 def sageattn2_wrapper(
         qkv_list,
-        attention_length
+        attention_length,
+        recycle_q = False,
     ):
     q,k, v = qkv_list
     qkv_list = [q,k,v]
     del q, k ,v
-    o = sageattn2(qkv_list, tensor_layout="NHD")
+    o = sageattn2(qkv_list, tensor_layout="NHD", recycle_q = recycle_q)
     qkv_list.clear()
 
     return o
@@ -244,7 +245,7 @@ def pay_attention(
     version=None,
     force_attention= None,
     attention_mask = None,
-    cross_attn= False,
+    recycle_q = False,
     q_lens = None,
     k_lens = None,
 ):
@@ -361,81 +362,18 @@ def pay_attention(
             max_seqlen_kv=lk,
         ).unflatten(0, (b, lq))
     elif attn=="sage3":
-        import math
-        if cross_attn or True:
-            qkv_list = [q,k,v]
-            del q,k,v
-            x = sageattn3_wrapper(qkv_list, lq)
+        qkv_list = [q,k,v]
+        del q,k,v
+        x = sageattn3_wrapper(qkv_list, lq)
     elif attn=="sage2":
-        import math
-        if cross_attn or True:
-            qkv_list = [q,k,v]
-            del q,k,v
-
-            x = sageattn2_wrapper(qkv_list, lq) #.unsqueeze(0)
-        # else:
-        #     layer =  offload.shared_state["layer"]
-        #     embed_sizes = offload.shared_state["embed_sizes"] 
-        #     current_step = offload.shared_state["step_no"] 
-        #     max_steps = offload.shared_state["max_steps"]  
-
-
-        #     nb_latents =  embed_sizes[0] * embed_sizes[1]* embed_sizes[2]
-
-        #     window = 0
-        #     start_window_step = int(max_steps * 0.3)
-        #     start_layer = 10
-        #     end_layer = 30
-        #     if (layer < start_layer or layer > end_layer )  or current_step <start_window_step: 
-        #         window = 0
-        #     else:
-        #         # coef =  min((max_steps - current_step)/(max_steps-start_window_step),1)*max(min((25 - layer)/(25-start_layer),1),0) * 0.7 + 0.3
-        #         coef = 0.3
-        #         print(f"step: {current_step}, layer: {layer}, coef:{coef:0.1f}]")
-        #         window =  math.ceil(coef* nb_latents)
-
-        #     invert_spaces = (layer + current_step) % 2 == 0 and window > 0
-        #     invert_spaces = False
-        #     def flip(q):
-        #         q = q.reshape(*embed_sizes, *q.shape[-2:])
-        #         q = q.transpose(0,2)
-        #         q = q.contiguous()
-        #         q = q.transpose(0,2)
-        #         q = q.reshape( -1, *q.shape[-2:])
-        #         return q
-
-        #     def flop(q):
-        #         q = q.reshape(embed_sizes[2], embed_sizes[1], embed_sizes[0] , *q.shape[-2:])
-        #         q = q.transpose(0,2)
-        #         q = q.contiguous()
-        #         q = q.transpose(0,2)
-        #         q = q.reshape( -1, *q.shape[-2:])
-        #         return q
-
-
-        #     if invert_spaces:
-
-        #         q = flip(q)
-        #         k = flip(k)
-        #         v = flip(v)            
-        #     qkv_list = [q,k,v]
-        #     del q,k,v
-
-
-
-        #     x = sageattn_window_wrapper(qkv_list, lq, window= window) #.unsqueeze(0)
-
-        #     if invert_spaces:
-        #         x = flop(x)
-        #     x = x.unsqueeze(0)
-
-        
+        qkv_list = [q,k,v]
+        del q,k,v
+        x = sageattn2_wrapper(qkv_list, lq, recycle_q = recycle_q)
     elif attn=="sdpa":
         qkv_list = [q, k, v]
         del q ,k ,v
         x = sdpa_wrapper( qkv_list, lq, attention_mask = attention_mask) #.unsqueeze(0)
     elif attn=="flash" and version == 3:
-        # Note: dropout_p, window_size are not supported in FA3 now.
         x = flash_attn_interface.flash_attn_varlen_func(
             q=q,
             k=k,

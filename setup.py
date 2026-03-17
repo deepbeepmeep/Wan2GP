@@ -311,9 +311,22 @@ def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k,
     print(f"\n[1/3] Preparing Environment: {env_name} ({env_type})...")
 
     if env_type != "none":
-        create_cmd = template["create"].format(ver=target_py_ver, dir=env_path, sys_py=sys.executable)
-        if create_cmd:
-            run_cmd(create_cmd)
+        if env_type == "venv":
+            py_ver_short = ".".join(target_py_ver.split(".")[:2])
+
+            if IS_WIN:
+                create_cmd = f"py -{py_ver_short} -m venv \"{env_path}\""
+            else:
+                create_cmd = f"python{py_ver_short} -m venv \"{env_path}\""
+        else:
+            create_cmd = template["create"].format(
+                ver=target_py_ver,
+                dir=env_path,
+                sys_py=sys.executable
+            )
+
+    if create_cmd:
+        run_cmd(create_cmd)
 
     pip = template["install"].format(dir=env_path)
     

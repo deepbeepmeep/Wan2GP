@@ -1,4 +1,5 @@
 {
+	"client_id": "",
 	"prompt": "",
 	"alt_prompt": "",
 	"image_mode":0,
@@ -99,6 +100,5 @@
 	"audio_guide": null,
 	"audio_guide2": null,
 	"custom_guide": null,
-	"audio_source": null,
-	"matanyone_version": "v1"
+	"audio_source": null
 }

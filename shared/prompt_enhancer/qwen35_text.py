@@ -932,6 +932,7 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_default_min_p = QWEN35_PROMPT_DEFAULT_MIN_P_GGUF if backend == enhancer_quantization_GGUF else None
     model._prompt_enhancer_enable_presence_penalty = backend != enhancer_quantization_GGUF and QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY
     model._prompt_enhancer_presence_penalty = QWEN35_PROMPT_PRESENCE_PENALTY
+    model._prompt_enhancer_min_model_len_hint = 8000
     model._prompt_enhancer_min_new_tokens = (
         QWEN35_PROMPT_MIN_NEW_TOKENS
         if backend == enhancer_quantization_GGUF and _env_enabled(QWEN35_GGUF_LLAMACPP_ENV, default=True)

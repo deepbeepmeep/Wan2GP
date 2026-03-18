@@ -6,18 +6,20 @@ import traceback
 from threading import Thread, Lock
 
 
-class Listener:
-    task_queue = []
-    lock = Lock()
-    thread = None
-    
-    @classmethod
-    def _process_tasks(cls):
+class _TaskRunner:
+    def __init__(self, runner_name="default"):
+        self.runner_name = str(runner_name or "default")
+        self.thread_name = self.runner_name.replace("_", " ").strip().title() or "Default"
+        self.task_queue = []
+        self.lock = Lock()
+        self.thread = None
+
+    def _process_tasks(self):
         while True:
             task = None
-            with cls.lock:
-                if cls.task_queue:
-                    task = cls.task_queue.pop(0)
+            with self.lock:
+                if self.task_queue:
+                    task = self.task_queue.pop(0)
                     
             if task is None:
                 time.sleep(0.001)
@@ -31,19 +33,43 @@ class Listener:
                 print('\n'.join(tb))
 
                 # print(f"Error in listener thread: {e}")
-    
-    @classmethod
-    def add_task(cls, func, *args, **kwargs):
-        with cls.lock:
-            cls.task_queue.append((func, args, kwargs))
 
-        if cls.thread is None:
-            cls.thread = Thread(target=cls._process_tasks, daemon=True)
-            cls.thread.start()
+    def add_task(self, func, *args, **kwargs):
+        with self.lock:
+            self.task_queue.append((func, args, kwargs))
+            thread = None if self.thread is not None else Thread(target=self._process_tasks, daemon=True, name=self.thread_name)
+            if thread is not None:
+                self.thread = thread
+
+        if thread is not None:
+            thread.start()
+
+
+class Listener:
+    runners = {}
+    lock = Lock()
+
+    @classmethod
+    def _get_runner(cls, runner_name="default"):
+        runner_name = str(runner_name or "default")
+        with cls.lock:
+            runner = cls.runners.get(runner_name, None)
+            if runner is None:
+                runner = _TaskRunner(runner_name)
+                cls.runners[runner_name] = runner
+            return runner
+
+    @classmethod
+    def add_task(cls, func, *args, runner_name="default", **kwargs):
+        cls._get_runner(runner_name).add_task(func, *args, **kwargs)
 
 
 def async_run(func, *args, **kwargs):
     Listener.add_task(func, *args, **kwargs)
+
+
+def async_run_in(runner_name, func, *args, **kwargs):
+    Listener.add_task(func, *args, runner_name=runner_name, **kwargs)
 
 
 class FIFOQueue:

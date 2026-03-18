@@ -26,6 +26,7 @@ RESET_BUTTON_ID = "assistant_chat_reset_button"
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jfif", ".pjpeg"}
 _MARKDOWN_EXTENSIONS = ["extra", "nl2br", "sane_lists", "fenced_code", "tables"]
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)")
+SERVER_INSTANCE_ID = uuid.uuid4().hex
 
 
 def _shell_markup() -> str:
@@ -1014,6 +1015,7 @@ WAC.restoreScrollAnchor = function (anchor, forceBottom) {
 };
 
 WAC.lastOptimisticSubmit = WAC.lastOptimisticSubmit || { id: '', text: '', ts: 0 };
+WAC.serverInstanceId = WAC.serverInstanceId || '';
 
 WAC.pushOptimisticUserMessage = function (text) {
   const content = String(text || '').trim();
@@ -1077,6 +1079,13 @@ WAC.consumePayload = function (payload) {
   if ((payloadId && payloadId === WAC.lastPayloadId) || (!payloadId && payloadText === WAC.lastPayloadText)) return [];
   WAC.lastPayloadId = payloadId;
   WAC.lastPayloadText = payloadText;
+  const instanceId = envelope && typeof envelope.instance_id === 'string' ? envelope.instance_id : '';
+  if (instanceId) {
+    if (WAC.serverInstanceId && WAC.serverInstanceId !== instanceId) {
+      WAC.reset();
+    }
+    WAC.serverInstanceId = instanceId;
+  }
   const event = envelope && envelope.event ? envelope.event : envelope;
   if (!event || typeof event !== 'object') return [];
   if (event.type === 'reset') {
@@ -1329,6 +1338,7 @@ WAC.sync = function (messages, status) {
 
 WAC.reset = function () {
   WAC.state = { order: [], messages: {}, status: null };
+  WAC.lastOptimisticSubmit = { id: '', text: '', ts: 0 };
   WAC.ensureShell();
   const transcript = WAC.transcript();
   if (transcript) transcript.innerHTML = '';
@@ -1582,7 +1592,7 @@ def _time_label() -> str:
 
 
 def _event_payload(event: dict[str, Any]) -> str:
-    return json.dumps({"event_id": uuid.uuid4().hex, "event": event}, ensure_ascii=False)
+    return json.dumps({"event_id": uuid.uuid4().hex, "instance_id": SERVER_INSTANCE_ID, "event": event}, ensure_ascii=False)
 
 
 def _markdown_to_html(text: str) -> str:
@@ -1710,7 +1720,6 @@ def _render_tool_blocks(tool_records: list[dict[str, Any]]) -> str:
         result_text = html.escape(json.dumps(result_payload, ensure_ascii=False, indent=2, sort_keys=True)) if result_payload is not None else ""
         blocks.append(
             "<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--tool' "
-            + ("open" if status == "running" else "")
             + ">"
             f"<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Tool</span>{html.escape(label)}</span><span class='wangp-assistant-chat__tool-status wangp-assistant-chat__tool-status--{status_class}'>{html.escape(status_label)}</span></summary>"
             "<div class='wangp-assistant-chat__disclosure-body'>"

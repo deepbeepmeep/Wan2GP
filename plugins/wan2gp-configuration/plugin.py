@@ -4,6 +4,10 @@ import json
 from shared.agents_engine import get_or_create_assistant_session
 from shared.gradio import assistant_chat
 from shared.assistant_config import (
+    DEEPY_DEFAULT_IMAGE_GENERATOR,
+    DEEPY_DEFAULT_IMAGE_GENERATOR_KEY,
+    DEEPY_DEFAULT_VIDEO_GENERATOR,
+    DEEPY_DEFAULT_VIDEO_GENERATOR_KEY,
     DEEPY_ENABLED_KEY,
     DEEPY_VRAM_ALWAYS,
     DEEPY_VRAM_MODE_KEY,
@@ -11,9 +15,13 @@ from shared.assistant_config import (
     DEEPY_VRAM_UNLOAD_ON_REQUEST,
     deepy_available,
     deepy_requirement_message,
+    normalize_deepy_default_image_generator,
+    normalize_deepy_default_video_generator,
     normalize_deepy_enabled,
     normalize_deepy_vram_mode,
+    set_deepy_runtime_config,
 )
+from shared.deepy import tool_settings as deepy_tool_settings
 
 class ConfigTabPlugin(WAN2GPPlugin):
     def __init__(self):
@@ -78,6 +86,19 @@ class ConfigTabPlugin(WAN2GPPlugin):
         )
 
     def create_config_ui(self):
+        set_deepy_runtime_config(self.server_config, self.server_config_filename)
+        image_generator_variants = deepy_tool_settings.list_tool_variants("gen_image")
+        video_generator_variants = deepy_tool_settings.list_tool_variants("gen_video")
+        selected_image_generator = deepy_tool_settings.resolve_tool_variant(
+            "gen_image",
+            self.server_config.get(DEEPY_DEFAULT_IMAGE_GENERATOR_KEY, DEEPY_DEFAULT_IMAGE_GENERATOR),
+            default_variant=DEEPY_DEFAULT_IMAGE_GENERATOR,
+        )
+        selected_video_generator = deepy_tool_settings.resolve_tool_variant(
+            "gen_video",
+            self.server_config.get(DEEPY_DEFAULT_VIDEO_GENERATOR_KEY, DEEPY_DEFAULT_VIDEO_GENERATOR),
+            default_variant=DEEPY_DEFAULT_VIDEO_GENERATOR,
+        )
         with gr.Column():
             with gr.Tabs():
                 with gr.Tab("General"):
@@ -298,6 +319,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_UNLOAD)),
                         label="VRAM Loading Mode",
                     )
+                    self.deepy_default_image_generator_choice = gr.Dropdown(
+                        choices=image_generator_variants,
+                        value=selected_image_generator,
+                        label="Default Image Generator",
+                    )
+                    self.deepy_default_video_generator_choice = gr.Dropdown(
+                        choices=video_generator_variants,
+                        value=selected_video_generator,
+                        label="Default Video Generator",
+                    )
                     self.deepy_requirement_md = gr.Markdown(value=deepy_requirement_message(self.server_config))
 
                 with gr.Tab("Outputs"):
@@ -371,7 +402,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_mode_choice,
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
             self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.rife_version_choice, self.matanyone_version_choice,
-            self.deepy_enabled_choice, self.deepy_vram_mode_choice,
+            self.deepy_enabled_choice, self.deepy_vram_mode_choice, self.deepy_default_image_generator_choice, self.deepy_default_video_generator_choice,
             self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
@@ -427,7 +458,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             enhancer_enabled_choice, enhancer_quantization_choice, enhancer_mode_choice,
             prompt_enhancer_temperature_choice, prompt_enhancer_top_p_choice, prompt_enhancer_randomize_seed_choice,
             mmaudio_mode_choice, mmaudio_persistence_choice, rife_version_choice, matanyone_version_choice,
-            deepy_enabled_choice, deepy_vram_mode_choice,
+            deepy_enabled_choice, deepy_vram_mode_choice, deepy_default_image_generator_choice, deepy_default_video_generator_choice,
             video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice,
@@ -466,6 +497,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "prompt_enhancer_randomize_seed": prompt_enhancer_randomize_seed_choice,
             DEEPY_ENABLED_KEY: normalize_deepy_enabled(deepy_enabled_choice),
             DEEPY_VRAM_MODE_KEY: normalize_deepy_vram_mode(deepy_vram_mode_choice),
+            DEEPY_DEFAULT_IMAGE_GENERATOR_KEY: deepy_tool_settings.resolve_tool_variant(
+                "gen_image",
+                normalize_deepy_default_image_generator(deepy_default_image_generator_choice),
+                default_variant=DEEPY_DEFAULT_IMAGE_GENERATOR,
+            ),
+            DEEPY_DEFAULT_VIDEO_GENERATOR_KEY: deepy_tool_settings.resolve_tool_variant(
+                "gen_video",
+                normalize_deepy_default_video_generator(deepy_default_video_generator_choice),
+                default_variant=DEEPY_DEFAULT_VIDEO_GENERATOR,
+            ),
             "preload_in_VRAM": preload_in_VRAM_choice, "depth_anything_v2_variant": depth_anything_v2_variant_choice,
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
@@ -507,7 +548,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled", "rife_version", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization",
-            DEEPY_ENABLED_KEY, DEEPY_VRAM_MODE_KEY,
+            DEEPY_ENABLED_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_DEFAULT_IMAGE_GENERATOR_KEY, DEEPY_DEFAULT_VIDEO_GENERATOR_KEY,
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
@@ -535,6 +576,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("transformer_quantization", new_server_config["transformer_quantization"])
         self.set_global("transformer_dtype_policy", new_server_config["transformer_dtype_policy"])
         self.set_global("transformer_types", new_server_config["transformer_types"])
+        set_deepy_runtime_config(new_server_config, self.server_config_filename)
         if needs_reload: self.set_global("reload_needed", True)
         self.server_config.update(new_server_config)
 

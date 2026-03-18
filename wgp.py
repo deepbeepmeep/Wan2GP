@@ -56,6 +56,10 @@ from shared.utils.process_locks import (
     unregister_GPU_resident,
 )
 from shared.assistant_config import (
+    DEEPY_DEFAULT_IMAGE_GENERATOR,
+    DEEPY_DEFAULT_IMAGE_GENERATOR_KEY,
+    DEEPY_DEFAULT_VIDEO_GENERATOR,
+    DEEPY_DEFAULT_VIDEO_GENERATOR_KEY,
     DEEPY_ENABLED_KEY,
     DEEPY_VRAM_ALWAYS,
     DEEPY_VRAM_MODE_KEY,
@@ -63,8 +67,11 @@ from shared.assistant_config import (
     DEEPY_VRAM_UNLOAD_ON_REQUEST,
     deepy_available,
     deepy_requirement_met,
+    normalize_deepy_default_image_generator,
+    normalize_deepy_default_video_generator,
     normalize_deepy_enabled,
     normalize_deepy_vram_mode,
+    set_deepy_runtime_config,
 )
 from shared.loras_migration import migrate_loras_layout
 from huggingface_hub import hf_hub_download, snapshot_download
@@ -1377,6 +1384,19 @@ def clean_settings(model_type, params):
     for meta_key in ['type', 'base_model_type', 'settings_version']:
         params.pop(meta_key, None)
 
+
+def _attachment_has_path_values(value):
+    if isinstance(value, str):
+        return len(value.strip()) > 0
+    if isinstance(value, (list, tuple)):
+        return any(isinstance(item, str) and len(item.strip()) > 0 for item in value)
+    return False
+
+
+def _task_has_path_attachments(params):
+    return any(_attachment_has_path_values(params.get(key)) for key in ATTACHMENT_KEYS)
+
+
 def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="[load]"):
 
     for key in ATTACHMENT_KEYS:
@@ -1415,7 +1435,8 @@ def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="
             # Load images as PIL, keep videos/audio as paths
             if has_image_file_extension(final_path):
                 try:
-                    loaded_items.append(Image.open(final_path))
+                    with Image.open(final_path) as loaded_image:
+                        loaded_items.append(loaded_image.copy())
                     print(f"{log_prefix} Loaded image: {final_path}")
                 except Exception as e:
                     print(f"{log_prefix} Error loading image {final_path}: {e}")
@@ -1425,8 +1446,7 @@ def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="
 
         # Update params, preserving list/single structure
         if loaded_items:
-            # has_pil_item = any(isinstance(item, Image.Image) for item in loaded_items)
-            if is_originally_list: # or has_pil_item
+            if key == "image_refs" or is_originally_list:
                 params[key] = loaded_items
             else:
                 params[key] = loaded_items[0]
@@ -1482,9 +1502,12 @@ def _process_task_params(params, state, log_prefix="[load]"):
 def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_prefix="[load]"):
     global task_id
     newly_loaded_queue = []
+    first_error = None
 
     for task_index, task_data in enumerate(manifest):
         if task_data is None or not isinstance(task_data, dict):
+            if first_error is None:
+                first_error = f"Invalid task data at index {task_index}"
             print(f"{log_prefix} Skipping invalid task data at index {task_index}")
             continue
 
@@ -1494,12 +1517,13 @@ def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_p
         # Process params (merge defaults, fix settings)
         model_type, error = _process_task_params(params, state, log_prefix)
         if error:
+            if first_error is None:
+                first_error = error
             print(f"{log_prefix} {error} for task #{task_id_loaded}. Skipping.")
             continue
 
-        if media_base_path is not None:
-            # Load media attachments
-            _load_task_attachments(params, media_base_path, cache_dir, log_prefix)
+        if media_base_path is not None or _task_has_path_attachments(params):
+            _load_task_attachments(params, media_base_path or os.path.dirname(os.path.abspath(__file__)), cache_dir, log_prefix)
 
         # Build runtime task
         runtime_task = _build_runtime_task(task_id_loaded, params, task_data.get('plugin_data', {}))
@@ -1512,7 +1536,7 @@ def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_p
         if current_max_id >= task_id:
             task_id = current_max_id + 1
 
-    return newly_loaded_queue, None
+    return newly_loaded_queue, None if len(newly_loaded_queue) > 0 else first_error or "No valid task could be unpacked."
 
 
 def _parse_queue_zip(filename, state):
@@ -1610,12 +1634,16 @@ def load_queue_action(filepath, state, evt:gr.EventData):
     filename = file_path = None
     newly_loaded_queue = gen.pop("inline_queue", None)
     if newly_loaded_queue is not None:
-        first = next(iter(newly_loaded_queue))                    
+        inline_queue_source = newly_loaded_queue
         if isinstance(newly_loaded_queue, dict): 
             newly_loaded_queue = [ {"id": 0, "params": newly_loaded_queue}]
+        else:
+            inline_queue_source = newly_loaded_queue
         newly_loaded_queue, error = _parse_task_manifest(newly_loaded_queue, state, None, None, "[unpack queue]")
         if error:
-            record_queue_error(state, newly_loaded_queue, error)
+            if isinstance(inline_queue_source, dict):
+                inline_queue_source = [{"id": 0, "params": inline_queue_source}]
+            record_queue_error(state, inline_queue_source or [], error)
             gr.Warning(f"Failed to unpack innline queue: {error[:200]}")
             return update_queue_data(original_queue)
 
@@ -2448,6 +2476,8 @@ if not Path(config_load_filename).is_file():
         "rife_version": "v4",
         DEEPY_ENABLED_KEY: 0,
         DEEPY_VRAM_MODE_KEY: DEEPY_VRAM_UNLOAD,
+        DEEPY_DEFAULT_IMAGE_GENERATOR_KEY: DEEPY_DEFAULT_IMAGE_GENERATOR,
+        DEEPY_DEFAULT_VIDEO_GENERATOR_KEY: DEEPY_DEFAULT_VIDEO_GENERATOR,
         "prompt_enhancer_quantization": "quanto_int8",
         "prompt_enhancer_temperature": 0.6,
         "prompt_enhancer_top_p": 0.9,
@@ -3099,6 +3129,9 @@ if "prompt_enhancer_top_p" not in server_config: server_config["prompt_enhancer_
 if "prompt_enhancer_randomize_seed" not in server_config: server_config["prompt_enhancer_randomize_seed"] = True
 server_config[DEEPY_ENABLED_KEY] = normalize_deepy_enabled(server_config.get(DEEPY_ENABLED_KEY, 0))
 server_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_UNLOAD))
+server_config[DEEPY_DEFAULT_IMAGE_GENERATOR_KEY] = normalize_deepy_default_image_generator(server_config.get(DEEPY_DEFAULT_IMAGE_GENERATOR_KEY, DEEPY_DEFAULT_IMAGE_GENERATOR))
+server_config[DEEPY_DEFAULT_VIDEO_GENERATOR_KEY] = normalize_deepy_default_video_generator(server_config.get(DEEPY_DEFAULT_VIDEO_GENERATOR_KEY, DEEPY_DEFAULT_VIDEO_GENERATOR))
+set_deepy_runtime_config(server_config, server_config_filename)
 if "enable_int8_kernels" not in server_config: server_config["enable_int8_kernels"] = 0
 
 preload_model_policy = server_config.get("preload_model_policy", []) 
@@ -5629,6 +5662,12 @@ def exec_prompt_enhancer_engine(state, model_def, prompt_enhancer_modes, origina
         def assistant_ensure_loaded():
             return ensure_prompt_enhancer_loaded(override_profile=override_profile)
 
+        def assistant_ensure_vision_loaded():
+            ensure_prompt_enhancer_loaded(override_profile=override_profile)
+            if prompt_enhancer_image_caption_model is None or prompt_enhancer_image_caption_processor is None:
+                raise gr.Error("Prompt enhancer vision runtime is not available.")
+            return prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor
+
         def assistant_unload_weights():
             if enhancer_offloadobj is not None:
                 enhancer_offloadobj.unload_all()
@@ -5656,6 +5695,7 @@ def exec_prompt_enhancer_engine(state, model_def, prompt_enhancer_modes, origina
                 ensure_loaded=assistant_ensure_loaded,
                 unload_runtime=unload_prompt_enhancer_runtime,
                 unload_weights=assistant_unload_weights,
+                ensure_vision_loaded=assistant_ensure_vision_loaded,
             ),
             tools,
             send_cmd,
@@ -8379,6 +8419,10 @@ def init_generate(state, input_file_list, last_choice, audio_files_paths, audio_
     set_file_choice(gen, audio_file_list, audio_file_selected, audio_files=True)
 
     return get_unique_id(), ""
+
+
+def init_generate_for_assistant(state, input_file_list, last_choice, audio_files_paths, audio_file_selected):
+    init_generate(state, input_file_list, last_choice, audio_files_paths, audio_file_selected)
 
 def video_to_control_video(state, input_file_list, choice):
     file_list, file_settings_list = get_file_list(state, input_file_list)
@@ -11383,8 +11427,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 )
             
             set_save_form_event(save_form_trigger.change)
-            ask_btn.click(fn=ask_ai, inputs=[state, ask_request], outputs=[assistant_chat_event, load_queue_trigger, ask_request])
-            ask_request.submit(fn=ask_ai, inputs=[state, ask_request], outputs=[assistant_chat_event, load_queue_trigger, ask_request], show_progress="hidden")
+            ask_btn.click(fn=init_generate_for_assistant, inputs=[state, output, last_choice, audio_files_paths, audio_file_selected], outputs=None, show_progress="hidden").then(fn=ask_ai, inputs=[state, ask_request], outputs=[assistant_chat_event, load_queue_trigger, ask_request])
+            ask_request.submit(fn=init_generate_for_assistant, inputs=[state, output, last_choice, audio_files_paths, audio_file_selected], outputs=None, show_progress="hidden").then(fn=ask_ai, inputs=[state, ask_request], outputs=[assistant_chat_event, load_queue_trigger, ask_request], show_progress="hidden")
             ask_reset_btn.click(fn=reset_ai, inputs=[state], outputs=[assistant_chat_event, load_queue_trigger, ask_request], show_progress="hidden")
             gr.on(triggers=[video_info_eject_video_btn.click, video_info_eject_video2_btn.click, video_info_eject_video3_btn.click, video_info_eject_deleted_video_btn.click,  video_info_eject_image_btn.click], fn=eject_video_from_gallery, inputs =[state, output, last_choice], outputs = [output, video_info, video_buttons_row] )
             video_info_to_control_video_btn.click(fn=video_to_control_video, inputs =[state, output, last_choice], outputs = [video_guide] )            

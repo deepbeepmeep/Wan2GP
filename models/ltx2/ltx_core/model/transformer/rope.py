@@ -228,19 +228,30 @@ def _slice_axis_buffers(
     return x0_tmp, x1_tmp, x0_orig_tmp
 
 
+def _is_compiling_graph() -> bool:
+    return torch.compiler.is_compiling()
+
+
 def _broadcast_group_freqs(freqs: torch.Tensor, axis: int, grid_ndim: int) -> torch.Tensor:
-    shape = [1] * (grid_ndim + 2)
-    stride = [0] * (grid_ndim + 2)
-    shape[axis] = freqs.shape[0]
-    stride[axis] = freqs.stride(0)
-    shape[-2] = freqs.shape[1]
-    stride[-2] = freqs.stride(1)
-    shape[-1] = freqs.shape[2]
-    stride[-1] = freqs.stride(2)
-    return torch.as_strided(freqs, size=tuple(shape), stride=tuple(stride), storage_offset=freqs.storage_offset())
+    for dim in range(grid_ndim):
+        if dim != axis:
+            freqs = freqs.unsqueeze(dim)
+    return freqs
 
 
 def _split_group_freq_view(axis_freqs: torch.Tensor, group: RopeSplitGroup, half_dim: int) -> torch.Tensor:
+    last_index = group.freq_start + (group.head_count - 1) * half_dim + group.freq_width - 1
+    if last_index >= axis_freqs.shape[1]:
+        raise RuntimeError(
+            "LTX2 split RoPE group exceeded cached frequency bounds: "
+            f"last_index={last_index}, width={axis_freqs.shape[1]}, group={group}"
+        )
+    if _is_compiling_graph():
+        # Keep the compile-safe path limited to the small frequency tensor.
+        head_offsets = torch.arange(group.head_count, device=axis_freqs.device, dtype=torch.long) * half_dim
+        freq_offsets = torch.arange(group.freq_width, device=axis_freqs.device, dtype=torch.long)
+        freq_indices = group.freq_start + head_offsets.unsqueeze(1) + freq_offsets.unsqueeze(0)
+        return axis_freqs.index_select(1, freq_indices.reshape(-1)).view(axis_freqs.shape[0], group.head_count, group.freq_width)
     return torch.as_strided(
         axis_freqs,
         size=(axis_freqs.shape[0], group.head_count, group.freq_width),

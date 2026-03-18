@@ -25,18 +25,26 @@ class _TaskRunner:
                 time.sleep(0.001)
                 continue
                 
-            func, args, kwargs = task
+            func, args, kwargs, thread_name = task
+            current_name = None
+            thread = self.thread
             try:
+                if thread_name and thread is not None:
+                    current_name = thread.name
+                    thread.name = thread_name
                 func(*args, **kwargs)
             except Exception as e:
                 tb = traceback.format_exc().split('\n')[:-1] 
                 print('\n'.join(tb))
 
                 # print(f"Error in listener thread: {e}")
+            finally:
+                if current_name is not None and thread is not None:
+                    thread.name = current_name
 
-    def add_task(self, func, *args, **kwargs):
+    def add_task(self, func, *args, thread_name=None, **kwargs):
         with self.lock:
-            self.task_queue.append((func, args, kwargs))
+            self.task_queue.append((func, args, kwargs, thread_name))
             thread = None if self.thread is not None else Thread(target=self._process_tasks, daemon=True, name=self.thread_name)
             if thread is not None:
                 self.thread = thread
@@ -60,16 +68,16 @@ class Listener:
             return runner
 
     @classmethod
-    def add_task(cls, func, *args, runner_name="default", **kwargs):
-        cls._get_runner(runner_name).add_task(func, *args, **kwargs)
+    def add_task(cls, func, *args, runner_name="default", thread_name=None, **kwargs):
+        cls._get_runner(runner_name).add_task(func, *args, thread_name=thread_name, **kwargs)
 
 
-def async_run(func, *args, **kwargs):
-    Listener.add_task(func, *args, **kwargs)
+def async_run(func, *args, thread_name=None, **kwargs):
+    Listener.add_task(func, *args, thread_name=thread_name, **kwargs)
 
 
-def async_run_in(runner_name, func, *args, **kwargs):
-    Listener.add_task(func, *args, runner_name=runner_name, **kwargs)
+def async_run_in(runner_name, func, *args, thread_name=None, **kwargs):
+    Listener.add_task(func, *args, runner_name=runner_name, thread_name=thread_name, **kwargs)
 
 
 class FIFOQueue:

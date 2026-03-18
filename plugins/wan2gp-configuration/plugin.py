@@ -1,6 +1,19 @@
 import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 import json
+from shared.agents_engine import get_or_create_assistant_session
+from shared.gradio import assistant_chat
+from shared.assistant_config import (
+    DEEPY_ENABLED_KEY,
+    DEEPY_VRAM_ALWAYS,
+    DEEPY_VRAM_MODE_KEY,
+    DEEPY_VRAM_UNLOAD,
+    DEEPY_VRAM_UNLOAD_ON_REQUEST,
+    deepy_available,
+    deepy_requirement_message,
+    normalize_deepy_enabled,
+    normalize_deepy_vram_mode,
+)
 
 class ConfigTabPlugin(WAN2GPPlugin):
     def __init__(self):
@@ -44,6 +57,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("generate_dropdown_model_list")
         self.request_global("get_unique_id")
         self.request_global("reset_prompt_enhancer")
+        self.request_global("release_deepy_vram")
         self.request_global("apply_int8_kernel_setting")
 
         self.request_component("model_description")
@@ -54,6 +68,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_component("refresh_form_trigger")      
         self.request_component("state")
         self.request_component("resolution")
+        self.request_component("assistant_launcher_host")
+        self.request_component("assistant_panel")
 
         self.add_tab(
             tab_id="configuration",
@@ -178,7 +194,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         label="VAE Tiling (higher presets use less VRAM and may increase artifacts like banding)",
                     )
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
-                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled if Triton availabe", 1)], value=self.server_config.get("enable_int8_kernels", 1), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
+                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled if Triton available", 1)], value=self.server_config.get("enable_int8_kernels", 1), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
                     self.video_profile_choice = gr.Dropdown(
                         choices=self.memory_profile_choices,
                         value=self.default_profile_video,
@@ -267,6 +283,23 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         interactive=not self.args.lock_config
                     )
 
+                with gr.Tab("Assistant"):
+                    self.deepy_enabled_choice = gr.Dropdown(
+                        choices=[("Off", 0), ("On", 1)],
+                        value=normalize_deepy_enabled(self.server_config.get(DEEPY_ENABLED_KEY, 0)),
+                        label="Enable Deepy",
+                    )
+                    self.deepy_vram_mode_choice = gr.Dropdown(
+                        choices=[
+                            ("Unload from VRAM as soon as possible", DEEPY_VRAM_UNLOAD),
+                            ("Always loaded in VRAM", DEEPY_VRAM_ALWAYS),
+                            ("Unload from VRAM if VRAM requested by another WanGP component", DEEPY_VRAM_UNLOAD_ON_REQUEST),
+                        ],
+                        value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_UNLOAD)),
+                        label="VRAM Loading Mode",
+                    )
+                    self.deepy_requirement_md = gr.Markdown(value=deepy_requirement_message(self.server_config))
+
                 with gr.Tab("Outputs"):
                     self.video_output_codec_choice = gr.Dropdown(choices=[("x265 CRF 28 (Balanced)", 'libx265_28'), ("x264 Level 8 (Balanced)", 'libx264_8'), ("x265 CRF 8 (High Quality)", 'libx265_8'), ("x264 Level 10 (High Quality)", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], value=self.server_config.get("video_output_codec", "libx264_8"), label="Video Codec")
                     self.image_output_codec_choice = gr.Dropdown(choices=[("JPEG Q85", 'jpeg_85'), ("WEBP Q85", 'webp_85'), ("JPEG Q95", 'jpeg_95'), ("WEBP Q95", 'webp_95'), ("WEBP Lossless", 'webp_lossless'), ("PNG Lossless", 'png')], value=self.server_config.get("image_output_codec", "jpeg_95"), label="Image Codec")
@@ -317,6 +350,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
             with gr.Row():
                 self.apply_btn = gr.Button("Save Settings")
 
+        def update_deepy_requirement(enhancer_enabled_choice):
+            runtime_config = dict(self.server_config)
+            runtime_config["enhancer_enabled"] = enhancer_enabled_choice
+            return deepy_requirement_message(runtime_config)
+
+        self.enhancer_enabled_choice.input(fn=update_deepy_requirement, inputs=[self.enhancer_enabled_choice], outputs=[self.deepy_requirement_md], show_progress="hidden")
+
         inputs = [
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
@@ -331,6 +371,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_mode_choice,
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
             self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.rife_version_choice, self.matanyone_version_choice,
+            self.deepy_enabled_choice, self.deepy_vram_mode_choice,
             self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
@@ -348,7 +389,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 self.model_family,
                 self.model_base_type_choice,
                 self.model_choice,
-                self.refresh_form_trigger
+                self.refresh_form_trigger,
+                self.assistant_launcher_host,
+                self.assistant_panel
             ]
         )
 
@@ -367,7 +410,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         # return "<div style='color:red; text-align:center;'>Unable to change config when a generation is in progress.</div>", *[gr.update()]*5
 
         if self.args.lock_config:
-            return "<div style='color:red; text-align:center;'>Configuration is locked by command-line arguments.</div>", *[gr.update()]*5
+            return "<div style='color:red; text-align:center;'>Configuration is locked by command-line arguments.</div>", *[gr.update()]*8
 
         old_server_config = self.server_config.copy()
 
@@ -384,6 +427,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             enhancer_enabled_choice, enhancer_quantization_choice, enhancer_mode_choice,
             prompt_enhancer_temperature_choice, prompt_enhancer_top_p_choice, prompt_enhancer_randomize_seed_choice,
             mmaudio_mode_choice, mmaudio_persistence_choice, rife_version_choice, matanyone_version_choice,
+            deepy_enabled_choice, deepy_vram_mode_choice,
             video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice,
@@ -420,6 +464,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "prompt_enhancer_temperature": prompt_enhancer_temperature_choice,
             "prompt_enhancer_top_p": prompt_enhancer_top_p_choice,
             "prompt_enhancer_randomize_seed": prompt_enhancer_randomize_seed_choice,
+            DEEPY_ENABLED_KEY: normalize_deepy_enabled(deepy_enabled_choice),
+            DEEPY_VRAM_MODE_KEY: normalize_deepy_vram_mode(deepy_vram_mode_choice),
             "preload_in_VRAM": preload_in_VRAM_choice, "depth_anything_v2_variant": depth_anything_v2_variant_choice,
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
@@ -461,6 +507,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled", "rife_version", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization",
+            DEEPY_ENABLED_KEY, DEEPY_VRAM_MODE_KEY,
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
@@ -488,10 +535,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("transformer_quantization", new_server_config["transformer_quantization"])
         self.set_global("transformer_dtype_policy", new_server_config["transformer_dtype_policy"])
         self.set_global("transformer_types", new_server_config["transformer_types"])
-        self.set_global("reload_needed", needs_reload)
+        if needs_reload: self.set_global("reload_needed", True)
         self.server_config.update(new_server_config)
 
-        if "enhancer_enabled" in changes or "enhancer_mode" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes:
+        if "enhancer_enabled" in changes or "enhancer_mode" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes or DEEPY_ENABLED_KEY in changes or DEEPY_VRAM_MODE_KEY in changes:
+            get_or_create_assistant_session(state).force_loading_status_once = True
+            self.release_deepy_vram(state, clear_session_state=False)
             self.reset_prompt_enhancer()
         if "enable_int8_kernels" in changes:
             self.apply_int8_kernel_setting(new_server_config["enable_int8_kernels"], True)
@@ -506,12 +555,18 @@ class ConfigTabPlugin(WAN2GPPlugin):
         else:
             msg = "<div style='color:green; text-align:center;'>The new configuration has been succesfully applied.</div>"
 
-        return (msg
-            ,
+        deepy_visible = deepy_available(new_server_config)
+        launcher_update = gr.update(value=assistant_chat.render_launcher_html() if deepy_visible else "", visible=deepy_visible)
+        panel_update = gr.update(visible=deepy_visible)
+
+        return (
+            msg,
             description_update,
             header_update,
             model_family_update,
             model_base_type_update,
             model_choice_update,
-            self.get_unique_id()
+            self.get_unique_id(),
+            launcher_update,
+            panel_update,
         )

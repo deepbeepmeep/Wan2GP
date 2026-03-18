@@ -46,7 +46,26 @@ from shared.utils.video_metadata import save_video_metadata
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
-from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, any_GPU_process_running, gen_lock
+from shared.utils.process_locks import (
+    acquire_GPU_ressources,
+    acquire_main_GPU_ressources,
+    any_GPU_process_running,
+    gen_lock,
+    register_GPU_resident,
+    release_GPU_ressources,
+    unregister_GPU_resident,
+)
+from shared.assistant_config import (
+    DEEPY_ENABLED_KEY,
+    DEEPY_VRAM_ALWAYS,
+    DEEPY_VRAM_MODE_KEY,
+    DEEPY_VRAM_UNLOAD,
+    DEEPY_VRAM_UNLOAD_ON_REQUEST,
+    deepy_available,
+    deepy_requirement_met,
+    normalize_deepy_enabled,
+    normalize_deepy_vram_mode,
+)
 from shared.loras_migration import migrate_loras_layout
 from huggingface_hub import hf_hub_download, snapshot_download
 from shared.utils import files_locator as fl 
@@ -107,7 +126,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "10.9873"
+WanGP_version = "10.9875"
 settings_version = 2.55
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -190,6 +209,7 @@ def release_model():
         offloadobj.release()
         offloadobj = None
     offload.flush_torch_caches()
+    gc.collect()
     reload_needed = True
 def get_unique_id():
     global unique_id  
@@ -2380,18 +2400,17 @@ if config_dir and not Path(server_config_filename).is_file():
     if Path(server_config_fallback).is_file():
         config_load_filename = server_config_fallback
 
-src_move = [ "models_clip_open-clip-xlm-roberta-large-vit-huge-14-bf16.safetensors", "models_t5_umt5-xxl-enc-bf16.safetensors", "models_t5_umt5-xxl-enc-quanto_int8.safetensors" ]
-tgt_move = [ "xlm-roberta-large", "umt5-xxl", "umt5-xxl"]
-for src,tgt in zip(src_move,tgt_move):
-    src = fl.locate_file(src, error_if_none= False)
-    tgt = fl.get_download_location(tgt)
+src_move = [ "ltx-2-19b-dev-fp4_diffusion_model.safetensors" ]
+tgt_move = [ "ltx-2-19b-dev-nvfp4_diffusion_model.safetensors" ]
+for src_name, tgt_name in zip(src_move, tgt_move):
+    src = fl.locate_file(src_name, error_if_none=False)
     if src is not None:
+        tgt = os.path.join(os.path.dirname(src), tgt_name)
         try:
             if os.path.isfile(tgt):
-                shutil.remove(src)
+                os.remove(src)
             else:
-                os.makedirs(os.path.dirname(tgt))
-                shutil.move(src, tgt)
+                os.replace(src, tgt)
         except:
             pass
     
@@ -2427,6 +2446,8 @@ if not Path(config_load_filename).is_file():
         "mmaudio_mode": 0,
         "mmaudio_persistence": 1,
         "rife_version": "v4",
+        DEEPY_ENABLED_KEY: 0,
+        DEEPY_VRAM_MODE_KEY: DEEPY_VRAM_UNLOAD,
         "prompt_enhancer_quantization": "quanto_int8",
         "prompt_enhancer_temperature": 0.6,
         "prompt_enhancer_top_p": 0.9,
@@ -3076,6 +3097,8 @@ if "save_queue_if_crash" not in server_config: server_config["save_queue_if_cras
 if "prompt_enhancer_temperature" not in server_config: server_config["prompt_enhancer_temperature"] = 0.6
 if "prompt_enhancer_top_p" not in server_config: server_config["prompt_enhancer_top_p"] = 0.9
 if "prompt_enhancer_randomize_seed" not in server_config: server_config["prompt_enhancer_randomize_seed"] = True
+server_config[DEEPY_ENABLED_KEY] = normalize_deepy_enabled(server_config.get(DEEPY_ENABLED_KEY, 0))
+server_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_UNLOAD))
 if "enable_int8_kernels" not in server_config: server_config["enable_int8_kernels"] = 0
 
 preload_model_policy = server_config.get("preload_model_policy", []) 
@@ -3593,6 +3616,7 @@ def init_pipe(pipe, kwargs, profile):
     return mmgp_profile
 
 reset_prompt_enhancer_requested = False
+DEEPY_GPU_PROCESS_ID = "deepy"
 def unload_prompt_enhancer_runtime():
     from shared.prompt_enhancer import unload_prompt_enhancer_models
 
@@ -3658,6 +3682,25 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None):
     if prompt_enhancer_llm_model is None or prompt_enhancer_llm_tokenizer is None:
         raise gr.Error("Prompt enhancer text runtime is not available.")
     return prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
+
+
+def deepy_is_available():
+    return deepy_available(server_config)
+
+
+def get_deepy_vram_mode():
+    return normalize_deepy_vram_mode(server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_UNLOAD))
+
+
+def release_deepy_vram(state, clear_session_state = False):
+    session = get_or_create_assistant_session(state)
+    release_callback = session.release_vram_callback
+    session.release_vram_callback = None
+    unregister_GPU_resident(state, DEEPY_GPU_PROCESS_ID)
+    if callable(release_callback):
+        release_callback()
+    if clear_session_state:
+        clear_assistant_session(session)
 
 
 
@@ -5561,6 +5604,10 @@ def exec_prompt_enhancer_engine(state, model_def, prompt_enhancer_modes, origina
 
     assistant_mode = "A" in prompt_enhancer_modes
     if assistant_mode:
+        if not normalize_deepy_enabled(server_config.get(DEEPY_ENABLED_KEY, 0)):
+            raise gr.Error("Deepy is disabled in Configuration > Assistant.")
+        if not deepy_requirement_met(server_config):
+            raise gr.Error("Deepy requires Prompt Enhancer to be set to Qwen3.5VL Abliterated 4B or 9B.")
         if send_cmd is None or tools is None:
             raise gr.Error("Assistant mode requires a command stream and a tool registry.")
         import secrets
@@ -5589,8 +5636,23 @@ def exec_prompt_enhancer_engine(state, model_def, prompt_enhancer_modes, origina
         assistant = AssistantEngine(
             session,
             AssistantRuntimeHooks(
-                acquire_gpu=lambda: acquire_GPU_ressources(state, "prompt_enhancer", "Prompt Enhancer"),
-                release_gpu=lambda: release_GPU_ressources(state, "prompt_enhancer"),
+                acquire_gpu=lambda: acquire_GPU_ressources(state, DEEPY_GPU_PROCESS_ID, "Deepy"),
+                release_gpu=lambda keep_resident = False, release_vram_callback = None, force_release_on_acquire = True: release_GPU_ressources(
+                    state,
+                    DEEPY_GPU_PROCESS_ID,
+                    keep_resident=keep_resident,
+                    process_name="Deepy",
+                    release_vram_callback=release_vram_callback,
+                    force_release_on_acquire=force_release_on_acquire,
+                ),
+                register_gpu_resident=lambda release_vram_callback = None, force_release_on_acquire = True: register_GPU_resident(
+                    state,
+                    DEEPY_GPU_PROCESS_ID,
+                    "Deepy",
+                    release_vram_callback=release_vram_callback,
+                    force_release_on_acquire=force_release_on_acquire,
+                ),
+                clear_gpu_resident=lambda: unregister_GPU_resident(state, DEEPY_GPU_PROCESS_ID),
                 ensure_loaded=assistant_ensure_loaded,
                 unload_runtime=unload_prompt_enhancer_runtime,
                 unload_weights=assistant_unload_weights,
@@ -5598,6 +5660,7 @@ def exec_prompt_enhancer_engine(state, model_def, prompt_enhancer_modes, origina
             tools,
             send_cmd,
             thinking_enabled="K" in prompt_enhancer_modes,
+            vram_mode=get_deepy_vram_mode(),
         )
         assistant.run_turn(
             original_prompts[0] if len(original_prompts) > 0 else "",
@@ -7288,13 +7351,7 @@ def process_tasks(state):
         audio_choice = gen.get("audio_selected",-1)
         gen["audio_file_list"], gen["audio_file_settings_list"], gen["audio_selected"] = truncate_list(audio_file_list, audio_file_settings_list, audio_choice)         
 
-    while True:
-        with gen_lock:
-            process_status = gen.get("process_status", None)
-            if process_status is None or process_status == "process:main":
-                gen["process_status"] = "process:main"
-                break
-        time.sleep(0.1)
+    acquire_main_GPU_ressources(state)
 
     def release_gen():
         with gen_lock:
@@ -9726,6 +9783,12 @@ def ask_ai(state, ask_request):
     if len(ask_request) == 0:
         yield gr.update(), gr.update(), gr.update()
         return
+    if not deepy_is_available():
+        requirement_text = "Deepy requires Prompt Enhancer to be set to Qwen3.5VL Abliterated 4B or 9B." if not deepy_requirement_met(server_config) else "Deepy is disabled in Configuration > Assistant."
+        error_turn_id = assistant_chat.create_assistant_turn(session)
+        error_event = assistant_chat.set_assistant_content(session, error_turn_id, requirement_text)
+        yield error_event if error_event is not None else gr.update(), gr.update(), gr.update(value="")
+        return
     gen = get_gen_info(state)
     com_stream = AsyncStream()
     send_cmd = com_stream.output_queue.push
@@ -9792,7 +9855,7 @@ def reset_ai(state):
             clear_queue_action(state)
         assistant_chat.reset_session_chat(session)
     else:
-        clear_assistant_session(session)
+        release_deepy_vram(state, clear_session_state=True)
     session.chat_html = ""
     return assistant_chat.build_reset_event(), gr.update(), gr.update(value="")
 
@@ -11016,9 +11079,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         lora_url = gr.Text(label ="Lora URL", placeholder= "Enter Lora URL", scale=4, show_label=False, elem_classes="compact_text" )
                         download_lora_btn = gr.Button("Download Lora", scale=1, min_width=10)
 
-                with gr.Column(elem_id=assistant_chat.DOCK_ID):
-                    gr.HTML(assistant_chat.render_launcher_html(), elem_id=assistant_chat.LAUNCHER_HOST_ID)
-                    with gr.Column(elem_id=assistant_chat.PANEL_ID):
+                with gr.Column(elem_id=assistant_chat.DOCK_ID) as assistant_dock:
+                    assistant_launcher_host = gr.HTML(assistant_chat.render_launcher_html() if deepy_is_available() else "", elem_id=assistant_chat.LAUNCHER_HOST_ID, visible=deepy_is_available())
+                    with gr.Column(elem_id=assistant_chat.PANEL_ID, visible=deepy_is_available()) as assistant_panel:
                         ask_htmloutput = gr.HTML(assistant_chat.render_shell_html(), elem_id=assistant_chat.CHAT_BLOCK_ID)
                         assistant_chat_event = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.CHAT_EVENT_ID)
                         with gr.Row(elem_id=assistant_chat.CONTROLS_ID):

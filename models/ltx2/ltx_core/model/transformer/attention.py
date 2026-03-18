@@ -3,6 +3,7 @@ from typing import Protocol
 
 import torch
 
+from ...utils import rms_norm
 from shared.attention import pay_attention
 from .rope import LTXRopeType, apply_rotary_emb_inplace
 
@@ -142,34 +143,20 @@ class AttentionFunction(Enum):
 
 
 class DBMRMSNorm(torch.nn.Module):
-
     def __init__(self, dim, eps=1e-5):
         super().__init__()
         self.dim = dim
         self.eps = eps
         self.weight = torch.nn.Parameter(torch.ones(dim))
 
-    def forward(self, x, in_place= True):
+    def forward(self, x, in_place=True):
         r"""
         Args:
             x(Tensor): Shape [B, L, C]
         """
-        y = x.float()
-        y.pow_(2)
-        y = y.mean(dim=-1, keepdim=True)
-        y += self.eps
-        y.rsqrt_()
-        if in_place:
-            x *=  y
-        else:
-            x = x * y
-        x *= self.weight
-        return x
-        # return self._norm(x).type_as(x) * self.weight
+        return rms_norm(x, weight=self.weight, eps=self.eps, in_place=in_place)
 
-    def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-    
+
 class Attention(torch.nn.Module):
     def __init__(
         self,
@@ -253,7 +240,7 @@ class Attention(torch.nn.Module):
             attention_mask=mask,
             force_attention=force_attention,
             version=attention_version,
-            cross_attn=cross_attn
+            recycle_q= True,
         )
         if self.to_gate_logits is not None:
             gate_logits = self.to_gate_logits(gate_input)

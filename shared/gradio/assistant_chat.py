@@ -72,12 +72,20 @@ def get_css() -> str:
     top: 50%;
     left: 0;
     z-index: 1500;
-    display: flex;
-    align-items: center;
-    gap: var(--dock-gap);
-    width: min(calc(var(--dock-panel-width) + var(--dock-launcher-width) + var(--dock-gap)), calc(100vw - 12px));
+    width: var(--dock-launcher-width);
     transform: translateY(-50%);
     pointer-events: none;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+}
+
+#assistant_chat_dock:not(:has(#assistant_chat_toggle)) {
+    display: none !important;
+}
+
+#assistant_chat_dock > * {
+    flex: 0 0 auto !important;
 }
 
 #assistant_chat_launcher_host,
@@ -86,6 +94,12 @@ def get_css() -> str:
 }
 
 #assistant_chat_launcher_host {
+    flex: 0 0 var(--dock-launcher-width) !important;
+    position: relative;
+    width: var(--dock-launcher-width) !important;
+    min-width: var(--dock-launcher-width) !important;
+    max-width: var(--dock-launcher-width) !important;
+    min-height: 188px !important;
     margin: 0 !important;
     padding: 0 !important;
     border: 0 !important;
@@ -121,11 +135,12 @@ def get_css() -> str:
         linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(230, 245, 251, 0.98) 100%);
     box-shadow: 0 18px 34px rgba(8, 33, 49, 0.16);
     cursor: pointer;
+    transform: translateX(-4px);
     transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
 }
 
 #assistant_chat_toggle:hover {
-    transform: translateX(3px);
+    transform: translateX(0);
     box-shadow: 0 22px 38px rgba(8, 33, 49, 0.2);
 }
 
@@ -152,6 +167,10 @@ def get_css() -> str:
 }
 
 #assistant_chat_panel {
+    position: absolute !important;
+    top: 50%;
+    left: calc(var(--dock-launcher-width) + var(--dock-gap));
+    flex: 0 0 auto !important;
     width: min(var(--dock-panel-width), calc(100vw - 92px));
     padding: 14px;
     border: 1px solid rgba(16, 78, 109, 0.16);
@@ -160,16 +179,21 @@ def get_css() -> str:
     box-shadow: 0 30px 60px rgba(8, 34, 50, 0.2);
     opacity: 0;
     visibility: hidden;
-    transform: translateX(-30px) scale(0.98);
-    transform-origin: left center;
+    transform: translateY(-50%) translateX(-30px) scale(0.98);
+    transform-origin: left center !important;
     transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s step-end;
     pointer-events: none;
 }
 
+#assistant_chat_dock:not(.is-open) #assistant_chat_panel {
+    display: none;
+}
+
 #assistant_chat_dock.is-open #assistant_chat_panel {
+    display: block;
     opacity: 1;
     visibility: visible;
-    transform: translateX(0) scale(1);
+    transform: translateY(-50%) translateX(0) scale(1);
     transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s step-start;
     pointer-events: auto;
 }
@@ -839,7 +863,7 @@ def get_css() -> str:
     #assistant_chat_dock {
         top: auto;
         bottom: 18px;
-        width: calc(100vw - 12px);
+        width: 36px;
         transform: none;
     }
 
@@ -852,8 +876,12 @@ def get_css() -> str:
     }
 
     #assistant_chat_panel {
+        top: auto;
+        bottom: 0;
+        left: calc(36px + var(--dock-gap));
         width: min(360px, calc(100vw - 72px));
         padding: 12px;
+        transform: translateX(-20px) scale(0.98);
     }
 
     .wangp-assistant-chat {
@@ -910,6 +938,10 @@ def get_css() -> str:
         order: 2;
         flex: 1 1 calc(50% - 5px) !important;
         width: auto;
+    }
+
+    #assistant_chat_dock.is-open #assistant_chat_panel {
+        transform: translateX(0) scale(1);
     }
 }
 """
@@ -1100,7 +1132,15 @@ WAC.replaceState = function (messages, status) {
   WAC.state = nextState;
 };
 
+WAC.syncDockVisibility = function () {
+  document.querySelectorAll('#assistant_chat_dock').forEach((dock) => {
+    const hasLauncher = !!dock.querySelector('#assistant_chat_toggle');
+    dock.style.display = hasLauncher ? 'flex' : 'none';
+  });
+};
+
 WAC.syncDockState = function () {
+  WAC.syncDockVisibility();
   const dock = WAC.dock();
   const launcher = WAC.launcher();
   if (dock) dock.classList.toggle('is-open', !!WAC.dockOpen);
@@ -1170,6 +1210,7 @@ WAC.ensureShell = function () {
   `;
   host.dataset.wangpAssistantChatMounted = 'true';
   WAC.hydrate();
+  WAC.syncDockVisibility();
   WAC.syncDockState();
   WAC.syncDockLayout();
   return true;
@@ -1667,7 +1708,6 @@ def _render_tool_blocks(tool_records: list[dict[str, Any]]) -> str:
         arguments_text = html.escape(json.dumps(tool_record.get("arguments", {}), ensure_ascii=False, indent=2, sort_keys=True))
         result_payload = tool_record.get("result", {})
         result_text = html.escape(json.dumps(result_payload, ensure_ascii=False, indent=2, sort_keys=True)) if result_payload is not None else ""
-        attachment_html = _render_attachments([tool_record["attachment"]]) if tool_record.get("attachment") else ""
         blocks.append(
             "<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--tool' "
             + ("open" if status == "running" else "")
@@ -1678,7 +1718,6 @@ def _render_tool_blocks(tool_records: list[dict[str, Any]]) -> str:
             f"<div><div class='wangp-assistant-chat__tool-section-title'>{html.escape(label)} Arguments</div><pre class='wangp-assistant-chat__pre'>{arguments_text}</pre></div>"
             f"<div><div class='wangp-assistant-chat__tool-section-title'>Result</div><pre class='wangp-assistant-chat__pre'>{result_text or html.escape('Pending...')}</pre></div>"
             "</div>"
-            f"{attachment_html}"
             "</div>"
             "</details>"
         )

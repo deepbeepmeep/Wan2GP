@@ -118,7 +118,7 @@ def _probe_gguf_cuda_runtime(force=False):
         _GGUF_CUDA_KERNELS_ENABLED_CACHE = False
         _GGUF_CUDA_MODULE = None
         _GGUF_CUDA_LOAD_ERROR = exc
-        _gguf_log_once("gguf_cuda_probe_failed", f"[GGUF][llama.cpp CUDA] kernels unavailable, using fallback: {exc}")
+        _gguf_log_once("gguf_cuda_probe_failed", f"[GGUF][llama.cpp CUDA] kernels unavailable, using fallback")
         return False
     _GGUF_CUDA_KERNELS_ENABLED_CACHE = True
     _GGUF_CUDA_MODULE = gguf_cuda_module

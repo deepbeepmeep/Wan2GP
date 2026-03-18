@@ -166,6 +166,8 @@ class TimestepCompressionPlan:
 class LatentStateRuntimeCache:
     timestep_plan: TimestepCompressionPlan | None = None
     rope_caches: dict[tuple, object] = field(default_factory=dict)
+    base_timestep: torch.Tensor | None = None
+    prompt_base_timestep: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)

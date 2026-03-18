@@ -213,6 +213,7 @@ def _nvfp4_note_load_backend():
 
 
 def _check_nvfp4_kernel_support(device, backend):
+    # return False
     if device.type != "cuda":
         return False
     if backend == _NVFP4_BACKEND_COMFY:
@@ -581,6 +582,12 @@ def _dequantize_nvfp4_weight(
     out = byte_lut[idx].reshape(m, k_bytes * 2)
 
     scale = _deswizzle_nvfp4_scale(scale, out.shape[1], block_size=block_size, dtype=dtype)
+    if scale.shape[0] < out.shape[0]:
+        raise RuntimeError(
+            f"NVFP4 scale row mismatch: expected at least {out.shape[0]} rows, got {scale.shape[0]}"
+        )
+    if scale.shape[0] != out.shape[0]:
+        scale = scale[:out.shape[0]]
     out = out.view(out.shape[0], scale.shape[1], block_size)
     out.mul_(scale.unsqueeze(-1))
     out = out.view(out.shape[0], -1)

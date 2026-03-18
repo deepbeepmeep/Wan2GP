@@ -448,23 +448,52 @@ def _infer_ic_lora_downscale_factor(loras_selected) -> int | None:
 def _collect_video_chunks(
     video: Iterator[torch.Tensor] | torch.Tensor,
     interrupt_check: Callable[[], bool] | None = None,
+    expected_frames: int | None = None,
+    expected_height: int | None = None,
+    expected_width: int | None = None,
 ) -> torch.Tensor | None:
+    iterator = None
     if video is None:
         return None
-    if torch.is_tensor(video):
-        chunks = [video]
-    else:
-        chunks = []
-        for chunk in video:
-            if interrupt_check is not None and interrupt_check():
+    try:
+        if torch.is_tensor(video):
+            frames = video
+            if expected_height is not None or expected_width is not None:
+                frames = frames[:, :expected_height, :expected_width]
+            return frames.permute(3, 0, 1, 2)
+        else:
+            iterator = iter(video)
+            video_tensor = None
+            write_pos = 0
+            for chunk in iterator:
+                if interrupt_check is not None and interrupt_check():
+                    return None
+                if chunk is None:
+                    continue
+                chunk = chunk if torch.is_tensor(chunk) else torch.tensor(chunk)
+                if expected_height is not None or expected_width is not None:
+                    chunk = chunk[:, :expected_height, :expected_width]
+                if video_tensor is None:
+                    channels = int(chunk.shape[-1])
+                    frame_capacity = int(expected_frames) if expected_frames is not None and expected_frames > 0 else int(chunk.shape[0])
+                    video_tensor = torch.empty(
+                        (channels, frame_capacity, chunk.shape[1], chunk.shape[2]),
+                        dtype=chunk.dtype,
+                        device=chunk.device,
+                    )
+                frame_count = min(int(chunk.shape[0]), int(video_tensor.shape[1] - write_pos))
+                if frame_count <= 0:
+                    break
+                video_tensor[:, write_pos : write_pos + frame_count].copy_(chunk[:frame_count].permute(3, 0, 1, 2))
+                write_pos += frame_count
+            if video_tensor is None:
                 return None
-            if chunk is None:
-                continue
-            chunks.append(chunk if torch.is_tensor(chunk) else torch.tensor(chunk))
-    if not chunks:
-        return None
-    frames = torch.cat(chunks, dim=0)
-    return frames.permute(3, 0, 1, 2)
+            return video_tensor[:, :write_pos]
+    finally:
+        if iterator is not None:
+            close = getattr(iterator, "close", None)
+            if close is not None:
+                close()
     # frames = frames.to(dtype=torch.float32).div_(127.5).sub_(1.0)
     # return frames.permute(3, 0, 1, 2).contiguous()
 
@@ -594,7 +623,7 @@ class LTX2:
         video_config_vae["spatial_padding_mode"] = "reflect"
         video_config_vae["encoder_spatial_padding_mode"] = "reflect"
         video_config_vae["decoder_spatial_padding_mode"] = "reflect"
-        print("[LTX2 VAE Config] forcing encoder/decoder spatial_padding_mode=reflect")
+        # print("[LTX2 VAE Config] forcing encoder/decoder spatial_padding_mode=reflect")
         with init_empty_weights():
             video_encoder = VideoEncoderConfigurator.from_config(video_config)
             video_decoder = VideoDecoderConfigurator.from_config(video_config)
@@ -1163,7 +1192,13 @@ class LTX2:
 
         if self._interrupt:
             return None
-        video_tensor = _collect_video_chunks(video, interrupt_check=interrupt_check)
+        video_tensor = _collect_video_chunks(
+            video,
+            interrupt_check=interrupt_check,
+            expected_frames=int(frame_num),
+            expected_height=int(height),
+            expected_width=int(width),
+        )
         if video_tensor is None:
             return None
 

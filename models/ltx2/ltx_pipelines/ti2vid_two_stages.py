@@ -12,7 +12,7 @@ from ..ltx_core.loader import LoraPathStrengthAndSDOps
 from ..ltx_core.model.audio_vae import decode_audio as vae_decode_audio
 from ..ltx_core.model.upsampler import upsample_video
 from ..ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
-from ..ltx_core.model.video_vae import decode_video as vae_decode_video
+from ..ltx_core.model.video_vae import decode_video_to_tensor as vae_decode_video_to_tensor
 from ..ltx_core.text_encoders.gemma import encode_text, postprocess_text_embeddings, resolve_text_connectors
 from ..ltx_core.tools import VideoLatentTools
 from ..ltx_core.types import LatentState, VideoPixelShape
@@ -511,7 +511,15 @@ class TI2VidTwoStagesPipeline:
         latent_slice = None
         if return_latent_slice is not None:
             latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
-        decoded_video = vae_decode_video(video_state.latent, self._get_stage_model(2, "video_decoder"), tiling_config)
+        decoded_video = vae_decode_video_to_tensor(
+            video_state.latent,
+            self._get_stage_model(2, "video_decoder"),
+            tiling_config,
+            expected_frames=int(stage_2_output_shape.frames),
+            expected_height=int(stage_2_output_shape.height),
+            expected_width=int(stage_2_output_shape.width),
+            interrupt_check=interrupt_check,
+        )
         decoded_audio = vae_decode_audio(
             audio_state.latent, self._get_stage_model(2, "audio_decoder"), self._get_stage_model(2, "vocoder")
         )

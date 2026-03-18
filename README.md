@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### March 13th 2026: WanGP v10.9873, Prompt Enhancer has just Been Abliterated
+### March 17th 2026: WanGP v10.9875, Prompt Enhancer has just Been Abliterated
 
 - **Qwen3.5 VL Abliterated Prompt Enhancer**: new choice of Prompt Enhancer
    * Based on widely acclaimed *Qwen3.5 model* that has just been released
@@ -52,6 +52,9 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
    * VAE Decoding hopefully should expose less banding
    * *Multiple Frames Injections*: inject at different positions the reference frames of your choice (works for LTX-2.0 too)
    * *Image Strength* can be applied now too *End Frames* & *Injected Frames*
+   * New Spatial Upsampler 1.1, hotfix supposed to improved quality with long video
+   * *More VRAM optimisations*: Oops I dit it again ! not that is was needed since WanGP is by far the LTX2 implementation that needs the least VRAM. But now we can in theory (output wont look nice due to LTX2 limitations) generate 15s at full 4K with 24GB of VRAM. So it means that with lower config you should be able to generate longer videos at 720p/1080p. As a bonus you get a 8% speedup.
+   * *NVFP4 Dev checkpoint*: if you have a RTX 50xx, help yourself 
 
 - **WanGP API**: rejoice developers (or agents) among you ! WanGP offers now an internal API that allows you to use WanGP as a backend for your apps. It is subject to compliance to the terms & conditions of WanGP license and more specifically to inform the users of your app that WanGP is working behind the scene.
 
@@ -63,7 +66,9 @@ Also note as people preferred mataynone v1 over v2 I have added an option to sel
 
 *update 10.9871*: Improved Qwen3.5 GGUF Prompt Enhancer Output Quality & added Think mode\
 *update 10.9872*: Added LTX 2.0/2.3 frames injection\
-*update 10.9873*: Fixed low fidelity LTX2 injected frames + added Image Strength slider for end & injected frames
+*update 10.9873*: Fixed low fidelity LTX2 injected frames + added Image Strength slider for end & injected frames\
+*update 10.9874*: Replaced LTX-2.3 spatial upsampler by hotfix v1.1\
+*update 10.9875*: LTX-2 more VRAM optimisations + NVFP4 checkpoint
 
 ### March 7th 2026: WanGP v10.981, Expecting an Update ? 
 

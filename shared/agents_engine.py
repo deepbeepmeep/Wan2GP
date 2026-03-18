@@ -6,12 +6,19 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from shared.assistant_config import (
+    DEEPY_VRAM_ALWAYS,
+    DEEPY_VRAM_UNLOAD,
+    DEEPY_VRAM_UNLOAD_ON_REQUEST,
+    normalize_deepy_vram_mode,
+)
 from shared.gradio import assistant_chat
 from shared.prompt_enhancer import qwen35_text
 from shared.prompt_enhancer.qwen35_assistant_runtime import (
     Qwen35AssistantRuntime,
     extract_tool_calls,
     render_assistant_messages,
+    render_text_user_turn_suffix,
     strip_inline_tool_call_text,
     strip_tool_blocks,
     strip_trailing_stop_markup,
@@ -68,12 +75,16 @@ class AssistantSessionState:
     control_queue: Any | None = None
     queued_job_count: int = 0
     chat_epoch: int = 0
+    release_vram_callback: Callable[[], None] | None = None
+    force_loading_status_once: bool = False
 
 
 @dataclass(slots=True)
 class AssistantRuntimeHooks:
     acquire_gpu: Callable[[], None]
-    release_gpu: Callable[[], None]
+    release_gpu: Callable[..., None]
+    register_gpu_resident: Callable[[Callable[[], None] | None, bool], None]
+    clear_gpu_resident: Callable[[], None]
     ensure_loaded: Callable[[], tuple[Any, Any]]
     unload_runtime: Callable[[], None]
     unload_weights: Callable[[], None]
@@ -94,6 +105,8 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.runtime_snapshot = None
     session.chat_html = ""
     session.queued_job_count = 0
+    session.release_vram_callback = None
+    session.force_loading_status_once = False
     assistant_chat.reset_session_chat(session)
 
 
@@ -354,13 +367,14 @@ class tools:
 
 
 class AssistantEngine:
-    def __init__(self, session: AssistantSessionState, runtime_hooks: AssistantRuntimeHooks, tool_box: tools, send_cmd, debug_enabled: bool | None = None, thinking_enabled: bool = True):
+    def __init__(self, session: AssistantSessionState, runtime_hooks: AssistantRuntimeHooks, tool_box: tools, send_cmd, debug_enabled: bool | None = None, thinking_enabled: bool = True, vram_mode: str = DEEPY_VRAM_UNLOAD):
         self.session = session
         self.runtime_hooks = runtime_hooks
         self.tool_box = tool_box
         self.send_cmd = send_cmd
         self.debug_enabled = ASSISTANT_DEBUG if debug_enabled is None else bool(debug_enabled)
         self.thinking_enabled = bool(thinking_enabled)
+        self.vram_mode = normalize_deepy_vram_mode(vram_mode)
         self.runtime: Qwen35AssistantRuntime | None = None
         self._gpu_acquired = False
         self._skip_pause_snapshot = False
@@ -402,6 +416,8 @@ class AssistantEngine:
         return thinking_text, answer_text
 
     def _acquire_runtime(self) -> Qwen35AssistantRuntime:
+        self.runtime_hooks.clear_gpu_resident()
+        self.session.release_vram_callback = None
         self.runtime_hooks.acquire_gpu()
         self._gpu_acquired = True
         try:
@@ -414,9 +430,35 @@ class AssistantEngine:
             self.runtime_hooks.release_gpu()
             raise
 
-    def _pause_runtime(self) -> None:
+    def _force_release_vram(self) -> None:
+        self.runtime_hooks.clear_gpu_resident()
+        try:
+            if self.runtime is not None and self.session.runtime_snapshot is None and len(self.session.rendered_token_ids) > 0:
+                self.session.runtime_snapshot = self.runtime.snapshot_context()
+        except Exception as exc:
+            self._log(f"Resident snapshot before VRAM release failed: {exc}")
+        try:
+            self.runtime_hooks.unload_runtime()
+        finally:
+            self.runtime_hooks.unload_weights()
+            self.runtime = None
+            self.session.release_vram_callback = None
+
+    def _pause_runtime(self, pause_reason: str = "idle") -> None:
+        keep_loaded = self.vram_mode in (DEEPY_VRAM_ALWAYS, DEEPY_VRAM_UNLOAD_ON_REQUEST)
+        if pause_reason == "tool" and self.vram_mode != DEEPY_VRAM_ALWAYS:
+            keep_loaded = False
+        allow_force_release = keep_loaded and self.vram_mode == DEEPY_VRAM_UNLOAD_ON_REQUEST and pause_reason != "tool"
+        release_callback = self._force_release_vram if keep_loaded else None
+        if keep_loaded:
+            self.session.release_vram_callback = release_callback
+        else:
+            self.session.release_vram_callback = None
+
         if not self._gpu_acquired:
             if self.session.drop_state_requested:
+                if callable(self.session.release_vram_callback):
+                    self.session.release_vram_callback()
                 clear_assistant_session(self.session)
                 self.session.drop_state_requested = False
             return
@@ -427,15 +469,24 @@ class AssistantEngine:
                 self.session.runtime_snapshot = None
         finally:
             try:
-                self.runtime_hooks.unload_runtime()
+                if not keep_loaded:
+                    self.runtime_hooks.unload_runtime()
             finally:
                 try:
-                    self.runtime_hooks.unload_weights()
+                    if not keep_loaded:
+                        self.runtime_hooks.unload_weights()
+                        self.runtime = None
                 finally:
-                    self.runtime_hooks.release_gpu()
+                    self.runtime_hooks.release_gpu(
+                        keep_resident=allow_force_release,
+                        release_vram_callback=release_callback,
+                        force_release_on_acquire=allow_force_release,
+                    )
                     self._gpu_acquired = False
                     self._skip_pause_snapshot = False
                     if self.session.drop_state_requested:
+                        if keep_loaded and callable(self.session.release_vram_callback):
+                            self.session.release_vram_callback()
                         clear_assistant_session(self.session)
                         self.session.drop_state_requested = False
 
@@ -459,31 +510,61 @@ class AssistantEngine:
         fallback_tokens = self.session.rendered_token_ids
         if len(fallback_tokens) == 0:
             return "empty"
+        try:
+            live_seq = runtime._get_active_sequence()
+        except Exception:
+            live_seq = None
+        if live_seq is not None:
+            live_token_ids = [int(token_id) for token_id in live_seq.token_ids]
+            snapshot_seq = None if self.session.runtime_snapshot is None else self.session.runtime_snapshot.get("sequence", {})
+            snapshot_token_ids = [] if not isinstance(snapshot_seq, dict) else [int(token_id) for token_id in snapshot_seq.get("token_ids", []) or []]
+            if len(snapshot_token_ids) > 0 and snapshot_token_ids == live_token_ids:
+                self._log("Session context reused live runtime.")
+                self.session.runtime_snapshot = None
+                return "reused"
+            if fallback_tokens[: len(live_token_ids)] == live_token_ids:
+                self._log("Session context reused live runtime.")
+                self.session.runtime_snapshot = None
+                return "reused"
         mode = runtime.restore_or_replay(self.session.runtime_snapshot, fallback_tokens)
         self._log(f"Session context {mode}.")
         self.session.runtime_snapshot = None
         return mode
 
-    def _sync_generation_context(self) -> None:
+    def _sync_generation_context(self, pending_user_text: str | None = None) -> None:
         runtime = self._acquire_runtime()
+        if len(self.session.rendered_token_ids) > 0:
+            restore_mode = self._restore_or_replay_session()
+            if pending_user_text is not None and restore_mode in ("reused", "restored"):
+                thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
+                suffix_tokens = render_text_user_turn_suffix(runtime.tokenizer, pending_user_text, thinking_enabled=thinking_enabled)
+                if len(suffix_tokens) > 0:
+                    mode = runtime.append_suffix(suffix_tokens)
+                    self._log(f"Generation context {mode} from live runtime.")
+                    return
         target_tokens = self._render_messages(add_generation_prompt=True)
         if len(self.session.rendered_token_ids) > 0:
-            self._restore_or_replay_session()
             mode = runtime.extend_context(target_tokens)
             self._log(f"Generation context {mode}.")
-        else:
-            runtime.prime_context(target_tokens)
-            self._log("Generation context primed.")
+            return
+        runtime.prime_context(target_tokens)
+        self._log("Generation context primed.")
 
     def _canonicalize_context(self, sync_runtime: bool | str = True) -> str:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for canonicalization.")
         target_tokens = self._render_messages(add_generation_prompt=False)
-        if not sync_runtime:
+        if not sync_runtime or sync_runtime == "record_only":
             self.session.rendered_token_ids = list(target_tokens)
             self.session.runtime_snapshot = None
             self._skip_pause_snapshot = True
             self._log("Canonical context recorded without runtime sync.")
+            return "recorded"
+        if sync_runtime == "record_preserve_live":
+            self.session.rendered_token_ids = list(target_tokens)
+            self.session.runtime_snapshot = None
+            self._skip_pause_snapshot = False
+            self._log("Canonical context recorded while preserving live runtime.")
             return "recorded"
         current_seq = self.runtime._get_active_sequence()
         if sync_runtime == "if_cheap":
@@ -527,7 +608,7 @@ class AssistantEngine:
         tool_id, tool_event = assistant_chat.add_tool_call(self.session, self._ensure_active_turn(), tool_name, arguments, tool_label=tool_label)
         self._emit_chat_event(tool_event)
         self._set_status(f"Using {tool_label}...", kind="tool")
-        self._pause_runtime()
+        self._pause_runtime(pause_reason="tool")
         try:
             result = self.tool_box.call(tool_name, arguments)
         except Exception as exc:
@@ -589,6 +670,7 @@ class AssistantEngine:
         tool_calls_used = 0
         model_passes = 0
         final_user_text = ""
+        pending_user_text = user_text
         try:
             while True:
                 if self.session.interrupt_requested:
@@ -596,12 +678,17 @@ class AssistantEngine:
                 if model_passes >= MAX_MODEL_PASSES_PER_TURN:
                     self._send_chat("Assistant stopped because the model-pass limit was reached.")
                     break
-                show_loading_status = model_passes == 0 and len(self.session.rendered_token_ids) == 0 and self.session.runtime_snapshot is None
+                show_loading_status = model_passes == 0 and (
+                    self.session.force_loading_status_once
+                    or (len(self.session.rendered_token_ids) == 0 and self.session.runtime_snapshot is None)
+                )
                 self._set_status("Loading Deepy..." if show_loading_status else "Thinking...", kind="loading" if show_loading_status else "thinking")
-                self._sync_generation_context()
+                self._sync_generation_context(pending_user_text=pending_user_text)
+                pending_user_text = None
                 if self.session.interrupt_requested:
                     break
                 if show_loading_status:
+                    self.session.force_loading_status_once = False
                     self._set_status("Thinking...", kind="thinking")
                 result = self.runtime.generate_segment(
                     max_new_tokens=max_new_tokens,
@@ -639,13 +726,13 @@ class AssistantEngine:
                     continue
 
                 self._append_assistant_message(raw_text)
-                self._canonicalize_context()
+                self._canonicalize_context(sync_runtime="record_preserve_live")
                 final_user_text = answer_text or qwen35_text._clean_generated_text(raw_text)
                 break
         finally:
             self._hide_status()
             try:
-                self._pause_runtime()
+                self._pause_runtime(pause_reason="idle")
             except Exception as exc:
                 self._log(f"Pause-after-turn failed: {exc}")
         if not self.session.interrupt_requested and len(final_user_text.strip()) > 0:

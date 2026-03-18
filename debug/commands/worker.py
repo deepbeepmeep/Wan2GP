@@ -1,12 +1,18 @@
 """Worker investigation command."""
 
 from debug.client import DebugClient
-from debug.formatters import Formatter
+from debug.formatting.worker_detail_formatter import format_worker
 
 
-def run(client: DebugClient, worker_id: str, options: dict):
+def run(client: DebugClient, worker_id: str | None = None, options: dict | None = None):
     """Handle 'debug.py worker <id>' command."""
+    options = options or {}
+    worker_id = worker_id or options.get("worker_id")
     try:
+        if not worker_id:
+            print("❌ Error investigating worker: missing worker_id")
+            return False
+
         hours = options.get('hours', 24)
         startup = options.get('startup', False)
         check_logging = options.get('check_logging', False)
@@ -35,7 +41,7 @@ def run(client: DebugClient, worker_id: str, options: dict):
                 print(f"\n❌ Cannot check disk space: {result.get('error')}")
                 print("\n💡 Worker may be terminated or SSH unavailable")
             print()
-            return
+            return True
         
         # Check if worker is logging
         if check_logging:
@@ -61,7 +67,7 @@ def run(client: DebugClient, worker_id: str, options: dict):
                 print(f"   2. Check startup logs: debug.py worker {worker_id} --startup")
                 print("   3. Wait if worker is < 10 minutes old (might be installing dependencies)")
             print()
-            return
+            return True
         
         # Get worker info
         info = client.get_worker_info(worker_id, hours=hours, startup=startup)
@@ -105,12 +111,13 @@ def run(client: DebugClient, worker_id: str, options: dict):
                 elif 'still running' in all_messages:
                     print("\n✅ Worker process started successfully")
         else:
-            output = Formatter.format_worker(info, format_type, logs_only)
+            output = format_worker(info, format_type, logs_only)
             print(output)
+        return True
         
     except Exception as e:
         print(f"❌ Error investigating worker: {e}")
         import traceback
         if options.get('debug'):
             print(traceback.format_exc())
-
+        return False

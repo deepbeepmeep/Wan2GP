@@ -1,4 +1,4 @@
-"""Structure video preprocessors (flow, canny, depth, raw, uni3c)."""
+"""Structure video preprocessors (flow, canny, depth, pose, raw, uni3c)."""
 
 import sys
 import numpy as np
@@ -183,6 +183,39 @@ def get_structure_preprocessor(
 
         return process_depth
 
+    elif structure_type == "pose":
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
+        if str(wan_dir) not in sys.path:
+            sys.path.insert(0, str(wan_dir))
+
+        from Wan2GP.preprocessing.dwpose.pose import PoseBodyFaceVideoAnnotator
+
+        det_model_path = wan_dir / "ckpts" / "pose" / "yolox_l.onnx"
+        pose_model_path = wan_dir / "ckpts" / "pose" / "dw-ll_ucoco_384.onnx"
+
+        missing_models = [
+            str(model_path)
+            for model_path in (det_model_path, pose_model_path)
+            if not model_path.exists()
+        ]
+        if missing_models:
+            raise RuntimeError(
+                "Missing DWPose models required for pose preprocessing: "
+                + ", ".join(missing_models)
+            )
+
+        cfg = {
+            "DETECTION_MODEL": str(det_model_path),
+            "POSE_MODEL": str(pose_model_path),
+            "RESIZE_SIZE": 1024,
+        }
+        annotator = PoseBodyFaceVideoAnnotator(cfg)
+
+        def process_pose(frames):
+            return annotator.forward(frames)
+
+        return process_pose
+
     elif structure_type in ("raw", "uni3c"):
         # Raw/uni3c use raw video frames as guidance - no preprocessing needed
         # For uni3c, frames are passed directly to WGP's uni3c encoder
@@ -190,7 +223,10 @@ def get_structure_preprocessor(
         return lambda frames: frames
 
     else:
-        raise ValueError(f"Unsupported structure_type: {structure_type}. Must be 'flow', 'canny', 'depth', 'raw', or 'uni3c'")
+        raise ValueError(
+            f"Unsupported structure_type: {structure_type}. Must be 'flow', 'canny', "
+            "'depth', 'pose', 'raw', or 'uni3c'"
+        )
 
 
 def process_structure_frames(
@@ -207,7 +243,7 @@ def process_structure_frames(
 
     Args:
         frames: List of input frames to preprocess
-        structure_type: Type of preprocessing ("flow", "canny", "depth", "raw", or "uni3c")
+        structure_type: Type of preprocessing ("flow", "canny", "depth", "pose", "raw", or "uni3c")
         motion_strength: Strength parameter for flow
         canny_intensity: Intensity parameter for canny
         depth_contrast: Contrast parameter for depth

@@ -98,10 +98,15 @@ def load_structure_video_frames_with_range(
         generation_logger.debug("[STRUCTURE_VIDEO_RANGE] decord not available, using cv2 fallback")
 
     if use_decord:
-        reader = decord.VideoReader(structure_video_path)
-        video_fps = round(reader.get_avg_fps())
-        total_video_frames = len(reader)
-    else:
+        try:
+            reader = decord.VideoReader(structure_video_path)
+            video_fps = round(reader.get_avg_fps())
+            total_video_frames = len(reader)
+        except (ModuleNotFoundError, RuntimeError, OSError, ValueError) as exc:
+            generation_logger.debug(f"[STRUCTURE_VIDEO_RANGE] decord reader unavailable, falling back to cv2: {exc}")
+            use_decord = False
+
+    if not use_decord:
         cap = cv2.VideoCapture(structure_video_path)
         video_fps = round(cap.get(cv2.CAP_PROP_FPS))
         total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))

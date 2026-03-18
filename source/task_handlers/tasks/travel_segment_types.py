@@ -6,7 +6,14 @@ arrive from the database and may have missing keys.
 """
 from __future__ import annotations
 
-from typing import List, TypedDict
+from typing import Any, List, Mapping, TypedDict
+
+
+SEGMENT_PARAM_PRECEDENCE = (
+    "individual_segment_params",
+    "segment_params",
+    "orchestrator_details",
+)
 
 
 class IndividualSegmentParams(TypedDict, total=False):
@@ -40,3 +47,32 @@ class IndividualSegmentParams(TypedDict, total=False):
 
     # --- LoRA (per-segment override) ---
     segment_loras: List[dict]
+
+
+_LIST_FIELDS = {"input_image_paths_resolved", "segment_loras"}
+_KNOWN_FIELDS = set(IndividualSegmentParams.__annotations__)
+
+
+def coerce_individual_segment_params(
+    payload: Mapping[str, Any] | None,
+    *,
+    context: str,
+    task_id: str,
+    allow_unknown: bool = True,
+) -> dict[str, Any]:
+    if payload is None:
+        return {}
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"{context} (task {task_id}): individual_segment_params must be a mapping")
+
+    normalized = dict(payload)
+    for key in _LIST_FIELDS:
+        if key in normalized and not isinstance(normalized[key], list):
+            raise ValueError(f"{context} (task {task_id}): {key} must be a list")
+
+    if not allow_unknown:
+        unknown = sorted(set(normalized) - _KNOWN_FIELDS)
+        if unknown:
+            raise ValueError(f"{context} (task {task_id}): unknown keys {unknown}")
+
+    return normalized

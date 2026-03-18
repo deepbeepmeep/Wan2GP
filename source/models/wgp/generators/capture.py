@@ -44,7 +44,7 @@ class LoggingTailBuffer(TailBuffer):
 
         # Check if debug mode is enabled
         try:
-            from source.core.log.core import is_debug_enabled
+            from source.core.log.api import is_debug_enabled
             self._debug_mode = is_debug_enabled()
         except (ImportError, AttributeError):
             pass

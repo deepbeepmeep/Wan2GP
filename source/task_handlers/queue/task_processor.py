@@ -35,6 +35,23 @@ from source.core.log import queue_logger
 _wgp_patch_lock = threading.Lock()
 
 
+def _check_fatal_error_and_raise(*, queue: Any, error_message_str: str, exception: BaseException, task_id: str):
+    try:
+        from source.task_handlers.worker.fatal_error_handler import check_and_handle_fatal_error, FatalWorkerError
+
+        check_and_handle_fatal_error(
+            error_message=error_message_str,
+            exception=exception,
+            logger=queue.logger,
+            worker_id=os.getenv("WORKER_ID"),
+            task_id=task_id,
+        )
+    except FatalWorkerError:
+        raise
+    except (RuntimeError, ValueError, OSError, ImportError) as fatal_check_error:
+        queue.logger.error(f"[TASK_ERROR] Error checking for fatal errors: {fatal_check_error}")
+
+
 # ---------------------------------------------------------------------------
 # Task processing
 # ---------------------------------------------------------------------------
@@ -46,6 +63,25 @@ def process_task_impl(queue: Any, task: Any, worker_name: str):
     This is where we delegate to headless_wgp.py while managing
     model persistence and state.
     """
+    try:
+        pass
+    except Exception as e:
+        _check_fatal_error_and_raise(
+            queue=queue,
+            error_message_str=str(e),
+            exception=e,
+            task_id=getattr(task, "id", "unknown"),
+        )
+        raise
+    except BaseException as e:
+        _check_fatal_error_and_raise(
+            queue=queue,
+            error_message_str=str(e),
+            exception=e,
+            task_id=getattr(task, "id", "unknown"),
+        )
+        raise
+
     # Ensure logs emitted during this generation are attributed to this task.
     # This runs inside the GenerationWorker thread, which is where wgp/headless_wgp runs.
     try:
@@ -74,7 +110,7 @@ def process_task_impl(queue: Any, task: Any, worker_name: str):
         # This ensures users aren't charged for model loading time
         queue.logger.debug(f"[TASK_PROCESSING] Task {task.id}: Phase 2 - Resetting billing")
         try:
-            from source.db_operations import reset_generation_started_at
+            from source.core.db.task_status import reset_generation_started_at
             reset_generation_started_at(task.id)
             queue.logger.debug(f"[TASK_PROCESSING] Task {task.id}: Phase 2 complete - Billing reset succeeded")
         except (OSError, ValueError, RuntimeError) as e_billing:
@@ -219,22 +255,12 @@ def process_task_impl(queue: Any, task: Any, worker_name: str):
         except (ImportError, AttributeError, OSError):
             pass  # Don't let flush errors mask the original exception
 
-        # Check if this is a fatal error that requires worker termination
-        try:
-            from source.task_handlers.worker.fatal_error_handler import check_and_handle_fatal_error, FatalWorkerError
-            check_and_handle_fatal_error(
-                error_message=error_message_str,
-                exception=e,
-                logger=queue.logger,
-                worker_id=os.getenv("WORKER_ID"),
-                task_id=task.id
-            )
-        except FatalWorkerError:
-            # Re-raise fatal errors to propagate to main worker loop
-            raise
-        except (RuntimeError, ValueError, OSError, ImportError) as fatal_check_error:
-            # If fatal error checking itself fails, log but don't crash
-            queue.logger.error(f"[TASK_ERROR] Error checking for fatal errors: {fatal_check_error}")
+        _check_fatal_error_and_raise(
+            queue=queue,
+            error_message_str=error_message_str,
+            exception=e,
+            task_id=task.id,
+        )
     except BaseException as e:
         # Catch any unexpected exceptions to prevent task from silently dying
         processing_time = time.time() - start_time
@@ -254,6 +280,13 @@ def process_task_impl(queue: Any, task: Any, worker_name: str):
             flush_log_buffer()
         except (ImportError, AttributeError, OSError):
             pass  # Don't let flush errors mask the original exception
+
+        _check_fatal_error_and_raise(
+            queue=queue,
+            error_message_str=error_message_str,
+            exception=e,
+            task_id=task.id,
+        )
 
     finally:
         with queue.queue_lock:

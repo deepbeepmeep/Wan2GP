@@ -66,20 +66,31 @@ def load_structure_video_frames(
     """
     from PIL import Image
 
-    # Use decord directly instead of importing from wgp.py to avoid argparse conflicts
+    # Try decord first, then fall back to cv2 when it is unavailable.
+    use_decord = False
     try:
         import decord
+
         decord.bridge.set_bridge('torch')
+        use_decord = True
     except ImportError:
-        raise ImportError("decord is required for video processing. Install with: pip install decord")
+        generation_logger.debug("[STRUCTURE_VIDEO] decord not available, using cv2 fallback")
+
+    if not use_decord:
+        import cv2
 
     # Load N+1 frames to ensure we get N flows (RAFT produces N-1 flows for N frames)
     frames_to_load = target_frame_count + 1
 
     # Load video
-    reader = decord.VideoReader(structure_video_path)
-    video_fps = round(reader.get_avg_fps())
-    video_frame_count = len(reader)
+    if use_decord:
+        reader = decord.VideoReader(structure_video_path)
+        video_fps = round(reader.get_avg_fps())
+        video_frame_count = len(reader)
+    else:
+        cap = cv2.VideoCapture(structure_video_path)
+        video_fps = round(cap.get(cv2.CAP_PROP_FPS))
+        video_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     generation_logger.debug(f"[STRUCTURE_VIDEO] Loading frames from structure video:")
     generation_logger.debug(f"  Video: {video_frame_count} frames @ {video_fps}fps")
@@ -126,10 +137,20 @@ def load_structure_video_frames(
     if not frame_indices:
         raise ValueError(f"No frames could be extracted from structure video: {structure_video_path}")
 
-    # Extract frames using decord
-    frames = reader.get_batch(frame_indices)  # Returns torch tensors [T, H, W, C]
-
-    generation_logger.debug(f"[STRUCTURE_VIDEO] Loaded {len(frames)} frames")
+    if use_decord:
+        frames = reader.get_batch(frame_indices)  # Returns torch tensors [T, H, W, C]
+        generation_logger.debug(f"[STRUCTURE_VIDEO] Loaded {len(frames)} frames")
+    else:
+        frames = []
+        for idx in frame_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame_bgr = cap.read()
+            if ret:
+                frames.append(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+            elif frames:
+                frames.append(frames[-1].copy())
+        cap.release()
+        generation_logger.debug(f"[STRUCTURE_VIDEO] Loaded {len(frames)} frames via cv2 fallback")
 
     # Process frames to target resolution (WGP pattern from line 3826-3830)
     w, h = target_resolution

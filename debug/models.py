@@ -45,6 +45,20 @@ class WorkerInfo:
 
 
 @dataclass
+class WorkerDiskStatus:
+    """Result of an attempted worker disk-space check."""
+
+    available: bool
+    runpod_id: str | None = None
+    disk_info: str | None = None
+    issues: List[str] | None = None
+    error: str | None = None
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
+
+@dataclass
 class TasksSummary:
     """Summary of multiple tasks."""
     tasks: List[Dict[str, Any]]
@@ -132,7 +146,6 @@ class OrchestratorStatus:
             'recent_cycles': self.recent_cycles,
             'recent_logs': self.recent_logs
         }
-
 
 
 

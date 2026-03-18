@@ -15,11 +15,11 @@ import json
 import uuid
 import argparse
 from datetime import datetime
+
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from dotenv import load_dotenv as _load_dotenv
 except ImportError:
-    pass  # dotenv not required if env vars are already set
+    _load_dotenv = None
 
 # Test task templates - these are real task configs that exercise the LoRA flow
 TEST_TASKS = {
@@ -598,6 +598,7 @@ def create_all_tasks(dry_run: bool = False):
     print(f"\n{'🔍 DRY RUN - ' if dry_run else ''}Creating one task of each type...\n")
 
     created_ids = []
+    failure_count = 0
     for task_type in TEST_TASKS.keys():
         try:
             task_id = create_task(task_type, dry_run=dry_run)
@@ -607,6 +608,7 @@ def create_all_tasks(dry_run: bool = False):
             raise
         except Exception as e:
             print(f"❌ Failed to create {task_type}: {e}\n")
+            failure_count += 1
             # Continue creating remaining tasks rather than aborting
 
     if created_ids and not dry_run:
@@ -615,8 +617,13 @@ def create_all_tasks(dry_run: bool = False):
         for task_type, task_id in created_ids:
             print(f"   {task_type:<25} → {task_id}")
 
+    return created_ids, failure_count
+
 
 def main():
+    if _load_dotenv is not None:
+        _load_dotenv()
+
     parser = argparse.ArgumentParser(description="Create test tasks for worker testing")
     parser.add_argument("task_type", nargs="?", help="Task type to create (travel_orchestrator, qwen_image_style)")
     parser.add_argument("--list", "-l", action="store_true", help="List available task templates")
@@ -627,21 +634,24 @@ def main():
 
     if args.list:
         list_tasks()
-        return
+        return 0
 
     if args.all:
-        create_all_tasks(dry_run=args.dry_run)
-        return
+        result = create_all_tasks(dry_run=args.dry_run)
+        if isinstance(result, tuple) and len(result) == 2:
+            _created_ids, failure_count = result
+            return 1 if failure_count else 0
+        return 0
 
     if not args.task_type:
         parser.print_help()
         print("\n")
         list_tasks()
-        return
+        return 0
 
     create_task(args.task_type, dry_run=args.dry_run)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
-
+    raise SystemExit(main())

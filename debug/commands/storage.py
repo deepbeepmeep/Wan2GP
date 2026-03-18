@@ -8,6 +8,7 @@ from debug.client import DebugClient
 def run(client: DebugClient, options: dict):
     """Handle 'debug.py storage' command - check all storage volumes."""
     load_dotenv()
+    success = True
     
     print("=" * 80)
     print("📦 STORAGE HEALTH CHECK")
@@ -24,7 +25,7 @@ def run(client: DebugClient, options: dict):
         
         if not volumes:
             print("   No network volumes found")
-            return
+            return True
         
         for vol in volumes:
             name = vol.get('name', 'Unknown')
@@ -47,7 +48,7 @@ def run(client: DebugClient, options: dict):
         if not workers.data:
             print("   No active workers to check storage via SSH")
             print("   (Need an active worker to SSH and check actual disk usage)")
-            return
+            return True
         
         # Group workers by storage volume
         workers_by_storage = {}
@@ -60,7 +61,7 @@ def run(client: DebugClient, options: dict):
         
         if not workers_by_storage:
             print("   No workers have storage_volume metadata")
-            return
+            return True
         
         print(f"   Found workers on {len(workers_by_storage)} storage volume(s): {list(workers_by_storage.keys())}\n")
         
@@ -127,7 +128,7 @@ def run(client: DebugClient, options: dict):
             volume_id = runpod_client._get_storage_volume_id(expand_target)
             if not volume_id:
                 print(f"   ❌ Could not find volume ID for '{expand_target}'")
-                return
+                return False
             
             # Get current size
             volumes = get_network_volumes(runpod_client.api_key)
@@ -135,7 +136,7 @@ def run(client: DebugClient, options: dict):
             
             if not volume_info:
                 print(f"   ❌ Could not find volume info for '{expand_target}'")
-                return
+                return False
             
             current_size = volume_info.get('size', 100)
             increment = int(os.getenv('STORAGE_EXPANSION_INCREMENT_GB', '50'))
@@ -147,14 +148,16 @@ def run(client: DebugClient, options: dict):
             if runpod_client._expand_network_volume(volume_id, new_size):
                 print(f"   ✅ Successfully expanded to {new_size} GB!")
             else:
-                print(f"   ❌ Expansion failed!")
+                print(f"   ❌ Expansion failed for '{expand_target}'")
+                success = False
         
     except (ImportError, ValueError, OSError) as e:
         print(f"❌ Error checking storage: {e}")
         import traceback
         if options.get('debug'):
             print(traceback.format_exc())
+        success = False
 
     print()
     print("=" * 80)
-
+    return success

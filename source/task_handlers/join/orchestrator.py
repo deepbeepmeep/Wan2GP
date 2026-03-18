@@ -20,10 +20,12 @@ import subprocess
 from pathlib import Path
 from typing import Tuple, List, Optional
 
-from source import db_operations as db_ops
-from source.utils import download_video_if_url, upload_intermediate_file_to_storage
+from source.core.db.task_polling import get_task_output_location_from_db
+from source.core.params.task_result import TaskResult
 from source.media.video import reverse_video
 from source.core.log import orchestrator_logger
+from source.utils.download_utils import download_video_if_url
+from source.utils.output_paths import upload_intermediate_file_to_storage
 
 from source.task_handlers.join.shared import (
     _check_existing_join_tasks,
@@ -36,7 +38,30 @@ from source.task_handlers.join.vlm_enhancement import (
     _extract_boundary_frames_for_vlm,
     _generate_vlm_prompts_for_joins)
 
-__all__ = ["_get_video_resolution", "_handle_join_clips_orchestrator_task"]
+__all__ = ["_get_video_resolution", "_handle_join_clips_orchestrator_task", "_parse_join_orchestrator_inputs"]
+
+
+def _parse_join_orchestrator_inputs(
+    task_params_from_db: dict,
+    *,
+    orchestrator_task_id_str: str,
+):
+    if "orchestrator_details" not in task_params_from_db:
+        return TaskResult.failed("orchestrator_details missing")
+
+    orchestrator_payload = dict(task_params_from_db["orchestrator_details"])
+    orchestrator_payload.setdefault("orchestrator_task_id_ref", orchestrator_task_id_str)
+    orchestrator_payload.setdefault("clip_list", [])
+    orchestrator_payload.setdefault("loop_first_clip", False)
+    run_id = orchestrator_payload.get("run_id")
+    if not run_id:
+        return TaskResult.failed("run_id is required")
+    return (
+        orchestrator_payload,
+        orchestrator_payload["clip_list"],
+        run_id,
+        bool(orchestrator_payload["loop_first_clip"]),
+    )
 
 def _get_video_resolution(video_path: str | Path) -> Tuple[int, int] | None:
     """
@@ -103,7 +128,7 @@ def _handle_join_clips_orchestrator_task(
 
             built_clip_list = []
             for i, task_id in enumerate(segment_task_ids):
-                output_url = db_ops.get_task_output_location_from_db(task_id)
+                output_url = get_task_output_location_from_db(task_id)
                 if not output_url:
                     return False, f"Segment task {task_id} has no output_location (may not be complete)"
 

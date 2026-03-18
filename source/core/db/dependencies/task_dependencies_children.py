@@ -39,5 +39,9 @@ def cancel_orchestrator_children(
     return cancelled_count
 
 
-__all__ = ["_cfg", "cancel_orchestrator_children"]
+def get_task_current_status(task_id: str):
+    """Compatibility wrapper for task status lookup."""
+    return _task_dependencies.get_task_current_status(task_id)
 
+
+__all__ = ["_cfg", "cancel_orchestrator_children", "get_task_current_status"]

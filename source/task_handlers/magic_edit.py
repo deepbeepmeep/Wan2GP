@@ -12,10 +12,8 @@ from pathlib import Path
 import requests
 from typing import Tuple
 
-try:
-    import replicate
-except ImportError:
-    replicate = None
+_REPLICATE_UNSET = object()
+replicate = _REPLICATE_UNSET
 
 from ..utils import (
     prepare_output_path_with_upload,
@@ -23,8 +21,24 @@ from ..utils import (
     report_orchestrator_failure
 )
 from source.core.log import task_logger
+from source.core.params.task_result import normalize_task_result
 
-def handle_magic_edit_task(
+
+def _load_replicate():
+    """Import Replicate lazily so optional dependency issues do not break module import."""
+    global replicate
+    if replicate is None:
+        return None
+    if replicate is not _REPLICATE_UNSET:
+        return replicate
+    try:
+        import replicate
+    except Exception:
+        return None
+    globals()["replicate"] = replicate
+    return replicate
+
+def _handle_magic_edit_task(
     task_params_from_db: dict,
     main_output_dir_base: Path,
     task_id: str) -> Tuple[bool, str]:
@@ -43,6 +57,7 @@ def handle_magic_edit_task(
     
     try:
         # Check if replicate is available
+        replicate = _load_replicate()
         if replicate is None:
             msg = "Replicate library not installed. Run: pip install replicate"
             task_logger.error(msg, task_id=task_id)
@@ -187,3 +202,18 @@ def handle_magic_edit_task(
         msg = f"Magic edit exception: {e}"
         report_orchestrator_failure(task_params_from_db, msg)
         return False, msg
+
+
+def handle_magic_edit_task(
+    task_params_from_db: dict,
+    main_output_dir_base: Path,
+    task_id: str,
+):
+    """Typed public entrypoint that normalizes the legacy tuple result."""
+    return normalize_task_result(
+        _handle_magic_edit_task(
+            task_params_from_db=task_params_from_db,
+            main_output_dir_base=main_output_dir_base,
+            task_id=task_id,
+        )
+    )

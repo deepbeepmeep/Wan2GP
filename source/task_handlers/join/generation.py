@@ -13,6 +13,7 @@ import json
 import time
 from pathlib import Path
 from typing import Tuple
+import source.media.video.api as video_api
 
 # Import shared utilities
 from ...utils import (
@@ -35,10 +36,6 @@ from ...media.video import (
     get_video_frame_count_ffprobe,
     get_video_fps_ffprobe,
     add_audio_to_video)
-from source.media.video.vace_frame_utils import (
-    create_guide_and_mask_for_generation,
-    prepare_vace_generation_params
-)
 from ... import db_operations as db_ops
 from ...core.log import headless_logger, orchestrator_logger
 
@@ -762,7 +759,7 @@ def handle_join_clips_task(
 
         # Create guide/mask with adjusted gap
         try:
-            created_guide_video, created_mask_video, guide_frame_count = create_guide_and_mask_for_generation(
+            created_guide_video, created_mask_video, guide_frame_count = video_api.create_guide_and_mask_for_generation(
                 context_frames_before=start_context_frames,
                 context_frames_after=end_context_frames,
                 gap_frame_count=gap_for_guide,  # Use quantization-adjusted gap
@@ -814,7 +811,7 @@ def handle_join_clips_task(
             orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Found phase_config: {json.dumps(phase_config, default=str)[:100]}...")
 
         # Use shared helper to prepare standardized VACE parameters
-        generation_params = prepare_vace_generation_params(
+        generation_params = video_api.prepare_vace_generation_params(
             guide_video_path=created_guide_video,
             mask_video_path=created_mask_video,
             total_frames=total_frames,
@@ -856,7 +853,7 @@ def handle_join_clips_task(
 
         try:
             # Import GenerationTask from correct location
-            from headless_model_management import GenerationTask
+            from source.task_handlers.queue.task_queue import GenerationTask
 
             generation_task = GenerationTask(
                 id=task_id,

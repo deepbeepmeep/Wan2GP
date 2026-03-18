@@ -189,12 +189,12 @@ class CustomLogInterceptor:
             log_buffer: LogBuffer instance to collect logs
         """
         self.log_buffer = log_buffer
-        self.current_task_id: Optional[str] = None
+        self._task_context = threading.local()
         self.original_print = None
 
     def set_current_task(self, task_id: Optional[str]):
         """Set current task ID for context."""
-        self.current_task_id = task_id
+        self._task_context.current_task_id = task_id
 
     def capture_log(self, level: str, message: str, task_id: Optional[str] = None):
         """
@@ -208,6 +208,6 @@ class CustomLogInterceptor:
         self.log_buffer.add(
             level=level,
             message=message,
-            task_id=task_id or self.current_task_id,
+            task_id=task_id if task_id is not None else getattr(self._task_context, "current_task_id", None),
             metadata={}
         )

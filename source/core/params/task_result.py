@@ -22,6 +22,8 @@ Usage:
 
 from dataclasses import dataclass, field
 from enum import Enum
+import os
+import warnings
 from typing import Optional
 
 
@@ -40,6 +42,7 @@ class TaskResult:
     output_path: Optional[str] = None
     error_message: Optional[str] = None
     thumbnail_url: Optional[str] = None
+    progress_message: Optional[str] = None
     metadata: dict = field(default_factory=dict)
 
     # ------------------------------------------------------------------
@@ -66,7 +69,7 @@ class TaskResult:
 
     @classmethod
     def orchestrating(cls, message: str) -> "TaskResult":
-        return cls(outcome=TaskOutcome.ORCHESTRATING, output_path=message)
+        return cls(outcome=TaskOutcome.ORCHESTRATING, progress_message=message)
 
     # ------------------------------------------------------------------
     # Properties
@@ -102,6 +105,41 @@ class TaskResult:
         if self.outcome == TaskOutcome.FAILED:
             yield False
             yield self.error_message
+        elif self.outcome == TaskOutcome.ORCHESTRATING:
+            yield True
+            yield self.progress_message
         else:
             yield True
             yield self.output_path
+
+
+def normalize_task_result(raw, *, orchestrator_task: bool = False) -> TaskResult:
+    """Normalize legacy handler outputs into a TaskResult."""
+    if isinstance(raw, TaskResult):
+        return raw
+
+    if isinstance(raw, tuple) and len(raw) == 2:
+        strict = (os.getenv("HEADLESS_STRICT_TASK_RESULT") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if strict:
+            raise TypeError("Legacy tuple task results are disabled in strict mode")
+
+        warnings.warn(
+            "Legacy tuple task results are deprecated; return TaskResult instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        success, payload = raw
+        if success:
+            if orchestrator_task and isinstance(payload, str) and not payload.endswith((".mp4", ".png", ".jpg", ".jpeg")):
+                return TaskResult.orchestrating(payload)
+            if payload is None:
+                return TaskResult.success("")
+            return TaskResult.success(payload)
+        return TaskResult.failed("" if payload is None else str(payload))
+
+    raise TypeError(f"Unsupported task result type: {type(raw).__name__}")

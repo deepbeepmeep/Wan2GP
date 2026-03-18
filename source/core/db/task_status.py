@@ -3,6 +3,7 @@ Task status updates, failure marking, requeue, and billing timestamp resets.
 """
 import os
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from postgrest.exceptions import APIError
@@ -13,6 +14,7 @@ __all__ = [
     "requeue_task_for_retry",
     "update_task_status",
     "update_task_status_supabase",
+    "TaskStatusUpdateResult",
     "mark_task_failed_supabase",
     "reset_generation_started_at",
 ]
@@ -27,6 +29,15 @@ from .config import (
     EDGE_FAIL_PREFIX,
     _log_thumbnail)
 from .edge_helpers import _call_edge_function_with_retry
+
+
+@dataclass(frozen=True)
+class TaskStatusUpdateResult:
+    outcome: str
+    output_location: str | None = None
+    public_url: str | None = None
+    thumbnail_url: str | None = None
+    error: str | None = None
 
 def _extract_video_thumbnail(video_path: Path, task_id_str: str) -> Path | None:
     """Extract a thumbnail from a video file.
@@ -232,6 +243,44 @@ def update_task_status(task_id: str, status: str, output_location: str | None = 
         raise
 
 def update_task_status_supabase(task_id_str, status_str, output_location_val=None, thumbnail_url_val=None):
+    legacy_result = _update_task_status_supabase_legacy(
+        task_id_str,
+        status_str,
+        output_location_val,
+        thumbnail_url_val,
+    )
+    if legacy_result is False:
+        return TaskStatusUpdateResult(
+            outcome="failed",
+            output_location=output_location_val,
+            error=f"status_update_failed:{status_str}",
+        )
+    if isinstance(legacy_result, dict):
+        return TaskStatusUpdateResult(
+            outcome="completed",
+            output_location=legacy_result.get("public_url") or output_location_val,
+            public_url=legacy_result.get("public_url"),
+            thumbnail_url=legacy_result.get("thumbnail_url"),
+        )
+    if isinstance(legacy_result, str):
+        return TaskStatusUpdateResult(
+            outcome="completed" if status_str == STATUS_COMPLETE else "updated",
+            output_location=legacy_result,
+        )
+    if legacy_result is True:
+        return TaskStatusUpdateResult(
+            outcome="updated",
+            output_location=output_location_val,
+            thumbnail_url=thumbnail_url_val,
+        )
+    return TaskStatusUpdateResult(
+        outcome="completed" if status_str == STATUS_COMPLETE else "updated",
+        output_location=output_location_val,
+        thumbnail_url=thumbnail_url_val,
+    )
+
+
+def _update_task_status_supabase_legacy(task_id_str, status_str, output_location_val=None, thumbnail_url_val=None):
     """Updates a task's status via Supabase Edge Functions.
 
     Args:

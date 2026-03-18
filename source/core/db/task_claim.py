@@ -23,6 +23,11 @@ from . import config as _cfg
 from .config import (
     STATUS_IN_PROGRESS)
 
+
+def _resolve_runtime_config(runtime_config=None):
+    return runtime_config or _cfg.get_db_runtime_config()
+
+
 def init_db():
     """Initializes the Supabase database connection."""
     return init_db_supabase()
@@ -43,16 +48,24 @@ def init_db_supabase():
         # Let the actual operations try and fail gracefully
         return False
 
-def check_task_counts_supabase(run_type: str = "gpu") -> dict | None:
+def check_task_counts_supabase(run_type: str = "gpu", runtime_config=None) -> dict | None:
     """Check task counts via Supabase Edge Function before attempting to claim tasks."""
-    if not _cfg.SUPABASE_CLIENT or not _cfg.SUPABASE_ACCESS_TOKEN:
+    runtime = _resolve_runtime_config(runtime_config)
+    client = getattr(runtime, "supabase_client", None)
+    access_token = getattr(runtime, "supabase_access_token", None)
+    supabase_url = getattr(runtime, "supabase_url", None)
+
+    if isinstance(runtime, _cfg.DBRuntimeConfig) and client is None:
+        raise _cfg.DBRuntimeContractError("Supabase client is not configured for task counts")
+
+    if not client or not access_token:
         headless_logger.error("[TASK_COUNTS] Supabase client or auth configuration not initialized")
         return None
 
     # Build task-counts edge function URL using same pattern as other functions
     edge_url = (
         os.getenv('SUPABASE_EDGE_TASK_COUNTS_URL')
-        or (f"{_cfg.SUPABASE_URL.rstrip('/')}/functions/v1/task-counts" if _cfg.SUPABASE_URL else None)
+        or (f"{supabase_url.rstrip('/')}/functions/v1/task-counts" if supabase_url else None)
     )
 
     if not edge_url:
@@ -60,11 +73,11 @@ def check_task_counts_supabase(run_type: str = "gpu") -> dict | None:
         return None
 
     try:
-        # Use same authentication pattern as other edge functions - SUPABASE_ACCESS_TOKEN
-        # This can be a service key, PAT, or JWT - the edge function determines the type
+        # Use the configured bearer credential for edge access.
+        # The edge endpoint determines how the credential is interpreted.
         headers = {
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {_cfg.SUPABASE_ACCESS_TOKEN}'
+            'Authorization': f'Bearer {access_token}'
         }
 
         payload = {
@@ -152,7 +165,7 @@ def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
                 return True
         return False
 
-    # Try edge function first (works for local workers without service key)
+    # Try the edge route first (works for local workers without direct DB credentials)
     edge_url = (
         os.getenv("SUPABASE_EDGE_GET_ORCHESTRATOR_CHILDREN_URL")
         or (f"{_cfg.SUPABASE_URL.rstrip('/')}/functions/v1/get-orchestrator-children" if _cfg.SUPABASE_URL else None)

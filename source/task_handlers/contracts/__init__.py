@@ -1,0 +1,1 @@
+"""Typed payload compatibility contracts."""

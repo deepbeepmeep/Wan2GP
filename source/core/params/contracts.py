@@ -98,6 +98,7 @@ class OrchestratorDetails(_OrchestratorDetailsRequired, total=False):
     lora_names: list
 
     # Structure guidance
+    travel_guidance: Optional[dict]
     structure_video_path: Optional[str]
     structure_video_treatment: str
     structure_type: str
@@ -152,6 +153,7 @@ class OrchestratorDetails(_OrchestratorDetailsRequired, total=False):
 # ---------------------------------------------------------------------------
 
 _REQUIRED_ORCHESTRATOR_KEYS = frozenset(_OrchestratorDetailsRequired.__annotations__.keys())
+REQUIRED_ORCHESTRATOR_KEYS = _REQUIRED_ORCHESTRATOR_KEYS
 
 
 def validate_orchestrator_details(

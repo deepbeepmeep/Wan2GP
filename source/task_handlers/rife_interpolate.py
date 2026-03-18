@@ -6,9 +6,13 @@ import shutil
 from pathlib import Path
 from PIL import Image
 
-from source.utils import parse_resolution, prepare_output_path_with_upload, upload_and_get_final_output_location
 from source.media.video import rife_interpolate_images_to_video
 from source.core.log import task_logger
+from source.utils.output_paths import (
+    prepare_output_path_with_upload,
+    upload_and_get_final_output_location,
+)
+from source.utils.resolution_utils import parse_resolution
 
 def handle_rife_interpolate_task(task_params_dict: dict, main_output_dir_base: Path, task_id: str, task_queue=None):
     """Handles the 'rife_interpolate_images' task."""

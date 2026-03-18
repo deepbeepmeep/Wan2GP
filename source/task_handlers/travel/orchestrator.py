@@ -3,6 +3,7 @@
 from pathlib import Path
 import uuid
 from datetime import datetime
+from typing import Any, Optional
 
 # Import structured logging
 from ...core.log import travel_logger, safe_json_repr, safe_dict_repr
@@ -16,6 +17,7 @@ from ...utils import (
     get_video_frame_count_and_fps)
 from ...utils.resolution_utils import get_model_grid_size
 from ...core.params.structure_guidance import StructureGuidanceConfig
+from ...core.params.travel_guidance import TravelGuidanceConfig
 from ...core.params.task_result import TaskResult
 
 from .svi_config import SVI_DEFAULT_PARAMS, SVI_STITCH_OVERLAP
@@ -23,6 +25,7 @@ from .debug_utils import log_ram_usage
 
 # Default seed used when no seed_base is provided in the orchestrator payload
 DEFAULT_SEED_BASE = 12345
+IC_LORA_UNION_CONTROL_FILENAME = "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors"
 
 
 def _get_model_fps(model_name: str | None) -> int:
@@ -64,6 +67,96 @@ def _quantize_frames(frames: int, step: int) -> int:
     For step=8: valid values are 1, 9, 17, 25, ...
     """
     return ((frames - 1) // step) * step + 1
+
+
+def _calculate_segment_stitched_offsets(
+    segment_frames_expanded: list[int],
+    frame_overlap_expanded: list[int],
+) -> tuple[list[int], int]:
+    """Return stitched segment start offsets and total stitched frame count."""
+    total_stitched_frames = 0
+    segment_stitched_offsets: list[int] = []
+
+    for idx, segment_total_frames in enumerate(segment_frames_expanded):
+        if idx == 0:
+            segment_stitched_offsets.append(0)
+            total_stitched_frames = segment_total_frames
+        else:
+            overlap = frame_overlap_expanded[idx - 1] if idx - 1 < len(frame_overlap_expanded) else 0
+            segment_start = total_stitched_frames - overlap
+            segment_stitched_offsets.append(segment_start)
+            total_stitched_frames = segment_start + segment_total_frames
+
+    return segment_stitched_offsets, total_stitched_frames
+
+
+def _segment_has_travel_guidance_overlap(
+    *,
+    segment_index: int,
+    segment_frames_expanded: list[int],
+    segment_stitched_offsets: list[int],
+    total_stitched_frames: int,
+    travel_guidance_config: TravelGuidanceConfig,
+) -> bool:
+    """Check travel-guidance overlap using the stitched timeline semantics."""
+    if travel_guidance_config.kind == "none":
+        return False
+    if not travel_guidance_config.videos:
+        return bool(travel_guidance_config.guidance_video_url)
+
+    segment_start = segment_stitched_offsets[segment_index] if segment_index < len(segment_stitched_offsets) else 0
+    segment_end = segment_start + (
+        segment_frames_expanded[segment_index]
+        if segment_index < len(segment_frames_expanded)
+        else 0
+    )
+
+    for video in travel_guidance_config.videos:
+        video_start = video.start_frame
+        video_end = total_stitched_frames if video.end_frame is None else video.end_frame
+        if video_start < segment_end and video_end > segment_start:
+            return True
+
+    return False
+
+
+def _build_segment_travel_guidance_payload(
+    config: TravelGuidanceConfig,
+    *,
+    frame_offset: int,
+    has_guidance: bool,
+) -> dict[str, Any]:
+    """Return the explicit segment-level travel guidance payload."""
+    if not has_guidance:
+        return {"kind": "none"}
+    return config.to_segment_payload(frame_offset=frame_offset)
+
+
+def _auto_inject_travel_guidance_lora(
+    segment_loras: Optional[list[dict[str, Any]]],
+    travel_guidance_config: Optional[TravelGuidanceConfig],
+) -> Optional[list[dict[str, Any]]]:
+    """Add the union IC-LoRA for LTX control modes that require it."""
+    if not travel_guidance_config or not travel_guidance_config.needs_ic_lora():
+        return segment_loras
+
+    merged_loras = [dict(entry) for entry in (segment_loras or [])]
+    for existing in merged_loras:
+        if existing.get("path") == IC_LORA_UNION_CONTROL_FILENAME:
+            existing["strength"] = travel_guidance_config.strength
+            existing.setdefault("name", "ic-lora-union-control (auto-injected)")
+            return merged_loras
+
+    merged_loras.append(
+        {
+            "path": IC_LORA_UNION_CONTROL_FILENAME,
+            "strength": travel_guidance_config.strength,
+            "name": "ic-lora-union-control (auto-injected)",
+        }
+    )
+    return merged_loras
+
+
 # Offset added to the base seed to derive a deterministic but distinct seed for upscaling
 UPSCALE_SEED_OFFSET = 5000
 
@@ -882,26 +975,73 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
         # =============================================================================
         # STRUCTURE VIDEO PROCESSING (Single or Multi-Source Composite)
         # =============================================================================
-        # Parse unified structure guidance config (handles both new and legacy formats)
-        structure_config = StructureGuidanceConfig.from_params(orchestrator_payload)
+        using_travel_guidance = isinstance(orchestrator_payload.get("travel_guidance"), dict)
+        travel_guidance_config: Optional[TravelGuidanceConfig]
+        structure_config: Optional[StructureGuidanceConfig]
 
-        # Log parsed config
-        travel_logger.debug(f"[STRUCTURE_CONFIG] Parsed: {structure_config}")
+        if using_travel_guidance:
+            travel_guidance_config = TravelGuidanceConfig.from_payload(
+                orchestrator_payload,
+                orchestrator_payload.get("model_name", ""),
+            )
+            structure_config = (
+                travel_guidance_config.to_structure_guidance_config()
+                if travel_guidance_config.kind in {"vace", "uni3c"}
+                else None
+            )
+            travel_logger.debug(f"[TRAVEL_GUIDANCE] Parsed: {travel_guidance_config}")
+        else:
+            structure_config = StructureGuidanceConfig.from_params(orchestrator_payload)
+            travel_logger.debug(f"[STRUCTURE_CONFIG] Parsed: {structure_config}")
+            if structure_config.has_guidance:
+                travel_guidance_config = TravelGuidanceConfig(
+                    kind="uni3c" if structure_config.is_uni3c else "vace",
+                    videos=list(structure_config.videos),
+                    strength=structure_config.strength,
+                    mode=(
+                        ""
+                        if structure_config.is_uni3c
+                        else (
+                            "raw"
+                            if structure_config.preprocessing == "none"
+                            else structure_config.preprocessing
+                        )
+                    ),
+                    canny_intensity=structure_config.canny_intensity,
+                    depth_contrast=structure_config.depth_contrast,
+                    step_window=structure_config.step_window,
+                    frame_policy=structure_config.frame_policy,
+                    zero_empty_frames=structure_config.zero_empty_frames,
+                    keep_on_gpu=structure_config.keep_on_gpu,
+                )
+            else:
+                travel_guidance_config = TravelGuidanceConfig(kind="none")
 
-        # Extract values for backward compatibility with existing code paths
-        # Check both legacy top-level structure_videos AND new structure_guidance.videos via config
-        structure_videos = orchestrator_payload.get("structure_videos", [])
-        if not structure_videos and structure_config.videos:
-            # New format: videos are in structure_guidance.videos, convert to legacy format
-            structure_videos = [v.to_dict() for v in structure_config.videos]
-            travel_logger.debug(f"[STRUCTURE_CONFIG] Extracted {len(structure_videos)} videos from structure_guidance.videos")
-        structure_video_path = orchestrator_payload.get("structure_video_path")
+        # Extract values for guidance processing
+        if using_travel_guidance and travel_guidance_config.kind != "none":
+            structure_videos = [video.to_dict() for video in travel_guidance_config.videos]
+            structure_video_path = None
+            structure_type = travel_guidance_config.legacy_structure_type
+            motion_strength = travel_guidance_config.strength
+            canny_intensity = travel_guidance_config.canny_intensity
+            depth_contrast = travel_guidance_config.depth_contrast
+        else:
+            structure_videos = orchestrator_payload.get("structure_videos", [])
+            if not structure_videos and structure_config and structure_config.videos:
+                structure_videos = [v.to_dict() for v in structure_config.videos]
+                travel_logger.debug(
+                    f"[STRUCTURE_CONFIG] Extracted {len(structure_videos)} videos from structure_guidance.videos"
+                )
+            structure_video_path = orchestrator_payload.get("structure_video_path")
+            structure_type = (
+                structure_config.legacy_structure_type
+                if structure_config and structure_config.has_guidance
+                else None
+            )
+            motion_strength = structure_config.strength if structure_config else 1.0
+            canny_intensity = structure_config.canny_intensity if structure_config else 1.0
+            depth_contrast = structure_config.depth_contrast if structure_config else 1.0
 
-        # Use config values (these handle all the legacy param name variations)
-        structure_type = structure_config.legacy_structure_type if structure_config.has_guidance else None
-        motion_strength = structure_config.strength
-        canny_intensity = structure_config.canny_intensity
-        depth_contrast = structure_config.depth_contrast
         segment_flow_offsets = []
         total_flow_frames = 0
         
@@ -915,19 +1055,10 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
         
         # STITCHED TIMELINE: sum(frames) - sum(overlaps)
         # This is what the user sees and where image keyframes are positioned
-        total_stitched_frames = 0
-        segment_stitched_offsets = []  # Where each segment STARTS in stitched output
-        for idx in range(num_segments):
-            segment_total_frames = expanded_segment_frames[idx]
-            if idx == 0:
-                segment_stitched_offsets.append(0)
-                total_stitched_frames = segment_total_frames
-            else:
-                # Segment starts where previous segment ended minus overlap
-                overlap = expanded_frame_overlap[idx - 1] if idx > 0 else 0
-                segment_start = total_stitched_frames - overlap
-                segment_stitched_offsets.append(segment_start)
-                total_stitched_frames = segment_start + segment_total_frames
+        segment_stitched_offsets, total_stitched_frames = _calculate_segment_stitched_offsets(
+            expanded_segment_frames,
+            expanded_frame_overlap,
+        )
         
         # GUIDANCE TIMELINE: Legacy calculation for backwards compatibility
         # This has overlapping regions that segments "reuse"
@@ -947,10 +1078,99 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
         travel_logger.debug(f"[STRUCTURE_VIDEO] Guidance timeline (legacy): {total_flow_frames} frames")
         travel_logger.debug(f"[STRUCTURE_VIDEO] Guidance segment offsets (legacy): {segment_flow_offsets}")
         
+        # Determines which timeline offsets segments use for guidance slicing.
+        # True  → stitched timeline (multi-video / travel_guidance)
+        # False → legacy guidance timeline (single video / no guidance)
+        use_stitched_offsets = False
+
         # =============================================================================
-        # PATH A: Multi-Structure Video (new format with structure_videos array)
+        # PATH A: travel_guidance-guided travel (vace / uni3c / ltx_control)
         # =============================================================================
-        if structure_videos and len(structure_videos) > 0:
+        if using_travel_guidance:
+            if travel_guidance_config.kind == "none":
+                use_stitched_offsets = False
+                travel_logger.info("travel_guidance kind=none: skipping guidance video processing", task_id=orchestrator_task_id_str)
+            else:
+                travel_logger.info(
+                    f"travel_guidance mode: kind={travel_guidance_config.kind}, videos={len(structure_videos)}",
+                    task_id=orchestrator_task_id_str,
+                )
+
+                try:
+                    from source.media.structure import create_composite_guidance_video
+
+                    structure_type = travel_guidance_config.get_preprocessor_type()
+
+                    target_resolution_raw = orchestrator_payload["parsed_resolution_wh"]
+                    target_fps = orchestrator_payload.get("fps_helpers", 16)
+
+                    if isinstance(target_resolution_raw, str):
+                        parsed_res = parse_resolution(target_resolution_raw)
+                        if parsed_res is None:
+                            raise ValueError(f"Invalid resolution format: {target_resolution_raw}")
+                        grid_size = get_model_grid_size(orchestrator_payload.get("model_name"))
+                        target_resolution = snap_resolution_to_model_grid(parsed_res, grid_size)
+                        orchestrator_payload["parsed_resolution_wh"] = f"{target_resolution[0]}x{target_resolution[1]}"
+                        travel_logger.debug(
+                            f"[TRAVEL_GUIDANCE] Resolution snapped (grid={grid_size}): "
+                            f"{target_resolution_raw} → {orchestrator_payload['parsed_resolution_wh']}"
+                        )
+                    else:
+                        target_resolution = target_resolution_raw
+
+                    timestamp_short = datetime.now().strftime("%H%M%S")
+                    unique_suffix = uuid.uuid4().hex[:6]
+                    composite_filename = (
+                        f"travel_guidance_{travel_guidance_config.kind}_{structure_type}_"
+                        f"{timestamp_short}_{unique_suffix}.mp4"
+                    )
+
+                    composite_guidance_path = create_composite_guidance_video(
+                        structure_configs=structure_videos,
+                        total_frames=total_stitched_frames,
+                        structure_type=structure_type,
+                        target_resolution=target_resolution,
+                        target_fps=target_fps,
+                        output_path=current_run_output_dir / composite_filename,
+                        motion_strength=motion_strength,
+                        canny_intensity=canny_intensity,
+                        depth_contrast=depth_contrast,
+                        download_dir=current_run_output_dir,
+                    )
+
+                    use_stitched_offsets = True
+                    structure_guidance_video_url = upload_and_get_final_output_location(
+                        local_file_path=composite_guidance_path,
+                        initial_db_location=str(composite_guidance_path),
+                    )
+
+                    guidance_frame_count, _ = get_video_frame_count_and_fps(composite_guidance_path)
+                    travel_logger.success(
+                        f"Travel guidance video created: {guidance_frame_count} frames",
+                        task_id=orchestrator_task_id_str,
+                    )
+
+                    travel_guidance_config._guidance_video_url = structure_guidance_video_url
+                    if structure_config is not None:
+                        structure_config._guidance_video_url = structure_guidance_video_url
+                except (OSError, ValueError, RuntimeError) as e:
+                    travel_logger.error(
+                        f"Failed to create travel guidance video: {e}",
+                        task_id=orchestrator_task_id_str,
+                        exc_info=True,
+                    )
+                    travel_logger.warning(
+                        "Travel guidance will not be available for this generation",
+                        task_id=orchestrator_task_id_str,
+                    )
+                    travel_guidance_config._guidance_video_url = None
+                    if structure_config is not None:
+                        structure_config._guidance_video_url = None
+
+        # =============================================================================
+        # PATH B: Multi-Structure Video (legacy/new internal structure_guidance path)
+        # =============================================================================
+        elif structure_videos and len(structure_videos) > 0:
             travel_logger.info(f"Multi-structure video mode: {len(structure_videos)} configs", task_id=orchestrator_task_id_str)
             
             try:
@@ -1043,12 +1263,14 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 )
                 
                 # Store guidance URL in config (unified format)
-                structure_config._guidance_video_url = structure_guidance_video_url
+                if structure_config is not None:
+                    structure_config._guidance_video_url = structure_guidance_video_url
                 
             except (OSError, ValueError, RuntimeError) as e:
                 travel_logger.error(f"Failed to create composite guidance video: {e}", task_id=orchestrator_task_id_str, exc_info=True)
                 travel_logger.warning("Structure guidance will not be available for this generation", task_id=orchestrator_task_id_str)
-                structure_config._guidance_video_url = None
+                if structure_config is not None:
+                    structure_config._guidance_video_url = None
 
         # =============================================================================
         # PATH B: Legacy Single Structure Video (structure_video_path)
@@ -1145,12 +1367,14 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 travel_logger.success(f"Structure guidance video created: {guidance_frame_count} frames", task_id=orchestrator_task_id_str)
 
                 # Store guidance URL in config (unified format)
-                structure_config._guidance_video_url = structure_guidance_video_url
+                if structure_config is not None:
+                    structure_config._guidance_video_url = structure_guidance_video_url
 
             except (OSError, ValueError, RuntimeError) as e:
                 travel_logger.error(f"Failed to create structure guidance video: {e}", task_id=orchestrator_task_id_str, exc_info=True)
                 travel_logger.warning("Structure guidance will not be available", task_id=orchestrator_task_id_str)
-                structure_config._guidance_video_url = None
+                if structure_config is not None:
+                    structure_config._guidance_video_url = None
 
         # =============================================================================
         # PATH C: No Structure Video
@@ -1571,7 +1795,13 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             # previous segment's VIDEO. For SVI chaining, we continue from the previous segment's
             # LAST FRAME as an image, so we should NOT inflate the frame count with overlap here.
             base_segment_frames = expanded_segment_frames[idx]
-            if idx > 0 and current_frame_overlap_from_previous > 0 and chain_segments and (not use_svi):
+            if (
+                idx > 0
+                and current_frame_overlap_from_previous > 0
+                and chain_segments
+                and (not use_svi)
+                and travel_mode == "vace"
+            ):
                 # Sequential mode: add context frames for continuity with previous segment
                 segment_frames_target_with_context = base_segment_frames + current_frame_overlap_from_previous
                 travel_logger.debug(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, context={current_frame_overlap_from_previous}, total={segment_frames_target_with_context}")
@@ -1580,6 +1810,8 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 segment_frames_target_with_context = base_segment_frames
                 if use_svi and idx > 0:
                     travel_logger.debug(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, no context (SVI mode)")
+                elif travel_mode != "vace" and idx > 0:
+                    travel_logger.debug(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, no context ({travel_mode} mode)")
                 elif not chain_segments and idx > 0:
                     travel_logger.debug(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, no context (independent mode)")
                 else:
@@ -1649,44 +1881,54 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             }
 
             # =============================================================================
-            # Structure Guidance: Use unified config for cleaner param handling
+            # Travel / Structure Guidance
             # =============================================================================
-            # Calculate frame offset for this segment
-            segment_frame_offset = (segment_stitched_offsets[idx] if use_stitched_offsets else segment_flow_offsets[idx]) if segment_flow_offsets else 0
+            segment_frame_offset = (
+                segment_stitched_offsets[idx]
+                if use_stitched_offsets
+                else (segment_flow_offsets[idx] if idx < len(segment_flow_offsets) else 0)
+            )
 
-            # Check if this segment has guidance overlap (for multi-structure-video mode)
-            segment_has_guidance = structure_config.has_guidance
-            if structure_videos and segment_has_guidance:
-                from source.media.structure import segment_has_structure_overlap
-                segment_has_guidance = segment_has_structure_overlap(
+            segment_has_guidance = False
+            if using_travel_guidance:
+                segment_has_guidance = _segment_has_travel_guidance_overlap(
                     segment_index=idx,
                     segment_frames_expanded=expanded_segment_frames,
-                    frame_overlap_expanded=expanded_frame_overlap,
-                    structure_videos=structure_videos
+                    segment_stitched_offsets=segment_stitched_offsets,
+                    total_stitched_frames=total_stitched_frames,
+                    travel_guidance_config=travel_guidance_config,
                 )
-                if not segment_has_guidance:
-                    travel_logger.debug(f"[STRUCTURE_VIDEO] Segment {idx}: No overlap with structure_videos, skipping structure guidance")
+                if not segment_has_guidance and travel_guidance_config.kind != "none":
+                    travel_logger.debug(
+                        f"[TRAVEL_GUIDANCE] Segment {idx}: no overlap on stitched timeline, sending kind=none"
+                    )
+            elif structure_config is not None:
+                segment_has_guidance = structure_config.has_guidance
+                if structure_videos and segment_has_guidance:
+                    from source.media.structure import segment_has_structure_overlap
 
-            # Set structure guidance using unified format only
-            if segment_has_guidance:
-                segment_guidance_url = structure_config.guidance_video_url
+                    segment_has_guidance = segment_has_structure_overlap(
+                        segment_index=idx,
+                        segment_frames_expanded=expanded_segment_frames,
+                        frame_overlap_expanded=expanded_frame_overlap,
+                        structure_videos=structure_videos,
+                    )
+                    if not segment_has_guidance:
+                        travel_logger.debug(
+                            f"[STRUCTURE_VIDEO] Segment {idx}: No overlap with structure_videos, skipping structure guidance"
+                        )
 
-                segment_payload["structure_guidance"] = {
-                    "target": structure_config.target,
-                    "preprocessing": structure_config.preprocessing,
-                    "strength": structure_config.strength,
-                    "canny_intensity": structure_config.canny_intensity,
-                    "depth_contrast": structure_config.depth_contrast,
-                    "step_window": list(structure_config.step_window),
-                    "frame_policy": structure_config.frame_policy,
-                    "zero_empty_frames": structure_config.zero_empty_frames,
-                    "keep_on_gpu": structure_config.keep_on_gpu,
-                    "videos": [v.to_dict() for v in structure_config.videos],
-                    "_guidance_video_url": segment_guidance_url,
-                    "_frame_offset": segment_frame_offset,
-                }
+            segment_payload["travel_guidance"] = _build_segment_travel_guidance_payload(
+                travel_guidance_config,
+                frame_offset=segment_frame_offset,
+                has_guidance=segment_has_guidance,
+            )
+
+            if segment_has_guidance and structure_config is not None:
+                segment_payload["structure_guidance"] = structure_config.to_segment_payload(
+                    frame_offset=segment_frame_offset
+                )["structure_guidance"]
             else:
-                # No guidance for this segment
                 segment_payload["structure_guidance"] = None
 
             # =============================================================================
@@ -1701,9 +1943,24 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 travel_logger.debug(f"[PER_SEGMENT_PARAMS] Segment {idx}: Using per-segment phase_config override")
 
             # Add per-segment LoRAs if available
+            segment_loras_for_payload = None
             if idx < len(loras_per_segment_expanded) and loras_per_segment_expanded[idx] is not None:
-                individual_segment_params["segment_loras"] = loras_per_segment_expanded[idx]
-                travel_logger.debug(f"[PER_SEGMENT_PARAMS] Segment {idx}: Using per-segment LoRA override ({len(loras_per_segment_expanded[idx])} LoRAs)")
+                segment_loras_for_payload = list(loras_per_segment_expanded[idx])
+                travel_logger.debug(
+                    f"[PER_SEGMENT_PARAMS] Segment {idx}: Using per-segment LoRA override "
+                    f"({len(segment_loras_for_payload)} LoRAs)"
+                )
+
+            segment_loras_for_payload = _auto_inject_travel_guidance_lora(
+                segment_loras_for_payload,
+                travel_guidance_config if segment_payload["travel_guidance"].get("kind") != "none" else None,
+            )
+            if segment_loras_for_payload:
+                individual_segment_params["segment_loras"] = segment_loras_for_payload
+                travel_logger.debug(
+                    f"[PER_SEGMENT_PARAMS] Segment {idx}: Final segment_loras count = "
+                    f"{len(segment_loras_for_payload)}"
+                )
 
             # Only add individual_segment_params if it has content
             if individual_segment_params:

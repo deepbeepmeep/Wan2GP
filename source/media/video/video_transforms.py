@@ -9,6 +9,7 @@ from source.core.log import headless_logger, generation_logger
 from source.media.video.frame_extraction import extract_frames_from_video
 from source.media.video.video_info import get_video_frame_count_and_fps
 from source.media.video.ffmpeg_ops import create_video_from_frames_list
+from source.utils.subprocess_utils import run_subprocess
 
 try:
     import moviepy.editor as mpe

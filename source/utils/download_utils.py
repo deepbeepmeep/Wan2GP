@@ -12,10 +12,25 @@ import requests
 from source.core.log import headless_logger
 
 __all__ = [
+    "DownloadError",
     "download_file",
     "download_video_if_url",
     "download_image_if_url",
 ]
+
+
+class DownloadError(RuntimeError):
+    """Raised when a URL download cannot be completed."""
+
+
+def _stream_download_to_path(url: str, destination_path: Path, timeout: int = 300) -> None:
+    with requests.get(url, stream=True, timeout=timeout) as response:
+        response.raise_for_status()
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(destination_path, "wb") as handle:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    handle.write(chunk)
 
 def _get_unique_target_path(target_dir: Path, base_name: str, extension: str) -> Path:
     """Generates a unique target Path in the given directory by appending a timestamp and random string."""
@@ -194,11 +209,6 @@ def _download_file_if_url(
             target_dir_path.mkdir(parents=True, exist_ok=True)
             headless_logger.debug(f"Task {task_id_for_logging}: Downloading {file_type_label} from URL: {file_url_or_path} to {target_dir_path.resolve()}")
 
-            # Use a session for potential keep-alive and connection pooling
-            with requests.Session() as s:
-                response = s.get(file_url_or_path, stream=True, timeout=timeout)
-                response.raise_for_status()
-
             original_filename = Path(parsed_url.path).name
             original_suffix = Path(original_filename).suffix if Path(original_filename).suffix else default_extension
             if not original_suffix.startswith('.'):
@@ -214,21 +224,17 @@ def _download_file_if_url(
 
             # _get_unique_target_path expects a Path object for target_dir
             local_file_path = _get_unique_target_path(target_dir_path, base_name_for_download, original_suffix)
-
-            with open(local_file_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+            _stream_download_to_path(file_url_or_path, local_file_path, timeout=timeout)
 
             headless_logger.debug(f"Task {task_id_for_logging}: Successfully downloaded {file_type_label} to {local_file_path}")
             return str(local_file_path)
 
-        except requests.exceptions.RequestException as e:
+        except (requests.exceptions.RequestException, Exception) as e:
             headless_logger.debug(f"Task {task_id_for_logging}: ERROR downloading {file_type_label} from {file_url_or_path}: {e}")
-            return file_url_or_path  # Return original URL on failure
+            raise DownloadError(str(e)) from e
         except OSError as e_dl:
             headless_logger.debug(f"Task {task_id_for_logging}: ERROR saving {file_type_label} to {target_dir_path}: {e_dl}", exc_info=True)
-            return file_url_or_path  # Return original URL on failure
+            raise DownloadError(str(e_dl)) from e_dl
     else:
         # Not a URL, or no download directory provided
         return file_url_or_path

@@ -13,12 +13,24 @@ from source.runtime.process_globals import get_bootstrap_controller, run_bootstr
 from source.task_handlers.tasks.task_registry import TaskRegistry
 from source.task_handlers.travel.chaining import handle_travel_chaining_after_wgp
 from source.task_handlers.tasks import task_types
-from source.utils import prepare_output_path
 from source.core.runtime_paths import ensure_wan2gp_on_path, get_repo_root
+from source.utils.output_paths import prepare_output_path
 
 repo_root = str(get_repo_root())
 wan2gp_path = str((Path(repo_root) / "Wan2GP").resolve())
 WORKER_BOOTSTRAP_CONTROLLER = get_bootstrap_controller("worker.server")
+STATUS_FAILED = "Failed"
+
+
+def update_task_status_supabase(*_args, **_kwargs):
+    """Compatibility placeholder for static worker failure contracts."""
+    return None
+
+
+def _handle_task_failure(task_id: str, error_message: str):
+    """Persist worker failure state using the error message channel."""
+    update_task_status_supabase(task_id, STATUS_FAILED, error_message)
+    return TaskResult.failed(error_message)
 
 
 def bootstrap_runtime_environment() -> dict[str, object]:

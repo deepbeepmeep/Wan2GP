@@ -24,6 +24,7 @@ import time
 import argparse
 from pathlib import Path
 from datetime import datetime
+from types import SimpleNamespace
 
 # Add project to Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -278,8 +279,7 @@ Examples:
             print("   Use format: WIDTHxHEIGHT (e.g. 1280x720)")
             return 1
 
-    # Run join_clips
-    success = run_join_clips(
+    options = SimpleNamespace(
         starting_video_path=args.clip1,
         ending_video_path=args.clip2,
         output_path=args.output,
@@ -292,8 +292,29 @@ Examples:
         seed=args.seed,
         resolution=resolution,
         fps=args.fps,
-        negative_prompt=args.negative_prompt
+        negative_prompt=args.negative_prompt,
     )
+
+    try:
+        success = run_join_clips(
+            starting_video_path=args.clip1,
+            ending_video_path=args.clip2,
+            output_path=args.output,
+            prompt=args.prompt,
+            context_frame_count=args.context_frames,
+            gap_frame_count=args.gap_frames,
+            model=args.model,
+            num_inference_steps=args.steps,
+            guidance_scale=args.guidance_scale,
+            seed=args.seed,
+            resolution=resolution,
+            fps=args.fps,
+            negative_prompt=args.negative_prompt,
+            options=options,
+        )
+    except Exception as exc:
+        print(f"Join-clips example failed: {exc}")
+        return 1
 
     return 0 if success else 1
 

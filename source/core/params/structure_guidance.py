@@ -19,6 +19,17 @@ from .base import ParamGroup
 logger = logging.getLogger(__name__)
 
 
+def normalize_structure_treatment(
+    treatment: str | None,
+    *,
+    context: str = "structure guidance",
+) -> Literal["adjust", "clip"]:
+    normalized = "adjust" if treatment is None else str(treatment).strip().lower()
+    if normalized not in {"adjust", "clip"}:
+        raise ValueError(f"{context}: invalid treatment {treatment!r}")
+    return normalized  # type: ignore[return-value]
+
+
 @dataclass
 class StructureVideoEntry:
     """
@@ -40,7 +51,7 @@ class StructureVideoEntry:
             path=d.get("path", ""),
             start_frame=d.get("start_frame", 0),
             end_frame=d.get("end_frame"),
-            treatment=d.get("treatment", "adjust"),
+            treatment=normalize_structure_treatment(d.get("treatment", "adjust")),
             source_start_frame=d.get("source_start_frame", 0),
             source_end_frame=d.get("source_end_frame"),
         )
@@ -220,7 +231,7 @@ class StructureGuidanceConfig(ParamGroup):
         elif params.get("structure_video_path"):
             config.videos = [StructureVideoEntry(
                 path=params["structure_video_path"],
-                treatment=params.get("structure_video_treatment", "adjust"),
+                treatment=normalize_structure_treatment(params.get("structure_video_treatment", "adjust")),
             )]
 
         # === Strength (unified) ===

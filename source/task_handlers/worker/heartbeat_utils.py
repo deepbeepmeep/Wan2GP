@@ -3,11 +3,22 @@ from multiprocessing import Process, Queue
 from source.core.log import headless_logger
 from heartbeat_guardian import guardian_main
 from source.core.constants import BYTES_PER_MB
+from source.core.db.edge.request import resolve_edge_auth_token
 
 
 
 # Maximum number of log messages buffered in the heartbeat guardian queue
 HEARTBEAT_LOG_QUEUE_MAX_SIZE = 1000
+
+
+def resolve_guardian_auth_token(*, explicit_token: str | None = None, runtime_config=None) -> str:
+    """Resolve the auth token used by the guardian heartbeat path."""
+    if explicit_token:
+        return explicit_token
+    token = resolve_edge_auth_token(scope="worker", runtime_config=runtime_config)
+    if not token:
+        raise RuntimeError("No guardian auth token available")
+    return token
 
 def start_heartbeat_guardian_process(worker_id: str, supabase_url: str, supabase_key: str):
     """
@@ -48,5 +59,4 @@ def get_gpu_memory_usage():
         headless_logger.debug(f"Failed to get GPU memory usage: {e}")
 
     return None, None
-
 

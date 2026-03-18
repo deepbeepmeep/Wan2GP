@@ -4,6 +4,8 @@ ComfyUI Utilities
 Provides ComfyUI server management and API client for processing workflow tasks.
 """
 
+from __future__ import annotations
+
 import os
 import time
 import signal

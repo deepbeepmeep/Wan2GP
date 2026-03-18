@@ -1,7 +1,6 @@
 """RunPod sync command."""
 
 import os
-import sys
 
 import httpx
 from dotenv import load_dotenv
@@ -16,12 +15,12 @@ def run(client, options: dict):
     except ImportError:
         print("❌ Error: runpod module not installed")
         print("   Install with: pip install runpod")
-        sys.exit(1)
+        return False
     
     runpod_api_key = os.getenv('RUNPOD_API_KEY')
     if not runpod_api_key:
         print("❌ Error: RunPod auth key not set in environment")
-        sys.exit(1)
+        return False
     
     runpod.api_key = runpod_api_key
     
@@ -136,13 +135,13 @@ def run(client, options: dict):
             print(f"\n💡 These workers should be marked as terminated in the database.")
         
         print("\n" + "=" * 80)
+        return True
         
     except (httpx.HTTPError, OSError, ValueError, KeyError) as e:
         print(f"❌ Error: {e}")
         import traceback
         print(traceback.format_exc())
-        sys.exit(1)
-
+        return False
 
 
 

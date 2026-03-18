@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from source.utils.subprocess_utils import run_subprocess
+
 
 def _safe_worker_fragment(worker_id: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in worker_id)
@@ -72,6 +74,7 @@ def send_heartbeat_with_logs(
     status: str = "active",
 ) -> bool:
     try:
+        auth_token = config.get("auth_token") or config.get("api_key")
         payload = json.dumps(
             {
                 "worker_id_param": worker_id,
@@ -81,28 +84,36 @@ def send_heartbeat_with_logs(
                 "status_param": status,
             }
         )
-        result = subprocess.run(
-            [
-                "curl",
-                "-s",
-                "-X",
-                "POST",
-                "-m",
-                "10",
-                f'{config["db_url"]}/rest/v1/rpc/func_worker_heartbeat_with_logs',
-                "-H",
-                f'apikey: {config["api_key"]}',
-                "-H",
-                "Content-Type: application/json",
-                "-H",
-                "Prefer: return=representation",
-                "-d",
-                payload,
-            ],
+        args = [
+            "curl",
+            "-s",
+            "-X",
+            "POST",
+            "-m",
+            "10",
+            f'{config["db_url"]}/rest/v1/rpc/func_worker_heartbeat_with_logs',
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "Prefer: return=representation",
+        ]
+        if auth_token:
+            args.extend(["-H", f"Authorization: Bearer {auth_token}", "-H", f"apikey: {auth_token}"])
+        args.extend(["-d", payload])
+        result = run_subprocess(
+            args,
             capture_output=True,
             timeout=15,
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False
+
+        raw_output = result.stdout.decode() if isinstance(result.stdout, (bytes, bytearray)) else str(result.stdout or "")
+        try:
+            parsed = json.loads(raw_output or "{}")
+        except json.JSONDecodeError:
+            return bool(os.getenv("GUARDIAN_LEGACY_PARSE_SUCCESS"))
+        return bool(parsed.get("success"))
     except Exception:
         return False
 

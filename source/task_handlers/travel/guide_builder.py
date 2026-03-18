@@ -14,10 +14,111 @@ from datetime import datetime
 from typing import Optional, List, Any
 
 from source.core.log import travel_logger
-from source.utils import prepare_output_path
 from source.media.video import create_guide_video_for_travel_segment
+from source.media.video.ffmpeg_ops import create_video_from_frames_list
 from source.core.params.structure_guidance import StructureGuidanceConfig
-from source import db_operations as db_ops
+from source.core.params.travel_guidance import TravelGuidanceConfig
+from source.core.db.dependencies.task_dependencies_queries import get_predecessor_output_via_edge_function
+from source.utils.download_utils import download_file, download_video_if_url
+from source.utils.output_paths import prepare_output_path
+
+
+def _build_local_travel_guidance_video(
+    proc: Any,
+    travel_guidance_config: TravelGuidanceConfig,
+) -> Optional[Path]:
+    """Build a segment-local composite guidance clip when no shared clip is provided."""
+    ctx = proc.ctx
+    if not travel_guidance_config.videos:
+        return None
+
+    from source.media.structure import create_composite_guidance_video, calculate_segment_stitched_position
+
+    segment_frames_expanded = ctx.orchestrator_details.get(
+        "segment_frames_expanded",
+        [ctx.total_frames_for_segment],
+    )
+    frame_overlap_expanded = ctx.orchestrator_details.get("frame_overlap_expanded", [0])
+    segment_start, _segment_frame_count = calculate_segment_stitched_position(
+        ctx.segment_idx,
+        segment_frames_expanded,
+        frame_overlap_expanded,
+    )
+    segment_end = segment_start + ctx.total_frames_for_segment
+
+    local_configs = []
+    for video in travel_guidance_config.videos:
+        video_start = video.start_frame
+        video_end = segment_end if video.end_frame is None else video.end_frame
+        overlap_start = max(video_start, segment_start)
+        overlap_end = min(video_end, segment_end)
+        if overlap_start >= overlap_end:
+            continue
+
+        local_config = video.to_dict()
+        local_config["start_frame"] = overlap_start - segment_start
+        local_config["end_frame"] = overlap_end - segment_start
+        local_configs.append(local_config)
+
+    if not local_configs:
+        return None
+
+    output_path = ctx.segment_processing_dir / f"travel_guidance_seg{ctx.segment_idx}_{uuid.uuid4().hex[:6]}.mp4"
+    return create_composite_guidance_video(
+        structure_configs=local_configs,
+        total_frames=ctx.total_frames_for_segment,
+        structure_type=travel_guidance_config.get_preprocessor_type(),
+        target_resolution=ctx.parsed_res_wh,
+        target_fps=ctx.orchestrator_details.get("fps_helpers", 16),
+        output_path=output_path,
+        motion_strength=travel_guidance_config.strength,
+        canny_intensity=travel_guidance_config.canny_intensity,
+        depth_contrast=travel_guidance_config.depth_contrast,
+        download_dir=ctx.segment_processing_dir,
+    )
+
+
+def _create_ltx_control_guide_video(
+    proc: Any,
+    travel_guidance_config: TravelGuidanceConfig,
+    guide_video_final_path: Path,
+) -> Optional[Path]:
+    """Use the preprocessed control clip directly for LTX guided travel."""
+    ctx = proc.ctx
+
+    guidance_video_url = travel_guidance_config.guidance_video_url
+    frame_offset = travel_guidance_config.frame_offset
+
+    if not guidance_video_url:
+        local_guidance_path = _build_local_travel_guidance_video(proc, travel_guidance_config)
+        if local_guidance_path is None:
+            return None
+        guidance_video_url = str(local_guidance_path)
+        frame_offset = 0
+
+    from source.media.structure.download import download_and_extract_motion_frames
+    import cv2
+
+    guidance_frames = download_and_extract_motion_frames(
+        structure_motion_video_url=guidance_video_url,
+        frame_start=frame_offset,
+        frame_count=ctx.total_frames_for_segment,
+        download_dir=ctx.segment_processing_dir,
+    )
+
+    if not guidance_frames:
+        return None
+
+    control_frames_bgr = [
+        cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        for frame_rgb in guidance_frames
+    ]
+    return create_video_from_frames_list(
+        control_frames_bgr,
+        guide_video_final_path,
+        ctx.orchestrator_details.get("fps_helpers", 16),
+        ctx.parsed_res_wh,
+    )
 
 def get_previous_segment_video(proc: Any) -> Optional[str]:
     """Get previous segment video output for guide creation."""
@@ -35,7 +136,7 @@ def get_previous_segment_video(proc: Any) -> Optional[str]:
         return ctx.orchestrator_details.get("continue_from_video_resolved_path")
     elif not is_first_segment:
         # Subsequent segment - get predecessor output
-        task_dependency_id, raw_path_from_db = db_ops.get_predecessor_output_via_edge_function(ctx.task_id)
+        task_dependency_id, raw_path_from_db = get_predecessor_output_via_edge_function(ctx.task_id)
         if task_dependency_id and raw_path_from_db:
             travel_logger.debug(f"Seg {ctx.segment_idx}: Found predecessor output: {raw_path_from_db}", task_id=ctx.task_id)
 
@@ -45,8 +146,6 @@ def get_previous_segment_video(proc: Any) -> Optional[str]:
                     travel_logger.debug(f"Seg {ctx.segment_idx}: Detected remote URL for previous segment: {raw_path_from_db}. Downloading...", task_id=ctx.task_id)
 
                     # Import download utilities
-                    from source import utils
-
                     remote_url = raw_path_from_db
                     local_filename = Path(remote_url).name
                     # Store under segment_processing_dir to keep things tidy
@@ -58,7 +157,7 @@ def get_previous_segment_video(proc: Any) -> Optional[str]:
                     # Perform download if file not already present
                     if not local_download_path.exists():
                         travel_logger.debug(f"Seg {ctx.segment_idx}: Downloading from {remote_url}", task_id=ctx.task_id)
-                        utils.download_file(remote_url, ctx.segment_processing_dir, local_download_path.name)
+                        download_file(remote_url, ctx.segment_processing_dir, local_download_path.name)
                         travel_logger.debug(f"Seg {ctx.segment_idx}: Downloaded previous segment video to {local_download_path}", task_id=ctx.task_id)
 
                         # Verify download was successful and file has content
@@ -72,7 +171,7 @@ def get_previous_segment_video(proc: Any) -> Optional[str]:
                         if local_download_path.stat().st_size == 0:
                             travel_logger.debug(f"Seg {ctx.segment_idx}: Cached file is empty, re-downloading...", task_id=ctx.task_id)
                             local_download_path.unlink()  # Remove empty file
-                            utils.download_file(remote_url, ctx.segment_processing_dir, local_download_path.name)
+                            download_file(remote_url, ctx.segment_processing_dir, local_download_path.name)
 
                     resolved_path = str(local_download_path.resolve())
                     travel_logger.debug(f"Seg {ctx.segment_idx}: Returning local path for guide creation: {resolved_path}", task_id=ctx.task_id)
@@ -126,15 +225,47 @@ def create_guide_video(proc: Any) -> Optional[Path]:
 
     # Initialize structure_type tracking (will be set later if applicable)
     proc._detected_structure_type = None
+    proc._travel_guidance_config = None
+    proc._structure_config = None
 
-    # Always create guide video for VACE models (required for functionality)
-    # For non-VACE models, only create in debug mode
-    if not ctx.debug_enabled and not proc.is_vace_model:
+    travel_guidance_config = None
+    if isinstance(ctx.segment_params.get("travel_guidance"), dict):
+        travel_guidance_config = TravelGuidanceConfig.from_payload(
+            ctx.segment_params["travel_guidance"],
+            ctx.model_name,
+        )
+        proc._travel_guidance_config = travel_guidance_config
+
+    if travel_guidance_config is not None and travel_guidance_config.kind in {"vace", "uni3c"}:
+        structure_config = travel_guidance_config.to_structure_guidance_config()
+    else:
+        structure_config = StructureGuidanceConfig.from_params({
+            **ctx.orchestrator_details,
+            **ctx.segment_params
+        })
+    proc._structure_config = structure_config
+
+    guide_required = (
+        proc.is_vace_model
+        or structure_config.has_guidance
+        or (
+            travel_guidance_config is not None
+            and travel_guidance_config.is_ltx_control
+            and travel_guidance_config.has_guidance
+        )
+    )
+
+    # Always create guide videos when the model or guidance mode requires them.
+    # For everything else, only create in debug mode.
+    if not ctx.debug_enabled and not guide_required:
         travel_logger.debug(f"Task {ctx.task_id}: Debug mode disabled and non-VACE model, skipping guide video creation", task_id=ctx.task_id)
         return None
 
-    if proc.is_vace_model and not ctx.debug_enabled:
-        travel_logger.debug(f"Task {ctx.task_id}: VACE model detected, creating guide video (REQUIRED for VACE functionality)", task_id=ctx.task_id)
+    if guide_required and not ctx.debug_enabled:
+        travel_logger.debug(
+            f"Task {ctx.task_id}: guide video is required for this segment; creating it",
+            task_id=ctx.task_id,
+        )
 
     try:
         # Generate unique guide video filename
@@ -150,6 +281,23 @@ def create_guide_video(proc: Any) -> Optional[Path]:
             main_output_dir_base=ctx.main_output_dir_base,
             task_type="travel_segment"
         )
+
+        if travel_guidance_config is not None and travel_guidance_config.is_ltx_control:
+            proc._detected_structure_type = travel_guidance_config.get_preprocessor_type()
+            direct_control_video = _create_ltx_control_guide_video(
+                proc,
+                travel_guidance_config,
+                guide_video_final_path,
+            )
+            if direct_control_video and Path(direct_control_video).exists():
+                travel_logger.debug(
+                    f"[GUIDE_DEBUG] Segment {ctx.segment_idx}: Using direct LTX control clip {direct_control_video}",
+                    task_id=ctx.task_id,
+                )
+                return Path(direct_control_video)
+            raise ValueError(
+                f"LTX control guidance for segment {ctx.segment_idx} could not be materialized"
+            )
 
         # Get previous segment video for guide creation
         path_to_previous_segment_video_output_for_guide = get_previous_segment_video(proc)
@@ -186,15 +334,7 @@ def create_guide_video(proc: Any) -> Optional[Path]:
         else:
             end_anchor_img_path_str_idx = ctx.segment_idx + 1
 
-        # Parse unified structure guidance config (handles all legacy param variations)
-        structure_config = StructureGuidanceConfig.from_params({
-            **ctx.orchestrator_details,
-            **ctx.segment_params
-        })
         travel_logger.debug(f"[STRUCTURE_CONFIG] Segment {ctx.segment_idx}: {structure_config}", task_id=ctx.task_id)
-
-        # Store config for use throughout this method
-        proc._structure_config = structure_config
 
         # Extract values from config for backward compatibility with existing code
         structure_video_path = structure_config.videos[0].path if structure_config.videos else None
@@ -214,31 +354,34 @@ def create_guide_video(proc: Any) -> Optional[Path]:
         proc._detected_structure_type = structure_type
 
         if structure_videos and not structure_guidance_video_url:
-            travel_logger.debug(f"[STRUCTURE_VIDEO] Segment {ctx.segment_idx}: Found structure_videos array, computing segment guidance locally", task_id=ctx.task_id)
+            if travel_guidance_config is not None:
+                local_guidance_path = _build_local_travel_guidance_video(proc, travel_guidance_config)
+            else:
+                travel_logger.debug(f"[STRUCTURE_VIDEO] Segment {ctx.segment_idx}: Found structure_videos array, computing segment guidance locally", task_id=ctx.task_id)
 
-            from source.media.structure import extract_segment_structure_guidance
+                from source.media.structure import extract_segment_structure_guidance
 
-            # Get segment layout from orchestrator payload
-            segment_frames_expanded = ctx.orchestrator_details.get("segment_frames_expanded", [ctx.total_frames_for_segment])
-            frame_overlap_expanded = ctx.orchestrator_details.get("frame_overlap_expanded", [0])
+                # Get segment layout from orchestrator payload
+                segment_frames_expanded = ctx.orchestrator_details.get("segment_frames_expanded", [ctx.total_frames_for_segment])
+                frame_overlap_expanded = ctx.orchestrator_details.get("frame_overlap_expanded", [0])
 
-            # Generate path for segment's guidance video
-            segment_guidance_filename = f"segment_guidance_{ctx.segment_idx}_{uuid.uuid4().hex[:6]}.mp4"
-            segment_guidance_path = ctx.segment_processing_dir / segment_guidance_filename
+                # Generate path for segment's guidance video
+                segment_guidance_filename = f"segment_guidance_{ctx.segment_idx}_{uuid.uuid4().hex[:6]}.mp4"
+                segment_guidance_path = ctx.segment_processing_dir / segment_guidance_filename
 
-            # Extract this segment's guidance
-            local_guidance_path = extract_segment_structure_guidance(
-                structure_videos=structure_videos,
-                segment_index=ctx.segment_idx,
-                segment_frames_expanded=segment_frames_expanded,
-                frame_overlap_expanded=frame_overlap_expanded,
-                target_resolution=ctx.parsed_res_wh,
-                target_fps=ctx.orchestrator_details.get("fps_helpers", 16),
-                output_path=segment_guidance_path,
-                motion_strength=structure_video_motion_strength,
-                canny_intensity=structure_canny_intensity,
-                depth_contrast=structure_depth_contrast,
-                download_dir=ctx.segment_processing_dir)
+                # Extract this segment's guidance
+                local_guidance_path = extract_segment_structure_guidance(
+                    structure_videos=structure_videos,
+                    segment_index=ctx.segment_idx,
+                    segment_frames_expanded=segment_frames_expanded,
+                    frame_overlap_expanded=frame_overlap_expanded,
+                    target_resolution=ctx.parsed_res_wh,
+                    target_fps=ctx.orchestrator_details.get("fps_helpers", 16),
+                    output_path=segment_guidance_path,
+                    motion_strength=structure_video_motion_strength,
+                    canny_intensity=structure_canny_intensity,
+                    depth_contrast=structure_depth_contrast,
+                    download_dir=ctx.segment_processing_dir)
 
             if local_guidance_path and Path(local_guidance_path).exists():
                 travel_logger.debug(f"[STRUCTURE_VIDEO] Created local segment guidance: {local_guidance_path}", task_id=ctx.task_id)
@@ -253,7 +396,6 @@ def create_guide_video(proc: Any) -> Optional[Path]:
         # Download structure video if it's a URL (defensive fallback if orchestrator didn't download)
         # Note: If structure_guidance_video_url is provided, this is not strictly needed as segments will use the pre-warped video
         if structure_video_path:
-            from source.utils import download_video_if_url
             structure_video_path = download_video_if_url(
                 structure_video_path,
                 download_target_dir=ctx.segment_processing_dir,
@@ -303,17 +445,15 @@ def create_guide_video(proc: Any) -> Optional[Path]:
         else:
             travel_logger.error(f"[GUIDE_ERROR] Guide video creation returned: {guide_video_path}", task_id=ctx.task_id)
 
-            # For VACE models, guide video is essential
-            if proc.is_vace_model:
-                raise ValueError(f"VACE model '{ctx.model_name}' requires guide video but creation failed")
+            if guide_required:
+                raise ValueError(f"Guide video is required for model '{ctx.model_name}' but creation failed")
 
             return None
 
     except (OSError, ValueError, RuntimeError) as e_guide:
         travel_logger.error(f"[GUIDE_ERROR] Guide video creation failed: {e_guide}", task_id=ctx.task_id, exc_info=True)
 
-        # For VACE models, if guide creation fails, we cannot proceed
-        if proc.is_vace_model:
-            raise ValueError(f"VACE model '{ctx.model_name}' requires guide video but creation failed: {e_guide}") from e_guide
+        if guide_required:
+            raise ValueError(f"Guide video is required for model '{ctx.model_name}' but creation failed: {e_guide}") from e_guide
 
         return None

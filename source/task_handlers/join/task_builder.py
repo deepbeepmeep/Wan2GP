@@ -8,7 +8,7 @@ supporting both the legacy sequential chain pattern and the newer parallel patte
 from pathlib import Path
 from typing import Tuple, List, Optional
 
-from source import db_operations as db_ops
+from source.core.db.task_completion import add_task_to_db
 from source.core.log import orchestrator_logger
 from source.task_handlers.join.shared import _check_orchestrator_cancelled
 
@@ -104,7 +104,7 @@ def _create_join_chain_tasks(
 
         orchestrator_logger.debug(f"[JOIN_CORE] Submitting join {idx} to database, depends_on={previous_join_task_id}")
 
-        actual_db_row_id = db_ops.add_task_to_db(
+        actual_db_row_id = add_task_to_db(
             task_payload=join_payload,
             task_type_str="join_clips_segment",
             dependant_on=previous_join_task_id
@@ -138,7 +138,7 @@ def _create_join_chain_tasks(
     if cancel_msg:
         return False, cancel_msg
 
-    final_stitch_task_id = db_ops.add_task_to_db(
+    final_stitch_task_id = add_task_to_db(
         task_payload=final_stitch_payload,
         task_type_str="join_final_stitch",
         dependant_on=previous_join_task_id
@@ -234,7 +234,7 @@ def _create_parallel_join_tasks(
 
         orchestrator_logger.debug(f"[JOIN_PARALLEL] Submitting transition {idx} to database (no dependency)")
 
-        trans_task_id = db_ops.add_task_to_db(
+        trans_task_id = add_task_to_db(
             task_payload=transition_payload,
             task_type_str="join_clips_segment",
             dependant_on=None
@@ -267,7 +267,7 @@ def _create_parallel_join_tasks(
     if cancel_msg:
         return False, cancel_msg
 
-    final_stitch_task_id = db_ops.add_task_to_db(
+    final_stitch_task_id = add_task_to_db(
         task_payload=final_stitch_payload,
         task_type_str="join_final_stitch",
         dependant_on=transition_task_ids

@@ -12,11 +12,10 @@ Extracted from worker.py (687 lines of Qwen code).
 
 from pathlib import Path
 from typing import Dict, Any, Optional
-from huggingface_hub import hf_hub_download  # type: ignore
 
 from source.core.log import model_logger
-from source.utils import download_image_if_url
 from source.core.params.phase_multiplier_utils import format_phase_multipliers, extract_phase_values
+from source.utils.download_utils import download_image_if_url
 
 from source.models.model_handlers.qwen_compositor import (
     cap_qwen_resolution,
@@ -57,6 +56,10 @@ QWEN_EDIT_MODEL_CONFIG = {
         "hf_subfolder": None,
     },
 }
+
+
+class LoRADownloadError(RuntimeError):
+    """Raised when a required Qwen LoRA download fails."""
 
 
 class QwenHandler:
@@ -140,6 +143,8 @@ class QwenHandler:
         self._log_info(f"Downloading LoRA '{filename}' from '{repo_id}'" +
                        (f" (subfolder: {hf_subfolder})" if hf_subfolder else ""))
         try:
+            from huggingface_hub import hf_hub_download  # type: ignore
+
             dl_path = hf_hub_download(
                 repo_id=repo_id,
                 filename=filename,
@@ -205,7 +210,9 @@ class QwenHandler:
         self._ensure_lora_lists(generation_params)
 
         if not (self.qwen_lora_dir / lightning_fname).exists():
-            self._download_lora_if_missing(lightning_repo, lightning_fname)
+            downloaded = self._download_lora_if_missing(lightning_repo, lightning_fname)
+            if not downloaded:
+                raise LoRADownloadError(f"Failed to download LoRA: {lightning_fname}")
 
         if lightning_fname in generation_params["lora_names"]:
             return
@@ -217,7 +224,9 @@ class QwenHandler:
 
     def _add_task_lora(self, generation_params: Dict[str, Any], repo_id: str, filename: str, multiplier: float = 1.0):
         """Download and add a task-specific LoRA."""
-        self._download_lora_if_missing(repo_id, filename)
+        downloaded = self._download_lora_if_missing(repo_id, filename)
+        if not downloaded:
+            raise LoRADownloadError(f"Failed to download LoRA: {filename}")
         self._ensure_lora_lists(generation_params)
         if filename not in generation_params["lora_names"]:
             generation_params["lora_names"].append(filename)

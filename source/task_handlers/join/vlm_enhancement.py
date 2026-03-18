@@ -11,10 +11,10 @@ from typing import Tuple, List, Optional
 
 import cv2
 
-from source.utils import download_video_if_url
 from source.media.video import extract_frames_from_video
 from source.core.constants import BYTES_PER_GB
 from source.core.log import orchestrator_logger
+from source.utils.download_utils import download_video_if_url
 
 __all__ = [
     "_extract_boundary_frames_for_vlm",

@@ -194,3 +194,8 @@ def resolve_parameters(orchestrator, model_type: str, task_params: dict) -> dict
     generation_logger.debug(f"FINAL resolved_params keys: {list(resolved_params.keys())}")
     generation_logger.debug(f"Parameter resolution for '{model_type}': {len(task_params)} task overrides applied")
     return resolved_params
+
+
+def query_resolve_parameters(orchestrator, model_type: str, task_params: dict) -> dict:
+    """Compatibility alias for resolve_parameters."""
+    return resolve_parameters(orchestrator=orchestrator, model_type=model_type, task_params=task_params)

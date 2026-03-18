@@ -13,11 +13,9 @@ from datetime import datetime
 from typing import Optional, Any
 
 from source.core.log import travel_logger
-from source.utils import (
-    create_mask_video_from_inactive_indices,
-    get_video_frame_count_and_fps,
-    prepare_output_path
-)
+from source.media.video.video_info import get_video_frame_count_and_fps
+from source.utils.mask_utils import create_mask_video_from_inactive_indices
+from source.utils.output_paths import prepare_output_path
 
 def create_mask_video(proc: Any) -> Optional[Path]:
     """

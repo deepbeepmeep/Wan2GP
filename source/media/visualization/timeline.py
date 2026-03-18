@@ -5,6 +5,7 @@ from typing import List, Optional
 from PIL import Image, ImageDraw, ImageFont
 
 from source.core.log import headless_logger
+from source.media.visualization.timeline_thumbnails import _load_timeline_thumbnail
 
 
 def _apply_video_treatment(clip, target_duration: float, target_fps: int, treatment: str, video_name: str = "video"):
@@ -29,10 +30,18 @@ def _apply_video_treatment(clip, target_duration: float, target_fps: int, treatm
     current_fps = clip.fps
     current_frame_count = int(clip.duration * clip.fps)
     target_frame_count = int(target_duration * target_fps)
+    if current_frame_count <= 0 or target_frame_count <= 0:
+        raise ValueError("Video treatment requires at least one input and target frame")
 
     if treatment == "adjust":
         # ADJUST MODE: Linear interpolation sampling (matches generation logic line 201)
-        if current_frame_count >= target_frame_count:
+        if target_frame_count == 1:
+            frame_indices = [0]
+            headless_logger.debug(f"  {video_name}: adjust mode - collapsing to a single frame")
+        elif current_frame_count == 1:
+            frame_indices = [0 for _ in range(target_frame_count)]
+            headless_logger.debug(f"  {video_name}: adjust mode - repeating single source frame")
+        elif current_frame_count >= target_frame_count:
             frame_indices = [int(i * (current_frame_count - 1) / (target_frame_count - 1))
                            for i in range(target_frame_count)]
             headless_logger.debug(f"  {video_name}: adjust mode - sampling {target_frame_count} from {current_frame_count} frames (compress)")
@@ -72,6 +81,8 @@ def _apply_video_treatment(clip, target_duration: float, target_fps: int, treatm
         frame_indices = resample_frame_indices(current_fps, current_frame_count, target_frame_count, target_fps)
 
         # If video too short, loop
+        if not frame_indices and current_frame_count > 0:
+            frame_indices = [0]
         if len(frame_indices) < target_frame_count:
             headless_logger.debug(f"  {video_name}: clip mode - video too short, looping to fill {target_frame_count} frames")
             while len(frame_indices) < target_frame_count:

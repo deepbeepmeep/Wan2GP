@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import time
 from importlib import import_module
+from types import MappingProxyType
 from typing import Any
 
 from source.core.runtime_paths import ensure_wan2gp_on_path
@@ -16,6 +17,20 @@ _STATE: dict[str, Any] = {
     "last_imported_at": None,
     "last_force_reload": False,
 }
+
+
+class _ReadonlyRuntimeProxy:
+    def __init__(self, runtime):
+        object.__setattr__(self, "_runtime", runtime)
+
+    def __getattr__(self, name: str):
+        value = getattr(object.__getattribute__(self, "_runtime"), name)
+        if isinstance(value, dict):
+            return MappingProxyType(value)
+        return value
+
+    def __setattr__(self, name: str, value):
+        raise AttributeError(f"{type(self).__name__} is read-only")
 
 
 def get_wgp_runtime_state() -> dict[str, Any]:
@@ -32,24 +47,31 @@ def reset_wgp_runtime_module() -> None:
 
 
 def get_wgp_runtime_module(*, force_reload: bool = False):
-    bridge_module = sys.modules.get("source.runtime.wgp_bridge")
-    ensure_fn = getattr(bridge_module, "ensure_wan2gp_on_path", ensure_wan2gp_on_path) if bridge_module else ensure_wan2gp_on_path
-    import_fn = getattr(bridge_module, "import_module", import_module) if bridge_module else import_module
-    ensure_fn()
+    ensure_wan2gp_on_path()
     if force_reload:
         sys.modules.pop("wgp", None)
     module = sys.modules.get("wgp")
     if module is None:
-        module = import_fn("wgp")
+        module = import_module("wgp")
+    _STATE["module_id"] = id(module)
+    _STATE["import_count"] = int(_STATE["import_count"]) + 1
+    _STATE["last_imported_at"] = time.time()
+    _STATE["last_force_reload"] = bool(force_reload)
+    return _ReadonlyRuntimeProxy(module)
+
+
+def get_wgp_runtime_module_mutable(*, force_reload: bool = False):
+    ensure_wan2gp_on_path()
+    if force_reload:
+        sys.modules.pop("wgp", None)
+    module = sys.modules.get("wgp")
+    if module is None:
+        module = import_module("wgp")
     _STATE["module_id"] = id(module)
     _STATE["import_count"] = int(_STATE["import_count"]) + 1
     _STATE["last_imported_at"] = time.time()
     _STATE["last_force_reload"] = bool(force_reload)
     return module
-
-
-def get_wgp_runtime_module_mutable(*, force_reload: bool = False):
-    return get_wgp_runtime_module(force_reload=force_reload)
 
 
 def get_wgp_models_def(*, force_reload: bool = False):

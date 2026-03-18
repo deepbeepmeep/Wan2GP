@@ -1,5 +1,7 @@
 """Orchestrator parameter extraction and failure reporting utilities."""
 
+from source.core.db.config import STATUS_FAILED
+from source.core.db.task_status import update_task_status
 from source.core.log import headless_logger
 
 __all__ = [
@@ -94,13 +96,6 @@ def report_orchestrator_failure(task_params_dict: dict, error_msg: str) -> None:
             of the standard keys (e.g. ``orchestrator_task_id_ref``).
         error_msg: Human-readable message describing the failure.
     """
-    # Defer import to avoid potential circular dependencies at module import time
-    try:
-        from source import db_operations as db_ops  # type: ignore
-    except ImportError as e:  # pragma: no cover
-        headless_logger.error(f"[report_orchestrator_failure] Could not import db_operations: {e}")
-        return
-
     orchestrator_id = None
     # Common payload keys that may reference the orchestrator task
     for key in (
@@ -122,9 +117,9 @@ def report_orchestrator_failure(task_params_dict: dict, error_msg: str) -> None:
     truncated_msg = error_msg[:500]
 
     try:
-        db_ops.update_task_status(
+        update_task_status(
             orchestrator_id,
-            db_ops.STATUS_FAILED,
+            STATUS_FAILED,
             truncated_msg)
         headless_logger.debug(
             f"[report_orchestrator_failure] Marked orchestrator task {orchestrator_id} as FAILED with message: {truncated_msg}"

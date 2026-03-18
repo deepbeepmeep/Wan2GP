@@ -1,19 +1,31 @@
 """Unified client for debugging data access."""
 
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 from collections import Counter
 from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
+import httpx
 
 from supabase import create_client
 from debug.models import (
     TaskInfo, WorkerInfo, TasksSummary, WorkersSummary,
     SystemHealth, OrchestratorStatus
 )
+
+
+class DebugDataUnavailableError(RuntimeError):
+    """Raised when debug data cannot be fetched due to transport/runtime issues."""
+
+
+@dataclass(frozen=True)
+class TaskQuery:
+    limit: int = 50
+    status: str | None = None
+    task_type: str | None = None
+    worker_id: str | None = None
+    hours: int | None = None
 
 
 class LogQueryClient:
@@ -91,15 +103,22 @@ class LogQueryClient:
 class DebugClient:
     """Unified client for all debugging data."""
     
-    def __init__(self):
+    def __init__(self, *, debug: bool = False):
+        load_dotenv()
         supabase_url = os.getenv("SUPABASE_URL")
         supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         
         if not supabase_url or not supabase_key:
             raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in environment")
         
+        self.debug = debug
         self.supabase = create_client(supabase_url, supabase_key)
         self.log_client = LogQueryClient(self.supabase)
+        self.log_query_class = lambda **kwargs: kwargs
+
+    def _debug(self, message: str) -> None:
+        if self.debug:
+            print(f"[DEBUG] {message}")
     
     # ==================== TASK METHODS ====================
     
@@ -161,6 +180,8 @@ class DebugClient:
         """
         child_tasks = []
         
+        query_errors: list[Exception] = []
+
         # Method 1: Query by dependant_on
         try:
             result = self.supabase.table('tasks').select(
@@ -171,6 +192,7 @@ class DebugClient:
                 child_tasks.extend(result.data)
         except Exception as e:
             print(f"[DEBUG] Failed to query child tasks by dependant_on: {e}")
+            query_errors.append(e)
 
         # Method 2: Look for orchestrator_task_id in params (for travel segments)
         # This requires a more complex query - check params JSON
@@ -214,6 +236,10 @@ class DebugClient:
                             child_tasks.append(task)
         except Exception as e:
             print(f"[DEBUG] Failed to query child tasks by project_id/params: {e}")
+            query_errors.append(e)
+
+        if not child_tasks and query_errors and all(isinstance(exc, httpx.HTTPError) for exc in query_errors):
+            raise DebugDataUnavailableError(str(query_errors[-1])) from query_errors[-1]
 
         # Sort by segment_index if available, otherwise by created_at
         def sort_key(task):
@@ -290,15 +316,24 @@ class DebugClient:
     
     def get_recent_tasks(
         self,
-        limit: int = 50,
+        limit: int | TaskQuery = 50,
         status: Optional[str] = None,
         task_type: Optional[str] = None,
         worker_id: Optional[str] = None,
         hours: Optional[int] = None
     ) -> TasksSummary:
         """Get recent tasks with analysis."""
+        if isinstance(limit, TaskQuery):
+            status = limit.status
+            task_type = limit.task_type
+            worker_id = limit.worker_id
+            hours = limit.hours
+            limit = limit.limit
         # Build query
-        query = self.supabase.table('tasks').select('*')
+        try:
+            query = self.supabase.table('tasks').select('*')
+        except httpx.HTTPError as exc:
+            raise DebugDataUnavailableError(str(exc)) from exc
         
         if status:
             query = query.eq('status', status)
@@ -311,7 +346,10 @@ class DebugClient:
             query = query.gte('created_at', cutoff.isoformat())
         
         query = query.order('created_at', desc=True).limit(limit)
-        result = query.execute()
+        try:
+            result = query.execute()
+        except httpx.HTTPError as exc:
+            raise DebugDataUnavailableError(str(exc)) from exc
         tasks = result.data or []
         
         # Calculate statistics

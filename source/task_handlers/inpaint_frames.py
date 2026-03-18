@@ -31,6 +31,7 @@ from source.media.video.vace_frame_utils import (
     validate_frame_range
 )
 from source.core.log import task_logger
+from source.core.params.task_result import normalize_task_result
 
 def _handle_inpaint_frames_task(
     task_params_from_db: dict,
@@ -233,7 +234,7 @@ def _handle_inpaint_frames_task(
 
         try:
             # Import GenerationTask from correct location
-            from headless_model_management import GenerationTask
+            from source.task_handlers.queue.task_queue import GenerationTask
 
             generation_task = GenerationTask(
                 id=task_id,
@@ -294,5 +295,18 @@ def _handle_inpaint_frames_task(
         return False, error_msg
 
 
-# Public alias for cross-module use.
-handle_inpaint_frames_task = _handle_inpaint_frames_task
+def handle_inpaint_frames_task(
+    task_params_from_db: dict,
+    main_output_dir_base: Path,
+    task_id: str,
+    task_queue=None,
+):
+    """Typed public entrypoint that normalizes the legacy tuple result."""
+    return normalize_task_result(
+        _handle_inpaint_frames_task(
+            task_params_from_db=task_params_from_db,
+            main_output_dir_base=main_output_dir_base,
+            task_id=task_id,
+            task_queue=task_queue,
+        )
+    )

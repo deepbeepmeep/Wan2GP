@@ -265,7 +265,7 @@ def generate_transition_prompts_batch(
                 # Upload debug images
                 if upload_debug_images and task_id and debug_path and debug_path.exists():
                     try:
-                        from source.utils import upload_intermediate_file_to_storage
+                        from source.utils.output_paths import upload_intermediate_file_to_storage
 
                         upload_filename = f"vlm_debug_pair{i}_combined.jpg"
                         upload_url = upload_intermediate_file_to_storage(

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from source.core.log import headless_logger
 from source.task_handlers.tasks.task_types import is_wgp_task
-from source.utils import prepare_output_path
+from source.utils.output_paths import prepare_output_path
 
 
 def move_wgp_output_to_task_type_dir(

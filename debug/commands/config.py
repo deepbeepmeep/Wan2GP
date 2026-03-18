@@ -4,6 +4,10 @@ import os
 from dotenv import load_dotenv
 
 
+def _format_secret_status(value: str | None) -> str:
+    return "set" if value else "Not set"
+
+
 def run(client, options: dict):
     """Handle 'debug.py config' command."""
     load_dotenv()
@@ -52,7 +56,7 @@ def run(client, options: dict):
     for env_var, description in runpod_configs:
         value = os.getenv(env_var, "Not set")
         if value and value != "Not set" and "KEY" in env_var:
-            display_value = f"{value[:8]}...{value[-4:]}" if len(value) > 12 else "***"
+            display_value = _format_secret_status(value)
         else:
             display_value = value
         print(f"\n{env_var}: {display_value}")
@@ -71,7 +75,7 @@ def run(client, options: dict):
     for env_var, description in db_configs:
         value = os.getenv(env_var, "Not set")
         if value and value != "Not set" and "KEY" in env_var:
-            display_value = f"{value[:8]}...{value[-4:]}" if len(value) > 12 else "***"
+            display_value = _format_secret_status(value)
         else:
             display_value = value
         print(f"\n{env_var}: {display_value}")
@@ -105,7 +109,6 @@ Note: If tasks are queued, at least 1 worker is kept regardless of MIN_ACTIVE_GP
         print(f"   (Depends on when orchestrator cycle runs after grace period expires)")
     
     print("\n" + "=" * 80)
-
 
 
 

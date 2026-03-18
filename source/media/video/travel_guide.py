@@ -1,4 +1,8 @@
-"""Travel-specific video operations: RIFE interpolation, VACE ref prep, guide video creation."""
+"""Travel-specific video operations: RIFE interpolation, VACE ref prep, guide video creation.
+
+Typed request adaptation for these helpers lives in
+``source.task_handlers.travel.guidance.guide_video_ops``.
+"""
 import os
 from pathlib import Path
 
@@ -9,15 +13,15 @@ from PIL import Image
 
 from source.core.log import generation_logger
 from source.runtime.wgp_bridge import run_rife_temporal_interpolation
-from source.utils import (
-    download_image_if_url,
-    get_sequential_target_path,
+from source.utils.download_utils import download_image_if_url
+from source.utils.frame_utils import (
     apply_strength_to_image,
     create_color_frame,
-    image_to_frame,
     get_easing_function,
-    wait_for_file_stable,
+    get_sequential_target_path,
+    image_to_frame,
 )
+from source.utils.output_paths import wait_for_file_stable
 from source.media.video.video_transforms import adjust_frame_brightness
 from source.core.params.structure_guidance import StructureGuidanceConfig
 from source.media.video.frame_extraction import extract_frames_from_video

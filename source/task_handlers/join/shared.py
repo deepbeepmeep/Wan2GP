@@ -8,7 +8,11 @@ Provides cancellation checks, settings extraction, and idempotency checks.
 import json
 from typing import Optional
 
-from source import db_operations as db_ops
+from source.core.db.dependencies.task_dependencies_children import (
+    cancel_orchestrator_children,
+    get_task_current_status,
+)
+from source.core.db.task_dependencies import get_orchestrator_child_tasks
 from source.core.log import task_logger
 from source.core.params.task_result import TaskResult
 
@@ -16,10 +20,41 @@ __all__ = [
     "_check_orchestrator_cancelled",
     "_extract_join_settings_from_payload",
     "_check_existing_join_tasks",
+    "_check_parallel_join_tasks",
+    "_check_chain_join_tasks",
     "check_orchestrator_cancelled",
     "extract_join_settings_from_payload",
     "check_existing_join_tasks",
 ]
+
+
+def _partial_join_child_state_result(prefix: str) -> TaskResult:
+    return TaskResult.orchestrating(f"{prefix} Partial join child state detected; waiting for existing children to settle.")
+
+
+def _check_parallel_join_tasks(
+    orchestrator_task_id_str: str,
+    num_joins: int,
+    existing_joins: list[dict],
+    existing_final_stitch: list[dict],
+) -> Optional[TaskResult]:
+    if not existing_joins and not existing_final_stitch:
+        return None
+    if len(existing_joins) < num_joins or not existing_final_stitch:
+        return _partial_join_child_state_result("Parallel:")
+    return None
+
+
+def _check_chain_join_tasks(
+    orchestrator_task_id_str: str,
+    num_joins: int,
+    existing_joins: list[dict],
+    existing_final_stitch: list[dict],
+) -> Optional[TaskResult]:
+    _ = orchestrator_task_id_str, existing_final_stitch
+    if existing_joins and len(existing_joins) < num_joins:
+        return _partial_join_child_state_result("Chain:")
+    return None
 
 
 def _check_orchestrator_cancelled(orchestrator_task_id: str, context_msg: str, **_kwargs) -> str | None:
@@ -27,10 +62,10 @@ def _check_orchestrator_cancelled(orchestrator_task_id: str, context_msg: str, *
 
     Returns an error message string if cancelled, None if still active.
     """
-    status = db_ops.get_task_current_status(orchestrator_task_id)
+    status = get_task_current_status(orchestrator_task_id)
     if status and status.lower() in ('cancelled', 'canceled'):
         task_logger.debug(f"[CANCELLATION] Join orchestrator {orchestrator_task_id} was cancelled - {context_msg}", task_id=orchestrator_task_id)
-        db_ops.cancel_orchestrator_children(orchestrator_task_id, reason="Orchestrator cancelled by user")
+        cancel_orchestrator_children(orchestrator_task_id, reason="Orchestrator cancelled by user")
         return f"Orchestrator cancelled: {context_msg}"
     return None
 
@@ -93,7 +128,7 @@ def _check_existing_join_tasks(
         TaskResult if should return early (complete/failed/in-progress).
     """
     task_logger.debug(f"[JOIN_CORE] Checking for existing child tasks", task_id=orchestrator_task_id_str)
-    existing_child_tasks = db_ops.get_orchestrator_child_tasks(orchestrator_task_id_str)
+    existing_child_tasks = get_orchestrator_child_tasks(orchestrator_task_id_str)
     existing_joins = existing_child_tasks.get('join_clips_segment', [])
     existing_final_stitch = existing_child_tasks.get('join_final_stitch', [])
 
@@ -115,8 +150,14 @@ def _check_existing_join_tasks(
 
     if is_parallel_pattern:
         # === PARALLEL PATTERN ===
-        if len(existing_joins) < num_joins:
-            return None
+        partial_result = _check_parallel_join_tasks(
+            orchestrator_task_id_str=orchestrator_task_id_str,
+            num_joins=num_joins,
+            existing_joins=existing_joins,
+            existing_final_stitch=existing_final_stitch,
+        )
+        if partial_result is not None:
+            return partial_result
 
         all_tasks = existing_joins + existing_final_stitch
         any_failed = any(is_terminal_failure(t) for t in all_tasks)
@@ -140,8 +181,14 @@ def _check_existing_join_tasks(
 
     else:
         # === CHAIN PATTERN (legacy) ===
-        if len(existing_joins) < num_joins:
-            return None
+        partial_result = _check_chain_join_tasks(
+            orchestrator_task_id_str=orchestrator_task_id_str,
+            num_joins=num_joins,
+            existing_joins=existing_joins,
+            existing_final_stitch=existing_final_stitch,
+        )
+        if partial_result is not None:
+            return partial_result
 
         task_logger.debug(f"[JOIN_CORE] All {num_joins} join tasks already exist (chain pattern)", task_id=orchestrator_task_id_str)
 

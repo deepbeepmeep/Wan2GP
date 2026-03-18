@@ -11,7 +11,7 @@ from source.media.video.video_info import VideoMetadataError
 from source.task_handlers.join.video_preprocess_utils import (
     require_video_frame_count_and_fps,
 )
-from source.utils import upload_intermediate_file_to_storage
+from source.utils.output_paths import upload_intermediate_file_to_storage
 
 
 def _detect_resolution(video_path: Path) -> tuple[int, int] | None:

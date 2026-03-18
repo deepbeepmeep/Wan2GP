@@ -1,4 +1,5 @@
 """FFmpeg-based video operations: creation, FPS conversion, frame extraction to video."""
+from dataclasses import dataclass
 import subprocess
 import threading
 from pathlib import Path
@@ -7,6 +8,7 @@ import cv2
 import numpy as np
 
 from source.core.log import generation_logger
+from source.utils.subprocess_utils import run_subprocess
 from source.media.video.video_info import (
     get_video_frame_count_and_fps,
     get_video_frame_count_ffprobe,
@@ -19,7 +21,14 @@ __all__ = [
     "apply_saturation_to_video_ffmpeg",
     "video_has_audio",
     "mux_audio_from_segments",
+    "mux_audio_from_segments_result",
 ]
+
+
+@dataclass(frozen=True)
+class AudioMuxResult:
+    status: str
+    output_path: Path | None = None
 
 
 def ensure_video_fps(
@@ -97,7 +106,7 @@ def ensure_video_fps(
     ]
 
     try:
-        result = subprocess.run(resample_cmd, capture_output=True, text=True, timeout=600)
+        result = run_subprocess(resample_cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"FFmpeg resample timed out after 600s for {input_video_path}") from e
     except (subprocess.SubprocessError, OSError) as e:
@@ -595,3 +604,22 @@ def mux_audio_from_segments(
     except (subprocess.SubprocessError, OSError, ValueError) as e:
         generation_logger.warning(f"[AUDIO_MUX] Audio mux failed: {e}")
         return None
+
+
+def mux_audio_from_segments_result(
+    *,
+    silent_video: Path,
+    segment_videos: list[Path],
+    output_path: Path,
+) -> AudioMuxResult:
+    if not any(video_has_audio(path) for path in segment_videos):
+        return AudioMuxResult(status="no_audio", output_path=None)
+
+    muxed = mux_audio_from_segments(
+        silent_video=silent_video,
+        segment_videos=segment_videos,
+        output_path=output_path,
+    )
+    if muxed is None:
+        return AudioMuxResult(status="failed", output_path=None)
+    return AudioMuxResult(status="ok", output_path=Path(muxed))

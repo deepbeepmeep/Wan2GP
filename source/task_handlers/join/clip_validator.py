@@ -8,8 +8,9 @@ and calculates minimum frame requirements.
 from pathlib import Path
 from typing import Tuple, List
 
-from source.utils import download_video_if_url, get_video_frame_count_and_fps
 from source.core.log import task_logger
+from source.media.video.video_info import get_video_frame_count_and_fps
+from source.utils.download_utils import download_video_if_url
 
 __all__ = [
     "calculate_min_clip_frames",

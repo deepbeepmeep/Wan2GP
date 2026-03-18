@@ -8,6 +8,8 @@ instead of using a massive if/elif block.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
+from importlib import import_module
 from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING
 from pathlib import Path
 import time
@@ -16,13 +18,15 @@ import uuid
 
 if TYPE_CHECKING:
     from source.core.params.contracts import TaskDispatchContext
-    from headless_model_management import HeadlessTaskQueue
+    from source.task_handlers.queue.task_queue import HeadlessTaskQueue
 
 from source.core.log import headless_logger, task_logger
 from source.task_handlers.worker.worker_utils import log_ram_usage
 from source.task_handlers.tasks.task_conversion import db_task_to_generation_task
 from source.core.params.phase_config_parser import parse_phase_config
 from source.core.params.structure_guidance import StructureGuidanceConfig
+from source.core.params.travel_guidance import TravelGuidanceConfig
+from source.task_handlers.contracts.dispatch import normalize_task_dispatch_payload
 from source.task_handlers.tasks.travel_segment_types import IndividualSegmentParams
 
 # Import task handlers
@@ -40,18 +44,16 @@ from source.task_handlers.edit_video_orchestrator import handle_edit_video_orche
 from source.task_handlers.inpaint_frames import handle_inpaint_frames_task
 from source.task_handlers.create_visualization import handle_create_visualization_task
 from source.task_handlers.travel.segment_processor import TravelSegmentProcessor, TravelSegmentContext
-from source.utils import (
-    parse_resolution,
-    snap_resolution_to_model_grid,
-    ensure_valid_prompt,
-    ensure_valid_negative_prompt,
-    download_image_if_url
-)
 from source.media.video import extract_last_frame_as_image
-from source import db_operations as db_ops
+from source.core.db.dependencies.task_dependencies_queries import get_predecessor_output_via_edge_function
+from source.core.db.task_polling import get_task_params
+from source.utils.download_utils import download_file, download_image_if_url
+from source.utils.prompt_utils import ensure_valid_negative_prompt, ensure_valid_prompt
+from source.utils.resolution_utils import parse_resolution, snap_resolution_to_model_grid
 
 # Import centralized task type definitions
 from source.task_handlers.tasks.task_types import DIRECT_QUEUE_TASK_TYPES
+from source.task_handlers.tasks.dispatch_manifest import HANDLER_IMPORT_SPECS as _HANDLER_SPECS
 
 
 # ─── Coordination dataclasses for handle_travel_segment_via_queue ────────────
@@ -95,10 +97,37 @@ class StructureOutputs:
     guide_video_path: Optional[str] = None
     mask_video_path_for_wgp: Optional[Path] = None
     video_prompt_type_str: Optional[str] = None
-    structure_config: Optional[StructureGuidanceConfig] = None
+    structure_config: Optional[StructureGuidanceConfig | TravelGuidanceConfig] = None
 
 
 _MISSING = object()
+
+_TRAVEL_SEGMENT_HANDLER_SPECS = {
+    "travel_segment": (
+        "source.task_handlers.travel.segments.segment_queue",
+        "handle_travel_segment_via_queue",
+    ),
+    "individual_travel_segment": (
+        "source.task_handlers.travel.segments.segment_queue",
+        "handle_travel_segment_via_queue",
+    ),
+}
+
+
+def _parse_handler_spec(spec) -> tuple[str, str]:
+    if isinstance(spec, tuple) and len(spec) == 2:
+        return spec
+    if isinstance(spec, str) and "." in spec:
+        module_path, attr_name = spec.rsplit(".", 1)
+        return module_path, attr_name
+    raise ValueError(f"Invalid handler import spec: {spec!r}")
+
+
+@lru_cache(maxsize=None)
+def _load_handler_callable(task_type: str):
+    module_path, attr_name = _parse_handler_spec(_HANDLER_SPECS[task_type])
+    module = import_module(module_path)
+    return getattr(module, attr_name)
 
 def _get_param(key, *sources, default=_MISSING, prefer_truthy: bool = False):
     """
@@ -155,7 +184,7 @@ def _resolve_segment_context(task_params_dict: dict, is_standalone: bool, task_i
         if not orchestrator_details:
             if not orchestrator_task_id_ref:
                 raise ValueError(f"Travel segment {task_id} missing orchestrator_details and orchestrator_task_id_ref")
-            orchestrator_task_raw_params_json = db_ops.get_task_params(orchestrator_task_id_ref)
+            orchestrator_task_raw_params_json = get_task_params(orchestrator_task_id_ref)
             if orchestrator_task_raw_params_json:
                 fetched_params = json.loads(orchestrator_task_raw_params_json) if isinstance(orchestrator_task_raw_params_json, str) else orchestrator_task_raw_params_json
                 orchestrator_details = fetched_params.get("orchestrator_details")
@@ -326,7 +355,7 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
             predecessor_output_url = svi_predecessor_video_url
         # Priority 2: Fetch from dependency chain (for segment_idx > 0)
         elif segment_idx > 0:
-            task_dependency_id, predecessor_output_url = db_ops.get_predecessor_output_via_edge_function(task_id)
+            task_dependency_id, predecessor_output_url = get_predecessor_output_via_edge_function(task_id)
             if task_dependency_id and predecessor_output_url:
                 task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: Found predecessor {task_dependency_id} with output: {predecessor_output_url}")
             else:
@@ -337,7 +366,6 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
             predecessor_video_path = predecessor_output_url
             if predecessor_output_url.startswith("http"):
                 try:
-                    from source.utils import download_file as download_file
                     local_filename = Path(predecessor_output_url).name
                     local_download_path = segment_processing_dir / f"svi_predecessor_{segment_idx:02d}_{local_filename}"
 
@@ -516,22 +544,35 @@ def _process_structure_guidance(ctx: SegmentContext, gen: GenerationInputs, task
     mask_video_path_for_wgp = None
     video_prompt_type_str = None
 
-    # Always parse unified structure guidance config up-front so later logic can rely on it.
-    # This handles both new format (structure_guidance.videos) and legacy params (structure_videos).
-    structure_config = StructureGuidanceConfig.from_params({
-        **orchestrator_details,
-        **segment_params
-    })
-
-    # Check if structure guidance is configured (uses unified config)
-    has_structure_guidance = structure_config.has_guidance
+    travel_guidance_payload = segment_params.get("travel_guidance")
+    if isinstance(travel_guidance_payload, dict):
+        structure_config: StructureGuidanceConfig | TravelGuidanceConfig
+        travel_guidance_config = TravelGuidanceConfig.from_payload(
+            travel_guidance_payload,
+            gen.model_name,
+        )
+        if travel_guidance_config.kind in {"vace", "uni3c"}:
+            structure_config = travel_guidance_config.to_structure_guidance_config()
+        else:
+            structure_config = travel_guidance_config
+        has_structure_guidance = structure_config.has_guidance
+    else:
+        # Backward-compatible path for legacy callers and non-travel structure guidance.
+        structure_config = StructureGuidanceConfig.from_params({
+            **orchestrator_details,
+            **segment_params
+        })
+        has_structure_guidance = structure_config.has_guidance
 
     # Run TravelSegmentProcessor for:
     # 1. VACE mode (always - requires masks and guides)
     # 2. Any mode with structure guidance configured (enables uni3c/flow guidance for i2v, etc.)
     if travel_mode == "vace" or has_structure_guidance:
         if has_structure_guidance and travel_mode != "vace":
-            task_logger.debug(f"[STRUCTURE_GUIDANCE] Task {task_id}: Running TravelSegmentProcessor for {travel_mode} mode (structure_guidance configured)")
+            task_logger.debug(
+                f"[STRUCTURE_GUIDANCE] Task {task_id}: Running TravelSegmentProcessor for "
+                f"{travel_mode} mode (guidance configured)"
+            )
         try:
             processor_context = TravelSegmentContext(
                 task_id=task_id,
@@ -927,8 +968,6 @@ def _apply_uni3c_config(generation_params: dict, ctx: SegmentContext, gen: Gener
     if not use_uni3c:
         return
 
-    from source.utils import download_file as download_file
-
     # Get guide video from config (may have been set by processor)
     uni3c_guide = structure_config.guidance_video_url
 
@@ -985,7 +1024,7 @@ def _apply_uni3c_config(generation_params: dict, ctx: SegmentContext, gen: Gener
         task_logger.debug(f"[UNI3C] Task {task_id}: Will blackout last frame (is_last_segment + has end anchor)")
 
 
-def handle_travel_segment_via_queue(task_params_dict: dict, main_output_dir_base: Path, task_id: str, colour_match_videos: bool, mask_active_frames: bool, task_queue: HeadlessTaskQueue, is_standalone: bool = False):
+def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_dir_base: Path, task_id: str, colour_match_videos: bool, mask_active_frames: bool, task_queue: HeadlessTaskQueue, is_standalone: bool = False):
     """Handle travel segment tasks via direct queue integration to eliminate blocking waits.
 
     Orchestrator mode (is_standalone=False) requires orchestrator_task_id_ref, orchestrator_run_id, segment_index.
@@ -1033,7 +1072,7 @@ def handle_travel_segment_via_queue(task_params_dict: dict, main_output_dir_base
         # This keeps logs, fatal error handling, and debug tooling consistent (no "travel_seg_" indirection).
         # We still include a hint in parameters so the queue can apply any task-type specific behavior.
         generation_params["_source_task_type"] = "travel_segment"
-        from headless_model_management import GenerationTask
+        from source.task_handlers.queue.task_queue import GenerationTask
 
         generation_task = GenerationTask(
             id=task_id,
@@ -1099,6 +1138,16 @@ def handle_travel_segment_via_queue(task_params_dict: dict, main_output_dir_base
 
 class TaskRegistry:
     """Registry for task handlers."""
+
+    @staticmethod
+    def validate_registered_handlers() -> dict[str, str]:
+        failures: dict[str, str] = {}
+        for task_type in _HANDLER_SPECS:
+            try:
+                _load_handler_callable(task_type)
+            except Exception as exc:
+                failures[task_type] = str(exc)
+        return failures
     
     @staticmethod
     def dispatch(task_type: str, context: "TaskDispatchContext") -> Tuple[bool, Optional[str]]:
@@ -1126,7 +1175,7 @@ class TaskRegistry:
                 main_output_dir_base=context["main_output_dir_base"],
                 orchestrator_task_id_str=task_id,
                 orchestrator_project_id=context["project_id"]),
-            "travel_segment": lambda: handle_travel_segment_via_queue(
+            "travel_segment": lambda: _load_handler_callable("travel_segment")(
                 task_params_dict=params,
                 main_output_dir_base=context["main_output_dir_base"],
                 task_id=task_id,
@@ -1135,7 +1184,7 @@ class TaskRegistry:
                 task_queue=context["task_queue"],
                 is_standalone=False
             ),
-            "individual_travel_segment": lambda: handle_travel_segment_via_queue(
+            "individual_travel_segment": lambda: _load_handler_callable("individual_travel_segment")(
                 task_params_dict=params,
                 main_output_dir_base=context["main_output_dir_base"],
                 task_id=task_id,
@@ -1193,13 +1242,28 @@ class TaskRegistry:
         }
 
         if task_type in handlers:
-            # Orchestrator setup
-            if task_type in ["travel_orchestrator", "join_clips_orchestrator", "edit_video_orchestrator"]:
-                params["task_id"] = task_id
-                if "orchestrator_details" in params:
-                    params["orchestrator_details"]["orchestrator_task_id"] = task_id
-            
-            return handlers[task_type]()
+            if task_type not in ["travel_orchestrator", "join_clips_orchestrator", "edit_video_orchestrator"]:
+                return handlers[task_type]()
+
+            dispatch_params = normalize_task_dispatch_payload(params, task_id=task_id)
+            orchestrator_handlers = {
+                "travel_orchestrator": lambda: travel_orchestrator.handle_travel_orchestrator_task(
+                    task_params_from_db=dispatch_params,
+                    main_output_dir_base=context["main_output_dir_base"],
+                    orchestrator_task_id_str=task_id,
+                    orchestrator_project_id=context["project_id"]),
+                "join_clips_orchestrator": lambda: handle_join_clips_orchestrator_task(
+                    task_params_from_db=dispatch_params,
+                    main_output_dir_base=context["main_output_dir_base"],
+                    orchestrator_task_id_str=task_id,
+                    orchestrator_project_id=context["project_id"]),
+                "edit_video_orchestrator": lambda: handle_edit_video_orchestrator_task(
+                    task_params_from_db=dispatch_params,
+                    main_output_dir_base=context["main_output_dir_base"],
+                    orchestrator_task_id_str=task_id,
+                    orchestrator_project_id=context["project_id"]),
+            }
+            return orchestrator_handlers[task_type]()
 
         # Default fallthrough to queue
         if context["task_queue"]:

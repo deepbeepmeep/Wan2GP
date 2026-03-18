@@ -4,10 +4,15 @@ import traceback
 from pathlib import Path
 
 import cv2
+import source.media.video.api as video_api
 
-from source import db_operations as db_ops
-from source.utils import save_frame_from_video, report_orchestrator_failure, prepare_output_path_with_upload, upload_and_get_final_output_location
+from source.core.db.task_polling import get_abs_path_from_db_path, get_task_output_location_from_db
 from source.core.log import task_logger
+from source.utils.orchestrator_utils import report_orchestrator_failure
+from source.utils.output_paths import (
+    prepare_output_path_with_upload,
+    upload_and_get_final_output_location,
+)
 
 def handle_extract_frame_task(task_params_dict: dict, main_output_dir_base: Path, task_id: str):
     """Handles the 'extract_frame' task."""
@@ -23,13 +28,13 @@ def handle_extract_frame_task(task_params_dict: dict, main_output_dir_base: Path
         return False, msg
 
     try:
-        video_path_from_db = db_ops.get_task_output_location_from_db(input_video_task_id)
+        video_path_from_db = get_task_output_location_from_db(input_video_task_id)
         if not video_path_from_db:
             msg = f"Task {task_id}: Could not find output location for dependency task {input_video_task_id}."
             report_orchestrator_failure(task_params_dict, msg)
             return False, msg
 
-        video_abs_path = db_ops.get_abs_path_from_db_path(video_path_from_db)
+        video_abs_path = get_abs_path_from_db_path(video_path_from_db)
         if not video_abs_path:
             msg = f"Task {task_id}: Could not resolve or find video file from DB path '{video_path_from_db}'."
             report_orchestrator_failure(task_params_dict, msg)
@@ -53,7 +58,7 @@ def handle_extract_frame_task(task_params_dict: dict, main_output_dir_base: Path
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
 
-        success = save_frame_from_video(
+        success = video_api.save_frame_from_video(
             input_video_path=video_abs_path,
             frame_index=frame_index,
             output_image_path=final_save_path,

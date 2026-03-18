@@ -13,6 +13,7 @@ Key Features:
 """
 
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
 from datetime import datetime
@@ -22,6 +23,18 @@ from source.core.log import generation_logger
 from source.utils.mask_utils import create_mask_video_from_inactive_indices
 from source.utils.frame_utils import create_color_frame
 from .ffmpeg_ops import create_video_from_frames_list
+
+
+@dataclass(frozen=True)
+class GuideMaskArtifacts:
+    guide_video_path: Path
+    mask_video_path: Path
+    total_frames: int
+
+    def __iter__(self):
+        yield self.guide_video_path
+        yield self.mask_video_path
+        yield self.total_frames
 
 
 def create_guide_and_mask_for_generation(

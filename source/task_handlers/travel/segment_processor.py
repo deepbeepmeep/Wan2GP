@@ -16,7 +16,8 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
 
 from source.core.log import travel_logger
-from source.utils import get_video_frame_count_and_fps
+from source.core.params.travel_guidance import TravelGuidanceConfig
+from source.media.video.video_info import get_video_frame_count_and_fps
 
 from source.task_handlers.travel.guide_builder import (
     create_guide_video as _build_guide_video,
@@ -58,6 +59,9 @@ class TravelSegmentProcessor:
     def __init__(self, ctx: TravelSegmentContext):
         self.ctx = ctx
         self.is_vace_model = self._detect_vace_model()
+        self._detected_structure_type = None
+        self._structure_config = None
+        self._travel_guidance_config = None
 
     def _detect_vace_model(self) -> bool:
         """Detect if this is a VACE model that requires guide videos."""
@@ -105,6 +109,33 @@ class TravelSegmentProcessor:
         travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: is_vace_model = {self.is_vace_model}", task_id=ctx.task_id)
         travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: mask_video_path exists = {mask_video_path is not None}", task_id=ctx.task_id)
 
+        travel_guidance_config = self._travel_guidance_config
+        if travel_guidance_config is None and isinstance(ctx.segment_params.get("travel_guidance"), dict):
+            travel_guidance_config = TravelGuidanceConfig.from_payload(
+                ctx.segment_params["travel_guidance"],
+                ctx.model_name,
+            )
+            self._travel_guidance_config = travel_guidance_config
+
+        if travel_guidance_config is not None:
+            if travel_guidance_config.is_ltx_control:
+                video_prompt_type_str = "VG"
+                travel_logger.debug(
+                    f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance ltx_control -> video_prompt_type='VG'",
+                    task_id=ctx.task_id,
+                )
+            elif travel_guidance_config.kind == "none":
+                video_prompt_type_str = ""
+            else:
+                video_prompt_type_str = ""
+
+            if video_prompt_type_str:
+                travel_logger.debug(
+                    f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance override result = '{video_prompt_type_str}'",
+                    task_id=ctx.task_id,
+                )
+                return video_prompt_type_str
+
         if self.is_vace_model:
             travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: ENTERING VACE MODEL PATH", task_id=ctx.task_id)
             vpt_components = []
@@ -150,7 +181,7 @@ class TravelSegmentProcessor:
 
             # Allow orchestrator to override via explicit guide_preprocessing
             guide_preprocessing = ctx.orchestrator_details.get("guide_preprocessing")
-            if guide_preprocessing:
+            if guide_preprocessing and travel_guidance_config is None:
                 video_prompt_type_str = guide_preprocessing
                 travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: Using explicit guide_preprocessing: {guide_preprocessing}", task_id=ctx.task_id)
 

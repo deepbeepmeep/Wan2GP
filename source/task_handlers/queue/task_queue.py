@@ -365,7 +365,7 @@ class HeadlessTaskQueue(WgpInitMixin):
             
             # Sanitize the filename for storage compatibility
             try:
-                from source.utils import sanitize_filename_for_storage
+                from source.utils.output_paths import sanitize_filename_for_storage
 
                 sanitized_filename = sanitize_filename_for_storage(original_filename)
                 if not sanitized_filename:

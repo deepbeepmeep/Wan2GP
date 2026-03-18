@@ -192,7 +192,7 @@ class WgpInitMixin:
             if is_debug_enabled():
                 self.logger.info("[LAZY_INIT] Runtime context active, importing WanOrchestrator...")
 
-            from headless_wgp import WanOrchestrator
+            from source.models.wgp.orchestrator import WanOrchestrator
 
             if is_debug_enabled():
                 try:

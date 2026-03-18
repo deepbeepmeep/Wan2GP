@@ -7,8 +7,8 @@ IMG2IMG_TARGET_MEGAPIXELS = 1024 * 1024
 # Default resolution string for image generation tasks
 DEFAULT_IMAGE_RESOLUTION = "1024x1024"
 from source.models.model_handlers.qwen_handler import QwenHandler
-from source.utils import extract_orchestrator_parameters
-from headless_model_management import GenerationTask
+from source.task_handlers.queue.task_queue import GenerationTask
+from source.utils.orchestrator_utils import extract_orchestrator_parameters
 
 def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: str, wan2gp_path: str, debug_mode: bool = False) -> GenerationTask:
     """
@@ -303,4 +303,3 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
     )
     
     return generation_task
-

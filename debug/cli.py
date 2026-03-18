@@ -24,13 +24,26 @@ Options:
 
 import sys
 import argparse
+import json
 from pathlib import Path
+from dataclasses import asdict, is_dataclass
 
 # Add project root to path so `import debug` works.
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from debug.client import DebugClient
+from debug.commands.registry import COMMAND_MODULES
+from debug.commands._shared import run_with_error_boundary
+from debug.options import (
+    coerce_config_options,
+    coerce_health_options,
+    coerce_runpod_options,
+    coerce_storage_options,
+    coerce_task_options,
+    coerce_tasks_options,
+    coerce_worker_options,
+)
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -106,84 +119,82 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def _build_options(args):
+    mapping = vars(args)
+    command = mapping.get("command")
+    common = {"format": "json" if mapping.get("json") else "text", "debug": bool(mapping.get("debug", False))}
+    if command == "task":
+        return coerce_task_options({**common, "task_id": mapping.get("task_id"), "logs_only": mapping.get("logs_only")})
+    if command == "worker":
+        return coerce_worker_options({
+            **common,
+            "worker_id": mapping.get("worker_id"),
+            "hours": mapping.get("hours"),
+            "logs_only": mapping.get("logs_only"),
+            "startup": mapping.get("startup"),
+            "check_logging": mapping.get("check_logging"),
+            "check_disk": mapping.get("check_disk"),
+        })
+    if command == "tasks":
+        return coerce_tasks_options({
+            **common,
+            "limit": mapping.get("limit"),
+            "status": mapping.get("status"),
+            "type": mapping.get("type"),
+            "worker": mapping.get("worker"),
+            "hours": mapping.get("hours"),
+        })
+    if command == "health":
+        return coerce_health_options(common)
+    if command == "config":
+        return coerce_config_options({"explain": mapping.get("explain")})
+    if command == "runpod":
+        return coerce_runpod_options({"terminate": mapping.get("terminate"), "debug": mapping.get("debug")})
+    if command == "storage":
+        return coerce_storage_options({"expand": mapping.get("expand"), "debug": mapping.get("debug")})
+    return common
+
+
+def _options_dict(options):
+    if is_dataclass(options):
+        return asdict(options)
+    return dict(options)
+
+
+def main() -> int:
     """Main entry point."""
     parser = create_parser()
     args = parser.parse_args()
 
-    # Import command handlers lazily (keeps import-time errors localized)
-    from debug.commands import task, worker, tasks, workers, health, orchestrator, config, runpod, storage
-
     # Create debug client
     try:
-        client = DebugClient()
+        client = DebugClient(debug=bool(getattr(args, "debug", False)))
     except Exception as e:
-        print(f"❌ Failed to initialize debug client: {e}")
-        print("\n💡 Make sure your environment has:")
-        print("   - SUPABASE_URL")
-        print("   - SUPABASE_SERVICE_ROLE_KEY")
-        sys.exit(1)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": "Failed to initialize debug client", "detail": str(e)}))
+        else:
+            print(f"Failed to initialize debug client: {e}")
+        return 1
 
-    # Convert args to options dict
-    options = {
-        "format": "json" if getattr(args, "json", False) else "text",
-        "debug": getattr(args, "debug", False),
-    }
-
-    # Add command-specific options
-    for key in [
-        "hours",
-        "limit",
-        "status",
-        "type",
-        "worker",
-        "detailed",
-        "logs_only",
-        "startup",
-        "check_logging",
-        "check_disk",
-        "explain",
-        "terminate",
-        "expand",
-    ]:
-        if hasattr(args, key):
-            options[key] = getattr(args, key)
+    options = _build_options(args)
 
     # Route to appropriate command handler
     try:
+        module = COMMAND_MODULES[args.command]
+        options_dict = _options_dict(options)
         if args.command == "task":
-            task.run(client, args.task_id, options)
+            module.run(client, args.task_id, options_dict)
         elif args.command == "worker":
-            worker.run(client, args.worker_id, options)
-        elif args.command == "tasks":
-            tasks.run(client, options)
-        elif args.command == "workers":
-            workers.run(client, options)
-        elif args.command == "health":
-            health.run(client, options)
-        elif args.command == "orchestrator":
-            orchestrator.run(client, options)
-        elif args.command == "config":
-            config.run(client, options)
-        elif args.command == "runpod":
-            runpod.run(client, options)
-        elif args.command == "storage":
-            storage.run(client, options)
+            module.run(client, args.worker_id, options_dict)
         else:
-            parser.print_help()
-            sys.exit(1)
+            module.run(client, options)
     except KeyboardInterrupt:
-        print("\n\n👋 Interrupted by user")
-        sys.exit(0)
+        return 0
     except Exception as e:
-        print(f"\n❌ Command failed: {e}")
-        if options.get("debug"):
-            import traceback
-
-            print(traceback.format_exc())
-        sys.exit(1)
+        run_with_error_boundary(lambda: (_ for _ in ()).throw(e), error_message="Command failed", json_output=getattr(args, "json", False))
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
-
+    raise SystemExit(main())

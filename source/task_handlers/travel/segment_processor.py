@@ -292,16 +292,30 @@ class TravelSegmentProcessor:
             travel_logger.debug(f"[VACEActivated] Seg {ctx.segment_idx}: Final video_prompt_type: '{video_prompt_type_str}'", task_id=ctx.task_id)
         elif self._is_ltx2_model():
             travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: ENTERING LTX-2 MODEL PATH", task_id=ctx.task_id)
+            travel_logger.debug(
+                f"[LTX_GUIDANCE] Seg {ctx.segment_idx}: "
+                f"guide_video={'YES' if guide_video_path else 'NO'}, "
+                f"mask_video={'YES' if mask_video_path else 'NO'}, "
+                f"guidance_kind={getattr(travel_guidance_config, 'kind', None)}, "
+                f"guidance_mode={getattr(travel_guidance_config, 'mode', None)}, "
+                f"needs_ic_lora={getattr(travel_guidance_config, 'needs_ic_lora', lambda: False)() if travel_guidance_config else False}, "
+                f"is_uni3c={getattr(structure_config, 'is_uni3c', False) if structure_config else False}",
+                task_id=ctx.task_id,
+            )
             # LTX-2 supports TSEV: T=text, S=start image, E=end image, V=video guide
             # Use guide_preprocessing from orchestrator if a guide video is provided
             if mask_video_path:
                 # LTX-2 supports mask preprocessing (A, NA, XA, XNA)
                 video_prompt_type_str = "VG" + "M" if mask_video_path else "VG"
-                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: LTX-2 with guide+mask", task_id=ctx.task_id)
+                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: LTX-2 with guide+mask → '{video_prompt_type_str}'", task_id=ctx.task_id)
+            elif guide_video_path:
+                # Guide video exists but no mask — use VG for video-guided generation
+                video_prompt_type_str = "VG"
+                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: LTX-2 with guide (no mask) → 'VG'", task_id=ctx.task_id)
             else:
                 # No guide video — use start image mode for keyframe-based generation
                 video_prompt_type_str = "S"
-                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: LTX-2 start-image mode", task_id=ctx.task_id)
+                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: LTX-2 start-image mode → 'S'", task_id=ctx.task_id)
 
             # Allow orchestrator to override via explicit guide_preprocessing
             guide_preprocessing = ctx.orchestrator_details.get("guide_preprocessing")

@@ -852,6 +852,17 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
     if guide_video_path: generation_params["video_guide"] = str(guide_video_path)
     if mask_video_path_for_wgp: generation_params["video_mask"] = str(mask_video_path_for_wgp.resolve())
     generation_params["video_prompt_type"] = video_prompt_type_str
+
+    # Log the complete guidance state being sent to WGP
+    task_logger.debug(
+        f"[LTX_WGP_HANDOFF] Task {task_id}: "
+        f"video_guide={'SET' if guide_video_path else 'NONE'}, "
+        f"video_mask={'SET' if mask_video_path_for_wgp else 'NONE'}, "
+        f"video_prompt_type='{video_prompt_type_str}', "
+        f"use_uni3c={generation_params.get('use_uni3c', False)}, "
+        f"uni3c_guide={'SET' if generation_params.get('uni3c_guide_video') else 'NONE'}, "
+        f"activated_loras={generation_params.get('activated_loras', [])}"
+    )
     if structure.image_refs_paths:
         generation_params["image_refs_paths"] = structure.image_refs_paths
     if structure.frames_positions:

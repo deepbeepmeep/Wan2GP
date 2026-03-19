@@ -250,7 +250,7 @@ def get_task_output_location_from_db(task_id_to_find: str, runtime_config=None) 
         headless_logger.error(f"No auth configuration available for get-task-output", task_id=task_id_to_find)
         return None
 
-    headers = build_edge_headers(token)
+    headers = build_edge_headers(token, include_apikey=False)
 
     payload = {"task_id": task_id_to_find}
 

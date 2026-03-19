@@ -33,6 +33,7 @@ from .config import (
     STATUS_COMPLETE,
     STATUS_FAILED,
     allow_direct_query_fallback,
+    build_edge_headers,
     resolve_edge_auth_token,
     resolve_edge_function_url)
 from .edge_helpers import _call_edge_function_with_retry
@@ -249,10 +250,7 @@ def get_task_output_location_from_db(task_id_to_find: str, runtime_config=None) 
         headless_logger.error(f"No auth configuration available for get-task-output", task_id=task_id_to_find)
         return None
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}"
-    }
+    headers = build_edge_headers(token)
 
     payload = {"task_id": task_id_to_find}
 

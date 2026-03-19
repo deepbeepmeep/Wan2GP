@@ -100,14 +100,16 @@ def create_mask_video(proc: Any) -> Optional[Path]:
 
         travel_logger.debug(f"Seg {ctx.segment_idx}: Creating mask video with {len(inactive_indices)} inactive frames: {sorted(inactive_indices)}", task_id=ctx.task_id)
 
-        # Always create mask video for VACE models (required for functionality)
-        # For non-VACE models, only create in debug mode
-        if not ctx.debug_enabled and not proc.is_vace_model:
+        # Mask video is required for VACE frame anchoring and for overlap-masked continuation.
+        if not ctx.debug_enabled and not (proc.is_vace_model or proc.generation_policy.continuation.uses_mask_video):
             travel_logger.debug(f"Task {ctx.task_id}: Debug mode disabled and non-VACE model, skipping mask video creation", task_id=ctx.task_id)
             return None
         else:
-            if proc.is_vace_model and not ctx.debug_enabled:
-                travel_logger.debug(f"Task {ctx.task_id}: VACE model detected, creating mask video (required for VACE functionality)", task_id=ctx.task_id)
+            if (proc.is_vace_model or proc.generation_policy.continuation.uses_mask_video) and not ctx.debug_enabled:
+                travel_logger.debug(
+                    f"Task {ctx.task_id}: Creating mask video for required travel frame anchoring",
+                    task_id=ctx.task_id,
+                )
 
             # Use the generalized mask creation function
             created_mask_vid = create_mask_video_from_inactive_indices(

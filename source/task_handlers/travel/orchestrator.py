@@ -17,6 +17,7 @@ from ...utils import (
     upload_and_get_final_output_location,
     get_video_frame_count_and_fps)
 from ...utils.resolution_utils import get_model_grid_size
+from ...core.params.generation_policy import GenerationPolicy
 from ...core.params.structure_guidance import StructureGuidanceConfig
 from ...core.params.travel_guidance import AnchorEntry, TravelGuidanceConfig
 from ...core.params.task_result import TaskResult
@@ -71,6 +72,13 @@ def _quantize_frames(frames: int, step: int) -> int:
     For step=8: valid values are 1, 9, 17, 25, ...
     """
     return ((frames - 1) // step) * step + 1
+
+
+def _quantize_frames_up(frames: int, step: int) -> int:
+    """Quantize a frame count up to the nearest valid step*N+1 value."""
+    if frames <= 1:
+        return 1
+    return ((frames + step - 2) // step) * step + 1
 
 
 def _calculate_segment_stitched_offsets(
@@ -412,9 +420,10 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             orchestrator_payload["use_svi"] = False
 
         chain_segments = bool(orchestrator_payload.get("chain_segments", True))
+        generation_policy = GenerationPolicy.from_payload(orchestrator_payload)
         should_create_stitch = bool(
             use_svi
-            or (travel_mode == "vace" and chain_segments)
+            or generation_policy.continuation.enabled
         )
         required_stitch_count = 1 if should_create_stitch else 0
         
@@ -1823,6 +1832,12 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 # SVI mode: ALWAYS sequential - each segment needs previous output for start frame
                 previous_segment_task_id = actual_segment_db_id_by_index.get(idx - 1) if idx > 0 else None
                 travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] Segment {idx} (SVI mode): Sequential dependency on previous segment: {previous_segment_task_id}")
+            elif generation_policy.continuation.enabled:
+                previous_segment_task_id = actual_segment_db_id_by_index.get(idx - 1) if idx > 0 else None
+                travel_logger.debug(
+                    f"[DEBUG_DEPENDENCY_CHAIN] Segment {idx} ({generation_policy.continuation.strategy} continuation): "
+                    f"Sequential dependency on previous segment: {previous_segment_task_id}"
+                )
             elif travel_mode == "i2v":
                 previous_segment_task_id = None
                 travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] Segment {idx} (i2v mode): No dependency on previous segment")
@@ -1834,7 +1849,7 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 previous_segment_task_id = actual_segment_db_id_by_index.get(idx - 1) if idx > 0 else None
 
             # Defensive fallback for sequential modes (SVI or VACE with chaining)
-            if (use_svi or (travel_mode == "vace" and chain_segments)):
+            if use_svi or generation_policy.continuation.enabled:
                 if idx > 0 and not previous_segment_task_id:
                     fallback_prev = existing_segment_task_ids.get(idx - 1)
                     if fallback_prev:
@@ -1950,9 +1965,8 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             if (
                 idx > 0
                 and current_frame_overlap_from_previous > 0
-                and chain_segments
                 and (not use_svi)
-                and travel_mode == "vace"
+                and generation_policy.continuation.enabled
             ):
                 # Sequential mode: add context frames for continuity with previous segment
                 segment_frames_target_with_context = base_segment_frames + current_frame_overlap_from_previous
@@ -1973,7 +1987,15 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             # Invalid counts cause mask/guide vs output frame count mismatches
             if (segment_frames_target_with_context - 1) % frame_step != 0:
                 old_count = segment_frames_target_with_context
-                segment_frames_target_with_context = _quantize_frames(segment_frames_target_with_context, frame_step)
+                if (
+                    idx > 0
+                    and current_frame_overlap_from_previous > 0
+                    and (not use_svi)
+                    and generation_policy.continuation.enabled
+                ):
+                    segment_frames_target_with_context = _quantize_frames_up(segment_frames_target_with_context, frame_step)
+                else:
+                    segment_frames_target_with_context = _quantize_frames(segment_frames_target_with_context, frame_step)
                 travel_logger.debug(f"[FRAME_QUANTIZATION] Segment {idx}: {old_count} -> {segment_frames_target_with_context} (enforcing {frame_step}N+1 rule)")
             
             # Consolidated segment frame count log for easy debugging
@@ -2219,11 +2241,14 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             # For SVI, use the small overlap value
             stitch_overlap_settings = [SVI_STITCH_OVERLAP] * (num_segments - 1) if num_segments > 1 else []
             travel_logger.debug(f"[STITCHING] SVI mode: Creating stitch task with overlap={SVI_STITCH_OVERLAP}")
-        elif travel_mode == "vace" and chain_segments:
-            # VACE sequential mode: Create stitch task with configured overlaps
+        elif generation_policy.continuation.enabled:
+            # Normalized continuation mode: Create stitch task with configured overlaps
             should_create_stitch = True
             stitch_overlap_settings = expanded_frame_overlap
-            travel_logger.debug(f"[STITCHING] VACE sequential mode: Creating stitch task with overlaps={expanded_frame_overlap}")
+            travel_logger.debug(
+                f"[STITCHING] {generation_policy.continuation.strategy}: "
+                f"Creating stitch task with overlaps={expanded_frame_overlap}"
+            )
         else:
             travel_logger.debug(f"[STITCHING] Skipping stitch task creation (mode={travel_mode}, chain_segments={chain_segments}, use_svi={use_svi})")
         

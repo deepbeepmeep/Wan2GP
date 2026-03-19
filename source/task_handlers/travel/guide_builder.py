@@ -18,7 +18,7 @@ from source.media.video import create_guide_video_for_travel_segment
 from source.media.video.ffmpeg_ops import create_video_from_frames_list
 from source.core.params.structure_guidance import StructureGuidanceConfig
 from source.core.params.travel_guidance import TravelGuidanceConfig
-from source.core.db.dependencies.task_dependencies_queries import get_predecessor_output_via_edge_function
+from source.core.db.dependencies.task_dependencies_queries import get_segment_predecessor_output
 from source.utils.download_utils import download_file, download_video_if_url
 from source.utils.output_paths import prepare_output_path
 
@@ -127,9 +127,10 @@ def _create_ltx_control_guide_video(
 def get_previous_segment_video(proc: Any) -> Optional[str]:
     """Get previous segment video output for guide creation."""
     ctx = proc.ctx
+    policy = proc.generation_policy
 
     chain_segments = ctx.orchestrator_details.get("chain_segments", True)
-    if not chain_segments:
+    if not chain_segments and not policy.continuation.enabled:
          travel_logger.debug(f"[INDEPENDENT_SEGMENTS] chain_segments=False: Skipping previous segment video lookup for segment {ctx.segment_idx}", task_id=ctx.task_id)
          return None
 
@@ -140,7 +141,20 @@ def get_previous_segment_video(proc: Any) -> Optional[str]:
         return ctx.orchestrator_details.get("continue_from_video_resolved_path")
     elif not is_first_segment:
         # Subsequent segment - get predecessor output
-        task_dependency_id, raw_path_from_db = get_predecessor_output_via_edge_function(ctx.task_id)
+        task_dependency_id, raw_path_from_db = get_segment_predecessor_output(
+            task_id=ctx.task_id,
+            parent_generation_id=(
+                ctx.segment_params.get("parent_generation_id")
+                or ctx.orchestrator_details.get("parent_generation_id")
+            ),
+            child_generation_id=(
+                ctx.individual_params.get("child_generation_id")
+                or ctx.segment_params.get("child_generation_id")
+                or ctx.orchestrator_details.get("child_generation_id")
+            ),
+            child_order=ctx.segment_params.get("child_order"),
+            segment_index=ctx.segment_idx,
+        )
         if task_dependency_id and raw_path_from_db:
             travel_logger.debug(f"Seg {ctx.segment_idx}: Found predecessor output: {raw_path_from_db}", task_id=ctx.task_id)
 
@@ -251,6 +265,7 @@ def create_guide_video(proc: Any) -> Optional[Path]:
 
     guide_required = (
         proc.is_vace_model
+        or proc.generation_policy.continuation.uses_guide_for_overlap
         or structure_config.has_guidance
         or (
             travel_guidance_config is not None

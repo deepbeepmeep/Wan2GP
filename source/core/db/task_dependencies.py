@@ -385,21 +385,33 @@ def _resolve_segment_branch_value(params_obj: dict, key: str) -> str | None:
             return value
     return None
 
-def get_predecessor_output_via_edge_function(task_id: str) -> tuple[str | None, str | None]:
+def get_predecessor_output_via_edge_function(
+    task_id: str,
+    *,
+    parent_generation_id: str | None = None,
+    child_order: int | None = None,
+) -> tuple[str | None, str | None]:
     """
-    Gets both the predecessor task ID and its output location using Supabase Edge Function.
+    Gets predecessor task/generation ID and output location via edge function.
 
-    Args:
-        task_id: Task ID to get predecessor for
+    Supports two lookup paths (handled server-side):
+    1. dependant_on chain — for orchestrator-created tasks
+    2. Generation sibling lookup — for individual segment regens (needs parent_generation_id + child_order)
 
     Returns:
-        (predecessor_id, output_location) or (None, None) if no dependency or error
+        (predecessor_id, output_location) or (None, None)
     """
     if not _cfg.SUPABASE_URL or not _cfg.SUPABASE_ACCESS_TOKEN:
         headless_logger.error("Supabase configuration incomplete. Falling back to direct queries.", task_id=task_id)
         return _fallback_predecessor_output_lookup(task_id)
 
     edge_url = f"{_cfg.SUPABASE_URL.rstrip('/')}/functions/v1/get-predecessor-output"
+
+    payload: dict[str, object] = {"task_id": task_id}
+    if parent_generation_id:
+        payload["parent_generation_id"] = parent_generation_id
+    if child_order is not None:
+        payload["child_order"] = child_order
 
     try:
         headless_logger.debug(f"Calling Edge Function: {edge_url} for task {task_id}")
@@ -408,7 +420,7 @@ def get_predecessor_output_via_edge_function(task_id: str) -> tuple[str | None, 
             'Authorization': f'Bearer {_cfg.SUPABASE_ACCESS_TOKEN}'
         }
 
-        resp = httpx.post(edge_url, json={"task_id": task_id}, headers=headers, timeout=15)
+        resp = httpx.post(edge_url, json=payload, headers=headers, timeout=15)
         headless_logger.debug(f"Edge Function response status: {resp.status_code}")
 
         if resp.status_code == 200:
@@ -446,82 +458,23 @@ def get_segment_predecessor_output(
 ) -> tuple[str | None, str | None]:
     """Resolve the previous segment output for chained travel generation.
 
-    Prefers the explicit task dependency edge lookup. If that is absent, falls
-    back to scanning completed segment tasks within the same parent generation.
-    The fallback is primarily for standalone individual-segment regeneration,
-    where the task may not have a DB dependency edge to its predecessor.
+    Uses the get-predecessor-output edge function which supports two paths:
+    1. dependant_on chain — for orchestrator-created tasks
+    2. Generation sibling lookup — for individual segment regens (parent_generation_id + child_order)
+
+    All lookups go through the edge function to work with PAT auth.
     """
-    predecessor_id, output_location = get_predecessor_output_via_edge_function(task_id)
-    if predecessor_id and output_location:
-        return predecessor_id, output_location
-
-    predecessor_index: int | None = None
-    if isinstance(child_order, int):
-        predecessor_index = child_order - 1
-    elif isinstance(segment_index, int):
-        predecessor_index = segment_index - 1
-
-    if predecessor_index is None or predecessor_index < 0 or not parent_generation_id:
-        return predecessor_id, output_location
-
-    if not _cfg.SUPABASE_CLIENT:
-        return predecessor_id, output_location
-
-    try:
-        response = (
-            _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME)
-            .select("id, task_type, status, created_at, output_location, params")
-            .in_("task_type", ["travel_segment", "individual_travel_segment"])
-            .eq("status", STATUS_COMPLETE)
-            .execute()
-        )
-    except (APIError, RuntimeError, ValueError, OSError) as exc:
-        headless_logger.debug(
-            f"[SEGMENT_PREDECESSOR] Direct predecessor fallback failed for {task_id}: {exc}"
-        )
-        return predecessor_id, output_location
-
-    matches: list[tuple[str, str | None, str]] = []
-    for row in response.data or []:
-        params_raw = row.get("params")
-        if params_raw is None:
-            continue
-        try:
-            params_obj = params_raw if isinstance(params_raw, dict) else json.loads(params_raw)
-        except (TypeError, json.JSONDecodeError, ValueError):
-            continue
-
-        row_parent_generation_id = _resolve_segment_branch_value(params_obj, "parent_generation_id")
-        if str(row_parent_generation_id) != str(parent_generation_id):
-            continue
-
-        if child_generation_id:
-            row_child_generation_id = _resolve_segment_branch_value(params_obj, "child_generation_id")
-            if str(row_child_generation_id) != str(child_generation_id):
-                continue
-
-        row_child_order = params_obj.get("child_order")
-        row_segment_index = params_obj.get("segment_index")
-        if row_child_order != predecessor_index and row_segment_index != predecessor_index:
-            continue
-
-        output_path = row.get("output_location")
-        if not output_path:
-            continue
-
-        created_at = str(row.get("created_at") or "")
-        matches.append((str(row.get("id")), output_path, created_at))
-
-    if not matches:
-        return predecessor_id, output_location
-
-    matches.sort(key=lambda item: item[2], reverse=True)
-    resolved_id, resolved_output, _created_at = matches[0]
-    headless_logger.debug(
-        f"[SEGMENT_PREDECESSOR] Fallback resolved predecessor for {task_id}: "
-        f"segment {predecessor_index} -> {resolved_id}"
+    # Resolve the effective child_order for the edge function
+    effective_child_order = child_order if isinstance(child_order, int) else (
+        segment_index if isinstance(segment_index, int) else None
     )
-    return resolved_id, resolved_output
+
+    return get_predecessor_output_via_edge_function(
+        task_id,
+        parent_generation_id=parent_generation_id,
+        child_order=effective_child_order,
+    )
+
 
 def get_completed_segment_outputs_for_stitch(run_id: str, project_id: str | None = None) -> list:
     """Gets completed travel_segment outputs for a given run_id for stitching from Supabase."""

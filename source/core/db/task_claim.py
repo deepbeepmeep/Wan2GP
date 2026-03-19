@@ -6,7 +6,6 @@ import sys
 import traceback
 
 import httpx
-from postgrest.exceptions import APIError
 
 from source.core.log import headless_logger
 
@@ -20,8 +19,6 @@ __all__ = [
 ]
 
 from . import config as _cfg
-from .config import (
-    STATUS_IN_PROGRESS)
 
 
 def _resolve_runtime_config(runtime_config=None):
@@ -33,20 +30,16 @@ def init_db():
     return init_db_supabase()
 
 def init_db_supabase():
-    """Check if the Supabase tasks table exists and is accessible."""
-    if not _cfg.SUPABASE_CLIENT:
-        headless_logger.error("Supabase client not initialized. Cannot check database table.")
+    """Verify Supabase configuration is present.
+
+    Connectivity is validated implicitly when the first edge function call
+    (claim-next-task) succeeds, so we no longer need a direct table query here.
+    """
+    if not _cfg.SUPABASE_URL or not _cfg.SUPABASE_ACCESS_TOKEN:
+        headless_logger.error("Supabase URL or access token not configured. Cannot operate.")
         sys.exit(1)
-    try:
-        # Simply check if the tasks table exists by querying it
-        result = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).select("count", count="exact").limit(1).execute()
-        headless_logger.essential(f"Supabase: Table '{_cfg.PG_TABLE_NAME}' exists and accessible (count: {result.count})")
-        return True
-    except (APIError, RuntimeError, ValueError, OSError) as e:
-        headless_logger.error(f"Supabase table check failed: {e}")
-        # Don't exit - the table might exist but have different permissions
-        # Let the actual operations try and fail gracefully
-        return False
+    headless_logger.essential(f"Supabase: Configuration present (URL={_cfg.SUPABASE_URL[:40]}…)")
+    return True
 
 def check_task_counts_supabase(run_type: str = "gpu", runtime_config=None) -> dict | None:
     """Check task counts via Supabase Edge Function before attempting to claim tasks."""
@@ -114,42 +107,13 @@ def check_my_assigned_tasks(worker_id: str) -> dict | None:
     This handles the case where a claim succeeded but the response was lost.
 
     Returns task data dict if found, None otherwise.
+
+    NOTE: This requires direct DB access which is not available with PAT auth.
+    Tasks that lose their HTTP response are recovered by heartbeat timeout instead.
     """
-    if not _cfg.SUPABASE_CLIENT or not worker_id:
-        return None
-
-    try:
-        # Query for tasks assigned to this worker that are In Progress
-        result = _cfg.SUPABASE_CLIENT.table('tasks') \
-            .select('id, params, task_type, project_id') \
-            .eq('worker_id', worker_id) \
-            .eq('status', STATUS_IN_PROGRESS) \
-            .limit(1) \
-            .execute()
-
-        if result.data and len(result.data) > 0:
-            task = result.data[0]
-            task_id = task.get('id')
-            task_type = task.get('task_type', 'unknown')
-            params = task.get('params', {})
-
-            headless_logger.essential(f"[RECOVERY] Found assigned task {task_id} (type={task_type}) - recovering", task_id=task_id)
-            headless_logger.debug(f"[RECOVERY_DEBUG] Task was assigned to us but we didn't process it - likely lost HTTP response")
-
-            # Return in the same format as claim-next-task Edge Function
-            return {
-                'task_id': task_id,
-                'params': params,
-                'task_type': task_type,
-                'project_id': task.get('project_id')
-            }
-
-        return None
-
-    except (APIError, RuntimeError, ValueError, OSError) as e:
-        # Don't let recovery check failures block normal operation
-        headless_logger.debug(f"[RECOVERY] Failed to check assigned tasks: {e}")
-        return None
+    # Direct DB query not available with PAT auth — heartbeat timeout handles recovery
+    headless_logger.debug(f"[RECOVERY] Skipping assigned-task check (PAT auth, heartbeat handles recovery)")
+    return None
 
 def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
     """
@@ -189,24 +153,9 @@ def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
         except (httpx.HTTPError, OSError, ValueError) as e:
             headless_logger.debug(f"[RECOVERY_CHECK] Edge function failed: {e}")
 
-    # Fallback to direct query if edge function not available or failed
-    if not _cfg.SUPABASE_CLIENT:
-        return False  # Can't check, assume no children
-
-    try:
-        response = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME)\
-            .select("id, status")\
-            .contains("params", {"orchestrator_task_id_ref": orchestrator_task_id})\
-            .execute()
-
-        if not response.data:
-            return False  # No children found
-
-        return _check_children(response.data)
-
-    except (APIError, RuntimeError, ValueError, OSError) as e:
-        headless_logger.debug(f"[RECOVERY_CHECK] Failed to check orchestrator children: {e}")
-        return False  # Can't check, don't block
+    # Edge function failed or unavailable — assume incomplete (safe default: don't re-run orchestrator)
+    headless_logger.debug(f"[RECOVERY_CHECK] Edge function unavailable for orchestrator {orchestrator_task_id}, assuming incomplete children")
+    return True
 
 def get_oldest_queued_task():
     """Gets the oldest queued task from Supabase."""
@@ -214,8 +163,8 @@ def get_oldest_queued_task():
 
 def get_oldest_queued_task_supabase(worker_id: str = None):
     """Fetches the oldest task via Supabase Edge Function. First checks task counts to avoid unnecessary claim attempts."""
-    if not _cfg.SUPABASE_CLIENT:
-        headless_logger.error("Supabase client not initialized. Cannot get task.")
+    if not _cfg.SUPABASE_URL or not _cfg.SUPABASE_ACCESS_TOKEN:
+        headless_logger.error("Supabase URL or access token not configured. Cannot get task.")
         return None
 
     # Worker ID is required

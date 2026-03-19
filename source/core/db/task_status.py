@@ -6,8 +6,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from postgrest.exceptions import APIError
-
 from source.core.log import headless_logger
 
 __all__ = [
@@ -160,8 +158,7 @@ def requeue_task_for_retry(task_id_str: str, error_message: str, current_attempt
 
     if not edge_url:
         headless_logger.error(f"No update-task-status edge function URL available for requeuing task {task_id_str}", task_id=task_id_str)
-        # Fallback to direct DB update
-        return _requeue_task_direct_db(task_id_str, new_attempts, error_details)
+        return False
 
     headers = {"Content-Type": "application/json"}
     if _cfg.SUPABASE_ACCESS_TOKEN:
@@ -189,41 +186,12 @@ def requeue_task_for_retry(task_id_str: str, error_message: str, current_attempt
         return True
     elif edge_error:
         headless_logger.error(f"Failed to requeue task {task_id_str}: {edge_error}", task_id=task_id_str)
-        # Fallback to direct DB update
-        return _requeue_task_direct_db(task_id_str, new_attempts, error_details)
+        return False
     elif resp:
         headless_logger.error(f"Failed to requeue task {task_id_str}: {resp.status_code} - {resp.text}", task_id=task_id_str)
-        # Fallback to direct DB update
-        return _requeue_task_direct_db(task_id_str, new_attempts, error_details)
+        return False
 
     return False
-
-def _requeue_task_direct_db(task_id_str: str, new_attempts: int, error_details: str) -> bool:
-    """
-    Fallback: Requeue task directly via Supabase client if edge function fails.
-    """
-    if not _cfg.SUPABASE_CLIENT:
-        headless_logger.error(f"No Supabase client available for direct DB requeue of task {task_id_str}", task_id=task_id_str)
-        return False
-
-    try:
-        result = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).update({
-            "status": STATUS_QUEUED,
-            "worker_id": None,
-            "attempts": new_attempts,
-            "error_details": error_details,
-            "generation_started_at": None,
-        }).eq("id", task_id_str).execute()
-
-        if result.data:
-            headless_logger.essential(f"Task {task_id_str} requeued via direct DB (attempt {new_attempts})", task_id=task_id_str)
-            return True
-        else:
-            headless_logger.error(f"Direct DB requeue returned no data for task {task_id_str}", task_id=task_id_str)
-            return False
-    except (APIError, RuntimeError, ValueError, OSError) as e:
-        headless_logger.error(f"Direct DB requeue failed for task {task_id_str}: {e}", task_id=task_id_str)
-        return False
 
 def update_task_status(task_id: str, status: str, output_location: str | None = None):
     """Updates a task's status in Supabase."""
@@ -291,8 +259,8 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
     """
     headless_logger.debug(f"[DEBUG] update_task_status_supabase called: task_id={task_id_str}, status={status_str}, output_location={output_location_val}, thumbnail={thumbnail_url_val}")
 
-    if not _cfg.SUPABASE_CLIENT:
-        headless_logger.error("Supabase client not initialized. Cannot update task status.", task_id=task_id_str)
+    if not _cfg.SUPABASE_URL or not _cfg.SUPABASE_ACCESS_TOKEN:
+        headless_logger.error("Supabase URL or access token not configured. Cannot update task status.", task_id=task_id_str)
         return
 
     # --- Use edge functions for ALL status updates ---
@@ -714,11 +682,8 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
             return
 
 def mark_task_failed_supabase(task_id_str, error_message):
-    """Marks a task as Failed with an error message using direct database update."""
+    """Marks a task as Failed with an error message via edge function."""
     headless_logger.debug(f"Marking task {task_id_str} as Failed with message: {error_message}")
-    if not _cfg.SUPABASE_CLIENT:
-        headless_logger.error("Supabase client not initialized. Cannot mark task failed.", task_id=task_id_str)
-        return
 
     # Use the standard update function which now uses direct database updates for non-COMPLETE statuses
     update_task_status_supabase(task_id_str, STATUS_FAILED, error_message)

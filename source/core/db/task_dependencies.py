@@ -2,10 +2,7 @@
 Task dependency, orchestrator child management, and cross-task queries.
 """
 import os
-import json
-import time
 import httpx
-from postgrest.exceptions import APIError
 
 from source.core.log import headless_logger
 
@@ -21,8 +18,6 @@ __all__ = [
 ]
 
 from . import config as _cfg
-from .config import (
-    STATUS_COMPLETE)
 from .edge_helpers import _call_edge_function_with_retry
 from .task_status import update_task_status
 from .task_polling import get_task_output_location_from_db
@@ -51,20 +46,7 @@ def get_task_dependency(task_id: str, max_retries: int = 3, retry_delay: float =
     )
 
     if not edge_url or not _cfg.SUPABASE_ACCESS_TOKEN:
-        # Fallback to direct query if edge function not available
-        if _cfg.SUPABASE_CLIENT:
-            for attempt in range(max_retries):
-                try:
-                    response = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).select("dependant_on").eq("id", task_id).single().execute()
-                    if response.data:
-                        return response.data.get("dependant_on")
-                    return None
-                except (APIError, RuntimeError, ValueError, OSError) as e:
-                    if "0 rows" in str(e) and attempt < max_retries - 1:
-                        time.sleep(retry_delay)
-                        continue
-                    headless_logger.debug(f"Error fetching dependant_on for task {task_id}: {e}")
-                    return None
+        headless_logger.error(f"No edge function URL or access token for get_task_dependency({task_id})")
         return None
 
     headers = {
@@ -176,25 +158,9 @@ def get_orchestrator_child_tasks(orchestrator_task_id: str) -> dict:
         except (httpx.HTTPError, OSError, ValueError) as e:
             headless_logger.debug(f"Error calling get-orchestrator-children: {e}")
 
-    # Fallback to direct query if edge function not available or failed
-    if not _cfg.SUPABASE_CLIENT:
-        headless_logger.error(f"No edge function or Supabase client available for get_orchestrator_child_tasks", task_id=orchestrator_task_id)
-        return empty_result
-
-    try:
-        response = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME)\
-            .select("id, task_type, status, params, output_location")\
-            .contains("params", {"orchestrator_task_id_ref": orchestrator_task_id})\
-            .order("created_at", desc=False)\
-            .execute()
-
-        if response.data:
-            return _categorize_tasks(response.data)
-        return empty_result
-
-    except (APIError, RuntimeError, ValueError, OSError) as e:
-        headless_logger.debug(f"Error querying Supabase for orchestrator child tasks {orchestrator_task_id}: {e}", exc_info=True)
-        return empty_result
+    # No fallback — edge function is the only path
+    headless_logger.error(f"Edge function unavailable for get_orchestrator_child_tasks({orchestrator_task_id})", task_id=orchestrator_task_id)
+    return empty_result
 
 def get_task_current_status(task_id: str) -> str | None:
     """
@@ -236,15 +202,7 @@ def get_task_current_status(task_id: str) -> str | None:
         except (httpx.HTTPError, OSError, ValueError) as e:
             headless_logger.debug(f"[GET_TASK_STATUS] Error calling get-task-status for {task_id}: {e}")
 
-    # Fallback to direct query if edge function not available or failed
-    if _cfg.SUPABASE_CLIENT:
-        try:
-            resp = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).select("status").eq("id", task_id).single().execute()
-            if resp.data:
-                return resp.data.get("status")
-        except (APIError, RuntimeError, ValueError, OSError) as e:
-            headless_logger.debug(f"[GET_TASK_STATUS] Direct query failed for {task_id}: {e}")
-
+    # No fallback — edge function is the only path
     return None
 
 def cancel_orchestrator_children(orchestrator_task_id: str, reason: str = "Orchestrator cancelled") -> int:
@@ -353,17 +311,13 @@ def cleanup_duplicate_child_tasks(orchestrator_task_id: str, expected_segments: 
     return cleanup_summary
 
 def _delete_task_by_id(task_id: str) -> bool:
-    """Helper to delete a task by ID from Supabase. Returns True if successful."""
-    if not _cfg.SUPABASE_CLIENT:
-        headless_logger.error(f"Supabase client not initialized. Cannot delete task {task_id}", task_id=task_id)
-        return False
+    """Helper to delete a task by ID from Supabase.
 
-    try:
-        response = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).delete().eq("id", task_id).execute()
-        return len(response.data) > 0 if response.data else False
-    except (APIError, RuntimeError, ValueError, OSError) as e:
-        headless_logger.debug(f"Error deleting Supabase task {task_id}: {e}")
-        return False
+    No edge function equivalent exists for deletion. This is only used for rare
+    orchestrator duplicate cleanup. With PAT auth, log and skip.
+    """
+    headless_logger.warning(f"[CLEANUP] Task deletion skipped (no direct DB access): {task_id}", task_id=task_id)
+    return False
 
 
 def _fallback_predecessor_output_lookup(task_id: str) -> tuple[str | None, str | None]:
@@ -503,69 +457,6 @@ def get_completed_segment_outputs_for_stitch(run_id: str, project_id: str | None
     except (httpx.HTTPError, OSError, ValueError) as e:
         headless_logger.debug(f"Edge Function failed: {e}. Falling back to direct query.")
 
-    # Fallback to direct query
-    if not _cfg.SUPABASE_CLIENT:
-        headless_logger.error("Supabase client not initialized. Cannot fall back to direct query.")
-        return []
-
-    try:
-        # First, let's debug by getting ALL completed tasks to see what's there
-        debug_resp = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).select("id, task_type, status, params, output_location")\
-            .eq("status", STATUS_COMPLETE).execute()
-
-        headless_logger.debug(f"[DEBUG_STITCH] Looking for run_id: '{run_id}' (type: {type(run_id)})")
-        headless_logger.debug(f"[DEBUG_STITCH] Total completed tasks in DB: {len(debug_resp.data) if debug_resp.data else 0}")
-
-        travel_segment_count = 0
-        matching_run_id_count = 0
-
-        if debug_resp.data:
-            for task in debug_resp.data:
-                task_type = task.get("task_type", "")
-                if task_type == "travel_segment":
-                    travel_segment_count += 1
-                    params_raw = task.get("params", {})
-                    try:
-                        params_obj = params_raw if isinstance(params_raw, dict) else json.loads(params_raw)
-                        task_run_id = params_obj.get("orchestrator_run_id")
-                        headless_logger.debug(f"[DEBUG_STITCH] Found travel_segment task {task.get('id')}: orchestrator_run_id='{task_run_id}' (type: {type(task_run_id)}), segment_index={params_obj.get('segment_index')}, output_location={task.get('output_location', 'None')}")
-
-                        if str(task_run_id) == str(run_id):
-                            matching_run_id_count += 1
-                            headless_logger.debug(f"[DEBUG_STITCH] MATCH FOUND! Task {task.get('id')} matches run_id {run_id}")
-                    except (json.JSONDecodeError, ValueError) as e_debug:
-                        headless_logger.debug(f"[DEBUG_STITCH] Error parsing params for task {task.get('id')}: {e_debug}")
-
-        headless_logger.debug(f"[DEBUG_STITCH] Travel_segment tasks found: {travel_segment_count}")
-        headless_logger.debug(f"[DEBUG_STITCH] Tasks matching run_id '{run_id}': {matching_run_id_count}")
-
-        # Now do the actual query
-        sel_resp = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).select("params, output_location")\
-            .eq("task_type", "travel_segment").eq("status", STATUS_COMPLETE).execute()
-
-        results = []
-        if sel_resp.data:
-            for i, row in enumerate(sel_resp.data):
-                params_raw = row.get("params")
-                if params_raw is None:
-                    continue
-                try:
-                    params_obj = params_raw if isinstance(params_raw, dict) else json.loads(params_raw)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-
-                row_run_id = params_obj.get("orchestrator_run_id")
-
-                # Use string comparison to handle type mismatches
-                if str(row_run_id) == str(run_id):
-                    seg_idx = params_obj.get("segment_index")
-                    output_loc = row.get("output_location")
-                    results.append((seg_idx, output_loc))
-                    headless_logger.debug(f"[DEBUG_STITCH] Added to results: segment_index={seg_idx}, output_location={output_loc}")
-
-        sorted_results = sorted(results, key=lambda x: x[0] if x[0] is not None else 0)
-        headless_logger.debug(f"[DEBUG_STITCH] Final sorted results: {sorted_results}")
-        return sorted_results
-    except (APIError, RuntimeError, ValueError, OSError) as e_sel:
-        headless_logger.debug(f"Stitch Supabase: Direct select failed: {e_sel}", exc_info=True)
-        return []
+    # No fallback — edge function is the only path for completed segment queries
+    headless_logger.error(f"Edge function failed for get_completed_segment_outputs_for_stitch(run_id={run_id})")
+    return []

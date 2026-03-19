@@ -278,17 +278,15 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
             # Proceed with claim attempt despite queued_only=0 since eligible_queued>0
             headless_logger.debug(f"[CLAIM_DEBUG] Proceeding with claim attempt despite queued_only=0 because eligible_queued={eligible_queued}")
         elif available_tasks <= 0:
-            headless_logger.debug("No queued tasks according to task-counts, skipping claim attempt")
+            headless_logger.debug("No non-orchestrator queued tasks according to task-counts, still attempting claim (orchestrators excluded from counts)")
             # If we deferred an orchestrator recovery, check if it actually needs re-running.
-            # Orchestrators waiting for children should NOT be recovered - they'll complete
-            # when their children complete (via complete-task orchestrator check).
             if deferred_orchestrator_recovery:
                 orch_task_id = deferred_orchestrator_recovery.get("task_id")
                 if orch_task_id and _orchestrator_has_incomplete_children(orch_task_id):
                     headless_logger.debug(f"[RECOVERY] Skipping orchestrator {orch_task_id} - has incomplete children, will complete via child completion")
                     return None
                 return deferred_orchestrator_recovery
-            return None
+            # Fall through to claim attempt — task-counts excludes orchestrators
         else:
             headless_logger.debug(f"Found {available_tasks} queued tasks, proceeding with claim")
 

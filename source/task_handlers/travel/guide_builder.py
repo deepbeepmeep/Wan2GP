@@ -18,8 +18,12 @@ from source.media.video import create_guide_video_for_travel_segment
 from source.media.video.ffmpeg_ops import create_video_from_frames_list
 from source.core.params.structure_guidance import StructureGuidanceConfig
 from source.core.params.travel_guidance import TravelGuidanceConfig
-from source.core.db.dependencies.task_dependencies_queries import get_segment_predecessor_output
-from source.utils.download_utils import download_file, download_video_if_url
+from source.task_handlers.travel.predecessor_resolver import (
+    download_predecessor_video,
+    resolve_generation_id,
+    resolve_segment_predecessor,
+)
+from source.utils.download_utils import download_video_if_url
 from source.utils.output_paths import prepare_output_path
 
 
@@ -141,21 +145,27 @@ def get_previous_segment_video(proc: Any) -> Optional[str]:
         return ctx.orchestrator_details.get("continue_from_video_resolved_path")
     elif not is_first_segment:
         # Subsequent segment - get predecessor output
-        task_dependency_id, raw_path_from_db = get_segment_predecessor_output(
+        individual_params = ctx.segment_params.get("individual_segment_params", {})
+        predecessor = resolve_segment_predecessor(
             task_id=ctx.task_id,
-            parent_generation_id=(
-                ctx.segment_params.get("parent_generation_id")
-                or ctx.orchestrator_details.get("parent_generation_id")
+            parent_generation_id=resolve_generation_id(
+                "parent_generation_id",
+                individual_params,
+                ctx.segment_params,
+                ctx.orchestrator_details,
             ),
-            child_generation_id=(
-                ctx.individual_params.get("child_generation_id")
-                or ctx.segment_params.get("child_generation_id")
-                or ctx.orchestrator_details.get("child_generation_id")
+            child_generation_id=resolve_generation_id(
+                "child_generation_id",
+                individual_params,
+                ctx.segment_params,
+                ctx.orchestrator_details,
             ),
             child_order=ctx.segment_params.get("child_order"),
             segment_index=ctx.segment_idx,
         )
-        if task_dependency_id and raw_path_from_db:
+        task_dependency_id = predecessor.task_id
+        raw_path_from_db = predecessor.output_url
+        if predecessor.found:
             travel_logger.debug(f"Seg {ctx.segment_idx}: Found predecessor output: {raw_path_from_db}", task_id=ctx.task_id)
 
             # Handle Supabase public URLs by downloading them locally for guide processing
@@ -163,35 +173,17 @@ def get_previous_segment_video(proc: Any) -> Optional[str]:
                 try:
                     travel_logger.debug(f"Seg {ctx.segment_idx}: Detected remote URL for previous segment: {raw_path_from_db}. Downloading...", task_id=ctx.task_id)
 
-                    # Import download utilities
-                    remote_url = raw_path_from_db
-                    local_filename = Path(remote_url).name
-                    # Store under segment_processing_dir to keep things tidy
-                    local_download_path = ctx.segment_processing_dir / f"prev_{ctx.segment_idx:02d}_{local_filename}"
+                    resolved_path = download_predecessor_video(
+                        raw_path_from_db,
+                        ctx.segment_processing_dir,
+                        prefix=f"prev_{ctx.segment_idx:02d}",
+                    )
+                    if not resolved_path:
+                        raise RuntimeError("Download failed or resulted in empty file")
 
-                    # Ensure directory exists
-                    ctx.segment_processing_dir.mkdir(parents=True, exist_ok=True)
-
-                    # Perform download if file not already present
-                    if not local_download_path.exists():
-                        travel_logger.debug(f"Seg {ctx.segment_idx}: Downloading from {remote_url}", task_id=ctx.task_id)
-                        download_file(remote_url, ctx.segment_processing_dir, local_download_path.name)
-                        travel_logger.debug(f"Seg {ctx.segment_idx}: Downloaded previous segment video to {local_download_path}", task_id=ctx.task_id)
-
-                        # Verify download was successful and file has content
-                        if local_download_path.exists() and local_download_path.stat().st_size > 0:
-                            travel_logger.debug(f"Seg {ctx.segment_idx}: Download verified - file size: {local_download_path.stat().st_size:,} bytes", task_id=ctx.task_id)
-                        else:
-                            raise Exception(f"Download failed or resulted in empty file: {local_download_path}")
-                    else:
-                        travel_logger.debug(f"Seg {ctx.segment_idx}: Local copy of previous segment video already exists at {local_download_path}", task_id=ctx.task_id)
-                        # Verify cached file is still valid
-                        if local_download_path.stat().st_size == 0:
-                            travel_logger.debug(f"Seg {ctx.segment_idx}: Cached file is empty, re-downloading...", task_id=ctx.task_id)
-                            local_download_path.unlink()  # Remove empty file
-                            download_file(remote_url, ctx.segment_processing_dir, local_download_path.name)
-
-                    resolved_path = str(local_download_path.resolve())
+                    local_download_path = Path(resolved_path)
+                    travel_logger.debug(f"Seg {ctx.segment_idx}: Downloaded previous segment video to {local_download_path}", task_id=ctx.task_id)
+                    travel_logger.debug(f"Seg {ctx.segment_idx}: Download verified - file size: {local_download_path.stat().st_size:,} bytes", task_id=ctx.task_id)
                     travel_logger.debug(f"Seg {ctx.segment_idx}: Returning local path for guide creation: {resolved_path}", task_id=ctx.task_id)
                     return resolved_path
 

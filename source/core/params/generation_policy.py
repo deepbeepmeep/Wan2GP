@@ -31,6 +31,14 @@ class ContinuationPolicy:
     uses_guide_for_overlap: bool
     uses_mask_video: bool
 
+    @property
+    def requires_prefix_video_source(self) -> bool:
+        return self.strategy == "prefix_video_source"
+
+    @property
+    def uses_svi_latent_chaining(self) -> bool:
+        return self.strategy == "svi_latent_chaining"
+
 
 @dataclass(frozen=True)
 class GenerationPolicy:

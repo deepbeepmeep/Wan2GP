@@ -6284,6 +6284,43 @@ def generate_video(
         frames_already_processed = []
         frames_already_processed_count = 0
         overlapped_latents = None
+        precomputed_overlapped_latents_path = None
+        if isinstance(custom_settings, dict):
+            precomputed_overlapped_latents_path = custom_settings.get("precomputed_overlapped_latents_path")
+        if precomputed_overlapped_latents_path and os.path.exists(precomputed_overlapped_latents_path):
+            try:
+                try:
+                    loaded_overlapped_latents = torch.load(
+                        precomputed_overlapped_latents_path,
+                        map_location="cpu",
+                        weights_only=True,
+                    )
+                except TypeError:
+                    loaded_overlapped_latents = torch.load(
+                        precomputed_overlapped_latents_path,
+                        map_location="cpu",
+                    )
+
+                if (
+                    torch.is_tensor(loaded_overlapped_latents)
+                    and loaded_overlapped_latents.dim() == 5
+                    and loaded_overlapped_latents.shape[2] > 0
+                ):
+                    load_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                    overlapped_latents = loaded_overlapped_latents.to(device=load_device)
+                    print(
+                        "[SVI_LATENT_CHAIN] Loaded precomputed overlapped_latents: "
+                        f"shape={tuple(overlapped_latents.shape)}, device={overlapped_latents.device}"
+                    )
+                else:
+                    print(
+                        "[SVI_LATENT_CHAIN] Rejected latent: "
+                        f"is_tensor={torch.is_tensor(loaded_overlapped_latents)}, "
+                        f"shape={tuple(loaded_overlapped_latents.shape) if torch.is_tensor(loaded_overlapped_latents) else 'N/A'}"
+                    )
+            except Exception as e:
+                print(f"[SVI_LATENT_CHAIN] Failed to load: {e}")
+                overlapped_latents = None
         context_scale = None
         window_no = 0
         extra_windows = 0
@@ -7038,6 +7075,26 @@ def generate_video(
 
                 else:
                     save_video( tensor=output_video_frames, save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None), container= container)
+
+                if (
+                    overlapped_latents is not None
+                    and model_def.get("svi2pro")
+                    and video_path
+                    and not audio_only
+                    and not is_image
+                    and not isinstance(video_path, list)
+                ):
+                    video_basename = os.path.splitext(os.path.basename(video_path))[0]
+                    latent_save_path = os.path.join(
+                        os.path.dirname(video_path),
+                        f"latent_tail_{video_basename}.pt",
+                    )
+                    try:
+                        torch.save(overlapped_latents.detach().to("cpu"), latent_save_path)
+                        gen["latent_tail_path"] = latent_save_path
+                        print(f"[SVI_LATENT_CHAIN] Saved latent tail: {latent_save_path}")
+                    except Exception as e:
+                        print(f"[SVI_LATENT_CHAIN] Failed to save latent: {e}")
 
                 end_time = time.time()
 

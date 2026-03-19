@@ -405,7 +405,15 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
         # Some runs intentionally do NOT create a stitch task (e.g. chain_segments=False, or i2v non-SVI).
         # In those cases, the orchestrator should be considered complete once all segments complete.
         travel_mode = orchestrator_payload.get("model_type", "vace")
-        use_svi = bool(orchestrator_payload.get("use_svi", False))
+        _continuation_cfg = orchestrator_payload.get("continuation_config")
+        use_svi = (
+            bool(orchestrator_payload.get("use_svi", False))
+            or (
+                isinstance(_continuation_cfg, dict)
+                and _continuation_cfg.get("strategy") == "svi_latent_chaining"
+            )
+        )
+        orchestrator_payload["use_svi"] = use_svi
 
         # SVI is not compatible with LTX-2: it uses Wan-specific LoRAs and
         # destructively patches the model's native sliding window settings.
@@ -418,6 +426,11 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             )
             use_svi = False
             orchestrator_payload["use_svi"] = False
+            # SVI unsupported on LTX, but LTX has its own continuation strategy.
+            # Rewrite to prefix_video_source so _apply_continuation_config() still runs.
+            if isinstance(_continuation_cfg, dict):
+                _continuation_cfg["strategy"] = "prefix_video_source"
+                _continuation_cfg["overlap_frames"] = 25  # LTX 8n+1: 3 latent frames + initial
 
         chain_segments = bool(orchestrator_payload.get("chain_segments", True))
         generation_policy = GenerationPolicy.from_payload(orchestrator_payload)

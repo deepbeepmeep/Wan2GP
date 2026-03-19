@@ -5,7 +5,6 @@ from source.core.db.task_completion import *  # noqa: F401,F403
 
 _cfg = _task_completion._cfg
 _call_edge_function_with_retry = _task_completion._call_edge_function_with_retry
-STATUS_QUEUED = _task_completion.STATUS_QUEUED
 
 
 def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on=None, db_path: str | None = None) -> str:

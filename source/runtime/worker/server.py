@@ -81,7 +81,13 @@ def _initialize_db_runtime(cli_args, *, access_token: str | None, debug_mode_ena
     )
     validation_errors = db_config.validate_config(runtime_config=runtime_cfg)
     if validation_errors:
-        raise ValueError("; ".join(validation_errors))
+        # With access-token auth, missing service key is non-fatal (old behavior: warn only)
+        fatal_errors = [e for e in validation_errors if "SERVICE_KEY" not in e]
+        for err in validation_errors:
+            if "SERVICE_KEY" in err:
+                headless_logger.warning(f"[CONFIG] {err} (non-fatal with access token auth)")
+        if fatal_errors:
+            raise ValueError("; ".join(fatal_errors))
     return runtime_cfg, client_key
 
 

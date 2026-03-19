@@ -31,6 +31,8 @@ class IndividualSegmentParams(TypedDict, total=False):
 
     # --- Frame count ---
     num_frames: int
+    frame_overlap_from_previous: int
+    continuation_config: dict[str, Any]
 
     # --- Images ---
     start_image_url: str

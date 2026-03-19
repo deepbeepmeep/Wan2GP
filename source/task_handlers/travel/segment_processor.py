@@ -17,6 +17,7 @@ from typing import Optional, Dict, Any, Tuple
 from urllib.parse import urlparse
 
 from source.core.log import travel_logger
+from source.core.params.generation_policy import GenerationPolicy
 from source.core.params.travel_guidance import TravelGuidanceConfig
 from source.media.video.video_info import get_video_frame_count_and_fps
 from source.utils.download_utils import download_file, download_image_if_url
@@ -62,6 +63,10 @@ class TravelSegmentProcessor:
     def __init__(self, ctx: TravelSegmentContext):
         self.ctx = ctx
         self.is_vace_model = self._detect_vace_model()
+        self.generation_policy = GenerationPolicy.from_payload({
+            **ctx.orchestrator_details,
+            **ctx.segment_params,
+        })
         self._detected_structure_type = None
         self._structure_config = None
         self._travel_guidance_config = None

@@ -62,6 +62,7 @@ class OrchestratorDetails(_OrchestratorDetailsRequired, total=False):
     # Segment chaining
     chain_segments: bool  # default True
     continue_from_video_resolved_path: str
+    continuation_config: dict
 
     # Model / generation
     model_type: str  # "vace", "i2v", etc.

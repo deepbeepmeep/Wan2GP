@@ -39,3 +39,7 @@ def __getattr__(name: str):
         module_globals=globals(),
         name=name,
     )
+
+
+if __name__ == "__main__":
+    main()

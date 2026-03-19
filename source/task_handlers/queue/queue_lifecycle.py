@@ -102,7 +102,8 @@ def stop_queue(queue: Any, timeout: float = 30.0):
         worker.join(timeout=timeout)
 
     # Save queue state (integrate with wgp.py's save system)
-    queue._save_queue_state()
+    if hasattr(queue, '_save_queue_state'):
+        queue._save_queue_state()
 
     # Optionally unload model to free VRAM
     # queue._cleanup_models()

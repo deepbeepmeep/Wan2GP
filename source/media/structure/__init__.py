@@ -37,6 +37,9 @@ _ATTR_EXPORTS = {
     "calculate_segment_stitched_position": ("source.media.structure.segments", "calculate_segment_stitched_position"),
     "extract_segment_structure_guidance": ("source.media.structure.segments", "extract_segment_structure_guidance"),
     "segment_has_structure_overlap": ("source.media.structure.segments", "segment_has_structure_overlap"),
+    "GuidanceTracker": ("source.media.structure.tracker", "GuidanceTracker"),
+    "apply_structure_motion_with_tracking": ("source.media.structure.segments", "apply_structure_motion_with_tracking"),
+    "apply_structure_motion_with_tracking_result": ("source.media.structure.segments", "apply_structure_motion_with_tracking_result"),
 }
 
 

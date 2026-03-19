@@ -206,12 +206,13 @@ class TravelSegmentProcessor:
             "audio_scale": float(travel_guidance_config.audio.strength),
         }
 
-    def create_video_prompt_type(self, mask_video_path: Optional[Path]) -> str:
+    def create_video_prompt_type(self, mask_video_path: Optional[Path], guide_video_path: Optional[Path] = None) -> str:
         """
         Create video_prompt_type string for VACE compatibility.
 
         Args:
             mask_video_path: Path to mask video, if created
+            guide_video_path: Path to guide video, if created
 
         Returns:
             video_prompt_type string (e.g., "VM", "VIM", "UM")
@@ -246,6 +247,13 @@ class TravelSegmentProcessor:
                 video_prompt_type_str = "VG"
                 travel_logger.debug(
                     f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance ltx_control -> video_prompt_type='VG'",
+                    task_id=ctx.task_id,
+                )
+            elif travel_guidance_config.kind == "uni3c":
+                # Uni3c provides a guide video — LTX needs VG to use it
+                video_prompt_type_str = "VG"
+                travel_logger.debug(
+                    f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance uni3c -> video_prompt_type='VG'",
                     task_id=ctx.task_id,
                 )
             elif travel_guidance_config.kind == "none":
@@ -356,7 +364,7 @@ class TravelSegmentProcessor:
         mask_video_path = self.create_mask_video()
 
         # Create video_prompt_type
-        video_prompt_type = self.create_video_prompt_type(mask_video_path)
+        video_prompt_type = self.create_video_prompt_type(mask_video_path, guide_video_path)
         hybrid_anchor_payload = self._build_hybrid_anchor_payload()
         hybrid_audio_payload = self._build_hybrid_audio_payload()
         travel_guidance_config = self._get_travel_guidance_config()

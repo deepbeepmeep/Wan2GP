@@ -43,7 +43,7 @@ def update_task_status_supabase(*_args, **_kwargs):
 
 
 def _resolve_worker_db_client_key(cli_args, *, access_token: str | None) -> str:
-    auth_mode = os.environ.get("WORKER_DB_CLIENT_AUTH_MODE", "anon").strip().lower()
+    auth_mode = os.environ.get("WORKER_DB_CLIENT_AUTH_MODE", "").strip().lower()
     service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_SERVICE_KEY")
     anon_key = getattr(cli_args, "supabase_anon_key", None) or os.environ.get("SUPABASE_ANON_KEY")
 
@@ -55,9 +55,11 @@ def _resolve_worker_db_client_key(cli_args, *, access_token: str | None) -> str:
         if not access_token:
             raise ValueError("WORKER_DB_CLIENT_AUTH_MODE=worker requires --reigh-access-token")
         return access_token
-    if not anon_key:
-        raise ValueError("SUPABASE_ANON_KEY is required for worker DB client initialization")
-    return anon_key
+    # Default: service key > access token > anon key (matches old worker.py behavior)
+    resolved = service_key or access_token or anon_key
+    if not resolved:
+        raise ValueError("No Supabase key found. Provide --reigh-access-token, SUPABASE_SERVICE_ROLE_KEY, or SUPABASE_ANON_KEY")
+    return resolved
 
 
 def _initialize_db_runtime(cli_args, *, access_token: str | None, debug_mode_enabled: bool):

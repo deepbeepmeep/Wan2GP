@@ -21,6 +21,7 @@ from ...media.video import (
     ensure_video_fps,
     extract_frames_from_video,
     extract_frame_range_to_video,
+    standardize_video_aspect_ratio,
     stitch_videos_with_crossfade,
     add_audio_to_video)
 from ... import db_operations as db_ops
@@ -329,8 +330,8 @@ def handle_join_final_stitch(
             orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Downloaded transition {i}: {local_path}")
 
         # --- 4a. Resample clips to match transition FPS ---
-        # Transitions were generated at a specific FPS (min of source clip FPS).
-        # Downloaded clips may be at a higher native FPS, so resample to match.
+        # Transitions are generated at a fixed FPS (default 16). Downloaded clips
+        # may be at a higher native FPS, so resample to match the transition.
         transition_fps = transitions[0].get("fps") if transitions else None
         if transition_fps:
             target_fps = transition_fps  # Use the FPS from generation for final output too
@@ -346,7 +347,45 @@ def handle_join_final_stitch(
         else:
             orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: No FPS in transition metadata, using clips at native FPS (target_fps={target_fps})")
 
-        # --- 4b. FRAME COUNT VERIFICATION ---
+        # --- 4b. Standardize clip aspect ratios to match transition ---
+        # The segment handler standardized clips to clip 1's aspect ratio before generation.
+        # We must do the same here so crossfade boundaries align pixel-perfectly.
+        try:
+            import subprocess
+
+            def _get_video_dimensions(video_path):
+                probe_cmd = [
+                    'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                    '-show_entries', 'stream=width,height', '-of', 'csv=p=0',
+                    str(video_path)
+                ]
+                result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    return None, None
+                w, h = result.stdout.strip().split(',')
+                return int(w), int(h)
+
+            ref_w, ref_h = _get_video_dimensions(clip_paths[0])
+            if ref_w and ref_h:
+                ref_aspect = ref_w / ref_h
+                for i in range(1, len(clip_paths)):
+                    clip_w, clip_h = _get_video_dimensions(clip_paths[i])
+                    if clip_w and clip_h and abs(clip_w / clip_h - ref_aspect) > 0.01:
+                        standardized_path = stitch_dir / f"clip_{i}_standardized.mp4"
+                        result = standardize_video_aspect_ratio(
+                            input_video_path=clip_paths[i],
+                            output_video_path=standardized_path,
+                            target_aspect_ratio=f"{ref_w}:{ref_h}",
+                            task_id_for_logging=task_id)
+                        if result is not None:
+                            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Standardized clip {i} aspect ratio to {ref_w}:{ref_h}")
+                            clip_paths[i] = standardized_path
+                        else:
+                            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Failed to standardize clip {i}, proceeding with original")
+        except (OSError, ValueError, RuntimeError) as e:
+            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Aspect ratio check failed: {e}, proceeding with originals")
+
+        # --- 4c. FRAME COUNT VERIFICATION ---
         # Verify actual clip frame counts match what transitions expected
         orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Verifying clip frame counts...")
         frame_count_mismatches = []

@@ -215,16 +215,8 @@ def handle_join_clips_task(
             orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: use_input_video_fps=True, keeping original video FPS")
             # Don't convert - will use input video's FPS
         else:
-            explicit_fps = task_params_from_db.get("fps")
-            if explicit_fps:
-                target_fps_param = explicit_fps
-                orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Using explicit fps param: {target_fps_param}")
-            else:
-                # Auto-detect: use the minimum FPS of the two clips
-                start_fps = get_video_fps_ffprobe(str(starting_video)) or 16
-                end_fps = get_video_fps_ffprobe(str(ending_video)) or 16
-                target_fps_param = min(start_fps, end_fps)
-                orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Auto-detected target FPS: {target_fps_param} (start={start_fps}, end={end_fps})")
+            # Downsample to target FPS (default 16, matching VACE training/tuning)
+            target_fps_param = task_params_from_db.get("fps") or 16
             orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Ensuring videos are at {target_fps_param} FPS...")
 
             starting_video_before = starting_video

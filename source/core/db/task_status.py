@@ -552,12 +552,14 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                                 storage_path = path_parts[1]
                                 headless_logger.debug(f"[DEBUG] JSON output detected - extracted storage_path: {storage_path}")
 
-                                # Step 1: Complete task with storage_path (marks as complete)
+                                # Complete task with storage_path and include JSON output_location
+                                # in a single call (avoids broken two-step Complete→Complete transition)
                                 payload = {
                                     "task_id": task_id_str,
                                     "storage_path": storage_path,
+                                    "output_location": output_location_val,  # Full JSON metadata
                                 }
-                                headless_logger.debug(f"[DEBUG] Completing task {task_id_str} with storage_path (JSON output mode)")
+                                headless_logger.debug(f"[DEBUG] Completing task {task_id_str} with storage_path + JSON output_location")
 
                                 headers = {"Content-Type": "application/json"}
                                 if _cfg.SUPABASE_ACCESS_TOKEN:
@@ -575,34 +577,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                                     retry_on_404_patterns=["Task not found", "not found"])
 
                                 if resp is not None and resp.status_code == 200:
-                                    headless_logger.debug(f"[DEBUG] Task {task_id_str} marked complete, now updating output_location with JSON")
-
-                                    # Step 2: Update output_location with full JSON metadata
-                                    # Use update-task-status to overwrite output_location with JSON
-                                    update_url = (
-                                        os.getenv("SUPABASE_EDGE_UPDATE_TASK_STATUS_URL") or
-                                        (f"{_cfg.SUPABASE_URL.rstrip('/')}/functions/v1/update-task-status" if _cfg.SUPABASE_URL else None)
-                                    )
-                                    if update_url:
-                                        update_payload = {
-                                            "task_id": task_id_str,
-                                            "status": STATUS_COMPLETE,
-                                            "output_location": output_location_val  # Full JSON
-                                        }
-                                        update_resp, update_error = _call_edge_function_with_retry(
-                                            edge_url=update_url,
-                                            payload=update_payload,
-                                            headers=headers,
-                                            function_name="update-task-status",
-                                            context_id=task_id_str,
-                                            timeout=30,
-                                            max_retries=2,
-                                            fallback_url=None)
-                                        if update_resp and update_resp.status_code == 200:
-                                            headless_logger.debug(f"[DEBUG] Output location updated with JSON for task {task_id_str}")
-                                        else:
-                                            headless_logger.debug(f"[DEBUG] Failed to update output_location with JSON: {update_error}")
-                                            # Task is still complete, just without JSON metadata
+                                    headless_logger.debug(f"[DEBUG] Task {task_id_str} completed with JSON output_location")
                                     return None
                                 else:
                                     error_msg = edge_error or f"{EDGE_FAIL_PREFIX}:complete_task:HTTP_{resp.status_code if resp else 'N/A'}] {resp.text[:200] if resp else 'No response'}"

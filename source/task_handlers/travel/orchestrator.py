@@ -241,6 +241,36 @@ def _build_segment_travel_guidance_payload(
     return config.to_segment_payload(frame_offset=frame_offset)
 
 
+def _ensure_ic_lora_in_lora_dir() -> None:
+    """Ensure the IC-LoRA union control file is in WGP's lora directory.
+
+    WGP downloads models to ckpts/ but validates LoRAs in loras/ltx2/.
+    If the file exists in ckpts/ but not in the lora dir, create a symlink.
+    """
+    from source.core.runtime_paths import get_repo_root
+
+    repo_root = get_repo_root()
+    ckpts_path = repo_root / "Wan2GP" / "ckpts" / IC_LORA_UNION_CONTROL_FILENAME
+    lora_dir = repo_root / "Wan2GP" / "loras" / "ltx2"
+    lora_path = lora_dir / IC_LORA_UNION_CONTROL_FILENAME
+
+    if lora_path.exists():
+        return
+
+    if not ckpts_path.exists():
+        travel_logger.warning(
+            f"[IC_LORA] IC-LoRA not found in ckpts/ ({ckpts_path}) — WGP may need to download it"
+        )
+        return
+
+    lora_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        lora_path.symlink_to(ckpts_path)
+        travel_logger.info(f"[IC_LORA] Symlinked IC-LoRA: {ckpts_path} → {lora_path}")
+    except OSError as e:
+        travel_logger.warning(f"[IC_LORA] Failed to symlink IC-LoRA: {e}")
+
+
 def _auto_inject_travel_guidance_lora(
     segment_loras: Optional[list[dict[str, Any]]],
     travel_guidance_config: Optional[TravelGuidanceConfig],
@@ -248,6 +278,9 @@ def _auto_inject_travel_guidance_lora(
     """Add the union IC-LoRA for LTX control modes that require it."""
     if not travel_guidance_config or not travel_guidance_config.needs_ic_lora():
         return segment_loras
+
+    # Ensure the IC-LoRA file is where WGP expects it
+    _ensure_ic_lora_in_lora_dir()
 
     lora_strength = (
         travel_guidance_config.control_strength

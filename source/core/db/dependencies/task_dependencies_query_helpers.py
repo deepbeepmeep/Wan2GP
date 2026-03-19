@@ -90,6 +90,7 @@ def _completed_segments_direct_query(run_id: str) -> list[tuple[int | None, str 
 
 get_task_dependency = _task_dependencies.get_task_dependency
 get_predecessor_output_via_edge_function = _task_dependencies.get_predecessor_output_via_edge_function
+get_segment_predecessor_output = _task_dependencies.get_segment_predecessor_output
 get_completed_segment_outputs_for_stitch = _task_dependencies.get_completed_segment_outputs_for_stitch
 
 
@@ -100,5 +101,6 @@ __all__ = [
     "_completed_segments_direct_query",
     "get_task_dependency",
     "get_predecessor_output_via_edge_function",
+    "get_segment_predecessor_output",
     "get_completed_segment_outputs_for_stitch",
 ]

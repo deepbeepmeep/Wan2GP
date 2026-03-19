@@ -55,9 +55,27 @@ def get_predecessor_output_via_edge_function(
     return None, None
 
 
+def get_segment_predecessor_output(
+    *,
+    task_id: str,
+    parent_generation_id: str | None = None,
+    child_generation_id: str | None = None,
+    child_order: int | None = None,
+    segment_index: int | None = None,
+) -> tuple[str | None, str | None]:
+    return _task_dependencies.get_segment_predecessor_output(
+        task_id=task_id,
+        parent_generation_id=parent_generation_id,
+        child_generation_id=child_generation_id,
+        child_order=child_order,
+        segment_index=segment_index,
+    )
+
+
 __all__ = [
     "_cfg",
     "resolve_edge_request",
     "get_task_dependency",
     "get_predecessor_output_via_edge_function",
+    "get_segment_predecessor_output",
 ]

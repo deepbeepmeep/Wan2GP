@@ -241,10 +241,14 @@ def main():
     import logging
     from dotenv import load_dotenv
 
+    print("[WORKER] main() entered", flush=True)
+
     load_dotenv()
     bootstrap_runtime_environment()
+    print("[WORKER] bootstrap done", flush=True)
 
     cli_args = parse_args()
+    print(f"[WORKER] args parsed: worker={cli_args.worker}, debug={cli_args.debug}", flush=True)
 
     # Resolve access token: prefer --reigh-access-token, fall back to --supabase-access-token
     access_token = cli_args.reigh_access_token or cli_args.supabase_access_token
@@ -285,11 +289,13 @@ def main():
         set_log_file(cli_args.save_logging)
 
     # Initialize DB runtime
+    print("[WORKER] initializing DB...", flush=True)
     try:
         _initialize_db_runtime(cli_args, access_token=access_token, debug_mode_enabled=debug_mode)
         os.environ["SUPABASE_URL"] = cli_args.supabase_url
+        print("[WORKER] DB initialized", flush=True)
     except (ValueError, OSError, KeyError) as e:
-        headless_logger.critical(f"DB init failed: {e}")
+        print(f"[WORKER] DB init failed: {e}", flush=True)
         sys.exit(1)
 
     if cli_args.migrate_only:
@@ -338,8 +344,10 @@ def main():
         if cli_args.wgp_preload: wgp_mod.server_config["preload_in_VRAM"] = cli_args.wgp_preload
         if "transformer_types" not in wgp_mod.server_config: wgp_mod.server_config["transformer_types"] = []
 
+        print("[WORKER] WGP imported OK", flush=True)
+
     except (ImportError, RuntimeError, AttributeError, KeyError) as e:
-        headless_logger.critical(f"WGP import failed: {e}")
+        print(f"[WORKER] WGP import failed: {e}", flush=True)
         sys.exit(1)
     finally:
         os.chdir(original_cwd)
@@ -360,10 +368,10 @@ def main():
         preload_model = cli_args.preload_model if cli_args.preload_model else None
         task_queue.start(preload_model=preload_model)
     except (RuntimeError, ValueError, OSError) as e:
-        headless_logger.critical(f"Queue init failed: {e}")
+        print(f"[WORKER] Queue init failed: {e}", flush=True)
         sys.exit(1)
 
-    headless_logger.essential(f"Worker {cli_args.worker or 'anonymous'} started. Polling every {cli_args.poll_interval}s.")
+    print(f"[WORKER] started. Polling every {cli_args.poll_interval}s.", flush=True)
 
     # Import task processing dependencies
     from source.core.db.task_claim import get_oldest_queued_task_supabase

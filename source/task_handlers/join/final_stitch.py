@@ -18,6 +18,7 @@ from ...utils import (
     prepare_output_path_with_upload,
     upload_and_get_final_output_location)
 from ...media.video import (
+    ensure_video_fps,
     extract_frames_from_video,
     extract_frame_range_to_video,
     stitch_videos_with_crossfade,
@@ -219,6 +220,7 @@ def handle_join_final_stitch(
                     "url": trans_url,
                     "index": trans_data.get("transition_index", i),
                     "frames": trans_frames,
+                    "fps": trans_data.get("fps"),  # FPS used during generation
                     "gap_frames": gap_frames,
                     "blend_frames": trans_blend,
                     "context_from_clip1": ctx_clip1,  # For clip->transition crossfade
@@ -326,7 +328,25 @@ def handle_join_final_stitch(
             transition_paths.append(Path(local_path))
             orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Downloaded transition {i}: {local_path}")
 
-        # --- 4a. FRAME COUNT VERIFICATION ---
+        # --- 4a. Resample clips to match transition FPS ---
+        # Transitions were generated at a specific FPS (min of source clip FPS).
+        # Downloaded clips may be at a higher native FPS, so resample to match.
+        transition_fps = transitions[0].get("fps") if transitions else None
+        if transition_fps:
+            target_fps = transition_fps  # Use the FPS from generation for final output too
+            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Resampling clips to transition FPS: {transition_fps}")
+            for i, clip_path in enumerate(clip_paths):
+                try:
+                    resampled = ensure_video_fps(clip_path, transition_fps, output_dir=stitch_dir)
+                    if resampled != clip_path:
+                        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Resampled clip {i} to {transition_fps}fps")
+                        clip_paths[i] = resampled
+                except (OSError, ValueError, RuntimeError) as e:
+                    return False, f"Failed to resample clip {i} to {transition_fps}fps: {e}"
+        else:
+            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: No FPS in transition metadata, using clips at native FPS (target_fps={target_fps})")
+
+        # --- 4b. FRAME COUNT VERIFICATION ---
         # Verify actual clip frame counts match what transitions expected
         orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Verifying clip frame counts...")
         frame_count_mismatches = []

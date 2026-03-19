@@ -207,17 +207,25 @@ def handle_join_clips_task(
             orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Pre-ensure_fps diagnostics error: {e_diag}")
 
         # --- 2a. Ensure Videos are at Target FPS ---
-        # use_input_video_fps: If True, keep original FPS. If False, downsample to fps param (default 16)
+        # Strategy: use the minimum FPS of the two source clips so we never upsample.
+        # An explicit fps param overrides this (e.g., if the frontend requests a specific FPS).
         use_input_video_fps = task_params_from_db.get("use_input_video_fps", False)
 
         if use_input_video_fps:
             orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: use_input_video_fps=True, keeping original video FPS")
             # Don't convert - will use input video's FPS
         else:
-            # Downsample to target FPS (default 16)
-            # Note: Use 'or' to handle explicit None values (get() only returns default if key is missing)
-            target_fps_param = task_params_from_db.get("fps") or 16
-            orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: use_input_video_fps=False, ensuring videos are at {target_fps_param} FPS...")
+            explicit_fps = task_params_from_db.get("fps")
+            if explicit_fps:
+                target_fps_param = explicit_fps
+                orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Using explicit fps param: {target_fps_param}")
+            else:
+                # Auto-detect: use the minimum FPS of the two clips
+                start_fps = get_video_fps_ffprobe(str(starting_video)) or 16
+                end_fps = get_video_fps_ffprobe(str(ending_video)) or 16
+                target_fps_param = min(start_fps, end_fps)
+                orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Auto-detected target FPS: {target_fps_param} (start={start_fps}, end={end_fps})")
+            orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Ensuring videos are at {target_fps_param} FPS...")
 
             starting_video_before = starting_video
             try:
@@ -1114,6 +1122,9 @@ def handle_join_clips_task(
                             # transition[ctx1:ctx1+gap] = generated gap frames
                             # transition[ctx1+gap:end] = clip2[clip2_ctx_start:clip2_ctx_end] (context after)
                             "transition_structure": f"[{actual_ctx_clip1} ctx1] + [{actual_gap} gap] + [{actual_ctx_clip2} ctx2]",
+
+                            # --- FPS (so stitch handler can resample clips to match) ---
+                            "fps": start_fps,
 
                             # --- Final stitch guidance ---
                             # When stitching: trim clip1 end by gap_from_clip1, trim clip2 start by gap_from_clip2

@@ -206,27 +206,36 @@ def handle_join_clips_task(
         except (OSError, ValueError, RuntimeError) as e_diag:
             orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Pre-ensure_fps diagnostics error: {e_diag}")
 
-        # --- 2a. Ensure Videos are at Target FPS ---
-        # Strategy: use the minimum FPS of the two source clips so we never upsample.
-        # An explicit fps param overrides this (e.g., if the frontend requests a specific FPS).
+        # --- 2a. Determine and apply target FPS ---
+        # This single FPS value is used for BOTH resampling and all downstream
+        # calculations (VACE guide, gap indices, output encoding, metadata).
         use_input_video_fps = task_params_from_db.get("use_input_video_fps", False)
+        explicit_fps = task_params_from_db.get("fps")
 
         if use_input_video_fps:
-            orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: use_input_video_fps=True, keeping original video FPS")
-            # Don't convert - will use input video's FPS
+            # Detect from source clips — use min to avoid upsampling
+            start_native_fps = get_video_fps_ffprobe(str(starting_video)) or 16
+            end_native_fps = get_video_fps_ffprobe(str(ending_video)) or 16
+            resolved_fps = min(start_native_fps, end_native_fps)
+            orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: use_input_video_fps=True, resolved FPS: {resolved_fps} (start={start_native_fps}, end={end_native_fps})")
+        elif explicit_fps:
+            resolved_fps = explicit_fps
+            orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Using explicit fps param: {resolved_fps}")
         else:
-            # Downsample to target FPS (default 16, matching VACE training/tuning)
-            target_fps_param = task_params_from_db.get("fps") or 16
-            orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Ensuring videos are at {target_fps_param} FPS...")
+            resolved_fps = 16
+            orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Using default FPS: {resolved_fps}")
+
+        if not use_input_video_fps:
+            orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Ensuring videos are at {resolved_fps} FPS...")
 
             starting_video_before = starting_video
             try:
                 starting_video = ensure_video_fps(
                     input_video_path=starting_video,
-                    target_fps=target_fps_param,
+                    target_fps=resolved_fps,
                     output_dir=join_clips_dir)
             except (OSError, ValueError, RuntimeError) as e:
-                error_msg = f"Failed to ensure starting video is at {target_fps_param} fps: {e}"
+                error_msg = f"Failed to ensure starting video is at {resolved_fps} fps: {e}"
                 orchestrator_logger.debug(f"[JOIN_CLIPS_ERROR] Task {task_id}: {error_msg}")
                 return False, error_msg
             if Path(starting_video_before) != Path(starting_video):
@@ -236,10 +245,10 @@ def handle_join_clips_task(
             try:
                 ending_video = ensure_video_fps(
                     input_video_path=ending_video,
-                    target_fps=target_fps_param,
+                    target_fps=resolved_fps,
                     output_dir=join_clips_dir)
             except (OSError, ValueError, RuntimeError) as e:
-                error_msg = f"Failed to ensure ending video is at {target_fps_param} fps: {e}"
+                error_msg = f"Failed to ensure ending video is at {resolved_fps} fps: {e}"
                 orchestrator_logger.debug(f"[JOIN_CLIPS_ERROR] Task {task_id}: {error_msg}")
                 return False, error_msg
             if Path(ending_video_before) != Path(ending_video):
@@ -400,13 +409,8 @@ def handle_join_clips_task(
                 task_id=task_id
             )
 
-        # Set target FPS based on use_input_video_fps setting
-        if use_input_video_fps:
-            target_fps = start_fps
-            orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Using input video FPS: {target_fps}")
-        else:
-            target_fps = task_params_from_db.get("fps") or 16
-            orchestrator_logger.debug(f"[JOIN_CLIPS] Task {task_id}: Using target FPS: {target_fps}")
+        # Use the single resolved_fps for all downstream operations
+        target_fps = resolved_fps
 
         # --- 4. Calculate gap sizes first (needed for REPLACE mode context extraction) ---
         # Calculate VACE quantization adjustments early so we know exact gap sizes

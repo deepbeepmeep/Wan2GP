@@ -5,7 +5,6 @@ Extracts boundary frames from clips and uses Qwen VLM to generate
 context-aware transition prompts.
 """
 
-import sys
 from pathlib import Path
 from typing import Tuple, List, Optional
 
@@ -14,6 +13,7 @@ import cv2
 from source.media.video import extract_frames_from_video
 from source.core.constants import BYTES_PER_GB
 from source.core.log import orchestrator_logger
+from source.runtime.wgp_bridge import create_qwen_prompt_expander
 from source.utils.download_utils import download_video_if_url
 
 __all__ = [
@@ -247,12 +247,7 @@ def _generate_vlm_prompts_for_joins(
     orchestrator_logger.debug(f"[VLM_PROMPTS] Base prompt context: '{base_prompt[:80]}...'" if base_prompt else "[VLM_PROMPTS] No base prompt (VLM will infer from frames)")
 
     try:
-        # Add Wan2GP to path for imports
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from Wan2GP.shared.utils.prompt_extend import QwenPromptExpander
         from source.media.vlm.model import download_qwen_vlm_if_needed
 
         if torch.cuda.is_available():
@@ -264,7 +259,7 @@ def _generate_vlm_prompts_for_joins(
         download_qwen_vlm_if_needed(local_model_path)
 
         orchestrator_logger.debug(f"[VLM_PROMPTS] Initializing Qwen2.5-VL-7B-Instruct...")
-        extender = QwenPromptExpander(
+        extender = create_qwen_prompt_expander(
             model_name=str(local_model_path),
             device=vlm_device,
             is_vl=True

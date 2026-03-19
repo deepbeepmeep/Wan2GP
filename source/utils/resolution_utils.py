@@ -1,5 +1,7 @@
 """Resolution parsing and snapping utilities."""
 
+from source.runtime.wgp_bridge import get_model_def
+
 __all__ = [
     "snap_resolution_to_model_grid",
     "parse_resolution",
@@ -31,7 +33,6 @@ def get_model_grid_size(model_name: str | None) -> int:
     if not model_name:
         return 16
     try:
-        from wgp import get_model_def
         model_def = get_model_def(model_name)
         if model_def is None:
             return 16

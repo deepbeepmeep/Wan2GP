@@ -14,9 +14,103 @@ import os
 from typing import TYPE_CHECKING
 
 from source.core.log import model_logger
+from source.runtime.wgp_bridge import (
+    get_qwen_family_handler,
+    get_qwen_main_module,
+    get_shared_lora_utils_module,
+)
 
 if TYPE_CHECKING:
     import types
+
+
+_DEFAULT_PATCH_CONTEXT_ID = "default"
+_PATCH_CONTEXT_STATE: dict[str, dict[str, dict[str, dict[str, object]]]] = {}
+_PATCH_CONTEXT_ROLLBACKS: dict[str, dict[str, dict[str, object]]] = {}
+
+
+def _normalize_patch_context_id(context_id: str | None = None) -> str:
+    normalized = context_id or _DEFAULT_PATCH_CONTEXT_ID
+    return str(normalized)
+
+
+def _context_patch_state(context_id: str | None = None) -> dict[str, dict[str, dict[str, object]]]:
+    return _PATCH_CONTEXT_STATE.setdefault(_normalize_patch_context_id(context_id), {})
+
+
+def _context_patch_rollbacks(context_id: str | None = None) -> dict[str, dict[str, object]]:
+    return _PATCH_CONTEXT_ROLLBACKS.setdefault(_normalize_patch_context_id(context_id), {})
+
+
+def _register_patch_application(
+    patch_name: str,
+    target_key: str,
+    *,
+    applied: bool,
+    context_id: str | None = None,
+    rollback=None,
+) -> None:
+    state_bucket = _context_patch_state(context_id).setdefault(patch_name, {})
+    state_bucket[target_key] = {"applied": bool(applied)}
+    if rollback is not None:
+        rollback_bucket = _context_patch_rollbacks(context_id).setdefault(patch_name, {})
+        rollback_bucket[target_key] = rollback
+
+
+def get_wgp_patch_state(*, context_id: str | None = None) -> dict[str, dict[str, dict[str, object]]]:
+    state = _PATCH_CONTEXT_STATE.get(_normalize_patch_context_id(context_id), {})
+    return {
+        patch_name: {
+            target_key: dict(metadata)
+            for target_key, metadata in patch_entries.items()
+        }
+        for patch_name, patch_entries in state.items()
+    }
+
+
+def clear_wgp_patch_context(context_id: str | None = None) -> None:
+    normalized = _normalize_patch_context_id(context_id)
+    _PATCH_CONTEXT_STATE.pop(normalized, None)
+    _PATCH_CONTEXT_ROLLBACKS.pop(normalized, None)
+
+
+def rollback_wgp_patches(
+    *,
+    patch_name: str | None = None,
+    target_key: str | None = None,
+    context_id: str | None = None,
+) -> int:
+    if context_id is not None:
+        contexts = [_normalize_patch_context_id(context_id)]
+    else:
+        contexts = sorted(set(_PATCH_CONTEXT_ROLLBACKS.keys()) | set(_PATCH_CONTEXT_STATE.keys()))
+    restored = 0
+
+    for normalized_context in contexts:
+        rollback_state = _PATCH_CONTEXT_ROLLBACKS.get(normalized_context, {})
+        state = _PATCH_CONTEXT_STATE.get(normalized_context, {})
+
+        patch_names = [patch_name] if patch_name is not None else list(rollback_state.keys())
+        for current_patch_name in patch_names:
+            patch_rollbacks = rollback_state.get(current_patch_name, {})
+            target_keys = [target_key] if target_key is not None else list(patch_rollbacks.keys())
+            for current_target_key in target_keys:
+                rollback = patch_rollbacks.pop(current_target_key, None)
+                if callable(rollback):
+                    restored += int(rollback())
+                patch_state = state.get(current_patch_name, {})
+                patch_state.pop(current_target_key, None)
+                if not patch_state:
+                    state.pop(current_patch_name, None)
+            if not patch_rollbacks:
+                rollback_state.pop(current_patch_name, None)
+
+        if not rollback_state:
+            _PATCH_CONTEXT_ROLLBACKS.pop(normalized_context, None)
+        if not state:
+            _PATCH_CONTEXT_STATE.pop(normalized_context, None)
+
+    return restored
 
 
 def apply_qwen_model_routing_patch(wgp_module: "types.ModuleType", wan_root: str) -> bool:
@@ -56,7 +150,7 @@ def apply_qwen_model_routing_patch(wgp_module: "types.ModuleType", wan_root: str
 
             if isinstance(base, str) and "qwen" in base.lower():
                 model_logger.debug("[QWEN_LOAD] Routing to Qwen family loader via monkeypatch")
-                from models.qwen.qwen_handler import family_handler as _qwen_handler
+                _qwen_handler = get_qwen_family_handler()
                 pipe_processor, pipe = _qwen_handler.load_model(
                     model_filename=model_filename,
                     model_type=model_type,
@@ -101,6 +195,11 @@ def apply_qwen_lora_directory_patch(wgp_module: "types.ModuleType", wan_root: st
         True if patch was applied successfully, False otherwise
     """
     try:
+        target_key = f"wgp_module:{id(wgp_module)}:get_lora_dir"
+        existing = get_wgp_patch_state().get("qwen_lora_directory", {})
+        if target_key in existing and getattr(wgp_module.get_lora_dir, "_headless_patch_target_key", None) == target_key:
+            return True
+
         _orig_get_lora_dir = wgp_module.get_lora_dir
 
         def _patched_get_lora_dir(model_type: str):
@@ -114,7 +213,15 @@ def apply_qwen_lora_directory_patch(wgp_module: "types.ModuleType", wan_root: st
                 model_logger.debug(f"[QWEN_LOAD] Error checking Qwen LoRA directory for model_type={model_type}: {e}")
             return _orig_get_lora_dir(model_type)
 
+        _patched_get_lora_dir._headless_patch_name = "qwen_lora_directory"
+        _patched_get_lora_dir._headless_patch_target_key = target_key
         wgp_module.get_lora_dir = _patched_get_lora_dir
+        _register_patch_application(
+            "qwen_lora_directory",
+            target_key,
+            applied=True,
+            rollback=lambda: _rollback_qwen_lora_directory_patch(wgp_module, target_key, _orig_get_lora_dir),
+        )
         return True
 
     except (RuntimeError, AttributeError, ImportError) as e:
@@ -137,7 +244,7 @@ def apply_lora_multiplier_parser_patch(wgp_module: "types.ModuleType") -> bool:
         True if patch was applied successfully, False otherwise
     """
     try:
-        from shared.utils import loras_mutipliers as _shared_lora_utils
+        _shared_lora_utils = get_shared_lora_utils_module()
         wgp_module.parse_loras_multipliers = _shared_lora_utils.parse_loras_multipliers
         wgp_module.preparse_loras_multipliers = _shared_lora_utils.preparse_loras_multipliers
         return True
@@ -159,7 +266,7 @@ def apply_qwen_inpainting_lora_patch() -> bool:
         True if patch was applied successfully, False otherwise
     """
     try:
-        from models.qwen import qwen_main as _qwen_main
+        _qwen_main = get_qwen_main_module()
         _orig_qwen_get_loras_transformer = _qwen_main.model_factory.get_loras_transformer
 
         def _patched_qwen_get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, **kwargs):
@@ -308,6 +415,11 @@ def apply_lora_caching_patch() -> bool:
     try:
         from mmgp import offload
 
+        target_key = f"mmgp.offload:{id(offload)}"
+        existing = get_wgp_patch_state().get("lora_caching", {})
+        if target_key in existing and getattr(offload.load_loras_into_model, "_headless_patch_target_key", None) == target_key:
+            return True
+
         _original_load = offload.load_loras_into_model
         _original_unload = offload.unload_loras_from_model
 
@@ -357,8 +469,18 @@ def apply_lora_caching_patch() -> bool:
                 return
             model_logger.debug("[LORA_CACHE] Deferring LoRA unload (cached for reuse)")
 
+        _cached_load._headless_patch_name = "lora_caching"
+        _cached_load._headless_patch_target_key = target_key
+        _deferred_unload._headless_patch_name = "lora_caching"
+        _deferred_unload._headless_patch_target_key = target_key
         offload.load_loras_into_model = _cached_load
         offload.unload_loras_from_model = _deferred_unload
+        _register_patch_application(
+            "lora_caching",
+            target_key,
+            applied=True,
+            rollback=lambda: _rollback_lora_caching_patch(offload, target_key, _original_load, _original_unload),
+        )
         return True
 
     except (ImportError, AttributeError, RuntimeError) as e:
@@ -390,7 +512,30 @@ def apply_headless_app_stub(wgp_module: "types.ModuleType") -> bool:
         return False
 
 
-def apply_all_wgp_patches(wgp_module: "types.ModuleType", wan_root: str) -> dict:
+def _rollback_qwen_lora_directory_patch(wgp_module, target_key: str, original_get_lora_dir) -> int:
+    if getattr(wgp_module.get_lora_dir, "_headless_patch_target_key", None) != target_key:
+        return 0
+    wgp_module.get_lora_dir = original_get_lora_dir
+    return 1
+
+
+def _rollback_lora_caching_patch(offload, target_key: str, original_load, original_unload) -> int:
+    restored = 0
+    if getattr(offload.load_loras_into_model, "_headless_patch_target_key", None) == target_key:
+        offload.load_loras_into_model = original_load
+        restored += 1
+    if getattr(offload.unload_loras_from_model, "_headless_patch_target_key", None) == target_key:
+        offload.unload_loras_from_model = original_unload
+        restored += 1
+    return restored
+
+
+def apply_all_wgp_patches(
+    wgp_module: "types.ModuleType",
+    wan_root: str,
+    *,
+    context_id: str | None = None,
+) -> dict:
     """
     Apply all WGP patches for headless operation.
 
@@ -419,5 +564,14 @@ def apply_all_wgp_patches(wgp_module: "types.ModuleType", wan_root: str) -> dict
         model_logger.debug(f"[WGP_PATCHES] Applied: {', '.join(successful)}")
     if failed:
         model_logger.debug(f"[WGP_PATCHES] Failed (non-fatal): {', '.join(failed)}")
+
+    context_target_key = f"wgp_module:{id(wgp_module)}"
+    for patch_name, applied in results.items():
+        _register_patch_application(
+            patch_name,
+            context_target_key,
+            applied=applied,
+            context_id=context_id,
+        )
 
     return results

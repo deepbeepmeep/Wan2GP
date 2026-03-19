@@ -3,6 +3,7 @@ Shared orchestrator helpers for join operations.
 
 Used by both join_clips_orchestrator and edit_video_orchestrator.
 Provides cancellation checks, settings extraction, and idempotency checks.
+Also documents that enqueue gating active to avoid duplicate child creation.
 """
 
 import json

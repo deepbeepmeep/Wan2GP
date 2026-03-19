@@ -1,4 +1,5 @@
 """Video metadata retrieval using ffprobe and OpenCV."""
+from pathlib import Path
 import json
 import subprocess
 import time
@@ -8,11 +9,17 @@ import cv2
 from source.core.log import generation_logger
 
 __all__ = [
+    "TimeoutExpired",
     "VideoMetadataError",
     "get_video_frame_count_ffprobe",
     "get_video_fps_ffprobe",
     "get_video_frame_count_and_fps",
+    "require_video_frame_count_and_fps",
+    "run_subprocess",
 ]
+
+run_subprocess = subprocess.run
+TimeoutExpired = subprocess.TimeoutExpired
 
 
 class VideoMetadataError(RuntimeError):
@@ -43,7 +50,7 @@ def get_video_frame_count_ffprobe(input_video_path: str) -> int | None:
             '-of', 'csv=p=0',
             str(input_video_path)
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = run_subprocess(cmd, capture_output=True, text=True, timeout=30)
 
         if result.returncode == 0 and result.stdout.strip():
             frame_count = int(result.stdout.strip())
@@ -60,7 +67,7 @@ def get_video_frame_count_ffprobe(input_video_path: str) -> int | None:
             '-of', 'csv=p=0',
             str(input_video_path)
         ]
-        result2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=120)
+        result2 = run_subprocess(cmd2, capture_output=True, text=True, timeout=120)
 
         if result2.returncode == 0 and result2.stdout.strip():
             frame_count = int(result2.stdout.strip())
@@ -69,7 +76,7 @@ def get_video_frame_count_ffprobe(input_video_path: str) -> int | None:
 
         return None
 
-    except subprocess.TimeoutExpired:
+    except TimeoutExpired:
         generation_logger.warning(f"[FFPROBE] Timeout getting frame count for {input_video_path}")
         return None
     except (subprocess.SubprocessError, OSError, ValueError) as e:
@@ -115,7 +122,7 @@ def get_video_fps_ffprobe(input_video_path: str) -> float | None:
             "-of", "json",
             str(input_video_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = run_subprocess(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0 or not result.stdout:
             return None
 
@@ -133,7 +140,7 @@ def get_video_fps_ffprobe(input_video_path: str) -> float | None:
         if fps and fps > 0:
             return fps
         return None
-    except subprocess.TimeoutExpired:
+    except TimeoutExpired:
         generation_logger.warning(f"[FFPROBE] Timeout getting FPS for {input_video_path}")
         return None
     except (subprocess.SubprocessError, OSError, ValueError) as e:
@@ -171,5 +178,22 @@ def get_video_frame_count_and_fps(input_video_path: str) -> tuple[int, float] | 
         if attempt < max_attempts - 1:
             time.sleep(0.5)
 
-    # If all attempts failed, return what we got (might be 0 or invalid)
-    return frames, fps
+    ffprobe_frames = get_video_frame_count_ffprobe(input_video_path)
+    ffprobe_fps = get_video_fps_ffprobe(input_video_path)
+
+    resolved_frames = frames if frames and frames > 0 else ffprobe_frames
+    resolved_fps = fps if fps and fps > 0 else ffprobe_fps
+
+    return resolved_frames, resolved_fps
+
+
+def require_video_frame_count_and_fps(
+    input_video_path: str | Path,
+    *,
+    context: str = "video metadata",
+) -> tuple[int, float]:
+    """Return required frame-count/FPS metadata or raise a structured error."""
+    frame_count, fps = get_video_frame_count_and_fps(str(input_video_path))
+    if not frame_count or frame_count <= 0 or not fps or fps <= 0:
+        raise VideoMetadataError(f"{context}: could not determine frame count")
+    return int(frame_count), float(fps)

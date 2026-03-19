@@ -5781,6 +5781,7 @@ def generate_video(
     input_video_strength,
     video_prompt_type,
     image_refs,
+    image_refs_strengths,
     frames_positions,
     video_guide,
     image_guide,
@@ -6166,6 +6167,7 @@ def generate_video(
     if trans2 is not None: trans2.cache = skip_steps_cache
     face_arc_embeds = None
     src_ref_images = src_ref_masks = None
+    src_ref_images_full = src_ref_masks_full = None
     output_new_audio_data = None
     output_new_audio_filepath = None
     original_audio_guide = audio_guide
@@ -6335,6 +6337,7 @@ def generate_video(
             gen["window_no"] = window_no
             return_latent_slice = None 
             frames_relative_positions_list = []
+            window_image_refs_strengths = image_refs_strengths
             if reuse_frames > 0:                
                 return_latent_slice = slice(- max(1, (reuse_frames + discard_last_frames ) // latent_size) , None if discard_last_frames == 0 else -(discard_last_frames // latent_size) )
             refresh_preview  = {"image_guide" : image_guide, "image_mask" : image_mask} if image_mode >= 1 else {}
@@ -6420,7 +6423,21 @@ def generate_video(
                     for i, pos in enumerate(frames_positions_list):
                         frames_to_inject[pos] = image_refs[i] 
             if custom_frames_injection:
-                frames_relative_positions_list= [ i -aligned_window_start_frame for i in  frames_positions_list if aligned_window_start_frame <= i < aligned_window_start_frame + current_video_length ]
+                window_indices = [
+                    idx
+                    for idx, i in enumerate(frames_positions_list)
+                    if aligned_window_start_frame <= i < aligned_window_start_frame + current_video_length
+                ]
+                frames_relative_positions_list = [
+                    frames_positions_list[idx] - aligned_window_start_frame
+                    for idx in window_indices
+                ]
+                if image_refs_strengths is not None:
+                    window_image_refs_strengths = [
+                        image_refs_strengths[idx]
+                        for idx in window_indices
+                        if idx < len(image_refs_strengths)
+                    ]
 
 
             video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = sparse_video_image = None
@@ -6542,6 +6559,24 @@ def generate_video(
                                                                                         return_tensor= model_def.get("return_image_refs_tensor", False),
                                                                                         ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0),
                                                                                         background_removal_color = model_def.get("background_removal_color", [255, 255, 255] ))
+                        src_ref_images_full = src_ref_images
+                        src_ref_masks_full = src_ref_masks
+
+            if custom_frames_injection:
+                if src_ref_images_full is not None:
+                    src_ref_images = [
+                        src_ref_images_full[idx]
+                        for idx in window_indices
+                        if idx < len(src_ref_images_full)
+                    ]
+                    if src_ref_masks_full is not None:
+                        src_ref_masks = [
+                            src_ref_masks_full[idx]
+                            for idx in window_indices
+                            if idx < len(src_ref_masks_full)
+                        ]
+                    else:
+                        src_ref_masks = None
 
             frames_to_inject_parsed = frames_to_inject[ window_start_frame if extract_guide_from_window_start else guide_start_frame: guide_end_frame]
             if video_guide is not None or len(frames_to_inject_parsed) > 0 or model_def.get("forced_guide_mask_inputs", False): 
@@ -6652,6 +6687,7 @@ def generate_video(
                     input_frames = src_video,
                     input_frames2 = src_video2,
                     input_ref_images=  src_ref_images,
+                    image_refs_strengths=window_image_refs_strengths,
                     input_ref_masks = src_ref_masks,
                     input_masks = src_mask,
                     input_masks2 = src_mask2,

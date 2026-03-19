@@ -8,6 +8,7 @@ Matches WGP's exact setup_loras call pattern from generate_video_tab.
 import os
 
 from source.core.log import model_logger
+from source.runtime.wgp_bridge import get_lora_dir, setup_loras
 
 
 def setup_loras_for_model(orchestrator, model_type: str):
@@ -22,11 +23,6 @@ def setup_loras_for_model(orchestrator, model_type: str):
         model_type: Model identifier (e.g., "t2v", "vace_14B")
     """
     try:
-        # Import WGP functions
-        import wgp
-        setup_loras = wgp.setup_loras
-        get_lora_dir = wgp.get_lora_dir
-
         # Use exact same call pattern as WGP's generate_video_tab (line 6941)
         # setup_loras(model_type, transformer, lora_dir, lora_preselected_preset, split_linear_modules_map)
         preset_to_load = ""  # No preset in headless mode (equivalent to lora_preselected_preset)

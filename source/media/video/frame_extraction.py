@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from source.core.log import generation_logger
+from source.core.log.video_runtime import generation_logger
 
 __all__ = [
     "extract_frames_from_video",

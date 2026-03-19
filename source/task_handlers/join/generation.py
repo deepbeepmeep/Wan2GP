@@ -7,6 +7,9 @@ This module provides the main handle_join_clips_task function that:
 3. Extracts context frames from the beginning of the second clip
 4. Generates transition frames between them using VACE
 5. Uses mask video to preserve the context frames and only generate the gap
+
+The staged workflow seam is represented by _JoinWorkflowStageOutputs and
+_join_run_workflow_stages(...).
 """
 
 import json

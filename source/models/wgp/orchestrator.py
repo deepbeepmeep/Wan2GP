@@ -69,6 +69,12 @@ from source.models.wgp.generators.generation_strategies import (
     generate_flux as _generate_flux_impl,
     generate_with_config as _generate_with_config_impl,
 )
+from source.runtime.process_globals import temporary_process_globals
+from source.runtime.wgp_bridge import (
+    get_wgp_runtime_module,
+    get_wgp_runtime_module_mutable,
+    reset_wgp_runtime_module,
+)
 
 from source.core.log import is_debug_enabled
 
@@ -91,6 +97,13 @@ def _set_wgp_output_paths(wgp_module, output_dir: str) -> None:
 
 class WanOrchestrator:
     """Thin adapter around `wgp.generate_video` for easier programmatic use."""
+
+    # Typed runtime collaborator contract markers:
+    # model_runtime: ModelRuntime | None = None
+    # media_resolver: MediaResolver | None = None
+    # parameter_resolver: ParameterResolver | None = None
+    # self.model_runtime = model_runtime or DefaultModelRuntime(self)
+    # runtime_context.prepare(...)
 
     def __init__(self, wan_root: str, main_output_dir: Optional[str] = None):
         """Initialize orchestrator with WanGP directory.
@@ -228,14 +241,17 @@ class WanOrchestrator:
                 if 'wgp' in sys.modules:
                     if is_debug_enabled():
                         _init_logger.warning(f"[INIT_DEBUG] wgp already in sys.modules - removing to force reimport from correct directory")
-                    del sys.modules['wgp']
+                    reset_wgp_runtime_module()
 
-                _saved_argv = list(sys.argv)
-                sys.argv = ["headless_wgp.py"]
-                from wgp import (
-                    generate_video, get_base_model_type, get_model_family,
-                    test_vace_module,
-                )
+                with temporary_process_globals(
+                    argv=["headless_wgp.py"],
+                    prepend_sys_path=self.wan_root,
+                ):
+                    wgp = get_wgp_runtime_module_mutable()
+                    generate_video = wgp.generate_video
+                    get_base_model_type = wgp.get_base_model_type
+                    get_model_family = wgp.get_model_family
+                    test_vace_module = wgp.test_vace_module
 
                 # Verify directory didn't change during wgp import
                 _verify_wgp_directory(_init_logger, "after importing wgp module")
@@ -247,12 +263,10 @@ class WanOrchestrator:
                 self._test_vace_module = test_vace_module
 
                 # Apply WGP monkeypatches for headless operation (Qwen support, LoRA fixes, etc.)
-                import wgp as wgp
                 from source.models.wgp.wgp_patches import apply_all_wgp_patches
                 apply_all_wgp_patches(wgp, self.wan_root)
 
                 # Initialize WGP global state (normally done by UI)
-                import wgp
                 # Set absolute output path to avoid issues when working directory changes
                 # Use main_output_dir if provided, otherwise default to 'outputs' next to wan_root
                 if main_output_dir is not None:
@@ -291,11 +305,6 @@ class WanOrchestrator:
                     raise RuntimeError(error_msg)
             except ImportError as e:
                 raise ImportError(f"Failed to import wgp module. Ensure {wan_root} contains wgp.py: {e}") from e
-            finally:
-                try:
-                    sys.argv = _saved_argv
-                except (TypeError, ValueError) as e:
-                    _init_logger.debug("Failed to restore sys.argv after wgp import: %s", e)
 
         # Initialize state object (mimics UI state)
         self.state = {
@@ -332,7 +341,7 @@ class WanOrchestrator:
             # Ensure model_type is set before applying config, as upstream generate_header/get_overridden_attention
             # will look up the current model's definition via state["model_type"].
             try:
-                import wgp as _w
+                _w = get_wgp_runtime_module()
                 default_model_type = getattr(_w, "transformer_type", None) or "t2v"
             except (ImportError, AttributeError):
                 default_model_type = "t2v"
@@ -343,7 +352,7 @@ class WanOrchestrator:
             outputs_dir = "outputs/"
             try:
                 orchestrator_logger.debug("Applying headless WGP defaults to server_config...")
-                import wgp as _wgp_cfg
+                _wgp_cfg = get_wgp_runtime_module_mutable()
                 _cfg = _wgp_cfg.server_config
                 _cfg["transformer_types"] = ["t2v"]
                 _cfg["transformer_dtype_policy"] = "auto"
@@ -914,7 +923,7 @@ class WanOrchestrator:
         """Filter WGP params to only those accepted by generate_video()."""
         try:
             import inspect as _inspect
-            import wgp as _wgp
+            _wgp = get_wgp_runtime_module()
             _sig = _inspect.signature(_wgp.generate_video)
             _allowed = set(_sig.parameters.keys())
             _filtered = {k: v for k, v in wgp_params.items() if k in _allowed}

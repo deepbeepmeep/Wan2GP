@@ -28,6 +28,7 @@ Usage:
 import os
 import sys
 import time
+import heapq
 
 import threading
 import queue
@@ -39,6 +40,9 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
 from source.core.log import queue_logger
+from source.runtime.wgp_bridge import get_model_def
+from source.runtime.process_globals import get_runtime_context
+from source.task_handlers.queue.polling_policy import FairQueuePolicy
 from source.task_handlers.queue.download_ops import switch_model_impl, convert_to_wgp_task_impl
 from source.task_handlers.queue.task_processor import (
     worker_loop,
@@ -54,8 +58,13 @@ from source.task_handlers.queue.wgp_init import WgpInitMixin
 def setup_wgp_path(wan_dir: str):
     """Setup WanGP path and imports."""
     wan_dir = os.path.abspath(wan_dir)
-    if wan_dir not in sys.path:
-        sys.path.insert(0, wan_dir)
+    runtime_context = get_runtime_context(
+        "queue.task_queue_path",
+        wan_root=wan_dir,
+        default_argv=["headless_wgp.py"],
+        require_cwd=False,
+    )
+    runtime_context.prepare(require_cwd=False)
     return wan_dir
 
 # Task definitions
@@ -89,14 +98,14 @@ class QueueStatus:
     memory_usage: Dict[str, Any]
 
 
-class HeadlessTaskQueue(WgpInitMixin):
+class HeadlessTaskQueue:
     """
     Main task queue manager that integrates with wgp.py's existing queue system.
 
     This class leverages wgp.py's built-in task management and state persistence
     while providing a clean API for headless operation.
 
-    Mixins:
+    Runtime helpers:
         WgpInitMixin: CUDA warmup and lazy WanOrchestrator initialization
     """
     
@@ -118,9 +127,6 @@ class HeadlessTaskQueue(WgpInitMixin):
         self.start_time = time.time()
         self.debug_mode = debug_mode  # Now controlled by caller
         
-        # Import wgp after path setup (protect sys.argv to prevent argument conflicts)
-        _saved_argv = sys.argv[:]
-        sys.argv = ["headless_wgp.py"]
         # Headless stubs to avoid optional UI deps (tkinter/matanyone) during import
         try:
             import types
@@ -154,12 +160,6 @@ class HeadlessTaskQueue(WgpInitMixin):
         # This allows the queue to initialize even if CUDA isn't ready yet
         self.wgp = None
         
-        # Restore sys.argv immediately (no wgp import, so no need for protection)
-        try:
-            sys.argv = _saved_argv
-        except (TypeError, AttributeError) as e:
-            logging.getLogger('HeadlessQueue').debug(f"Failed to restore sys.argv after init: {e}")
-        
         # Defer orchestrator initialization to avoid CUDA init during queue setup
         # Orchestrator imports wgp, which triggers deep imports that call torch.cuda
         # We'll initialize it lazily when first needed
@@ -169,6 +169,7 @@ class HeadlessTaskQueue(WgpInitMixin):
         
         # Task management
         self.task_queue = queue.PriorityQueue()
+        self.fair_queue_policy = FairQueuePolicy()
         self.task_history: Dict[str, GenerationTask] = {}
         self.current_task: Optional[GenerationTask] = None
         self.current_model: Optional[str] = None
@@ -194,7 +195,28 @@ class HeadlessTaskQueue(WgpInitMixin):
         self._init_wgp_integration()
         
         self.logger.info(f"HeadlessTaskQueue initialized with WanGP at {wan_dir}")
-    
+
+    def ensure_orchestrator_runtime(self):
+        """Run the extracted orchestrator bootstrap flow on this queue host."""
+        return WgpInitMixin._ensure_orchestrator(self)
+
+    def _ensure_orchestrator(self):
+        return self.ensure_orchestrator_runtime()
+
+    def import_and_create_orchestrator_runtime(self):
+        """Create the WanOrchestrator using the extracted runtime bootstrap helper."""
+        return WgpInitMixin._import_and_create_orchestrator(self)
+
+    def _import_and_create_orchestrator(self):
+        return self.import_and_create_orchestrator_runtime()
+
+    def init_wgp_integration_runtime(self):
+        """Populate queue-side WGP integration state using the extracted runtime helper."""
+        return WgpInitMixin._init_wgp_integration(self)
+
+    def _init_wgp_integration(self):
+        return self.init_wgp_integration_runtime()
+
     def _setup_logging(self):
         """Setup structured logging that goes to Supabase via the log interceptor."""
         # Keep Python's basic logging for local file backup
@@ -211,7 +233,27 @@ class HeadlessTaskQueue(WgpInitMixin):
         # Use queue_logger (ComponentLogger) as main logger - this goes to Supabase
         # ComponentLogger has compatible interface: .info(), .error(), .warning(), .debug()
         self.logger = queue_logger
-    
+
+    def dequeue_task(self, timeout: float = 1.0):
+        """Pull the next task using the queue fairness policy."""
+        deadline = time.monotonic() + max(timeout, 0.0)
+
+        while self.running and not self.shutdown_event.is_set():
+            with self.task_queue.mutex:
+                entries = self.task_queue.queue
+                if entries:
+                    index = self.fair_queue_policy.choose_index(entries, now=time.time())
+                    priority, timestamp, task = entries.pop(index)
+                    heapq.heapify(entries)
+                    self.task_queue.not_full.notify()
+                    return priority, timestamp, task
+
+            if time.monotonic() >= deadline:
+                raise queue.Empty
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+        raise queue.Empty
+
     def get_task_status(self, task_id: str) -> Optional[GenerationTask]:
         """Get status of a specific task."""
         return self.task_history.get(task_id)
@@ -437,15 +479,7 @@ class HeadlessTaskQueue(WgpInitMixin):
         """Apply sampler-specific CFG and flow_shift settings from model configuration."""
         try:
             # Import WGP to get model definition
-            # Protect sys.argv in case wgp hasn't been imported yet
-            _saved_argv = sys.argv[:]
-            try:
-                sys.argv = ["headless_model_management.py"]
-                import wgp
-            finally:
-                sys.argv = _saved_argv
-
-            model_def = wgp.get_model_def(model_key)
+            model_def = get_model_def(model_key)
             
             # Check if model has sampler-specific presets
             sampler_presets = model_def.get("sampler_cfg_presets", {})

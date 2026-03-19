@@ -13,6 +13,7 @@ import time
 from typing import Any, Dict
 
 from source.core.log import is_debug_enabled
+from source.runtime.process_globals import temporary_process_globals
 
 
 # ---------------------------------------------------------------------------
@@ -107,12 +108,7 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
     if config.lora.has_pending_downloads():
         queue.logger.info(f"[LORA_PROCESS] Task {task.id}: {len(config.lora.get_pending_downloads())} LoRAs need downloading")
 
-        # Ensure we're in Wan2GP directory for LoRA operations
-        _saved_cwd = os.getcwd()
-        if _saved_cwd != queue.wan_dir:
-            os.chdir(queue.wan_dir)
-
-        try:
+        with temporary_process_globals(cwd=queue.wan_dir):
             from source.models.lora.lora_utils import download_lora_from_url
 
             for url, mult in list(config.lora.get_pending_downloads().items()):
@@ -125,9 +121,6 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
                         queue.logger.warning(f"[LORA_DOWNLOAD] Task {task.id}: Failed to download {url}")
                 except (OSError, ValueError, RuntimeError) as e:
                     queue.logger.warning(f"[LORA_DOWNLOAD] Task {task.id}: Error downloading {url}: {e}")
-        finally:
-            if _saved_cwd != queue.wan_dir:
-                os.chdir(_saved_cwd)
 
     # Validate before conversion
     errors = config.validate()

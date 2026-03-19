@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from source.core.constants import BYTES_PER_GB as BYTES_PER_GIB
+from source.runtime.wgp_bridge import clear_uni3c_cache_if_unused
 
 
 def cleanup_memory_after_task(queue: Any, task_id: str):
@@ -38,11 +39,7 @@ def cleanup_memory_after_task(queue: Any, task_id: str):
             )
 
         # Clear uni3c cache if it wasn't used this task (preserves cache for consecutive uni3c tasks)
-        try:
-            from Wan2GP.models.wan.uni3c import clear_uni3c_cache_if_unused
-            clear_uni3c_cache_if_unused()
-        except ImportError:
-            pass  # uni3c module not available
+        clear_uni3c_cache_if_unused()
 
         # Clear PyTorch's CUDA cache (frees unused reserved memory, keeps models)
         if torch.cuda.is_available():

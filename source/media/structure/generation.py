@@ -1,6 +1,5 @@
 """Structure guidance video generation orchestrators."""
 
-import sys
 import numpy as np
 from pathlib import Path
 from typing import Tuple
@@ -10,6 +9,7 @@ from source.core.constants import BYTES_PER_MB
 from source.core.log import generation_logger
 from source.media.structure.loading import load_structure_video_frames
 from source.media.structure.preprocessors import process_structure_frames
+from source.runtime.wgp_bridge import get_wan2gp_save_video_callable
 
 # Re-export extracted functions so existing `from generation import X` still works
 from source.media.structure.frame_ops import (  # noqa: F401
@@ -126,12 +126,7 @@ def create_structure_guidance_video(
         # Step 3: Encode as video
         generation_logger.debug(f"[STRUCTURE_GUIDANCE_VIDEO] Encoding video to {output_path}")
 
-        # Import video creation utilities
-        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from shared.utils.audio_video import save_video
+        save_video = get_wan2gp_save_video_callable()
 
         # Convert to numpy array format expected by save_video
         # save_video expects [T, H, W, C] in range [0, 255]
@@ -213,12 +208,7 @@ def create_trimmed_structure_video(
         # Step 2: Encode as video directly (no style transfer)
         generation_logger.debug(f"[TRIMMED_STRUCTURE_VIDEO] Encoding video to {output_path}")
 
-        # Import video creation utilities
-        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from shared.utils.audio_video import save_video
+        save_video = get_wan2gp_save_video_callable()
 
         # Convert list of numpy arrays [H, W, C] to tensor [T, H, W, C]
         video_tensor = np.stack(frames, axis=0)

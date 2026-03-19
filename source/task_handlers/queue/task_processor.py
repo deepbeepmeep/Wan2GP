@@ -26,7 +26,8 @@ from typing import Any
 # via worker_thread (and now via task_processor) continue to work.
 from source.task_handlers.queue.memory_cleanup import cleanup_memory_after_task  # noqa: F401
 
-from source.core.log import queue_logger
+from source.core.log.queue_runtime import queue_logger
+from source.runtime.wgp_bridge import get_wgp_runtime_module_mutable
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +376,7 @@ def _execute_generation_with_patches(
     _wan_model_patched = False
     if generation_params.get("svi2pro"):
         try:
-            import wgp
+            wgp = get_wgp_runtime_module_mutable()
             model_key = task.model
 
             # Patch 1: wgp.models_def (for any new model loads)
@@ -574,7 +575,7 @@ def _execute_generation_with_patches(
         if _svi2pro_patched or _wan_model_patched:
             queue.logger.debug(f"[GENERATION] Task {task.id}: Restoring svi2pro/sliding_window patches")
             try:
-                import wgp
+                wgp = get_wgp_runtime_module_mutable()
                 model_key = task.model
 
                 # Restore wgp.models_def
@@ -634,11 +635,14 @@ def worker_loop(queue: Any):
 
             # Get next task (blocks with timeout)
             try:
-                queue.logger.debug(f"[WORKER_LOOP] {worker_name} attempting to get task from queue...")
+                queue.logger.debug(f"[WORKER_LOOP] {worker_name} attempting to dequeue task...")
                 get_start = time.time()
-                priority, timestamp, task = queue.task_queue.get(timeout=1.0)
+                priority, timestamp, task = queue.dequeue_task(timeout=1.0)
                 get_elapsed = time.time() - get_start
-                queue.logger.info(f"[WORKER_LOOP] {worker_name} retrieved task {task.id} from queue (queue.get took {get_elapsed:.3f}s)")
+                queue.logger.info(
+                    f"[WORKER_LOOP] {worker_name} retrieved task {task.id} from queue "
+                    f"(dequeue_task took {get_elapsed:.3f}s)"
+                )
             except queue_mod.Empty:
                 queue.logger.debug(f"[WORKER_LOOP] {worker_name} queue empty, continuing...")
                 continue

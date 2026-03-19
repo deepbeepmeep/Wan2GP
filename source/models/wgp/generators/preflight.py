@@ -8,6 +8,7 @@ parameters are in the format that WGP expects.
 from typing import Any, Callable, Dict, Optional
 
 from source.core.log import generation_logger, is_debug_enabled
+from source.runtime.wgp_bridge import get_model_min_frames_and_step
 
 
 def prepare_svi_image_refs(kwargs: dict) -> None:
@@ -16,6 +17,7 @@ def prepare_svi_image_refs(kwargs: dict) -> None:
     Our task pipeline passes paths for JSON-serializability, but Wan2GP/WGP
     expects ``image_refs`` as a list of PIL.Image objects.
     """
+    strict_alignment = "image_refs_strengths" in kwargs
     try:
         if (
             "image_refs_paths" in kwargs
@@ -29,12 +31,22 @@ def prepare_svi_image_refs(kwargs: dict) -> None:
             refs: list = []
             for p in kwargs["image_refs_paths"]:
                 if not p:
+                    if strict_alignment:
+                        raise ValueError(
+                            "Anchor image path is empty "
+                            "(alignment invariant violated)"
+                        )
                     continue
                 try:
                     img = Image.open(str(p)).convert("RGB")
                     img = ImageOps.exif_transpose(img)
                     refs.append(img)
                 except (OSError, ValueError, RuntimeError) as e_img:
+                    if strict_alignment:
+                        raise ValueError(
+                            "Anchor image failed to load "
+                            f"(alignment invariant violated): {p}: {e_img}"
+                        ) from e_img
                     if is_debug_enabled():
                         generation_logger.warning(
                             f"[SVI_GROUND_TRUTH] Failed to load image_ref path '{p}': {e_img}"
@@ -50,7 +62,14 @@ def prepare_svi_image_refs(kwargs: dict) -> None:
                     generation_logger.warning(
                         "[SVI_GROUND_TRUTH] image_refs_paths provided but no images could be loaded"
                     )
-    except (OSError, ValueError, RuntimeError, TypeError) as e_refs:
+    except ValueError:
+        if strict_alignment:
+            raise
+        if is_debug_enabled():
+            generation_logger.warning(
+                "[SVI_GROUND_TRUTH] Exception while converting image_refs_paths -> image_refs"
+            )
+    except (OSError, RuntimeError, TypeError) as e_refs:
         if is_debug_enabled():
             generation_logger.warning(
                 f"[SVI_GROUND_TRUTH] Exception while converting image_refs_paths -> image_refs: {e_refs}"
@@ -99,7 +118,6 @@ def configure_model_specific_params(
         # (e.g. Wan needs >= 5, LTX-2 needs >= 17)
         min_frames = 5  # Safe default
         try:
-            from wgp import get_model_min_frames_and_step
             _model_key = model_type or resolved_params.get("model") or resolved_params.get("model_name", "")
             _min, _step, _latent = get_model_min_frames_and_step(_model_key)
             min_frames = max(_min, 5)

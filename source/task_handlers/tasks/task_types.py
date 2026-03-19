@@ -36,6 +36,7 @@ WGP_TASK_TYPES: FrozenSet[str] = frozenset({
     "hunyuan", "ltxv", "ltx2",
     # Qwen image tasks
     "qwen_image_edit", "qwen_image_style", "image_inpaint", "annotated_image_edit",
+    "qwen_image", "qwen_image_2512",
     # Specialized handlers that enqueue WGP tasks
     "inpaint_frames",
     # Generic generation

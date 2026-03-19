@@ -4,6 +4,7 @@ import numpy as np
 from typing import List, Tuple
 
 from source.core.log import generation_logger
+from source.core.params.structure_guidance import normalize_structure_treatment
 
 __all__ = [
     "load_structure_video_frames",
@@ -66,6 +67,11 @@ def load_structure_video_frames(
     """
     from PIL import Image
 
+    treatment = normalize_structure_treatment(
+        treatment,
+        context="structure video loading",
+    )
+
     # Try decord first, then fall back to cv2 when it is unavailable.
     use_decord = False
     try:
@@ -121,6 +127,11 @@ def load_structure_video_frames(
             target_fps=target_fps,
             start_target_frame=0
         )
+
+        if not frame_indices and video_frame_count > 0:
+            # When temporal resampling yields nothing (very short clips, edge rounding),
+            # seed from the first available frame so the fill loop can make progress.
+            frame_indices = [0]
 
         # If video is too short, loop back to start
         if len(frame_indices) < frames_to_load:

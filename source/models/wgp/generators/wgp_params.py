@@ -116,6 +116,7 @@ def build_passthrough_params(
         'keep_frames_video_source': '',
         'input_video_strength': resolved_params.get('input_video_strength', 1.0),
         'image_refs': None,
+        'image_refs_strengths': resolved_params.get('image_refs_strengths'),
         'frames_positions': '',
         'image_guide': None,
         'keep_frames_video_guide': '',
@@ -314,6 +315,7 @@ def build_normal_params(
         'image_start': resolved_params.get("image_start"),
         'image_end': resolved_params.get("image_end"),
         'image_refs': resolved_params.get("image_refs"),
+        'image_refs_strengths': resolved_params.get("image_refs_strengths"),
         'frames_positions': resolved_params.get("frames_positions", ""),
         'image_guide': resolved_params.get("image_guide"),
         'image_mask': resolved_params.get("image_mask"),
@@ -387,11 +389,59 @@ def build_normal_params(
     return wgp_params
 
 
+def _build_allowed_override_keys() -> set[str]:
+    passthrough_keys = set(
+        build_passthrough_params(
+            state={},
+            current_model="wan",
+            image_mode=0,
+            resolved_params={},
+            video_guide=None,
+            video_mask=None,
+            video_prompt_type=None,
+            control_net_weight=None,
+            control_net_weight2=None,
+        ).keys()
+    )
+    normal_keys = set(
+        build_normal_params(
+            state={},
+            current_model="wan",
+            image_mode=0,
+            resolved_params={},
+            prompt="",
+            actual_video_length=81,
+            actual_batch_size=1,
+            actual_guidance=5.0,
+            final_embedded_guidance=0.0,
+            is_flux=False,
+            video_guide=None,
+            video_mask=None,
+            video_prompt_type=None,
+            control_net_weight=None,
+            control_net_weight2=None,
+            activated_loras=[],
+            loras_multipliers_str="",
+        ).keys()
+    )
+    return passthrough_keys | normal_keys | {"phase_config"}
+
+
+_IMMUTABLE_KWARG_OVERRIDE_KEYS = {"task", "send_cmd", "state", "model_type"}
+_ALLOWED_KWARG_OVERRIDE_KEYS = _build_allowed_override_keys()
+
+
 def apply_kwargs_overrides(wgp_params: Dict[str, Any], kwargs: dict) -> None:
     """Override any WGP parameter with values from kwargs (in-place)."""
     for key, value in kwargs.items():
+        if key in _IMMUTABLE_KWARG_OVERRIDE_KEYS:
+            generation_logger.debug(f"Ignoring immutable kwargs override: {key}")
+            continue
+        if key not in _ALLOWED_KWARG_OVERRIDE_KEYS:
+            generation_logger.debug(f"Ignoring unknown/internal kwargs override: {key}")
+            continue
         if key in wgp_params:
             generation_logger.debug(f"Overriding parameter from kwargs: {key}={wgp_params[key]} -> {value}")
         else:
-            generation_logger.debug(f"Adding new parameter from kwargs: {key}={value}")
+            generation_logger.debug(f"Adding allowed parameter from kwargs: {key}={value}")
         wgp_params[key] = value

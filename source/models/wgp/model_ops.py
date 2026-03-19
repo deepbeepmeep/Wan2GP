@@ -8,7 +8,19 @@ Also provides cached Uni3C ControlNet loading.
 import os
 import gc
 
-from source.core.log import model_logger, generation_logger
+from source.core.log.model_runtime import generation_logger, model_logger
+from source.runtime.wgp_bridge import (
+    clear_wgp_loaded_model_state,
+    get_model_name,
+    get_model_recursive_prop,
+    get_wgp_runtime_module,
+    get_wgp_runtime_module_mutable,
+    load_uni3c_controlnet,
+    set_wgp_loaded_model_state,
+    set_wgp_model_def,
+    set_wgp_reload_needed,
+    upsert_wgp_model_definition,
+)
 
 
 def load_missing_model_definition(orchestrator, model_key: str, json_path: str):
@@ -22,7 +34,7 @@ def load_missing_model_definition(orchestrator, model_key: str, json_path: str):
         json_path: Path to the model definition JSON file
     """
     import json
-    import wgp
+    wgp = get_wgp_runtime_module_mutable()
 
     with open(json_path, "r", encoding="utf-8") as f:
         try:
@@ -42,9 +54,8 @@ def load_missing_model_definition(orchestrator, model_key: str, json_path: str):
             existing_settings.update(settings)
         existing_model_def.update(model_def)
     else:
-        wgp.models_def[model_key] = model_def  # partial def
-        model_def = wgp.init_model_def(model_key, model_def)
-        wgp.models_def[model_key] = model_def  # replace with full def
+        set_wgp_model_def(model_key, model_def)
+        model_def = upsert_wgp_model_definition(model_key, model_def, initialize=True)
         model_def["settings"] = settings
 
 
@@ -74,7 +85,7 @@ def load_model_impl(orchestrator, model_key: str) -> bool:
     if orchestrator._get_base_model_type(model_key) is None:
         raise ValueError(f"Unknown model: {model_key}")
 
-    import wgp
+    wgp = get_wgp_runtime_module_mutable()
 
     # Debug: Check if model definition is missing and diagnose why
     model_def = wgp.get_model_def(model_key)
@@ -103,7 +114,7 @@ def load_model_impl(orchestrator, model_key: str) -> bool:
             model_logger.error(f"Model JSON file missing at {json_path}")
 
     architecture = model_def.get('architecture') if model_def else 'unknown'
-    modules = wgp.get_model_recursive_prop(model_key, "modules", return_list=True)
+    modules = get_model_recursive_prop(model_key, "modules", return_list=True)
     model_logger.debug(f"Model Info: {model_key} | Architecture: {architecture} | Modules: {modules}")
 
     # Use WGP's EXACT model loading pattern from generate_video (lines 4249-4258)
@@ -127,10 +138,10 @@ def load_model_impl(orchestrator, model_key: str) -> bool:
             model_logger.warning(f"LoRA cleanup failed during model switch: {e}")
 
         # Replicate WGP's exact unloading pattern (lines 4250-4254)
-        wgp.wan_model = None
-        if wgp.offloadobj is not None:
-            wgp.offloadobj.release()
-            wgp.offloadobj = None
+        current_offloadobj = getattr(wgp, "offloadobj", None)
+        if current_offloadobj is not None:
+            current_offloadobj.release()
+        clear_wgp_loaded_model_state()
         gc.collect()
 
         # CRITICAL: Clear CUDA cache after unloading to free reserved VRAM before loading new model
@@ -141,10 +152,11 @@ def load_model_impl(orchestrator, model_key: str) -> bool:
             model_logger.debug("Cleared CUDA cache after model unload")
 
         # Replicate WGP's exact loading pattern (lines 4255-4258)
-        model_logger.debug(f"Loading model {wgp.get_model_name(model_key)}...")
-        wgp.wan_model, wgp.offloadobj = wgp.load_models(model_key)
+        model_logger.debug(f"Loading model {get_model_name(model_key)}...")
+        wan_model, offloadobj = wgp.load_models(model_key)
+        set_wgp_loaded_model_state(wan_model, offloadobj)
         model_logger.debug("Model loaded")
-        wgp.reload_needed = False
+        set_wgp_reload_needed(False)
         switched = True
 
         # Note: transformer_type is set automatically by load_models() at line 2929
@@ -156,7 +168,7 @@ def load_model_impl(orchestrator, model_key: str) -> bool:
     # Update our tracking to match WGP's state
     orchestrator.current_model = model_key
     orchestrator.state["model_type"] = model_key
-    orchestrator.offloadobj = wgp.offloadobj  # Keep reference to WGP's offload object
+    orchestrator.offloadobj = get_wgp_runtime_module().offloadobj  # Keep reference to WGP's offload object
 
     family = orchestrator._get_model_family(model_key, for_ui=True)
     if switched:
@@ -178,7 +190,7 @@ def unload_model_impl(orchestrator):
         orchestrator.state["model_type"] = None
         orchestrator._cached_uni3c_controlnet = None
         return
-    import wgp
+    wgp = get_wgp_runtime_module_mutable()
 
     if orchestrator.current_model and wgp.wan_model is not None:
         model_logger.info(f"🔄 MODEL UNLOAD: Unloading {orchestrator.current_model} using WGP's unload_model_if_needed")
@@ -222,10 +234,6 @@ def get_or_load_uni3c_controlnet(orchestrator):
 
     try:
         import torch
-        import os
-
-        # Use the proper loading function that handles dtypes correctly
-        from models.wan.uni3c import load_uni3c_controlnet
 
         ckpts_dir = os.path.join(orchestrator.wan_root, "ckpts")
         generation_logger.info(f"[UNI3C_CACHE] Loading Uni3C controlnet from disk (first use)...")

@@ -1,6 +1,5 @@
 """Multi-structure video compositing: validation and composite timeline assembly."""
 
-import sys
 import numpy as np
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -8,13 +7,47 @@ import torch
 
 from source.core.constants import BYTES_PER_MB
 from source.core.log import generation_logger
+from source.core.params.structure_guidance import normalize_structure_treatment
 from source.media.structure.frame_ops import create_neutral_frame, load_structure_video_frames_with_range
 from source.media.structure.preprocessors import process_structure_frames
+from source.runtime.wgp_bridge import get_wan2gp_save_video_callable
 
 __all__ = [
     "validate_structure_video_configs",
     "create_composite_guidance_video",
 ]
+
+
+def download_structure_source(
+    source_path: str,
+    *,
+    config_idx: int,
+    download_dir: Path,
+) -> str:
+    """Materialize a structure source locally when it is an HTTP URL."""
+    if not source_path.startswith(("http://", "https://")):
+        return source_path
+
+    download_dir.mkdir(parents=True, exist_ok=True)
+
+    import requests
+
+    local_filename = f"structure_src_{config_idx}_{Path(source_path).name}"
+    local_path = download_dir / local_filename
+
+    if not local_path.exists():
+        generation_logger.debug(f"  Downloading: {source_path}")
+        response = requests.get(source_path, timeout=120)
+        response.raise_for_status()
+        with open(local_path, "wb") as f:
+            f.write(response.content)
+        generation_logger.debug(
+            f"  Downloaded: {local_path.name} ({len(response.content) / BYTES_PER_MB:.2f} MB)"
+        )
+    else:
+        generation_logger.debug(f"  Using cached: {local_path.name}")
+
+    return str(local_path)
 
 
 def validate_structure_video_configs(
@@ -42,7 +75,9 @@ def validate_structure_video_configs(
 
     # First pass: validate required fields and clip/filter configs
     valid_configs = []
-    for i, config in enumerate(sorted_configs):
+    for i, raw_config in enumerate(sorted_configs):
+        config = dict(raw_config)
+
         # Check required fields
         if "path" not in config:
             raise ValueError(f"Structure video config {i} missing 'path'")
@@ -72,6 +107,10 @@ def validate_structure_video_configs(
         if start >= end:
             raise ValueError(f"Config {i}: start_frame {start} >= end_frame {end}")
 
+        config["treatment"] = normalize_structure_treatment(
+            config.get("treatment", "adjust"),
+            context=f"structure config {i}",
+        )
         valid_configs.append(config)
 
     # Second pass: check for overlaps on valid configs
@@ -168,23 +207,11 @@ def create_composite_guidance_video(
         if source_path.startswith(("http://", "https://")):
             if download_dir is None:
                 download_dir = Path("./temp_structure_downloads")
-            download_dir.mkdir(parents=True, exist_ok=True)
-
-            import requests
-            local_filename = f"structure_src_{config_idx}_{Path(source_path).name}"
-            local_path = download_dir / local_filename
-
-            if not local_path.exists():
-                generation_logger.debug(f"  Downloading: {source_path}")
-                response = requests.get(source_path, timeout=120)
-                response.raise_for_status()
-                with open(local_path, 'wb') as f:
-                    f.write(response.content)
-                generation_logger.debug(f"  Downloaded: {local_path.name} ({len(response.content) / BYTES_PER_MB:.2f} MB)")
-            else:
-                generation_logger.debug(f"  Using cached: {local_path.name}")
-
-            source_path = str(local_path)
+            source_path = download_structure_source(
+                source_path,
+                config_idx=config_idx,
+                download_dir=download_dir,
+            )
 
         # Load source frames with optional range extraction
         source_frames = load_structure_video_frames_with_range(
@@ -241,11 +268,7 @@ def create_composite_guidance_video(
 
     # Try WGP's save_video first, fall back to cv2
     try:
-        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from shared.utils.audio_video import save_video
+        save_video = get_wan2gp_save_video_callable()
 
         video_tensor = np.stack(composite_frames, axis=0)  # [T, H, W, C]
 

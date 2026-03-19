@@ -1,11 +1,17 @@
 """Structure video preprocessors (flow, canny, depth, pose, raw, uni3c)."""
 
-import sys
 import numpy as np
 from pathlib import Path
 from typing import List
 
 from source.core.log import generation_logger
+from source.runtime.wgp_bridge import (
+    get_canny_video_annotator_class,
+    get_depth_v2_video_annotator_class,
+    get_flow_annotator_class,
+    get_flow_viz_module,
+    get_pose_body_face_video_annotator_class,
+)
 
 __all__ = [
     "get_structure_preprocessor",
@@ -38,12 +44,8 @@ def get_structure_preprocessor(
     generation_logger.debug(f"[PREPROCESSOR_DEBUG] Initializing preprocessor with structure_type='{structure_type}'")
 
     if structure_type == "flow":
-        # Add Wan2GP to path for imports
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from Wan2GP.preprocessing.flow import FlowAnnotator
+        FlowAnnotator = get_flow_annotator_class()
 
         # Ensure RAFT model is downloaded
         flow_model_path = wan_dir / "ckpts" / "flow" / "raft-things.pth"
@@ -65,8 +67,7 @@ def get_structure_preprocessor(
         cfg = {"PRETRAINED_MODEL": str(flow_model_path)}
         annotator = FlowAnnotator(cfg)
 
-        # Import flow_viz for visualization
-        from Wan2GP.preprocessing.raft.utils import flow_viz
+        flow_viz = get_flow_viz_module()
 
         def process_with_motion_strength(frames):
             """Process frames with motion_strength applied to flow visualizations."""
@@ -89,10 +90,7 @@ def get_structure_preprocessor(
 
     elif structure_type == "canny":
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from Wan2GP.preprocessing.canny import CannyVideoAnnotator
+        CannyVideoAnnotator = get_canny_video_annotator_class()
 
         # Ensure scribble/canny model is downloaded
         canny_model_path = wan_dir / "ckpts" / "scribble" / "netG_A_latest.pth"
@@ -133,10 +131,7 @@ def get_structure_preprocessor(
 
     elif structure_type == "depth":
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from Wan2GP.preprocessing.depth_anything_v2.depth import DepthV2VideoAnnotator
+        DepthV2VideoAnnotator = get_depth_v2_video_annotator_class()
 
         variant = "vitl"  # Could be configurable
 
@@ -185,10 +180,7 @@ def get_structure_preprocessor(
 
     elif structure_type == "pose":
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from Wan2GP.preprocessing.dwpose.pose import PoseBodyFaceVideoAnnotator
+        PoseBodyFaceVideoAnnotator = get_pose_body_face_video_annotator_class()
 
         det_model_path = wan_dir / "ckpts" / "pose" / "yolox_l.onnx"
         pose_model_path = wan_dir / "ckpts" / "pose" / "dw-ll_ucoco_384.onnx"

@@ -639,3 +639,11 @@ def create_guide_video_for_travel_segment(
     except (OSError, ValueError, RuntimeError) as e:
         generation_logger.error(f"ERROR creating guide video for segment {segment_idx_for_logging}: {e}", exc_info=True)
         return None
+
+
+# Legacy module surface now points at the canonical travel API facade.
+from source.task_handlers.travel.api import (  # noqa: E402
+    create_guide_video_for_travel_segment as create_guide_video_for_travel_segment,
+    prepare_vace_ref_for_segment as prepare_vace_ref_for_segment,
+    rife_interpolate_images_to_video as rife_interpolate_images_to_video,
+)

@@ -5,26 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
+from source.runtime.wgp_bridge import get_model_def
+
 from .base import ParamGroup
 from .structure_guidance import StructureGuidanceConfig, StructureVideoEntry
 
-_TRAVEL_GUIDANCE_KIND = Literal["none", "vace", "ltx_control", "uni3c"]
+_TRAVEL_GUIDANCE_KIND = Literal["none", "vace", "ltx_control", "ltx_hybrid", "uni3c"]
 _TRAVEL_GUIDANCE_LEGACY_KEYS = (
     "structure_type",
     "structure_video_path",
     "structure_videos",
     "use_uni3c",
 )
+_LTX_CONTROL_MODES = {"pose", "depth", "canny", "video"}
 
 
 def _has_payload_value(value: Any) -> bool:
-    """Return True when a payload field should count as "present".
-
-    Treats None, empty collections, empty strings, and False as absent.
-    This matters for boolean legacy keys like ``use_uni3c`` where
-    ``False`` is the inactive/default state and should not conflict
-    with ``travel_guidance``.
-    """
+    """Return True when a payload field should count as "present"."""
     if value is None or value is False:
         return False
     if isinstance(value, (list, dict, str)):
@@ -39,8 +36,6 @@ def _infer_allowed_kinds(model_name: str) -> set[str]:
     if "ltx2" in lowered:
         pipeline_kind = None
         try:
-            from wgp import get_model_def
-
             model_def = get_model_def(model_name)
             if isinstance(model_def, dict):
                 pipeline_kind = model_def.get("ltx2_pipeline")
@@ -51,11 +46,60 @@ def _infer_allowed_kinds(model_name: str) -> set[str]:
             pipeline_kind is None and "distilled" in lowered
         )
         if is_distilled:
-            return {"none", "ltx_control", "uni3c"}
+            return {"none", "ltx_control", "ltx_hybrid", "uni3c"}
         return {"none"}
 
-    # Preserve existing Wan/VACE-style travel guidance behavior for non-LTX models.
     return {"none", "vace", "uni3c"}
+
+
+@dataclass
+class AnchorEntry:
+    """Single positioned image anchor for hybrid travel guidance."""
+
+    image_url: str
+    frame_position: int
+    strength: float = 1.0
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AnchorEntry":
+        return cls(
+            image_url=str(d.get("image_url", "") or ""),
+            frame_position=int(d.get("frame_position", 0) or 0),
+            strength=float(d.get("strength", 1.0)),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "image_url": self.image_url,
+            "frame_position": self.frame_position,
+            "strength": self.strength,
+        }
+
+
+@dataclass
+class AudioConditioningConfig:
+    """Optional generation-time audio conditioning for hybrid travel guidance."""
+
+    source: Literal["external", "control_track"]
+    audio_url: Optional[str] = None
+    strength: float = 1.0
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AudioConditioningConfig":
+        return cls(
+            source=str(d.get("source", "") or ""),  # type: ignore[arg-type]
+            audio_url=d.get("audio_url"),
+            strength=float(d.get("strength", 1.0)),
+        )
+
+    def to_dict(self) -> dict:
+        result = {
+            "source": self.source,
+            "strength": self.strength,
+        }
+        if self.audio_url:
+            result["audio_url"] = self.audio_url
+        return result
 
 
 @dataclass
@@ -67,6 +111,11 @@ class TravelGuidanceConfig(ParamGroup):
     # Shared fields for all non-none kinds
     videos: List[StructureVideoEntry] = field(default_factory=list)
     strength: float = 0.0
+
+    # Hybrid-only fields
+    anchors: List[AnchorEntry] = field(default_factory=list)
+    control_strength: float = 1.0
+    audio: Optional[AudioConditioningConfig] = None
 
     # VACE / LTX control
     mode: str = ""
@@ -85,7 +134,6 @@ class TravelGuidanceConfig(ParamGroup):
 
     @classmethod
     def from_params(cls, params: Dict[str, Any], **context) -> "TravelGuidanceConfig":
-        """ParamGroup entry point."""
         model_name = (
             context.get("model_name")
             or context.get("model")
@@ -112,11 +160,16 @@ class TravelGuidanceConfig(ParamGroup):
         kind = str(raw.get("kind", "none") or "none")
         mode = str(raw.get("mode", "") or "")
         strength_default = cls._default_strength(kind, mode)
+        audio_raw = raw.get("audio")
+        anchors_raw = raw.get("anchors", []) or []
 
         config = cls(
             kind=kind,  # type: ignore[arg-type]
             videos=[StructureVideoEntry.from_dict(v) for v in raw.get("videos", []) or []],
             strength=float(raw.get("strength", strength_default)),
+            anchors=[AnchorEntry.from_dict(anchor) for anchor in anchors_raw],
+            control_strength=float(raw.get("control_strength", 1.0)),
+            audio=AudioConditioningConfig.from_dict(audio_raw) if isinstance(audio_raw, dict) else None,
             mode=mode,
             canny_intensity=float(raw.get("canny_intensity", 1.0)),
             depth_contrast=float(raw.get("depth_contrast", 1.0)),
@@ -147,9 +200,7 @@ class TravelGuidanceConfig(ParamGroup):
     def _validate_exclusive_payload(payload: Dict[str, Any]) -> None:
         """Reject mixed public travel-guidance contracts."""
         if _has_payload_value(payload.get("structure_guidance")):
-            raise ValueError(
-                "travel_guidance cannot be combined with structure_guidance"
-            )
+            raise ValueError("travel_guidance cannot be combined with structure_guidance")
 
         conflicting = [
             key for key in _TRAVEL_GUIDANCE_LEGACY_KEYS if _has_payload_value(payload.get(key))
@@ -166,6 +217,8 @@ class TravelGuidanceConfig(ParamGroup):
             return 1.0 if mode == "video" else 0.5
         if kind in ("vace", "uni3c"):
             return 1.0
+        if kind == "ltx_hybrid":
+            return 0.0
         return 0.0
 
     def to_structure_guidance_config(self) -> StructureGuidanceConfig:
@@ -201,13 +254,21 @@ class TravelGuidanceConfig(ParamGroup):
 
     def needs_ic_lora(self) -> bool:
         """Return True when LTX control requires the union IC-LoRA."""
-        return self.kind == "ltx_control" and self.mode in {"pose", "depth", "canny"}
+        if self.kind == "ltx_control":
+            return self.mode in {"pose", "depth", "canny"}
+        if self.kind == "ltx_hybrid":
+            return self.has_control and self.mode in {"pose", "depth", "canny"}
+        return False
 
     def get_preprocessor_type(self) -> str:
         """Return the preprocessor/compositing type used for this guidance."""
         if self.kind == "vace":
             return "raw" if self.mode == "raw" else self.mode
         if self.kind == "ltx_control":
+            return "raw" if self.mode == "video" else self.mode
+        if self.kind == "ltx_hybrid":
+            if not self.has_control:
+                return "raw"
             return "raw" if self.mode == "video" else self.mode
         if self.kind == "uni3c":
             return "uni3c"
@@ -230,6 +291,13 @@ class TravelGuidanceConfig(ParamGroup):
         if self.kind in {"vace", "ltx_control"}:
             payload["canny_intensity"] = self.canny_intensity
             payload["depth_contrast"] = self.depth_contrast
+        if self.kind == "ltx_hybrid":
+            payload["anchors"] = [anchor.to_dict() for anchor in self.anchors]
+            payload["control_strength"] = self.control_strength
+            payload["canny_intensity"] = self.canny_intensity
+            payload["depth_contrast"] = self.depth_contrast
+            if self.audio is not None:
+                payload["audio"] = self.audio.to_dict()
         if self.kind == "uni3c":
             payload["step_window"] = list(self.step_window)
             payload["frame_policy"] = self.frame_policy
@@ -245,9 +313,10 @@ class TravelGuidanceConfig(ParamGroup):
         errors: List[str] = []
         allowed_kinds = _infer_allowed_kinds(model_name)
 
-        if self.kind not in {"none", "vace", "ltx_control", "uni3c"}:
+        if self.kind not in {"none", "vace", "ltx_control", "ltx_hybrid", "uni3c"}:
             errors.append(
-                f"Invalid travel_guidance.kind '{self.kind}'. Must be one of none, vace, ltx_control, uni3c"
+                "Invalid travel_guidance.kind "
+                f"'{self.kind}'. Must be one of none, vace, ltx_control, ltx_hybrid, uni3c"
             )
             return errors
 
@@ -259,17 +328,27 @@ class TravelGuidanceConfig(ParamGroup):
         if self.kind == "none":
             return errors
 
-        if not self.videos:
+        if self.kind in {"vace", "ltx_control", "uni3c"} and not self.videos:
             errors.append(f"travel_guidance kind '{self.kind}' requires at least one video")
+
+        if self.kind == "ltx_hybrid" and not (self.has_control or self.has_anchors):
+            errors.append("travel_guidance kind 'ltx_hybrid' requires anchors or videos")
 
         if self.kind == "vace" and self.mode not in {"flow", "canny", "depth", "raw"}:
             errors.append(
                 "travel_guidance kind 'vace' requires mode to be one of flow, canny, depth, raw"
             )
-        if self.kind == "ltx_control" and self.mode not in {"pose", "depth", "canny", "video"}:
+        if self.kind == "ltx_control" and self.mode not in _LTX_CONTROL_MODES:
             errors.append(
                 "travel_guidance kind 'ltx_control' requires mode to be one of pose, depth, canny, video"
             )
+        if self.kind == "ltx_hybrid":
+            if self.has_control and self.mode not in _LTX_CONTROL_MODES:
+                errors.append(
+                    "travel_guidance kind 'ltx_hybrid' requires mode to be one of pose, depth, canny, video when videos are present"
+                )
+            if not self.has_control and self.mode == "raw":
+                errors.append("travel_guidance kind 'ltx_hybrid' does not accept mode='raw'")
         if self.kind == "uni3c" and self.mode:
             errors.append("travel_guidance kind 'uni3c' does not accept mode")
 
@@ -279,6 +358,11 @@ class TravelGuidanceConfig(ParamGroup):
             )
         elif self.strength < 0:
             errors.append(f"travel_guidance strength must be non-negative, got {self.strength}")
+
+        if self.kind == "ltx_hybrid" and not 0.0 <= self.control_strength <= 1.0:
+            errors.append(
+                f"travel_guidance control_strength for ltx_hybrid must be within [0, 1], got {self.control_strength}"
+            )
 
         if self.step_window[0] < 0 or self.step_window[1] > 1:
             errors.append(f"travel_guidance step_window must be within [0, 1], got {self.step_window}")
@@ -291,11 +375,38 @@ class TravelGuidanceConfig(ParamGroup):
             if not video.path:
                 errors.append(f"travel_guidance video {index} has an empty path")
 
+        if self.kind == "ltx_hybrid":
+            for index, anchor in enumerate(self.anchors):
+                if not anchor.image_url:
+                    errors.append(f"travel_guidance anchor {index} has an empty image_url")
+                if not 0.0 <= anchor.strength <= 1.0:
+                    errors.append(
+                        f"travel_guidance anchor {index} strength must be within [0, 1], got {anchor.strength}"
+                    )
+
+            if self.audio is not None:
+                if self.audio.source not in {"external", "control_track"}:
+                    errors.append(
+                        "travel_guidance audio.source must be one of external, control_track"
+                    )
+                if self.audio.source == "control_track" and not self.has_control:
+                    errors.append(
+                        "travel_guidance audio.source='control_track' requires control videos"
+                    )
+                if self.audio.source == "external" and not self.audio.audio_url:
+                    errors.append(
+                        "travel_guidance audio.source='external' requires audio.audio_url"
+                    )
+                if not 0.0 <= self.audio.strength <= 1.0:
+                    errors.append(
+                        f"travel_guidance audio.strength must be within [0, 1], got {self.audio.strength}"
+                    )
+
         return errors
 
     @property
     def has_guidance(self) -> bool:
-        return self.kind != "none" and (bool(self.videos) or bool(self._guidance_video_url))
+        return self.kind != "none" and (self.has_anchors or self.has_control)
 
     @property
     def guidance_video_url(self) -> Optional[str]:
@@ -318,6 +429,22 @@ class TravelGuidanceConfig(ParamGroup):
         return self.kind == "ltx_control"
 
     @property
+    def is_ltx_hybrid(self) -> bool:
+        return self.kind == "ltx_hybrid"
+
+    @property
+    def has_control(self) -> bool:
+        return bool(self.videos)
+
+    @property
+    def has_anchors(self) -> bool:
+        return bool(self.anchors)
+
+    @property
+    def has_audio(self) -> bool:
+        return self.audio is not None
+
+    @property
     def legacy_structure_type(self) -> str:
         if self.kind == "uni3c":
             return "uni3c"
@@ -329,6 +456,8 @@ class TravelGuidanceConfig(ParamGroup):
             f"kind={self.kind!r}, "
             f"mode={self.mode!r}, "
             f"strength={self.strength}, "
+            f"control_strength={self.control_strength}, "
             f"videos={len(self.videos)}, "
+            f"anchors={len(self.anchors)}, "
             f"has_guidance={self.has_guidance})"
         )

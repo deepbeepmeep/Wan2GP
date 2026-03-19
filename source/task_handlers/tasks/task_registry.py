@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import import_module
+from types import MappingProxyType
 from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING
 from pathlib import Path
 import time
@@ -28,6 +29,7 @@ from source.core.params.structure_guidance import StructureGuidanceConfig
 from source.core.params.travel_guidance import TravelGuidanceConfig
 from source.task_handlers.contracts.dispatch import normalize_task_dispatch_payload
 from source.task_handlers.tasks.travel_segment_types import IndividualSegmentParams
+from source.core.params.contracts import validate_orchestrator_details
 
 # Import task handlers
 # These imports should be available from the environment where this module is used
@@ -49,7 +51,11 @@ from source.core.db.dependencies.task_dependencies_queries import get_predecesso
 from source.core.db.task_polling import get_task_params
 from source.utils.download_utils import download_file, download_image_if_url
 from source.utils.prompt_utils import ensure_valid_negative_prompt, ensure_valid_prompt
-from source.utils.resolution_utils import parse_resolution, snap_resolution_to_model_grid
+from source.utils.resolution_utils import (
+    get_model_grid_size,
+    parse_resolution,
+    snap_resolution_to_model_grid,
+)
 
 # Import centralized task type definitions
 from source.task_handlers.tasks.task_types import DIRECT_QUEUE_TASK_TYPES
@@ -98,6 +104,13 @@ class StructureOutputs:
     mask_video_path_for_wgp: Optional[Path] = None
     video_prompt_type_str: Optional[str] = None
     structure_config: Optional[StructureGuidanceConfig | TravelGuidanceConfig] = None
+    image_refs_paths: Optional[list[str]] = None
+    frames_positions: Optional[str] = None
+    image_refs_strengths: Optional[list[float]] = None
+    audio_guide: Optional[str] = None
+    audio_prompt_type: Optional[str] = None
+    audio_scale: Optional[float] = None
+    denoising_strength: Optional[float] = None
 
 
 _MISSING = object()
@@ -191,9 +204,15 @@ def _resolve_segment_context(task_params_dict: dict, is_standalone: bool, task_i
 
         if not orchestrator_details:
             raise ValueError(f"Travel segment {task_id}: Could not retrieve orchestrator_details")
+        validate_orchestrator_details(
+            orchestrator_details,
+            context="travel_segment",
+            task_id=task_id,
+        )
 
     # individual_segment_params has highest priority for segment-specific overrides
     individual_params: IndividualSegmentParams = segment_params.get("individual_segment_params", {})
+    orchestrator_details = MappingProxyType(dict(orchestrator_details))
 
     return SegmentContext(
         mode="standalone" if is_standalone else "orchestrator",
@@ -244,7 +263,6 @@ def _resolve_generation_inputs(ctx: SegmentContext, task_id: str, main_output_di
     parsed_res_raw = parse_resolution(parsed_res_wh_str)
     if parsed_res_raw is None:
         raise ValueError(f"Travel segment {task_id}: Invalid resolution format {parsed_res_wh_str}")
-    from source.utils.resolution_utils import get_model_grid_size
     model_name = segment_params.get("model_name") or orchestrator_details.get("model_name")
     grid_size = get_model_grid_size(model_name)
     parsed_res_wh = snap_resolution_to_model_grid(parsed_res_raw, grid_size)
@@ -264,6 +282,16 @@ def _resolve_generation_inputs(ctx: SegmentContext, task_id: str, main_output_di
                 f"Travel segment {task_id}: no frame count found (segment_idx={segment_idx}, "
                 f"segment_frames_expanded has {len(segment_frames)} entries)"
             )
+    try:
+        total_frames_for_segment = int(total_frames_for_segment)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Travel segment {task_id}: invalid frame count {total_frames_for_segment!r}"
+        ) from exc
+    if total_frames_for_segment <= 0:
+        raise ValueError(
+            f"Travel segment {task_id}: invalid frame count {total_frames_for_segment!r}"
+        )
 
     current_run_base_output_dir_str = _get_param(
         "current_run_base_output_dir",
@@ -543,6 +571,13 @@ def _process_structure_guidance(ctx: SegmentContext, gen: GenerationInputs, task
     guide_video_path = None
     mask_video_path_for_wgp = None
     video_prompt_type_str = None
+    image_refs_paths = None
+    frames_positions = None
+    image_refs_strengths = None
+    audio_guide = None
+    audio_prompt_type = None
+    audio_scale = None
+    denoising_strength = None
 
     travel_guidance_payload = segment_params.get("travel_guidance")
     if isinstance(travel_guidance_payload, dict):
@@ -592,6 +627,13 @@ def _process_structure_guidance(ctx: SegmentContext, gen: GenerationInputs, task
             guide_video_path = segment_outputs.get("video_guide")
             mask_video_path_for_wgp = Path(segment_outputs["video_mask"]) if segment_outputs.get("video_mask") else None
             video_prompt_type_str = segment_outputs["video_prompt_type"]
+            image_refs_paths = segment_outputs.get("image_refs_paths")
+            frames_positions = segment_outputs.get("frames_positions")
+            image_refs_strengths = segment_outputs.get("image_refs_strengths")
+            audio_guide = segment_outputs.get("audio_guide")
+            audio_prompt_type = segment_outputs.get("audio_prompt_type")
+            audio_scale = segment_outputs.get("audio_scale")
+            denoising_strength = segment_outputs.get("denoising_strength")
             detected_structure_type = segment_outputs.get("structure_type")
 
             # Debug: Log segment_outputs keys and structure_type
@@ -614,6 +656,13 @@ def _process_structure_guidance(ctx: SegmentContext, gen: GenerationInputs, task
         mask_video_path_for_wgp=mask_video_path_for_wgp,
         video_prompt_type_str=video_prompt_type_str,
         structure_config=structure_config,
+        image_refs_paths=image_refs_paths,
+        frames_positions=frames_positions,
+        image_refs_strengths=image_refs_strengths,
+        audio_guide=audio_guide,
+        audio_prompt_type=audio_prompt_type,
+        audio_scale=audio_scale,
+        denoising_strength=denoising_strength,
     )
 
 
@@ -803,6 +852,20 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
     if guide_video_path: generation_params["video_guide"] = str(guide_video_path)
     if mask_video_path_for_wgp: generation_params["video_mask"] = str(mask_video_path_for_wgp.resolve())
     generation_params["video_prompt_type"] = video_prompt_type_str
+    if structure.image_refs_paths:
+        generation_params["image_refs_paths"] = structure.image_refs_paths
+    if structure.frames_positions:
+        generation_params["frames_positions"] = structure.frames_positions
+    if structure.image_refs_strengths:
+        generation_params["image_refs_strengths"] = structure.image_refs_strengths
+    if structure.audio_guide:
+        generation_params["audio_guide"] = structure.audio_guide
+    if structure.audio_prompt_type:
+        generation_params["audio_prompt_type"] = structure.audio_prompt_type
+    if structure.audio_scale is not None:
+        generation_params["audio_scale"] = structure.audio_scale
+    if structure.denoising_strength is not None:
+        generation_params["denoising_strength"] = structure.denoising_strength
 
     # Diagnostic: Log guidance configuration when uni3c is enabled
     if structure_config.is_uni3c and guide_video_path:
@@ -1138,6 +1201,11 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
 
 class TaskRegistry:
     """Registry for task handlers."""
+
+    @staticmethod
+    def _resolve_handler(task_type: str):
+        """Resolve a registered handler callable through the lazy import manifest."""
+        return _load_handler_callable(task_type)
 
     @staticmethod
     def validate_registered_handlers() -> dict[str, str]:

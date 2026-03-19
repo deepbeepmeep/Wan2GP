@@ -4,10 +4,71 @@ Handles extracting the output path from WGP state, logging captured
 stdout/stderr/Python logs on failure, and reporting memory usage.
 """
 
+from dataclasses import dataclass
 from typing import Any, Deque, Dict, Optional
 
 from source.core.log import generation_logger
 from source.models.wgp.error_extraction import extract_wgp_error, LOG_TAIL_MAX_CHARS
+
+
+@dataclass(frozen=True)
+class GenerationOutcome:
+    ok: bool
+    output_path: Optional[str]
+    error_code: Optional[str]
+    error_detail: Optional[str]
+
+
+class GenerationFailure(RuntimeError):
+    def __init__(self, error_code: str, error_detail: Optional[str] = None):
+        self.error_code = error_code
+        self.error_detail = error_detail
+        message = error_detail or error_code
+        super().__init__(message)
+
+
+def build_generation_outcome(
+    *,
+    state: dict,
+    captured_stdout: Any,
+    captured_stderr: Any,
+    captured_logs: Optional[Deque[Dict[str, str]]] = None,
+) -> GenerationOutcome:
+    try:
+        file_list = state["gen"]["file_list"]
+    except (KeyError, TypeError):
+        return GenerationOutcome(
+            ok=False,
+            output_path=None,
+            error_code="invalid_state",
+            error_detail="Could not retrieve output path from state",
+        )
+
+    if file_list:
+        return GenerationOutcome(
+            ok=True,
+            output_path=file_list[-1],
+            error_code=None,
+            error_detail=None,
+        )
+
+    stdout_content = captured_stdout.getvalue() if captured_stdout is not None else ""
+    stderr_content = captured_stderr.getvalue() if captured_stderr is not None else ""
+    actual_error = extract_wgp_error(stdout_content, stderr_content)
+    if actual_error:
+        return GenerationOutcome(
+            ok=False,
+            output_path=None,
+            error_code="parsed_wgp_error",
+            error_detail=actual_error,
+        )
+
+    return GenerationOutcome(
+        ok=False,
+        output_path=None,
+        error_code="no_output",
+        error_detail="No output generated",
+    )
 
 
 def extract_output_path(
@@ -25,12 +86,21 @@ def extract_output_path(
         Path to the generated output file, or None if state is malformed.
     """
     try:
-        file_list = state["gen"]["file_list"]
-        if file_list:
-            output_path = file_list[-1]  # Most recently generated file
+        outcome = build_generation_outcome(
+            state=state,
+            captured_stdout=captured_stdout,
+            captured_stderr=captured_stderr,
+            captured_logs=captured_logs,
+        )
+        if outcome.ok:
+            output_path = outcome.output_path
             generation_logger.success(f"{model_type_desc} generation completed")
             generation_logger.essential(f"Output saved to: {output_path}")
             return output_path
+
+        if outcome.error_code == "invalid_state":
+            generation_logger.warning(outcome.error_detail)
+            return None
 
         # No output produced -- log diagnostics
         generation_logger.warning(
@@ -38,19 +108,15 @@ def extract_output_path(
         )
         log_captured_output(captured_stdout, captured_stderr, captured_logs)
 
-        # Extract actual error from WGP output and raise it so the retry
-        # system can properly classify errors like OOM.
-        stdout_content = captured_stdout.getvalue() if captured_stdout is not None else ""
-        stderr_content = captured_stderr.getvalue() if captured_stderr is not None else ""
-        actual_error = extract_wgp_error(stdout_content, stderr_content)
-        if actual_error:
-            generation_logger.error(f"[WGP_ERROR] Extracted error from WGP output: {actual_error}")
-            raise RuntimeError(f"WGP generation failed: {actual_error}")
+        if outcome.error_code == "parsed_wgp_error":
+            generation_logger.error(
+                f"[WGP_ERROR] Extracted error from WGP output: {outcome.error_detail}"
+            )
+            raise GenerationFailure(outcome.error_code, f"WGP generation failed: {outcome.error_detail}")
 
-        # No specific error found -- generic error
-        raise RuntimeError("No output generated")
+        raise GenerationFailure(outcome.error_code or "no_output", outcome.error_detail)
 
-    except RuntimeError:
+    except GenerationFailure:
         raise
     except (KeyError, TypeError, IndexError) as e:
         # Only catch unexpected errors accessing state
@@ -141,3 +207,13 @@ def log_memory_stats() -> None:
             )
     except (RuntimeError, OSError, ImportError) as e:
         generation_logger.debug(f"Could not retrieve memory stats: {e}")
+
+
+__all__ = [
+    "GenerationFailure",
+    "GenerationOutcome",
+    "build_generation_outcome",
+    "extract_output_path",
+    "log_captured_output",
+    "log_memory_stats",
+]

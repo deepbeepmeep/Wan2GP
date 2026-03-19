@@ -1,9 +1,9 @@
-import sys
-import os
 import copy
 import traceback
 from pathlib import Path
 from source.core.log import headless_logger
+from source.runtime.wgp_bridge import get_wgp_runtime_module_mutable
+from source.runtime.process_globals import temporary_process_globals
 
 def apply_phase_config_patch(parsed_phase_config: dict, model_name: str, task_id: str):
     """
@@ -15,17 +15,12 @@ def apply_phase_config_patch(parsed_phase_config: dict, model_name: str, task_id
 
     try:
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        _saved_cwd = os.getcwd()
-        os.chdir(str(wan_dir))
-
-        _saved_argv = sys.argv[:]
-        sys.argv = ["apply_phase_config_patch.py"]
-        try:
-            import wgp
+        with temporary_process_globals(
+            cwd=str(wan_dir),
+            argv=["apply_phase_config_patch.py"],
+            prepend_sys_path=str(wan_dir),
+        ):
+            wgp = get_wgp_runtime_module_mutable()
 
             if model_name not in wgp.models_def:
                 model_def = wgp.get_model_def(model_name)
@@ -53,9 +48,6 @@ def apply_phase_config_patch(parsed_phase_config: dict, model_name: str, task_id
                     f"✅ Patched wgp.models_def['{model_name}'] in memory",
                     task_id=task_id
                 )
-        finally:
-            sys.argv = _saved_argv
-            os.chdir(_saved_cwd)
     except (RuntimeError, ValueError, OSError) as e:
         headless_logger.warning(f"Failed to apply phase_config patch: {e}", task_id=task_id)
         headless_logger.debug(f"Patch error traceback: {traceback.format_exc()}", task_id=task_id)
@@ -70,8 +62,8 @@ def restore_model_patches(parsed_phase_config: dict, model_name: str, task_id: s
 
     try:
         wan_dir_path = str(Path(__file__).parent.parent.parent.parent / "Wan2GP")
-        if wan_dir_path in sys.path:
-            import wgp
+        with temporary_process_globals(prepend_sys_path=wan_dir_path):
+            wgp = get_wgp_runtime_module_mutable()
 
             if "_original_model_def" in parsed_phase_config and model_name in wgp.models_def:
                 wgp.models_def[model_name] = parsed_phase_config["_original_model_def"]
@@ -81,5 +73,3 @@ def restore_model_patches(parsed_phase_config: dict, model_name: str, task_id: s
                 )
     except (RuntimeError, ValueError, OSError) as e:
         headless_logger.warning(f"Failed to restore model patches: {e}", task_id=task_id)
-
-

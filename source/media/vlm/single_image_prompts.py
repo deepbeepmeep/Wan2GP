@@ -1,6 +1,5 @@
 """Single-image prompt generation using VLM."""
 
-import sys
 from pathlib import Path
 from typing import Optional, List
 from PIL import Image
@@ -9,6 +8,7 @@ import torch
 from source.core.constants import BYTES_PER_GB
 from source.core.log import headless_logger, model_logger
 from source.media.vlm.model import download_qwen_vlm_if_needed
+from source.runtime.wgp_bridge import create_qwen_prompt_expander
 
 
 def generate_single_image_prompt(
@@ -32,10 +32,6 @@ def generate_single_image_prompt(
     """
     try:
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from Wan2GP.shared.utils.prompt_extend import QwenPromptExpander
 
         model_logger.debug(f"[VLM_SINGLE] Generating prompt for single image: {Path(image_path).name}")
 
@@ -47,7 +43,7 @@ def generate_single_image_prompt(
         download_qwen_vlm_if_needed(local_model_path)
 
         model_logger.debug(f"[VLM_SINGLE] Initializing Qwen2.5-VL-7B-Instruct from local path: {local_model_path}")
-        extender = QwenPromptExpander(
+        extender = create_qwen_prompt_expander(
             model_name=str(local_model_path),
             device=device,
             is_vl=True
@@ -144,10 +140,6 @@ def generate_single_image_prompts_batch(
 
     try:
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from Wan2GP.shared.utils.prompt_extend import QwenPromptExpander
 
         if torch.cuda.is_available():
             gpu_mem_before = torch.cuda.memory_allocated() / BYTES_PER_GB
@@ -161,7 +153,7 @@ def generate_single_image_prompts_batch(
         download_qwen_vlm_if_needed(local_model_path)
 
         model_logger.debug(f"[VLM_SINGLE_BATCH] Using local model from: {local_model_path}")
-        extender = QwenPromptExpander(
+        extender = create_qwen_prompt_expander(
             model_name=str(local_model_path),
             device=device,
             is_vl=True

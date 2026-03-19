@@ -773,6 +773,7 @@ class LTX2:
         input_masks=None,
         input_masks2=None,
         frames_relative_positions_list=None,
+        image_refs_strengths: list[float] | None = None,
         masking_strength: float | None = None,
         input_video_strength: float | None = None,
         return_latent_slice=None,
@@ -823,6 +824,12 @@ class LTX2:
             frames_relative_positions_list = list(frames_relative_positions_list)
         else:
             frames_relative_positions_list = [frames_relative_positions_list]
+        if image_refs_strengths is None:
+            image_refs_strengths = []
+        elif isinstance(image_refs_strengths, (list, tuple)):
+            image_refs_strengths = list(image_refs_strengths)
+        else:
+            image_refs_strengths = [image_refs_strengths]
 
         prefix_frames_count = int(prefix_frames_count or 0)
         video_prompt_type = video_prompt_type or ""
@@ -964,8 +971,18 @@ class LTX2:
 
         def _append_injected_ref_entries(target_list, extra_list=None):
             injected_ref_count = min(len(input_ref_images), len(frames_relative_positions_list))
-            for ref_image, frame_idx in zip(input_ref_images[:injected_ref_count], frames_relative_positions_list[:injected_ref_count]):
-                entry = (ref_image, int(frame_idx), input_video_strength, "lanczos")
+            for i, (ref_image, frame_idx) in enumerate(
+                zip(
+                    input_ref_images[:injected_ref_count],
+                    frames_relative_positions_list[:injected_ref_count],
+                )
+            ):
+                strength = (
+                    image_refs_strengths[i]
+                    if i < len(image_refs_strengths)
+                    else input_video_strength
+                )
+                entry = (ref_image, int(frame_idx), strength, "lanczos")
                 target_list.append(entry)
                 if extra_list is not None:
                     extra_list.append(entry)

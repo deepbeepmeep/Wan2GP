@@ -1,6 +1,5 @@
 """Transition prompt generation using VLM for image-pair transitions."""
 
-import sys
 from pathlib import Path
 from typing import Optional, List, Tuple
 from PIL import Image
@@ -10,6 +9,7 @@ from source.core.constants import BYTES_PER_GB
 from source.core.log import headless_logger, model_logger
 from source.media.vlm.image_prep import create_framed_vlm_image, create_labeled_debug_image
 from source.media.vlm.model import download_qwen_vlm_if_needed
+from source.runtime.wgp_bridge import create_qwen_prompt_expander
 
 
 def generate_transition_prompt(
@@ -33,91 +33,24 @@ def generate_transition_prompt(
         Generated prompt describing the transition, with base_prompt appended if provided
     """
     try:
-        # Add Wan2GP to path for imports
-        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        try:
-            from Wan2GP.shared.utils.prompt_extend import QwenPromptExpander  # type: ignore
-        except ModuleNotFoundError:
-            from Wan2GP.wan.utils.prompt_extend import QwenPromptExpander  # type: ignore
-
-        model_logger.debug(f"[VLM_TRANSITION] Generating transition prompt from {Path(start_image_path).name} -> {Path(end_image_path).name}")
-
-        # Load both images
-        start_img = Image.open(start_image_path).convert("RGB")
-        end_img = Image.open(end_image_path).convert("RGB")
-
-        # Combine images side by side for VLM to see both
-        combined_width = start_img.width + end_img.width
-        combined_height = max(start_img.height, end_img.height)
-        combined_img = Image.new('RGB', (combined_width, combined_height))
-        combined_img.paste(start_img, (0, 0))
-        combined_img.paste(end_img, (start_img.width, 0))
-
-        # Initialize VLM with Qwen2.5-VL-7B
-        local_model_path = wan_dir / "ckpts" / "Qwen2.5-VL-7B-Instruct"
-
-        model_logger.debug(f"[VLM_TRANSITION] Checking for model at {local_model_path}...")
-        download_qwen_vlm_if_needed(local_model_path)
-
-        model_logger.debug(f"[VLM_TRANSITION] Initializing Qwen2.5-VL-7B-Instruct from local path: {local_model_path}")
-        extender = QwenPromptExpander(
-            model_name=str(local_model_path),
+        prompts = generate_transition_prompts_batch(
+            image_pairs=[(start_image_path, end_image_path)],
+            base_prompts=[base_prompt],
             device=device,
-            is_vl=True
+            task_id=None,
+            upload_debug_images=False,
         )
-
-        base_prompt_text = base_prompt if base_prompt and base_prompt.strip() else "the objects/people inside the scene move excitingly and things transform or shift with the camera"
-
-        query = f"""You are viewing two images side by side: the left image shows the starting frame, and the right image shows the ending frame of a video sequence.
-
-Your goal is to create a THREE-SENTENCE prompt that describes the MOTION and CHANGES in this transition based on the user's description: '{base_prompt_text}'
-
-FOCUS ON MOTION: Describe what MOVES, what CHANGES, and HOW things transition between these frames. Everything should be described in terms of motion and transformation, not static states.
-
-YOUR RESPONSE MUST FOLLOW THIS EXACT STRUCTURE:
-
-SENTENCE 1 (PRIMARY MOTION): Describe the main action, camera movement, and major scene transitions. What is the dominant movement happening?
-
-SENTENCE 2 (MOVING ELEMENTS): Describe how the characters, objects, and environment are moving or changing. Focus on what's in motion and how it moves through space.
-
-SENTENCE 3 (MOTION DETAILS): Describe the subtle motion details - secondary movements, environmental dynamics, particles, lighting shifts, and small-scale motions.
-
-Examples of MOTION-FOCUSED descriptions:
-
-- "The sun rises rapidly above the jagged peaks as the camera tilts upward from the dark valley floor. The silhouette pine trees sway gently against the shifting violet and gold sky as the entire landscape brightens. Wisps of morning mist evaporate and drift upward from the river surface while distant birds circle and glide through the upper left corner."
-
-- "A woman sprints from the kitchen into the bright exterior sunlight as the camera pans right to track her accelerating path. Her vintage floral dress flows and ripples in the wind while colorful playground equipment blurs past in the background. Her hair whips back dynamically and dust particles kick up and swirl around her sneakers as she impacts the gravel."
-
-- "The camera zooms aggressively inward into a macro shot of an eye as the brown horse reflection grows larger and more detailed. The iris textures shift under the changing warm lighting while the biological details come into sharper focus. The pupil constricts and contracts in reaction to the light while the tiny reflected horse tosses its mane and shifts position."
-
-Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_prompt_text}'"""
-
-        system_prompt = "You are a video direction assistant. You MUST respond with EXACTLY THREE SENTENCES following this structure: 1) PRIMARY MOTION, 2) MOVING ELEMENTS, 3) MOTION DETAILS. Focus exclusively on what moves and changes, not static descriptions."
-
-        model_logger.debug(f"[VLM_TRANSITION] Running inference...")
-        result = extender.extend_with_img(
-            prompt=query,
-            system_prompt=system_prompt,
-            image=combined_img
-        )
-
-        vlm_prompt = result.prompt.strip()
-        model_logger.debug(f"[VLM_TRANSITION] Generated: {vlm_prompt}")
-
-        return vlm_prompt
-
+        if prompts:
+            return prompts[0]
     except (RuntimeError, ValueError, OSError, ImportError) as e:
         model_logger.error(f"[VLM_TRANSITION] ERROR: Failed to generate transition prompt: {e}", exc_info=True)
 
-        if base_prompt and base_prompt.strip():
-            model_logger.debug(f"[VLM_TRANSITION] Falling back to base prompt: {base_prompt}")
-            return base_prompt
-        else:
-            model_logger.debug(f"[VLM_TRANSITION] Falling back to generic prompt")
-            return "cinematic transition"
+    if base_prompt and base_prompt.strip():
+        model_logger.debug(f"[VLM_TRANSITION] Falling back to base prompt: {base_prompt}")
+        return base_prompt
+
+    model_logger.debug(f"[VLM_TRANSITION] Falling back to generic prompt")
+    return "cinematic transition"
 
 
 def generate_transition_prompts_batch(
@@ -151,10 +84,6 @@ def generate_transition_prompts_batch(
 
     try:
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from Wan2GP.shared.utils.prompt_extend import QwenPromptExpander
 
         if torch.cuda.is_available():
             gpu_mem_before = torch.cuda.memory_allocated() / BYTES_PER_GB
@@ -168,7 +97,7 @@ def generate_transition_prompts_batch(
         download_qwen_vlm_if_needed(local_model_path)
 
         model_logger.debug(f"[VLM_BATCH] Using local model from: {local_model_path}")
-        extender = QwenPromptExpander(
+        extender = create_qwen_prompt_expander(
             model_name=str(local_model_path),
             device=device,
             is_vl=True

@@ -9,7 +9,9 @@ __all__ = ["api"]
 
 _MODULES = {
     "api": "source.core.log.api",
+    "model_runtime": "source.core.log.model_runtime",
     "queue_runtime": "source.core.log.queue_runtime",
+    "video_runtime": "source.core.log.video_runtime",
 }
 _COMPAT_EXPORTS = {
     "CustomLogInterceptor": ("source.core.log.database", "CustomLogInterceptor"),

@@ -1,5 +1,6 @@
 """Segment-level structure guidance application and positioning."""
 
+from dataclasses import dataclass
 import numpy as np
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -11,12 +12,134 @@ from source.media.structure.compositing import (
 )
 
 __all__ = [
+    "StructureMotionApplicationResult",
     "apply_structure_motion_with_tracking",
+    "apply_structure_motion_with_tracking_result",
     "segment_has_structure_overlap",
     "calculate_segment_guidance_position",
     "calculate_segment_stitched_position",
     "extract_segment_structure_guidance",
 ]
+
+
+@dataclass
+class StructureMotionApplicationResult:
+    """Outcome of applying precomputed structure-guidance frames to a segment."""
+
+    status: str
+    frames: List[np.ndarray]
+    filled_frames: int = 0
+    error: str | None = None
+    diagnostics: str | None = None
+
+
+def apply_structure_motion_with_tracking_result(
+    *,
+    frames_for_guide_list: List[np.ndarray],
+    guidance_tracker: GuidanceTracker,
+    structure_guidance_video_url: str | None = None,
+    segment_processing_dir: Path | None = None,
+    structure_type: str = "flow",
+    structure_guidance_frame_offset: int = 0,
+) -> StructureMotionApplicationResult:
+    """Apply structure motion and return a status-rich result object."""
+    unguidanced_ranges = guidance_tracker.get_unguidanced_ranges()
+
+    if not unguidanced_ranges:
+        generation_logger.debug("[STRUCTURE_VIDEO] No unguidanced frames found")
+        return StructureMotionApplicationResult(
+            status="skipped",
+            frames=frames_for_guide_list,
+            diagnostics="No unguidanced frames found",
+        )
+
+    total_unguidanced = sum(end - start + 1 for start, end in unguidanced_ranges)
+    generation_logger.debug(
+        f"[STRUCTURE_VIDEO] Processing {total_unguidanced} unguidanced frames across {len(unguidanced_ranges)} ranges"
+    )
+
+    if not structure_guidance_video_url:
+        generation_logger.debug("[STRUCTURE_VIDEO] No structure guidance video supplied")
+        return StructureMotionApplicationResult(
+            status="skipped",
+            frames=frames_for_guide_list,
+            diagnostics="No structure guidance video provided",
+        )
+
+    if not segment_processing_dir:
+        error = "segment_processing_dir required when using structure_guidance_video_url"
+        generation_logger.error(f"[ERROR] {error}")
+        return StructureMotionApplicationResult(
+            status="failed",
+            frames=frames_for_guide_list,
+            error=error,
+        )
+
+    try:
+        generation_logger.debug("[STRUCTURE_VIDEO] ========== FAST PATH ACTIVATED ==========")
+        generation_logger.debug("[STRUCTURE_VIDEO] Using pre-warped guidance video (fast path)")
+        generation_logger.debug(f"[STRUCTURE_VIDEO] Type: {structure_type}")
+        generation_logger.debug(f"[STRUCTURE_VIDEO] URL/Path: {structure_guidance_video_url}")
+        generation_logger.debug(
+            f"[STRUCTURE_VIDEO] Extracting frames starting at offset {structure_guidance_frame_offset}"
+        )
+        guidance_frames = download_and_extract_motion_frames(
+            structure_motion_video_url=structure_guidance_video_url,
+            frame_start=structure_guidance_frame_offset,
+            frame_count=total_unguidanced,
+            download_dir=segment_processing_dir,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        generation_logger.error(f"[ERROR] FAST PATH FAILED: {exc}", exc_info=True)
+        generation_logger.error("[ERROR] Structure guidance could not be applied")
+        return StructureMotionApplicationResult(
+            status="failed",
+            frames=frames_for_guide_list,
+            error=str(exc),
+        )
+
+    generation_logger.debug(
+        f"[STRUCTURE_VIDEO] Successfully extracted {len(guidance_frames)} guidance frames"
+    )
+    updated_frames = frames_for_guide_list.copy()
+    guidance_frame_idx = 0
+    frames_filled = 0
+
+    for range_start, range_end in unguidanced_ranges:
+        generation_logger.debug(f"[STRUCTURE_VIDEO] Filling range {range_start}-{range_end}")
+        for frame_idx in range(range_start, range_end + 1):
+            if guidance_frame_idx >= len(guidance_frames):
+                generation_logger.warning(
+                    f"[STRUCTURE_VIDEO] Warning: Ran out of guidance frames at frame {frame_idx}"
+                )
+                break
+            updated_frames[frame_idx] = guidance_frames[guidance_frame_idx]
+            guidance_tracker.mark_single_frame(frame_idx)
+            guidance_frame_idx += 1
+            frames_filled += 1
+
+    if frames_filled == total_unguidanced:
+        status = "applied"
+        diagnostics = None
+    elif frames_filled > 0:
+        status = "partial"
+        diagnostics = (
+            f"Filled {frames_filled}/{total_unguidanced} requested guidance frames"
+        )
+    else:
+        status = "failed"
+        diagnostics = f"Filled 0/{total_unguidanced} requested guidance frames"
+
+    generation_logger.debug(
+        f"[STRUCTURE_VIDEO] FAST PATH {status.upper()}: Filled {frames_filled} frames with {structure_type} visualizations"
+    )
+    generation_logger.debug("[STRUCTURE_VIDEO] ==========================================")
+    return StructureMotionApplicationResult(
+        status=status,
+        frames=updated_frames,
+        filled_frames=frames_filled,
+        diagnostics=diagnostics,
+    )
 
 
 def apply_structure_motion_with_tracking(
@@ -61,75 +184,15 @@ def apply_structure_motion_with_tracking(
     Returns:
         Updated frames list with structure guidance applied
     """
-    # Get unguidanced ranges from tracker (not pixel inspection!)
-    unguidanced_ranges = guidance_tracker.get_unguidanced_ranges()
-
-    if not unguidanced_ranges:
-        generation_logger.debug(f"[STRUCTURE_VIDEO] No unguidanced frames found")
-        return frames_for_guide_list
-
-    # Calculate total frames needed
-    total_unguidanced = sum(end - start + 1 for start, end in unguidanced_ranges)
-
-    generation_logger.debug(f"[STRUCTURE_VIDEO] Processing {total_unguidanced} unguidanced frames across {len(unguidanced_ranges)} ranges")
-
-    # ===== PRE-WARPED VIDEO PATH (FASTER) =====
-    if structure_guidance_video_url:
-        generation_logger.debug(f"[STRUCTURE_VIDEO] ========== FAST PATH ACTIVATED ==========")
-        generation_logger.debug(f"[STRUCTURE_VIDEO] Using pre-warped guidance video (fast path)")
-        generation_logger.debug(f"[STRUCTURE_VIDEO] Type: {structure_type}")
-        generation_logger.debug(f"[STRUCTURE_VIDEO] URL/Path: {structure_guidance_video_url}")
-
-        if not segment_processing_dir:
-            raise ValueError("segment_processing_dir required when using structure_guidance_video_url")
-
-        try:
-            # Download and extract THIS segment's portion of guidance frames
-            generation_logger.debug(f"[STRUCTURE_VIDEO] Extracting frames starting at offset {structure_guidance_frame_offset}")
-            guidance_frames = download_and_extract_motion_frames(
-                structure_motion_video_url=structure_guidance_video_url,  # Function still uses old param name internally
-                frame_start=structure_guidance_frame_offset,
-                frame_count=total_unguidanced,
-                download_dir=segment_processing_dir,
-            )
-
-            generation_logger.debug(f"[STRUCTURE_VIDEO] Successfully extracted {len(guidance_frames)} guidance frames")
-
-            # Drop guidance frames directly into unguidanced ranges
-            updated_frames = frames_for_guide_list.copy()
-            guidance_frame_idx = 0
-            frames_filled = 0
-
-            for range_start, range_end in unguidanced_ranges:
-                generation_logger.debug(f"[STRUCTURE_VIDEO] Filling range {range_start}-{range_end}")
-
-                for frame_idx in range(range_start, range_end + 1):
-                    if guidance_frame_idx < len(guidance_frames):
-                        updated_frames[frame_idx] = guidance_frames[guidance_frame_idx]
-                        guidance_tracker.mark_single_frame(frame_idx)
-                        guidance_frame_idx += 1
-                        frames_filled += 1
-                    else:
-                        generation_logger.warning(f"[STRUCTURE_VIDEO] Warning: Ran out of guidance frames at frame {frame_idx}")
-                        break
-
-            generation_logger.debug(f"[STRUCTURE_VIDEO] FAST PATH SUCCESS: Filled {frames_filled} frames with {structure_type} visualizations")
-            generation_logger.debug(f"[STRUCTURE_VIDEO] ==========================================")
-            return updated_frames
-
-        except (OSError, ValueError, RuntimeError) as e:
-            generation_logger.error(f"[ERROR] FAST PATH FAILED: {e}", exc_info=True)
-            generation_logger.error(f"[ERROR] Structure guidance could not be applied")
-            # Return original frames unchanged
-            return frames_for_guide_list
-
-    # No pre-computed guidance video provided
-    generation_logger.debug(f"[STRUCTURE_VIDEO] ========== NO GUIDANCE VIDEO ==========")
-    generation_logger.debug(f"[STRUCTURE_VIDEO] structure_guidance_video_url is None or empty")
-    generation_logger.debug(f"[STRUCTURE_VIDEO] Reason: Orchestrator didn't provide pre-computed guidance video")
-    generation_logger.debug(f"[STRUCTURE_VIDEO] Cannot apply structure guidance - returning frames unchanged")
-    generation_logger.debug(f"[STRUCTURE_VIDEO] =========================================")
-    return frames_for_guide_list
+    result = apply_structure_motion_with_tracking_result(
+        frames_for_guide_list=frames_for_guide_list,
+        guidance_tracker=guidance_tracker,
+        structure_guidance_video_url=structure_guidance_video_url,
+        segment_processing_dir=segment_processing_dir,
+        structure_type=structure_type,
+        structure_guidance_frame_offset=structure_guidance_frame_offset,
+    )
+    return result.frames
 
 
 def segment_has_structure_overlap(

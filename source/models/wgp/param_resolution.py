@@ -11,6 +11,7 @@ from source.core.log import (
     generation_logger,
     safe_dict_repr, safe_log_params, safe_log_change
 )
+from source.runtime.wgp_bridge import get_default_settings
 
 
 def resolve_parameters(orchestrator, model_type: str, task_params: dict) -> dict:
@@ -47,8 +48,7 @@ def resolve_parameters(orchestrator, model_type: str, task_params: dict) -> dict
 
     # 2. Apply model JSON configuration (medium priority)
     try:
-        import wgp
-        model_defaults = wgp.get_default_settings(model_type)
+        model_defaults = get_default_settings(model_type)
         # Safe logging: Use safe_dict_repr to prevent hanging
         generation_logger.debug(f"get_default_settings('{model_type}') returned: {safe_dict_repr(model_defaults) if model_defaults else 'None'}")
         generation_logger.debug(f"Type: {type(model_defaults)}")

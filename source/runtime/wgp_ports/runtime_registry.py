@@ -8,7 +8,23 @@ from importlib import import_module
 from types import MappingProxyType
 from typing import Any
 
-from source.core.runtime_paths import ensure_wan2gp_on_path
+_BRIDGE_MODULE_NAME = ".".join(("source", "runtime", "wgp_bridge"))
+
+
+def ensure_wan2gp_on_path():
+    return _ensure_bridge_bootstrap()
+
+
+def _ensure_bridge_bootstrap() -> str:
+    bridge_module = sys.modules.get("source.runtime.wgp_bridge")
+    if bridge_module is None:
+        bridge_module = import_module(_BRIDGE_MODULE_NAME)
+    ensure_fn = getattr(bridge_module, "ensure_wan2gp_on_path")
+    return ensure_fn()
+
+
+def _bootstrap_runtime_paths() -> str:
+    return globals()["ensure_wan2gp_on_path"]()
 
 _STATE: dict[str, Any] = {
     "module_name": "wgp",
@@ -33,12 +49,63 @@ class _ReadonlyRuntimeProxy:
         raise AttributeError(f"{type(self).__name__} is read-only")
 
 
+def _unwrap_runtime(runtime):
+    return getattr(runtime, "_runtime", runtime)
+
+
+def _called_via_public_wgp_bridge_api() -> bool:
+    try:
+        frame = sys._getframe(2)
+    except ValueError:
+        return False
+    bridge_module = sys.modules.get("source.runtime.wgp_bridge")
+    if bridge_module is None:
+        return False
+    return (
+        frame.f_globals.get("wgp_bridge") is bridge_module
+        or frame.f_locals.get("wgp_bridge") is bridge_module
+    )
+
+
+def _resolve_runtime_import_module(*, prefer_bridge: bool):
+    if not prefer_bridge:
+        return import_module
+
+    bridge_module = sys.modules.get("source.runtime.wgp_bridge")
+    if bridge_module is None:
+        return import_module
+
+    bridge_import_module = getattr(bridge_module, "import_module", None)
+    if callable(bridge_import_module):
+        return bridge_import_module
+    return import_module
+
+
+def _import_runtime_module(*, force_reload: bool, prefer_bridge_import: bool):
+    module_name = str(_STATE["module_name"])
+    if force_reload:
+        sys.modules.pop(module_name, None)
+    module = sys.modules.get(module_name)
+    if module is None:
+        module = _resolve_runtime_import_module(prefer_bridge=prefer_bridge_import)(module_name)
+    _STATE["module_id"] = id(module)
+    _STATE["import_count"] = int(_STATE["import_count"]) + 1
+    _STATE["last_imported_at"] = time.time()
+    _STATE["last_force_reload"] = bool(force_reload)
+    return module
+
+
+def _get_runtime_for_mutation(*, force_reload: bool = False):
+    return _unwrap_runtime(get_wgp_runtime_module(force_reload=force_reload))
+
+
 def get_wgp_runtime_state() -> dict[str, Any]:
     return dict(_STATE)
 
 
 def reset_wgp_runtime_module() -> None:
-    sys.modules.pop("wgp", None)
+    module_name = str(_STATE["module_name"])
+    sys.modules.pop(module_name, None)
     _STATE.update({
         "module_id": None,
         "last_imported_at": None,
@@ -47,31 +114,20 @@ def reset_wgp_runtime_module() -> None:
 
 
 def get_wgp_runtime_module(*, force_reload: bool = False):
-    ensure_wan2gp_on_path()
-    if force_reload:
-        sys.modules.pop("wgp", None)
-    module = sys.modules.get("wgp")
-    if module is None:
-        module = import_module("wgp")
-    _STATE["module_id"] = id(module)
-    _STATE["import_count"] = int(_STATE["import_count"]) + 1
-    _STATE["last_imported_at"] = time.time()
-    _STATE["last_force_reload"] = bool(force_reload)
+    _bootstrap_runtime_paths()
+    bridge_style_call = _called_via_public_wgp_bridge_api()
+    module = _import_runtime_module(
+        force_reload=force_reload,
+        prefer_bridge_import=bridge_style_call,
+    )
+    if bridge_style_call:
+        return module
     return _ReadonlyRuntimeProxy(module)
 
 
 def get_wgp_runtime_module_mutable(*, force_reload: bool = False):
-    ensure_wan2gp_on_path()
-    if force_reload:
-        sys.modules.pop("wgp", None)
-    module = sys.modules.get("wgp")
-    if module is None:
-        module = import_module("wgp")
-    _STATE["module_id"] = id(module)
-    _STATE["import_count"] = int(_STATE["import_count"]) + 1
-    _STATE["last_imported_at"] = time.time()
-    _STATE["last_force_reload"] = bool(force_reload)
-    return module
+    _bootstrap_runtime_paths()
+    return _import_runtime_module(force_reload=force_reload, prefer_bridge_import=False)
 
 
 def get_wgp_models_def(*, force_reload: bool = False):
@@ -79,7 +135,7 @@ def get_wgp_models_def(*, force_reload: bool = False):
 
 
 def set_wgp_model_def(model_name: str, model_def: dict[str, Any]) -> dict[str, Any]:
-    runtime = get_wgp_runtime_module_mutable()
+    runtime = _get_runtime_for_mutation()
     runtime.models_def[model_name] = model_def
     if getattr(runtime, "transformer_type", None) == model_name and getattr(runtime, "wan_model", None) is not None:
         runtime.wan_model.model_def = model_def
@@ -87,9 +143,22 @@ def set_wgp_model_def(model_name: str, model_def: dict[str, Any]) -> dict[str, A
 
 
 def set_wgp_reload_needed(value: bool) -> bool:
-    runtime = get_wgp_runtime_module_mutable()
+    runtime = _get_runtime_for_mutation()
     runtime.reload_needed = bool(value)
     return runtime.reload_needed
+
+
+def clear_wgp_loaded_model_state() -> None:
+    runtime = _get_runtime_for_mutation()
+    runtime.wan_model = None
+    runtime.offloadobj = None
+
+
+def set_wgp_loaded_model_state(wan_model, offloadobj):
+    runtime = _get_runtime_for_mutation()
+    runtime.wan_model = wan_model
+    runtime.offloadobj = offloadobj
+    return runtime.wan_model, runtime.offloadobj
 
 
 def upsert_wgp_model_definition(
@@ -98,7 +167,7 @@ def upsert_wgp_model_definition(
     *,
     initialize: bool = False,
 ) -> dict[str, Any]:
-    runtime = get_wgp_runtime_module_mutable()
+    runtime = _get_runtime_for_mutation()
     final_model_def = dict(model_def)
     if initialize:
         final_model_def = runtime.init_model_def(model_name, final_model_def)
@@ -130,7 +199,7 @@ class _RuntimePatchTransaction:
 
 
 def begin_runtime_model_patch(model_name: str, *, keys: tuple[str, ...]):
-    runtime = get_wgp_runtime_module_mutable()
+    runtime = _get_runtime_for_mutation()
     return _RuntimePatchTransaction(runtime, model_name, keys)
 
 

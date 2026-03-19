@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from typing import Dict, List, Tuple, Optional
 
 from source.core.log import headless_logger
+from source.runtime.wgp_bridge import parse_loras_multipliers
 
 
 class HiresFixHelper:
@@ -121,7 +122,6 @@ class HiresFixHelper:
         """
         try:
             from source.core.params.phase_multiplier_utils import extract_phase_values
-            from wgp import parse_loras_multipliers
 
             # Extract multipliers for the specified phase
             phase_values = extract_phase_values(

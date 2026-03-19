@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from source.core.db import task_dependencies as _task_dependencies
+from source.core.db.config import allow_direct_query_fallback, resolve_edge_request
 
 _cfg = _task_dependencies._cfg
 
@@ -41,7 +42,20 @@ def cancel_orchestrator_children(
 
 def get_task_current_status(task_id: str):
     """Compatibility wrapper for task status lookup."""
+    request = resolve_edge_request("get-task-status")
+    if not request.url and allow_direct_query_fallback() and _cfg.SUPABASE_CLIENT:
+        response = (
+            _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME)
+            .select("status")
+            .eq("id", task_id)
+            .single()
+            .execute()
+        )
+        if response.data:
+            return response.data.get("status")
+        return None
+
     return _task_dependencies.get_task_current_status(task_id)
 
 
-__all__ = ["_cfg", "cancel_orchestrator_children", "get_task_current_status"]
+__all__ = ["_cfg", "resolve_edge_request", "cancel_orchestrator_children", "get_task_current_status"]

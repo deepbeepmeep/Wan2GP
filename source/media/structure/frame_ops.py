@@ -4,6 +4,7 @@ import numpy as np
 from typing import List, Tuple, Optional
 
 from source.core.log import generation_logger
+from source.core.params.structure_guidance import normalize_structure_treatment
 from source.media.structure.loading import _resample_frame_indices
 
 __all__ = [
@@ -88,6 +89,11 @@ def load_structure_video_frames_with_range(
     import cv2
     from PIL import Image
 
+    treatment = normalize_structure_treatment(
+        treatment,
+        context="structure video range loading",
+    )
+
     # Try decord first (faster), fall back to cv2
     use_decord = False
     try:
@@ -159,6 +165,10 @@ def load_structure_video_frames_with_range(
         )
         # Offset to actual source positions
         frame_indices = [actual_start + idx for idx in frame_indices]
+
+        if not frame_indices and effective_source_frames > 0:
+            # Seed from the first available frame so short ranges do not loop forever.
+            frame_indices = [actual_start]
 
         # Handle if source range is too short
         if len(frame_indices) < frames_to_load:

@@ -14,10 +14,13 @@ Key Components:
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
+from urllib.parse import urlparse
 
 from source.core.log import travel_logger
 from source.core.params.travel_guidance import TravelGuidanceConfig
 from source.media.video.video_info import get_video_frame_count_and_fps
+from source.utils.download_utils import download_file, download_image_if_url
+from source.utils.subprocess_utils import run_subprocess
 
 from source.task_handlers.travel.guide_builder import (
     create_guide_video as _build_guide_video,
@@ -93,6 +96,116 @@ class TravelSegmentProcessor:
         """
         return _build_mask_video(self)
 
+    def _get_travel_guidance_config(self) -> Optional[TravelGuidanceConfig]:
+        ctx = self.ctx
+        travel_guidance_config = self._travel_guidance_config
+        if travel_guidance_config is None and isinstance(ctx.segment_params.get("travel_guidance"), dict):
+            travel_guidance_config = TravelGuidanceConfig.from_payload(
+                ctx.segment_params["travel_guidance"],
+                ctx.model_name,
+            )
+            self._travel_guidance_config = travel_guidance_config
+        return travel_guidance_config
+
+    def _build_hybrid_anchor_payload(self) -> Dict[str, Any]:
+        ctx = self.ctx
+        travel_guidance_config = self._get_travel_guidance_config()
+        if travel_guidance_config is None or not travel_guidance_config.is_ltx_hybrid or not travel_guidance_config.has_anchors:
+            return {
+                "image_refs_paths": None,
+                "frames_positions": None,
+                "image_refs_strengths": None,
+            }
+
+        image_refs_paths: list[str] = []
+        frames_positions: list[str] = []
+        image_refs_strengths: list[float] = []
+        for anchor_index, anchor in enumerate(travel_guidance_config.anchors):
+            resolved_path = download_image_if_url(
+                anchor.image_url,
+                ctx.segment_processing_dir,
+                ctx.task_id,
+                debug_mode=ctx.debug_enabled,
+                descriptive_name=f"hybrid_anchor_seg{ctx.segment_idx}_{anchor_index}",
+            )
+            image_refs_paths.append(resolved_path)
+            frames_positions.append(str(int(anchor.frame_position) + 1))
+            image_refs_strengths.append(float(anchor.strength))
+
+        return {
+            "image_refs_paths": image_refs_paths,
+            "frames_positions": ",".join(frames_positions),
+            "image_refs_strengths": image_refs_strengths,
+        }
+
+    def _resolve_external_audio_path(self, audio_url: str) -> str:
+        ctx = self.ctx
+        parsed = urlparse(audio_url)
+        suffix = Path(parsed.path).suffix or ".wav"
+        local_name = f"hybrid_audio_src_seg{ctx.segment_idx}{suffix}"
+        if audio_url.startswith(("http://", "https://")):
+            ok = download_file(audio_url, ctx.segment_processing_dir, local_name)
+            if not ok:
+                raise ValueError(f"Failed to download hybrid audio guide: {audio_url}")
+            return str((ctx.segment_processing_dir / local_name).resolve())
+        return str(Path(audio_url).resolve())
+
+    def _slice_external_audio(self, audio_url: str) -> str:
+        ctx = self.ctx
+        source_audio = self._resolve_external_audio_path(audio_url)
+        fps = float(ctx.orchestrator_details.get("fps_helpers", 16) or 16)
+        start_seconds = max(0.0, float(self._get_travel_guidance_config().frame_offset) / fps)
+        duration_seconds = max(0.0, float(ctx.total_frames_for_segment) / fps)
+        output_path = ctx.segment_processing_dir / f"hybrid_audio_seg{ctx.segment_idx}.wav"
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{start_seconds:.6f}",
+            "-i",
+            source_audio,
+            "-t",
+            f"{duration_seconds:.6f}",
+            "-acodec",
+            "pcm_s16le",
+            str(output_path),
+        ]
+        result = run_subprocess(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
+            raise ValueError(
+                "Failed to slice hybrid audio guide: "
+                f"{audio_url} (rc={result.returncode})"
+            )
+        return str(output_path.resolve())
+
+    def _build_hybrid_audio_payload(self) -> Dict[str, Any]:
+        travel_guidance_config = self._get_travel_guidance_config()
+        if travel_guidance_config is None or not travel_guidance_config.is_ltx_hybrid or not travel_guidance_config.has_audio:
+            return {
+                "audio_guide": None,
+                "audio_prompt_type": "",
+                "audio_scale": None,
+            }
+
+        assert travel_guidance_config.audio is not None
+        if travel_guidance_config.audio.source == "control_track":
+            if not travel_guidance_config.has_control:
+                raise ValueError(
+                    "travel_guidance audio.source='control_track' requires control overlap "
+                    "for the current segment"
+                )
+            return {
+                "audio_guide": None,
+                "audio_prompt_type": "K",
+                "audio_scale": float(travel_guidance_config.audio.strength),
+            }
+
+        return {
+            "audio_guide": self._slice_external_audio(travel_guidance_config.audio.audio_url or ""),
+            "audio_prompt_type": "A",
+            "audio_scale": float(travel_guidance_config.audio.strength),
+        }
+
     def create_video_prompt_type(self, mask_video_path: Optional[Path]) -> str:
         """
         Create video_prompt_type string for VACE compatibility.
@@ -109,16 +222,27 @@ class TravelSegmentProcessor:
         travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: is_vace_model = {self.is_vace_model}", task_id=ctx.task_id)
         travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: mask_video_path exists = {mask_video_path is not None}", task_id=ctx.task_id)
 
-        travel_guidance_config = self._travel_guidance_config
-        if travel_guidance_config is None and isinstance(ctx.segment_params.get("travel_guidance"), dict):
-            travel_guidance_config = TravelGuidanceConfig.from_payload(
-                ctx.segment_params["travel_guidance"],
-                ctx.model_name,
-            )
-            self._travel_guidance_config = travel_guidance_config
+        travel_guidance_config = self._get_travel_guidance_config()
 
         if travel_guidance_config is not None:
-            if travel_guidance_config.is_ltx_control:
+            if travel_guidance_config.is_ltx_hybrid:
+                parts = []
+                if travel_guidance_config.has_control:
+                    mode_map = {
+                        "video": "VG",
+                        "pose": "PVG",
+                        "depth": "DVG",
+                        "canny": "EVG",
+                    }
+                    parts.append(mode_map.get(travel_guidance_config.mode, ""))
+                if travel_guidance_config.has_anchors:
+                    parts.append("KFI")
+                video_prompt_type_str = "".join(parts)
+                travel_logger.debug(
+                    f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance ltx_hybrid -> video_prompt_type='{video_prompt_type_str}'",
+                    task_id=ctx.task_id,
+                )
+            elif travel_guidance_config.is_ltx_control:
                 video_prompt_type_str = "VG"
                 travel_logger.debug(
                     f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance ltx_control -> video_prompt_type='VG'",
@@ -219,6 +343,9 @@ class TravelSegmentProcessor:
 
         # Create video_prompt_type
         video_prompt_type = self.create_video_prompt_type(mask_video_path)
+        hybrid_anchor_payload = self._build_hybrid_anchor_payload()
+        hybrid_audio_payload = self._build_hybrid_audio_payload()
+        travel_guidance_config = self._get_travel_guidance_config()
 
         # === FRAME COUNT DIAGNOSTIC SUMMARY ===
         # This consolidated log helps quickly diagnose frame count mismatches
@@ -262,7 +389,20 @@ class TravelSegmentProcessor:
             "video_guide": str(guide_video_path) if guide_video_path else None,
             "video_mask": str(mask_video_path) if mask_video_path else None,
             "video_prompt_type": video_prompt_type,
-            "structure_type": self._detected_structure_type  # Pass through for uni3c handling
+            "structure_type": self._detected_structure_type,  # Pass through for uni3c handling
+            "image_refs_paths": hybrid_anchor_payload["image_refs_paths"],
+            "frames_positions": hybrid_anchor_payload["frames_positions"],
+            "image_refs_strengths": hybrid_anchor_payload["image_refs_strengths"],
+            "audio_guide": hybrid_audio_payload["audio_guide"],
+            "audio_prompt_type": hybrid_audio_payload["audio_prompt_type"],
+            "audio_scale": hybrid_audio_payload["audio_scale"],
+            "denoising_strength": (
+                travel_guidance_config.control_strength
+                if travel_guidance_config is not None
+                and travel_guidance_config.is_ltx_hybrid
+                and travel_guidance_config.has_control
+                else None
+            ),
         }
 
     def _detect_single_image_journey(self) -> bool:

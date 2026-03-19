@@ -11,11 +11,16 @@ from source.core.db.edge.request import resolve_edge_auth_token
 HEARTBEAT_LOG_QUEUE_MAX_SIZE = 1000
 
 
-def resolve_guardian_auth_token(*, explicit_token: str | None = None, runtime_config=None) -> str:
+def resolve_guardian_auth_token(
+    *,
+    explicit_token: str | None = None,
+    runtime_config=None,
+    auth_scope: str = "worker",
+) -> str:
     """Resolve the auth token used by the guardian heartbeat path."""
     if explicit_token:
         return explicit_token
-    token = resolve_edge_auth_token(scope="worker", runtime_config=runtime_config)
+    token = resolve_edge_auth_token(scope=auth_scope, runtime_config=runtime_config)
     if not token:
         raise RuntimeError("No guardian auth token available")
     return token
@@ -59,4 +64,3 @@ def get_gpu_memory_usage():
         headless_logger.debug(f"Failed to get GPU memory usage: {e}")
 
     return None, None
-

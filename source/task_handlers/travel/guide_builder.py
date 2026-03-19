@@ -71,7 +71,11 @@ def _build_local_travel_guidance_video(
         target_resolution=ctx.parsed_res_wh,
         target_fps=ctx.orchestrator_details.get("fps_helpers", 16),
         output_path=output_path,
-        motion_strength=travel_guidance_config.strength,
+        motion_strength=(
+            travel_guidance_config.control_strength
+            if travel_guidance_config.is_ltx_hybrid
+            else travel_guidance_config.strength
+        ),
         canny_intensity=travel_guidance_config.canny_intensity,
         depth_contrast=travel_guidance_config.depth_contrast,
         download_dir=ctx.segment_processing_dir,
@@ -250,7 +254,13 @@ def create_guide_video(proc: Any) -> Optional[Path]:
         or structure_config.has_guidance
         or (
             travel_guidance_config is not None
-            and travel_guidance_config.is_ltx_control
+            and (
+                travel_guidance_config.is_ltx_control
+                or (
+                    travel_guidance_config.is_ltx_hybrid
+                    and travel_guidance_config.has_control
+                )
+            )
             and travel_guidance_config.has_guidance
         )
     )
@@ -282,7 +292,13 @@ def create_guide_video(proc: Any) -> Optional[Path]:
             task_type="travel_segment"
         )
 
-        if travel_guidance_config is not None and travel_guidance_config.is_ltx_control:
+        if travel_guidance_config is not None and (
+            travel_guidance_config.is_ltx_control
+            or (
+                travel_guidance_config.is_ltx_hybrid
+                and travel_guidance_config.has_control
+            )
+        ):
             proc._detected_structure_type = travel_guidance_config.get_preprocessor_type()
             direct_control_video = _create_ltx_control_guide_video(
                 proc,

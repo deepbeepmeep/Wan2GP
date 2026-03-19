@@ -1,5 +1,6 @@
 """Travel orchestrator task handler - creates and manages segment tasks."""
 
+from dataclasses import replace
 from pathlib import Path
 import uuid
 from datetime import datetime
@@ -17,8 +18,9 @@ from ...utils import (
     get_video_frame_count_and_fps)
 from ...utils.resolution_utils import get_model_grid_size
 from ...core.params.structure_guidance import StructureGuidanceConfig
-from ...core.params.travel_guidance import TravelGuidanceConfig
+from ...core.params.travel_guidance import AnchorEntry, TravelGuidanceConfig
 from ...core.params.task_result import TaskResult
+from ...runtime.wgp_bridge import get_model_fps, get_model_min_frames_and_step
 
 from .svi_config import SVI_DEFAULT_PARAMS, SVI_STITCH_OVERLAP
 from .debug_utils import log_ram_usage
@@ -26,6 +28,10 @@ from .debug_utils import log_ram_usage
 # Default seed used when no seed_base is provided in the orchestrator payload
 DEFAULT_SEED_BASE = 12345
 IC_LORA_UNION_CONTROL_FILENAME = "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors"
+HYBRID_SEGMENT_ANCHOR_SOFT_LIMIT = 4
+HYBRID_SEGMENT_ANCHOR_HARD_LIMIT = 8
+get_orchestrator_child_tasks = db_ops.get_orchestrator_child_tasks
+cleanup_duplicate_child_tasks = db_ops.cleanup_duplicate_child_tasks
 
 
 def _get_model_fps(model_name: str | None) -> int:
@@ -36,7 +42,6 @@ def _get_model_fps(model_name: str | None) -> int:
     if not model_name:
         return 24
     try:
-        from wgp import get_model_fps
         return get_model_fps(model_name)
     except (ImportError, TypeError, ValueError, KeyError):
         # Heuristic fallback
@@ -53,7 +58,6 @@ def _get_frame_step(model_name: str | None) -> int:
     if not model_name:
         return 4
     try:
-        from wgp import get_model_min_frames_and_step
         _min_frames, frames_step, _latent_size = get_model_min_frames_and_step(model_name)
         return frames_step
     except (ImportError, TypeError, ValueError, KeyError):
@@ -101,6 +105,40 @@ def _segment_has_travel_guidance_overlap(
     """Check travel-guidance overlap using the stitched timeline semantics."""
     if travel_guidance_config.kind == "none":
         return False
+    segment_start = segment_stitched_offsets[segment_index] if segment_index < len(segment_stitched_offsets) else 0
+    segment_end = segment_start + (
+        segment_frames_expanded[segment_index]
+        if segment_index < len(segment_frames_expanded)
+        else 0
+    )
+
+    if travel_guidance_config.is_ltx_hybrid and travel_guidance_config.anchors:
+        for anchor in travel_guidance_config.anchors:
+            if segment_start <= anchor.frame_position < segment_end:
+                return True
+
+    if not travel_guidance_config.videos:
+        return bool(travel_guidance_config.guidance_video_url)
+
+    for video in travel_guidance_config.videos:
+        video_start = video.start_frame
+        video_end = total_stitched_frames if video.end_frame is None else video.end_frame
+        if video_start < segment_end and video_end > segment_start:
+            return True
+
+    return False
+
+
+def _segment_has_travel_guidance_control_overlap(
+    *,
+    segment_index: int,
+    segment_frames_expanded: list[int],
+    segment_stitched_offsets: list[int],
+    total_stitched_frames: int,
+    travel_guidance_config: TravelGuidanceConfig,
+) -> bool:
+    if travel_guidance_config.kind == "none":
+        return False
     if not travel_guidance_config.videos:
         return bool(travel_guidance_config.guidance_video_url)
 
@@ -110,14 +148,85 @@ def _segment_has_travel_guidance_overlap(
         if segment_index < len(segment_frames_expanded)
         else 0
     )
-
     for video in travel_guidance_config.videos:
         video_start = video.start_frame
         video_end = total_stitched_frames if video.end_frame is None else video.end_frame
         if video_start < segment_end and video_end > segment_start:
             return True
-
     return False
+
+
+def _build_segment_hybrid_guidance_config(
+    *,
+    config: TravelGuidanceConfig,
+    segment_index: int,
+    segment_frames_expanded: list[int],
+    segment_stitched_offsets: list[int],
+    total_stitched_frames: int,
+) -> TravelGuidanceConfig:
+    segment_start = segment_stitched_offsets[segment_index] if segment_index < len(segment_stitched_offsets) else 0
+    segment_frame_count = (
+        segment_frames_expanded[segment_index]
+        if segment_index < len(segment_frames_expanded)
+        else 0
+    )
+    remapped_anchors: list[AnchorEntry] = []
+    for anchor in config.anchors:
+        local_pos = anchor.frame_position - segment_start
+        if 0 <= local_pos < segment_frame_count:
+            remapped_anchors.append(
+                AnchorEntry(
+                    image_url=anchor.image_url,
+                    frame_position=local_pos,
+                    strength=anchor.strength,
+                )
+            )
+
+    local_positions = [anchor.frame_position for anchor in remapped_anchors]
+    if len(local_positions) != len(set(local_positions)):
+        raise ValueError(
+            "ltx_hybrid segment contains duplicate local frame positions after remap"
+        )
+
+    if len(remapped_anchors) > HYBRID_SEGMENT_ANCHOR_HARD_LIMIT:
+        raise ValueError(
+            "ltx_hybrid segment exceeds anchor cap: "
+            f"{len(remapped_anchors)} > {HYBRID_SEGMENT_ANCHOR_HARD_LIMIT}"
+        )
+    if len(remapped_anchors) > HYBRID_SEGMENT_ANCHOR_SOFT_LIMIT:
+        travel_logger.warning(
+            "[TRAVEL_GUIDANCE] Segment %s has %s hybrid anchors (soft limit=%s)",
+            segment_index,
+            len(remapped_anchors),
+            HYBRID_SEGMENT_ANCHOR_SOFT_LIMIT,
+        )
+
+    has_control = _segment_has_travel_guidance_control_overlap(
+        segment_index=segment_index,
+        segment_frames_expanded=segment_frames_expanded,
+        segment_stitched_offsets=segment_stitched_offsets,
+        total_stitched_frames=total_stitched_frames,
+        travel_guidance_config=config,
+    )
+    if not remapped_anchors and not has_control:
+        return TravelGuidanceConfig(kind="none")
+
+    audio_config = config.audio
+    if (
+        audio_config is not None
+        and audio_config.source == "control_track"
+        and not has_control
+    ):
+        audio_config = None
+
+    return replace(
+        config,
+        videos=list(config.videos) if has_control else [],
+        anchors=remapped_anchors,
+        audio=audio_config,
+        _frame_offset=segment_start,
+        _guidance_video_url=config.guidance_video_url if has_control else None,
+    )
 
 
 def _build_segment_travel_guidance_payload(
@@ -140,17 +249,23 @@ def _auto_inject_travel_guidance_lora(
     if not travel_guidance_config or not travel_guidance_config.needs_ic_lora():
         return segment_loras
 
+    lora_strength = (
+        travel_guidance_config.control_strength
+        if travel_guidance_config.is_ltx_hybrid
+        else travel_guidance_config.strength
+    )
+
     merged_loras = [dict(entry) for entry in (segment_loras or [])]
     for existing in merged_loras:
         if existing.get("path") == IC_LORA_UNION_CONTROL_FILENAME:
-            existing["strength"] = travel_guidance_config.strength
+            existing["strength"] = lora_strength
             existing.setdefault("name", "ic-lora-union-control (auto-injected)")
             return merged_loras
 
     merged_loras.append(
         {
             "path": IC_LORA_UNION_CONTROL_FILENAME,
-            "strength": travel_guidance_config.strength,
+            "strength": lora_strength,
             "name": "ic-lora-union-control (auto-injected)",
         }
     )
@@ -241,7 +356,7 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
 
         # IDEMPOTENCY CHECK: Look for existing child tasks before creating new ones
         travel_logger.debug(f"[IDEMPOTENCY] Checking for existing child tasks for orchestrator {orchestrator_task_id_str}")
-        existing_child_tasks = db_ops.get_orchestrator_child_tasks(orchestrator_task_id_str)
+        existing_child_tasks = get_orchestrator_child_tasks(orchestrator_task_id_str)
         existing_segments = existing_child_tasks['segments']
         existing_stitch = existing_child_tasks['stitch']
         
@@ -282,7 +397,7 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             has_required_join_orchestrator = len(existing_join_orchestrators) >= required_join_orchestrator_count
             if len(existing_segments) >= expected_segments and len(existing_stitch) >= required_stitch_count and has_required_join_orchestrator:
                 # Clean up any duplicates but don't create new tasks
-                cleanup_summary = db_ops.cleanup_duplicate_child_tasks(orchestrator_task_id_str, expected_segments)
+                cleanup_summary = cleanup_duplicate_child_tasks(orchestrator_task_id_str, expected_segments)
 
                 if cleanup_summary['duplicate_segments_removed'] > 0 or cleanup_summary['duplicate_stitch_removed'] > 0:
                     travel_logger.info(f"Cleaned up duplicates: {cleanup_summary['duplicate_segments_removed']} segments, {cleanup_summary['duplicate_stitch_removed']} stitch tasks", task_id=orchestrator_task_id_str)
@@ -402,9 +517,9 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
 
         num_segments = orchestrator_payload.get("num_new_segments_to_generate", 0)
         if num_segments <= 0:
-            msg = f"No new segments to generate based on orchestrator payload. Orchestration complete (vacuously)."
+            msg = "no-op payload: no new segments to generate"
             travel_logger.warning(msg, task_id=orchestrator_task_id_str)
-            return TaskResult.orchestrating(msg)
+            return TaskResult.orchestrator_complete(msg)
 
         # Track actual DB row IDs by segment index to avoid mixing logical IDs
         actual_segment_db_id_by_index: dict[int, str] = {}
@@ -1022,7 +1137,11 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             structure_videos = [video.to_dict() for video in travel_guidance_config.videos]
             structure_video_path = None
             structure_type = travel_guidance_config.legacy_structure_type
-            motion_strength = travel_guidance_config.strength
+            motion_strength = (
+                travel_guidance_config.control_strength
+                if travel_guidance_config.is_ltx_hybrid
+                else travel_guidance_config.strength
+            )
             canny_intensity = travel_guidance_config.canny_intensity
             depth_contrast = travel_guidance_config.depth_contrast
         else:
@@ -1885,19 +2004,33 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             # =============================================================================
             segment_frame_offset = (
                 segment_stitched_offsets[idx]
-                if use_stitched_offsets
+                if (
+                    use_stitched_offsets
+                    or (using_travel_guidance and travel_guidance_config.is_ltx_hybrid)
+                )
                 else (segment_flow_offsets[idx] if idx < len(segment_flow_offsets) else 0)
             )
 
             segment_has_guidance = False
+            segment_travel_guidance_config = travel_guidance_config
             if using_travel_guidance:
-                segment_has_guidance = _segment_has_travel_guidance_overlap(
-                    segment_index=idx,
-                    segment_frames_expanded=expanded_segment_frames,
-                    segment_stitched_offsets=segment_stitched_offsets,
-                    total_stitched_frames=total_stitched_frames,
-                    travel_guidance_config=travel_guidance_config,
-                )
+                if travel_guidance_config.is_ltx_hybrid:
+                    segment_travel_guidance_config = _build_segment_hybrid_guidance_config(
+                        config=travel_guidance_config,
+                        segment_index=idx,
+                        segment_frames_expanded=expanded_segment_frames,
+                        segment_stitched_offsets=segment_stitched_offsets,
+                        total_stitched_frames=total_stitched_frames,
+                    )
+                    segment_has_guidance = segment_travel_guidance_config.kind != "none"
+                else:
+                    segment_has_guidance = _segment_has_travel_guidance_overlap(
+                        segment_index=idx,
+                        segment_frames_expanded=expanded_segment_frames,
+                        segment_stitched_offsets=segment_stitched_offsets,
+                        total_stitched_frames=total_stitched_frames,
+                        travel_guidance_config=travel_guidance_config,
+                    )
                 if not segment_has_guidance and travel_guidance_config.kind != "none":
                     travel_logger.debug(
                         f"[TRAVEL_GUIDANCE] Segment {idx}: no overlap on stitched timeline, sending kind=none"
@@ -1919,7 +2052,7 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                         )
 
             segment_payload["travel_guidance"] = _build_segment_travel_guidance_payload(
-                travel_guidance_config,
+                segment_travel_guidance_config,
                 frame_offset=segment_frame_offset,
                 has_guidance=segment_has_guidance,
             )
@@ -1953,7 +2086,11 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
 
             segment_loras_for_payload = _auto_inject_travel_guidance_lora(
                 segment_loras_for_payload,
-                travel_guidance_config if segment_payload["travel_guidance"].get("kind") != "none" else None,
+                (
+                    segment_travel_guidance_config
+                    if segment_payload["travel_guidance"].get("kind") != "none"
+                    else None
+                ),
             )
             if segment_loras_for_payload:
                 individual_segment_params["segment_loras"] = segment_loras_for_payload

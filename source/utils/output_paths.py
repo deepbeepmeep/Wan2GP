@@ -163,7 +163,11 @@ def upload_intermediate_file_to_storage(
     retryable_status_codes = {502, 503, 504}
     max_retries = 3
     supabase_url = _db_config.SUPABASE_URL
-    supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
+    supabase_key = (
+        os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_ANON_KEY")
+        or _db_config.SUPABASE_ACCESS_TOKEN
+    )
 
     if not supabase_url or not supabase_key:
         headless_logger.warning("[UPLOAD_INTERMEDIATE] Supabase not configured, cannot upload", task_id=task_id)

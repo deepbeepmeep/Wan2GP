@@ -31,10 +31,15 @@ def notify_worker_model_switch(old_model: Optional[str], new_model: str):
     if not worker_id:
         return
 
-    # Prefer service role; fall back to older env var name if present.
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
+    # Prefer service role; fall back to older env var name or PAT.
+    from source.core.db import config as _db_config
+    supabase_key = (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_SERVICE_KEY")
+        or _db_config.SUPABASE_ACCESS_TOKEN
+    )
     if not supabase_key:
-        model_logger.debug("No SUPABASE_SERVICE_ROLE_KEY, skipping model switch notification")
+        model_logger.debug("No SUPABASE_SERVICE_ROLE_KEY or access token, skipping model switch notification")
         return
 
     try:

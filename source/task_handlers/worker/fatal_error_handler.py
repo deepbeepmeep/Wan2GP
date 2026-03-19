@@ -246,9 +246,15 @@ def _mark_worker_for_termination(
         import os
         from datetime import datetime, timezone
         
-        supabase_url = os.getenv("SUPABASE_URL")
-        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
-        
+        from source.core.db import config as _db_config
+
+        supabase_url = os.getenv("SUPABASE_URL") or _db_config.SUPABASE_URL
+        supabase_key = (
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+            or os.getenv("SUPABASE_SERVICE_KEY")
+            or _db_config.SUPABASE_ACCESS_TOKEN
+        )
+
         if not supabase_url or not supabase_key:
             if logger:
                 logger.warning("Supabase auth configuration not available - cannot mark worker for termination")

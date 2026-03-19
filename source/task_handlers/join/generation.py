@@ -1119,8 +1119,9 @@ def handle_join_clips_task(
                             # transition[ctx1+gap:end] = clip2[clip2_ctx_start:clip2_ctx_end] (context after)
                             "transition_structure": f"[{actual_ctx_clip1} ctx1] + [{actual_gap} gap] + [{actual_ctx_clip2} ctx2]",
 
-                            # --- FPS (so stitch handler can resample clips to match) ---
+                            # --- FPS and resolution (so stitch handler can match clips) ---
                             "fps": start_fps,
+                            "resolution": list(parsed_res_wh),  # [width, height]
 
                             # --- Final stitch guidance ---
                             # When stitching: trim clip1 end by gap_from_clip1, trim clip2 start by gap_from_clip2

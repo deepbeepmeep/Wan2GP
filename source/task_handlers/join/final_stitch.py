@@ -348,8 +348,9 @@ def handle_join_final_stitch(
             orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: No FPS in transition metadata, using clips at native FPS (target_fps={target_fps})")
 
         # --- 4b. Standardize clip aspect ratios to match transition ---
-        # The segment handler standardized clips to clip 1's aspect ratio before generation.
-        # We must do the same here so crossfade boundaries align pixel-perfectly.
+        # The segment handler standardized clips to a common aspect ratio before
+        # generation. Use the transition's resolution (ground truth) to match,
+        # falling back to clip 1's dimensions if not available in metadata.
         try:
             import subprocess
 
@@ -365,15 +366,23 @@ def handle_join_final_stitch(
                 w, h = result.stdout.strip().split(',')
                 return int(w), int(h)
 
-            ref_w, ref_h = _get_video_dimensions(clip_paths[0])
+            # Prefer resolution from transition metadata (exact match for what was generated)
+            trans_resolution = transitions[0].get("resolution") if transitions else None
+            if trans_resolution and len(trans_resolution) == 2:
+                ref_w, ref_h = int(trans_resolution[0]), int(trans_resolution[1])
+                orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Using transition resolution as reference: {ref_w}x{ref_h}")
+            else:
+                ref_w, ref_h = _get_video_dimensions(clip_paths[0])
+                orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: No resolution in transition metadata, using clip 0: {ref_w}x{ref_h}")
+
             if ref_w and ref_h:
                 ref_aspect = ref_w / ref_h
-                for i in range(1, len(clip_paths)):
-                    clip_w, clip_h = _get_video_dimensions(clip_paths[i])
+                for i, clip_path in enumerate(clip_paths):
+                    clip_w, clip_h = _get_video_dimensions(clip_path)
                     if clip_w and clip_h and abs(clip_w / clip_h - ref_aspect) > 0.01:
                         standardized_path = stitch_dir / f"clip_{i}_standardized.mp4"
                         result = standardize_video_aspect_ratio(
-                            input_video_path=clip_paths[i],
+                            input_video_path=clip_path,
                             output_video_path=standardized_path,
                             target_aspect_ratio=f"{ref_w}:{ref_h}",
                             task_id_for_logging=task_id)

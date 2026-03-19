@@ -25,7 +25,7 @@ from source.core.log import headless_logger, task_logger
 from source.task_handlers.worker.worker_utils import log_ram_usage
 from source.task_handlers.tasks.task_conversion import db_task_to_generation_task
 from source.core.params.phase_config_parser import parse_phase_config
-from source.core.params.generation_policy import GenerationPolicy
+from source.core.params.generation_policy import ContinuationPolicy, GenerationPolicy
 from source.core.params.structure_guidance import StructureGuidanceConfig
 from source.core.params.travel_guidance import TravelGuidanceConfig
 from source.task_handlers.contracts.dispatch import normalize_task_dispatch_payload
@@ -97,6 +97,7 @@ class ImageRefs:
     end_ref_path: Optional[str] = None
     svi_predecessor_video_for_source: Optional[str] = None
     continuation_video_for_source: Optional[str] = None
+    precomputed_overlapped_latents_path: Optional[str] = None
     use_svi: bool = False
     is_continuing: bool = False
 
@@ -408,6 +409,101 @@ def _extract_prefix_video(
     return str(trimmed_result)
 
 
+def _upload_svi_latent_tail_if_available(
+    result_path: str | None,
+    task_id: str,
+) -> str | None:
+    if not result_path:
+        return None
+
+    try:
+        result_file = Path(result_path)
+        latent_path = result_file.parent / f"latent_tail_{result_file.stem}.pt"
+        if not latent_path.exists() or latent_path.stat().st_size <= 0:
+            task_logger.debug(
+                f"[SVI_LATENT_CHAIN] Task {task_id}: No latent tail found at {latent_path}"
+            )
+            return None
+
+        from source.utils.output_paths import upload_intermediate_file_to_storage
+
+        latent_url = upload_intermediate_file_to_storage(
+            local_file_path=latent_path,
+            task_id=task_id,
+            filename="latent_tail.pt",
+        )
+        if latent_url:
+            task_logger.debug(
+                f"[SVI_LATENT_CHAIN] Task {task_id}: Uploaded latent tail to {latent_url}"
+            )
+        return latent_url
+    except (OSError, ValueError, RuntimeError) as exc:
+        task_logger.debug(
+            f"[SVI_LATENT_CHAIN] Task {task_id}: Failed to upload latent tail: {exc}"
+        )
+        return None
+
+
+def _resolve_precomputed_svi_latent_path(
+    predecessor_task_id: str | None,
+    predecessor_output_url: str | None,
+    segment_processing_dir: Path,
+    task_id: str,
+) -> str | None:
+    if not predecessor_task_id or not predecessor_output_url:
+        return None
+
+    predecessor_output_url = predecessor_output_url.strip()
+    if not predecessor_output_url or predecessor_output_url.startswith("{"):
+        task_logger.debug(
+            f"[SVI_LATENT_CHAIN] Task {task_id}: Predecessor output is not a storage URL; skipping latent lookup"
+        )
+        return None
+
+    if "/image_uploads/" not in predecessor_output_url:
+        task_logger.debug(
+            f"[SVI_LATENT_CHAIN] Task {task_id}: Predecessor URL not usable for latent lookup"
+        )
+        return None
+
+    try:
+        storage_suffix = predecessor_output_url.split("/image_uploads/", 1)[1]
+        path_parts = [part for part in storage_suffix.split("/") if part]
+        if len(path_parts) < 4:
+            task_logger.debug(
+                f"[SVI_LATENT_CHAIN] Task {task_id}: Could not parse predecessor storage URL"
+            )
+            return None
+
+        pred_user_id = path_parts[0]
+        from source.core.db import config as _db_config
+
+        supabase_url = (_db_config.SUPABASE_URL or "").rstrip("/")
+        if not supabase_url:
+            task_logger.debug(
+                f"[SVI_LATENT_CHAIN] Task {task_id}: Supabase URL unavailable; skipping latent lookup"
+            )
+            return None
+
+        latent_url = (
+            f"{supabase_url}/storage/v1/object/public/image_uploads/"
+            f"{pred_user_id}/tasks/{predecessor_task_id}/latent_tail.pt"
+        )
+        local_latent = segment_processing_dir / "predecessor_latent_tail.pt"
+        download_file(latent_url, segment_processing_dir, local_latent.name)
+        if local_latent.exists() and local_latent.stat().st_size > 0:
+            task_logger.debug(
+                f"[SVI_LATENT_CHAIN] Task {task_id}: Downloaded predecessor latent tail from storage"
+            )
+            return str(local_latent)
+    except Exception as exc:
+        task_logger.debug(
+            f"[SVI_LATENT_CHAIN] Task {task_id}: No latent available, pixel re-encode will be used ({exc})"
+        )
+
+    return None
+
+
 def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_id: str, is_standalone: bool) -> ImageRefs:
     """Resolve start/end image reference paths and SVI predecessor video.
 
@@ -454,10 +550,12 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
     # =============================================================================
     svi_predecessor_video_for_source = None  # Will be set for SVI continuation
     continuation_video_for_source = None
+    precomputed_overlapped_latents_path = None
 
     if use_svi and (segment_idx > 0 or svi_predecessor_video_url):
         task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: Using SVI end frame chaining mode")
 
+        task_dependency_id = None
         predecessor_output_url = None
 
         # Priority 1: Manually specified predecessor video URL
@@ -477,6 +575,13 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
                 task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: Found predecessor {task_dependency_id} with output: {predecessor_output_url}")
             else:
                 task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: ERROR - Could not fetch predecessor output (dep_id={task_dependency_id})")
+
+        precomputed_overlapped_latents_path = _resolve_precomputed_svi_latent_path(
+            task_dependency_id,
+            predecessor_output_url,
+            segment_processing_dir,
+            task_id,
+        )
 
         if predecessor_output_url:
             # Download predecessor video if it's a URL
@@ -628,33 +733,41 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
             segment_index=segment_idx,
         )
         if not predecessor_output_url:
-            raise ValueError(
-                f"Task {task_id}: continuation enabled for segment {segment_idx} "
-                "but predecessor output could not be resolved"
+            task_logger.warning(
+                f"[CONTINUATION] Task {task_id}: continuation enabled for segment {segment_idx} "
+                "but predecessor output could not be resolved — falling back to independent generation",
+                task_id=task_id,
             )
-
-        predecessor_video_path = _download_predecessor_video(
-            predecessor_output_url,
-            segment_processing_dir,
-            prefix=f"continuation_predecessor_{segment_idx:02d}",
-        )
-        if not predecessor_video_path or not Path(predecessor_video_path).exists():
-            raise ValueError(
-                f"Task {task_id}: continuation predecessor video unavailable for segment {segment_idx}"
+            policy = GenerationPolicy(
+                travel_mode=policy.travel_mode,
+                continuation=ContinuationPolicy(
+                    enabled=False, strategy='none', overlap_frames=0,
+                    uses_guide_for_overlap=False, uses_mask_video=False,
+                ),
             )
-
-        try:
-            continuation_video_for_source = _extract_prefix_video(
-                predecessor_video_path,
+        else:
+            predecessor_video_path = _download_predecessor_video(
+                predecessor_output_url,
                 segment_processing_dir,
-                segment_idx=segment_idx,
-                frames_needed=policy.continuation.overlap_frames,
-                prefix="continuation_prefix",
+                prefix=f"continuation_predecessor_{segment_idx:02d}",
             )
-        except (OSError, ValueError, RuntimeError) as exc:
-            raise ValueError(
-                f"Task {task_id}: failed to prepare continuation prefix for segment {segment_idx}: {exc}"
-            ) from exc
+            if not predecessor_video_path or not Path(predecessor_video_path).exists():
+                raise ValueError(
+                    f"Task {task_id}: continuation predecessor video unavailable for segment {segment_idx}"
+                )
+
+            try:
+                continuation_video_for_source = _extract_prefix_video(
+                    predecessor_video_path,
+                    segment_processing_dir,
+                    segment_idx=segment_idx,
+                    frames_needed=policy.continuation.overlap_frames,
+                    prefix="continuation_prefix",
+                )
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise ValueError(
+                    f"Task {task_id}: failed to prepare continuation prefix for segment {segment_idx}: {exc}"
+                ) from exc
 
         task_logger.debug(
             f"[CONTINUATION_PREFIX] Seg {segment_idx}: predecessor={predecessor_task_id}, "
@@ -673,6 +786,7 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
         end_ref_path=end_ref_path,
         svi_predecessor_video_for_source=svi_predecessor_video_for_source,
         continuation_video_for_source=continuation_video_for_source,
+        precomputed_overlapped_latents_path=precomputed_overlapped_latents_path,
         use_svi=use_svi,
         is_continuing=is_continuing,
     )
@@ -1146,6 +1260,19 @@ def _apply_svi_config(generation_params: dict, ctx: SegmentContext, gen: Generat
         f"(svi_strength={svi_strength}, svi_strength_1={svi_strength_1}, svi_strength_2={svi_strength_2})"
     )
 
+    if image_refs.precomputed_overlapped_latents_path:
+        custom_settings = generation_params.get("custom_settings")
+        if isinstance(custom_settings, dict):
+            custom_settings["precomputed_overlapped_latents_path"] = image_refs.precomputed_overlapped_latents_path
+        else:
+            generation_params["custom_settings"] = {
+                "precomputed_overlapped_latents_path": image_refs.precomputed_overlapped_latents_path
+            }
+        task_logger.debug(
+            f"[SVI_LATENT_CHAIN] Task {task_id}: Passing precomputed latent path to WGP: "
+            f"{image_refs.precomputed_overlapped_latents_path}"
+        )
+
 
 def _apply_continuation_config(generation_params: dict, gen: GenerationInputs, image_refs: ImageRefs, task_id: str) -> None:
     """Apply prefix-video continuation for normalized non-SVI continuation policies."""
@@ -1319,6 +1446,9 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
             if status is None: return False, f"Travel segment {task_id}: Task status became None"
 
             if status.status == "completed":
+                if image_refs.use_svi:
+                    _upload_svi_latent_tail_if_available(status.result_path, task_id)
+
                 # In standalone mode, skip chaining (no orchestrator to coordinate with)
                 if is_standalone:
                     headless_logger.debug(f"Standalone segment completed, skipping chaining", task_id=task_id)

@@ -88,7 +88,28 @@ def _normalize_task_params(params_payload):
 
 
 def query_task_status(task_id: str, runtime_config=None) -> tuple[str | None, str | None]:
+    """Query task status + output_location, preferring edge function over direct DB."""
     runtime = _resolve_runtime_config(runtime_config)
+
+    # Edge function path (works with PAT auth)
+    edge_url = resolve_edge_function_url("get-task-output", runtime_config=runtime)
+    token = resolve_edge_auth_token(runtime_config=runtime)
+
+    if edge_url and token:
+        headers = build_edge_headers(token, include_apikey=False)
+        try:
+            resp = httpx.post(edge_url, json={"task_id": task_id}, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("status"), data.get("output_location")
+            elif resp.status_code == 404:
+                return None, None
+            else:
+                headless_logger.debug(f"[POLL] Edge get-task-output returned {resp.status_code} for {task_id}")
+        except (httpx.HTTPError, OSError, ValueError) as e:
+            headless_logger.debug(f"[POLL] Edge get-task-output failed for {task_id}: {e}")
+
+    # Fallback to direct DB query (only available with service key)
     client = getattr(runtime, "supabase_client", None)
     table_name = getattr(runtime, "pg_table_name", _cfg.PG_TABLE_NAME)
     if not client:

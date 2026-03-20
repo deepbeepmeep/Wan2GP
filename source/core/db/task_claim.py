@@ -44,15 +44,11 @@ def init_db_supabase():
 def check_task_counts_supabase(run_type: str = "gpu", runtime_config=None) -> dict | None:
     """Check task counts via Supabase Edge Function before attempting to claim tasks."""
     runtime = _resolve_runtime_config(runtime_config)
-    client = getattr(runtime, "supabase_client", None)
     access_token = getattr(runtime, "supabase_access_token", None)
     supabase_url = getattr(runtime, "supabase_url", None)
 
-    if isinstance(runtime, _cfg.DBRuntimeConfig) and client is None:
-        raise _cfg.DBRuntimeContractError("Supabase client is not configured for task counts")
-
-    if not client or not access_token:
-        headless_logger.error("[TASK_COUNTS] Supabase client or auth configuration not initialized")
+    if not access_token or not supabase_url:
+        headless_logger.error("[TASK_COUNTS] access_token or supabase_url not configured")
         return None
 
     # Build task-counts edge function URL using same pattern as other functions
@@ -174,37 +170,6 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
 
     headless_logger.debug(f"DEBUG: Using worker_id: {worker_id}")
 
-    # =========================================================================
-    # RECOVERY (but don't starve queued tasks)
-    #
-    # We *used* to immediately return an In Progress task assigned to this worker,
-    # assuming a claim succeeded but the HTTP response was lost.
-    #
-    # That behavior can create a tight loop for orchestrator tasks:
-    # - Orchestrator stays "In Progress" while waiting for child tasks
-    # - Recovery keeps returning the orchestrator every cycle
-    # - Worker never claims queued child tasks => orchestrator can never finish
-    #
-    # Fix: only prioritize recovery for non-orchestrator tasks.
-    # For orchestrators, we defer recovery until AFTER attempting to claim queued work.
-    # =========================================================================
-    assigned_task = check_my_assigned_tasks(worker_id)
-    deferred_orchestrator_recovery = None
-    if assigned_task:
-        try:
-            ttype = (assigned_task.get("task_type") or "").lower()
-        except (ValueError, KeyError, TypeError):
-            ttype = ""
-        if ttype.endswith("_orchestrator"):
-            deferred_orchestrator_recovery = assigned_task
-            headless_logger.debug(f"[RECOVERY] Deferring orchestrator recovery for {assigned_task.get('task_id')} to avoid starving queued tasks")
-        else:
-            return assigned_task
-
-    # =========================================================================
-    # STEP 2: No assigned tasks - check for new tasks to claim
-    # =========================================================================
-
     # OPTIMIZATION: Check task counts first to avoid unnecessary claim attempts
     headless_logger.debug("Checking task counts before attempting to claim...")
     task_counts = check_task_counts_supabase("gpu")
@@ -228,13 +193,6 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
             headless_logger.debug(f"[CLAIM_DEBUG] Proceeding with claim attempt despite queued_only=0 because eligible_queued={eligible_queued}")
         elif available_tasks <= 0:
             headless_logger.debug("No non-orchestrator queued tasks according to task-counts, still attempting claim (orchestrators excluded from counts)")
-            # If we deferred an orchestrator recovery, check if it actually needs re-running.
-            if deferred_orchestrator_recovery:
-                orch_task_id = deferred_orchestrator_recovery.get("task_id")
-                if orch_task_id and _orchestrator_has_incomplete_children(orch_task_id):
-                    headless_logger.debug(f"[RECOVERY] Skipping orchestrator {orch_task_id} - has incomplete children, will complete via child completion")
-                    return None
-                return deferred_orchestrator_recovery
             # Fall through to claim attempt — task-counts excludes orchestrators
         else:
             headless_logger.debug(f"Found {available_tasks} queued tasks, proceeding with claim")
@@ -274,26 +232,16 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
                 return task_data  # Already in the expected format
             elif resp.status_code == 204:
                 headless_logger.debug("Edge Function: No queued tasks available")
-                # If no queued tasks are claimable right now, fall back to any
-                # deferred orchestrator recovery (lost-response protection).
-                if deferred_orchestrator_recovery:
-                    return deferred_orchestrator_recovery
                 return None
             else:
                 headless_logger.error(f"[CLAIM] Edge Function returned {resp.status_code}: {resp.text[:500]}")
-                if deferred_orchestrator_recovery:
-                    return deferred_orchestrator_recovery
                 return None
         except (httpx.HTTPError, OSError, ValueError) as e_edge:
             # Log visibly - this is a critical failure that can cause orphaned tasks
             headless_logger.error(f"[CLAIM] Edge Function call failed: {e_edge}")
             headless_logger.debug(f"[CLAIM_DEBUG] Exception type: {type(e_edge).__name__}")
             headless_logger.debug(f"[CLAIM_DEBUG] Full traceback: {traceback.format_exc()}")
-            if deferred_orchestrator_recovery:
-                return deferred_orchestrator_recovery
             return None
     else:
         headless_logger.error("[CLAIM] No edge function URL or auth configuration available for task claiming")
-        if deferred_orchestrator_recovery:
-            return deferred_orchestrator_recovery
         return None

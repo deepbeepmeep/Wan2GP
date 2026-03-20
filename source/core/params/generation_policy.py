@@ -32,8 +32,9 @@ class ContinuationPolicy:
     uses_mask_video: bool
 
     @property
-    def requires_prefix_video_source(self) -> bool:
-        return self.strategy == "prefix_video_source"
+    def requires_video_source(self) -> bool:
+        """True for strategies that inject a predecessor clip as video_source (SVI or LTX prefix)."""
+        return self.strategy in ("prefix_video_source", "svi_latent_chaining")
 
     @property
     def uses_svi_latent_chaining(self) -> bool:

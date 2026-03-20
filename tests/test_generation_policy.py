@@ -19,7 +19,7 @@ def test_prefix_video_source_sets_semantic_flag():
     policy = GenerationPolicy.from_payload(_payload_for("prefix_video_source"))
 
     assert policy.continuation.enabled is True
-    assert policy.continuation.requires_prefix_video_source is True
+    assert policy.continuation.requires_video_source is True
     assert policy.continuation.uses_svi_latent_chaining is False
 
 
@@ -28,7 +28,7 @@ def test_svi_latent_chaining_sets_semantic_flag():
 
     assert policy.continuation.enabled is True
     assert policy.continuation.uses_svi_latent_chaining is True
-    assert policy.continuation.requires_prefix_video_source is False
+    assert policy.continuation.requires_video_source is True
 
 
 def test_guide_overlap_masked_keeps_existing_semantics_and_new_flags_false():
@@ -37,7 +37,7 @@ def test_guide_overlap_masked_keeps_existing_semantics_and_new_flags_false():
     assert policy.continuation.enabled is True
     assert policy.continuation.uses_guide_for_overlap is True
     assert policy.continuation.uses_mask_video is True
-    assert policy.continuation.requires_prefix_video_source is False
+    assert policy.continuation.requires_video_source is False
     assert policy.continuation.uses_svi_latent_chaining is False
 
 
@@ -46,7 +46,7 @@ def test_disabled_continuation_keeps_all_flags_false():
 
     assert policy.continuation.enabled is False
     assert policy.continuation.strategy == "none"
-    assert policy.continuation.requires_prefix_video_source is False
+    assert policy.continuation.requires_video_source is False
     assert policy.continuation.uses_svi_latent_chaining is False
     assert policy.continuation.uses_guide_for_overlap is False
 
@@ -57,5 +57,5 @@ def test_legacy_vace_fallback_uses_overlap_guide_only():
     assert policy.continuation.enabled is True
     assert policy.continuation.strategy == "guide_overlap_masked"
     assert policy.continuation.uses_guide_for_overlap is True
-    assert policy.continuation.requires_prefix_video_source is False
+    assert policy.continuation.requires_video_source is False
     assert policy.continuation.uses_svi_latent_chaining is False

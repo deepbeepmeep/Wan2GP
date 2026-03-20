@@ -335,15 +335,15 @@ def test_svi_latent_tail_upload_uses_deterministic_sibling_file(tmp_path):
     assert upload_calls == [(latent_tail, "task-99", "latent_tail.pt")]
 
 
-def test_apply_svi_config_injects_precomputed_latent_path_into_custom_settings():
+def test_apply_svi_specific_params_injects_precomputed_latent_path_into_custom_settings():
     logger = _LoggerStub()
 
     def fake_get_param(key, *sources, default=None, prefer_truthy=False):
         return None
 
-    apply_svi_config = _load_function_from_source(
+    apply_svi_specific_params = _load_function_from_source(
         TASK_REGISTRY_PATH,
-        "_apply_svi_config",
+        "_apply_svi_specific_params",
         {
             "Path": Path,
             "_get_param": fake_get_param,
@@ -367,9 +367,9 @@ def test_apply_svi_config_injects_precomputed_latent_path_into_custom_settings()
     ctx = SimpleNamespace(segment_params={}, orchestrator_details={})
     gen = SimpleNamespace(total_frames_for_segment=17)
     image_refs = SimpleNamespace(
-        use_svi=True,
+        active_svi_continuation=True,
         start_ref_path=None,
-        svi_predecessor_video_for_source=None,
+        prefix_video_for_source=None,
         precomputed_overlapped_latents_path="/tmp/predecessor_latent_tail.pt",
     )
 
@@ -381,7 +381,7 @@ def test_apply_svi_config_injects_precomputed_latent_path_into_custom_settings()
             "source.task_handlers.travel.svi_config": merge_module,
         }
     ):
-        apply_svi_config(generation_params, ctx, gen, image_refs, "task-apply")
+        apply_svi_specific_params(generation_params, ctx, gen, image_refs, "task-apply")
 
     assert generation_params["svi2pro"] is True
     assert generation_params["custom_settings"]["pace"] == 0.5

@@ -99,10 +99,9 @@ class ImageRefs:
     """Image reference paths for the segment."""
     start_ref_path: Optional[str] = None
     end_ref_path: Optional[str] = None
-    svi_predecessor_video_for_source: Optional[str] = None
-    continuation_video_for_source: Optional[str] = None
+    prefix_video_for_source: Optional[str] = None
     precomputed_overlapped_latents_path: Optional[str] = None
-    use_svi: bool = False
+    active_svi_continuation: bool = False
     is_continuing: bool = False
 
 @dataclass
@@ -435,239 +434,42 @@ def _resolve_precomputed_svi_latent_path(
     return None
 
 
-def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_id: str, is_standalone: bool) -> ImageRefs:
-    """Resolve start/end image reference paths and SVI predecessor video.
+@dataclass
+class PredecessorResult:
+    """Result of predecessor video resolution."""
+    predecessor_video_path: Optional[str] = None
+    prefix_video_path: Optional[str] = None
+    precomputed_latents_path: Optional[str] = None
 
-    Handles SVI chaining (downloading predecessor video, extracting last frames),
-    non-SVI image resolution from multiple sources, and downloading URLs to local paths.
-    """
-    segment_params = ctx.segment_params
-    orchestrator_details = ctx.orchestrator_details
-    individual_params = ctx.individual_params
-    segment_idx = ctx.segment_idx
-    segment_processing_dir = gen.segment_processing_dir
-    debug_enabled = gen.debug_enabled
 
-    start_ref_path = None
-    end_ref_path = None
+def _resolve_predecessor_video_source(
+    policy: GenerationPolicy,
+    ctx: SegmentContext,
+    task_id: str,
+    segment_processing_dir: Path,
+    segment_idx: int,
+    explicit_predecessor_url: Optional[str] = None,
+    is_svi: bool = False,
+) -> PredecessorResult:
+    """Download predecessor video, extract prefix frames for video_source continuation."""
+    result = PredecessorResult()
 
-    # Image resolution priority:
-    # 1. individual_segment_params.start_image_url / end_image_url
-    # 2. individual_segment_params.input_image_paths_resolved (array)
-    # 3. top-level input_image_paths_resolved
-    # 4. orchestrator_details images (indexed by segment_idx)
-
-    individual_images = individual_params.get("input_image_paths_resolved", [])
-    top_level_images = segment_params.get("input_image_paths_resolved", [])
-    orchestrator_images = orchestrator_details.get("input_image_paths_resolved", [])
-
-    task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: segment_idx={segment_idx}, individual_images={len(individual_images)}, top_level_images={len(top_level_images)}, orchestrator_images={len(orchestrator_images)}")
-
-    is_continuing = orchestrator_details.get("continue_from_video_resolved_path") is not None
-    policy = gen.generation_policy
-    # Check use_svi with explicit False handling (False at segment level should override True at orchestrator)
-    use_svi = segment_params["use_svi"] if "use_svi" in segment_params else orchestrator_details.get("use_svi", False)
-    svi_predecessor_video_url = _get_param(
-        "svi_predecessor_video_url", segment_params, orchestrator_details, prefer_truthy=True
-    )
-
-    if use_svi:
-        task_logger.debug(f"[SVI_MODE] Task {task_id}: SVI mode enabled for segment {segment_idx}")
-
-    # =============================================================================
-    # SVI MODE: Chain segments using predecessor video for overlapped_latents
-    # SVI Pro uses the last ~9 frames (5 + sliding_window_overlap) from predecessor
-    # to create temporal continuity via overlapped_latents in the VAE
-    # =============================================================================
-    svi_predecessor_video_for_source = None  # Will be set for SVI continuation
-    continuation_video_for_source = None
-    precomputed_overlapped_latents_path = None
-
-    if use_svi and (segment_idx > 0 or svi_predecessor_video_url):
-        task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: Using SVI end frame chaining mode")
-
-        task_dependency_id = None
-        predecessor_output_url = None
-
-        # Priority 1: Manually specified predecessor video URL
-        if svi_predecessor_video_url:
-            task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: Using manually specified predecessor video: {svi_predecessor_video_url}")
-            predecessor_output_url = svi_predecessor_video_url
-        # Priority 2: Fetch from dependency chain (for segment_idx > 0)
-        elif segment_idx > 0:
-            predecessor = resolve_segment_predecessor(
-                task_id=task_id,
-                parent_generation_id=resolve_generation_id(
-                    "parent_generation_id",
-                    ctx.individual_params,
-                    ctx.segment_params,
-                    ctx.orchestrator_details,
-                ),
-                child_generation_id=resolve_generation_id(
-                    "child_generation_id",
-                    ctx.individual_params,
-                    ctx.segment_params,
-                    ctx.orchestrator_details,
-                ),
-                child_order=segment_params.get("child_order"),
-                segment_index=segment_idx,
-            )
-            task_dependency_id = predecessor.task_id
-            predecessor_output_url = predecessor.output_url
-            if predecessor.found:
-                task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: Found predecessor {task_dependency_id} with output: {predecessor_output_url}")
-            else:
-                task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: ERROR - Could not fetch predecessor output (dep_id={task_dependency_id})")
-
-        precomputed_overlapped_latents_path = _resolve_precomputed_svi_latent_path(
-            task_dependency_id,
-            predecessor_output_url,
-            segment_processing_dir,
-            task_id,
-        )
-
-        if predecessor_output_url:
-            # Download predecessor video if it's a URL
-            predecessor_video_path = download_predecessor_video(
-                predecessor_output_url,
-                segment_processing_dir,
-                prefix=f"svi_predecessor_{segment_idx:02d}",
-            )
-
-            # SVI CRITICAL: Extract only the last ~9 frames (5 + overlap_size) from predecessor
-            # WGP uses prefix_video[:, -(5 + overlap_size):] to create overlapped_latents,
-            # but then prepends the ENTIRE prefix_video to output. By extracting only the
-            # last frames ourselves, we limit what gets prepended.
-            if predecessor_video_path and Path(predecessor_video_path).exists():
-                from source.media.video import get_video_frame_count_and_fps as get_video_frame_count_and_fps
-
-                # Get predecessor video frame count
-                pred_frames, pred_fps = get_video_frame_count_and_fps(predecessor_video_path)
-                if pred_frames and pred_frames > 0:
-                    # IMPORTANT GROUND TRUTH:
-                    # Wan2GP SVI continuation uses the last (5 + overlap_size) frames of prefix_video
-                    # to build `overlapped_latents`. The extra 5 frames are *model context*; the
-                    # overlap_size (4) is the actual stitch overlap we keep in the final segment.
-                    #
-                    # So we intentionally extract MORE than 4 frames here (usually 9), but after WGP
-                    # generation we trim the output so only the last 4 prefix frames remain as the
-                    # overlap with the previous segment.
-                    prefix_min_context = 5
-                    overlap_size = 4  # SVI_STITCH_OVERLAP (pixel-frame overlap)
-                    frames_needed = prefix_min_context + overlap_size  # 9 frames total
-                    start_frame = max(0, int(pred_frames) - frames_needed)
-
-                    # GROUND TRUTH LOG: Predecessor video analysis
-                    task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: ========== PREDECESSOR ANALYSIS ==========")
-                    task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: Predecessor video: {predecessor_video_path}")
-                    task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: Predecessor total frames: {pred_frames}")
-                    task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: prefix_min_context={prefix_min_context}, overlap_size={overlap_size} => frames_needed={frames_needed}")
-                    task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: Extracting frames [{start_frame}:{pred_frames}] (last {frames_needed} frames)")
-                    task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: Frame range breakdown:")
-                    task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}:   - Frames 0-{start_frame-1}: Will be DISCARDED (not needed)")
-                    task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}:   - Frames {start_frame}-{pred_frames-1}: Will be EXTRACTED (last {frames_needed} frames)")
-                    task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}:   - Last 4 frames [{pred_frames-4}:{pred_frames-1}]: OVERLAP frames for stitching")
-
-                    try:
-                        trimmed_result = extract_prefix_video(
-                            predecessor_video_path,
-                            segment_processing_dir,
-                            segment_idx=segment_idx,
-                            frames_needed=frames_needed,
-                            prefix="svi_prefix",
-                        )
-                        # Verify extracted prefix video
-                        prefix_frames, prefix_fps = get_video_frame_count_and_fps(trimmed_result)
-                        svi_predecessor_video_for_source = str(trimmed_result)
-                        task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: Extracted prefix video: {prefix_frames} frames (expected: {frames_needed})")
-                        task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: Prefix video path: {trimmed_result}")
-                        task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: This prefix will be passed to WGP as video_source")
-                        if prefix_frames != frames_needed:
-                            task_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: WARNING: Extracted {prefix_frames} frames, expected {frames_needed}")
-                    except (OSError, ValueError, RuntimeError) as e_trim:
-                        # Fallback: use full video if extraction failed
-                        svi_predecessor_video_for_source = predecessor_video_path
-                        task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: WARNING - Failed to extract last frames ({e_trim}), using full predecessor video")
-                else:
-                    # Fallback: use full video if we can't get frame count
-                    svi_predecessor_video_for_source = predecessor_video_path
-                    task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: Could not get predecessor frame count, using full video")
-
-                # Still extract last frame for image_refs (anchor reference)
-                start_ref_path = extract_last_frame_as_image(
-                    predecessor_video_path,
-                    segment_processing_dir,
-                    task_id
-                )
-                task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: Extracted last frame as anchor start_ref: {start_ref_path}")
-            else:
-                task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: ERROR - Predecessor video not available at {predecessor_video_path}")
-
-        # For SVI, end_ref is the target image from input array
-        target_end_idx = segment_idx + 1 if segment_idx > 0 else 1
-        if svi_predecessor_video_url and segment_idx == 0:
-            target_end_idx = 1 if len(orchestrator_images) > 1 else 0
-
-        if len(orchestrator_images) > target_end_idx:
-            end_ref_path = orchestrator_images[target_end_idx]
-            task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: end_ref from input_images[{target_end_idx}]: {end_ref_path}")
-        elif len(orchestrator_images) > 0:
-            end_ref_path = orchestrator_images[-1]
-            task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: end_ref fallback to last input image: {end_ref_path}")
-
-    # =============================================================================
-    # SVI MODE: First segment uses input images normally (no manual predecessor)
-    # =============================================================================
-    elif use_svi and segment_idx == 0:
-        task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: First segment in SVI mode - using input images")
-        if len(orchestrator_images) > 0:
-            start_ref_path = orchestrator_images[0]
-        if len(orchestrator_images) > 1:
-            end_ref_path = orchestrator_images[1]
-
-    # =============================================================================
-    # NON-SVI MODES: Original logic
-    # =============================================================================
-    # Check individual_segment_params first (highest priority for standalone)
-    elif individual_params.get("start_image_url") or individual_params.get("end_image_url"):
-        start_ref_path = individual_params.get("start_image_url")
-        end_ref_path = individual_params.get("end_image_url")
-        task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using individual_segment_params URLs: start={start_ref_path}")
-    elif len(individual_images) >= 2:
-        start_ref_path = individual_images[0]
-        end_ref_path = individual_images[1]
-        task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using individual_segment_params array: start={start_ref_path}")
-    elif is_standalone and len(top_level_images) >= 2:
-        start_ref_path = top_level_images[0]
-        end_ref_path = top_level_images[1]
-        task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using top-level images directly: start={start_ref_path}")
-    elif is_continuing:
-        if segment_idx == 0:
-            continued_video_path = orchestrator_details.get("continue_from_video_resolved_path")
-            if continued_video_path and Path(continued_video_path).exists():
-                start_ref_path = extract_last_frame_as_image(continued_video_path, segment_processing_dir, task_id)
-            if orchestrator_images:
-                end_ref_path = orchestrator_images[0]
-        else:
-            if len(orchestrator_images) > segment_idx:
-                start_ref_path = orchestrator_images[segment_idx - 1]
-                end_ref_path = orchestrator_images[segment_idx]
+    # Determine frames_needed: SVI needs 5 + 4 = 9 (model context + overlap), others use policy overlap
+    if is_svi:
+        prefix_min_context = 5
+        overlap_size = 4  # SVI_STITCH_OVERLAP
+        frames_needed = prefix_min_context + overlap_size  # 9
     else:
-        task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using orchestrator images (from scratch)")
-        if len(orchestrator_images) > segment_idx:
-            start_ref_path = orchestrator_images[segment_idx]
+        frames_needed = policy.continuation.overlap_frames
 
-        if len(orchestrator_images) > segment_idx + 1:
-            end_ref_path = orchestrator_images[segment_idx + 1]
-    task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: start_ref_path after logic: {start_ref_path}")
+    # Resolve predecessor URL
+    task_dependency_id = None
+    predecessor_output_url = None
 
-    if (
-        not use_svi
-        and policy.continuation.enabled
-        and policy.continuation.requires_prefix_video_source
-        and policy.continuation.overlap_frames > 0
-        and segment_idx > 0
-    ):
+    if explicit_predecessor_url:
+        task_logger.debug(f"[PREDECESSOR] Seg {segment_idx}: Using explicit predecessor URL")
+        predecessor_output_url = explicit_predecessor_url
+    elif segment_idx > 0:
         predecessor = resolve_segment_predecessor(
             task_id=task_id,
             parent_generation_id=resolve_generation_id(
@@ -682,15 +484,133 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
                 ctx.segment_params,
                 ctx.orchestrator_details,
             ),
-            child_order=segment_params.get("child_order"),
+            child_order=ctx.segment_params.get("child_order"),
             segment_index=segment_idx,
         )
-        predecessor_task_id = predecessor.task_id
+        task_dependency_id = predecessor.task_id
         predecessor_output_url = predecessor.output_url
-        if not predecessor_output_url:
+        if predecessor.found:
+            task_logger.debug(f"[PREDECESSOR] Seg {segment_idx}: Found predecessor {task_dependency_id}")
+        else:
+            task_logger.debug(f"[PREDECESSOR] Seg {segment_idx}: Could not resolve predecessor (dep_id={task_dependency_id})")
+
+    if not predecessor_output_url:
+        return result
+
+    # SVI-only: resolve precomputed latent tail from predecessor
+    if is_svi:
+        result.precomputed_latents_path = _resolve_precomputed_svi_latent_path(
+            task_dependency_id,
+            predecessor_output_url,
+            segment_processing_dir,
+            task_id,
+        )
+
+    # Download predecessor video
+    prefix_label = "svi_predecessor" if is_svi else "continuation_predecessor"
+    predecessor_video_path = download_predecessor_video(
+        predecessor_output_url,
+        segment_processing_dir,
+        prefix=f"{prefix_label}_{segment_idx:02d}",
+    )
+
+    if not predecessor_video_path or not Path(predecessor_video_path).exists():
+        if not is_svi:
+            raise ValueError(
+                f"Task {task_id}: continuation predecessor video unavailable for segment {segment_idx}"
+            )
+        task_logger.debug(f"[PREDECESSOR] Seg {segment_idx}: Predecessor video not available at {predecessor_video_path}")
+        return result
+
+    result.predecessor_video_path = predecessor_video_path
+
+    # Extract prefix video (last N frames)
+    try:
+        prefix_label_short = "svi_prefix" if is_svi else "continuation_prefix"
+        trimmed_result = extract_prefix_video(
+            predecessor_video_path,
+            segment_processing_dir,
+            segment_idx=segment_idx,
+            frames_needed=frames_needed,
+            prefix=prefix_label_short,
+        )
+        result.prefix_video_path = str(trimmed_result)
+        task_logger.debug(
+            f"[PREDECESSOR] Seg {segment_idx}: Extracted {frames_needed}-frame prefix for "
+            f"{policy.continuation.strategy} continuation"
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        if is_svi:
+            # Fallback: use full video if extraction failed
+            result.prefix_video_path = predecessor_video_path
+            task_logger.debug(f"[PREDECESSOR] Seg {segment_idx}: Prefix extraction failed ({exc}), using full predecessor")
+        else:
+            raise ValueError(
+                f"Task {task_id}: failed to prepare continuation prefix for segment {segment_idx}: {exc}"
+            ) from exc
+
+    return result
+
+
+def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_id: str, is_standalone: bool) -> ImageRefs:
+    """Resolve start/end image reference paths and predecessor video for continuation.
+
+    Handles unified predecessor resolution for both SVI and prefix_video_source strategies,
+    image resolution from multiple sources, and downloading URLs to local paths.
+    """
+    segment_params = ctx.segment_params
+    orchestrator_details = ctx.orchestrator_details
+    individual_params = ctx.individual_params
+    segment_idx = ctx.segment_idx
+    segment_processing_dir = gen.segment_processing_dir
+    debug_enabled = gen.debug_enabled
+
+    start_ref_path = None
+    end_ref_path = None
+
+    individual_images = individual_params.get("input_image_paths_resolved", [])
+    top_level_images = segment_params.get("input_image_paths_resolved", [])
+    orchestrator_images = orchestrator_details.get("input_image_paths_resolved", [])
+
+    task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: segment_idx={segment_idx}, individual_images={len(individual_images)}, top_level_images={len(top_level_images)}, orchestrator_images={len(orchestrator_images)}")
+
+    is_continuing = orchestrator_details.get("continue_from_video_resolved_path") is not None
+    policy = gen.generation_policy
+    svi_predecessor_video_url = _get_param(
+        "svi_predecessor_video_url", segment_params, orchestrator_details, prefer_truthy=True
+    )
+
+    # Derive segment-scoped SVI flag. The orchestrator sets use_svi=False on segment 0
+    # (orchestrator.py:2207), but an explicit svi_predecessor_video_url overrides that.
+    active_svi_continuation = (
+        policy.continuation.uses_svi_latent_chaining
+        and (segment_idx > 0 or bool(svi_predecessor_video_url))
+    )
+
+    if active_svi_continuation:
+        task_logger.debug(f"[SVI_MODE] Task {task_id}: SVI continuation active for segment {segment_idx}")
+
+    # =============================================================================
+    # UNIFIED PREDECESSOR RESOLUTION (SVI + prefix_video_source)
+    # =============================================================================
+    predecessor = PredecessorResult()
+
+    if (
+        policy.continuation.requires_video_source
+        and policy.continuation.overlap_frames > 0
+        and (segment_idx > 0 or svi_predecessor_video_url)
+    ):
+        predecessor = _resolve_predecessor_video_source(
+            policy, ctx, task_id, segment_processing_dir, segment_idx,
+            explicit_predecessor_url=svi_predecessor_video_url,
+            is_svi=active_svi_continuation,
+        )
+
+        if not predecessor.prefix_video_path and not active_svi_continuation:
+            # Non-SVI: predecessor resolution failed — fall back to independent generation
             task_logger.warning(
                 f"[CONTINUATION] Task {task_id}: continuation enabled for segment {segment_idx} "
-                "but predecessor output could not be resolved — falling back to independent generation",
+                "but predecessor could not be resolved — falling back to independent generation",
                 task_id=task_id,
             )
             policy = GenerationPolicy(
@@ -700,35 +620,64 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
                     uses_guide_for_overlap=False, uses_mask_video=False,
                 ),
             )
-        else:
-            predecessor_video_path = download_predecessor_video(
-                predecessor_output_url,
-                segment_processing_dir,
-                prefix=f"continuation_predecessor_{segment_idx:02d}",
-            )
-            if not predecessor_video_path or not Path(predecessor_video_path).exists():
-                raise ValueError(
-                    f"Task {task_id}: continuation predecessor video unavailable for segment {segment_idx}"
-                )
 
-            try:
-                continuation_video_for_source = extract_prefix_video(
-                    predecessor_video_path,
-                    segment_processing_dir,
-                    segment_idx=segment_idx,
-                    frames_needed=policy.continuation.overlap_frames,
-                    prefix="continuation_prefix",
-                )
-            except (OSError, ValueError, RuntimeError) as exc:
-                raise ValueError(
-                    f"Task {task_id}: failed to prepare continuation prefix for segment {segment_idx}: {exc}"
-                ) from exc
+        if active_svi_continuation and predecessor.predecessor_video_path:
+            # SVI: override start_ref to predecessor's last frame (anchor)
+            start_ref_path = extract_last_frame_as_image(
+                predecessor.predecessor_video_path, segment_processing_dir, task_id
+            )
+            task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: Extracted last frame as anchor start_ref")
+
+            # SVI end_ref is the target image from input array
+            target_end_idx = segment_idx + 1 if segment_idx > 0 else 1
+            if svi_predecessor_video_url and segment_idx == 0:
+                target_end_idx = 1 if len(orchestrator_images) > 1 else 0
+
+            if len(orchestrator_images) > target_end_idx:
+                end_ref_path = orchestrator_images[target_end_idx]
+            elif len(orchestrator_images) > 0:
+                end_ref_path = orchestrator_images[-1]
 
         task_logger.debug(
-            f"[CONTINUATION_PREFIX] Seg {segment_idx}: predecessor={predecessor_task_id}, "
-            f"strategy={policy.continuation.strategy}, overlap={policy.continuation.overlap_frames}, "
-            f"video_source={continuation_video_for_source}"
+            f"[CONTINUATION] Seg {segment_idx}: strategy={policy.continuation.strategy}, "
+            f"overlap={policy.continuation.overlap_frames}, prefix={'SET' if predecessor.prefix_video_path else 'NONE'}"
         )
+
+    # =============================================================================
+    # NORMAL IMAGE RESOLUTION (non-continuation, first segment, or VACE)
+    # =============================================================================
+    if start_ref_path is None:
+        if individual_params.get("start_image_url") or individual_params.get("end_image_url"):
+            start_ref_path = individual_params.get("start_image_url")
+            end_ref_path = individual_params.get("end_image_url")
+            task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using individual_segment_params URLs: start={start_ref_path}")
+        elif len(individual_images) >= 2:
+            start_ref_path = individual_images[0]
+            end_ref_path = individual_images[1]
+            task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using individual_segment_params array: start={start_ref_path}")
+        elif is_standalone and len(top_level_images) >= 2:
+            start_ref_path = top_level_images[0]
+            end_ref_path = top_level_images[1]
+            task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using top-level images directly: start={start_ref_path}")
+        elif is_continuing:
+            if segment_idx == 0:
+                continued_video_path = orchestrator_details.get("continue_from_video_resolved_path")
+                if continued_video_path and Path(continued_video_path).exists():
+                    start_ref_path = extract_last_frame_as_image(continued_video_path, segment_processing_dir, task_id)
+                if orchestrator_images:
+                    end_ref_path = orchestrator_images[0]
+            else:
+                if len(orchestrator_images) > segment_idx:
+                    start_ref_path = orchestrator_images[segment_idx - 1]
+                    end_ref_path = orchestrator_images[segment_idx]
+        else:
+            task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using orchestrator images (from scratch)")
+            if len(orchestrator_images) > segment_idx:
+                start_ref_path = orchestrator_images[segment_idx]
+            if len(orchestrator_images) > segment_idx + 1:
+                end_ref_path = orchestrator_images[segment_idx + 1]
+
+    task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: start_ref_path after logic: {start_ref_path}")
 
     if start_ref_path:
         start_ref_path = download_image_if_url(start_ref_path, segment_processing_dir, task_id, debug_mode=debug_enabled)
@@ -739,10 +688,9 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
     return ImageRefs(
         start_ref_path=start_ref_path,
         end_ref_path=end_ref_path,
-        svi_predecessor_video_for_source=svi_predecessor_video_for_source,
-        continuation_video_for_source=continuation_video_for_source,
-        precomputed_overlapped_latents_path=precomputed_overlapped_latents_path,
-        use_svi=use_svi,
+        prefix_video_for_source=predecessor.prefix_video_path,
+        precomputed_overlapped_latents_path=predecessor.precomputed_latents_path,
+        active_svi_continuation=active_svi_continuation,
         is_continuing=is_continuing,
     )
 
@@ -1087,20 +1035,50 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
     return generation_params
 
 
-def _apply_svi_config(generation_params: dict, ctx: SegmentContext, gen: GenerationInputs, image_refs: ImageRefs, task_id: str) -> None:
-    """Apply SVI-specific generation parameters (mutates generation_params in place).
-
-    Enables SVI encoding mode, sets video_prompt_type, configures predecessor video
-    as video_source, adjusts video_length for continuation frame accounting,
-    copies SVI generation params, and merges SVI LoRAs.
-    """
-    if not image_refs.use_svi:
+def _apply_video_source_continuation(
+    generation_params: dict,
+    policy: GenerationPolicy,
+    image_refs: ImageRefs,
+    ctx: SegmentContext,
+    gen: GenerationInputs,
+    task_id: str,
+) -> None:
+    """Apply video_source continuation for both SVI and prefix_video_source strategies."""
+    if not image_refs.prefix_video_for_source:
         return
 
+    # Shared: inject video_source, remove image_start
+    video_source_path = str(Path(image_refs.prefix_video_for_source).resolve())
+    generation_params["video_source"] = video_source_path
+    generation_params.pop("image_start", None)
+
+    if image_refs.active_svi_continuation:
+        _apply_svi_specific_params(generation_params, ctx, gen, image_refs, task_id)
+    else:
+        # LTX / prefix_video_source
+        generation_params["image_prompt_type"] = "VE" if generation_params.get("image_end") else "V"
+        task_logger.debug(
+            f"[CONTINUATION_PREFIX] Task {task_id}: Set video_source for {policy.continuation.strategy} "
+            f"continuation ({policy.continuation.overlap_frames} frames), "
+            f"image_prompt_type={generation_params['image_prompt_type']}"
+        )
+
+
+def _apply_svi_specific_params(
+    generation_params: dict,
+    ctx: SegmentContext,
+    gen: GenerationInputs,
+    image_refs: ImageRefs,
+    task_id: str,
+) -> None:
+    """Apply SVI-specific generation parameters (mutates generation_params in place).
+
+    Called only when active_svi_continuation is true and prefix_video_for_source is set.
+    video_source and image_start removal are already handled by _apply_video_source_continuation.
+    """
     segment_params = ctx.segment_params
     orchestrator_details = ctx.orchestrator_details
     start_ref_path = image_refs.start_ref_path
-    svi_predecessor_video_for_source = image_refs.svi_predecessor_video_for_source
     total_frames_for_segment = gen.total_frames_for_segment
 
     task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Configuring WGP payload for SVI mode")
@@ -1116,79 +1094,29 @@ def _apply_svi_config(generation_params: dict, ctx: SegmentContext, gen: Generat
         generation_params["image_refs_paths"] = [str(Path(start_ref_path).resolve())]
         task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Set image_refs_paths to start image: {start_ref_path}")
 
-    # CRITICAL: Pass predecessor video as video_source for SVI continuation
-    # WGP uses prefix_video[:, -(5 + overlap_size):] to create overlapped_latents
-    # This provides temporal continuity between segments (uses last ~9 frames)
-    # IMPORTANT: Must NOT set image_start when video_source is set, otherwise
-    # wgp.py prioritizes image_start and creates only a 1-frame prefix_video!
-    if svi_predecessor_video_for_source:
-        from source.media.video import get_video_frame_count_and_fps as get_video_frame_count_and_fps
+    # Set image_prompt_type to "SV" for start+video continuation
+    generation_params["image_prompt_type"] = "SV"
+    task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Set image_prompt_type='SV' for video continuation")
 
-        video_source_path = str(Path(svi_predecessor_video_for_source).resolve())
-        generation_params["video_source"] = video_source_path
-
-        # GROUND TRUTH LOG: What WGP will receive
-        try:
-            wgp_input_frames, wgp_input_fps = get_video_frame_count_and_fps(video_source_path)
-            task_logger.debug(f"[SVI_GROUND_TRUTH] Task {task_id}: ========== WGP INPUT ANALYSIS ==========")
-            task_logger.debug(f"[SVI_GROUND_TRUTH] Task {task_id}: video_source: {video_source_path}")
-            task_logger.debug(f"[SVI_GROUND_TRUTH] Task {task_id}: video_source frames: {wgp_input_frames}")
-            task_logger.debug(f"[SVI_GROUND_TRUTH] Task {task_id}: WGP will extract last 9 frames from this for overlapped_latents")
-            task_logger.debug(f"[SVI_GROUND_TRUTH] Task {task_id}: WGP will prepend ALL {wgp_input_frames} frames to output")
-        except (OSError, ValueError, RuntimeError) as e_wgp_log:
-            task_logger.debug(f"[SVI_GROUND_TRUTH] Task {task_id}: Could not analyze video_source: {e_wgp_log}")
-
-        # Remove image_start so WGP uses video_source for multi-frame prefix_video
-        # The anchor image is provided via image_refs instead
-        if "image_start" in generation_params:
-            del generation_params["image_start"]
-            task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Removed image_start (anchor provided via image_refs)")
-        # CRITICAL: Set image_prompt_type to include "V" to enable video_source usage
-        # SVI2Pro allows "SVL" - we use "SV" for start+video continuation
-        generation_params["image_prompt_type"] = "SV"
-        task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Set image_prompt_type='SV' for video continuation")
-        task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Set video_source for SVI continuation: {svi_predecessor_video_for_source}")
-
-    # SVI Pro sliding window overlap = 4 frames (standard for SVI)
-    # Note: WGP applies latent alignment formula (x-1)//4*4+1, but we bypass it
-    # by patching sliding_window_defaults.overlap_default=4 in headless_model_management.py
+    # SVI Pro sliding window overlap = 4 frames
     generation_params["sliding_window_overlap"] = 4
-    task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Set sliding_window_overlap=4 for SVI")
 
-    # IMPORTANT (SVI continuation frame accounting):
-    # When `video_source` is provided, WGP will:
-    #   - generate `video_length` frames total
-    #   - discard the first `sliding_window_overlap` frames of the generated sample
-    #   - prepend the prefix video frames (pixels) to the output
-    #
-    # Therefore the number of **new** frames produced by diffusion is:
-    #   new_frames = video_length - sliding_window_overlap
-    #
-    # In our travel pipeline, `segment_frames_target` / `segment_frames_expanded[idx]` represent
-    # the desired number of **new** frames for the segment (4N+1). To actually get that many
-    # new frames while still maintaining overlap for stitching, we must request:
-    #   video_length = desired_new_frames + sliding_window_overlap
-    if svi_predecessor_video_for_source:
-        try:
-            desired_new_frames = int(total_frames_for_segment) if total_frames_for_segment else 0
-            overlap_size = int(generation_params.get("sliding_window_overlap") or 4)
-            current_video_length = int(generation_params.get("video_length") or 0)
-            if desired_new_frames > 0 and overlap_size > 0:
-                # Only bump if the payload is still "new-frames based" (avoid double-bumping).
-                if current_video_length == desired_new_frames:
-                    generation_params["video_length"] = desired_new_frames + overlap_size
-                    task_logger.debug(
-                        f"[SVI_PAYLOAD] Task {task_id}: SVI continuation => bump video_length "
-                        f"{current_video_length} -> {generation_params['video_length']} "
-                        f"(desired_new_frames={desired_new_frames}, overlap_size={overlap_size})"
-                    )
-                else:
-                    task_logger.debug(
-                        f"[SVI_PAYLOAD] Task {task_id}: SVI continuation => NOT bumping video_length "
-                        f"(current={current_video_length}, desired_new_frames={desired_new_frames}, overlap_size={overlap_size})"
-                    )
-        except (ValueError, TypeError) as e_len_bump:
-            task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: WARNING: Could not adjust video_length for SVI continuation: {e_len_bump}")
+    # SVI continuation frame accounting: bump video_length by overlap_size
+    # so that desired_new_frames of NEW content are produced after overlap discard.
+    try:
+        desired_new_frames = int(total_frames_for_segment) if total_frames_for_segment else 0
+        overlap_size = int(generation_params.get("sliding_window_overlap") or 4)
+        current_video_length = int(generation_params.get("video_length") or 0)
+        if desired_new_frames > 0 and overlap_size > 0:
+            if current_video_length == desired_new_frames:
+                generation_params["video_length"] = desired_new_frames + overlap_size
+                task_logger.debug(
+                    f"[SVI_PAYLOAD] Task {task_id}: SVI continuation => bump video_length "
+                    f"{current_video_length} -> {generation_params['video_length']} "
+                    f"(desired_new_frames={desired_new_frames}, overlap_size={overlap_size})"
+                )
+    except (ValueError, TypeError) as e_len_bump:
+        task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: WARNING: Could not adjust video_length for SVI continuation: {e_len_bump}")
 
     # Add SVI generation parameters from segment_params (set by orchestrator)
     for key in ["guidance_phases", "num_inference_steps", "guidance_scale", "guidance2_scale",
@@ -1227,34 +1155,6 @@ def _apply_svi_config(generation_params: dict, ctx: SegmentContext, gen: Generat
             f"[SVI_LATENT_CHAIN] Task {task_id}: Passing precomputed latent path to WGP: "
             f"{image_refs.precomputed_overlapped_latents_path}"
         )
-
-
-def _apply_continuation_config(generation_params: dict, gen: GenerationInputs, image_refs: ImageRefs, task_id: str) -> None:
-    """Apply prefix-video continuation for normalized non-SVI continuation policies."""
-    policy = gen.generation_policy
-    if (
-        image_refs.use_svi
-        or not policy.continuation.enabled
-        or not policy.continuation.requires_prefix_video_source
-    ):
-        return
-
-    continuation_video_for_source = image_refs.continuation_video_for_source
-    if not continuation_video_for_source:
-        return
-
-    video_source_path = str(Path(continuation_video_for_source).resolve())
-    generation_params["video_source"] = video_source_path
-
-    if "image_start" in generation_params:
-        del generation_params["image_start"]
-
-    generation_params["image_prompt_type"] = "VE" if generation_params.get("image_end") else "V"
-    task_logger.debug(
-        f"[CONTINUATION_PREFIX] Task {task_id}: Set video_source for {policy.continuation.strategy} "
-        f"continuation ({policy.continuation.overlap_frames} frames), "
-        f"image_prompt_type={generation_params['image_prompt_type']}"
-    )
 
 
 def _apply_uni3c_config(generation_params: dict, ctx: SegmentContext, gen: GenerationInputs, structure: StructureOutputs, task_id: str) -> None:
@@ -1359,11 +1259,9 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
         # 5. Build generation_params dict
         generation_params = _build_generation_params(ctx, gen, image_refs, structure, task_id)
 
-        # 6. Apply SVI-specific configuration
-        _apply_svi_config(generation_params, ctx, gen, image_refs, task_id)
-        # 7. Apply normalized continuation configuration
-        _apply_continuation_config(generation_params, gen, image_refs, task_id)
-        # 8. Apply UNI3C-specific configuration
+        # 6. Apply video_source continuation (SVI or prefix_video_source)
+        _apply_video_source_continuation(generation_params, gen.generation_policy, image_refs, ctx, gen, task_id)
+        # 7. Apply UNI3C-specific configuration
         _apply_uni3c_config(generation_params, ctx, gen, structure, task_id)
 
         # Log diagnostic summary before WGP submission
@@ -1401,7 +1299,7 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
             if status is None: return False, f"Travel segment {task_id}: Task status became None"
 
             if status.status == "completed":
-                if image_refs.use_svi:
+                if image_refs.active_svi_continuation:
                     _upload_svi_latent_tail_if_available(status.result_path, task_id)
 
                 # In standalone mode, skip chaining (no orchestrator to coordinate with)
@@ -1413,7 +1311,8 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
                 chain_success, chain_message, final_chained_path = handle_travel_chaining_after_wgp(
                     wgp_task_params={
                         # Provide minimal ground-truth frame params for downstream debug logging / trimming analysis.
-                        "use_svi": image_refs.use_svi,
+                        # chaining.py reads use_svi from this payload for SVI output trimming.
+                        "use_svi": image_refs.active_svi_continuation,
                         "video_length": generation_params.get("video_length"),
                         "sliding_window_overlap": generation_params.get("sliding_window_overlap"),
                         "video_source": generation_params.get("video_source"),

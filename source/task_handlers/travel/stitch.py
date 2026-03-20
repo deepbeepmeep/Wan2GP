@@ -29,13 +29,70 @@ from ...utils import (
 from .orchestrator import DEFAULT_SEED_BASE, UPSCALE_SEED_OFFSET
 
 from ...media.video import (
+    add_audio_to_video,
     extract_frames_from_video,
     create_video_from_frames_list,
     cross_fade_overlap_frames)
 from ...media.video.ffmpeg_ops import mux_audio_from_segments
+from ...media.video.ingest import download_file_if_url
 
 from .debug_utils import debug_video_analysis, log_ram_usage
 from .ffmpeg_fallback import attempt_ffmpeg_crossfade_fallback
+
+
+def _as_string_list(value) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    normalized = []
+    for item in value:
+        if isinstance(item, str):
+            stripped = item.strip()
+            if stripped:
+                normalized.append(stripped)
+    return normalized
+
+
+def _get_segment_output_source(entry) -> str:
+    if isinstance(entry, tuple) and len(entry) >= 2:
+        return entry[1]
+    if isinstance(entry, dict):
+        value = entry.get("video_file_path") or entry.get("output_location")
+        return value if isinstance(value, str) else ""
+    return ""
+
+
+def _parse_explicit_clip_request(stitch_params: dict) -> dict | None:
+    clip_urls = _as_string_list(stitch_params.get("clip_urls"))
+    if not clip_urls:
+        return None
+
+    if len(clip_urls) < 2:
+        raise ValueError("Explicit stitch mode requires at least two clip_urls.")
+
+    raw_overlaps = stitch_params.get("frame_overlap_settings_expanded")
+    if not isinstance(raw_overlaps, list):
+        raise ValueError("Explicit stitch mode requires frame_overlap_settings_expanded.")
+
+    overlaps = []
+    for index, overlap in enumerate(raw_overlaps):
+        if not isinstance(overlap, (int, float)):
+            raise ValueError(f"Explicit stitch overlap at index {index} must be numeric.")
+        overlap_int = int(overlap)
+        if overlap_int <= 0:
+            raise ValueError(f"Explicit stitch overlap at index {index} must be positive.")
+        overlaps.append(overlap_int)
+
+    if len(overlaps) != len(clip_urls) - 1:
+        raise ValueError(
+            "Explicit stitch mode requires one frame overlap value per clip boundary."
+        )
+
+    return {
+        "clip_urls": clip_urls,
+        "expanded_frame_overlaps": overlaps,
+        "audio_url": stitch_params.get("audio_url"),
+    }
 
 def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: Path, stitch_task_id_str: str):
     travel_logger.essential(f"Starting travel stitch task", task_id=stitch_task_id_str)
@@ -49,27 +106,34 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
 
     try:
         # --- 1. Initialization & Parameter Extraction ---
+        explicit_clip_request = _parse_explicit_clip_request(stitch_params)
+        explicit_clips_mode = explicit_clip_request is not None
         orchestrator_task_id_ref = stitch_params.get("orchestrator_task_id_ref")
         orchestrator_run_id = stitch_params.get("orchestrator_run_id")
         # Support both canonical (orchestrator_details) and legacy (full_orchestrator_payload) key names
-        orchestrator_details = stitch_params.get("orchestrator_details") or stitch_params.get("full_orchestrator_payload")
+        orchestrator_details = stitch_params.get("orchestrator_details") or stitch_params.get("full_orchestrator_payload") or {}
+        if not isinstance(orchestrator_details, dict):
+            orchestrator_details = {}
+        explicit_audio_url = explicit_clip_request.get("audio_url") if explicit_clip_request else stitch_params.get("audio_url")
 
         travel_logger.debug(f"orchestrator_run_id: {orchestrator_run_id}", task_id=stitch_task_id_str)
         travel_logger.debug(f"orchestrator_task_id_ref: {orchestrator_task_id_ref}", task_id=stitch_task_id_str)
         travel_logger.debug(f"orchestrator_details present: {orchestrator_details is not None}", task_id=stitch_task_id_str)
+        travel_logger.debug(f"explicit_clips_mode: {explicit_clips_mode}", task_id=stitch_task_id_str)
 
-        if not all([orchestrator_task_id_ref, orchestrator_run_id, orchestrator_details]):
+        if not explicit_clips_mode and not all([orchestrator_task_id_ref, orchestrator_run_id, orchestrator_details]):
             msg = f"Stitch task {stitch_task_id_str} missing critical orchestrator refs or orchestrator_details."
             travel_logger.error(msg, task_id=stitch_task_id_str)
             return False, msg
 
-        # Validate required keys early to produce clear errors instead of KeyError
-        _stitch_required = {"num_new_segments_to_generate", "parsed_resolution_wh", "segment_frames_expanded"}
-        _stitch_missing = _stitch_required - orchestrator_details.keys()
-        if _stitch_missing:
-            msg = f"Stitch task {stitch_task_id_str}: orchestrator_details missing required keys: {sorted(_stitch_missing)}"
-            travel_logger.error(msg, task_id=stitch_task_id_str)
-            return False, msg
+        if not explicit_clips_mode:
+            # Validate required keys early to produce clear errors instead of KeyError
+            _stitch_required = {"num_new_segments_to_generate", "parsed_resolution_wh", "segment_frames_expanded"}
+            _stitch_missing = _stitch_required - orchestrator_details.keys()
+            if _stitch_missing:
+                msg = f"Stitch task {stitch_task_id_str}: orchestrator_details missing required keys: {sorted(_stitch_missing)}"
+                travel_logger.error(msg, task_id=stitch_task_id_str)
+                return False, msg
 
         project_id_for_stitch = stitch_params.get("project_id")
         current_run_base_output_dir_str = stitch_params.get("current_run_base_output_dir",
@@ -81,36 +145,47 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         stitch_processing_dir.mkdir(parents=True, exist_ok=True)
         travel_logger.debug(f"Stitch Task {stitch_task_id_str}: Processing in {stitch_processing_dir.resolve()}", task_id=stitch_task_id_str)
 
-        num_expected_new_segments = orchestrator_details["num_new_segments_to_generate"]
-        travel_logger.debug(f"num_expected_new_segments: {num_expected_new_segments}", task_id=stitch_task_id_str)
+        if explicit_clips_mode:
+            num_expected_new_segments = len(explicit_clip_request["clip_urls"])
+            travel_logger.debug(f"num_expected_new_segments (explicit mode): {num_expected_new_segments}", task_id=stitch_task_id_str)
+            parsed_res_wh_from_payload = None
+            parsed_res_wh = None
+            final_fps = stitch_params.get("fps") or 0
+            expanded_frame_overlaps = explicit_clip_request["expanded_frame_overlaps"]
+            crossfade_sharp_amt = stitch_params.get("crossfade_sharp_amt", 0.3)
+            initial_continued_video_path_str = None
+        else:
+            num_expected_new_segments = orchestrator_details["num_new_segments_to_generate"]
+            travel_logger.debug(f"num_expected_new_segments: {num_expected_new_segments}", task_id=stitch_task_id_str)
 
-        # Parse resolution from payload - but DON'T snap to model grid yet!
-        # The actual resolution will be determined from the input segment videos.
-        # Snapping is only needed for generation, not for stitching existing videos.
-        parsed_res_wh_str = orchestrator_details["parsed_resolution_wh"]
-        try:
-            parsed_res_wh_from_payload = parse_resolution(parsed_res_wh_str)
-            if parsed_res_wh_from_payload is None:
-                raise ValueError(f"parse_resolution returned None for input: {parsed_res_wh_str}")
-            # NOTE: We use this as a fallback only. Actual resolution comes from input videos.
-        except (ValueError, KeyError, TypeError) as e_parse_res_stitch:
-            msg = f"Stitch Task {stitch_task_id_str}: Invalid format or error parsing parsed_resolution_wh '{parsed_res_wh_str}': {e_parse_res_stitch}"
-            travel_logger.error(msg, task_id=stitch_task_id_str)
-            return False, msg
-        travel_logger.debug(f"Stitch Task {stitch_task_id_str}: Payload resolution (w,h): {parsed_res_wh_from_payload} (will use actual video resolution)", task_id=stitch_task_id_str)
+            # Parse resolution from payload - but DON'T snap to model grid yet!
+            # The actual resolution will be determined from the input segment videos.
+            # Snapping is only needed for generation, not for stitching existing videos.
+            parsed_res_wh_str = orchestrator_details["parsed_resolution_wh"]
+            try:
+                parsed_res_wh_from_payload = parse_resolution(parsed_res_wh_str)
+                if parsed_res_wh_from_payload is None:
+                    raise ValueError(f"parse_resolution returned None for input: {parsed_res_wh_str}")
+                # NOTE: We use this as a fallback only. Actual resolution comes from input videos.
+            except (ValueError, KeyError, TypeError) as e_parse_res_stitch:
+                msg = f"Stitch Task {stitch_task_id_str}: Invalid format or error parsing parsed_resolution_wh '{parsed_res_wh_str}': {e_parse_res_stitch}"
+                travel_logger.error(msg, task_id=stitch_task_id_str)
+                return False, msg
+            travel_logger.debug(f"Stitch Task {stitch_task_id_str}: Payload resolution (w,h): {parsed_res_wh_from_payload} (will use actual video resolution)", task_id=stitch_task_id_str)
 
-        # Placeholder - will be set from actual input video after loading
-        parsed_res_wh = None
+            # Placeholder - will be set from actual input video after loading
+            parsed_res_wh = None
 
-        final_fps = orchestrator_details.get("fps_helpers", 24)
-        # CRITICAL: Use stitch_params overlay settings, NOT the orchestrator's default!
-        # For SVI mode, frame_overlap_settings_expanded contains [4, 4, ...] (SVI_STITCH_OVERLAP)
-        # For VACE mode, it contains the configured overlap values
-        # Fallback to orchestrator's frame_overlap_expanded only if not provided
-        expanded_frame_overlaps = stitch_params.get("frame_overlap_settings_expanded") or orchestrator_details.get("frame_overlap_expanded", [])
-        travel_logger.debug(f"[STITCH DEBUG] Using overlap settings from stitch_params: {expanded_frame_overlaps[:5]}... (len={len(expanded_frame_overlaps)})", task_id=stitch_task_id_str)
-        crossfade_sharp_amt = orchestrator_details.get("crossfade_sharp_amt", 0.3)
-        initial_continued_video_path_str = orchestrator_details.get("continue_from_video_resolved_path")
+            final_fps = orchestrator_details.get("fps_helpers", 24)
+            # CRITICAL: Use stitch_params overlay settings, NOT the orchestrator's default!
+            # For SVI mode, frame_overlap_settings_expanded contains [4, 4, ...] (SVI_STITCH_OVERLAP)
+            # For VACE mode, it contains the configured overlap values
+            # Fallback to orchestrator's frame_overlap_expanded only if not provided
+            expanded_frame_overlaps = stitch_params.get("frame_overlap_settings_expanded") or orchestrator_details.get("frame_overlap_expanded", [])
+            crossfade_sharp_amt = orchestrator_details.get("crossfade_sharp_amt", 0.3)
+            initial_continued_video_path_str = orchestrator_details.get("continue_from_video_resolved_path")
+
+        travel_logger.debug(f"[STITCH DEBUG] Using overlap settings: {expanded_frame_overlaps[:5]}... (len={len(expanded_frame_overlaps)})", task_id=stitch_task_id_str)
 
         # [OVERLAP DEBUG] Add detailed debug for overlap values
         travel_logger.debug(f"[OVERLAP DEBUG] Stitch: expanded_frame_overlaps from payload: {expanded_frame_overlaps}", task_id=stitch_task_id_str)
@@ -136,30 +211,37 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 travel_logger.debug(f"Stitch: ERROR - Could not open continue video for property check", task_id=stitch_task_id_str)
             segment_video_paths_for_stitch.append(str(Path(initial_continued_video_path_str).resolve()))
 
-        # Fetch completed segments with a small retry loop to handle race conditions
-        max_stitch_fetch_retries = 6  # Allow up to ~18s total wait
-        completed_segment_outputs_from_db = []
+        if explicit_clips_mode:
+            completed_segment_outputs_from_db = list(enumerate(explicit_clip_request["clip_urls"]))
+            travel_logger.debug(
+                f"Explicit stitch mode using {len(completed_segment_outputs_from_db)} clip URLs directly",
+                task_id=stitch_task_id_str,
+            )
+        else:
+            # Fetch completed segments with a small retry loop to handle race conditions
+            max_stitch_fetch_retries = 6  # Allow up to ~18s total wait
+            completed_segment_outputs_from_db = []
 
-        travel_logger.debug(f"About to start retry loop for run_id: {orchestrator_run_id}", task_id=stitch_task_id_str)
+            travel_logger.debug(f"About to start retry loop for run_id: {orchestrator_run_id}", task_id=stitch_task_id_str)
 
-        for attempt in range(max_stitch_fetch_retries):
-            travel_logger.debug(f"Stitch fetch attempt {attempt+1}/{max_stitch_fetch_retries} for run_id: {orchestrator_run_id}", task_id=stitch_task_id_str)
+            for attempt in range(max_stitch_fetch_retries):
+                travel_logger.debug(f"Stitch fetch attempt {attempt+1}/{max_stitch_fetch_retries} for run_id: {orchestrator_run_id}", task_id=stitch_task_id_str)
 
-            try:
-                completed_segment_outputs_from_db = db_ops.get_completed_segment_outputs_for_stitch(orchestrator_run_id, project_id=project_id_for_stitch) or []
-                travel_logger.debug(f"DB query returned: {completed_segment_outputs_from_db}", task_id=stitch_task_id_str)
-            except (RuntimeError, ValueError, OSError) as e_db_query:
-                travel_logger.error(f"DB query failed: {e_db_query}", task_id=stitch_task_id_str)
-                completed_segment_outputs_from_db = []
+                try:
+                    completed_segment_outputs_from_db = db_ops.get_completed_segment_outputs_for_stitch(orchestrator_run_id, project_id=project_id_for_stitch) or []
+                    travel_logger.debug(f"DB query returned: {completed_segment_outputs_from_db}", task_id=stitch_task_id_str)
+                except (RuntimeError, ValueError, OSError) as e_db_query:
+                    travel_logger.error(f"DB query failed: {e_db_query}", task_id=stitch_task_id_str)
+                    completed_segment_outputs_from_db = []
 
-            travel_logger.debug(f"Attempt {attempt+1} returned {len(completed_segment_outputs_from_db)} segments", task_id=stitch_task_id_str)
+                travel_logger.debug(f"Attempt {attempt+1} returned {len(completed_segment_outputs_from_db)} segments", task_id=stitch_task_id_str)
 
-            if len(completed_segment_outputs_from_db) >= num_expected_new_segments:
-                travel_logger.debug(f"Expected {num_expected_new_segments} segment rows found on attempt {attempt+1}. Proceeding.", task_id=stitch_task_id_str)
-                break
-            travel_logger.debug(f"Insufficient segments found (attempt {attempt+1}/{max_stitch_fetch_retries}). Waiting 3s and retrying...", task_id=stitch_task_id_str)
-            if attempt < max_stitch_fetch_retries - 1:  # Don't sleep after the last attempt
-                time.sleep(3)
+                if len(completed_segment_outputs_from_db) >= num_expected_new_segments:
+                    travel_logger.debug(f"Expected {num_expected_new_segments} segment rows found on attempt {attempt+1}. Proceeding.", task_id=stitch_task_id_str)
+                    break
+                travel_logger.debug(f"Insufficient segments found (attempt {attempt+1}/{max_stitch_fetch_retries}). Waiting 3s and retrying...", task_id=stitch_task_id_str)
+                if attempt < max_stitch_fetch_retries - 1:  # Don't sleep after the last attempt
+                    time.sleep(3)
         travel_logger.debug(f"Stitch Task {stitch_task_id_str}: Completed segments fetched: {completed_segment_outputs_from_db}", task_id=stitch_task_id_str)
         travel_logger.debug(f"Final completed_segment_outputs_from_db: {completed_segment_outputs_from_db}", task_id=stitch_task_id_str)
 
@@ -168,6 +250,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         # ------------------------------------------------------------------
         travel_logger.debug(f"[STITCH_DEBUG] Starting path resolution for {len(completed_segment_outputs_from_db)} segments", task_id=stitch_task_id_str)
         travel_logger.debug(f"[STITCH_DEBUG] Raw DB results: {completed_segment_outputs_from_db}", task_id=stitch_task_id_str)
+        derived_segment_frames = []
         for seg_idx, video_path_str_from_db in completed_segment_outputs_from_db:
             travel_logger.debug(f"[STITCH_DEBUG] Processing segment {seg_idx} with path: {video_path_str_from_db}", task_id=stitch_task_id_str)
             resolved_video_path_for_stitch: Path | None = None
@@ -194,44 +277,13 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
             elif video_path_str_from_db.startswith("http"):
                 travel_logger.debug(f"Case B: Remote URL detected for segment {seg_idx}", task_id=stitch_task_id_str)
                 try:
-                    from ...utils import download_file as download_file
-                    remote_url = video_path_str_from_db
-                    local_filename = Path(remote_url).name
-                    local_download_path = stitch_processing_dir / f"seg{seg_idx:02d}_{local_filename}"
-                    travel_logger.debug(f"Remote URL: {remote_url}", task_id=stitch_task_id_str)
-                    travel_logger.debug(f"Local download path: {local_download_path}", task_id=stitch_task_id_str)
-
-                    # Check if cached file exists and validate its frame count against orchestrator's expected values
-                    need_download = True
-                    if local_download_path.exists():
-                        travel_logger.debug(f"Local copy exists for segment {seg_idx}, validating frame count...", task_id=stitch_task_id_str)
-                        try:
-                            cached_frames, _ = get_video_frame_count_and_fps(str(local_download_path))
-                            expected_segment_frames = orchestrator_details["segment_frames_expanded"]
-                            expected_frames = expected_segment_frames[seg_idx] if seg_idx < len(expected_segment_frames) else None
-                            travel_logger.debug(f"Cached file has {cached_frames} frames (expected: {expected_frames})", task_id=stitch_task_id_str)
-
-                            if expected_frames and cached_frames == expected_frames:
-                                travel_logger.debug(f"Cached file frame count matches expected ({cached_frames} frames)", task_id=stitch_task_id_str)
-                                need_download = False
-                            elif expected_frames:
-                                travel_logger.debug(f"Cached file frame count mismatch! Expected {expected_frames}, got {cached_frames}, will re-download", task_id=stitch_task_id_str)
-                            else:
-                                travel_logger.debug(f"No expected frame count available for segment {seg_idx}, will re-download", task_id=stitch_task_id_str)
-                        except (OSError, ValueError, RuntimeError, KeyError, IndexError) as e_validate:
-                            travel_logger.debug(f"Could not validate cached file: {e_validate}, will re-download", task_id=stitch_task_id_str)
-
-                    if need_download:
-                        travel_logger.debug(f"Downloading remote segment {seg_idx}...", task_id=stitch_task_id_str)
-                        # Remove stale cached file if it exists
-                        if local_download_path.exists():
-                            local_download_path.unlink()
-                        download_file(remote_url, stitch_processing_dir, local_download_path.name)
-                        travel_logger.debug(f"Download completed for segment {seg_idx}", task_id=stitch_task_id_str)
-                    else:
-                        travel_logger.debug(f"Using validated cached file for segment {seg_idx}", task_id=stitch_task_id_str)
-
-                    resolved_video_path_for_stitch = local_download_path
+                    resolved_video_path_for_stitch = Path(download_file_if_url(
+                        video_path_str_from_db,
+                        stitch_processing_dir,
+                        task_id_for_logging=stitch_task_id_str,
+                        descriptive_name=f"seg{seg_idx:02d}",
+                    )).resolve()
+                    travel_logger.debug(f"Downloaded segment {seg_idx} to {resolved_video_path_for_stitch}", task_id=stitch_task_id_str)
                 except (OSError, ValueError, RuntimeError) as e_dl:
                     travel_logger.error(f"Download failed for segment {seg_idx}: {e_dl}", task_id=stitch_task_id_str)
                     travel_logger.warning(f"Stitch: Failed to download remote video for segment {seg_idx}: {e_dl}", task_id=stitch_task_id_str)
@@ -251,6 +303,13 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
             if resolved_video_path_for_stitch is not None:
                 segment_video_paths_for_stitch.append(str(resolved_video_path_for_stitch))
                 travel_logger.debug(f"Added video for segment {seg_idx}: {resolved_video_path_for_stitch}", task_id=stitch_task_id_str)
+                try:
+                    frame_count, clip_fps = get_video_frame_count_and_fps(str(resolved_video_path_for_stitch))
+                    derived_segment_frames.append(frame_count or 0)
+                    if explicit_clips_mode and not final_fps and clip_fps:
+                        final_fps = clip_fps
+                except (OSError, ValueError, RuntimeError):
+                    derived_segment_frames.append(0)
 
                 # Analyze the resolved video immediately
                 debug_video_analysis(resolved_video_path_for_stitch, f"RESOLVED_Seg{seg_idx}", stitch_task_id_str)
@@ -260,6 +319,8 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         travel_logger.debug(f"Path resolution complete", task_id=stitch_task_id_str)
         travel_logger.debug(f"Final segment_video_paths_for_stitch: {segment_video_paths_for_stitch}", task_id=stitch_task_id_str)
         travel_logger.debug(f"Total videos collected: {len(segment_video_paths_for_stitch)}", task_id=stitch_task_id_str)
+        if explicit_clips_mode:
+            orchestrator_details["segment_frames_expanded"] = derived_segment_frames
         # [CRITICAL DEBUG] Log each video's frame count before stitching
         travel_logger.debug(f"[CRITICAL DEBUG] About to stitch videos:", task_id=stitch_task_id_str)
         expected_segment_frames = orchestrator_details["segment_frames_expanded"]
@@ -299,6 +360,10 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 cap.release()
                 parsed_res_wh = (actual_width, actual_height)
                 travel_logger.debug(f"Using actual video resolution: {actual_width}x{actual_height}", task_id=stitch_task_id_str)
+                if explicit_clips_mode:
+                    _, detected_fps = get_video_frame_count_and_fps(str(first_video_path))
+                    if not final_fps and detected_fps:
+                        final_fps = detected_fps
 
                 # Log if there's a difference from payload resolution
                 if parsed_res_wh_from_payload and parsed_res_wh != parsed_res_wh_from_payload:
@@ -310,6 +375,8 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
             # Fallback to payload resolution (without snapping) if we can't read the video
             travel_logger.warning(f"Could not read resolution from video, using payload: {e_res}", task_id=stitch_task_id_str)
             parsed_res_wh = parsed_res_wh_from_payload
+        if not final_fps:
+            final_fps = 24
 
         # --- 3. Stitching (Crossfade or Concatenate) ---
         current_stitched_video_path: Path | None = None # This will hold the path to the current version of the stitched video
@@ -429,7 +496,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                         for failed_idx in failed_segments:
                             if failed_idx < len(completed_segment_outputs_from_db):
                                 seg_output = completed_segment_outputs_from_db[failed_idx]
-                                video_path_str_from_db = seg_output.get("video_file_path", "")
+                                video_path_str_from_db = _get_segment_output_source(seg_output)
 
                                 # Check if it's a remote URL that can be re-downloaded
                                 if video_path_str_from_db.startswith("http"):
@@ -793,6 +860,26 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
             travel_logger.warning(f"Upscale factor {upscale_factor} > 1.0 but no upscale_model_name provided. Skipping upscale.", task_id=stitch_task_id_str)
         else:
             travel_logger.debug(f"No upscaling requested (factor: {upscale_factor})", task_id=stitch_task_id_str)
+
+        if explicit_audio_url:
+            try:
+                audio_output_path = video_path_after_optional_upscale.with_name(
+                    f"{video_path_after_optional_upscale.stem}_with_audio{video_path_after_optional_upscale.suffix}"
+                )
+                muxed_audio_path = add_audio_to_video(
+                    input_video_path=str(video_path_after_optional_upscale),
+                    audio_url=explicit_audio_url,
+                    output_video_path=str(audio_output_path),
+                    temp_dir=str(stitch_processing_dir),
+                )
+                if muxed_audio_path and Path(muxed_audio_path).exists():
+                    video_path_after_optional_upscale = Path(muxed_audio_path)
+                    travel_logger.debug("External audio muxed into stitched output", task_id=stitch_task_id_str)
+            except (OSError, ValueError, RuntimeError) as audio_err:
+                travel_logger.warning(
+                    f"Stitch: Failed to add external audio (continuing without): {audio_err}",
+                    task_id=stitch_task_id_str,
+                )
 
         # Use consistent UUID-based naming for final video
         timestamp_short = datetime.now().strftime("%H%M%S")

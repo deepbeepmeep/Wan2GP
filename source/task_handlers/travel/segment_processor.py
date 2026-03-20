@@ -312,7 +312,7 @@ class TravelSegmentProcessor:
                 f"guidance_kind={getattr(travel_guidance_config, 'kind', None)}, "
                 f"guidance_mode={getattr(travel_guidance_config, 'mode', None)}, "
                 f"needs_ic_lora={getattr(travel_guidance_config, 'needs_ic_lora', lambda: False)() if travel_guidance_config else False}, "
-                f"is_uni3c={getattr(structure_config, 'is_uni3c', False) if structure_config else False}",
+                f"is_uni3c={getattr(travel_guidance_config, 'is_uni3c', False) if travel_guidance_config else False}",
                 task_id=ctx.task_id,
             )
             # LTX-2 supports TSEV: T=text, S=start image, E=end image, V=video guide

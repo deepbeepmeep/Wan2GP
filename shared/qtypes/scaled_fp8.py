@@ -485,8 +485,9 @@ class ScaledFP8WeightTensor(QTensor):
             device = kwargs.pop("device", t.device) if kwargs else t.device
             if dtype != t.dtype:
                 return t.dequantize(dtype=dtype, device=device)
-            out_data = op(t._data, device=device, **(kwargs or {}))
-            out_scale = op(t._scale, device=device, **(kwargs or {}))
+            with torch.inference_mode(False):
+                out_data = op(t._data, device=device, **(kwargs or {}))
+                out_scale = op(t._scale, device=device, **(kwargs or {}))
             return ScaledFP8WeightTensor.create(
                 weight=out_data,
                 scale=out_scale,

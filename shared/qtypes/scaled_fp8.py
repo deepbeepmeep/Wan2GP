@@ -287,12 +287,13 @@ class ScaledFP8WeightTensor(QTensor):
         qweight= self
         target_type = _normalize_default_dtype(qweight.dtype)
         weights, output_scales = qweight._data, qweight._scale
+        target_device = input.device
         input = input.to(target_type)
-        output_scales = output_scales.to(target_type)
+        output_scales = output_scales.to(device=target_device, dtype=target_type)
         in_features = input.shape[-1]
         out_features = weights.shape[0]
         output_shape = input.shape[:-1] + (out_features,)
-        weights = weights.to(target_type)
+        weights = weights.to(device=target_device, dtype=target_type)
         weights *= output_scales
         out = torch.matmul(input.reshape(-1, in_features), weights.t())
         out = out.reshape(output_shape)

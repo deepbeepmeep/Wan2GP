@@ -437,6 +437,7 @@ class ScaledFP8WeightTensor(QTensor):
             t = args[0]
             dtype = kwargs.pop("dtype", t.dtype) if kwargs else t.dtype
             device = kwargs.pop("device", t.device) if kwargs else t.device
+            kwargs.pop("copy", None)  # copy=True on inference tensors raises version_counter error
             if dtype != t.dtype:
                 return t.dequantize(dtype=dtype, device=device)
             out_data = op(t._data, device=device, **(kwargs or {}))

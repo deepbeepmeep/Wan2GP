@@ -409,6 +409,31 @@ class ScaledFP8WeightTensor(QTensor):
             bias = args[2] if len(args) > 2 else kwargs.get("bias", None)
             if isinstance(weight, ScaledFP8WeightTensor):
                 return weight.linear(input, bias=bias)
+        # torch.Tensor.to() on an inference ScaledFP8WeightTensor fails in C++ with
+        # "Cannot set version_counter for inference tensor" because __torch_dispatch__
+        # is bypassed for inference tensors. Handle it here before reaching C++.
+        if func is torch.Tensor.to:
+            t = args[0] if args else None
+            if isinstance(t, ScaledFP8WeightTensor):
+                kw = dict(kwargs)
+                device = kw.pop("device", t.device)
+                dtype = kw.pop("dtype", t.dtype)
+                kw.pop("copy", None)  # always creating a new tensor, flag is redundant
+                if isinstance(device, str):
+                    device = torch.device(device)
+                if dtype != t.dtype:
+                    return t.dequantize(dtype=dtype, device=device)
+                with torch.inference_mode(False):
+                    out_data = t._data.to(device=device, **kw)
+                    out_scale = t._scale.to(device=device, **kw)
+                return ScaledFP8WeightTensor.create(
+                    weight=out_data,
+                    scale=out_scale,
+                    size=t.size(),
+                    stride=t.stride(),
+                    dtype=t.dtype,
+                    device=device,
+                )
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
 
@@ -437,7 +462,6 @@ class ScaledFP8WeightTensor(QTensor):
             t = args[0]
             dtype = kwargs.pop("dtype", t.dtype) if kwargs else t.dtype
             device = kwargs.pop("device", t.device) if kwargs else t.device
-            kwargs.pop("copy", None)  # copy=True on inference tensors raises version_counter error
             if dtype != t.dtype:
                 return t.dequantize(dtype=dtype, device=device)
             out_data = op(t._data, device=device, **(kwargs or {}))

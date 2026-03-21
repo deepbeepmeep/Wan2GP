@@ -409,12 +409,28 @@ class ScaledFP8WeightTensor(QTensor):
             bias = args[2] if len(args) > 2 else kwargs.get("bias", None)
             if isinstance(weight, ScaledFP8WeightTensor):
                 return weight.linear(input, bias=bias)
-        # torch.Tensor.to() on an inference ScaledFP8WeightTensor fails in C++ with
-        # "Cannot set version_counter for inference tensor" because __torch_dispatch__
-        # is bypassed for inference tensors. Handle it here before reaching C++.
-        if func is torch.Tensor.to:
-            t = args[0] if args else None
-            if isinstance(t, ScaledFP8WeightTensor):
+        # detach() and to() on a ScaledFP8WeightTensor whose inner _data/_scale are
+        # inference tensors fail deep in C++ with "Cannot set version_counter for
+        # inference tensor". The func received here is the C-level TensorBase method
+        # (not torch.Tensor.detach / torch.Tensor.to), so we match by name.
+        # Handle both ops before they reach C++ dispatch.
+        func_name = getattr(func, "__name__", None)
+        t = args[0] if args else None
+        if isinstance(t, ScaledFP8WeightTensor):
+            if func_name == "detach":
+                # Return a new wrapper sharing the same inner tensors (no-op detach).
+                # Calling op(t._data) on an inference _data would try to set version
+                # counters → error. Model weights don't need grad so sharing is safe.
+                return ScaledFP8WeightTensor.create(
+                    weight=t._data,
+                    scale=t._scale,
+                    size=t.size(),
+                    stride=t.stride(),
+                    dtype=t.dtype,
+                    device=t.device,
+                    requires_grad=False,
+                )
+            if func_name == "to":
                 kw = dict(kwargs)
                 device = kw.pop("device", t.device)
                 dtype = kw.pop("dtype", t.dtype)
@@ -449,14 +465,18 @@ class ScaledFP8WeightTensor(QTensor):
                 return weight.linear(input, bias=bias)
         if op is torch.ops.aten.detach:
             t = args[0]
+            # Do NOT call op(t._data) / op(t._scale): if the inner tensors are
+            # inference tensors, aten::detach tries to set up version-counter sharing
+            # and raises "Cannot set version_counter for inference tensor".
+            # Model weights never require grad, so sharing inner tensors is safe.
             return ScaledFP8WeightTensor.create(
-                weight=op(t._data),
-                scale=op(t._scale),
+                weight=t._data,
+                scale=t._scale,
                 size=t.size(),
                 stride=t.stride(),
                 dtype=t.dtype,
                 device=t.device,
-                requires_grad=t.requires_grad,
+                requires_grad=False,
             )
         if op in (torch.ops.aten._to_copy, torch.ops.aten.to):
             t = args[0]

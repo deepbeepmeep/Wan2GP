@@ -19,6 +19,7 @@ from typing import Any, Iterator, Sequence
 
 from PIL import Image
 
+from shared.utils.process_locks import set_main_generation_running
 from shared.utils.thread_utils import AsyncStream
 
 _RUNTIME_LOCK = threading.RLock()
@@ -668,6 +669,7 @@ class WanGPSession:
     def _prepare_state_for_run(self, tasks: list[dict[str, Any]]) -> None:
         gen = self._state["gen"]
         gen["queue"] = tasks
+        set_main_generation_running(self._state, True)
         gen["process_status"] = "process:main"
         gen["progress_status"] = ""
         gen["progress_phase"] = ("", -1)
@@ -682,6 +684,7 @@ class WanGPSession:
     def _reset_state_after_run(self) -> None:
         gen = self._state["gen"]
         gen["queue"] = []
+        set_main_generation_running(self._state, False)
         gen["process_status"] = "process:main"
         gen["progress_status"] = ""
         gen["progress_phase"] = ("", -1)

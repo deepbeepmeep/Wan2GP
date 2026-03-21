@@ -62,8 +62,6 @@ def _set_default_dtype_from_loader(dtype):
 def _resolve_default_dtype(dtype, fallback=None):
     if dtype is None:
         return _GGUF_DEFAULT_DTYPE or fallback
-    if _GGUF_DEFAULT_DTYPE is not None and fallback is not None and dtype == fallback:
-        return _GGUF_DEFAULT_DTYPE
     return dtype
 
 

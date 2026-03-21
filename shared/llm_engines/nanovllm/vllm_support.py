@@ -1,3 +1,4 @@
+import copy
 import os
 from typing import Any, Callable, Optional
 
@@ -249,6 +250,13 @@ class NanoVllmTextEngine:
         max_model_len = self._max_model_len_hint or 4096
         max_num_seqs = self._max_num_seqs_hint or 1
         max_num_batched_tokens = self._max_num_batched_tokens_hint or (max_model_len * max_num_seqs)
+        hf_config = self.hf_config
+        if hf_config is not None and bool(getattr(self.model, "_prompt_enhancer_allow_extended_context", False)):
+            requested_max_model_len = int(self._max_model_len_hint or 0)
+            configured_max_position_embeddings = int(getattr(hf_config, "max_position_embeddings", 0) or 0)
+            if requested_max_model_len > configured_max_position_embeddings:
+                hf_config = copy.deepcopy(hf_config)
+                hf_config.max_position_embeddings = requested_max_model_len
         self._llm = LLM(
             model=self.model_path,
             enforce_eager=self.enforce_eager,
@@ -256,7 +264,7 @@ class NanoVllmTextEngine:
             max_model_len=max_model_len,
             max_num_seqs=max_num_seqs,
             max_num_batched_tokens=max_num_batched_tokens,
-            hf_config=self.hf_config,
+            hf_config=hf_config,
             tokenizer=self.tokenizer,
             model_object=self.model,
         )

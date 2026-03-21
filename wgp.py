@@ -30,6 +30,7 @@ except ImportError:
 from pathlib import Path
 from datetime import datetime
 import gradio as gr
+from gradio.themes.utils.sizes import Size
 import random
 import json
 import numpy as np
@@ -53,39 +54,18 @@ from shared.utils.process_locks import (
     gen_lock,
     register_GPU_resident,
     release_GPU_ressources,
+    set_main_generation_running,
     unregister_GPU_resident,
 )
-from shared.assistant_config import (
-    DEEPY_DEFAULT_IMAGE_GENERATOR,
-    DEEPY_DEFAULT_IMAGE_GENERATOR_KEY,
-    DEEPY_DEFAULT_VIDEO_GENERATOR,
-    DEEPY_DEFAULT_VIDEO_GENERATOR_KEY,
-    DEEPY_ENABLED_KEY,
-    DEEPY_VRAM_ALWAYS,
-    DEEPY_VRAM_MODE_KEY,
-    DEEPY_VRAM_UNLOAD,
-    DEEPY_VRAM_UNLOAD_ON_REQUEST,
-    deepy_available,
-    deepy_requirement_met,
-    normalize_deepy_default_image_generator,
-    normalize_deepy_default_video_generator,
-    normalize_deepy_enabled,
-    normalize_deepy_vram_mode,
-    set_deepy_runtime_config,
-)
+from shared.deepy.config import get_deepy_default_runtime_config, set_deepy_runtime_config
 from shared.loras_migration import migrate_loras_layout
 from huggingface_hub import hf_hub_download, snapshot_download
 from shared.utils import files_locator as fl 
 from shared.gradio.audio_gallery import AudioGallery  
 from shared.utils.self_refiner import normalize_self_refiner_plan, ensure_refiner_list, add_refiner_rule, remove_refiner_rule
-from shared.agents_engine import (
-    AssistantEngine,
-    AssistantRuntimeHooks,
-    clear_assistant_session,
-    get_or_create_assistant_session,
-    request_assistant_reset,
-    tools as AssistantTools,
-)
+from shared.deepy import controller as deepy_controller
+from shared.deepy import cli as deepy_cli
+from shared.deepy import gradio_ui as deepy_gradio_ui
 import torch
 import gc
 import traceback
@@ -112,7 +92,7 @@ from transformers.utils import logging
 logging.set_verbosity_error
 from tqdm import tqdm
 import requests
-from shared.gradio.gallery import AdvancedMediaGallery
+from shared.gradio.gallery import AdvancedMediaGallery, get_gradio_file_path
 from shared.ffmpeg_setup import download_ffmpeg
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from shared.llm_engines.nanovllm.vllm_support import resolve_lm_decoder_engine
@@ -133,7 +113,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "10.9875"
+WanGP_version = "11"
 settings_version = 2.55
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -143,6 +123,10 @@ CUSTOM_SETTINGS_PER_ROW = 2
 CUSTOM_SETTING_TYPES = {"int", "float", "text"}
 lm_decoder_engine = ""
 enable_int8_kernels = 0
+theme_text_size = Size("8.1px", "9px", "10.8px", "12.6px", "14.4px", "19.8px", "23.4px", name="wangp_text_90")
+theme_spacing_size = Size("0.9px", "1.8px", "3.6px", "5.4px", "7.2px", "9px", "14.4px", name="wangp_spacing_90")
+theme_radius_size = Size("0.9px", "1.8px", "3.6px", "5.4px", "7.2px", "10.8px", "19.8px", name="wangp_radius_90")
+app = None
 # All media attachment keys for queue save/load
 ATTACHMENT_KEYS = ["image_start", "image_end", "image_refs", "image_guide", "image_mask",
                    "video_guide",  "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source", "custom_guide"]
@@ -314,17 +298,6 @@ def clean_image_list(gradio_list):
     if any( isinstance(image, str) and not has_image_file_extension(image) for image in gradio_list): return None
     gradio_list = [ convert_image( Image.open(img) if isinstance(img, str) else img  ) for img in gradio_list  ]        
     return gradio_list
-
-_generate_video_param_names = None
-def _get_generate_video_param_names():
-    """Get parameter names from generate_video signature (cached)."""
-    global _generate_video_param_names
-    if _generate_video_param_names is None:
-        _generate_video_param_names = [
-            x for x in inspect.signature(generate_video).parameters
-            if x not in ["task", "send_cmd", "plugin_data"]
-        ]
-    return _generate_video_param_names
 
 
 def silent_cancel_edit(state):
@@ -1499,7 +1472,7 @@ def _process_task_params(params, state, log_prefix="[load]"):
     return model_type, None
 
 
-def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_prefix="[load]"):
+def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_prefix="[load]", verbose_output = True):
     global task_id
     newly_loaded_queue = []
     first_error = None
@@ -1528,7 +1501,8 @@ def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_p
         # Build runtime task
         runtime_task = _build_runtime_task(task_id_loaded, params, task_data.get('plugin_data', {}))
         newly_loaded_queue.append(runtime_task)
-        print(f"{log_prefix} Task {task_index+1}/{len(manifest)} ready, ID: {task_id_loaded}, model: {model_type}")
+        if verbose_output:
+            print(f"{log_prefix} Task {task_index+1}/{len(manifest)} ready, ID: {task_id_loaded}, model: {model_type}")
 
     # Update global task_id
     if newly_loaded_queue:
@@ -1623,6 +1597,26 @@ def record_queue_error(state, queue, error, abort= False):
             queue_errors[client_id] = (error, abort, i>0)
 
 
+def _normalize_inline_queue_priority(value):
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"", "0", "false", "off", "no"}:
+            return False
+        if value in {"1", "true", "on", "yes"}:
+            return True
+    return bool(value)
+
+
+def _pop_runtime_task_priority(task):
+    if not isinstance(task, dict):
+        return False
+    params = task.get("params", None)
+    raw_value = params.pop("priority", None) if isinstance(params, dict) else None
+    if raw_value is None:
+        raw_value = task.pop("priority", None)
+    return _normalize_inline_queue_priority(raw_value)
+
+
 def load_queue_action(filepath, state, evt:gr.EventData):
     """Load queue from ZIP or JSON file (Gradio UI wrapper)."""
     global task_id
@@ -1632,14 +1626,16 @@ def load_queue_action(filepath, state, evt:gr.EventData):
     # Determine filename (autoload vs user upload)
     delete_autoqueue_file = False
     filename = file_path = None
+    verbose_output = True
     newly_loaded_queue = gen.pop("inline_queue", None)
     if newly_loaded_queue is not None:
+        verbose_output = False
         inline_queue_source = newly_loaded_queue
         if isinstance(newly_loaded_queue, dict): 
             newly_loaded_queue = [ {"id": 0, "params": newly_loaded_queue}]
         else:
             inline_queue_source = newly_loaded_queue
-        newly_loaded_queue, error = _parse_task_manifest(newly_loaded_queue, state, None, None, "[unpack queue]")
+        newly_loaded_queue, error = _parse_task_manifest(newly_loaded_queue, state, None, None, "[unpack queue]", verbose_output = verbose_output )
         if error:
             if isinstance(inline_queue_source, dict):
                 inline_queue_source = [{"id": 0, "params": inline_queue_source}]
@@ -1694,13 +1690,26 @@ def load_queue_action(filepath, state, evt:gr.EventData):
             # Renumber newly loaded tasks
             for i, task in enumerate(newly_loaded_queue):
                 task['id'] = max_existing_id + 1 + i
+            priority_tasks = []
+            regular_tasks = []
+            for task in newly_loaded_queue:
+                if _pop_runtime_task_priority(task):
+                    priority_tasks.append(task)
+                else:
+                    regular_tasks.append(task)
             # Update global task_id counter
             task_id = max_existing_id + len(newly_loaded_queue) + 1
-            # Extend existing queue in-place (preserves reference for running process_tasks)
-            original_queue.extend(newly_loaded_queue)
+            with lock:
+                if priority_tasks:
+                    original_queue[1:1] = priority_tasks
+                if regular_tasks:
+                    original_queue.extend(regular_tasks)
+                gen["queue"] = original_queue
             action_msg = f"Merged {len(newly_loaded_queue)} task(s) with existing {len(original_queue) - len(newly_loaded_queue)} task(s)"
             merged_queue = original_queue
         else:
+            for task in newly_loaded_queue:
+                _pop_runtime_task_priority(task)
             # No existing queue - assign newly loaded queue directly
             merged_queue = newly_loaded_queue
             action_msg = f"Loaded {len(newly_loaded_queue)} task(s)"
@@ -1711,9 +1720,9 @@ def load_queue_action(filepath, state, evt:gr.EventData):
         with lock:
             gen["prompts_max"] = len(merged_queue)
         update_global_queue_ref(merged_queue)
-
-        print(f"[load_queue_action] {action_msg}.")
-        gr.Info(action_msg)
+        if verbose_output:
+            print(f"[load_queue_action] {action_msg}.")
+            gr.Info(action_msg)
         return update_queue_data(merged_queue)
 
     except Exception as e:
@@ -1738,6 +1747,7 @@ def load_queue_action(filepath, state, evt:gr.EventData):
                     print(f"[load_queue_action] Info: Could not remove temp file {filepath.name}: {e}")
             else:
                 print(f"[load_queue_action] Info: Did not remove non-temporary file: {filepath.name}")
+
 
 def clear_queue_action(state):
     gen = get_gen_info(state)
@@ -2316,6 +2326,11 @@ def _parse_args():
         help="Process a saved queue (.zip) or settings file (.json) without launching the web UI"
     )
     parser.add_argument(
+        "--ask-deepy",
+        action="store_true",
+        help="Start an interactive Deepy console session without launching the web UI"
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate file without generating (use with --process)"
@@ -2376,6 +2391,9 @@ def get_lora_dir(model_type):
 attention_modes_installed = get_attention_modes()
 attention_modes_supported = get_supported_attention_modes()
 args = _parse_args()
+verbose_arg_provided = any(one_arg == "--verbose" or str(one_arg).startswith("--verbose=") for one_arg in sys.argv[1:])
+if args.ask_deepy and not verbose_arg_provided:
+    args.verbose = "0"
 migrate_loras_layout()
 
 gpu_major, gpu_minor = torch.cuda.get_device_capability(args.gpu if len(args.gpu) > 0 else None)
@@ -2474,10 +2492,7 @@ if not Path(config_load_filename).is_file():
         "mmaudio_mode": 0,
         "mmaudio_persistence": 1,
         "rife_version": "v4",
-        DEEPY_ENABLED_KEY: 0,
-        DEEPY_VRAM_MODE_KEY: DEEPY_VRAM_UNLOAD,
-        DEEPY_DEFAULT_IMAGE_GENERATOR_KEY: DEEPY_DEFAULT_IMAGE_GENERATOR,
-        DEEPY_DEFAULT_VIDEO_GENERATOR_KEY: DEEPY_DEFAULT_VIDEO_GENERATOR,
+        **get_deepy_default_runtime_config(),
         "prompt_enhancer_quantization": "quanto_int8",
         "prompt_enhancer_temperature": 0.6,
         "prompt_enhancer_top_p": 0.9,
@@ -2894,10 +2909,6 @@ def fix_settings(model_type, ui_defaults, min_settings_version = 0):
 
     audio_prompt_type = ui_defaults.get("audio_prompt_type", None)
     if settings_version < 2.2: 
-        if not base_model_type in ["vace_1.3B","vace_14B", "sky_df_1.3B", "sky_df_14B", "ltxv_13B"]:
-            for p in  ["sliding_window_size", "sliding_window_overlap", "sliding_window_overlap_noise", "sliding_window_discard_last_frames"]:
-                if p in ui_defaults: del ui_defaults[p]
-
         if audio_prompt_type == None :
             if any_audio_track(base_model_type):
                 audio_prompt_type ="A"
@@ -3127,10 +3138,6 @@ if "save_queue_if_crash" not in server_config: server_config["save_queue_if_cras
 if "prompt_enhancer_temperature" not in server_config: server_config["prompt_enhancer_temperature"] = 0.6
 if "prompt_enhancer_top_p" not in server_config: server_config["prompt_enhancer_top_p"] = 0.9
 if "prompt_enhancer_randomize_seed" not in server_config: server_config["prompt_enhancer_randomize_seed"] = True
-server_config[DEEPY_ENABLED_KEY] = normalize_deepy_enabled(server_config.get(DEEPY_ENABLED_KEY, 0))
-server_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_UNLOAD))
-server_config[DEEPY_DEFAULT_IMAGE_GENERATOR_KEY] = normalize_deepy_default_image_generator(server_config.get(DEEPY_DEFAULT_IMAGE_GENERATOR_KEY, DEEPY_DEFAULT_IMAGE_GENERATOR))
-server_config[DEEPY_DEFAULT_VIDEO_GENERATOR_KEY] = normalize_deepy_default_video_generator(server_config.get(DEEPY_DEFAULT_VIDEO_GENERATOR_KEY, DEEPY_DEFAULT_VIDEO_GENERATOR))
 set_deepy_runtime_config(server_config, server_config_filename)
 if "enable_int8_kernels" not in server_config: server_config["enable_int8_kernels"] = 0
 
@@ -3649,11 +3656,8 @@ def init_pipe(pipe, kwargs, profile):
     return mmgp_profile
 
 reset_prompt_enhancer_requested = False
-DEEPY_GPU_PROCESS_ID = "deepy"
 def unload_prompt_enhancer_runtime():
-    from shared.prompt_enhancer import unload_prompt_enhancer_models
-
-    unload_prompt_enhancer_models(prompt_enhancer_image_caption_model, prompt_enhancer_llm_model)
+    deepy_controller._unload_prompt_enhancer_runtime(prompt_enhancer_image_caption_model, prompt_enhancer_llm_model)
 
 
 def reset_prompt_enhancer():
@@ -3716,29 +3720,12 @@ def ensure_prompt_enhancer_loaded(override_profile=None, progress=None):
         raise gr.Error("Prompt enhancer text runtime is not available.")
     return prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
 
-
-def deepy_is_available():
-    return deepy_available(server_config)
-
-
-def get_deepy_vram_mode():
-    return normalize_deepy_vram_mode(server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_UNLOAD))
-
-
-def release_deepy_vram(state, clear_session_state = False):
-    session = get_or_create_assistant_session(state)
-    release_callback = session.release_vram_callback
-    session.release_vram_callback = None
-    unregister_GPU_resident(state, DEEPY_GPU_PROCESS_ID)
-    if callable(release_callback):
-        release_callback()
-    if clear_session_state:
-        clear_assistant_session(session)
-
-
-
 def load_models(model_type, override_profile = -1, output_type="video", **model_kwargs):
     global transformer_type, loaded_profile
+    def _load_models_info(message):
+        if int(verbose_level) > 0:
+            print(message)
+
     base_model_type = get_base_model_type(model_type)
     model_def = get_model_def(model_type)
     save_quantized = args.save_quantized and model_def != None
@@ -3807,9 +3794,9 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
 
     for source_type, filename in zip(source_type_list, local_model_file_list):
         if source_type==0:  
-            print(f"Loading Model '{filename}' ...")
+            _load_models_info(f"Loading Model '{filename}' ...")
         elif source_type==1:  
-            print(f"Loading Module '{filename}' ...")
+            _load_models_info(f"Loading Module '{filename}' ...")
 
 
     model_type_handler = model_types_handlers[base_model_type] 
@@ -3821,13 +3808,13 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
         if text_encoder_filename is not None:
             download_models(text_encoder_filename, file_model_type, 2, -1, force_path =text_encoder_folder)
             text_encoder_filename =  get_local_model_filename(text_encoder_filename, extra_paths=text_encoder_folder)
-            print(f"Loading Text Encoder '{text_encoder_filename}' ...")
+            _load_models_info(f"Loading Text Encoder '{text_encoder_filename}' ...")
 
 
     profile = compute_profile(override_profile, output_type)
     lm_decoder_engine_obtained = resolve_lm_decoder_engine(lm_decoder_engine, model_def.get("lm_engines", []) )
     if lm_decoder_engine_obtained in ("cg", "vllm") and int(profile) not in [ 1, 3]:
-        print(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
+        _load_models_info(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
         lm_decoder_engine_obtained = "legacy"
     torch.set_default_device('cpu')    
     wan_model, pipe = model_type_handler.load_model(
@@ -3851,7 +3838,7 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
         wan_model.custom_compile(backend= "inductor", mode ="default")
     compile_modules = model_def.get("compile", compile) if len(compile) > 0 else ""
     if compile_modules == False:
-        print("Pytorch compilation is not supported for this Model")
+        _load_models_info("Pytorch compilation is not supported for this Model")
     # kwargs["pinnedMemory"] = "text_encoder"
     offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)  
     if len(args.gpu) > 0:
@@ -3943,7 +3930,7 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
         with gen_lock:
             process_status = gen.get("process_status", None)
             pause_msg = None
-            if process_status.startswith("request:"):        
+            if isinstance(process_status, str) and process_status.startswith("request:"):
                 gen["process_status"] = "process:" + process_status[len("request:"):]
                 offloadobj.unload_all()
                 pause_msg = gen.get("pause_msg", "Unknown Pause")
@@ -3955,6 +3942,9 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
                 time.sleep(0.1)            
                 with gen_lock:
                     process_status = gen.get("process_status", None)
+                    if isinstance(process_status, str) and process_status.startswith("request:"):
+                        gen["process_status"] = "process:" + process_status[len("request:"):]
+                        continue
                     if process_status == "process:main": break
             force_refresh = True
         if gen.get("early_stop", False) and not gen.get("early_stop_forwarded", False):
@@ -4255,9 +4245,10 @@ def get_file_list(state, input_file_list, audio_files = False):
             file_list = []
             file_settings_list = []
             if input_file_list != None:
+                if not isinstance(input_file_list, list): input_file_list = [input_file_list]
                 for file_path in input_file_list:
-                    if isinstance(file_path, tuple): file_path = file_path[0]
-                    if not os.path.isfile(file_path):
+                    file_path = get_gradio_file_path(file_path)
+                    if not file_path or not os.path.isfile(file_path):
                         continue
                     file_settings, _, _ = get_settings_from_file(state, file_path, False, False, False)
                     file_list.append(file_path)
@@ -4271,6 +4262,8 @@ def set_file_choice(gen, file_list, choice, audio_files = False):
     if len(file_list) > 0: choice = max(choice,0)
     gen["audio_last_selected" if audio_files else "last_selected"] = (choice + 1) >= len(file_list)
     gen["audio_selected" if audio_files else "selected"] = choice
+    gen["current_gallery_source"] = "audio" if audio_files else "video"
+    gen["selected_video_time"] = None if audio_files or choice < 0 or choice >= len(file_list) or not has_video_file_extension(file_list[choice]) else 0.0
 
 def select_audio(state, audio_files_paths, audio_file_selected):
     gen = get_gen_info(state)
@@ -4566,6 +4559,10 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             prompt_class = model_def.get("prompt_class","Text Prompt")
             values +=  misc_values + [video_prompt]
             labels +=  misc_labels + [ prompt_class]
+            video_comments = html.escape(str(configs.get("comments", "") or "")[:4096]).replace("\n", "<BR>")
+            if len(video_comments) > 0:
+                values += [video_comments]
+                labels += ["Comments"]
             alt_prompt_def = model_def.get("alt_prompt", None)
             if alt_prompt_def is not None:
                 alt_prompt_label = alt_prompt_def.get("name", alt_prompt_def.get("label")) 
@@ -4745,9 +4742,9 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             #video_info, #video_info TR, #video_info TD {
             background-color: transparent; 
             color: inherit; 
-            padding: 4px;
+            padding: 3px 4px;
             border:0px !important;
-            font-size:12px;
+            font-size:11px;
             }
             </STYLE>
         """
@@ -5637,80 +5634,7 @@ def exec_prompt_enhancer_engine(state, model_def, prompt_enhancer_modes, origina
 
     assistant_mode = "A" in prompt_enhancer_modes
     if assistant_mode:
-        if not normalize_deepy_enabled(server_config.get(DEEPY_ENABLED_KEY, 0)):
-            raise gr.Error("Deepy is disabled in Configuration > Assistant.")
-        if not deepy_requirement_met(server_config):
-            raise gr.Error("Deepy requires Prompt Enhancer to be set to Qwen3.5VL Abliterated 4B or 9B.")
-        if send_cmd is None or tools is None:
-            raise gr.Error("Assistant mode requires a command stream and a tool registry.")
-        import secrets
-
-        enhancer_temperature = server_config.get("prompt_enhancer_temperature", 0.6)
-        enhancer_top_p = server_config.get("prompt_enhancer_top_p", 0.9)
-        randomize_seed = server_config.get("prompt_enhancer_randomize_seed", True)
-        assistant_seed = secrets.randbits(32) if randomize_seed else (seed if seed is not None and seed >= 0 else 0)
-        session = get_or_create_assistant_session(state)
-        assistant_model_def = model_def if model_def is not None else get_model_def(get_state_model_type(state))
-        _assistant_instructions, assistant_max_new_tokens = resolve_prompt_enhancer_settings(
-            assistant_model_def,
-            prompt_enhancer_modes,
-            is_image=False,
-            text_encoder_max_tokens=1024,
-        )
-        assistant_max_new_tokens = max(1024, int(assistant_max_new_tokens))
-
-        def assistant_ensure_loaded():
-            return ensure_prompt_enhancer_loaded(override_profile=override_profile)
-
-        def assistant_ensure_vision_loaded():
-            ensure_prompt_enhancer_loaded(override_profile=override_profile)
-            if prompt_enhancer_image_caption_model is None or prompt_enhancer_image_caption_processor is None:
-                raise gr.Error("Prompt enhancer vision runtime is not available.")
-            return prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor
-
-        def assistant_unload_weights():
-            if enhancer_offloadobj is not None:
-                enhancer_offloadobj.unload_all()
-
-        assistant = AssistantEngine(
-            session,
-            AssistantRuntimeHooks(
-                acquire_gpu=lambda: acquire_GPU_ressources(state, DEEPY_GPU_PROCESS_ID, "Deepy"),
-                release_gpu=lambda keep_resident = False, release_vram_callback = None, force_release_on_acquire = True: release_GPU_ressources(
-                    state,
-                    DEEPY_GPU_PROCESS_ID,
-                    keep_resident=keep_resident,
-                    process_name="Deepy",
-                    release_vram_callback=release_vram_callback,
-                    force_release_on_acquire=force_release_on_acquire,
-                ),
-                register_gpu_resident=lambda release_vram_callback = None, force_release_on_acquire = True: register_GPU_resident(
-                    state,
-                    DEEPY_GPU_PROCESS_ID,
-                    "Deepy",
-                    release_vram_callback=release_vram_callback,
-                    force_release_on_acquire=force_release_on_acquire,
-                ),
-                clear_gpu_resident=lambda: unregister_GPU_resident(state, DEEPY_GPU_PROCESS_ID),
-                ensure_loaded=assistant_ensure_loaded,
-                unload_runtime=unload_prompt_enhancer_runtime,
-                unload_weights=assistant_unload_weights,
-                ensure_vision_loaded=assistant_ensure_vision_loaded,
-            ),
-            tools,
-            send_cmd,
-            thinking_enabled="K" in prompt_enhancer_modes,
-            vram_mode=get_deepy_vram_mode(),
-        )
-        assistant.run_turn(
-            original_prompts[0] if len(original_prompts) > 0 else "",
-            max_new_tokens=assistant_max_new_tokens,
-            seed=assistant_seed,
-            do_sample=True,
-            temperature=enhancer_temperature,
-            top_p=enhancer_top_p,
-        )
-        return None
+        return _deepy.run_assistant_prompt_turn(state, model_def, prompt_enhancer_modes, original_prompts, seed, override_profile=override_profile, send_cmd=send_cmd, tools=tools)
 
     acquire_GPU_ressources(state, "prompt_enhancer", "Prompt Enhancer")
     try:
@@ -5967,6 +5891,49 @@ def _video_tensor_to_uint8_chunk_inplace(sample, value_range=(-1, 1)):
     sample = sample.sub_(min_val).mul_(255.0 / (max_val - min_val)).to(torch.uint8)
     return sample
 
+def get_output_filepath(file_path, is_image, audio_only):
+    if is_image:
+        base_path = image_save_path
+    elif audio_only:
+        base_path = audio_save_path
+    else:
+        base_path = save_path
+    return get_available_filename(base_path, file_path)
+
+def record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=None):
+    metadata_choice = server_config.get("metadata_type","metadata")
+    file_list, file_settings_list, audio_file_list, audio_file_settings_list = get_processed_queue(gen)
+    video_path = [video_path] if not isinstance(video_path, list) else video_path
+    for no, path in enumerate(video_path):
+        if configs is not None:
+            if metadata_choice == "json":
+                json_path = os.path.splitext(path)[0] + ".json"
+                with open(json_path, 'w') as f:
+                    json.dump(configs, f, indent=4)
+            elif metadata_choice == "metadata":
+                if audio_only:
+                    save_audio_metadata(path, configs)
+                if is_image:
+                    save_image_metadata(path, configs)
+                else:
+                    save_video_metadata(path, configs, embedded_images)
+        if verbose_level > 0:
+            if audio_only:
+                print(f"New audio file saved to Path: "+ path)
+            elif is_image:
+                print(f"New image saved to Path: "+ path)
+            else:
+                print(f"New video saved to Path: "+ path)
+        with lock:
+            if audio_only:
+                audio_file_list.append(path)
+                audio_file_settings_list.append(configs if no > 0 else configs.copy())
+            else:
+                file_list.append(path)
+                file_settings_list.append(configs if no > 0 else configs.copy())
+            gen["last_was_audio"] = audio_only
+
+
 def generate_video(
     task,
     send_cmd,
@@ -6100,12 +6067,6 @@ def generate_video(
     if mode.startswith("edit_"):
         edit_video(send_cmd, state, mode, video_source, seed, temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, MMAudio_setting, MMAudio_prompt, MMAudio_neg_prompt, repeat_generation, audio_source)
         return True
-    with lock:
-        file_list = gen["file_list"]
-        file_settings_list = gen["file_settings_list"]
-        audio_file_list = gen["audio_file_list"]
-        audio_file_settings_list = gen["audio_file_settings_list"]
-
 
     model_def = get_model_def(model_type) 
     is_image = image_mode > 0
@@ -6300,6 +6261,7 @@ def generate_video(
     else:
         speakers_bboxes = None        
     if "L" in image_prompt_type:
+        file_list, _, _, _ = get_processed_queue(gen)
         if len(file_list)>0:
             video_source = file_list[-1]
         else:
@@ -7231,34 +7193,7 @@ def generate_video(
                 configs["creation_date"] = datetime.fromtimestamp(end_time).isoformat(timespec="seconds")
                 configs["creation_timestamp"] = int(end_time)
                 # if sample_is_image: configs["is_image"] = True
-                metadata_choice = server_config.get("metadata_type","metadata")
-                video_path = [video_path] if not isinstance(video_path, list) else video_path
-                for no, path in enumerate(video_path):
-                    if metadata_choice == "json":
-                        json_path = os.path.splitext(path)[0] + ".json"
-                        with open(json_path, 'w') as f:
-                            json.dump(configs, f, indent=4)
-                    elif metadata_choice == "metadata":
-                        if audio_only:
-                            save_audio_metadata(path, configs)
-                        if is_image:
-                            save_image_metadata(path, configs)
-                        else:
-                            save_video_metadata(path, configs, embedded_images)
-                    if audio_only:
-                        print(f"New audio file saved to Path: "+ path)
-                    elif is_image:
-                        print(f"New image saved to Path: "+ path)
-                    else:
-                        print(f"New video saved to Path: "+ path)
-                    with lock:
-                        if audio_only:
-                            audio_file_list.append(path)
-                            audio_file_settings_list.append(configs if no > 0 else configs.copy())
-                        else:
-                            file_list.append(path)
-                            file_settings_list.append(configs if no > 0 else configs.copy())
-                        gen["last_was_audio"] = audio_only
+                record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=embedded_images)
 
                 embedded_images = None
                 # Play notification sound for single video
@@ -7391,12 +7326,14 @@ def process_tasks(state):
         audio_choice = gen.get("audio_selected",-1)
         gen["audio_file_list"], gen["audio_file_settings_list"], gen["audio_selected"] = truncate_list(audio_file_list, audio_file_settings_list, audio_choice)         
 
+    set_main_generation_running(state, True)
     acquire_main_GPU_ressources(state)
 
     def release_gen():
+        set_main_generation_running(state, False)
         with gen_lock:
             process_status = gen.get("process_status", None)
-            if process_status.startswith("request:"):        
+            if isinstance(process_status, str) and process_status.startswith("request:"):
                 gen["process_status"] = "process:" + process_status[len("request:"):]
             else:
                 gen["process_status"] = None
@@ -8413,16 +8350,20 @@ def get_function_arguments(func, locals):
 
 def init_generate(state, input_file_list, last_choice, audio_files_paths, audio_file_selected):
     gen = get_gen_info(state)
+    current_gallery_source = gen.get("current_gallery_source", "video")
+    selected_video_time = gen.get("selected_video_time", None)
     file_list, file_settings_list = get_file_list(state, input_file_list)
-    set_file_choice(gen, file_list, last_choice)
+    if len(file_list) > 0: last_choice = max(last_choice, 0)
+    gen["last_selected"] = (last_choice + 1) >= len(file_list)
+    gen["selected"] = last_choice
     audio_file_list, audio_file_settings_list = get_file_list(state, unpack_audio_list(audio_files_paths), audio_files=True)
-    set_file_choice(gen, audio_file_list, audio_file_selected, audio_files=True)
-
+    if len(audio_file_list) > 0: audio_file_selected = max(audio_file_selected, 0)
+    gen["audio_last_selected"] = (audio_file_selected + 1) >= len(audio_file_list)
+    gen["audio_selected"] = audio_file_selected
+    gen["current_gallery_source"] = current_gallery_source
+    gen["selected_video_time"] = selected_video_time if current_gallery_source == "video" and 0 <= last_choice < len(file_list) and has_video_file_extension(file_list[last_choice]) else None
     return get_unique_id(), ""
 
-
-def init_generate_for_assistant(state, input_file_list, last_choice, audio_files_paths, audio_file_selected):
-    init_generate(state, input_file_list, last_choice, audio_files_paths, audio_file_selected)
 
 def video_to_control_video(state, input_file_list, choice):
     file_list, file_settings_list = get_file_list(state, input_file_list)
@@ -9807,7 +9748,12 @@ def download_lora(state, lora_url, progress=gr.Progress(track_tqdm=True),):
     
 
 def set_gallery_tab(state, evt:gr.SelectData):                
-    return evt.index, "video" if evt.index == 0 else "audio"
+    gen = get_gen_info(state)
+    gen["current_gallery_source"] = "video" if evt.index == 0 else "audio"
+    if evt.index != 0:
+        gen["selected_video_time"] = None
+    return evt.index, gen["current_gallery_source"]
+
 
 def get_processed_queue(gen):
     with lock:
@@ -9817,91 +9763,32 @@ def get_processed_queue(gen):
         audio_file_settings_list = gen.get("audio_file_settings_list", [])
     return file_list, file_settings_list, audio_file_list, audio_file_settings_list
 
-def ask_ai(state, ask_request):
-    from shared.utils.thread_utils import AsyncStream, async_run_in
 
-    def get_refresh_id():
-        return str(time.time()) + "_" + str(get_new_refresh_id())
-    session = get_or_create_assistant_session(state)
-    ask_request = str(ask_request or "").strip()
-    if len(ask_request) == 0:
-        yield gr.update(), gr.update(), gr.update()
-        return
-    if not deepy_is_available():
-        requirement_text = "Deepy requires Prompt Enhancer to be set to Qwen3.5VL Abliterated 4B or 9B." if not deepy_requirement_met(server_config) else "Deepy is disabled in Configuration > Assistant."
-        error_turn_id = assistant_chat.create_assistant_turn(session)
-        error_event = assistant_chat.set_assistant_content(session, error_turn_id, requirement_text)
-        yield error_event if error_event is not None else gr.update(), gr.update(), gr.update(value="")
-        return
-    gen = get_gen_info(state)
-    com_stream = AsyncStream()
-    send_cmd = com_stream.output_queue.push
-    queued = session.worker_active or session.queued_job_count > 0
-    queued_epoch = session.chat_epoch
-    session.queued_job_count += 1
-    user_message_id, user_event = assistant_chat.add_user_message(session, ask_request, queued=queued)
-    yield user_event, gr.update(), gr.update(value="")
-    if queued:
-        yield assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"), gr.update(), gr.update()
-
-    def queue_worker_func():
-        session.queued_job_count = max(0, session.queued_job_count - 1)
-        if queued_epoch != session.chat_epoch:
-            send_cmd("exit", None)
-            return
-        session.control_queue = com_stream.output_queue
-        session.worker_active = True
-        send_cmd("chat_output", assistant_chat.build_sync_event(session))
-        queued_badge_event = assistant_chat.set_message_badge(session, user_message_id, None)
-        if queued_badge_event is not None:
-            send_cmd("chat_output", queued_badge_event)
-        my_tools = AssistantTools(gen, get_processed_queue, send_cmd, session=session)
-        try:
-            exec_prompt_enhancer_engine(state, None, "AK", [ask_request], None, None, False, False, 0, None, 3.5, send_cmd, my_tools)
-        except Exception as e:
-            traceback.print_exc()
-            error_turn_id = assistant_chat.create_assistant_turn(session)
-            error_event = assistant_chat.set_assistant_content(session, error_turn_id, f"Assistant crashed: {e}")
-            if error_event is not None:
-                send_cmd("chat_output", error_event)
-            send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
-        finally:
-            session.worker_active = False
-            if session.control_queue is com_stream.output_queue:
-                session.control_queue = None
-            if queued_epoch == session.chat_epoch and not session.interrupt_requested:
-                send_cmd("chat_output", assistant_chat.build_sync_event(session))
-            send_cmd("exit", None)
-
-    async_run_in("assistant", queue_worker_func)
-    while True:
-        cmd, data = com_stream.output_queue.next()               
-        if cmd == "console_output":
-            print(data)
-        elif cmd == "chat_output":
-            yield data, gr.update(), gr.update()
-        elif cmd == "load_queue_trigger":
-            yield gr.update(), str(get_refresh_id()), gr.update()
-        elif cmd == "error":
-            error_turn_id = assistant_chat.create_assistant_turn(session)
-            error_event = assistant_chat.set_assistant_content(session, error_turn_id, str(data or "Assistant error."))
-            yield error_event if error_event is not None else gr.update(), gr.update(), gr.update()
-        elif cmd == "exit":
-            break
-
-
-def reset_ai(state):
-    session = get_or_create_assistant_session(state)
-    if session.worker_active:
-        request_assistant_reset(session)
-        gen = get_gen_info(state)
-        if gen.get("in_progress") or len(gen.get("queue", []) or []) > 0:
-            clear_queue_action(state)
-        assistant_chat.reset_session_chat(session)
-    else:
-        release_deepy_vram(state, clear_session_state=True)
-    session.chat_html = ""
-    return assistant_chat.build_reset_event(), gr.update(), gr.update(value="")
+_deepy = deepy_controller.create_controller(
+    get_server_config=lambda: server_config,
+    get_server_config_filename=lambda: server_config_filename,
+    get_verbose_level=lambda: verbose_level,
+    resolve_prompt_enhancer_settings=resolve_prompt_enhancer_settings,
+    get_state_model_type=get_state_model_type,
+    get_model_def=get_model_def,
+    ensure_prompt_enhancer_loaded=ensure_prompt_enhancer_loaded,
+    unload_prompt_enhancer_runtime=unload_prompt_enhancer_runtime,
+    get_image_caption_model=lambda: prompt_enhancer_image_caption_model,
+    get_image_caption_processor=lambda: prompt_enhancer_image_caption_processor,
+    get_enhancer_offloadobj=lambda: enhancer_offloadobj,
+    acquire_gpu=lambda state: acquire_GPU_ressources(state, "deepy", "Deepy"),
+    release_gpu=lambda state, **kwargs: release_GPU_ressources(state, "deepy", process_name="Deepy", **kwargs),
+    register_gpu_resident=lambda state, **kwargs: register_GPU_resident(state, "deepy", "Deepy", **kwargs),
+    clear_gpu_resident=lambda state: unregister_GPU_resident(state, "deepy"),
+    get_new_refresh_id=get_new_refresh_id,
+    get_gen_info=get_gen_info,
+    get_processed_queue=get_processed_queue,
+    get_output_filepath=get_output_filepath,
+    record_file_metadata=record_file_metadata,
+    exec_prompt_enhancer_engine=exec_prompt_enhancer_engine,
+    clear_queue_action=clear_queue_action,
+)
+release_deepy_vram = _deepy.release_vram
 
 
 def generate_video_tab(update_form = False, state_dict = None, ui_defaults = None, model_family = None, model_base_type_choice = None, model_choice = None, model_description = None, header = None, main = None, main_tabs= None, tab_id='generate', edit_tab=None, default_state=None):
@@ -11123,15 +11010,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         lora_url = gr.Text(label ="Lora URL", placeholder= "Enter Lora URL", scale=4, show_label=False, elem_classes="compact_text" )
                         download_lora_btn = gr.Button("Download Lora", scale=1, min_width=10)
 
-                with gr.Column(elem_id=assistant_chat.DOCK_ID) as assistant_dock:
-                    assistant_launcher_host = gr.HTML(assistant_chat.render_launcher_html() if deepy_is_available() else "", elem_id=assistant_chat.LAUNCHER_HOST_ID, visible=deepy_is_available())
-                    with gr.Column(elem_id=assistant_chat.PANEL_ID, visible=deepy_is_available()) as assistant_panel:
-                        ask_htmloutput = gr.HTML(assistant_chat.render_shell_html(), elem_id=assistant_chat.CHAT_BLOCK_ID)
-                        assistant_chat_event = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.CHAT_EVENT_ID)
-                        with gr.Row(elem_id=assistant_chat.CONTROLS_ID):
-                            ask_request =  gr.Text(value = "", label="Request", scale =3, show_label = False, elem_id=assistant_chat.REQUEST_ID)
-                            ask_btn = gr.Button("Ask", scale=1, min_width=10, elem_id=assistant_chat.ASK_BUTTON_ID)
-                            ask_reset_btn = gr.Button("Reset", scale=1, min_width=10, elem_id=assistant_chat.RESET_BUTTON_ID)
+                assistant_ui = deepy_gradio_ui.build_deepy_chat_ui(deepy_visible=_deepy.is_available())
+                assistant_launcher_host = assistant_ui.launcher_host
+                assistant_panel = assistant_ui.panel
 
             mode = gr.Text(value="", visible = False)
 
@@ -11150,6 +11031,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         output_audio = AudioGallery(audio_paths=[], max_thumbnails=999, height=40, update_only=update_form)
                         audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger = output_audio.get_state()
                 output_trigger = gr.Text(interactive= False, visible=False)
+                selected_video_time_input = gr.Text(interactive= False, visible=False, elem_id="selected_video_time_input")
                 refresh_models_trigger = gr.Text(interactive= False, visible=False)
                 refresh_form_trigger = gr.Text(interactive= False, visible=False)
                 fill_wizard_prompt_trigger = gr.Text(interactive= False, visible=False)
@@ -11427,9 +11309,25 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 )
             
             set_save_form_event(save_form_trigger.change)
-            ask_btn.click(fn=init_generate_for_assistant, inputs=[state, output, last_choice, audio_files_paths, audio_file_selected], outputs=None, show_progress="hidden").then(fn=ask_ai, inputs=[state, ask_request], outputs=[assistant_chat_event, load_queue_trigger, ask_request])
-            ask_request.submit(fn=init_generate_for_assistant, inputs=[state, output, last_choice, audio_files_paths, audio_file_selected], outputs=None, show_progress="hidden").then(fn=ask_ai, inputs=[state, ask_request], outputs=[assistant_chat_event, load_queue_trigger, ask_request], show_progress="hidden")
-            ask_reset_btn.click(fn=reset_ai, inputs=[state], outputs=[assistant_chat_event, load_queue_trigger, ask_request], show_progress="hidden")
+            deepy_gradio_ui.bind_deepy_chat_ui(
+                assistant_ui,
+                state=state,
+                output=output,
+                last_choice=last_choice,
+                audio_files_paths=audio_files_paths,
+                audio_file_selected=audio_file_selected,
+                selected_video_time_input=selected_video_time_input,
+                load_queue_trigger=load_queue_trigger,
+                output_trigger=output_trigger,
+                handlers=deepy_gradio_ui.DeepyChatHandlers(
+                    prepare_request_context=init_generate,
+                    update_tool_ui_settings=_deepy.update_tool_ui_settings,
+                    store_selected_video_time=_deepy.store_selected_video_time,
+                    ask_ai=_deepy.ask_ai,
+                    stop_ai=_deepy.stop_ai,
+                    reset_ai=_deepy.reset_ai,
+                ),
+            )
             gr.on(triggers=[video_info_eject_video_btn.click, video_info_eject_video2_btn.click, video_info_eject_video3_btn.click, video_info_eject_deleted_video_btn.click,  video_info_eject_image_btn.click], fn=eject_video_from_gallery, inputs =[state, output, last_choice], outputs = [output, video_info, video_buttons_row] )
             video_info_to_control_video_btn.click(fn=video_to_control_video, inputs =[state, output, last_choice], outputs = [video_guide] )            
             video_info_to_video_source_btn.click(fn=video_to_source_video, inputs =[state, output, last_choice], outputs = [video_source] )
@@ -11876,7 +11774,7 @@ def create_ui():
     if UI_theme == "gradio":
         theme = None
     else:
-        theme = gr.themes.Soft(font=["Verdana"], primary_hue="sky", neutral_hue="slate", text_size="md")
+        theme = gr.themes.Soft(font=["Verdana"], primary_hue="sky", neutral_hue="slate", spacing_size=theme_spacing_size, radius_size=theme_radius_size, text_size=theme_text_size)
 
     # Load main JS from external file
     js_path = os.path.join(os.path.dirname(__file__), "shared", "gradio", "ui_scripts.js")
@@ -11900,7 +11798,7 @@ def create_ui():
     else:
         stats_app = None
 
-    with gr.Blocks(css=css, js=js,  theme=theme, title= "WanGP") as main:
+    with gr.Blocks(css=css, js=js, theme=theme, title="WanGP", fill_width=True) as main:
         gr.Markdown(f"<div align=center><H1>Wan<SUP>GP</SUP> v{WanGP_version} <FONT SIZE=4>by <I>DeepBeepMeep</I></FONT> <FONT SIZE=3>") # (<A HREF='https://github.com/deepbeepmeep/Wan2GP'>Updates</A>)</FONT SIZE=3></H1></div>")
         global model_list
 
@@ -12070,6 +11968,34 @@ if __name__ == "__main__":
         sys.exit(0)
 
     app = WAN2GPApplication()
+
+    if args.ask_deepy:
+        download_ffmpeg()
+        if len(args.output_dir) > 0:
+            if not os.path.isdir(args.output_dir):
+                os.makedirs(args.output_dir, exist_ok=True)
+            server_config["save_path"] = args.output_dir
+            server_config["image_save_path"] = args.output_dir
+            server_config["audio_save_path"] = args.output_dir
+            save_path = args.output_dir
+            image_save_path = args.output_dir
+            audio_save_path = args.output_dir
+            print(f"Output directory: {args.output_dir}")
+        server_config["notification_sound_enabled"] = 0
+        sys.exit(
+            deepy_cli.run_deepy_cli_session(
+                deepy_cli.DeepyCliDeps(
+                    controller=_deepy,
+                    get_server_config=lambda: server_config,
+                    get_gen_info=get_gen_info,
+                    get_settings_from_file=get_settings_from_file,
+                    load_queue_action=load_queue_action,
+                    validate_task=validate_task,
+                    generate_video=generate_video,
+                    default_model_type=transformer_type,
+                )
+            )
+        )
 
     # CLI Queue Processing Mode
     if len(args.process) > 0:

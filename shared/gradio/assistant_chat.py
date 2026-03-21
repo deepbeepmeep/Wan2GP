@@ -11,6 +11,8 @@ from typing import Any
 
 import markdown
 
+from shared.deepy import video_tools as deepy_video_tools
+
 
 CHAT_HOST_ID = "assistant_chat_html"
 CHAT_EVENT_ID = "assistant_chat_event"
@@ -18,15 +20,21 @@ DOCK_ID = "assistant_chat_dock"
 LAUNCHER_HOST_ID = "assistant_chat_launcher_host"
 LAUNCHER_BUTTON_ID = "assistant_chat_toggle"
 PANEL_ID = "assistant_chat_panel"
+SETTINGS_LAUNCHER_HOST_ID = "assistant_chat_settings_launcher_host"
+SETTINGS_TOGGLE_ID = "assistant_chat_settings_toggle"
+SETTINGS_PANEL_ID = "assistant_chat_settings_panel"
 CHAT_BLOCK_ID = "assistant_chat_shell_block"
 CONTROLS_ID = "assistant_chat_controls"
 REQUEST_ID = "assistant_chat_request"
 ASK_BUTTON_ID = "assistant_chat_ask_button"
 RESET_BUTTON_ID = "assistant_chat_reset_button"
+STOP_BRIDGE_ID = "assistant_chat_stop_bridge"
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jfif", ".pjpeg"}
+_VIDEO_EXTENSIONS = deepy_video_tools.VIDEO_EXTENSIONS
 _MARKDOWN_EXTENSIONS = ["extra", "nl2br", "sane_lists", "fenced_code", "tables"]
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)")
 SERVER_INSTANCE_ID = uuid.uuid4().hex
+_UNSET = object()
 
 
 def _shell_markup() -> str:
@@ -44,7 +52,7 @@ def _shell_markup() -> str:
   <div class="wangp-assistant-chat__status" aria-live="polite">
     <div class="wangp-assistant-chat__status-dots" aria-hidden="true"><span></span><span></span><span></span></div>
     <div class="wangp-assistant-chat__status-text"></div>
-    <div class="wangp-assistant-chat__status-kind"></div>
+    <button class="wangp-assistant-chat__status-stop" type="button" aria-label="Stop Deepy" disabled>Stop</button>
   </div>
 </section>
 """.strip()
@@ -63,12 +71,24 @@ def render_launcher_html() -> str:
     )
 
 
+def render_settings_launcher_html() -> str:
+    return (
+        f"<button id='{SETTINGS_TOGGLE_ID}' class='wangp-assistant-chat__settings-toggle' type='button' "
+        "aria-label='Toggle Deepy settings' aria-expanded='false'>"
+        "<span class='wangp-assistant-chat__settings-toggle-text'>Settings</span>"
+        "</button>"
+    )
+
+
 def get_css() -> str:
     return r"""
 #assistant_chat_dock {
     --dock-gap: 14px;
     --dock-launcher-width: 41px;
-    --dock-panel-width: 588px;
+    --dock-panel-width: 548px;
+    --dock-settings-panel-width: 660px;
+    --dock-settings-panel-offset: 44px;
+    --dock-font-scale: 0.9;
     position: fixed !important;
     top: 50%;
     left: 0;
@@ -90,7 +110,9 @@ def get_css() -> str:
 }
 
 #assistant_chat_launcher_host,
-#assistant_chat_panel {
+#assistant_chat_panel,
+#assistant_chat_settings_launcher_host,
+#assistant_chat_settings_panel {
     pointer-events: auto;
 }
 
@@ -129,11 +151,10 @@ def get_css() -> str:
     min-width: var(--dock-launcher-width);
     min-height: 188px;
     padding: 18px 6px;
-    border: 1px solid rgba(13, 74, 105, 0.22);
+    border: 1px solid rgba(73, 87, 99, 0.18);
     border-left: 0;
     border-radius: 0 22px 22px 0;
-    background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(230, 245, 251, 0.98) 100%);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(239, 242, 246, 0.98) 100%);
     box-shadow: 0 18px 34px rgba(8, 33, 49, 0.16);
     cursor: pointer;
     transform: translateX(-4px);
@@ -158,8 +179,8 @@ def get_css() -> str:
     align-items: center;
     justify-content: center;
     gap: 10px;
-    color: #0f5375;
-    font-size: 0.76rem;
+    color: #4d6070;
+    font-size: calc(0.76rem * var(--dock-font-scale));
     font-weight: 800;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -173,9 +194,9 @@ def get_css() -> str:
     left: calc(var(--dock-launcher-width) + var(--dock-gap));
     flex: 0 0 auto !important;
     width: min(var(--dock-panel-width), calc(100vw - 92px));
-    padding: 14px;
+    padding: 12px;
     border: 1px solid rgba(16, 78, 109, 0.16);
-    border-radius: 28px;
+    border-radius: 24px;
     background: #ffffff;
     box-shadow: 0 30px 60px rgba(8, 34, 50, 0.2);
     opacity: 0;
@@ -184,6 +205,7 @@ def get_css() -> str:
     transform-origin: left center !important;
     transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s step-end;
     pointer-events: none;
+    overflow: visible !important;
 }
 
 #assistant_chat_dock:not(.is-open) #assistant_chat_panel {
@@ -197,6 +219,147 @@ def get_css() -> str:
     transform: translateY(-50%) translateX(0) scale(1);
     transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s step-start;
     pointer-events: auto;
+}
+
+#assistant_chat_settings_launcher_host {
+    position: absolute !important;
+    top: 20px;
+    right: -30px;
+    z-index: 3;
+    width: 30px !important;
+    min-width: 30px !important;
+    max-width: 30px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+}
+
+#assistant_chat_settings_launcher_host .html-container,
+#assistant_chat_settings_launcher_host .prose {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+}
+
+#assistant_chat_settings_toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    min-width: 30px;
+    min-height: 156px;
+    padding: 14px 4px;
+    border: 1px solid rgba(16, 78, 109, 0.18);
+    border-left: 0;
+    border-radius: 0 18px 18px 0;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(237, 245, 250, 0.98) 100%);
+    box-shadow: 0 16px 28px rgba(8, 34, 50, 0.12);
+    cursor: pointer;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+#assistant_chat_settings_toggle:hover {
+    box-shadow: 0 18px 30px rgba(8, 34, 50, 0.16);
+}
+
+#assistant_chat_panel.is-settings-open #assistant_chat_settings_toggle {
+    background: linear-gradient(180deg, rgba(13, 79, 113, 0.98) 0%, rgba(7, 50, 72, 0.98) 100%);
+}
+
+#assistant_chat_panel.is-settings-open #assistant_chat_settings_toggle .wangp-assistant-chat__settings-toggle-text {
+    color: #f4fbff;
+}
+
+.wangp-assistant-chat__settings-toggle-text {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #0f5375;
+    font-size: calc(0.68rem * var(--dock-font-scale));
+    font-weight: 800;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+}
+
+#assistant_chat_settings_panel {
+    position: absolute !important;
+    top: 0;
+    left: calc(100% + var(--dock-settings-panel-offset));
+    z-index: 2;
+    width: min(var(--dock-settings-panel-width), calc(100vw - 150px));
+    height: 100%;
+    padding: 12px;
+    display: block;
+    border: 1px solid rgba(16, 78, 109, 0.16);
+    border-radius: 24px;
+    background: #ffffff;
+    box-shadow: 0 30px 60px rgba(8, 34, 50, 0.16);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateX(-24px) scale(0.98);
+    transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s step-end;
+    pointer-events: none;
+    overflow: hidden !important;
+}
+
+#assistant_chat_panel.is-settings-open #assistant_chat_settings_panel {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(0) scale(1);
+    transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s step-start;
+    pointer-events: auto;
+}
+
+#assistant_chat_settings_panel .form,
+#assistant_chat_settings_panel .wrap,
+#assistant_chat_settings_panel .block,
+#assistant_chat_settings_panel .gradio-container,
+#assistant_chat_settings_panel .accordion {
+    min-width: 0 !important;
+}
+
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll {
+    display: block !important;
+    height: 100%;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    padding-right: 4px;
+}
+
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block {
+    display: block !important;
+    margin: 0 0 12px !important;
+    overflow: visible;
+}
+
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap {
+    align-items: center;
+    padding: 10px 14px;
+    border: 1px solid rgba(23, 90, 125, 0.16);
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgba(236, 244, 249, 0.98) 0%, rgba(224, 237, 245, 0.98) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap.open {
+    margin-bottom: 8px;
+}
+
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap span {
+    color: #174a67;
+}
+
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > div:last-child {
+    overflow: visible;
+}
+
+#assistant_chat_settings_panel .label-wrap {
+    gap: 6px;
 }
 
 #assistant_chat_shell_block,
@@ -227,7 +390,7 @@ def get_css() -> str:
 
 #assistant_chat_controls {
     display: flex;
-    align-items: stretch;
+    align-items: center;
     flex-wrap: nowrap;
     justify-content: flex-start;
     gap: 10px;
@@ -260,9 +423,11 @@ def get_css() -> str:
 #assistant_chat_request textarea,
 #assistant_chat_request input {
     width: 100% !important;
-    min-height: 52px !important;
+    min-height: 48px !important;
+    font-size: calc(0.92rem * var(--dock-font-scale)) !important;
+    line-height: 1.45;
     border: 1px solid rgba(23, 90, 125, 0.18) !important;
-    border-radius: 16px !important;
+    border-radius: 15px !important;
     background: linear-gradient(180deg, rgba(248, 252, 255, 0.94) 0%, rgba(239, 246, 251, 0.95) 100%) !important;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 8px 18px rgba(14, 53, 75, 0.04) !important;
 }
@@ -285,26 +450,33 @@ def get_css() -> str:
 #assistant_chat_reset_button {
     order: 0;
     flex: 0 0 auto !important;
+    align-self: center;
     min-width: 0 !important;
-    min-height: 52px;
-    padding: 0 16px;
-    border-radius: 16px;
+    height: 48px;
+    min-height: 48px;
+    padding: 0 14px;
+    border-radius: 15px;
+    font-size: calc(1.12rem * var(--dock-font-scale));
     font-weight: 700;
     box-shadow: 0 12px 22px rgba(11, 43, 63, 0.12);
     border: 0;
 }
 
 #assistant_chat_ask_button {
-    width: 112px;
+    width: 86px;
     background: linear-gradient(180deg, #0e5b81 0%, #0a415e 100%);
     color: #f3fbff;
 }
 
 #assistant_chat_reset_button {
-    width: 88px;
+    width: 82px;
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(239, 246, 250, 0.98) 100%);
     color: #164f70;
     border: 1px solid rgba(20, 82, 113, 0.14);
+}
+
+#assistant_chat_stop_bridge {
+    display: none !important;
 }
 
 #assistant_chat_html {
@@ -315,6 +487,9 @@ def get_css() -> str:
     --chat-border: transparent;
     --chat-shadow: none;
     --chat-surface: #ffffff;
+    --chat-status-offset: 18px;
+    --chat-status-reserved-height: 0px;
+    --chat-status-gap: 7px;
     --assistant-bg: linear-gradient(180deg, #145171 0%, #0c3954 100%);
     --assistant-border: rgba(8, 40, 57, 0.42);
     --assistant-text: #f2fbff;
@@ -338,6 +513,10 @@ def get_css() -> str:
     background: var(--chat-surface);
     box-shadow: var(--chat-shadow);
     isolation: isolate;
+}
+
+.wangp-assistant-chat:has(.wangp-assistant-chat__status.is-visible) {
+    --chat-status-reserved-height: 58px;
 }
 
 .wangp-assistant-chat::before {
@@ -377,7 +556,7 @@ def get_css() -> str:
     border-radius: 0;
     color: var(--muted-text);
     text-align: center;
-    font-size: 0.98rem;
+    font-size: calc(0.98rem * var(--dock-font-scale));
     line-height: 1.6;
     background: transparent;
     backdrop-filter: none;
@@ -387,14 +566,14 @@ def get_css() -> str:
     display: block;
     margin-bottom: 6px;
     color: #194d70;
-    font-size: 1rem;
+    font-size: calc(1rem * var(--dock-font-scale));
 }
 
 .wangp-assistant-chat__transcript {
     display: flex;
     flex-direction: column;
     gap: 16px;
-    padding: 22px 18px 94px;
+    padding: 22px 18px calc(var(--chat-status-offset) + var(--chat-status-reserved-height) + var(--chat-status-gap));
 }
 
 .wangp-assistant-chat__message {
@@ -416,7 +595,7 @@ def get_css() -> str:
     width: 54px;
     height: 54px;
     border-radius: 50%;
-    font-size: 0.8rem;
+    font-size: calc(0.8rem * var(--dock-font-scale));
     font-weight: 700;
     letter-spacing: 0.03em;
     text-transform: uppercase;
@@ -437,7 +616,7 @@ def get_css() -> str:
 }
 
 .wangp-assistant-chat__message-card {
-    width: min(84%, 920px);
+    width: min(82%, 860px);
     border-radius: 22px;
     padding: 16px 16px 14px;
     box-shadow: 0 18px 34px rgba(11, 36, 54, 0.08);
@@ -461,7 +640,7 @@ def get_css() -> str:
     justify-content: space-between;
     gap: 12px;
     margin-bottom: 10px;
-    font-size: 0.82rem;
+    font-size: calc(0.82rem * var(--dock-font-scale));
     color: var(--soft-text);
 }
 
@@ -496,7 +675,7 @@ def get_css() -> str:
     margin-left: 8px;
     padding: 4px 10px;
     border-radius: 999px;
-    font-size: 0.72rem;
+    font-size: calc(0.72rem * var(--dock-font-scale));
     font-weight: 700;
     letter-spacing: 0.02em;
     background: rgba(31, 110, 154, 0.1);
@@ -514,7 +693,7 @@ def get_css() -> str:
 }
 
 .wangp-assistant-chat__body {
-    font-size: 0.97rem;
+    font-size: calc(0.97rem * var(--dock-font-scale));
     line-height: 1.68;
 }
 
@@ -605,8 +784,12 @@ def get_css() -> str:
     cursor: pointer;
     list-style: none;
     font-weight: 700;
-    font-size: 0.8rem;
+    font-size: calc(0.7rem * var(--dock-font-scale));
     line-height: 1.3;
+}
+
+.wangp-assistant-chat__disclosure > summary {
+    display: flex;
 }
 
 .wangp-assistant-chat__disclosure summary::-webkit-details-marker {
@@ -614,14 +797,14 @@ def get_css() -> str:
 }
 
 .wangp-assistant-chat__disclosure summary::after {
-    content: "▾";
-    font-size: 0.78rem;
-    transition: transform 0.18s ease;
+    content: "\25B8";
+    font-size: calc(0.78rem * var(--dock-font-scale));
+    transition: color 0.18s ease;
     color: #2f769f;
 }
 
 .wangp-assistant-chat__disclosure[open] summary::after {
-    transform: rotate(180deg);
+    content: "\25BE";
 }
 
 .wangp-assistant-chat__message--assistant .wangp-assistant-chat__disclosure summary::after {
@@ -630,7 +813,17 @@ def get_css() -> str:
 
 .wangp-assistant-chat__disclosure-body {
     padding: 0 14px 14px;
+    font-size: calc(0.84rem * var(--dock-font-scale));
+    line-height: 1.52;
     color: #385363;
+}
+
+.wangp-assistant-chat__disclosure:not([open]) > .wangp-assistant-chat__disclosure-body {
+    display: none;
+}
+
+.wangp-assistant-chat__disclosure[open] > .wangp-assistant-chat__disclosure-body {
+    display: block;
 }
 
 .wangp-assistant-chat__message--assistant .wangp-assistant-chat__disclosure-body {
@@ -641,7 +834,7 @@ def get_css() -> str:
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-size: 0.8rem;
+    font-size: calc(0.72rem * var(--dock-font-scale));
 }
 
 .wangp-assistant-chat__tool-chip {
@@ -649,7 +842,7 @@ def get_css() -> str:
     align-items: center;
     padding: 2px 8px;
     border-radius: 999px;
-    font-size: 0.64rem;
+    font-size: calc(0.54rem * var(--dock-font-scale));
     font-weight: 800;
     letter-spacing: 0.03em;
     text-transform: uppercase;
@@ -667,7 +860,7 @@ def get_css() -> str:
     align-items: center;
     padding: 3px 8px;
     border-radius: 999px;
-    font-size: 0.64rem;
+    font-size: calc(0.55rem * var(--dock-font-scale));
     font-weight: 800;
     letter-spacing: 0.02em;
 }
@@ -694,7 +887,7 @@ def get_css() -> str:
     overflow-x: auto;
     background: rgba(247, 251, 253, 0.95);
     border: 1px solid rgba(30, 92, 127, 0.1);
-    font-size: 0.84rem;
+    font-size: calc(0.72rem * var(--dock-font-scale));
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
@@ -714,7 +907,7 @@ def get_css() -> str:
 
 .wangp-assistant-chat__tool-section-title {
     margin-bottom: 6px;
-    font-size: 0.76rem;
+    font-size: calc(0.67rem * var(--dock-font-scale));
     font-weight: 800;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -776,7 +969,7 @@ def get_css() -> str:
     display: block;
     margin-top: 4px;
     color: #667d8c;
-    font-size: 0.84rem;
+    font-size: calc(0.84rem * var(--dock-font-scale));
     line-height: 1.45;
     word-break: break-word;
 }
@@ -785,7 +978,7 @@ def get_css() -> str:
     position: absolute;
     left: 18px;
     right: 18px;
-    bottom: 18px;
+    bottom: var(--chat-status-offset);
     z-index: 3;
     display: flex;
     align-items: center;
@@ -804,7 +997,7 @@ def get_css() -> str:
 
 .wangp-assistant-chat__status,
 .wangp-assistant-chat__status-text,
-.wangp-assistant-chat__status-kind {
+.wangp-assistant-chat__status-stop {
     color: var(--status-text);
 }
 
@@ -816,7 +1009,7 @@ def get_css() -> str:
 .wangp-assistant-chat__status-text {
     flex: 1;
     min-width: 0;
-    font-size: 0.92rem;
+    font-size: calc(0.92rem * var(--dock-font-scale));
     line-height: 1.45;
     font-weight: 600;
 }
@@ -843,16 +1036,34 @@ def get_css() -> str:
     animation-delay: 0.3s;
 }
 
-.wangp-assistant-chat__status-kind {
+.wangp-assistant-chat__status-stop {
     display: inline-flex;
     align-items: center;
-    padding: 4px 10px;
+    justify-content: center;
+    min-width: 62px;
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.18);
-    font-size: 0.72rem;
+    background: rgba(179, 58, 58, 0.9);
+    box-shadow: 0 10px 18px rgba(6, 18, 28, 0.16);
+    font-size: calc(0.74rem * var(--dock-font-scale));
     font-weight: 800;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+    cursor: pointer;
+    pointer-events: auto;
+    transition: transform 0.16s ease, background 0.16s ease, opacity 0.16s ease;
+}
+
+.wangp-assistant-chat__status-stop:hover:not(:disabled) {
+    transform: translateY(-1px);
+    background: rgba(197, 72, 72, 0.96);
+}
+
+.wangp-assistant-chat__status-stop:disabled {
+    opacity: 0.55;
+    cursor: default;
 }
 
 @keyframes wangp-assistant-chat-pulse {
@@ -910,7 +1121,7 @@ def get_css() -> str:
     }
 
     .wangp-assistant-chat__transcript {
-        padding: 16px 12px 88px;
+        padding: 16px 12px calc(var(--chat-status-offset) + var(--chat-status-reserved-height) + var(--chat-status-gap));
     }
 
     .wangp-assistant-chat__attachments {
@@ -944,6 +1155,41 @@ def get_css() -> str:
     #assistant_chat_dock.is-open #assistant_chat_panel {
         transform: translateX(0) scale(1);
     }
+
+    #assistant_chat_settings_launcher_host {
+        top: 14px;
+        right: 12px;
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
+    }
+
+    #assistant_chat_settings_toggle {
+        min-height: 30px;
+        width: auto;
+        min-width: 30px;
+        padding: 8px 12px;
+        border-radius: 14px;
+        border-left: 1px solid rgba(16, 78, 109, 0.18);
+    }
+
+    .wangp-assistant-chat__settings-toggle-text {
+        writing-mode: horizontal-tb;
+        transform: none;
+        letter-spacing: 0.08em;
+    }
+
+    #assistant_chat_settings_panel {
+        top: 12px;
+        left: 12px;
+        width: calc(100% - 24px);
+        height: calc(100% - 24px);
+        transform: translateY(10px) scale(0.98);
+    }
+
+    #assistant_chat_panel.is-settings-open #assistant_chat_settings_panel {
+        transform: translateY(0) scale(1);
+    }
 }
 """
 
@@ -963,7 +1209,9 @@ WAC.lastPayloadId = WAC.lastPayloadId || '';
 WAC.lastPayloadText = WAC.lastPayloadText || '';
 WAC.dockBridgeInstalled = WAC.dockBridgeInstalled || false;
 WAC.dockOpen = typeof WAC.dockOpen === 'boolean' ? WAC.dockOpen : false;
-WAC.scrollFrame = WAC.scrollFrame || 0;
+WAC.settingsOpen = typeof WAC.settingsOpen === 'boolean' ? WAC.settingsOpen : false;
+WAC.disclosureNode = WAC.disclosureNode || null;
+WAC.disclosureState = WAC.disclosureState || {};
 
 WAC.dock = function () {
   return document.querySelector('#assistant_chat_dock');
@@ -975,6 +1223,14 @@ WAC.panel = function () {
 
 WAC.launcher = function () {
   return document.querySelector('#assistant_chat_toggle');
+};
+
+WAC.settingsPanel = function () {
+  return document.querySelector('#assistant_chat_settings_panel');
+};
+
+WAC.settingsLauncher = function () {
+  return document.querySelector('#assistant_chat_settings_toggle');
 };
 
 WAC.requestInput = function () {
@@ -989,48 +1245,52 @@ WAC.timeLabel = function () {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-WAC.captureScrollAnchor = function () {
+WAC.bottomThreshold = function () {
+  return 1;
+};
+
+WAC.captureAutoscrollState = function () {
   const scroll = WAC.scroll();
-  if (!scroll) return { stick: true, top: 0 };
+  if (!scroll) return { atBottom: true, top: 0 };
   return {
-    stick: WAC.isNearBottom(),
+    atBottom: WAC.isNearBottom(),
     top: Math.max(0, scroll.scrollTop),
   };
 };
 
-WAC.restoreScrollAnchor = function (anchor, forceBottom) {
+WAC.applyAutoscrollState = function (state) {
   const scroll = WAC.scroll();
   if (!scroll) return;
-  if (WAC.scrollFrame) cancelAnimationFrame(WAC.scrollFrame);
-  WAC.scrollFrame = requestAnimationFrame(() => {
-    WAC.scrollFrame = 0;
-    if (forceBottom || !anchor || anchor.stick) {
-      scroll.scrollTop = scroll.scrollHeight;
-      return;
-    }
-    const maxTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
-    const targetTop = Math.max(0, Math.min(maxTop, Number(anchor.top || 0)));
-    scroll.scrollTop = targetTop;
-  });
+  if (state && state.atBottom) {
+    scroll.scrollTop = scroll.scrollHeight;
+    return;
+  }
+  if (!state) return;
+  scroll.scrollTop = Math.max(0, Number(state.top || 0));
 };
 
 WAC.lastOptimisticSubmit = WAC.lastOptimisticSubmit || { id: '', text: '', ts: 0 };
 WAC.serverInstanceId = WAC.serverInstanceId || '';
 
+WAC.normalizeText = function (value) {
+  return String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').trim();
+};
+
 WAC.pushOptimisticUserMessage = function (text) {
-  const content = String(text || '').trim();
+  const content = WAC.normalizeText(text);
   if (!content) return;
   const now = Date.now();
   if (WAC.lastOptimisticSubmit.text === content && (now - WAC.lastOptimisticSubmit.ts) < 900) return;
   const optimisticId = `optimistic_${now}`;
   WAC.lastOptimisticSubmit = { id: optimisticId, text: content, ts: now };
+  const contentHtml = WAC.escapeHtml(content).replace(/\n/g, '<br>');
   const html = [
     `<article class='wangp-assistant-chat__message wangp-assistant-chat__message--user' data-message-id='${optimisticId}'>`,
     "<div class='wangp-assistant-chat__avatar'>You</div>",
     "<div class='wangp-assistant-chat__message-card'>",
     "<div class='wangp-assistant-chat__meta'><div class='wangp-assistant-chat__meta-left'></div>",
     `<div class='wangp-assistant-chat__time'>${WAC.escapeHtml(WAC.timeLabel())}</div></div>`,
-    `<div class='wangp-assistant-chat__body'><p>${WAC.escapeHtml(content)}</p></div>`,
+    `<div class='wangp-assistant-chat__body'><p>${contentHtml}</p></div>`,
     "</div></article>",
   ].join('');
   WAC.upsertMessage({ id: optimisticId, role: 'user', html });
@@ -1060,6 +1320,72 @@ WAC.statusNode = function () {
   return document.querySelector('#assistant_chat_html .wangp-assistant-chat__status');
 };
 
+WAC.disclosureKey = function (node) {
+  if (!node || !node.getAttribute) return '';
+  const reasoningId = String(node.getAttribute('data-reasoning-id') || '').trim();
+  if (reasoningId) return `reasoning:${reasoningId}`;
+  const toolId = String(node.getAttribute('data-tool-id') || '').trim();
+  if (toolId) return `tool:${toolId}`;
+  return '';
+};
+
+WAC.captureDisclosureState = function (root) {
+  const scope = root || WAC.transcript();
+  if (!scope || !scope.querySelectorAll) return;
+  scope.querySelectorAll('.wangp-assistant-chat__disclosure').forEach((node) => {
+    const key = WAC.disclosureKey(node);
+    if (!key) return;
+    WAC.disclosureState[key] = !!node.open;
+  });
+};
+
+WAC.applyDisclosureState = function (root) {
+  const scope = root || WAC.transcript();
+  if (!scope || !scope.querySelectorAll) return;
+  scope.querySelectorAll('.wangp-assistant-chat__disclosure').forEach((node) => {
+    const key = WAC.disclosureKey(node);
+    if (!key || !(key in WAC.disclosureState)) return;
+    node.open = !!WAC.disclosureState[key];
+  });
+};
+
+WAC.handleDisclosureToggle = function (event) {
+  const node = event && event.target;
+  if (!node || !node.classList || !node.classList.contains('wangp-assistant-chat__disclosure')) return;
+  const key = WAC.disclosureKey(node);
+  if (!key) return;
+  WAC.disclosureState[key] = !!node.open;
+};
+
+WAC.toggleDisclosure = function (node) {
+  if (!node || !node.classList || !node.classList.contains('wangp-assistant-chat__disclosure')) return;
+  const scrollState = WAC.captureAutoscrollState();
+  node.open = !node.open;
+  const key = WAC.disclosureKey(node);
+  if (key) WAC.disclosureState[key] = !!node.open;
+  WAC.applyAutoscrollState(scrollState);
+};
+
+WAC.handleDisclosurePointerDown = function (event) {
+  const summary = event && event.target && event.target.closest ? event.target.closest('summary') : null;
+  if (!summary) return false;
+  const disclosureNode = summary.parentElement;
+  if (!disclosureNode || !disclosureNode.classList || !disclosureNode.classList.contains('wangp-assistant-chat__disclosure')) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  WAC.toggleDisclosure(disclosureNode);
+  return true;
+};
+
+WAC.stopBridgeTargets = function () {
+  const wrapper = document.querySelector('#assistant_chat_stop_bridge');
+  if (!wrapper) return [];
+  const targets = [wrapper];
+  const button = wrapper.querySelector('button');
+  if (button) targets.unshift(button);
+  return targets.filter((target, index, items) => !!target && items.indexOf(target) === index);
+};
+
 WAC.eventSource = function () {
   return document.querySelector('#assistant_chat_event textarea, #assistant_chat_event input');
 };
@@ -1079,6 +1405,10 @@ WAC.consumePayload = function (payload) {
   if ((payloadId && payloadId === WAC.lastPayloadId) || (!payloadId && payloadText === WAC.lastPayloadText)) return [];
   WAC.lastPayloadId = payloadId;
   WAC.lastPayloadText = payloadText;
+  if (Array.isArray(envelope.batch)) {
+    for (const item of envelope.batch) WAC.consumePayload(item);
+    return [];
+  }
   const instanceId = envelope && typeof envelope.instance_id === 'string' ? envelope.instance_id : '';
   if (instanceId) {
     if (WAC.serverInstanceId && WAC.serverInstanceId !== instanceId) {
@@ -1154,6 +1484,15 @@ WAC.syncDockState = function () {
   const launcher = WAC.launcher();
   if (dock) dock.classList.toggle('is-open', !!WAC.dockOpen);
   if (launcher) launcher.setAttribute('aria-expanded', WAC.dockOpen ? 'true' : 'false');
+  WAC.syncSettingsState();
+};
+
+WAC.syncSettingsState = function () {
+  const panel = WAC.panel();
+  const launcher = WAC.settingsLauncher();
+  const open = !!WAC.dockOpen && !!WAC.settingsOpen;
+  if (panel) panel.classList.toggle('is-settings-open', open);
+  if (launcher) launcher.setAttribute('aria-expanded', open ? 'true' : 'false');
 };
 
 WAC.syncDockLayout = function () {
@@ -1161,22 +1500,38 @@ WAC.syncDockLayout = function () {
   if (!dock) return;
   if (window.innerWidth <= 900) {
     dock.style.removeProperty('--dock-panel-width');
+    dock.style.removeProperty('--dock-settings-panel-width');
     return;
   }
-  const flowColumn = dock.parentElement;
-  const measuredWidth = flowColumn ? Math.round(flowColumn.getBoundingClientRect().width) : 0;
-  const maxWidth = Math.max(420, window.innerWidth - 92);
-  const panelWidth = Math.max(420, Math.min(measuredWidth || 588, maxWidth));
+  const candidates = [
+    dock.parentElement,
+    dock.parentElement ? dock.parentElement.closest('.column') : null,
+    dock.parentElement && dock.parentElement.parentElement ? dock.parentElement.parentElement.closest('.column') : null,
+  ].filter((node) => node && node !== dock);
+  const flowColumn = candidates
+    .map((node) => ({ node, rect: node.getBoundingClientRect() }))
+    .filter((entry) => entry.rect.width > 180)
+    .sort((a, b) => a.rect.width - b.rect.width)[0];
+  const flowRect = flowColumn ? flowColumn.rect : null;
+  const dockStyle = window.getComputedStyle(dock);
+  const launcherWidth = parseFloat(dockStyle.getPropertyValue('--dock-launcher-width')) || 41;
+  const dockGap = parseFloat(dockStyle.getPropertyValue('--dock-gap')) || 14;
+  const panelLeft = launcherWidth + dockGap;
+  const measuredWidth = flowRect ? Math.round(flowRect.width) : 0;
+  const columnBoundWidth = flowRect ? Math.round(flowRect.right - panelLeft - 12) : 0;
+  const maxWidth = Math.max(320, window.innerWidth - panelLeft - 28);
+  const panelWidth = Math.max(Math.min(320, maxWidth), Math.min(measuredWidth || 548, columnBoundWidth || measuredWidth || 548, maxWidth));
+  const maxSettingsWidth = Math.max(panelWidth, window.innerWidth - panelLeft - 44);
+  const settingsWidth = Math.min(maxSettingsWidth, Math.max(panelWidth, Math.min(panelWidth + 112, 660)));
   dock.style.setProperty('--dock-panel-width', `${panelWidth}px`);
+  dock.style.setProperty('--dock-settings-panel-width', `${settingsWidth}px`);
 };
 
 WAC.setDockOpen = function (open, persist) {
   WAC.dockOpen = !!open;
+  if (!WAC.dockOpen) WAC.settingsOpen = false;
   WAC.syncDockState();
   WAC.syncDockLayout();
-  if (persist !== false) {
-    try { window.localStorage.setItem('wangp-assistant-chat-open', WAC.dockOpen ? '1' : '0'); } catch (_error) {}
-  }
   if (WAC.dockOpen) {
     window.setTimeout(() => {
       const input = WAC.requestInput();
@@ -1188,6 +1543,18 @@ WAC.setDockOpen = function (open, persist) {
 WAC.toggleDock = function (forceOpen) {
   const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !WAC.dockOpen;
   WAC.setDockOpen(nextOpen);
+};
+
+WAC.setSettingsOpen = function (open) {
+  WAC.settingsOpen = !!open;
+  if (WAC.settingsOpen && !WAC.dockOpen) WAC.dockOpen = true;
+  WAC.syncDockState();
+  WAC.syncDockLayout();
+};
+
+WAC.toggleSettings = function (forceOpen) {
+  const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !WAC.settingsOpen;
+  WAC.setSettingsOpen(nextOpen);
 };
 
 WAC.ensureShell = function () {
@@ -1213,7 +1580,7 @@ WAC.ensureShell = function () {
       <div class="wangp-assistant-chat__status" aria-live="polite">
         <div class="wangp-assistant-chat__status-dots" aria-hidden="true"><span></span><span></span><span></span></div>
         <div class="wangp-assistant-chat__status-text"></div>
-        <div class="wangp-assistant-chat__status-kind"></div>
+        <button class="wangp-assistant-chat__status-stop" type="button" aria-label="Stop Deepy" disabled>Stop</button>
       </div>
     </section>
   `;
@@ -1222,20 +1589,14 @@ WAC.ensureShell = function () {
   WAC.syncDockVisibility();
   WAC.syncDockState();
   WAC.syncDockLayout();
+  WAC.syncDisclosureBridge();
   return true;
 };
 
 WAC.isNearBottom = function () {
   const scroll = WAC.scroll();
   if (!scroll) return true;
-  return (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) < 120;
-};
-
-WAC.scrollToBottom = function (force) {
-  const scroll = WAC.scroll();
-  if (!scroll) return;
-  if (!force && !WAC.isNearBottom()) return;
-  requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
+  return (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) <= WAC.bottomThreshold();
 };
 
 WAC.hideEmpty = function () {
@@ -1259,7 +1620,7 @@ WAC.createMessageNode = function (message) {
 
 WAC.messageBodyText = function (node) {
   const body = node && node.querySelector ? node.querySelector('.wangp-assistant-chat__body') : null;
-  return body ? String(body.innerText || body.textContent || '').trim() : '';
+  return body ? WAC.normalizeText(body.innerText || body.textContent || '') : '';
 };
 
 WAC.upsertMessage = function (message) {
@@ -1267,7 +1628,8 @@ WAC.upsertMessage = function (message) {
   WAC.ensureShell();
   const transcript = WAC.transcript();
   if (!transcript) return;
-  const anchor = WAC.captureScrollAnchor();
+  WAC.captureDisclosureState(transcript);
+  const scrollState = WAC.captureAutoscrollState();
   const node = WAC.createMessageNode(message);
   if (!node) return;
   const existing = transcript.querySelector(`[data-message-id="${CSS.escape(String(message.id))}"]`);
@@ -1276,14 +1638,15 @@ WAC.upsertMessage = function (message) {
   if (!existing && message.role === 'user' && !incomingId.startsWith('optimistic_') && optimistic.id) {
     const optimisticNode = transcript.querySelector(`[data-message-id="${CSS.escape(String(optimistic.id))}"]`);
     const incomingText = WAC.messageBodyText(node);
-    if (optimisticNode && incomingText && incomingText === optimistic.text) {
+    if (optimisticNode && incomingText && incomingText === WAC.normalizeText(optimistic.text)) {
       optimisticNode.replaceWith(node);
       delete WAC.state.messages[String(optimistic.id)];
       WAC.state.order = WAC.state.order.map((id) => id === String(optimistic.id) ? incomingId : id);
       WAC.state.messages[incomingId] = message;
       WAC.lastOptimisticSubmit = { id: '', text: '', ts: 0 };
       WAC.hideEmpty();
-      WAC.restoreScrollAnchor(anchor, true);
+      WAC.applyDisclosureState(transcript);
+      WAC.applyAutoscrollState(scrollState);
       return;
     }
   }
@@ -1295,50 +1658,58 @@ WAC.upsertMessage = function (message) {
   }
   WAC.state.messages[incomingId] = message;
   WAC.hideEmpty();
-  WAC.restoreScrollAnchor(anchor, message.role === 'user');
+  WAC.applyDisclosureState(transcript);
+  WAC.applyAutoscrollState(scrollState);
 };
 
 WAC.removeMessage = function (messageId) {
   const transcript = WAC.transcript();
   if (!transcript) return;
+  const scrollState = WAC.captureAutoscrollState();
   const existing = transcript.querySelector(`[data-message-id="${CSS.escape(String(messageId))}"]`);
   if (existing) existing.remove();
   delete WAC.state.messages[String(messageId)];
   WAC.state.order = WAC.state.order.filter(id => id !== String(messageId));
   WAC.showEmptyIfNeeded();
+  WAC.applyAutoscrollState(scrollState);
 };
 
 WAC.setStatus = function (status, restoreAnchor) {
   WAC.ensureShell();
+  const scrollState = WAC.captureAutoscrollState();
   WAC.state.status = status || null;
   const node = WAC.statusNode();
   if (!node) return;
-  const anchor = restoreAnchor === undefined ? WAC.captureScrollAnchor() : restoreAnchor;
   const textNode = node.querySelector('.wangp-assistant-chat__status-text');
-  const kindNode = node.querySelector('.wangp-assistant-chat__status-kind');
+  const stopNode = node.querySelector('.wangp-assistant-chat__status-stop');
   if (!status || !status.visible || !status.text) {
     node.classList.remove('is-visible');
+    node.removeAttribute('data-kind');
     if (textNode) textNode.textContent = '';
-    if (kindNode) kindNode.textContent = '';
-    if (anchor !== null) WAC.restoreScrollAnchor(anchor, false);
+    if (stopNode) stopNode.disabled = true;
+    WAC.applyAutoscrollState(scrollState);
     return;
   }
   if (textNode) textNode.textContent = String(status.text);
-  if (kindNode) kindNode.textContent = String(status.kind || 'status');
+  node.dataset.kind = String(status.kind || 'status');
+  if (stopNode) stopNode.disabled = false;
   node.classList.add('is-visible');
-  if (anchor !== null) WAC.restoreScrollAnchor(anchor, false);
+  WAC.applyAutoscrollState(scrollState);
 };
 
 WAC.sync = function (messages, status) {
   WAC.ensureShell();
-  const anchor = WAC.captureScrollAnchor();
+  WAC.captureDisclosureState(WAC.transcript());
+  const scrollState = WAC.captureAutoscrollState();
+  WAC.lastOptimisticSubmit = { id: '', text: '', ts: 0 };
   WAC.replaceState(messages, status);
-  WAC.hydrate(anchor);
+  WAC.hydrate(scrollState);
 };
 
 WAC.reset = function () {
   WAC.state = { order: [], messages: {}, status: null };
   WAC.lastOptimisticSubmit = { id: '', text: '', ts: 0 };
+  WAC.disclosureState = {};
   WAC.ensureShell();
   const transcript = WAC.transcript();
   if (transcript) transcript.innerHTML = '';
@@ -1346,7 +1717,7 @@ WAC.reset = function () {
   WAC.setStatus(null);
 };
 
-WAC.hydrate = function (anchor) {
+WAC.hydrate = function (scrollState) {
   const transcript = WAC.transcript();
   if (!transcript) return;
   transcript.innerHTML = '';
@@ -1356,13 +1727,22 @@ WAC.hydrate = function (anchor) {
     const node = WAC.createMessageNode(message);
     if (node) transcript.appendChild(node);
   }
+  WAC.applyDisclosureState(transcript);
   WAC.showEmptyIfNeeded();
   WAC.setStatus(WAC.state.status, null);
-  WAC.restoreScrollAnchor(anchor, false);
+  WAC.applyAutoscrollState(scrollState);
 };
 
 WAC.applyEvent = function (payload) {
   return WAC.consumePayload(payload);
+};
+
+WAC.syncDisclosureBridge = function () {
+  const transcript = WAC.transcript();
+  if (!transcript || transcript === WAC.disclosureNode) return;
+  if (WAC.disclosureNode) WAC.disclosureNode.removeEventListener('toggle', WAC.handleDisclosureToggle, true);
+  WAC.disclosureNode = transcript;
+  WAC.disclosureNode.addEventListener('toggle', WAC.handleDisclosureToggle, true);
 };
 
 WAC.installObserver = function () {
@@ -1370,16 +1750,22 @@ WAC.installObserver = function () {
   const target = document.querySelector('gradio-app') || document.body;
   if (!target) return;
   WAC.observer = new MutationObserver(() => {
-    if (WAC.host()) WAC.ensureShell();
-    WAC.syncDockLayout();
-    WAC.handleEventNodeMutation();
-    WAC.readEventSource();
+    if (WAC.observerScheduled) return;
+    WAC.observerScheduled = true;
+    window.requestAnimationFrame(() => {
+      WAC.observerScheduled = false;
+      if (WAC.host()) WAC.ensureShell();
+      WAC.syncDockLayout();
+      WAC.handleEventNodeMutation();
+      WAC.readEventSource();
+    });
   });
   WAC.observer.observe(target, { childList: true, subtree: true });
 };
 
 WAC.installEventBridge = function () {
   WAC.handleEventNodeMutation();
+  WAC.syncDisclosureBridge();
   if (!WAC.pollTimer) WAC.pollTimer = window.setInterval(() => { WAC.readEventSource(); }, 250);
   window.addEventListener('focus', () => { WAC.readEventSource(); }, { passive: true });
   document.addEventListener('visibilitychange', () => {
@@ -1391,16 +1777,40 @@ WAC.installEventBridge = function () {
 WAC.installDockBridge = function () {
   if (WAC.dockBridgeInstalled) return;
   WAC.dockBridgeInstalled = true;
-  try {
-    WAC.dockOpen = window.localStorage.getItem('wangp-assistant-chat-open') === '1';
-  } catch (_error) {
-    WAC.dockOpen = false;
-  }
+  WAC.dockOpen = false;
+  try { window.localStorage.removeItem('wangp-assistant-chat-open'); } catch (_error) {}
+  document.addEventListener('pointerdown', (event) => {
+    if (WAC.handleDisclosurePointerDown(event)) return;
+  }, true);
   document.addEventListener('click', (event) => {
+    const disclosureSummary = event.target && event.target.closest ? event.target.closest('summary') : null;
+    if (disclosureSummary) {
+      const disclosureNode = disclosureSummary.parentElement;
+      if (disclosureNode && disclosureNode.classList && disclosureNode.classList.contains('wangp-assistant-chat__disclosure')) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+    }
     const toggle = event.target && event.target.closest ? event.target.closest('#assistant_chat_toggle') : null;
     if (toggle) {
       event.preventDefault();
       WAC.toggleDock();
+      return;
+    }
+    const settingsToggle = event.target && event.target.closest ? event.target.closest('#assistant_chat_settings_toggle') : null;
+    if (settingsToggle) {
+      event.preventDefault();
+      WAC.toggleSettings();
+      return;
+    }
+    const stopButton = event.target && event.target.closest ? event.target.closest('.wangp-assistant-chat__status-stop') : null;
+    if (stopButton) {
+      event.preventDefault();
+      for (const target of WAC.stopBridgeTargets()) {
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        if (typeof target.click === 'function') target.click();
+      }
       return;
     }
     const askButton = event.target && event.target.closest ? event.target.closest('#assistant_chat_ask_button') : null;
@@ -1412,7 +1822,12 @@ WAC.installDockBridge = function () {
     WAC.pushOptimisticUserMessage(text);
   }, true);
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || !WAC.dockOpen) return;
+    if (event.key !== 'Escape') return;
+    if (WAC.settingsOpen) {
+      WAC.setSettingsOpen(false);
+      return;
+    }
+    if (!WAC.dockOpen) return;
     WAC.setDockOpen(false);
   }, true);
   document.addEventListener('keydown', (event) => {
@@ -1420,8 +1835,12 @@ WAC.installDockBridge = function () {
     if (!input || event.target !== input || event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
     const text = String(input.value || '').trim();
     if (!text) return;
+    event.preventDefault();
+    event.stopPropagation();
     WAC.setDockOpen(true);
     WAC.pushOptimisticUserMessage(text);
+    const askButton = document.querySelector('#assistant_chat_ask_button button, #assistant_chat_ask_button');
+    if (askButton && typeof askButton.click === 'function') askButton.click();
   }, true);
   WAC.syncDockState();
   WAC.syncDockLayout();
@@ -1460,6 +1879,25 @@ def build_status_event(text: str | None, kind: str = "status", visible: bool = T
     return _event_payload({"type": "status", "status": status})
 
 
+def build_event_batch(payloads: list[str]) -> str:
+    envelopes = []
+    for payload in payloads or []:
+        payload_text = str(payload or "").strip()
+        if len(payload_text) == 0:
+            continue
+        try:
+            envelope = json.loads(payload_text)
+        except Exception:
+            continue
+        if isinstance(envelope, dict):
+            envelopes.append(envelope)
+    if len(envelopes) == 0:
+        return ""
+    if len(envelopes) == 1:
+        return json.dumps(envelopes[0], ensure_ascii=False)
+    return json.dumps({"event_id": uuid.uuid4().hex, "instance_id": SERVER_INSTANCE_ID, "batch": envelopes}, ensure_ascii=False)
+
+
 def build_sync_event(session, status: dict[str, Any] | None = None) -> str:
     messages = [_render_message_payload(record) for record in session.chat_transcript]
     return _event_payload({"type": "sync", "messages": messages, "status": status})
@@ -1471,12 +1909,13 @@ def add_user_message(session, text: str, queued: bool = False) -> tuple[str, str
         "role": "user",
         "author": "You",
         "created_at": _time_label(),
-        "content": str(text or "").strip(),
-        "reasoning": [],
-        "tools": [],
+        "blocks": [],
         "attachments": [],
         "badge": "Queued" if queued else "",
     }
+    content = str(text or "").strip()
+    if len(content) > 0:
+        record["blocks"].append({"id": _next_block_id("content"), "type": "markdown", "text": content})
     session.chat_transcript.append(record)
     return record["id"], _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
 
@@ -1487,14 +1926,28 @@ def create_assistant_turn(session) -> str:
         "role": "assistant",
         "author": "Deepy",
         "created_at": _time_label(),
-        "content": "",
-        "reasoning": [],
-        "tools": [],
+        "blocks": [],
         "attachments": [],
         "badge": "",
     }
     session.chat_transcript.append(record)
     return record["id"]
+
+
+def get_message_content(session, message_id: str) -> str:
+    record = _find_message(session, message_id)
+    if record is None:
+        return ""
+    parts = [str(block.get("text", "")).strip() for block in _ensure_message_blocks(record) if isinstance(block, dict) and block.get("type") == "markdown" and len(str(block.get("text", "")).strip()) > 0]
+    return "\n\n".join(parts)
+
+
+def get_message_reasoning_content(session, message_id: str) -> str:
+    record = _find_message(session, message_id)
+    if record is None:
+        return ""
+    parts = [str(block.get("text", "")).strip() for block in _ensure_message_blocks(record) if isinstance(block, dict) and block.get("type") == "reasoning" and len(str(block.get("text", "")).strip()) > 0]
+    return "\n\n".join(parts)
 
 
 def set_message_badge(session, message_id: str, badge: str | None) -> str | None:
@@ -1505,18 +1958,41 @@ def set_message_badge(session, message_id: str, badge: str | None) -> str | None
     return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
 
 
+def remove_message(session, message_id: str) -> str | None:
+    target_id = str(message_id or "").strip()
+    if len(target_id) == 0:
+        return None
+    original_len = len(session.chat_transcript)
+    session.chat_transcript[:] = [record for record in session.chat_transcript if str(record.get("id", "")) != target_id]
+    if len(session.chat_transcript) == original_len:
+        return None
+    return _event_payload({"type": "remove_message", "message_id": target_id})
+
+
 def append_reasoning(session, message_id: str, text: str) -> str | None:
+    _reasoning_id, payload = upsert_reasoning_block(session, message_id, None, text)
+    return payload
+
+
+def upsert_reasoning_block(session, message_id: str, reasoning_id: str | None, text: str) -> tuple[str, str | None]:
     reasoning_text = str(text or "").strip()
     if len(reasoning_text) == 0:
-        return None
+        return "", None
     record = _find_message(session, message_id)
     if record is None:
-        return None
-    reasoning_blocks = record.setdefault("reasoning", [])
-    if len(reasoning_blocks) > 0 and reasoning_blocks[-1] == reasoning_text:
-        return None
-    reasoning_blocks.append(reasoning_text)
-    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+        return "", None
+    blocks = _ensure_message_blocks(record)
+    target_id = str(reasoning_id or "").strip()
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "reasoning" or block.get("id", "") != target_id:
+            continue
+        if str(block.get("text", "")).strip() == reasoning_text:
+            return target_id, None
+        block["text"] = reasoning_text
+        return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+    target_id = target_id or f"reasoning_{uuid.uuid4().hex[:10]}"
+    blocks.append({"id": target_id, "type": "reasoning", "text": reasoning_text})
+    return target_id, _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
 
 
 def add_tool_call(session, message_id: str, tool_name: str, arguments: dict[str, Any], tool_label: str | None = None) -> tuple[str, str | None]:
@@ -1525,41 +2001,57 @@ def add_tool_call(session, message_id: str, tool_name: str, arguments: dict[str,
         return "", None
     tool_record = {
         "id": _next_tool_id(),
+        "type": "tool",
         "name": str(tool_name or "").strip(),
         "label": str(tool_label or "").strip() or _friendly_tool_label(tool_name),
         "arguments": dict(arguments or {}),
         "result": None,
         "status": "running",
+        "status_text": "Running",
         "attachment": None,
     }
-    record.setdefault("tools", []).append(tool_record)
+    _ensure_message_blocks(record).append(tool_record)
     return tool_record["id"], _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
 
 
-def complete_tool_call(session, message_id: str, tool_id: str, result: dict[str, Any]) -> str | None:
+def update_tool_call(session, message_id: str, tool_id: str, status: str | None = None, result: dict[str, Any] | object = _UNSET, status_text: str | None = None) -> str | None:
     record = _find_message(session, message_id)
     if record is None:
         return None
-    for tool_record in record.setdefault("tools", []):
-        if tool_record.get("id") != tool_id:
+    for tool_record in _ensure_message_blocks(record):
+        if not isinstance(tool_record, dict) or tool_record.get("type") != "tool" or tool_record.get("id") != tool_id:
             continue
-        tool_record["result"] = dict(result or {})
-        status = str(result.get("status", "")).strip().lower()
-        tool_record["status"] = "error" if status in {"error", "failed"} else "done"
-        attachment = _attachment_from_tool_result(result)
-        if attachment is not None:
-            tool_record["attachment"] = attachment
-            _merge_attachments(record, [attachment])
+        if status is not None:
+            tool_record["status"] = str(status or "").strip().lower() or "running"
+        if status_text is not None:
+            tool_record["status_text"] = str(status_text or "").strip()
+        if result is not _UNSET:
+            tool_record["result"] = None if result is None else dict(result or {})
+            tool_record["attachment"] = _attachment_from_tool_result(tool_record.get("result"))
         return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
     return None
+
+
+def complete_tool_call(session, message_id: str, tool_id: str, result: dict[str, Any]) -> str | None:
+    status = str((result or {}).get("status", "")).strip().lower()
+    failed = status in {"error", "failed", "interrupted"}
+    return update_tool_call(session, message_id, tool_id, status="error" if failed else "done", result=result, status_text="Interrupted" if status == "interrupted" else ("Error" if failed else "Done"))
 
 
 def set_assistant_content(session, message_id: str, text: str) -> str | None:
     record = _find_message(session, message_id)
     if record is None:
         return None
-    record["content"] = str(text or "").strip()
-    _merge_attachments(record, _extract_attachments_from_markdown(record["content"])[1])
+    content_text = str(text or "").strip()
+    if len(content_text) == 0:
+        return None
+    blocks = _ensure_message_blocks(record)
+    if len(blocks) > 0 and isinstance(blocks[-1], dict) and blocks[-1].get("type") == "markdown":
+        if str(blocks[-1].get("text", "")).strip() == content_text:
+            return None
+        blocks[-1]["text"] = content_text
+    else:
+        blocks.append({"id": _next_block_id("content"), "type": "markdown", "text": content_text})
     return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
 
 
@@ -1570,6 +2062,10 @@ def _next_message_id(session, prefix: str) -> str:
 
 def _next_tool_id() -> str:
     return f"tool_{uuid.uuid4().hex[:10]}"
+
+
+def _next_block_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
 
 def _friendly_tool_label(tool_name: str | None) -> str:
@@ -1585,6 +2081,34 @@ def _find_message(session, message_id: str) -> dict[str, Any] | None:
         if record.get("id") == target_id:
             return record
     return None
+
+
+def _ensure_message_blocks(record: dict[str, Any]) -> list[dict[str, Any]]:
+    blocks = record.get("blocks", None)
+    if isinstance(blocks, list):
+        return blocks
+    blocks = []
+    content = str(record.get("content", "") or "").strip()
+    if len(content) > 0:
+        blocks.append({"id": _next_block_id("content"), "type": "markdown", "text": content})
+    for reasoning_block in record.get("reasoning", []) or []:
+        if isinstance(reasoning_block, dict):
+            reasoning_id = str(reasoning_block.get("id", "")).strip() or _next_block_id("reasoning")
+            reasoning_text = str(reasoning_block.get("text", "")).strip()
+        else:
+            reasoning_id = _next_block_id("reasoning")
+            reasoning_text = str(reasoning_block or "").strip()
+        if len(reasoning_text) > 0:
+            blocks.append({"id": reasoning_id, "type": "reasoning", "text": reasoning_text})
+    for tool_block in record.get("tools", []) or []:
+        if not isinstance(tool_block, dict):
+            continue
+        migrated_block = dict(tool_block)
+        migrated_block["type"] = "tool"
+        migrated_block["id"] = str(migrated_block.get("id", "")).strip() or _next_tool_id()
+        blocks.append(migrated_block)
+    record["blocks"] = blocks
+    return blocks
 
 
 def _time_label() -> str:
@@ -1623,7 +2147,7 @@ def _attachment_from_tool_result(result: dict[str, Any] | None) -> dict[str, Any
     if len(output_file) == 0:
         return None
     ext = os.path.splitext(output_file)[1].lower()
-    label = "Generated image" if ext in _IMAGE_EXTENSIONS else "Generated file"
+    label = "Generated image" if ext in _IMAGE_EXTENSIONS else ("Generated video" if ext in _VIDEO_EXTENSIONS else "Generated file")
     return _attachment_from_path(output_file, label)
 
 
@@ -1643,40 +2167,41 @@ def _attachment_from_path(path: str, label: str | None = None) -> dict[str, Any]
     subtitle = os.path.basename(normalized_path)
     if resolved_label == subtitle:
         subtitle = ""
+    thumb_url = ""
+    kind = "file"
+    if ext in _IMAGE_EXTENSIONS:
+        kind = "image"
+        thumb_url = href
+    elif ext in _VIDEO_EXTENSIONS:
+        kind = "video"
+        try:
+            thumb_url = deepy_video_tools.get_video_thumbnail_data_url(normalized_path)
+        except Exception:
+            thumb_url = ""
     return {
         "path_key": path_key,
         "href": href,
         "label": resolved_label,
         "subtitle": subtitle,
-        "kind": "image" if ext in _IMAGE_EXTENSIONS else "file",
-        "thumb_url": href if ext in _IMAGE_EXTENSIONS else "",
+        "kind": kind,
+        "thumb_url": thumb_url,
     }
-
-
-def _merge_attachments(record: dict[str, Any], new_attachments: list[dict[str, Any]]) -> None:
-    if len(new_attachments) == 0:
-        return
-    existing = {attachment.get("path_key", "") or attachment.get("href", "") for attachment in record.setdefault("attachments", [])}
-    for attachment in new_attachments:
-        dedupe_key = attachment.get("path_key", "") or attachment.get("href", "")
-        if len(dedupe_key) == 0 or dedupe_key in existing:
-            continue
-        record["attachments"].append(attachment)
-        existing.add(dedupe_key)
 
 
 def _render_message_payload(record: dict[str, Any]) -> dict[str, Any]:
     role = str(record.get("role", "assistant"))
-    content_source, markdown_attachments = _extract_attachments_from_markdown(record.get("content", ""))
-    _merge_attachments(record, markdown_attachments)
     badge_text = str(record.get("badge", "")).strip()
-    content_html = _markdown_to_html(content_source)
-    reasoning_html = _render_reasoning_blocks(record.get("reasoning", []))
-    tools_html = _render_tool_blocks(record.get("tools", []))
-    attachments_html = _render_attachments(list(record.get("attachments", [])))
+    blocks_html, rendered_attachment_keys = _render_message_blocks(record)
+    attachments_html = _render_attachments(
+        [
+            attachment
+            for attachment in list(record.get("attachments", []))
+            if isinstance(attachment, dict) and (attachment.get("path_key", "") or attachment.get("href", "")) not in rendered_attachment_keys
+        ]
+    )
     badge_html = "" if len(badge_text) == 0 else f"<span class='wangp-assistant-chat__badge'>{html.escape(badge_text)}</span>"
-    body_html = content_html
-    if len(body_html) == 0 and role == "assistant" and (len(reasoning_html) > 0 or len(tools_html) > 0):
+    body_html = f"{blocks_html}{attachments_html}"
+    if len(body_html) == 0 and role == "assistant":
         body_html = "<p>Working through the request.</p>"
     card_html = (
         f"<article class='wangp-assistant-chat__message wangp-assistant-chat__message--{html.escape(role)}' data-message-id='{html.escape(str(record.get('id', '')))}'>"
@@ -1686,51 +2211,92 @@ def _render_message_payload(record: dict[str, Any]) -> dict[str, Any]:
         f"<div class='wangp-assistant-chat__meta-left'>{badge_html}</div>"
         f"<div class='wangp-assistant-chat__time'>{html.escape(str(record.get('created_at', '')))}</div>"
         f"</div>"
-        f"<div class='wangp-assistant-chat__body'>{body_html}{reasoning_html}{tools_html}{attachments_html}</div>"
+        f"<div class='wangp-assistant-chat__body'>{body_html}</div>"
         f"</div>"
         f"</article>"
     )
     return {"id": record.get("id", ""), "role": role, "html": card_html}
 
 
-def _render_reasoning_blocks(reasoning_blocks: list[str]) -> str:
-    blocks = [str(block or "").strip() for block in reasoning_blocks if len(str(block or "").strip()) > 0]
+def _render_message_blocks(record: dict[str, Any]) -> tuple[str, set[str]]:
+    blocks = _ensure_message_blocks(record)
     if len(blocks) == 0:
-        return ""
-    body_html = "".join(f"<div class='wangp-assistant-chat__reasoning-block'>{_markdown_to_html(block)}</div>" for block in blocks)
-    label = "Thought process" if len(blocks) == 1 else f"Thought process ({len(blocks)} thoughts)"
+        return "", set()
+    rendered = []
+    rendered_attachment_keys = set()
+    reasoning_total = sum(1 for block in blocks if isinstance(block, dict) and block.get("type") == "reasoning" and len(str(block.get("text", "")).strip()) > 0)
+    reasoning_no = 0
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type", "markdown")).strip().lower() or "markdown"
+        if block_type == "markdown":
+            content_source, attachments = _extract_attachments_from_markdown(block.get("text", ""))
+            content_html = _markdown_to_html(content_source)
+            if len(content_html) > 0:
+                rendered.append(content_html)
+            attachment_html = _render_attachments(_dedupe_attachments(attachments, rendered_attachment_keys))
+            if len(attachment_html) > 0:
+                rendered.append(attachment_html)
+            continue
+        if block_type == "reasoning":
+            reasoning_text = str(block.get("text", "")).strip()
+            if len(reasoning_text) == 0:
+                continue
+            reasoning_no += 1
+            rendered.append(_render_reasoning_block(block, reasoning_no, reasoning_total))
+            continue
+        if block_type == "tool":
+            rendered.append(_render_tool_block(block))
+            attachment_html = _render_attachments(_dedupe_attachments([block.get("attachment")] if isinstance(block.get("attachment"), dict) else [], rendered_attachment_keys))
+            if len(attachment_html) > 0:
+                rendered.append(attachment_html)
+    return "".join(rendered), rendered_attachment_keys
+
+
+def _dedupe_attachments(attachments: list[dict[str, Any]], rendered_attachment_keys: set[str]) -> list[dict[str, Any]]:
+    unique = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        dedupe_key = attachment.get("path_key", "") or attachment.get("href", "")
+        if len(dedupe_key) == 0 or dedupe_key in rendered_attachment_keys:
+            continue
+        rendered_attachment_keys.add(dedupe_key)
+        unique.append(attachment)
+    return unique
+
+
+def _render_reasoning_block(block: dict[str, Any], block_no: int, total_blocks: int) -> str:
+    label = "Thought process"
     return (
-        "<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--reasoning'>"
+        f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--reasoning' data-reasoning-id='{html.escape(str(block.get('id', '')))}'>"
         f"<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Thought</span>{html.escape(label)}</span></summary>"
-        f"<div class='wangp-assistant-chat__disclosure-body'>{body_html}</div>"
+        f"<div class='wangp-assistant-chat__disclosure-body'><div class='wangp-assistant-chat__reasoning-block'>{_markdown_to_html(block.get('text', ''))}</div></div>"
         "</details>"
     )
 
 
-def _render_tool_blocks(tool_records: list[dict[str, Any]]) -> str:
-    blocks = []
-    for tool_record in tool_records:
-        name = str(tool_record.get("name", "tool")).strip() or "tool"
-        label = str(tool_record.get("label", "")).strip() or _friendly_tool_label(name)
-        status = str(tool_record.get("status", "running")).strip().lower()
-        status_label = {"running": "Running", "done": "Done", "error": "Error"}.get(status, status.title() or "Running")
-        status_class = {"running": "running", "done": "done", "error": "error"}.get(status, "running")
-        arguments_text = html.escape(json.dumps(tool_record.get("arguments", {}), ensure_ascii=False, indent=2, sort_keys=True))
-        result_payload = tool_record.get("result", {})
-        result_text = html.escape(json.dumps(result_payload, ensure_ascii=False, indent=2, sort_keys=True)) if result_payload is not None else ""
-        blocks.append(
-            "<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--tool' "
-            + ">"
-            f"<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Tool</span>{html.escape(label)}</span><span class='wangp-assistant-chat__tool-status wangp-assistant-chat__tool-status--{status_class}'>{html.escape(status_label)}</span></summary>"
-            "<div class='wangp-assistant-chat__disclosure-body'>"
-            "<div class='wangp-assistant-chat__tool-grid'>"
-            f"<div><div class='wangp-assistant-chat__tool-section-title'>{html.escape(label)} Arguments</div><pre class='wangp-assistant-chat__pre'>{arguments_text}</pre></div>"
-            f"<div><div class='wangp-assistant-chat__tool-section-title'>Result</div><pre class='wangp-assistant-chat__pre'>{result_text or html.escape('Pending...')}</pre></div>"
-            "</div>"
-            "</div>"
-            "</details>"
-        )
-    return "".join(blocks)
+def _render_tool_block(tool_record: dict[str, Any]) -> str:
+    name = str(tool_record.get("name", "tool")).strip() or "tool"
+    label = str(tool_record.get("label", "")).strip() or _friendly_tool_label(name)
+    status = str(tool_record.get("status", "running")).strip().lower()
+    status_label = str(tool_record.get("status_text", "")).strip() or {"running": "Running", "done": "Done", "error": "Error"}.get(status, status.title() or "Running")
+    status_class = {"running": "running", "done": "done", "error": "error"}.get(status, "running")
+    arguments_text = html.escape(json.dumps(tool_record.get("arguments", {}), ensure_ascii=False, indent=2, sort_keys=True))
+    result_payload = tool_record.get("result", {})
+    result_text = html.escape(json.dumps(result_payload, ensure_ascii=False, indent=2, sort_keys=True)) if result_payload is not None else ""
+    return (
+        f"<details class='wangp-assistant-chat__disclosure wangp-assistant-chat__disclosure--tool' data-tool-id='{html.escape(str(tool_record.get('id', '')))}'>"
+        f"<summary><span class='wangp-assistant-chat__tool-title'><span class='wangp-assistant-chat__tool-chip'>Tool</span>{html.escape(label)}</span><span class='wangp-assistant-chat__tool-status wangp-assistant-chat__tool-status--{status_class}'>{html.escape(status_label)}</span></summary>"
+        "<div class='wangp-assistant-chat__disclosure-body'>"
+        "<div class='wangp-assistant-chat__tool-grid'>"
+        f"<div><div class='wangp-assistant-chat__tool-section-title'>{html.escape(label)} Arguments</div><pre class='wangp-assistant-chat__pre'>{arguments_text}</pre></div>"
+        f"<div><div class='wangp-assistant-chat__tool-section-title'>Result</div><pre class='wangp-assistant-chat__pre'>{result_text or html.escape('Pending...')}</pre></div>"
+        "</div>"
+        "</div>"
+        "</details>"
+    )
 
 
 def _render_attachments(attachments: list[dict[str, Any]]) -> str:
@@ -1762,5 +2328,3 @@ def _render_attachments(attachments: list[dict[str, Any]]) -> str:
     if len(cards) == 0:
         return ""
     return f"<div class='wangp-assistant-chat__attachments'>{''.join(cards)}</div>"
-"""
-"""

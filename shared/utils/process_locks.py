@@ -3,6 +3,7 @@ import threading
 import torch
 
 gen_lock = threading.Lock()
+_MAIN_PROCESS_RUNNING_KEY = "main_process_running"
 
 def get_gen_info(state):
     cache = state.get("gen", None)
@@ -11,11 +12,26 @@ def get_gen_info(state):
         state["gen"] = cache
     return cache
 
+
+def _main_generation_active_locked(gen):
+    return bool(gen.get(_MAIN_PROCESS_RUNNING_KEY, False))
+
+
+def set_main_generation_running(state, running):
+    gen = get_gen_info(state)
+    with gen_lock:
+        if running:
+            gen[_MAIN_PROCESS_RUNNING_KEY] = True
+        else:
+            gen.pop(_MAIN_PROCESS_RUNNING_KEY, None)
+
 def any_GPU_process_running(state, process_id, ignore_main = False):
     gen = get_gen_info(state)
 #"process:" + process_id
     with gen_lock:
         process_status = gen.get("process_status", None)
+        if process_status == "process:main" and not _main_generation_active_locked(gen):
+            return False
         return process_status is not None and not (process_status =="process:main" and ignore_main)
 
 
@@ -117,12 +133,24 @@ def acquire_GPU_ressources(state, process_id, process_name, gr = None, custom_pa
             process_status = gen.get("process_status", None)
             if process_status is None:
                 _drop_gpu_resident_locked(gen, process_id)
-                original_process_status = process_status 
+                original_process_status = None
+                release_actions = _collect_resident_release_actions_locked(gen, requester_id=process_id)
+                gen["process_status"] = "process:" + process_id
+                break
+            elif process_status == "request:" + process_id and not _main_generation_active_locked(gen):
+                _drop_gpu_resident_locked(gen, process_id)
+                original_process_status = None
                 release_actions = _collect_resident_release_actions_locked(gen, requester_id=process_id)
                 gen["process_status"] = "process:" + process_id
                 break
             elif process_status == "process:main":
-                original_process_status = process_status 
+                if not _main_generation_active_locked(gen):
+                    _drop_gpu_resident_locked(gen, process_id)
+                    original_process_status = None
+                    release_actions = _collect_resident_release_actions_locked(gen, requester_id=process_id)
+                    gen["process_status"] = "process:" + process_id
+                    break
+                original_process_status = process_status
                 gen["process_status"] = "request:" + process_id
 
                 gen["pause_msg"] = custom_pause_msg if custom_pause_msg is not None else f"Generation Suspended while using {process_name}" 
@@ -141,8 +169,9 @@ def acquire_GPU_ressources(state, process_id, process_name, gr = None, custom_pa
         while True:
             with gen_lock:
                 process_status = gen.get("process_status", None)
-                if process_status == "process:" + process_id: break
-                if process_status is None:
+                if process_status == "process:" + process_id:
+                    break
+                if process_status is None or (process_status == "request:" + process_id and not _main_generation_active_locked(gen)):
                     # handle case when main process has finished at some point in between the last check and now
                     gen["process_status"] = "process:" + process_id
                     break
@@ -176,4 +205,7 @@ def release_GPU_ressources(state, process_id, keep_resident = False, process_nam
         else:
             _drop_gpu_resident_locked(gen, process_id)
         process_hierarchy = gen.get("process_hierarchy", {})
-        gen["process_status"] = process_hierarchy.pop(process_id, None)
+        restore_status = process_hierarchy.pop(process_id, None)
+        if restore_status == "process:main" and not _main_generation_active_locked(gen):
+            restore_status = None
+        gen["process_status"] = restore_status

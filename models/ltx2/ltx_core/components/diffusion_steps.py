@@ -42,7 +42,7 @@ class Res2sDiffusionStep(DiffusionStepProtocol):
             alpha_ratio = (1 - sigma_next) / (1 - sigma_down)
             sigma_up = (sigma_next**2 - sigma_down**2 * alpha_ratio**2).clamp(min=0) ** 0.5
         elif sigma_up is not None:
-            sigma_up.clamp_(max=sigma_next * 0.9999)
+            sigma_up = sigma_up.clamp(max=sigma_next * 0.9999)
             sigmax = sigma_max if sigma_max is not None else torch.ones_like(sigma_next)
             sigma_signal = sigmax - sigma_next
             sigma_residual = (sigma_next**2 - sigma_up**2).clamp(min=0) ** 0.5
@@ -55,7 +55,7 @@ class Res2sDiffusionStep(DiffusionStepProtocol):
 
         sigma_up = torch.nan_to_num(sigma_up if sigma_up is not None else torch.zeros_like(sigma_next), 0.0)
         nan_mask = torch.isnan(sigma_down)
-        sigma_down[nan_mask] = sigma_next[nan_mask].to(sigma_down.dtype)
+        sigma_down = torch.where(nan_mask, sigma_next.to(sigma_down.dtype), sigma_down)
         alpha_ratio = torch.nan_to_num(alpha_ratio, 1.0)
 
         return alpha_ratio, sigma_down, sigma_up

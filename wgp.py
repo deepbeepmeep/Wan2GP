@@ -4549,9 +4549,14 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 # values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}'"]
                 labels += ["Self Refiner"]      
             video_apg_switch = configs.get("apg_switch", None)
-            if video_apg_switch is not None and video_apg_switch != 0: 
+            if video_apg_switch is not None and video_apg_switch != 0:
                 values += ["on"]
-                labels += ["APG"]      
+                labels += ["APG"]
+            video_hq_sampler = configs.get("hq_sampler", 0)
+            if video_hq_sampler:
+                video_rescale = configs.get("rescale_scale", 0.0)
+                values += [f"Res2s (HQ), Rescale={video_rescale}"]
+                labels += ["Sampler"]
             video_motion_amplitude = configs.get("motion_amplitude", 1.)
             if  video_motion_amplitude != 1: 
                 values += [video_motion_amplitude]

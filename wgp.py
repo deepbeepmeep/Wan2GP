@@ -5835,6 +5835,8 @@ def generate_video(
     self_refiner_plan,
     self_refiner_f_uncertainty,
     self_refiner_certain_percentage,
+    hq_sampler,
+    rescale_scale,
     output_filename,
     state,
     model_type,
@@ -6715,6 +6717,8 @@ def generate_video(
                     self_refiner_plan=self_refiner_plan,
                     self_refiner_f_uncertainty = self_refiner_f_uncertainty,
                     self_refiner_certain_percentage = self_refiner_certain_percentage,
+                    hq_sampler=int(hq_sampler) if hq_sampler else 0,
+                    rescale_scale=float(rescale_scale) if rescale_scale else 0.0,
                     duration_seconds=duration_seconds,
                     pause_seconds=pause_seconds,
                     top_p=top_p,
@@ -8085,6 +8089,9 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["self_refiner_setting", "self_refiner_f_uncertainty", "self_refiner_plan", "self_refiner_certain_percentage"]
         # pop += ["self_refiner_setting", "self_refiner_plan"]
 
+    if not model_def.get("hq_sampler", False):
+        pop += ["hq_sampler", "rescale_scale"]
+
     if model_def.get("audio_scale_name", None) is None:
         pop += ["audio_scale"]
 
@@ -8809,6 +8816,8 @@ def save_inputs(
             self_refiner_plan,            
             self_refiner_f_uncertainty,
             self_refiner_certain_percentage,
+            hq_sampler,
+            rescale_scale,
             output_filename,
             mode,
             state,
@@ -10544,7 +10553,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_motion_amplitude = model_def.get("motion_amplitude", False) and not image_outputs
                 any_pnp = True # Enable PnP for all supported models (or restriction logic here)
 
-                with gr.Tab("Quality", visible = (vace and image_outputs or any_perturbation or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude or any_pnp) and not audio_only ) as quality_tab:
+                any_hq_sampler = model_def.get("hq_sampler", False)
+                with gr.Tab("Quality", visible = (vace and image_outputs or any_perturbation or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude or any_pnp or any_hq_sampler) and not audio_only ) as quality_tab:
+                        with gr.Column(visible=any_hq_sampler) as hq_sampler_col:
+                            gr.Markdown("<B>Sampler (Res2s HQ uses a second-order sampler for better quality at fewer steps)</B>")
+                            with gr.Row():
+                                hq_sampler = gr.Dropdown(choices=[("Euler (Standard)", 0), ("Res2s (HQ)", 1)], value=ui_get("hq_sampler", 0), label="Sampler", scale=1)
+                                rescale_scale = gr.Slider(0, 1, value=ui_get("rescale_scale", 0.0), step=0.05, label="Rescale Scale (0=off, 0.45=recommended for HQ)", scale=2, show_reset_button=False)
                         with gr.Column(visible = any_perturbation ) as perturbation_row:
                             gr.Markdown("<B>Perturbation (improves video quality, requires guidance > 1)</B>")
                             perturbation_choices = model_def.get("perturbation_choices", [("OFF", 0), ("Skip Layer Guidance", 1)])
@@ -10926,7 +10941,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       NAG_col, audio_options_row, remove_background_sound, normalize_audio_volumes, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, prompt_enhancer_mode_dropdown, prompt_enhancer_think,
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, *custom_settings_rows, top_pk_row, 
                                       number_frames_row, negative_prompt_row,
-                                      self_refiner_col, pause_row]+\
+                                      self_refiner_col, hq_sampler_col, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

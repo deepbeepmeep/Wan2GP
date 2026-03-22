@@ -31,6 +31,8 @@ from .utils.helpers import (
     generate_enhanced_prompt,
     get_device,
     guider_denoising_func,
+    multi_modal_guider_denoising_func,
+    res2s_audio_video_denoising_loop,
     image_conditionings_by_adding_guiding_latent,
     image_conditionings_by_replacing_latent,
     latent_conditionings_by_latent_sequence,
@@ -160,13 +162,19 @@ class TI2VidTwoStagesPipeline:
         self_refiner_f_uncertainty: float = 0.1,
         self_refiner_certain_percentage: float = 0.999,
         self_refiner_max_plans: int = 1,
+        hq_sampler: int = 0,
+        rescale_scale: float = 0.0,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
 
         generator = torch.Generator(device=self.device).manual_seed(seed)
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
-        stepper = EulerDiffusionStep()
+        if hq_sampler:
+            from ..ltx_core.components.diffusion_steps import Res2sDiffusionStep
+            stepper = Res2sDiffusionStep()
+        else:
+            stepper = EulerDiffusionStep()
         self_refiner_handler = None
         self_refiner_handler_audio = None
         self_refiner_handler_stage2 = None
@@ -205,13 +213,30 @@ class TI2VidTwoStagesPipeline:
                     channel_dim=-1,
                 )
         audio_cfg_guidance_scale = cfg_guidance_scale if audio_cfg_guidance_scale is None else audio_cfg_guidance_scale
-        guider_cls = CFGGuider
-        if apg_switch:
-            guider_cls = LtxAPGGuider
-        elif cfg_star_switch:
-            guider_cls = CFGStarRescalingGuider
-        video_cfg_guider = guider_cls(cfg_guidance_scale)
-        audio_cfg_guider = guider_cls(audio_cfg_guidance_scale)
+        if hq_sampler:
+            from ..ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
+            video_guider_params = MultiModalGuiderParams(
+                cfg_scale=cfg_guidance_scale,
+                stg_scale=0.0,
+                rescale_scale=rescale_scale,
+                modality_scale=alt_guidance_scale if alt_guidance_scale != 1.0 else 1.0,
+                stg_blocks=perturbation_layers if perturbation_layers else [],
+            )
+            audio_guider_params = MultiModalGuiderParams(
+                cfg_scale=audio_cfg_guidance_scale,
+                stg_scale=0.0,
+                rescale_scale=rescale_scale,
+                modality_scale=alt_guidance_scale if alt_guidance_scale != 1.0 else 1.0,
+                stg_blocks=perturbation_layers if perturbation_layers else [],
+            )
+        else:
+            guider_cls = CFGGuider
+            if apg_switch:
+                guider_cls = LtxAPGGuider
+            elif cfg_star_switch:
+                guider_cls = CFGStarRescalingGuider
+            video_cfg_guider = guider_cls(cfg_guidance_scale)
+            audio_cfg_guider = guider_cls(audio_cfg_guidance_scale)
         dtype = torch.bfloat16
 
         text_encoder = self._get_stage_model(1, "text_encoder")
@@ -272,6 +297,27 @@ class TI2VidTwoStagesPipeline:
             preview_tools: VideoLatentTools | None = None,
             mask_context=None,
         ) -> tuple[LatentState, LatentState]:
+            if hq_sampler:
+                video_guider = MultiModalGuider(params=video_guider_params, negative_context=v_context_n)
+                audio_guider = MultiModalGuider(params=audio_guider_params, negative_context=a_context_n)
+                return res2s_audio_video_denoising_loop(
+                    sigmas=sigmas,
+                    video_state=video_state,
+                    audio_state=audio_state,
+                    stepper=stepper,
+                    denoise_fn=multi_modal_guider_denoising_func(
+                        video_guider, audio_guider,
+                        v_context_p, a_context_p,
+                        transformer=transformer,
+                    ),
+                    noise_seed=seed,
+                    mask_context=mask_context,
+                    interrupt_check=interrupt_check,
+                    callback=callback,
+                    preview_tools=preview_tools,
+                    pass_no=1,
+                    transformer=transformer,
+                )
             return euler_denoising_loop(
                 sigmas=sigmas,
                 video_state=video_state,
@@ -421,17 +467,33 @@ class TI2VidTwoStagesPipeline:
             preview_tools: VideoLatentTools | None = None,
             mask_context=None,
         ) -> tuple[LatentState, LatentState]:
+            stage2_denoise_fn = simple_denoising_func(
+                video_context=v_context_p,
+                audio_context=a_context_p,
+                transformer=transformer,  # noqa: F821
+                alt_guidance_scale=1.0,
+            )
+            if hq_sampler:
+                return res2s_audio_video_denoising_loop(
+                    sigmas=sigmas,
+                    video_state=video_state,
+                    audio_state=audio_state,
+                    stepper=stepper,
+                    denoise_fn=stage2_denoise_fn,
+                    noise_seed=seed + 1,
+                    mask_context=mask_context,
+                    interrupt_check=interrupt_check,
+                    callback=callback,
+                    preview_tools=preview_tools,
+                    pass_no=2,
+                    transformer=transformer,
+                )
             return euler_denoising_loop(
                 sigmas=sigmas,
                 video_state=video_state,
                 audio_state=audio_state,
                 stepper=stepper,
-                denoise_fn=simple_denoising_func(
-                    video_context=v_context_p,
-                    audio_context=a_context_p,
-                    transformer=transformer,  # noqa: F821
-                    alt_guidance_scale=1.0,
-                ),
+                denoise_fn=stage2_denoise_fn,
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,

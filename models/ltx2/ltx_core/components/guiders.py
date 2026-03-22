@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 
 import torch
 
@@ -187,6 +188,62 @@ class LegacyStatefulAPGGuider(GuiderProtocol):
 
     def enabled(self) -> bool:
         return self.scale != 0.0
+
+
+@dataclass(frozen=True)
+class MultiModalGuiderParams:
+    """Parameters for the multi-modal guider (official HQ pipeline)."""
+
+    cfg_scale: float = 1.0
+    stg_scale: float = 0.0
+    stg_blocks: list[int] | None = field(default_factory=list)
+    rescale_scale: float = 0.0
+    modality_scale: float = 1.0
+    skip_step: int = 0
+
+
+@dataclass(frozen=True)
+class MultiModalGuider:
+    """Unified multi-modal guider combining CFG, STG, modality guidance, and rescaling.
+
+    Ported from the official LTX-2 reference implementation.
+    """
+
+    params: MultiModalGuiderParams
+    negative_context: torch.Tensor | None = None
+
+    def calculate(
+        self,
+        cond: torch.Tensor,
+        uncond_text: "torch.Tensor | float",
+        uncond_perturbed: "torch.Tensor | float",
+        uncond_modality: "torch.Tensor | float",
+    ) -> torch.Tensor:
+        pred = (
+            cond
+            + (self.params.cfg_scale - 1) * (cond - uncond_text)
+            + self.params.stg_scale * (cond - uncond_perturbed)
+            + (self.params.modality_scale - 1) * (cond - uncond_modality)
+        )
+        if self.params.rescale_scale != 0:
+            factor = cond.std() / pred.std()
+            factor = self.params.rescale_scale * factor + (1 - self.params.rescale_scale)
+            pred = pred * factor
+        return pred
+
+    def do_unconditional_generation(self) -> bool:
+        return not math.isclose(self.params.cfg_scale, 1.0)
+
+    def do_perturbed_generation(self) -> bool:
+        return not math.isclose(self.params.stg_scale, 0.0)
+
+    def do_isolated_modality_generation(self) -> bool:
+        return not math.isclose(self.params.modality_scale, 1.0)
+
+    def should_skip_step(self, step: int) -> bool:
+        if self.params.skip_step == 0:
+            return False
+        return step % (self.params.skip_step + 1) != 0
 
 
 def projection_coef(to_project: torch.Tensor, project_onto: torch.Tensor) -> torch.Tensor:

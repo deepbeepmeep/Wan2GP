@@ -10560,6 +10560,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             with gr.Row():
                                 hq_sampler = gr.Dropdown(choices=[("Euler (Standard)", 0), ("Res2s (HQ)", 1)], value=ui_get("hq_sampler", 0), label="Sampler", scale=1)
                                 rescale_scale = gr.Slider(0, 1, value=ui_get("rescale_scale", 0.0), step=0.05, label="Rescale Scale (0=off, 0.45=recommended for HQ)", scale=2, show_reset_button=False)
+                            gr.Markdown("<I>Res2s HQ is designed for 15 steps with a distilled LoRA at 0.25 strength, CFG 3, Rescale 0.45</I>")
                         with gr.Column(visible = any_perturbation ) as perturbation_row:
                             gr.Markdown("<B>Perturbation (improves video quality, requires guidance > 1)</B>")
                             perturbation_choices = model_def.get("perturbation_choices", [("OFF", 0), ("Skip Layer Guidance", 1)])

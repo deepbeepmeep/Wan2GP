@@ -272,10 +272,20 @@ class TI2VidTwoStagesPipeline:
         v_context_n, a_context_n = context_n
 
         # Stage 1: Initial low resolution video generation.
+        stage_1_output_shape = VideoPixelShape(
+            batch=1,
+            frames=num_frames,
+            width=width // 2,
+            height=height // 2,
+            fps=frame_rate,
+        )
         video_encoder = self._get_stage_model(1, "video_encoder")
         transformer = self._get_stage_model(1, "transformer")
         bind_interrupt_check(transformer, interrupt_check)
-        sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
+        # Pass latent shape to scheduler for resolution-dependent sigma shifting
+        from ..ltx_core.types import VideoLatentShape
+        empty_latent = torch.empty(VideoLatentShape.from_pixel_shape(stage_1_output_shape).to_torch_shape())
+        sigmas = LTX2Scheduler().execute(steps=num_inference_steps, latent=empty_latent).to(dtype=torch.float32, device=self.device)
         if loras_slists is not None:
             stage_1_steps = len(sigmas) - 1
             update_loras_slists(
@@ -311,7 +321,6 @@ class TI2VidTwoStagesPipeline:
                         transformer=transformer,
                         v_context_n=v_context_n, a_context_n=a_context_n,
                     ),
-                    noise_seed=seed,
                     mask_context=mask_context,
                     interrupt_check=interrupt_check,
                     callback=callback,
@@ -350,13 +359,6 @@ class TI2VidTwoStagesPipeline:
                 self_refiner_generator=generator,
             )
 
-        stage_1_output_shape = VideoPixelShape(
-            batch=1,
-            frames=num_frames,
-            width=width // 2,
-            height=height // 2,
-            fps=frame_rate,
-        )
         stage_1_conditionings = image_conditionings_by_replacing_latent(
             images=images,
             height=stage_1_output_shape.height,
@@ -481,7 +483,6 @@ class TI2VidTwoStagesPipeline:
                     audio_state=audio_state,
                     stepper=stepper,
                     denoise_fn=stage2_denoise_fn,
-                    noise_seed=seed + 1,
                     mask_context=mask_context,
                     interrupt_check=interrupt_check,
                     callback=callback,

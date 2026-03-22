@@ -1573,7 +1573,7 @@ def res2s_audio_video_denoising_loop(
 
         denoised_video_2, denoised_audio_2 = denoise_fn(
             video_state=mid_video_state, audio_state=mid_audio_state,
-            sigmas=torch.stack([sub_sigma, torch.zeros_like(sub_sigma)]).to(dtype=torch.float32, device=_device), step_index=0,
+            sigmas=torch.stack([sub_sigma]).to(dtype=torch.float32, device=_device), step_index=0,
         )
         if denoised_video_2 is None or denoised_audio_2 is None:
             return None, None
@@ -1603,6 +1603,15 @@ def res2s_audio_video_denoising_loop(
         if mask_context is not None:
             _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
         _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
+
+    # Final step: fully denoise when last sigma is 0
+    if sigmas[-1] == 0:
+        denoised_video_final, denoised_audio_final = denoise_fn(video_state, audio_state, sigmas, n_full_steps)
+        if denoised_video_final is not None and denoised_audio_final is not None:
+            denoised_video_final = post_process_latent(denoised_video_final, video_state.denoise_mask, video_state.clean_latent)
+            denoised_audio_final = post_process_latent(denoised_audio_final, audio_state.denoise_mask, audio_state.clean_latent)
+            video_state = replace(video_state, latent=denoised_video_final.to(model_dtype))
+            audio_state = replace(audio_state, latent=denoised_audio_final.to(model_dtype))
 
     return video_state, audio_state
 

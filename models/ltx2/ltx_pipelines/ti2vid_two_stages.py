@@ -309,6 +309,7 @@ class TI2VidTwoStagesPipeline:
                         video_guider, audio_guider,
                         v_context_p, a_context_p,
                         transformer=transformer,
+                        v_context_n=v_context_n, a_context_n=a_context_n,
                     ),
                     noise_seed=seed,
                     mask_context=mask_context,

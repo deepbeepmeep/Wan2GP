@@ -1304,6 +1304,8 @@ def multi_modal_guider_denoising_func(
     v_context: torch.Tensor,
     a_context: torch.Tensor,
     transformer,
+    v_context_n: torch.Tensor | None = None,
+    a_context_n: torch.Tensor | None = None,
 ):
     """Denoising function using the official MultiModalGuider (HQ pipeline).
 
@@ -1319,21 +1321,46 @@ def multi_modal_guider_denoising_func(
 
     last_denoised_video = None
     last_denoised_audio = None
+    prepared_v_context = None
+    prepared_a_context = None
+    prepared_v_context_neg = None
+    prepared_a_context_neg = None
+
+    def _prewarm(video_state: LatentState, audio_state: LatentState, sigmas: torch.Tensor) -> None:
+        nonlocal prepared_v_context, prepared_a_context, prepared_v_context_neg, prepared_a_context_neg
+        if prepared_v_context is None:
+            prepared_v_context = _prepare_conditioning_context(transformer, video_state, v_context, sigmas, is_audio=False)
+        if prepared_a_context is None:
+            prepared_a_context = _prepare_conditioning_context(transformer, audio_state, a_context, sigmas, is_audio=True)
+        if v_context_n is not None and prepared_v_context_neg is None:
+            prepared_v_context_neg = _prepare_conditioning_context(transformer, video_state, v_context_n, sigmas, is_audio=False)
+        if a_context_n is not None and prepared_a_context_neg is None:
+            prepared_a_context_neg = _prepare_conditioning_context(transformer, audio_state, a_context_n, sigmas, is_audio=True)
+
+    def _cleanup() -> None:
+        nonlocal prepared_v_context, prepared_a_context, prepared_v_context_neg, prepared_a_context_neg
+        prepared_v_context = prepared_a_context = None
+        prepared_v_context_neg = prepared_a_context_neg = None
+        _clear_phase_timestep_embedders(transformer)
 
     def guider_denoising_step(
         video_state: LatentState, audio_state: LatentState, sigmas: torch.Tensor, step_index: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
         nonlocal last_denoised_video, last_denoised_audio
 
+        _prewarm(video_state, audio_state, sigmas)
+
         if video_guider.should_skip_step(step_index) and audio_guider.should_skip_step(step_index):
             return last_denoised_video, last_denoised_audio
 
         sigma = sigmas[step_index]
         pos_video = modality_from_latent_state(
-            video_state, v_context, sigma, enabled=not video_guider.should_skip_step(step_index)
+            video_state, prepared_v_context, sigma, enabled=not video_guider.should_skip_step(step_index),
+            step_index=step_index, sigma_schedule=sigmas,
         )
         pos_audio = modality_from_latent_state(
-            audio_state, a_context, sigma, enabled=not audio_guider.should_skip_step(step_index)
+            audio_state, prepared_a_context, sigma, enabled=not audio_guider.should_skip_step(step_index),
+            step_index=step_index, sigma_schedule=sigmas,
         )
 
         denoised_video, denoised_audio = transformer(
@@ -1342,10 +1369,10 @@ def multi_modal_guider_denoising_func(
 
         neg_denoised_video, neg_denoised_audio = 0.0, 0.0
         if video_guider.do_unconditional_generation() or audio_guider.do_unconditional_generation():
-            neg_video_context = video_guider.negative_context if video_guider.negative_context is not None else v_context
-            neg_audio_context = audio_guider.negative_context if audio_guider.negative_context is not None else a_context
-            neg_video = modality_from_latent_state(video_state, neg_video_context, sigma)
-            neg_audio = modality_from_latent_state(audio_state, neg_audio_context, sigma)
+            neg_v_ctx = prepared_v_context_neg if prepared_v_context_neg is not None else prepared_v_context
+            neg_a_ctx = prepared_a_context_neg if prepared_a_context_neg is not None else prepared_a_context
+            neg_video = modality_from_latent_state(video_state, neg_v_ctx, sigma, step_index=step_index, sigma_schedule=sigmas)
+            neg_audio = modality_from_latent_state(audio_state, neg_a_ctx, sigma, step_index=step_index, sigma_schedule=sigmas)
             neg_denoised_video, neg_denoised_audio = transformer(
                 video=neg_video, audio=neg_audio, perturbations=None
             )
@@ -1397,6 +1424,8 @@ def multi_modal_guider_denoising_func(
         last_denoised_audio = denoised_audio
         return denoised_video, denoised_audio
 
+    guider_denoising_step._prewarm = _prewarm
+    guider_denoising_step._cleanup = _cleanup
     return guider_denoising_step
 
 
@@ -1493,6 +1522,7 @@ def res2s_audio_video_denoising_loop(
         if transformer is not None:
             offload.set_step_no_for_lora(transformer, step_idx)
 
+        _device = sigmas.device
         sigma = sigmas[step_idx].double()
         sigma_next = sigmas[step_idx + 1].double()
 
@@ -1519,13 +1549,14 @@ def res2s_audio_video_denoising_loop(
         x_mid_audio = x_anchor_audio + h * a21 * eps_1_audio
 
         # SDE noise injection at substep
+        _sde_substep_sigmas = torch.stack([sigma, sub_sigma]).to(dtype=torch.float32, device=_device)
         x_mid_video = substep_noise_injecting_fn(
             state=video_state, sample=x_anchor_video, denoised_sample=x_mid_video,
-            sigmas=torch.stack([sigma, sub_sigma]), step_idx=0,
+            sigmas=_sde_substep_sigmas, step_idx=0,
         )
         x_mid_audio = substep_noise_injecting_fn(
             state=audio_state, sample=x_anchor_audio, denoised_sample=x_mid_audio,
-            sigmas=torch.stack([sigma, sub_sigma]), step_idx=0,
+            sigmas=_sde_substep_sigmas, step_idx=0,
         )
 
         # Bong iteration: stabilize anchor point
@@ -1542,7 +1573,7 @@ def res2s_audio_video_denoising_loop(
 
         denoised_video_2, denoised_audio_2 = denoise_fn(
             video_state=mid_video_state, audio_state=mid_audio_state,
-            sigmas=torch.stack([sub_sigma]).to(sigmas.device), step_index=0,
+            sigmas=torch.stack([sub_sigma, torch.zeros_like(sub_sigma)]).to(dtype=torch.float32, device=_device), step_index=0,
         )
         if denoised_video_2 is None or denoised_audio_2 is None:
             return None, None

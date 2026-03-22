@@ -282,10 +282,13 @@ class TI2VidTwoStagesPipeline:
         video_encoder = self._get_stage_model(1, "video_encoder")
         transformer = self._get_stage_model(1, "transformer")
         bind_interrupt_check(transformer, interrupt_check)
-        # Pass latent shape to scheduler for resolution-dependent sigma shifting
-        from ..ltx_core.types import VideoLatentShape
-        empty_latent = torch.empty(VideoLatentShape.from_pixel_shape(stage_1_output_shape).to_torch_shape())
-        sigmas = LTX2Scheduler().execute(steps=num_inference_steps, latent=empty_latent).to(dtype=torch.float32, device=self.device)
+        if hq_sampler:
+            # HQ pipeline: resolution-dependent sigma shifting
+            from ..ltx_core.types import VideoLatentShape
+            empty_latent = torch.empty(VideoLatentShape.from_pixel_shape(stage_1_output_shape).to_torch_shape())
+            sigmas = LTX2Scheduler().execute(steps=num_inference_steps, latent=empty_latent).to(dtype=torch.float32, device=self.device)
+        else:
+            sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
         if loras_slists is not None:
             stage_1_steps = len(sigmas) - 1
             update_loras_slists(

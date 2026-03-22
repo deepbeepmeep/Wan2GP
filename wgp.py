@@ -10556,11 +10556,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_hq_sampler = model_def.get("hq_sampler", False)
                 with gr.Tab("Quality", visible = (vace and image_outputs or any_perturbation or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude or any_pnp or any_hq_sampler) and not audio_only ) as quality_tab:
                         with gr.Column(visible=any_hq_sampler) as hq_sampler_col:
-                            gr.Markdown("<B>Sampler (Res2s HQ uses a second-order sampler for better quality at fewer steps)</B>")
-                            with gr.Row():
-                                hq_sampler = gr.Dropdown(choices=[("Euler (Standard)", 0), ("Res2s (HQ)", 1)], value=ui_get("hq_sampler", 0), label="Sampler", scale=1)
-                                rescale_scale = gr.Slider(0, 1, value=ui_get("rescale_scale", 0.0), step=0.05, label="Rescale Scale (0=off, 0.45=recommended for HQ)", scale=2, show_reset_button=False)
-                            gr.Markdown("<I>Res2s HQ is designed for 15 steps with a distilled LoRA at 0.25 strength, CFG 3, Rescale 0.45</I>")
+                            gr.Markdown("<B>Sampler</B>")
+                            hq_sampler = gr.Dropdown(choices=[("Euler (Standard)", 0), ("Res2s (HQ)", 1)], value=ui_get("hq_sampler", 0), label="Sampler", scale=1)
+                            with gr.Column(visible=(update_form and ui_get("hq_sampler", 0) == 1)) as hq_sampler_options:
+                                rescale_scale = gr.Slider(0, 1, value=ui_get("rescale_scale", 0.0), step=0.05, label="Rescale Scale (0=off, 0.45=recommended for HQ)", show_reset_button=False)
+                                gr.Markdown("<I>Res2s HQ is designed for 15 steps with a distilled LoRA at 0.25 strength, CFG 3, Rescale 0.45</I>")
+                            if not update_form:
+                                hq_sampler.change(fn=lambda v: gr.update(visible=v == 1), inputs=[hq_sampler], outputs=[hq_sampler_options])
                         with gr.Column(visible = any_perturbation ) as perturbation_row:
                             gr.Markdown("<B>Perturbation (improves video quality, requires guidance > 1)</B>")
                             perturbation_choices = model_def.get("perturbation_choices", [("OFF", 0), ("Skip Layer Guidance", 1)])

@@ -1568,8 +1568,10 @@ def res2s_audio_video_denoising_loop(
                 eps_1_audio = denoised_audio_1.double() - x_anchor_audio
 
         # Stage 2: evaluate at substep point
-        mid_video_state = replace(video_state, latent=x_mid_video.to(model_dtype))
-        mid_audio_state = replace(audio_state, latent=x_mid_audio.to(model_dtype))
+        # Use fresh runtime_cache to prevent stale base_timestep from main step (B8)
+        from ...ltx_core.types import LatentStateRuntimeCache
+        mid_video_state = replace(video_state, latent=x_mid_video.to(model_dtype), runtime_cache=LatentStateRuntimeCache())
+        mid_audio_state = replace(audio_state, latent=x_mid_audio.to(model_dtype), runtime_cache=LatentStateRuntimeCache())
 
         denoised_video_2, denoised_audio_2 = denoise_fn(
             video_state=mid_video_state, audio_state=mid_audio_state,

@@ -17,18 +17,22 @@ class DeepyChatUI:
     settings_launcher_host: Any
     html_output: Any
     chat_event: Any
+    stats_output: Any
     stop_btn: Any
     request: Any
     ask_btn: Any
     reset_btn: Any
+    auto_cancel_queue_tasks: Any
     use_template_properties: Any
-    priority: Any
     override_height: Any
     override_width: Any
     override_num_frames: Any
+    default_video_with_speech: Any
     default_image_generator: Any
     default_image_editor: Any
     default_video_generator: Any
+    default_speech_from_description: Any
+    default_speech_from_sample: Any
     refresh_presets_btn: Any
 
 
@@ -36,6 +40,7 @@ class DeepyChatUI:
 class DeepyChatHandlers:
     prepare_request_context: Callable[[Any, Any, Any, Any, Any], Any]
     update_tool_ui_settings: Callable[..., Any]
+    persist_auto_cancel_queue_tasks: Callable[[Any, Any], Any]
     store_selected_video_time: Callable[[Any, Any], Any]
     ask_ai: Callable[[Any, str], Any]
     stop_ai: Callable[[Any], Any]
@@ -56,11 +61,15 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                 request = gr.Text(value="", label="Request", scale=3, show_label=False, elem_id=assistant_chat.REQUEST_ID)
                 ask_btn = gr.Button("Ask", scale=1, min_width=10, elem_id=assistant_chat.ASK_BUTTON_ID)
                 reset_btn = gr.Button("Reset", scale=1, min_width=10, elem_id=assistant_chat.RESET_BUTTON_ID)
+            stats_output = gr.HTML(assistant_chat.render_stats_html(), elem_id=assistant_chat.STATS_BLOCK_ID)
             with gr.Column(elem_id=assistant_chat.SETTINGS_PANEL_ID):
                 with gr.Column(elem_classes=["wangp-assistant-chat__settings-scroll"]):
                     with gr.Accordion("Generation Properties", open=True):
+                        auto_cancel_queue_tasks = gr.Checkbox(
+                            value=tool_ui_state["auto_cancel_queue_tasks"],
+                            label="Auto-abort or remove Deepy-started generation on Stop/Reset.",
+                        )
                         use_template_properties = gr.Checkbox(value=tool_ui_state["use_template_properties"], label="Use Properties defined in Settings Templates files.")
-                        priority = gr.Checkbox(value=False, label="Priority queue insertion (place next after current task).")
                         with gr.Row():
                             override_width = gr.Slider(
                                 deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
@@ -87,22 +96,40 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                             interactive=not tool_ui_state["use_template_properties"],
                         )
                     with gr.Accordion("Template Settings used by Tools", open=False):
-                        default_image_generator = gr.Dropdown(
-                            choices=template_selector_state["image_generator_choices"],
-                            value=tool_ui_state["image_generator_variant"],
-                            label="Image Generator",
-                        )
-                        default_image_editor = gr.Dropdown(
-                            choices=template_selector_state["image_editor_choices"],
-                            value=tool_ui_state["image_editor_variant"],
-                            label="Image Editor",
-                        )
-                        default_video_generator = gr.Dropdown(
-                            choices=template_selector_state["video_generator_choices"],
-                            value=tool_ui_state["video_generator_variant"],
-                            label="Video Generator",
-                        )
-                        refresh_presets_btn = gr.Button("Refresh Presets", size="sm")
+                        with gr.Row():
+                            default_video_generator = gr.Dropdown(
+                                choices=template_selector_state["video_generator_choices"],
+                                value=tool_ui_state["video_generator_variant"],
+                                label="Video Generator",
+                            )
+                            default_video_with_speech = gr.Dropdown(
+                                choices=template_selector_state["video_with_speech_choices"],
+                                value=tool_ui_state["video_with_speech_variant"],
+                                label="Video With Speech",
+                            )
+                        with gr.Row():
+                            default_image_generator = gr.Dropdown(
+                                choices=template_selector_state["image_generator_choices"],
+                                value=tool_ui_state["image_generator_variant"],
+                                label="Image Generator",
+                            )
+                            default_image_editor = gr.Dropdown(
+                                choices=template_selector_state["image_editor_choices"],
+                                value=tool_ui_state["image_editor_variant"],
+                                label="Image Editor",
+                            )
+                        with gr.Row():
+                            default_speech_from_description = gr.Dropdown(
+                                choices=template_selector_state["speech_from_description_choices"],
+                                value=tool_ui_state["speech_from_description_variant"],
+                                label="Speech From Description",
+                            )
+                            default_speech_from_sample = gr.Dropdown(
+                                choices=template_selector_state["speech_from_sample_choices"],
+                                value=tool_ui_state["speech_from_sample_variant"],
+                                label="Speech From Sample",
+                            )
+                        refresh_presets_btn = gr.Button("Refresh Presets Lists", size="sm")
     return DeepyChatUI(
         dock=dock,
         launcher_host=launcher_host,
@@ -110,18 +137,22 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         settings_launcher_host=settings_launcher_host,
         html_output=html_output,
         chat_event=chat_event,
+        stats_output=stats_output,
         stop_btn=stop_btn,
         request=request,
         ask_btn=ask_btn,
         reset_btn=reset_btn,
+        auto_cancel_queue_tasks=auto_cancel_queue_tasks,
         use_template_properties=use_template_properties,
-        priority=priority,
         override_height=override_height,
         override_width=override_width,
         override_num_frames=override_num_frames,
+        default_video_with_speech=default_video_with_speech,
         default_image_generator=default_image_generator,
         default_image_editor=default_image_editor,
         default_video_generator=default_video_generator,
+        default_speech_from_description=default_speech_from_description,
+        default_speech_from_sample=default_speech_from_sample,
         refresh_presets_btn=refresh_presets_btn,
     )
 
@@ -137,14 +168,18 @@ def bind_deepy_chat_ui(
     selected_video_time_input: Any,
     load_queue_trigger: Any,
     output_trigger: Any,
+    abort_client_id: Any,
     handlers: DeepyChatHandlers,
 ) -> None:
-    def refresh_preset_dropdowns(current_image_generator, current_image_editor, current_video_generator):
-        refreshed = deepy_ui_settings.refresh_template_selector_state(current_image_generator, current_image_editor, current_video_generator)
+    def refresh_preset_dropdowns(current_video_generator, current_video_with_speech, current_image_generator, current_image_editor, current_speech_from_description, current_speech_from_sample):
+        refreshed = deepy_ui_settings.refresh_template_selector_state(current_image_generator, current_image_editor, current_video_generator, current_video_with_speech, current_speech_from_description, current_speech_from_sample)
         return (
+            gr.update(choices=refreshed["video_generator_choices"], value=refreshed["selected_video_generator"]),
+            gr.update(choices=refreshed["video_with_speech_choices"], value=refreshed["selected_video_with_speech"]),
             gr.update(choices=refreshed["image_generator_choices"], value=refreshed["selected_image_generator"]),
             gr.update(choices=refreshed["image_editor_choices"], value=refreshed["selected_image_editor"]),
-            gr.update(choices=refreshed["video_generator_choices"], value=refreshed["selected_video_generator"]),
+            gr.update(choices=refreshed["speech_from_description_choices"], value=refreshed["selected_speech_from_description"]),
+            gr.update(choices=refreshed["speech_from_sample_choices"], value=refreshed["selected_speech_from_sample"]),
         )
 
     def toggle_override_controls(use_template_properties):
@@ -158,26 +193,32 @@ def bind_deepy_chat_ui(
         audio_files_paths_value,
         audio_file_selected_value,
         ask_request,
+        auto_cancel_queue_tasks,
         use_template_properties,
-        priority,
         override_height,
         override_width,
         override_num_frames,
+        default_video_generator,
+        default_video_with_speech,
         default_image_generator,
         default_image_editor,
-        default_video_generator,
+        default_speech_from_description,
+        default_speech_from_sample,
     ):
         handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
         handlers.update_tool_ui_settings(
             state_value,
+            auto_cancel_queue_tasks=auto_cancel_queue_tasks,
             use_template_properties=use_template_properties,
-            priority=priority,
             width=override_width,
             height=override_height,
             num_frames=override_num_frames,
+            video_with_speech_variant=default_video_with_speech,
             image_generator_variant=default_image_generator,
             image_editor_variant=default_image_editor,
             video_generator_variant=default_video_generator,
+            speech_from_description_variant=default_speech_from_description,
+            speech_from_sample_variant=default_speech_from_sample,
             persist=True,
         )
         yield from handlers.ask_ai(state_value, ask_request)
@@ -188,6 +229,16 @@ def bind_deepy_chat_ui(
     def reset_ai_with_ui(state_value):
         return handlers.reset_ai(state_value)
 
+    def persist_auto_cancel_queue_tasks(state_value, auto_cancel_queue_tasks):
+        handlers.persist_auto_cancel_queue_tasks(state_value, auto_cancel_queue_tasks)
+
+    ui.auto_cancel_queue_tasks.change(
+        fn=persist_auto_cancel_queue_tasks,
+        inputs=[state, ui.auto_cancel_queue_tasks],
+        outputs=None,
+        show_progress="hidden",
+        queue=False,
+    )
     ui.use_template_properties.change(
         fn=toggle_override_controls,
         inputs=[ui.use_template_properties],
@@ -197,8 +248,8 @@ def bind_deepy_chat_ui(
     )
     ui.refresh_presets_btn.click(
         fn=refresh_preset_dropdowns,
-        inputs=[ui.default_image_generator, ui.default_image_editor, ui.default_video_generator],
-        outputs=[ui.default_image_generator, ui.default_image_editor, ui.default_video_generator],
+        inputs=[ui.default_video_generator, ui.default_video_with_speech, ui.default_image_generator, ui.default_image_editor, ui.default_speech_from_description, ui.default_speech_from_sample],
+        outputs=[ui.default_video_generator, ui.default_video_with_speech, ui.default_image_generator, ui.default_image_editor, ui.default_speech_from_description, ui.default_speech_from_sample],
         show_progress="hidden",
         queue=False,
     )
@@ -218,20 +269,23 @@ def bind_deepy_chat_ui(
             audio_files_paths,
             audio_file_selected,
             ui.request,
+            ui.auto_cancel_queue_tasks,
             ui.use_template_properties,
-            ui.priority,
             ui.override_height,
             ui.override_width,
             ui.override_num_frames,
+            ui.default_video_generator,
+            ui.default_video_with_speech,
             ui.default_image_generator,
             ui.default_image_editor,
-            ui.default_video_generator,
+            ui.default_speech_from_description,
+            ui.default_speech_from_sample,
         ],
-        outputs=[ui.chat_event, load_queue_trigger, ui.request, output_trigger],
+        outputs=[ui.chat_event, load_queue_trigger, ui.request, output_trigger, abort_client_id],
         show_progress="hidden",
     )
-    ui.stop_btn.click(fn=stop_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request], show_progress="hidden", queue=False)
-    ui.reset_btn.click(fn=reset_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request], show_progress="hidden")
+    ui.stop_btn.click(fn=stop_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden", queue=False)
+    ui.reset_btn.click(fn=reset_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden")
 
 
 __all__ = ["DeepyChatHandlers", "DeepyChatUI", "bind_deepy_chat_ui", "build_deepy_chat_ui"]

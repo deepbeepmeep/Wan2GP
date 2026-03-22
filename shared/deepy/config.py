@@ -12,6 +12,7 @@ DEEPY_DEFAULT_IMAGE_EDITOR_KEY = "deepy_default_image_editor"
 DEEPY_DEFAULT_VIDEO_GENERATOR_KEY = "deepy_default_video_generator"
 DEEPY_CONTEXT_TOKENS_KEY = "deepy_context_tokens"
 DEEPY_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_custom_system_prompt"
+DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
 
 DEEPY_VRAM_UNLOAD = "unload"
 DEEPY_VRAM_ALWAYS = "always_loaded"
@@ -22,6 +23,7 @@ DEEPY_DEFAULT_VIDEO_GENERATOR = "LTX-2 2.3 Distilled"
 DEEPY_CONTEXT_TOKENS_MIN = 4096
 DEEPY_CONTEXT_TOKENS_MAX = 256000
 DEEPY_CONTEXT_TOKENS_DEFAULT = 32768
+DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
 DEEPY_CONFIG_FILENAME = "wgp_config.json"
 
 DEEPY_QWEN_ENHANCER_IDS = {3, 4}
@@ -78,6 +80,16 @@ def normalize_deepy_custom_system_prompt(value: Any) -> str:
     return text
 
 
+def normalize_deepy_auto_cancel_queue_tasks(value: Any) -> bool:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"", "0", "false", "off", "no"}:
+            return False
+        if text in {"1", "true", "on", "yes"}:
+            return True
+    return bool(value)
+
+
 def estimate_deepy_kv_cache_mb(enhancer_enabled: Any, context_tokens: Any) -> tuple[str | None, int | None]:
     try:
         enhancer_no = int(enhancer_enabled or 0)
@@ -117,6 +129,7 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_DEFAULT_VIDEO_GENERATOR_KEY] = normalize_deepy_default_video_generator(runtime_config.get(DEEPY_DEFAULT_VIDEO_GENERATOR_KEY, DEEPY_DEFAULT_VIDEO_GENERATOR))
     runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
     runtime_config[DEEPY_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_CUSTOM_SYSTEM_PROMPT_KEY, ""))
+    runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
     return runtime_config
 
 
@@ -129,6 +142,7 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_DEFAULT_VIDEO_GENERATOR_KEY: DEEPY_DEFAULT_VIDEO_GENERATOR,
         DEEPY_CONTEXT_TOKENS_KEY: DEEPY_CONTEXT_TOKENS_DEFAULT,
         DEEPY_CUSTOM_SYSTEM_PROMPT_KEY: "",
+        DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
     }
 
 

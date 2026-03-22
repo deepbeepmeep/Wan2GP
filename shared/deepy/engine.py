@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import copy
 import json
+import math
 import os
 import re
 import sys
 import time
+import ffmpeg
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +18,8 @@ from PIL import Image
 from shared.utils.audio_video import extract_audio_tracks
 from shared.utils.utils import get_video_frame, get_video_info
 from shared.deepy.config import (
+    DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
+    DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY,
     DEEPY_CONTEXT_TOKENS_DEFAULT,
     DEEPY_CONTEXT_TOKENS_KEY,
     DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
@@ -22,6 +27,7 @@ from shared.deepy.config import (
     DEEPY_VRAM_UNLOAD,
     DEEPY_VRAM_UNLOAD_ON_REQUEST,
     get_deepy_config_value,
+    normalize_deepy_auto_cancel_queue_tasks,
     normalize_deepy_context_tokens,
     normalize_deepy_custom_system_prompt,
     normalize_deepy_vram_mode,
@@ -51,7 +57,7 @@ _TOOL_TYPE_MAP = {
     "bool": "boolean",
 }
 _AI_GEN_NO = 0
-_DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
+_DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
 _DEEPY_DOCS = {
     "finetunes": {"title": "Finetunes", "path": _DOCS_DIR / "FINETUNES.md"},
     "getting_started": {"title": "Getting Started", "path": _DOCS_DIR / "GETTING_STARTED.md"},
@@ -60,8 +66,25 @@ _DEEPY_DOCS = {
     "prompts": {"title": "Prompts", "path": _DOCS_DIR / "PROMPTS.md"},
     "vace": {"title": "VACE", "path": _DOCS_DIR / "VACE.md"},
 }
+_DOC_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_DOC_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _SELECTED_REFERENCE_RE = re.compile(r"\b(selected|current(?:ly)?\s+selected|current\s+(?:item|media))\b", flags=re.IGNORECASE)
+_RUNTIME_UPDATE_BLOCK_RE = re.compile(r"\s*<wangp_runtime_update>.*?</wangp_runtime_update>\s*", flags=re.DOTALL | re.IGNORECASE)
 _POST_TRIM_WINDOW_FRACTION = 0.25
+_INJECT_SELECTED_MEDIA_RUNTIME_UPDATES = False
+_RUNTIME_STATUS_VISUAL_KEYS = (
+    "selected_visual_media_id",
+    "selected_visual_media_type",
+    "selected_visual_media_label",
+    "selected_visual_current_time_seconds",
+    "selected_visual_current_frame_no",
+)
+_RUNTIME_STATUS_AUDIO_KEYS = (
+    "selected_audio_media_id",
+    "selected_audio_media_type",
+    "selected_audio_media_label",
+)
+_RUNTIME_STATUS_ALL_KEYS = _RUNTIME_STATUS_VISUAL_KEYS + _RUNTIME_STATUS_AUDIO_KEYS
 
 
 def set_assistant_debug(enabled: bool) -> None:
@@ -96,6 +119,183 @@ def assistant_tool(
     return decorator
 
 
+def _doc_relative_path(doc_path: Path) -> str:
+    return str(doc_path.relative_to(_DOCS_DIR.parent)).replace("\\", "/")
+
+
+def _normalize_doc_text(value: str) -> str:
+    return " ".join(_DOC_TOKEN_RE.findall(str(value or "").lower()))
+
+
+def _tokenize_doc_query(value: str) -> list[str]:
+    return _DOC_TOKEN_RE.findall(str(value or "").lower())
+
+
+def _extract_doc_sections(doc_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    lookup_id = str(doc_id or "").strip().lower()
+    doc_entry = _DEEPY_DOCS.get(lookup_id, None)
+    if doc_entry is None:
+        raise KeyError(lookup_id)
+    doc_path = Path(doc_entry["path"])
+    content = doc_path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n").strip()
+    lines = content.split("\n") if len(content) > 0 else []
+    headings = []
+    in_code_block = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        match = _DOC_HEADING_RE.match(line)
+        if match is None:
+            continue
+        headings.append((index, len(match.group(1)), match.group(2).strip()))
+    include_top_level = not any(level > 1 for _line_no, level, _title in headings)
+    sections = []
+    stack: list[tuple[int, str]] = []
+    for heading_index, (start_line, level, title) in enumerate(headings):
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, title))
+        if not include_top_level and level == 1:
+            continue
+        end_line = len(lines)
+        for next_start_line, next_level, _next_title in headings[heading_index + 1 :]:
+            if next_level <= level:
+                end_line = next_start_line
+                break
+        section_parts = [item_title for item_level, item_title in stack if include_top_level or item_level > 1]
+        section_name = " > ".join(section_parts or [title])
+        markdown = "\n".join(lines[start_line:end_line]).strip()
+        body = "\n".join(lines[start_line + 1 : end_line]).strip()
+        sections.append(
+            {
+                "section": section_name,
+                "heading": title,
+                "heading_level": int(level),
+                "content": markdown,
+                "body": body,
+            }
+        )
+    if not sections and len(content) > 0:
+        sections.append(
+            {
+                "section": str(doc_entry["title"]).strip() or lookup_id,
+                "heading": str(doc_entry["title"]).strip() or lookup_id,
+                "heading_level": 1,
+                "content": content,
+                "body": content,
+            }
+        )
+    return {
+        "doc_id": lookup_id,
+        "title": str(doc_entry["title"]).strip() or lookup_id,
+        "path": _doc_relative_path(doc_path),
+    }, sections
+
+
+def _build_doc_excerpt(section: dict[str, Any], query: str, query_tokens: list[str], limit: int = 260) -> str:
+    lines = [line.strip() for line in str(section.get("body", "") or "").splitlines() if len(line.strip()) > 0]
+    if not lines:
+        lines = [line.strip() for line in str(section.get("content", "") or "").splitlines() if len(line.strip()) > 0]
+    if not lines:
+        return ""
+    query_lower = str(query or "").strip().lower()
+    best_line = ""
+    if len(query_lower) > 0:
+        best_line = next((line for line in lines if query_lower in line.lower()), "")
+    if len(best_line) == 0 and query_tokens:
+        best_line = max(lines, key=lambda line: sum(token in line.lower() for token in query_tokens))
+    if len(best_line) == 0:
+        best_line = lines[0]
+    best_line = re.sub(r"\s+", " ", best_line).strip()
+    return best_line if len(best_line) <= limit else best_line[: limit - 3].rstrip() + "..."
+
+
+def _score_doc_section(query: str, query_tokens: list[str], doc_title: str, section: dict[str, Any]) -> int:
+    query_lower = str(query or "").strip().lower()
+    path_text = f"{doc_title} {section.get('section', '')}".lower()
+    content_text = str(section.get("body", "") or section.get("content", "")).lower()
+    score = 0
+    if len(query_lower) > 0 and query_lower in path_text:
+        score += 100
+    if len(query_lower) > 0 and query_lower in content_text:
+        score += 40
+    for token in query_tokens:
+        if token in path_text:
+            score += 12
+        if token in content_text:
+            score += 3
+    return score
+
+
+def _resolve_doc_section(doc_id: str, section_name: str) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    doc_info, sections = _extract_doc_sections(doc_id)
+    normalized_target = _normalize_doc_text(section_name)
+    if len(normalized_target) == 0:
+        return doc_info, {}, []
+    exact_path_matches = [section for section in sections if _normalize_doc_text(section["section"]) == normalized_target]
+    if len(exact_path_matches) == 1:
+        return doc_info, exact_path_matches[0], []
+    exact_heading_matches = [section for section in sections if _normalize_doc_text(section["heading"]) == normalized_target]
+    if len(exact_path_matches) == 0 and len(exact_heading_matches) == 1:
+        return doc_info, exact_heading_matches[0], []
+    partial_matches = [section for section in sections if normalized_target in _normalize_doc_text(section["section"])]
+    if len(exact_path_matches) == 0 and len(exact_heading_matches) == 0 and len(partial_matches) == 1:
+        return doc_info, partial_matches[0], []
+    candidate_matches = exact_path_matches or exact_heading_matches or partial_matches
+    candidate_names = [str(section["section"]) for section in candidate_matches[:5]]
+    return doc_info, {}, candidate_names
+
+
+def _format_avg_tokens_per_second(value: float) -> str:
+    try:
+        speed = float(value or 0.0)
+    except Exception:
+        speed = 0.0
+    if not math.isfinite(speed) or speed < 0.0:
+        speed = 0.0
+    return f"{speed:.1f}"
+
+
+def build_assistant_chat_stats(
+    session: AssistantSessionState,
+    *,
+    max_tokens: int,
+    active_sequence_token_count: int | None = None,
+    live_prefill_tokens: int = 0,
+    live_prefill_seconds: float = 0.0,
+    live_generated_tokens: int = 0,
+    live_generation_seconds: float = 0.0,
+) -> dict[str, Any]:
+    max_tokens = max(0, int(max_tokens or 0))
+    consumed_tokens = None if active_sequence_token_count is None else max(0, int(active_sequence_token_count))
+    if consumed_tokens is None:
+        snapshot_sequence = None if session.runtime_snapshot is None else session.runtime_snapshot.get("sequence", None)
+        if isinstance(snapshot_sequence, dict):
+            snapshot_token_ids = snapshot_sequence.get("token_ids", []) or []
+            if len(snapshot_token_ids) > 0:
+                consumed_tokens = len(snapshot_token_ids)
+    if consumed_tokens is None:
+        consumed_tokens = len(session.rendered_token_ids or [])
+    total_prefill_tokens = max(0, int(session.prefill_token_total or 0)) + max(0, int(live_prefill_tokens or 0))
+    total_prefill_seconds = max(0.0, float(session.prefill_seconds_total or 0.0)) + max(0.0, float(live_prefill_seconds or 0.0))
+    total_generated_tokens = max(0, int(session.generated_token_total or 0)) + max(0, int(live_generated_tokens or 0))
+    total_generation_seconds = max(0.0, float(session.generated_seconds_total or 0.0)) + max(0.0, float(live_generation_seconds or 0.0))
+    avg_prefill_tokens_per_second = (float(total_prefill_tokens) / float(total_prefill_seconds)) if total_prefill_seconds > 1e-9 else 0.0
+    avg_generated_tokens_per_second = (float(total_generated_tokens) / float(total_generation_seconds)) if total_generation_seconds > 1e-9 else 0.0
+    return {
+        "visible": True,
+        "text": f"prefill {_format_avg_tokens_per_second(avg_prefill_tokens_per_second)} tk/s | gen {_format_avg_tokens_per_second(avg_generated_tokens_per_second)} tk/s | {int(consumed_tokens):,} / {int(max_tokens):,} tk",
+        "avg_prefill_tokens_per_second": avg_prefill_tokens_per_second,
+        "avg_generated_tokens_per_second": avg_generated_tokens_per_second,
+        "consumed_tokens": int(consumed_tokens),
+        "max_tokens": int(max_tokens),
+    }
+
+
 @dataclass(slots=True)
 class AssistantSessionState:
     messages: list[dict[str, Any]] = field(default_factory=list)
@@ -123,6 +323,12 @@ class AssistantSessionState:
     rendered_context_window_tokens: int = 0
     pending_replay_reason: str = ""
     tool_ui_settings: dict[str, Any] = field(default_factory=dict)
+    prefill_token_total: int = 0
+    prefill_seconds_total: float = 0.0
+    generated_token_total: int = 0
+    generated_seconds_total: float = 0.0
+    runtime_max_model_len: int = 0
+    chat_stats_signature: str = ""
 
 
 @dataclass(slots=True)
@@ -165,6 +371,12 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.rendered_context_window_tokens = 0
     session.pending_replay_reason = ""
     session.tool_ui_settings = {}
+    session.prefill_token_total = 0
+    session.prefill_seconds_total = 0.0
+    session.generated_token_total = 0
+    session.generated_seconds_total = 0.0
+    session.runtime_max_model_len = 0
+    session.chat_stats_signature = ""
     assistant_chat.reset_session_chat(session)
 
 
@@ -180,6 +392,8 @@ def begin_assistant_turn(session: AssistantSessionState, user_message_id: str, u
         "rendered_context_window_tokens": session.rendered_context_window_tokens,
         "assistant_message_id": "",
         "interrupt_recorded": False,
+        "chat_transcript": copy.deepcopy(session.chat_transcript),
+        "chat_transcript_counter": int(session.chat_transcript_counter or 0),
     }
 
 
@@ -188,6 +402,21 @@ def mark_assistant_turn_message(session: AssistantSessionState, message_id: str)
     if not isinstance(checkpoint, dict):
         return
     checkpoint["assistant_message_id"] = str(message_id or "").strip()
+
+
+def checkpoint_assistant_turn(session: AssistantSessionState) -> bool:
+    checkpoint = session.current_turn
+    if not isinstance(checkpoint, dict):
+        return False
+    checkpoint["messages_len"] = len(session.messages)
+    checkpoint["rendered_token_ids"] = [int(token_id) for token_id in session.rendered_token_ids]
+    checkpoint["rendered_messages_len"] = int(session.rendered_messages_len or 0)
+    checkpoint["runtime_snapshot"] = None if session.runtime_snapshot is None else copy.deepcopy(session.runtime_snapshot)
+    checkpoint["rendered_system_prompt_signature"] = str(session.rendered_system_prompt_signature or "")
+    checkpoint["rendered_context_window_tokens"] = int(session.rendered_context_window_tokens or 0)
+    checkpoint["chat_transcript"] = copy.deepcopy(session.chat_transcript)
+    checkpoint["chat_transcript_counter"] = int(session.chat_transcript_counter or 0)
+    return True
 
 
 def _build_interruption_notice(user_text: str) -> str:
@@ -231,9 +460,17 @@ def rollback_assistant_turn(session: AssistantSessionState, interrupted_badge: s
         session.rendered_context_window_tokens = int(checkpoint.get("rendered_context_window_tokens", 0) or 0)
     except Exception:
         session.rendered_context_window_tokens = 0
-    assistant_message_id = str(checkpoint.get("assistant_message_id", "") or "").strip()
-    if len(assistant_message_id) > 0:
-        assistant_chat.remove_message(session, assistant_message_id)
+    transcript_snapshot = checkpoint.get("chat_transcript", None)
+    if isinstance(transcript_snapshot, list):
+        session.chat_transcript = copy.deepcopy(transcript_snapshot)
+        try:
+            session.chat_transcript_counter = int(checkpoint.get("chat_transcript_counter", session.chat_transcript_counter) or 0)
+        except Exception:
+            pass
+    else:
+        assistant_message_id = str(checkpoint.get("assistant_message_id", "") or "").strip()
+        if len(assistant_message_id) > 0:
+            assistant_chat.remove_message(session, assistant_message_id)
     user_message_id = str(checkpoint.get("user_message_id", "") or "").strip()
     if len(user_message_id) > 0:
         assistant_chat.set_message_badge(session, user_message_id, interrupted_badge)
@@ -291,7 +528,7 @@ def _strip_partial_tool_markup(text: str) -> str:
 
 
 class tools:
-    def __init__(self, gen, get_processed_queue, send_cmd, session: AssistantSessionState | None = None, get_output_filepath: Callable[[str, bool, bool], str] | None = None, record_file_metadata: Callable[..., None] | None = None, get_server_config: Callable[[], dict[str, Any]] | None = None):
+    def __init__(self, gen, get_processed_queue, send_cmd, session: AssistantSessionState | None = None, get_output_filepath: Callable[[str, bool, bool], str] | None = None, record_file_metadata: Callable[..., None] | None = None, get_server_config: Callable[[], dict[str, Any]] | None = None, get_current_model_def: Callable[[], dict[str, Any] | None] | None = None):
         self.gen = gen
         self.get_processed_queue = get_processed_queue
         self.send_cmd = send_cmd
@@ -299,6 +536,7 @@ class tools:
         self.get_output_filepath = get_output_filepath
         self.record_file_metadata = record_file_metadata
         self.get_server_config = get_server_config
+        self.get_current_model_def = get_current_model_def
         self._vision_query_callback: Callable[[dict[str, Any], str], dict[str, Any]] | None = None
         self._tool_progress_callback: Callable[..., None] | None = None
 
@@ -311,14 +549,24 @@ class tools:
 
     def _interrupted_result(self, client_id: str, task: dict[str, Any]) -> dict[str, Any]:
         self._log(f"Generation interrupted for {client_id}")
+        cancel_result = {}
+        if self._auto_cancel_queue_tasks_enabled() and len(str(client_id or "").strip()) > 0:
+            queue = list((self.gen or {}).get("queue", []) or [])
+            if self._queue_contains_client_id(queue, client_id):
+                self.send_cmd("abort_client_id", str(client_id))
+                cancel_result = {"client_id": str(client_id), "mode": "abort_client_id"}
+            elif self._clear_inline_queue_client_id(client_id):
+                cancel_result = {"client_id": str(client_id), "mode": "inline_queue"}
         result = {
             "status": "interrupted",
             "client_id": client_id,
             "output_file": "",
             "prompt": task["prompt"],
             "resolution": task["resolution"],
-            "error": "Interrupted by reset request.",
+            "error": "Interrupted by user.",
         }
+        if isinstance(cancel_result, dict) and len(cancel_result) > 0:
+            result["queue_cancel"] = cancel_result
         self._update_tool_progress("error", "Interrupted", result)
         return result
 
@@ -338,15 +586,73 @@ class tools:
             return deepy_ui_settings.normalize_assistant_tool_ui_settings(**self.session.tool_ui_settings)
         return deepy_ui_settings.normalize_assistant_tool_ui_settings()
 
-    def get_tool_template_filename(self, tool_name: str) -> str:
+    def _auto_cancel_queue_tasks_enabled(self) -> bool:
+        return normalize_deepy_auto_cancel_queue_tasks(self._server_config().get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
+
+    def _clear_inline_queue_client_id(self, client_id: str) -> bool:
+        client_id = str(client_id or "").strip()
+        if len(client_id) == 0 or not isinstance(self.gen, dict):
+            return False
+        def _matches(item):
+            if not isinstance(item, dict):
+                return False
+            if str(item.get("client_id", "") or "").strip() == client_id:
+                return True
+            params = item.get("params", None)
+            return isinstance(params, dict) and str(params.get("client_id", "") or "").strip() == client_id
+        inline_queue = self.gen.get("inline_queue", None)
+        if _matches(inline_queue):
+            self.gen.pop("inline_queue", None)
+            return True
+        if isinstance(inline_queue, list):
+            remaining_inline = [item for item in inline_queue if not _matches(item)]
+            if len(remaining_inline) != len(inline_queue):
+                if remaining_inline:
+                    self.gen["inline_queue"] = remaining_inline
+                else:
+                    self.gen.pop("inline_queue", None)
+                return True
+        return False
+
+    def _get_current_model_def(self) -> dict[str, Any]:
+        if not callable(self.get_current_model_def):
+            return {}
+        try:
+            model_def = self.get_current_model_def()
+        except Exception:
+            return {}
+        return dict(model_def or {})
+
+    def _get_deepy_tool_config(self, tool_name: str) -> dict[str, Any]:
+        deepy_tools = self._get_current_model_def().get("deepy_tools", None)
+        if not isinstance(deepy_tools, dict):
+            return {}
+        tool_config = deepy_tools.get(str(tool_name or "").strip(), None)
+        return dict(tool_config or {}) if isinstance(tool_config, dict) else {}
+
+    def _get_image_start_target(self, tool_name: str) -> str:
+        target = str(self._get_deepy_tool_config(tool_name).get("image_start", "image_start") or "image_start").strip()
+        return "image_refs" if target == "image_refs" else "image_start"
+
+    def get_tool_variant(self, tool_name: str) -> str:
+        lookup_name = str(tool_name or "").strip()
         setting_key = {
             "gen_image": "image_generator_variant",
             "edit_image": "image_editor_variant",
             "gen_video": "video_generator_variant",
-        }.get(str(tool_name or "").strip(), "")
-        if len(setting_key) == 0:
-            return ""
-        variant = str(self._get_tool_ui_settings().get(setting_key, "") or "").strip()
+            "gen_video_with_speech": "video_with_speech_variant",
+            "gen_speech_from_description": "speech_from_description_variant",
+            "gen_speech_from_sample": "speech_from_sample_variant",
+        }.get(lookup_name, "")
+        if len(setting_key) > 0:
+            return str(self._get_tool_ui_settings().get(setting_key, "") or "").strip()
+        return ""
+
+    def get_tool_template_filename(self, tool_name: str) -> str:
+        try:
+            variant = self.get_tool_variant(tool_name)
+        except Exception:
+            variant = ""
         if len(variant) == 0:
             return ""
         template_name = Path(variant).name
@@ -358,7 +664,7 @@ class tools:
 
     def get_tool_transcript_label(self, tool_name: str) -> str:
         label = self.get_tool_display_name(tool_name)
-        if str(tool_name or "").strip() not in {"gen_image", "edit_image", "gen_video"}:
+        if str(tool_name or "").strip() not in {"gen_image", "edit_image", "gen_video", "gen_speech_from_description", "gen_speech_from_sample", "gen_video_with_speech"}:
             return label
         template_label = Path(self.get_tool_template_filename(tool_name)).stem.strip()
         return label if len(template_label) == 0 else f"{label} [{template_label}]"
@@ -379,6 +685,12 @@ class tools:
         media_registry.sync_recent_generated_media(self.session, file_list, file_settings_list, max_items=max_items)
         media_registry.sync_recent_generated_media(self.session, audio_file_list, audio_file_settings_list, max_items=max_items)
 
+    def _queue_contains_client_id(self, queue: list[Any], client_id: str) -> bool:
+        lookup_client_id = str(client_id or "").strip()
+        if len(lookup_client_id) == 0:
+            return False
+        return any(isinstance(item, dict) and isinstance(item.get("params"), dict) and str(item["params"].get("client_id", "") or "").strip() == lookup_client_id for item in list(queue or []))
+
     def _compact_media_payload(self, record: dict[str, Any], why: str = "") -> dict[str, Any]:
         payload = {
             "media_id": record.get("media_id", ""),
@@ -394,29 +706,56 @@ class tools:
             payload["why"] = str(why).strip()
         return payload
 
+    def _normalize_selected_media_type(self, media_type: str | None) -> str:
+        normalized = str(media_type or "").strip().lower()
+        if normalized in {"", "any", "all"}:
+            return "all"
+        if normalized in {"image", "video", "audio"}:
+            return normalized
+        return "all"
+
+    def _selected_media_payload(self, media_record: dict[str, Any], why: str = "") -> dict[str, Any]:
+        payload = self._compact_media_payload(media_record, why=why)
+        payload["path"] = str(media_record.get("path", "")).strip()
+        payload.update(self._get_selected_video_position(media_record))
+        return payload
+
     def _get_selected_runtime_snapshot(self) -> dict[str, Any] | None:
-        media_record, error_result = self._get_selected_media_record("any")
-        if error_result is not None or media_record is None:
-            return None
-        snapshot = {
-            "selected_media_id": str(media_record.get("media_id", "") or "").strip(),
-            "selected_media_type": str(media_record.get("media_type", "") or "").strip(),
-        }
-        label = str(media_record.get("label", "") or "").strip()
-        if len(label) > 0:
-            snapshot["selected_media_label"] = label
-        if snapshot["selected_media_type"] == "video":
-            snapshot.update(self._get_selected_video_position(media_record))
-        return snapshot
+        snapshot = {}
+
+        visual_media_record, _error_result = self._get_selected_media_record_from_source("video", "all")
+        if visual_media_record is not None:
+            snapshot["selected_visual_media_id"] = str(visual_media_record.get("media_id", "") or "").strip()
+            snapshot["selected_visual_media_type"] = str(visual_media_record.get("media_type", "") or "").strip()
+            label = str(visual_media_record.get("label", "") or "").strip()
+            if len(label) > 0:
+                snapshot["selected_visual_media_label"] = label
+            if snapshot["selected_visual_media_type"] == "video":
+                video_position = self._get_selected_video_position(visual_media_record)
+                if "current_time_seconds" in video_position:
+                    snapshot["selected_visual_current_time_seconds"] = video_position["current_time_seconds"]
+                if "current_frame_no" in video_position:
+                    snapshot["selected_visual_current_frame_no"] = video_position["current_frame_no"]
+
+        audio_media_record, _error_result = self._get_selected_media_record_from_source("audio", "audio")
+        if audio_media_record is not None:
+            snapshot["selected_audio_media_id"] = str(audio_media_record.get("media_id", "") or "").strip()
+            snapshot["selected_audio_media_type"] = str(audio_media_record.get("media_type", "") or "").strip()
+            label = str(audio_media_record.get("label", "") or "").strip()
+            if len(label) > 0:
+                snapshot["selected_audio_media_label"] = label
+
+        return snapshot if len(snapshot) > 1 else None
 
     def _is_selected_reference(self, reference: str) -> bool:
         return _SELECTED_REFERENCE_RE.search(str(reference or "").strip()) is not None
 
-    def _get_selected_media_record(self, requested_media_type: str = "any") -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    def _get_selected_media_record_from_source(self, source: str, requested_media_type: str = "all") -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        requested_label = self._normalize_selected_media_type(requested_media_type)
         if self.session is None:
-            return None, {"status": "error", "media_type": str(requested_media_type or "any").strip() or "any", "error": "Assistant session is not available."}
+            return None, {"status": "error", "media_type": requested_label, "error": "Assistant session is not available."}
         file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(self.gen)
-        source = str((self.gen or {}).get("current_gallery_source", "video") or "video").strip().lower()
+        source = "audio" if str(source or "").strip().lower() == "audio" else "video"
         if source == "audio":
             raw_choice = (self.gen or {}).get("audio_selected", -1)
             file_list, file_settings_list = list(audio_file_list or []), list(audio_file_settings_list or [])
@@ -428,9 +767,17 @@ class tools:
         except Exception:
             choice = -1
         if choice < 0 or choice >= len(file_list):
-            return None, {"status": "error", "media_type": str(requested_media_type or "any").strip() or "any", "error": "No media is currently selected in WanGP galleries."}
+            gallery_label = "audio gallery" if source == "audio" else "image/video gallery"
+            return None, {"status": "error", "media_type": requested_label, "error": f"No media is currently selected in the WanGP {gallery_label}."}
         selected_path = str(file_list[choice] or "").strip()
         selected_settings = file_settings_list[choice] if choice < len(file_settings_list) and isinstance(file_settings_list[choice], dict) else None
+        selected_client_id = str((selected_settings or {}).get("client_id", "") or "").strip()
+        selected_gallery_media_type = "audio" if source == "audio" else "video"
+        if len(selected_client_id) > 0 and (source == "audio" or deepy_video_tools.has_video_extension(selected_path)):
+            latest_path, latest_settings = media_registry.find_last_gallery_media_by_client(file_list, file_settings_list, selected_client_id, media_type=selected_gallery_media_type)
+            if latest_path is not None:
+                selected_path = latest_path
+                selected_settings = latest_settings if isinstance(latest_settings, dict) else None
         media_record = media_registry.register_media(
             self.session,
             selected_path,
@@ -439,7 +786,7 @@ class tools:
             client_id=str((selected_settings or {}).get("client_id", "") or "").strip(),
         )
         if media_record is None:
-            return None, {"status": "error", "media_type": str(requested_media_type or "any").strip() or "any", "error": "The currently selected gallery item is not a supported media file."}
+            return None, {"status": "error", "media_type": requested_label, "error": "The currently selected gallery item is not a supported media file."}
         actual_media_type = str(media_record.get("media_type", "") or "").strip() or "unknown media type"
         resolved_media_type = media_registry.normalize_media_type(requested_media_type)
         if resolved_media_type != "any" and actual_media_type != resolved_media_type:
@@ -451,6 +798,32 @@ class tools:
                 "error": f"The currently selected media is a {actual_media_type}, not a {resolved_media_type}.",
             }
         return media_record, None
+
+    def _get_all_selected_media_records(self) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+        visual_media_record, _visual_error = self._get_selected_media_record_from_source("video", "all")
+        audio_media_record, _audio_error = self._get_selected_media_record_from_source("audio", "audio")
+        if visual_media_record is None and audio_media_record is None:
+            return None, None, {"status": "error", "media_type": "all", "error": "No media is currently selected in either WanGP gallery."}
+        return visual_media_record, audio_media_record, None
+
+    def _get_selected_media_record(self, requested_media_type: str = "all") -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        resolved_media_type = self._normalize_selected_media_type(requested_media_type)
+        if resolved_media_type == "audio":
+            return self._get_selected_media_record_from_source("audio", "audio")
+        if resolved_media_type in {"image", "video"}:
+            return self._get_selected_media_record_from_source("video", resolved_media_type)
+        visual_media_record, audio_media_record, error_result = self._get_all_selected_media_records()
+        if error_result is not None:
+            return None, error_result
+        if visual_media_record is None:
+            return audio_media_record, None
+        if audio_media_record is None:
+            return visual_media_record, None
+        return None, {
+            "status": "error",
+            "media_type": "all",
+            "error": "Both a visual selection and an audio selection exist. Request image, video, or audio explicitly, or use Get Selected Media with media_type='all'.",
+        }
 
     def _get_selected_video_position(self, media_record: dict[str, Any]) -> dict[str, Any]:
         if str(media_record.get("media_type", "") or "").strip() != "video":
@@ -617,7 +990,11 @@ class tools:
         if duration is not None:
             settings["duration_seconds"] = round(duration, 3)
 
-    def _queue_generation_task(self, task: dict[str, Any], *, activity_label: str, output_label: str | None = None) -> dict[str, Any]:
+    def _get_output_duration_seconds(self, output_path: str, file_settings: dict[str, Any] | None = None) -> float | None:
+        duration = deepy_video_tools.get_media_duration(output_path)
+        return None if duration is None else round(duration, 3)
+
+    def _queue_generation_task(self, task: dict[str, Any], *, activity_label: str, output_label: str | None = None, gallery_media_type: str = "image") -> dict[str, Any]:
         if not isinstance(self.gen, dict):
             raise RuntimeError("WanGP generation queue is not available.")
         client_id = str(task.get("client_id", "") or "").strip()
@@ -627,10 +1004,7 @@ class tools:
         self.get_processed_queue(gen)
         self._set_status(f"Queueing {activity_label}...", kind="tool")
         self._update_tool_progress("running", "Queued", {"status": "queued", "client_id": client_id, "prompt": prompt, "resolution": resolution})
-        if self._get_tool_ui_settings().get("priority", False):
-            task["priority"] = True
-        else:
-            task.pop("priority", None)
+        task["priority"] = True
         gen["inline_queue"] = task
         self.send_cmd("load_queue_trigger", {"client_id": client_id})
         self._log(f"Queued {activity_label} for {client_id}")
@@ -654,8 +1028,8 @@ class tools:
                 }
                 self._update_tool_progress("error", "Error", result)
                 return result
-            queue = gen.get("queue", []) or []
-            if any(isinstance(item, dict) and isinstance(item.get("params"), dict) and item["params"].get("client_id") == client_id for item in queue):
+            queue = list(gen.get("queue", []) or [])
+            if self._queue_contains_client_id(queue, client_id):
                 self._set_status(f"{activity_label.capitalize()} started...", kind="tool")
                 self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
                 break
@@ -679,12 +1053,16 @@ class tools:
                 }
                 self._update_tool_progress("error", "Error", result)
                 return result
-            file_list, file_settings_list, _audio_file_list, _audio_file_settings_list = self.get_processed_queue(gen)
-            for file_path, file_settings in zip(file_list, file_settings_list):
-                if not isinstance(file_settings, dict):
-                    continue
-                if file_settings.get("client_id", "") != client_id:
-                    continue
+            file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
+            media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
+            media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
+            queue = list(gen.get("queue", []) or [])
+            client_id_still_in_queue = self._queue_contains_client_id(queue, client_id)
+            if client_id_still_in_queue:
+                time.sleep(0.5)
+                continue
+            file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
+            if file_path is not None and isinstance(file_settings, dict):
                 media_record = self._register_tool_media(str(file_path), file_settings, label=output_label)
                 result = {
                     "status": "done",
@@ -695,12 +1073,26 @@ class tools:
                     "resolution": resolution,
                     "error": "",
                 }
+                if gallery_media_type in {"video", "audio"}:
+                    result["output_duration"] = self._get_output_duration_seconds(str(file_path), file_settings)
                 self._log(f"{activity_label.capitalize()} completed for {client_id}: {file_path}")
                 self._set_status(f"{activity_label.capitalize()} finished.", kind="tool")
                 self.send_cmd("refresh_gallery", {"path": str(file_path)})
                 self._update_tool_progress("done", "Done", result)
                 return result
-            time.sleep(0.5)
+            error_text = f"{activity_label.capitalize()} finished queue processing but no {gallery_media_type} output with client_id '{client_id}' was found in the gallery."
+            self._log(error_text)
+            self._set_status(error_text, kind="error")
+            result = {
+                "status": "error",
+                "client_id": client_id,
+                "output_file": "",
+                "prompt": prompt,
+                "resolution": resolution,
+                "error": error_text,
+            }
+            self._update_tool_progress("error", "Error", result)
+            return result
 
     @assistant_tool(
         display_name="Generate Image",
@@ -786,7 +1178,7 @@ class tools:
                 "resolution": task.get("resolution", ""),
                 "error": "Prompt is empty.",
             }
-        result = self._queue_generation_task(task, activity_label="video generation", output_label="Generated video")
+        result = self._queue_generation_task(task, activity_label="video generation", output_label="Generated video", gallery_media_type="video")
         result["generator_variant"] = generator_variant
         if len(template_file) > 0:
             result["template_file"] = template_file
@@ -794,6 +1186,174 @@ class tools:
             result["source_start_media_id"] = start_media.get("media_id", "")
         if end_media is not None:
             result["source_end_media_id"] = end_media.get("media_id", "")
+        return result
+
+    @assistant_tool(
+        display_name="Generate Video With Speech",
+        description="Queue and generate a talking video from a text prompt, a start image, and a speech audio clip inside WanGP, then wait until the output video is available.",
+        parameters={
+            "prompt": {
+                "type": "string",
+                "description": "The video generation prompt to send to WanGP.",
+            },
+            "image_start": {
+                "type": "string",
+                "description": "The media id of the start image returned by Resolve Media.",
+            },
+            "audio_media_id": {
+                "type": "string",
+                "description": "The media id of the speech audio returned by Resolve Media.",
+            },
+        },
+    )
+    def gen_video_with_speech(self, prompt: str, image_start: str, audio_media_id: str) -> dict[str, Any]:
+        self._sync_recent_media()
+        start_media, error_result = self._resolve_image_media(image_start, "image_start")
+        if error_result is not None:
+            error_result.update({"prompt": str(prompt or "").strip(), "output_file": ""})
+            return error_result
+        audio_media, error_result = self._resolve_audio_media(audio_media_id, "audio_media_id")
+        if error_result is not None:
+            error_result.update({"prompt": str(prompt or "").strip(), "output_file": ""})
+            return error_result
+        client_id = _next_ai_client_id()
+        generator_variant = self.get_tool_variant("gen_video_with_speech")
+        template_file = self.get_tool_template_filename("gen_video_with_speech")
+        task = deepy_tool_settings.build_generation_task(
+            "gen_video_with_speech",
+            generator_variant,
+            prompt=prompt,
+            client_id=client_id,
+            audio_guide=str(audio_media.get("path", "")).strip(),
+            image_start_target=self._get_image_start_target("gen_video_with_speech"),
+            image_start=str(start_media.get("path", "")).strip(),
+        )
+        task = self._apply_generation_overrides(task, include_num_frames=True)
+        if len(task["prompt"]) == 0:
+            self._set_status("Video generation failed: prompt is empty.", kind="error")
+            return {
+                "status": "error",
+                "client_id": client_id,
+                "output_file": "",
+                "prompt": "",
+                "resolution": task.get("resolution", ""),
+                "error": "Prompt is empty.",
+            }
+        if len(str(task.get("audio_guide", "") or "").strip()) == 0:
+            return {
+                "status": "error",
+                "client_id": client_id,
+                "output_file": "",
+                "prompt": str(prompt or "").strip(),
+                "resolution": task.get("resolution", ""),
+                "error": "Speech audio path is empty.",
+            }
+        result = self._queue_generation_task(task, activity_label="video generation", output_label="Generated video", gallery_media_type="video")
+        result["generator_variant"] = generator_variant
+        if len(template_file) > 0:
+            result["template_file"] = template_file
+        result["source_start_media_id"] = start_media.get("media_id", "")
+        result["source_audio_media_id"] = audio_media.get("media_id", "")
+        result["image_start_target"] = self._get_image_start_target("gen_video_with_speech")
+        return result
+
+    @assistant_tool(
+        display_name="Generate Speech From Description",
+        description="Queue and generate a speech audio clip from text, using a voice description stored in alt_prompt, then wait until the output audio is available.",
+        parameters={
+            "prompt": {
+                "type": "string",
+                "description": "The speech content to synthesize.",
+            },
+            "voice_description": {
+                "type": "string",
+                "description": "A short description of the desired voice, tone, or speaking style.",
+            },
+        },
+    )
+    def gen_speech_from_description(self, prompt: str, voice_description: str) -> dict[str, Any]:
+        client_id = _next_ai_client_id()
+        generator_variant = self.get_tool_variant("gen_speech_from_description")
+        template_file = self.get_tool_template_filename("gen_speech_from_description")
+        task = deepy_tool_settings.build_generation_task("gen_speech_from_description", generator_variant, prompt=prompt, client_id=client_id, alt_prompt=voice_description)
+        if len(task["prompt"]) == 0:
+            self._set_status("Speech generation failed: prompt is empty.", kind="error")
+            return {
+                "status": "error",
+                "client_id": client_id,
+                "output_file": "",
+                "prompt": "",
+                "error": "Prompt is empty.",
+            }
+        if len(str(task.get("alt_prompt", "") or "").strip()) == 0:
+            self._set_status("Speech generation failed: voice description is empty.", kind="error")
+            return {
+                "status": "error",
+                "client_id": client_id,
+                "output_file": "",
+                "prompt": str(prompt or "").strip(),
+                "error": "voice_description is required.",
+            }
+        result = self._queue_generation_task(task, activity_label="speech generation", output_label="Generated speech", gallery_media_type="audio")
+        result["generator_variant"] = generator_variant
+        if len(template_file) > 0:
+            result["template_file"] = template_file
+        result["voice_description"] = str(task.get("alt_prompt", "") or "").strip()
+        return result
+
+    @assistant_tool(
+        display_name="Generate Speech From Sample",
+        description="Queue and generate a speech audio clip from text, cloning the voice from a previously resolved audio sample, then wait until the output audio is available.",
+        parameters={
+            "prompt": {
+                "type": "string",
+                "description": "The speech content to synthesize.",
+            },
+            "media_id": {
+                "type": "string",
+                "description": "The media id of the audio sample returned by Resolve Media.",
+            },
+        },
+    )
+    def gen_speech_from_sample(self, prompt: str, media_id: str) -> dict[str, Any]:
+        self._sync_recent_media()
+        sample_media, error_result = self._resolve_audio_media(media_id, "media_id")
+        if error_result is not None:
+            error_result.update({"prompt": str(prompt or "").strip(), "output_file": ""})
+            return error_result
+        client_id = _next_ai_client_id()
+        generator_variant = self.get_tool_variant("gen_speech_from_sample")
+        template_file = self.get_tool_template_filename("gen_speech_from_sample")
+        task = deepy_tool_settings.build_generation_task(
+            "gen_speech_from_sample",
+            generator_variant,
+            prompt=prompt,
+            client_id=client_id,
+            audio_guide=str(sample_media.get("path", "")).strip(),
+        )
+        if len(task["prompt"]) == 0:
+            self._set_status("Speech generation failed: prompt is empty.", kind="error")
+            return {
+                "status": "error",
+                "client_id": client_id,
+                "output_file": "",
+                "prompt": "",
+                "error": "Prompt is empty.",
+            }
+        if len(str(task.get("audio_guide", "") or "").strip()) == 0:
+            return {
+                "status": "error",
+                "client_id": client_id,
+                "media_id": sample_media.get("media_id", ""),
+                "output_file": "",
+                "prompt": str(prompt or "").strip(),
+                "error": "Audio sample path is empty.",
+            }
+        result = self._queue_generation_task(task, activity_label="speech generation", output_label="Generated speech", gallery_media_type="audio")
+        result["generator_variant"] = generator_variant
+        if len(template_file) > 0:
+            result["template_file"] = template_file
+        result["source_media_id"] = sample_media.get("media_id", "")
         return result
 
     @assistant_tool(
@@ -1009,7 +1569,7 @@ class tools:
 
     @assistant_tool(
         display_name="Extract Audio",
-        description="Extract audio from a previously resolved video or clip an existing audio file using optional start_time, end_time, or duration.",
+        description="Extract audio from a previously resolved video or audio file using optional start_time, end_time, duration, and audio_track_no.",
         parameters={
             "media_id": {
                 "type": "string",
@@ -1030,10 +1590,15 @@ class tools:
                 "description": "Optional segment duration in seconds.",
                 "required": False,
             },
+            "audio_track_no": {
+                "type": "integer",
+                "description": "Optional 1-based audio track number to extract. Defaults to 1.",
+                "required": False,
+            },
         },
         pause_runtime=False,
     )
-    def extract_audio(self, media_id: str, start_time: float | None = None, end_time: float | None = None, duration: float | None = None) -> dict[str, Any]:
+    def extract_audio(self, media_id: str, start_time: float | None = None, end_time: float | None = None, duration: float | None = None, audio_track_no: int | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         if self.session is None:
             return {"status": "error", "media_id": str(media_id or "").strip(), "output_file": "", "error": "Assistant session is not available."}
@@ -1055,22 +1620,30 @@ class tools:
         if error_result is not None:
             error_result.update({"media_id": source_media.get("media_id", ""), "output_file": ""})
             return error_result
+        try:
+            audio_track_no = None if audio_track_no is None or str(audio_track_no).strip() == "" else int(audio_track_no)
+        except Exception:
+            return {"status": "error", "media_id": source_media.get("media_id", ""), "audio_track_no": audio_track_no, "output_file": "", "error": "audio_track_no must be an integer."}
+        if audio_track_no is not None and audio_track_no <= 0:
+            return {"status": "error", "media_id": source_media.get("media_id", ""), "audio_track_no": audio_track_no, "output_file": "", "error": "audio_track_no must be >= 1."}
         if end_time is not None and duration is not None:
             return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": "Specify either end_time or duration, not both."}
         self._set_status("Extracting audio...", kind="tool")
-        self._update_tool_progress("running", "Extracting", {"status": "running", "media_id": source_media.get("media_id", ""), "start_time": start_time, "end_time": end_time, "duration": duration})
+        self._update_tool_progress("running", "Extracting", {"status": "running", "media_id": source_media.get("media_id", ""), "start_time": start_time, "end_time": end_time, "duration": duration, "audio_track_no": audio_track_no})
         source_path = str(source_media.get("path", "")).strip()
         base_name = os.path.splitext(os.path.basename(source_path))[0]
         audio_codec = self._get_standalone_audio_output_codec()
         output_path = self._resolve_direct_output_path(f"{base_name}_audio{deepy_video_tools.get_audio_standalone_extension(audio_codec)}", False, True)
         try:
-            output_path = deepy_video_tools.extract_audio(source_path, output_path, start_time=start_time, end_time=end_time, duration=duration, audio_codec=audio_codec)
+            output_path = deepy_video_tools.extract_audio(source_path, output_path, start_time=start_time, end_time=end_time, duration=duration, audio_track_no=audio_track_no, audio_codec=audio_codec)
         except Exception as exc:
-            result = {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": str(exc)}
+            result = {"status": "error", "media_id": source_media.get("media_id", ""), "audio_track_no": audio_track_no, "output_file": "", "error": str(exc)}
             self._update_tool_progress("error", "Error", result)
             self._set_status(f"Audio extraction failed: {exc}", kind="error")
             return result
         comments = f'Extracted audio from "{os.path.basename(source_path)}"'
+        if audio_track_no is not None:
+            comments += f" using audio track {audio_track_no}"
         if start_time is not None:
             comments += f" starting at {start_time}s"
         if end_time is not None:
@@ -1087,6 +1660,7 @@ class tools:
             "start_time": start_time,
             "end_time": end_time,
             "duration": duration,
+            "audio_track_no": 1 if audio_track_no is None else audio_track_no,
             "output_file": output_path,
             "error": "",
         }
@@ -1190,12 +1764,12 @@ class tools:
         return result
 
     @assistant_tool(
-        display_name="Resize Crop Video",
-        description="Resize and crop a previously resolved video in one step. Crop values can be expressed in pixels or percent.",
+        display_name="Resize Crop",
+        description="Resize and crop a previously resolved image or video in one step. Crop values can be expressed in pixels or percent.",
         parameters={
             "media_id": {
                 "type": "string",
-                "description": "The media id for the source video returned by Resolve Media.",
+                "description": "The media id for the source image or video returned by Resolve Media.",
             },
             "width": {
                 "type": "integer",
@@ -1235,11 +1809,16 @@ class tools:
         },
         pause_runtime=False,
     )
-    def resize_crop_video(self, media_id: str, width: int | None = None, height: int | None = None, crop_left: float | None = None, crop_top: float | None = None, crop_right: float | None = None, crop_bottom: float | None = None, crop_unit: str | None = None) -> dict[str, Any]:
+    def resize_crop(self, media_id: str, width: int | None = None, height: int | None = None, crop_left: float | None = None, crop_top: float | None = None, crop_right: float | None = None, crop_bottom: float | None = None, crop_unit: str | None = None) -> dict[str, Any]:
         self._sync_recent_media()
-        source_media, error_result = self._resolve_video_media(media_id, "media_id")
-        if error_result is not None:
-            return error_result
+        if self.session is None:
+            return {"status": "error", "media_id": str(media_id or "").strip(), "output_file": "", "error": "Assistant session is not available."}
+        source_media = media_registry.get_media_record(self.session, media_id)
+        if source_media is None:
+            return {"status": "error", "media_id": str(media_id or "").strip(), "output_file": "", "error": "Unknown media id."}
+        if source_media.get("media_type") not in {"image", "video"}:
+            actual_media_type = str(source_media.get("media_type", "") or "").strip() or "unknown media type"
+            return {"status": "error", "media_id": source_media.get("media_id", ""), "actual_media_type": actual_media_type, "media_type": actual_media_type, "output_file": "", "error": f"media_id must reference an image or video, not a {actual_media_type}."}
         try:
             width = None if width is None or str(width).strip() == "" else int(width)
             height = None if height is None or str(height).strip() == "" else int(height)
@@ -1252,14 +1831,22 @@ class tools:
         crop_unit = str(crop_unit or "pixels").strip().lower() or "pixels"
         if crop_unit not in {"pixels", "percent"}:
             return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": "crop_unit must be 'pixels' or 'percent'."}
-        self._set_status("Resizing and cropping video...", kind="tool")
+        source_media_type = str(source_media.get("media_type", "") or "").strip() or "media"
+        self._set_status(f"Resizing and cropping {source_media_type}...", kind="tool")
         self._update_tool_progress("running", "Processing", {"status": "running", "media_id": source_media.get("media_id", ""), "width": width, "height": height, "crop_left": crop_left, "crop_top": crop_top, "crop_right": crop_right, "crop_bottom": crop_bottom, "crop_unit": crop_unit})
         source_path = str(source_media.get("path", "")).strip()
-        video_codec, video_container = self._get_video_output_settings()
         base_name = os.path.splitext(os.path.basename(source_path))[0]
-        output_path = self._resolve_direct_output_path(f"{base_name}_resized{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
         try:
-            output_path = deepy_video_tools.resize_crop_video(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
+            if source_media_type == "video":
+                video_codec, video_container = self._get_video_output_settings()
+                output_path = self._resolve_direct_output_path(f"{base_name}_resized{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
+                output_path = deepy_video_tools.resize_crop_video(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
+            else:
+                image_ext = os.path.splitext(source_path)[1].lower()
+                if image_ext not in {".png", ".jpg", ".jpeg", ".webp"}:
+                    image_ext = ".png"
+                output_path = self._resolve_direct_output_path(f"{base_name}_resized{image_ext}", True, False)
+                output_path = deepy_video_tools.resize_crop_image(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit)
         except Exception as exc:
             result = {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": str(exc)}
             self._update_tool_progress("error", "Error", result)
@@ -1271,8 +1858,9 @@ class tools:
         if any(value > 0 for value in (crop_left, crop_top, crop_right, crop_bottom)):
             comments += f" with crop {crop_left}/{crop_top}/{crop_right}/{crop_bottom} {crop_unit}"
         resized_settings = self._build_direct_media_settings(source_media, comments)
-        self._update_video_metadata_fields(output_path, resized_settings)
-        media_record = self._record_direct_media(output_path, resized_settings, is_image=False, audio_only=False, label="Resized/cropped video")
+        if source_media_type == "video":
+            self._update_video_metadata_fields(output_path, resized_settings)
+        media_record = self._record_direct_media(output_path, resized_settings, is_image=source_media_type == "image", audio_only=False, label=f"Resized/cropped {source_media_type}")
         result = {
             "status": "done",
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
@@ -1281,7 +1869,7 @@ class tools:
             "error": "",
         }
         self._update_tool_progress("done", "Done", result)
-        self._set_status("Video resize/crop finished.", kind="tool")
+        self._set_status(f"{source_media_type.capitalize()} resize/crop finished.", kind="tool")
         return result
 
     @assistant_tool(
@@ -1345,82 +1933,171 @@ class tools:
         return result
 
     @assistant_tool(
-        display_name="Load Doc",
-        description="Load one WanGP documentation page into Deepy's context by its doc id.",
+        display_name="Search Doc",
+        description="Search WanGP documentation by keywords and return the best matching sections.",
         parameters={
+            "query": {
+                "type": "string",
+                "description": "Keywords or a short natural-language question to search for in WanGP docs.",
+            },
             "doc_id": {
                 "type": "string",
-                "description": "Documentation id to load: finetunes, getting_started, loras, overview, prompts, or vace.",
-            },
-        },
-        pause_runtime=False,
-    )
-    def load_doc(self, doc_id: str) -> dict[str, Any]:
-        lookup_id = str(doc_id or "").strip().lower()
-        doc_entry = _DEEPY_DOCS.get(lookup_id, None)
-        if doc_entry is None:
-            return {
-                "status": "error",
-                "doc_id": lookup_id,
-                "available_doc_ids": sorted(_DEEPY_DOCS.keys()),
-                "error": "Unknown documentation id.",
-            }
-        doc_path = doc_entry["path"]
-        self._set_status(f"Loading {doc_entry['title']} documentation...", kind="tool")
-        self._update_tool_progress("running", "Loading", {"status": "running", "doc_id": lookup_id})
-        try:
-            content = doc_path.read_text(encoding="utf-8").strip()
-        except Exception as exc:
-            result = {
-                "status": "error",
-                "doc_id": lookup_id,
-                "title": doc_entry["title"],
-                "path": str(doc_path),
-                "error": str(exc),
-            }
-            self._update_tool_progress("error", "Error", result)
-            return result
-        result = {
-            "status": "done",
-            "doc_id": lookup_id,
-            "title": doc_entry["title"],
-            "path": str(doc_path.relative_to(_DOCS_DIR.parent)).replace("\\", "/"),
-            "content": content,
-            "error": "",
-        }
-        self._update_tool_progress("done", "Loaded", {"status": "done", "doc_id": lookup_id, "title": doc_entry["title"], "path": result["path"], "error": ""})
-        self._set_status(f"{doc_entry['title']} documentation loaded.", kind="tool")
-        return result
-
-    @assistant_tool(
-        display_name="Get Selected Media",
-        description="Return the media id for the currently selected WanGP gallery item. If the selected item is a video, also report the current player time and frame number.",
-        parameters={
-            "media_type": {
-                "type": "string",
-                "description": "Optional desired media type: image, video, audio, or any.",
+                "description": "Optional documentation id to limit the search to: finetunes, getting_started, loras, overview, prompts, or vace.",
                 "required": False,
             },
         },
         pause_runtime=False,
     )
-    def get_selected_media(self, media_type: str = "any") -> dict[str, Any]:
-        self._sync_recent_media()
-        media_record, error_result = self._get_selected_media_record(media_type)
-        if error_result is not None:
-            return error_result
+    def search_doc(self, query: str, doc_id: str = "") -> dict[str, Any]:
+        query = str(query or "").strip()
+        lookup_id = str(doc_id or "").strip().lower()
+        if len(query) == 0:
+            return {"status": "error", "query": "", "doc_id": lookup_id, "matches": [], "error": "query is empty."}
+        if len(lookup_id) > 0 and lookup_id not in _DEEPY_DOCS:
+            return {
+                "status": "error",
+                "query": query,
+                "doc_id": lookup_id,
+                "matches": [],
+                "available_doc_ids": sorted(_DEEPY_DOCS.keys()),
+                "error": "Unknown documentation id.",
+            }
+        target_doc_ids = [lookup_id] if len(lookup_id) > 0 else sorted(_DEEPY_DOCS.keys())
+        query_tokens = _tokenize_doc_query(query)
+        self._set_status("Searching documentation...", kind="tool")
+        self._update_tool_progress("running", "Searching", {"status": "running", "query": query, "doc_id": lookup_id})
+        try:
+            matches = []
+            for current_doc_id in target_doc_ids:
+                doc_info, sections = _extract_doc_sections(current_doc_id)
+                for section in sections:
+                    score = _score_doc_section(query, query_tokens, doc_info["title"], section)
+                    if score <= 0:
+                        continue
+                    matches.append(
+                        {
+                            "doc_id": doc_info["doc_id"],
+                            "title": doc_info["title"],
+                            "path": doc_info["path"],
+                            "section": section["section"],
+                            "heading": section["heading"],
+                            "heading_level": section["heading_level"],
+                            "excerpt": _build_doc_excerpt(section, query, query_tokens),
+                            "score": int(score),
+                        }
+                    )
+        except Exception as exc:
+            result = {"status": "error", "query": query, "doc_id": lookup_id, "matches": [], "error": str(exc)}
+            self._update_tool_progress("error", "Error", result)
+            return result
+        matches.sort(key=lambda item: (-int(item["score"]), str(item["doc_id"]), len(str(item["section"]))))
         result = {
             "status": "done",
-            **self._compact_media_payload(media_record),
-            "path": str(media_record.get("path", "")).strip(),
+            "query": query,
+            "doc_id": lookup_id,
+            "searched_doc_ids": target_doc_ids,
+            "matches": matches[:5],
             "error": "",
         }
-        result.update(self._get_selected_video_position(media_record))
+        self._update_tool_progress("done", "Done", {"status": "done", "query": query, "doc_id": lookup_id, "match_count": len(result["matches"]), "error": ""})
+        self._set_status("Documentation search finished.", kind="tool")
         return result
 
     @assistant_tool(
+        display_name="Load Doc Section",
+        description="Load one specific WanGP documentation section using the doc id and section path returned by Search Doc.",
+        parameters={
+            "doc_id": {
+                "type": "string",
+                "description": "Documentation id: finetunes, getting_started, loras, overview, prompts, or vace.",
+            },
+            "section": {
+                "type": "string",
+                "description": "The section path returned by Search Doc, for example `Prompt Enhancer > Automatic Versus On-Demand`.",
+            },
+        },
+        pause_runtime=False,
+    )
+    def load_doc_section(self, doc_id: str, section: str) -> dict[str, Any]:
+        lookup_id = str(doc_id or "").strip().lower()
+        section = str(section or "").strip()
+        if lookup_id not in _DEEPY_DOCS:
+            return {
+                "status": "error",
+                "doc_id": lookup_id,
+                "section": section,
+                "available_doc_ids": sorted(_DEEPY_DOCS.keys()),
+                "error": "Unknown documentation id.",
+            }
+        if len(section) == 0:
+            return {"status": "error", "doc_id": lookup_id, "section": "", "error": "section is empty."}
+        self._set_status("Loading documentation section...", kind="tool")
+        self._update_tool_progress("running", "Loading", {"status": "running", "doc_id": lookup_id, "section": section})
+        try:
+            doc_info, resolved_section, candidate_sections = _resolve_doc_section(lookup_id, section)
+        except Exception as exc:
+            result = {"status": "error", "doc_id": lookup_id, "section": section, "error": str(exc)}
+            self._update_tool_progress("error", "Error", result)
+            return result
+        if len(resolved_section) == 0:
+            result = {
+                "status": "error",
+                "doc_id": lookup_id,
+                "section": section,
+                "matching_sections": candidate_sections,
+                "error": "Section not found or ambiguous. Use the exact section path returned by Search Doc.",
+            }
+            self._update_tool_progress("error", "Error", result)
+            return result
+        result = {
+            "status": "done",
+            "doc_id": doc_info["doc_id"],
+            "title": doc_info["title"],
+            "path": doc_info["path"],
+            "section": resolved_section["section"],
+            "heading": resolved_section["heading"],
+            "heading_level": resolved_section["heading_level"],
+            "content": resolved_section["content"],
+            "error": "",
+        }
+        self._update_tool_progress("done", "Loaded", {"status": "done", "doc_id": doc_info["doc_id"], "section": resolved_section["section"], "path": doc_info["path"], "error": ""})
+        self._set_status("Documentation section loaded.", kind="tool")
+        return result
+
+    @assistant_tool(
+        display_name="Get Selected Media",
+        description="Return the current selected WanGP gallery media. With media_type=all, return both the selected visual media and the selected audio media. If the selected visual item is a video, also report the current player time and frame number.",
+        parameters={
+            "media_type": {
+                "type": "string",
+                "description": "Optional desired media type: image, video, audio, or all. all returns both gallery selections.",
+                "required": False,
+            },
+        },
+        pause_runtime=False,
+    )
+    def get_selected_media(self, media_type: str = "all") -> dict[str, Any]:
+        self._sync_recent_media()
+        resolved_media_type = self._normalize_selected_media_type(media_type)
+        if resolved_media_type == "all":
+            visual_media_record, audio_media_record, error_result = self._get_all_selected_media_records()
+            if error_result is not None:
+                return error_result
+            return {
+                "status": "done",
+                "media_type": "all",
+                "selected_visual_media": None if visual_media_record is None else self._selected_media_payload(visual_media_record),
+                "selected_audio_media": None if audio_media_record is None else self._selected_media_payload(audio_media_record),
+                "error": "",
+            }
+        media_record, error_result = self._get_selected_media_record(media_type)
+        if error_result is not None:
+            return error_result
+        return {"status": "done", **self._selected_media_payload(media_record), "error": ""}
+
+    @assistant_tool(
         display_name="Get Media Details",
-        description="Return detailed local metadata for a previously resolved image or video.",
+        description="Return detailed local metadata for a previously resolved image, video, or audio.",
         parameters={
             "media_id": {
                 "type": "string",
@@ -1438,12 +2115,12 @@ class tools:
             return {"status": "error", "media_id": str(media_id or "").strip(), "error": "Unknown media id."}
         media_path = str(media_record.get("path", "")).strip()
         media_type = str(media_record.get("media_type", "")).strip().lower()
-        if media_type not in {"image", "video"}:
+        if media_type not in {"image", "video", "audio"}:
             return {
                 "status": "error",
                 "media_id": media_record.get("media_id", ""),
                 "media_type": media_type,
-                "error": "Detailed media info currently supports images and videos.",
+                "error": "Detailed media info currently supports images, videos, and audio.",
             }
         self._set_status("Reading media details...", kind="tool")
         self._update_tool_progress("running", "Reading", {"status": "running", "media_id": media_record.get("media_id", ""), "media_type": media_type})
@@ -1466,9 +2143,11 @@ class tools:
                     "duration_seconds": None,
                     "has_audio": False,
                     "audio_track_count": 0,
+                    "sample_rate": None,
+                    "channels": None,
                     "error": "",
                 }
-            else:
+            elif media_type == "video":
                 fps, width, height, frame_count = get_video_info(media_path)
                 audio_track_count = int(extract_audio_tracks(media_path, query_only=True))
                 result = {
@@ -1486,6 +2165,46 @@ class tools:
                     "duration_seconds": (float(frame_count) / float(fps)) if fps > 0 else None,
                     "has_audio": audio_track_count > 0,
                     "audio_track_count": audio_track_count,
+                    "sample_rate": None,
+                    "channels": None,
+                    "error": "",
+                }
+            else:
+                probe = ffmpeg.probe(media_path)
+                audio_streams = [stream for stream in probe.get("streams", []) if str(stream.get("codec_type", "")).strip().lower() == "audio"]
+                primary_stream = audio_streams[0] if audio_streams else {}
+                sample_rate = primary_stream.get("sample_rate", None)
+                channels = primary_stream.get("channels", None)
+                duration_seconds = probe.get("format", {}).get("duration", None)
+                try:
+                    duration_seconds = None if duration_seconds in {None, "", "N/A"} else float(duration_seconds)
+                except Exception:
+                    duration_seconds = None
+                try:
+                    sample_rate = None if sample_rate in {None, "", "N/A"} else int(sample_rate)
+                except Exception:
+                    sample_rate = None
+                try:
+                    channels = None if channels in {None, "", "N/A"} else int(channels)
+                except Exception:
+                    channels = None
+                result = {
+                    "status": "done",
+                    "media_id": media_record.get("media_id", ""),
+                    "label": media_record.get("label", ""),
+                    "media_type": "audio",
+                    "path": media_path,
+                    "filename": os.path.basename(media_path),
+                    "width": None,
+                    "height": None,
+                    "resolution": None,
+                    "frame_count": None,
+                    "fps": None,
+                    "duration_seconds": duration_seconds,
+                    "has_audio": len(audio_streams) > 0,
+                    "audio_track_count": int(len(audio_streams)),
+                    "sample_rate": sample_rate,
+                    "channels": channels,
                     "error": "",
                 }
         except Exception as exc:
@@ -1512,7 +2231,7 @@ class tools:
             },
             "media_type": {
                 "type": "string",
-                "description": "The desired media type: image, video, audio, or any.",
+                "description": "The desired media type: image, video, audio, or all.",
             },
         },
         pause_runtime=False,
@@ -1520,15 +2239,27 @@ class tools:
     def resolve_media_reference(self, reference: str, media_type: str) -> dict[str, Any]:
         self._sync_recent_media()
         if self.session is None:
-            return {"status": "error", "reference": str(reference or "").strip(), "media_type": str(media_type or "any").strip() or "any", "matches": [], "error": "Assistant session is not available."}
+            return {"status": "error", "reference": str(reference or "").strip(), "media_type": str(media_type or "all").strip() or "all", "matches": [], "error": "Assistant session is not available."}
         if self._is_selected_reference(reference):
-            media_record, error_result = self._get_selected_media_record(media_type)
+            resolved_media_type = self._normalize_selected_media_type(media_type)
+            if resolved_media_type == "all":
+                matches = []
+                visual_media_record, audio_media_record, error_result = self._get_all_selected_media_records()
+                if error_result is not None:
+                    error_result.setdefault("reference", str(reference or "").strip())
+                    return error_result
+                if visual_media_record is not None:
+                    matches.append(self._selected_media_payload(visual_media_record, why="matched selected visual media"))
+                if audio_media_record is not None:
+                    matches.append(self._selected_media_payload(audio_media_record, why="matched selected audio media"))
+                if len(matches) == 1:
+                    return {"status": "resolved", "media_type": "all", "reference": str(reference or "").strip(), "media": matches[0], "error": ""}
+                return {"status": "candidates", "media_type": "all", "reference": str(reference or "").strip(), "matches": matches, "error": ""}
+            media_record, error_result = self._get_selected_media_record(resolved_media_type)
             if error_result is not None:
                 error_result.setdefault("reference", str(reference or "").strip())
                 return error_result
-            selected_media = self._compact_media_payload(media_record, why="matched selected media")
-            selected_media.update(self._get_selected_video_position(media_record))
-            return {"status": "resolved", "media_type": media_registry.normalize_media_type(media_type, reference=reference), "reference": str(reference or "").strip(), "media": selected_media, "error": ""}
+            return {"status": "resolved", "media_type": resolved_media_type, "reference": str(reference or "").strip(), "media": self._selected_media_payload(media_record, why="matched selected media"), "error": ""}
         result = media_registry.resolve_media_reference(self.session, reference, media_type)
         result.setdefault("error", "")
         return result
@@ -1753,6 +2484,10 @@ class AssistantEngine:
         self._stream_reasoning_block_id = ""
         self._stream_thinking_unknown = False
         self._stream_thinking_open = False
+        self._prefill_started_at: float | None = None
+        self._live_prefill_tokens = 0
+        self._segment_started_at: float | None = None
+        self._segment_generated_tokens = 0
         bind_runtime_tools = getattr(self.tool_box, "bind_runtime_tools", None)
         if callable(bind_runtime_tools):
             bind_runtime_tools(vision_query_callback=self._run_visual_query, tool_progress_callback=self._handle_tool_progress)
@@ -1768,12 +2503,109 @@ class AssistantEngine:
 
     def _set_status(self, text: str | None, kind: str = "thinking") -> None:
         self._emit_chat_event(assistant_chat.build_status_event(text, kind=kind, visible=text is not None and len(str(text).strip()) > 0))
+        self._emit_stats()
 
     def _hide_status(self) -> None:
         self._emit_chat_event(assistant_chat.build_status_event(None, visible=False))
+        self._emit_stats(force=True)
 
     def _get_context_window_tokens(self) -> int:
         return normalize_deepy_context_tokens(get_deepy_config_value(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
+
+    def _active_sequence_token_count(self) -> int | None:
+        if self.runtime is None:
+            return None
+        try:
+            current_seq = self.runtime._get_active_sequence()
+        except Exception:
+            return None
+        if current_seq is None:
+            return None
+        try:
+            return len(current_seq.token_ids or [])
+        except Exception:
+            return None
+
+    def _resolved_chat_max_tokens(self) -> int:
+        max_tokens = 0
+        if self.runtime is not None:
+            try:
+                max_tokens = int(self.runtime.get_max_model_len() or 0)
+            except Exception:
+                max_tokens = 0
+        if max_tokens > 0:
+            self.session.runtime_max_model_len = max_tokens
+            return max_tokens
+        try:
+            max_tokens = int(self.session.runtime_max_model_len or 0)
+        except Exception:
+            max_tokens = 0
+        return max_tokens if max_tokens > 0 else self._get_context_window_tokens()
+
+    def _chat_stats_payload(self) -> dict[str, Any]:
+        live_prefill_seconds = 0.0 if self._prefill_started_at is None else max(0.0, time.perf_counter() - self._prefill_started_at)
+        live_generation_seconds = 0.0 if self._segment_started_at is None else max(0.0, time.perf_counter() - self._segment_started_at)
+        return build_assistant_chat_stats(
+            self.session,
+            max_tokens=self._resolved_chat_max_tokens(),
+            active_sequence_token_count=self._active_sequence_token_count(),
+            live_prefill_tokens=self._live_prefill_tokens,
+            live_prefill_seconds=live_prefill_seconds,
+            live_generated_tokens=self._segment_generated_tokens,
+            live_generation_seconds=live_generation_seconds,
+        )
+
+    def _emit_stats(self, *, force: bool = False) -> None:
+        stats = self._chat_stats_payload()
+        signature = _json_dumps(stats)
+        if not force and signature == str(self.session.chat_stats_signature or ""):
+            return
+        self.session.chat_stats_signature = signature
+        self._emit_chat_event(assistant_chat.build_stats_event(stats))
+
+    def _record_prefill_metrics(self, token_count: int, elapsed_seconds: float) -> None:
+        tokens = max(0, int(token_count or 0))
+        elapsed = max(0.0, float(elapsed_seconds or 0.0))
+        if tokens <= 0 or elapsed <= 0.0:
+            return
+        self.session.prefill_token_total += tokens
+        self.session.prefill_seconds_total += elapsed
+
+    def _record_generation_metrics(self, token_count: int, elapsed_seconds: float) -> None:
+        tokens = max(0, int(token_count or 0))
+        elapsed = max(0.0, float(elapsed_seconds or 0.0))
+        if tokens <= 0 or elapsed <= 0.0:
+            return
+        self.session.generated_token_total += tokens
+        self.session.generated_seconds_total += elapsed
+
+    def _run_prefill_call(self, token_count: int, callback: Callable[[], Any], *, record_if: bool | Callable[[Any], bool] = True) -> Any:
+        tokens = max(0, int(token_count or 0))
+        started_at = time.perf_counter()
+        self._prefill_started_at = started_at if tokens > 0 else None
+        self._live_prefill_tokens = tokens
+        completed = False
+        result = None
+        try:
+            result = callback()
+            completed = True
+            return result
+        finally:
+            elapsed_seconds = max(0.0, time.perf_counter() - started_at)
+            self._prefill_started_at = None
+            self._live_prefill_tokens = 0
+            should_record = record_if(result) if callable(record_if) else bool(record_if)
+            if completed and should_record:
+                self._record_prefill_metrics(tokens, elapsed_seconds)
+            self._emit_stats(force=True)
+
+    def _finish_stream_pass(self, token_count: int | None = None) -> None:
+        elapsed_seconds = 0.0 if self._segment_started_at is None else max(0.0, time.perf_counter() - self._segment_started_at)
+        recorded_tokens = max(max(0, int(token_count or 0)), max(0, int(self._segment_generated_tokens or 0)))
+        self._record_generation_metrics(recorded_tokens, elapsed_seconds)
+        self._segment_started_at = None
+        self._segment_generated_tokens = 0
+        self._emit_stats(force=True)
 
     def _get_custom_system_prompt(self) -> str:
         return normalize_deepy_custom_system_prompt(get_deepy_config_value(DEEPY_CUSTOM_SYSTEM_PROMPT_KEY, ""))
@@ -1800,7 +2632,9 @@ class AssistantEngine:
     def _message_render_content(self, message: dict[str, Any]) -> str:
         model_content = message.get("model_content", None)
         if isinstance(model_content, str) and len(model_content) > 0:
-            return model_content
+            if _INJECT_SELECTED_MEDIA_RUNTIME_UPDATES:
+                return model_content
+            return _RUNTIME_UPDATE_BLOCK_RE.sub("\n", model_content).strip()
         return str(message.get("content", "") or "")
 
     def _get_pending_render_messages(self) -> list[dict[str, Any]]:
@@ -1839,36 +2673,52 @@ class AssistantEngine:
         return [self._message_render_content(message).strip() for message in self._get_pending_render_messages() if str(message.get("role", "")).strip().lower() == "tool" and len(self._message_render_content(message).strip()) > 0]
 
     def _refresh_runtime_status_note(self) -> None:
+        if not _INJECT_SELECTED_MEDIA_RUNTIME_UPDATES:
+            self.session.runtime_status_note = ""
+            self.session.runtime_status_signature = ""
+            return
         snapshot = self.tool_box._get_selected_runtime_snapshot()
+        previous_snapshot = {}
+        previous_signature = str(self.session.runtime_status_signature or "").strip()
+        if len(previous_signature) > 0:
+            try:
+                previous_snapshot = dict(json.loads(previous_signature) or {})
+            except Exception:
+                previous_snapshot = {}
         if snapshot is None:
-            if len(str(self.session.runtime_status_signature or "").strip()) == 0:
+            if len(previous_signature) == 0:
                 self.session.runtime_status_note = ""
                 return
-            normalized_snapshot = {
-                "selected_media_id": None,
-                "selected_media_type": None,
-                "selected_media_label": None,
-                "current_time_seconds": None,
-                "current_frame_no": None,
-            }
+            normalized_snapshot = {key: None for key in _RUNTIME_STATUS_ALL_KEYS}
         else:
-            normalized_snapshot = {
-                "selected_media_id": str(snapshot.get("selected_media_id", "") or "").strip() or None,
-                "selected_media_type": str(snapshot.get("selected_media_type", "") or "").strip() or None,
-                "selected_media_label": str(snapshot.get("selected_media_label", "") or "").strip() or None,
-                "current_time_seconds": snapshot.get("current_time_seconds", None),
-                "current_frame_no": snapshot.get("current_frame_no", None),
-            }
+            normalized_snapshot = {key: None for key in _RUNTIME_STATUS_ALL_KEYS}
+            for key in ("selected_visual_media_id", "selected_visual_media_type", "selected_visual_media_label", "selected_audio_media_id", "selected_audio_media_type", "selected_audio_media_label"):
+                normalized_snapshot[key] = str(snapshot.get(key, "") or "").strip() or None
+            for key in ("selected_visual_current_time_seconds", "selected_visual_current_frame_no"):
+                normalized_snapshot[key] = snapshot.get(key, None)
         signature = _json_dumps(normalized_snapshot)
         if signature == self.session.runtime_status_signature:
             self.session.runtime_status_note = ""
             return
+        changed_keys = [key for key in _RUNTIME_STATUS_ALL_KEYS if previous_snapshot.get(key, None) != normalized_snapshot.get(key, None)]
+        if len(previous_snapshot) == 0:
+            emitted_keys = list(_RUNTIME_STATUS_ALL_KEYS)
+        else:
+            emitted_keys = []
+            if any(key in changed_keys for key in _RUNTIME_STATUS_VISUAL_KEYS):
+                emitted_keys.extend(_RUNTIME_STATUS_VISUAL_KEYS)
+            if any(key in changed_keys for key in _RUNTIME_STATUS_AUDIO_KEYS):
+                emitted_keys.extend(_RUNTIME_STATUS_AUDIO_KEYS)
+            if len(emitted_keys) == 0:
+                self.session.runtime_status_note = ""
+                self.session.runtime_status_signature = signature
+                return
         lines = [
             "<wangp_runtime_update>",
             "Hidden WanGP runtime state. This is environment metadata, not a user message.",
-            "Use it as factual UI context only.",
+            "Use it as factual UI context only. Omitted keys keep their previous runtime-update values.",
         ]
-        for key in ("selected_media_id", "selected_media_type", "selected_media_label", "current_time_seconds", "current_frame_no"):
+        for key in emitted_keys:
             value = normalized_snapshot.get(key, None)
             if isinstance(value, str):
                 rendered_value = value if len(value) > 0 else "none"
@@ -1904,6 +2754,7 @@ class AssistantEngine:
         self._skip_pause_snapshot = False
         self._remember_render_state()
         self._log(log_message)
+        self._emit_stats(force=True)
         return "recorded"
 
     def _send_chat(self, text: str) -> None:
@@ -1938,6 +2789,8 @@ class AssistantEngine:
         self._stream_reasoning_block_id = ""
         self._stream_thinking_unknown = self.runtime is not None and qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
         self._stream_thinking_open = False
+        self._segment_started_at = time.perf_counter()
+        self._segment_generated_tokens = 0
 
     def _current_stream_content(self) -> str:
         return self._stream_answer_text
@@ -1970,6 +2823,7 @@ class AssistantEngine:
 
     def _stream_generation_update(self, *, raw_text: str, token_count: int, stop_reason: str | None, is_final: bool) -> None:
         turn_id = self._ensure_active_turn()
+        self._segment_generated_tokens = max(int(self._segment_generated_tokens or 0), max(0, int(token_count or 0)))
         thinking_text, answer_text = self._split_streaming_text(raw_text, is_final=is_final)
         if not is_final and len(thinking_text) < len(self._stream_reasoning_text):
             thinking_text = self._stream_reasoning_text
@@ -1982,6 +2836,7 @@ class AssistantEngine:
         if answer_text != self._stream_answer_text and len(answer_text) > 0:
             self._stream_answer_text = answer_text
             self._emit_chat_event(assistant_chat.set_assistant_content(self.session, turn_id, self._stream_answer_text))
+        self._emit_stats()
 
     def _handle_tool_progress(self, status: str | None = None, status_text: str | None = None, result: dict[str, Any] | None = None) -> None:
         if self._active_tool_context is None:
@@ -2180,7 +3035,11 @@ class AssistantEngine:
                 self.session.runtime_snapshot = None
                 self.session.pending_replay_reason = ""
                 return "reused"
-        mode, runtime_replay_reason = runtime.restore_or_replay(self.session.runtime_snapshot, fallback_tokens)
+        mode, runtime_replay_reason = self._run_prefill_call(
+            len(fallback_tokens),
+            lambda: runtime.restore_or_replay(self.session.runtime_snapshot, fallback_tokens),
+            record_if=lambda result: isinstance(result, tuple) and len(result) > 0 and result[0] == "replayed",
+        )
         pending_replay_reason = str(self.session.pending_replay_reason or "").strip()
         runtime_replay_reason = str(runtime_replay_reason or "").strip()
         if len(pending_replay_reason) > 0 and runtime_replay_reason == "no exact runtime snapshot was available":
@@ -2243,19 +3102,23 @@ class AssistantEngine:
                 thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
                 suffix_tokens = render_tool_turn_suffix(runtime.tokenizer, self._pending_tool_render_contents(), thinking_enabled=thinking_enabled)
                 if len(suffix_tokens) > 0:
-                    mode = runtime.append_suffix(suffix_tokens)
+                    prefix_tokens = self._active_sequence_token_count()
+                    prefix_tokens = len(self.session.rendered_token_ids) if prefix_tokens is None else prefix_tokens
+                    mode = self._run_prefill_call(prefix_tokens + len(suffix_tokens), lambda: runtime.append_suffix(suffix_tokens), record_if=lambda result: result == "prefilled")
                     self._record_live_context("Generation context extended from live runtime. [suffix append only]" if mode == "extended" else "Generation context prefilled from live runtime. [prefill redone]" if mode == "prefilled" else f"Generation context {mode} from live runtime.")
                     return
             if restore_mode in ("reused", "restored") and self._can_append_pending_user_suffix():
                 thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
                 suffix_tokens = render_text_user_turn_suffix(runtime.tokenizer, self._pending_user_render_content(), thinking_enabled=thinking_enabled)
                 if len(suffix_tokens) > 0:
-                    mode = runtime.append_suffix(suffix_tokens)
+                    prefix_tokens = self._active_sequence_token_count()
+                    prefix_tokens = len(self.session.rendered_token_ids) if prefix_tokens is None else prefix_tokens
+                    mode = self._run_prefill_call(prefix_tokens + len(suffix_tokens), lambda: runtime.append_suffix(suffix_tokens), record_if=lambda result: result == "prefilled")
                     self._record_live_context("Generation context extended from live runtime. [suffix append only]" if mode == "extended" else "Generation context prefilled from live runtime. [prefill redone]" if mode == "prefilled" else f"Generation context {mode} from live runtime.")
                     return
         target_tokens = self._fit_rendered_messages_to_window(add_generation_prompt=True, reserve_tokens=128)
         if len(self.session.rendered_token_ids) > 0:
-            mode = runtime.extend_context(target_tokens)
+            mode = self._run_prefill_call(len(target_tokens), lambda: runtime.extend_context(target_tokens), record_if=lambda result: result in ("prefilled", "replayed"))
             self._remember_render_state()
             if mode == "prefilled":
                 self._log("Generation context prefilled. [prefill redone]")
@@ -2266,7 +3129,7 @@ class AssistantEngine:
             else:
                 self._log(f"Generation context {mode}.")
             return
-        runtime.prime_context(target_tokens)
+        self._run_prefill_call(len(target_tokens), lambda: runtime.prime_context(target_tokens))
         self._remember_render_state()
         self._log("Generation context primed. [prefill redone]")
 
@@ -2347,10 +3210,10 @@ class AssistantEngine:
             self._log(f"Tool validation error: {validation_error}")
             self._set_status(f"{tool_label} failed: {validation_error}", kind="error")
             self._emit_chat_event(assistant_chat.complete_tool_call(self.session, message_id, tool_id, result))
-            self._emit_chat_event(assistant_chat.build_sync_event(self.session))
+            self._emit_chat_event(assistant_chat.build_sync_event(self.session, stats=self._chat_stats_payload()))
             return result
         if len(tool_template) > 0:
-            self._set_status(f"Using {tool_label} ({tool_template})...", kind="tool")
+            self._set_status(f"Using {tool_label} ({Path(tool_template).stem})...", kind="tool")
         else:
             self._set_status(f"Using {tool_label}...", kind="tool")
         if tool_policy.get("pause_runtime", True):
@@ -2367,7 +3230,7 @@ class AssistantEngine:
         self._emit_chat_event(assistant_chat.complete_tool_call(self.session, message_id, tool_id, result))
         # Queue-backed tools can finish and immediately trigger another model pass; emit a full
         # transcript sync here so the UI materializes the final tool state and attachment first.
-        self._emit_chat_event(assistant_chat.build_sync_event(self.session))
+        self._emit_chat_event(assistant_chat.build_sync_event(self.session, stats=self._chat_stats_payload()))
         return result
 
     def _append_assistant_message(self, raw_text: str, tool_calls: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
@@ -2426,6 +3289,7 @@ class AssistantEngine:
         self._active_turn_id = ""
         self._refresh_runtime_status_note()
         self.session.messages.append(self._build_pending_user_message(user_text))
+        checkpoint_assistant_turn(self.session)
         recent_thoughts: list[str] = []
         model_passes = 0
         final_user_text = ""
@@ -2440,24 +3304,29 @@ class AssistantEngine:
                 )
                 self._set_status("Loading Deepy..." if show_loading_status else "Thinking...", kind="loading" if show_loading_status else "thinking")
                 self._sync_generation_context()
+                self._emit_stats(force=True)
                 if self.session.interrupt_requested:
                     break
                 if show_loading_status:
                     self.session.force_loading_status_once = False
                     self._set_status("Thinking...", kind="thinking")
                 self._start_stream_pass()
-                result = self.runtime.generate_segment(
-                    max_new_tokens=max_new_tokens,
-                    seed=seed,
-                    do_sample=do_sample,
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    thinking_enabled=self.thinking_enabled,
-                    stop_requested=lambda: bool(self.session.interrupt_requested),
-                    stream_callback=self._stream_generation_update,
-                    stream_interval_seconds=1.0,
-                )
+                result = None
+                try:
+                    result = self.runtime.generate_segment(
+                        max_new_tokens=max_new_tokens,
+                        seed=seed,
+                        do_sample=do_sample,
+                        temperature=temperature,
+                        top_p=top_p,
+                        top_k=top_k,
+                        thinking_enabled=self.thinking_enabled,
+                        stop_requested=lambda: bool(self.session.interrupt_requested),
+                        stream_callback=self._stream_generation_update,
+                        stream_interval_seconds=1.0,
+                    )
+                finally:
+                    self._finish_stream_pass(None if result is None else result.token_count)
                 model_passes += 1
                 if self.session.interrupt_requested or result.stop_reason == "interrupted":
                     break
@@ -2498,6 +3367,7 @@ class AssistantEngine:
                             break
                         tool_result = self._execute_tool(tool_call)
                         self._append_tool_message(tool_result, stored_tool_call.get("id"))
+                        checkpoint_assistant_turn(self.session)
                     if self.session.interrupt_requested:
                         break
                     continue
@@ -2517,6 +3387,11 @@ class AssistantEngine:
                 rollback_assistant_turn(self.session)
             finish_assistant_turn(self.session)
             self.session.runtime_status_note = ""
+            self._prefill_started_at = None
+            self._live_prefill_tokens = 0
+            self._segment_started_at = None
+            self._segment_generated_tokens = 0
+            self._emit_stats(force=True)
         if not self.session.interrupt_requested and len(final_user_text.strip()) > 0:
             self._send_chat(final_user_text)
         if turn_completed and not self.session.interrupt_requested and len(self.session.interruption_notice.strip()) > 0:

@@ -11,7 +11,7 @@ from shared.utils.audio_video import read_image_metadata
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
 _VIDEO_EXTENSIONS = {".mp4", ".mkv"}
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac"}
-_MEDIA_TYPES = {"image", "video", "audio", "any"}
+_MEDIA_TYPES = {"image", "video", "audio", "any", "all"}
 _TYPE_HINTS = {
     "image": ("image", "images", "picture", "photo", "photos", "pic", "pics"),
     "video": ("video", "videos", "clip", "movie", "footage"),
@@ -56,6 +56,8 @@ _SEARCH_LIMIT = 5
 def normalize_media_type(media_type: str | None, reference: str | None = None) -> str:
     normalized = str(media_type or "").strip().lower()
     if normalized not in _MEDIA_TYPES:
+        normalized = "any"
+    elif normalized == "all":
         normalized = "any"
     if normalized != "any":
         return normalized
@@ -130,8 +132,57 @@ def register_media(
     return existing
 
 
+def collapse_gallery_media(file_list: list[Any], file_settings_list: list[Any]) -> tuple[list[Any], list[Any]]:
+    gallery_files = list(file_list or [])
+    gallery_settings = list(file_settings_list or [])
+    collapsed_pairs: list[tuple[Any, Any]] = []
+    seen_client_keys: set[tuple[str, str]] = set()
+    for index in range(len(gallery_files) - 1, -1, -1):
+        path = gallery_files[index]
+        settings = gallery_settings[index] if index < len(gallery_settings) else None
+        client_key = _gallery_client_media_key(path, settings)
+        if client_key is not None:
+            if client_key in seen_client_keys:
+                continue
+            seen_client_keys.add(client_key)
+        collapsed_pairs.append((path, settings))
+    collapsed_pairs.reverse()
+    collapsed_files = []
+    collapsed_settings = []
+    for path, settings in collapsed_pairs:
+        if path is None and settings is None:
+            continue
+        collapsed_files.append(path)
+        collapsed_settings.append(settings)
+    return collapsed_files, collapsed_settings
+
+
+def find_last_gallery_media_by_client(file_list: list[Any], file_settings_list: list[Any], client_id: str, *, media_type: str | None = None) -> tuple[str | None, dict[str, Any] | None]:
+    lookup_client_id = str(client_id or "").strip()
+    if len(lookup_client_id) == 0:
+        return None, None
+    gallery_files = list(file_list or [])
+    gallery_settings = list(file_settings_list or [])
+    expected_media_type = normalize_media_type(media_type)
+    for index in range(len(gallery_files) - 1, -1, -1):
+        settings = gallery_settings[index] if index < len(gallery_settings) else None
+        if not isinstance(settings, dict):
+            continue
+        if str(settings.get("client_id", "") or "").strip() != lookup_client_id:
+            continue
+        path = str(gallery_files[index] or "").strip()
+        if len(path) == 0:
+            continue
+        detected_media_type = _detect_media_type(path)
+        if expected_media_type != "any" and detected_media_type != expected_media_type:
+            continue
+        return path, settings
+    return None, None
+
+
 def sync_recent_generated_media(session, file_list: list[Any], file_settings_list: list[Any], max_items: int = _SEARCH_LIMIT) -> list[dict[str, Any]]:
-    recent_items = list(zip(list(file_list or []), list(file_settings_list or [])))
+    collapsed_file_list, collapsed_settings_list = collapse_gallery_media(file_list, file_settings_list)
+    recent_items = list(zip(collapsed_file_list, collapsed_settings_list))
     if max_items > 0:
         recent_items = recent_items[-max_items:]
     synced = []
@@ -311,7 +362,21 @@ def _label_from_settings(settings: dict[str, Any] | None, path: str) -> str | No
     return _summarize_prompt(prompt, media_type)
 
 
+def _gallery_client_media_key(path: Any, settings: Any) -> tuple[str, str] | None:
+    if not isinstance(settings, dict):
+        return None
+    client_id = str(settings.get("client_id", "") or "").strip()
+    if len(client_id) == 0:
+        return None
+    media_type = _detect_media_type(str(path or "").strip())
+    if media_type not in {"video", "audio"}:
+        return None
+    return media_type, client_id
+
+
 __all__ = [
+    "collapse_gallery_media",
+    "find_last_gallery_media_by_client",
     "get_media_record",
     "normalize_media_type",
     "register_media",

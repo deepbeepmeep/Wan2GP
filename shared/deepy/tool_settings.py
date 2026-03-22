@@ -26,6 +26,9 @@ SETTINGS_DIR = _DEEPY_DIR / "settings"
 CUSTOM_SETTINGS_DIR = _DEEPY_DIR / "custom_settings"
 SHARED_CUSTOM_SETTINGS_DIR = _DEEPY_DIR.parent / "custom_settings"
 DEFAULT_IMAGE_EDITOR_VARIANT = DEEPY_DEFAULT_IMAGE_EDITOR
+DEFAULT_VIDEO_WITH_SPEECH_VARIANT = "Infinitalk"
+DEFAULT_SPEECH_FROM_DESCRIPTION_VARIANT = "Qwen3 1.7B"
+DEFAULT_SPEECH_FROM_SAMPLE_VARIANT = "Index TTS 2"
 _LEGACY_VARIANT_ALIASES = {
     "edit_image": {"Qwen_Edit": DEEPY_DEFAULT_IMAGE_EDITOR},
     "gen_image": {"Z_Image_Turbo": DEEPY_DEFAULT_IMAGE_GENERATOR},
@@ -178,6 +181,18 @@ def get_default_image_editor_variant() -> str:
     return resolve_tool_variant("edit_image", configured, default_variant=DEEPY_DEFAULT_IMAGE_EDITOR)
 
 
+def get_default_video_with_speech_variant() -> str:
+    return resolve_tool_variant("gen_video_with_speech", "", default_variant=DEFAULT_VIDEO_WITH_SPEECH_VARIANT)
+
+
+def get_default_speech_from_description_variant() -> str:
+    return resolve_tool_variant("gen_speech_from_description", "", default_variant=DEFAULT_SPEECH_FROM_DESCRIPTION_VARIANT)
+
+
+def get_default_speech_from_sample_variant() -> str:
+    return resolve_tool_variant("gen_speech_from_sample", "", default_variant=DEFAULT_SPEECH_FROM_SAMPLE_VARIANT)
+
+
 @lru_cache(maxsize=None)
 def load_tool_preset(tool_name: str, variant: str) -> dict[str, Any]:
     tool_name = str(tool_name or "").strip()
@@ -212,6 +227,9 @@ def build_generation_task(
     *,
     prompt: str,
     client_id: str,
+    alt_prompt: str | None = None,
+    audio_guide: str | None = None,
+    image_start_target: str = "image_start",
     image_start: str | None = None,
     image_end: str | None = None,
     image_refs: list[str] | None = None,
@@ -219,16 +237,38 @@ def build_generation_task(
     task = clone_tool_preset(tool_name, variant)
     task["prompt"] = str(prompt or "").strip()
     task["client_id"] = str(client_id or "").strip()
+    if alt_prompt is not None:
+        alt_prompt = str(alt_prompt).strip()
+        if len(alt_prompt) > 0:
+            task["alt_prompt"] = alt_prompt
+    if audio_guide is not None:
+        audio_guide = str(audio_guide).strip()
+        if len(audio_guide) > 0:
+            task["audio_guide"] = audio_guide
     if image_start is not None:
         image_start = str(image_start).strip()
         if len(image_start) > 0:
-            task["image_start"] = image_start
+            if str(image_start_target or "image_start").strip() == "image_refs":
+                existing_image_refs = task.get("image_refs", None)
+                image_refs_list = [] if not isinstance(existing_image_refs, list) else [str(path).strip() for path in existing_image_refs if len(str(path).strip()) > 0]
+                image_refs_list.insert(0, image_start)
+                task["image_refs"] = image_refs_list
+                task.pop("image_start", None)
+            else:
+                task["image_start"] = image_start
     if image_end is not None:
         image_end = str(image_end).strip()
         if len(image_end) > 0:
             task["image_end"] = image_end
     if image_refs is not None:
-        task["image_refs"] = [str(path).strip() for path in image_refs if len(str(path).strip()) > 0]
+        image_refs_list = [str(path).strip() for path in image_refs if len(str(path).strip()) > 0]
+        existing_image_refs = task.get("image_refs", None)
+        if isinstance(existing_image_refs, list) and len(existing_image_refs) > 0:
+            merged_image_refs = [str(path).strip() for path in existing_image_refs if len(str(path).strip()) > 0]
+            merged_image_refs.extend(path for path in image_refs_list if path not in merged_image_refs)
+            task["image_refs"] = merged_image_refs
+        else:
+            task["image_refs"] = image_refs_list
     return task
 
 

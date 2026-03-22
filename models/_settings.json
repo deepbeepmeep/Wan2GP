@@ -1,5 +1,9 @@
 {
 	"client_id": "",
+	"deepy_auto_cancel_queue_tasks": true,
+	"deepy_default_video_with_speech_generator": "Infinitalk",
+	"deepy_default_speech_from_description_generator": "Qwen3 1.7B",
+	"deepy_default_speech_from_sample_generator": "Index TTS 2",
 	"prompt": "",
 	"alt_prompt": "",
 	"image_mode":0,
@@ -83,6 +87,7 @@
 	"sliding_window_color_correction_strength": 0,
 	"sliding_window_overlap_noise": 0,
 	"sliding_window_discard_last_frames": 0,
+	"keep_intermediate_sliding_windows": 1,
 	"RIFLEx_setting": 0,
 	"override_profile": -1,
 	"override_attention": "",

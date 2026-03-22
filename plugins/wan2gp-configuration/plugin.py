@@ -355,6 +355,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         choices=[("Export JSON files", "json"), ("Embed metadata in file (Exif/tag)", "metadata"), ("None", "none")],
                         value=self.server_config.get("metadata_type", "metadata"), label="Metadata Handling"
                     )
+                    self.keep_intermediate_sliding_windows_choice = gr.Dropdown(
+                        choices=[("Yes", 1), ("No", 0)],
+                        value=self.server_config.get("keep_intermediate_sliding_windows", 1),
+                        label="Keep Intermediate Sliding Windows"
+                    )
                     self.embed_source_images_choice = gr.Checkbox(
                         value=self.server_config.get("embed_source_images", False),
                         label="Embed Source Images",
@@ -388,7 +393,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         inputs = [
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
-            self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice,
+            self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.keep_intermediate_sliding_windows_choice,
             self.display_stats_choice, self.max_frames_multiplier_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice, self.save_queue_if_crash_choice,
             self.UI_theme_choice, self.queue_color_scheme_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
@@ -445,7 +450,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         (
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
-            attention_choice, preload_model_policy_choice, clear_file_list_choice,
+            attention_choice, preload_model_policy_choice, clear_file_list_choice, keep_intermediate_sliding_windows_choice,
             display_stats_choice, max_frames_multiplier_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice, save_queue_if_crash_choice,
             UI_theme_choice, queue_color_scheme_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
@@ -486,6 +491,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "mixed_precision": mixed_precision_choice, "metadata_type": metadata_choice,
             "transformer_quantization": quantization_choice, "transformer_dtype_policy": transformer_dtype_policy_choice,
             "boost": boost_choice, "enable_int8_kernels": enable_int8_kernels_choice, "clear_file_list": clear_file_list_choice,
+            "keep_intermediate_sliding_windows": keep_intermediate_sliding_windows_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
             "fit_canvas": fit_canvas_choice, "enhancer_enabled": enhancer_enabled_choice,
             "prompt_enhancer_quantization": enhancer_quantization_choice,
@@ -533,7 +539,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         no_reload_keys = [
             "attention_mode", "vae_config", "boost", "enable_int8_kernels", "save_path", "image_save_path", "audio_save_path",
-            "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant",
+            "metadata_type", "clear_file_list", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled", "rife_version", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization",

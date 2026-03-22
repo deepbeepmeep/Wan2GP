@@ -16,6 +16,7 @@
     const POLYGON_EDGE_COLOR = "#ff4d57";
     const TRAJECTORY_EDGE_COLOR = "#4d9bff";
     const DEFAULT_CLASSIC_OUTLINE_WIDTH = 1;
+    const BACKGROUND_RENDER_DELAY_MS = 500;
 
     const state = {
         baseImage: null,
@@ -1285,7 +1286,7 @@
             }
         }
         dom.timelineSlider.value = state.animation.playhead.toFixed(3);
-        requestAnimationFrame(previewTick);
+        scheduleVisualFrame(previewTick);
     }
     function onPointerDown(evt) {
         if (evt.button !== 0) {
@@ -2697,7 +2698,26 @@
                 ctx.fillRect(0, 0, dom.canvas.width, dom.canvas.height);
             }
         }
-        requestAnimationFrame(render);
+        scheduleVisualFrame(render);
+    }
+
+    function scheduleVisualFrame(callback) {
+        if (shouldRunHotRenderLoop()) {
+            requestAnimationFrame(callback);
+            return;
+        }
+        window.setTimeout(() => callback(performance.now()), BACKGROUND_RENDER_DELAY_MS);
+    }
+
+    function shouldRunHotRenderLoop() {
+        if (typeof document.visibilityState === "string" && document.visibilityState !== "visible") {
+            return false;
+        }
+        if (!dom.canvas || !dom.canvas.isConnected) {
+            return false;
+        }
+        const rect = dom.canvas.getBoundingClientRect();
+        return rect.width > 2 && rect.height > 2;
     }
 
     function drawTrajectoryPreview(ctx, progress) {

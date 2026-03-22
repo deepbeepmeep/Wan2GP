@@ -24,6 +24,8 @@ SETTINGS_LAUNCHER_HOST_ID = "assistant_chat_settings_launcher_host"
 SETTINGS_TOGGLE_ID = "assistant_chat_settings_toggle"
 SETTINGS_PANEL_ID = "assistant_chat_settings_panel"
 CHAT_BLOCK_ID = "assistant_chat_shell_block"
+STATS_BLOCK_ID = "assistant_chat_stats_block"
+STATS_ID = "assistant_chat_stats"
 CONTROLS_ID = "assistant_chat_controls"
 REQUEST_ID = "assistant_chat_request"
 ASK_BUTTON_ID = "assistant_chat_ask_button"
@@ -31,8 +33,11 @@ RESET_BUTTON_ID = "assistant_chat_reset_button"
 STOP_BRIDGE_ID = "assistant_chat_stop_bridge"
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jfif", ".pjpeg"}
 _VIDEO_EXTENSIONS = deepy_video_tools.VIDEO_EXTENSIONS
+_AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus"}
 _MARKDOWN_EXTENSIONS = ["extra", "nl2br", "sane_lists", "fenced_code", "tables"]
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)")
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_AUDIO_THUMBNAIL_PATH = os.path.join(_REPO_ROOT, "icons", "soundwave.jpg")
 SERVER_INSTANCE_ID = uuid.uuid4().hex
 _UNSET = object()
 
@@ -60,6 +65,10 @@ def _shell_markup() -> str:
 
 def render_shell_html() -> str:
     return f"<div id='{CHAT_HOST_ID}' data-wangp-assistant-chat-mounted='true'>{_shell_markup()}</div>"
+
+
+def render_stats_html() -> str:
+    return f"<div id='{STATS_ID}' class='wangp-assistant-chat__stats' aria-hidden='true'></div>"
 
 
 def render_launcher_html() -> str:
@@ -133,12 +142,14 @@ def get_css() -> str:
 }
 
 #assistant_chat_launcher_host .html-container,
-#assistant_chat_shell_block .html-container {
+#assistant_chat_shell_block .html-container,
+#assistant_chat_stats_block .html-container {
     padding: 0 !important;
 }
 
 #assistant_chat_launcher_host .prose,
-#assistant_chat_shell_block .prose {
+#assistant_chat_shell_block .prose,
+#assistant_chat_stats_block .prose {
     max-width: none !important;
     margin: 0 !important;
 }
@@ -363,6 +374,7 @@ def get_css() -> str:
 }
 
 #assistant_chat_shell_block,
+#assistant_chat_stats_block,
 #assistant_chat_controls {
     margin: 0 !important;
     background: transparent !important;
@@ -372,7 +384,12 @@ def get_css() -> str:
 }
 
 #assistant_chat_shell_block {
-    margin-bottom: 12px !important;
+    margin-bottom: 8px !important;
+}
+
+#assistant_chat_stats_block {
+    margin-top: 2px !important;
+    margin-bottom: 4px !important;
 }
 
 #assistant_chat_controls,
@@ -574,6 +591,25 @@ def get_css() -> str:
     flex-direction: column;
     gap: 16px;
     padding: 22px 18px calc(var(--chat-status-offset) + var(--chat-status-reserved-height) + var(--chat-status-gap));
+}
+
+.wangp-assistant-chat__stats {
+    min-height: calc(0.78rem * var(--dock-font-scale));
+    padding: 0 2px;
+    font-size: calc(0.64rem * var(--dock-font-scale));
+    line-height: 1.15;
+    white-space: nowrap;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #8d9aa5;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+}
+
+.wangp-assistant-chat__stats.is-visible {
+    opacity: 0.96;
 }
 
 .wangp-assistant-chat__message {
@@ -1012,12 +1048,14 @@ def get_css() -> str:
     font-size: calc(0.92rem * var(--dock-font-scale));
     line-height: 1.45;
     font-weight: 600;
+    pointer-events: none;
 }
 
 .wangp-assistant-chat__status-dots {
     display: inline-flex;
     align-items: center;
     gap: 5px;
+    pointer-events: none;
 }
 
 .wangp-assistant-chat__status-dots span {
@@ -1200,7 +1238,7 @@ window.__wangpAssistantChatNS = window.__wangpAssistantChatNS || {};
 window.__wangpAssistantChatPending = window.__wangpAssistantChatPending || [];
 const WAC = window.__wangpAssistantChatNS;
 
-WAC.state = WAC.state || { order: [], messages: {}, status: null };
+WAC.state = WAC.state || { order: [], messages: {}, status: null, stats: null };
 WAC.init = WAC.init || false;
 WAC.observer = WAC.observer || null;
 WAC.eventNode = WAC.eventNode || null;
@@ -1320,6 +1358,10 @@ WAC.statusNode = function () {
   return document.querySelector('#assistant_chat_html .wangp-assistant-chat__status');
 };
 
+WAC.statsNode = function () {
+  return document.getElementById('assistant_chat_stats');
+};
+
 WAC.disclosureKey = function (node) {
   if (!node || !node.getAttribute) return '';
   const reasoningId = String(node.getAttribute('data-reasoning-id') || '').trim();
@@ -1377,6 +1419,25 @@ WAC.handleDisclosurePointerDown = function (event) {
   return true;
 };
 
+WAC.handleAttachmentPointerDown = function (event) {
+  const link = event && event.target && event.target.closest ? event.target.closest('a.wangp-assistant-chat__attachment') : null;
+  if (!link) return false;
+  const isPrimaryPointer = event.button === 0 || event.pointerType === 'touch' || event.pointerType === 'pen';
+  if (!isPrimaryPointer || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+  const href = String(link.href || '').trim();
+  if (!href) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  const target = String(link.target || '_blank').trim() || '_blank';
+  if (target === '_blank') {
+    const opened = window.open(href, '_blank', 'noopener');
+    if (opened) opened.opener = null;
+    return true;
+  }
+  window.location.assign(href);
+  return true;
+};
+
 WAC.stopBridgeTargets = function () {
   const wrapper = document.querySelector('#assistant_chat_stop_bridge');
   if (!wrapper) return [];
@@ -1407,6 +1468,8 @@ WAC.consumePayload = function (payload) {
   WAC.lastPayloadText = payloadText;
   if (Array.isArray(envelope.batch)) {
     for (const item of envelope.batch) WAC.consumePayload(item);
+    WAC.lastPayloadId = payloadId;
+    WAC.lastPayloadText = payloadText;
     return [];
   }
   const instanceId = envelope && typeof envelope.instance_id === 'string' ? envelope.instance_id : '';
@@ -1432,10 +1495,15 @@ WAC.consumePayload = function (payload) {
   }
   if (event.type === 'status') {
     WAC.setStatus(event.status || null);
+    if (Object.prototype.hasOwnProperty.call(event, 'stats')) WAC.setStats(event.stats || null);
+    return [];
+  }
+  if (event.type === 'stats') {
+    WAC.setStats(event.stats || null);
     return [];
   }
   if (event.type === 'sync') {
-    WAC.sync(event.messages || [], event.status || null);
+    WAC.sync(event.messages || [], event.status || null, Object.prototype.hasOwnProperty.call(event, 'stats') ? (event.stats || null) : WAC.state.stats);
     return [];
   }
   return [];
@@ -1459,8 +1527,8 @@ WAC.handleEventNodeMutation = function () {
   setTimeout(handler, 0);
 };
 
-WAC.replaceState = function (messages, status) {
-  const nextState = { order: [], messages: {}, status: status || null };
+WAC.replaceState = function (messages, status, stats) {
+  const nextState = { order: [], messages: {}, status: status || null, stats: typeof stats === 'undefined' ? (WAC.state ? (WAC.state.stats || null) : null) : (stats || null) };
   const items = Array.isArray(messages) ? messages : [];
   for (const message of items) {
     if (!message || !message.id) continue;
@@ -1618,6 +1686,82 @@ WAC.createMessageNode = function (message) {
   return tpl.content.firstElementChild;
 };
 
+WAC.syncAttributes = function (target, source) {
+  if (!target || !source || !target.getAttributeNames || !source.getAttributeNames) return;
+  const sourceNames = new Set(source.getAttributeNames());
+  for (const name of target.getAttributeNames()) {
+    if (!sourceNames.has(name)) target.removeAttribute(name);
+  }
+  for (const name of sourceNames) {
+    const nextValue = source.getAttribute(name);
+    if (target.getAttribute(name) !== nextValue) target.setAttribute(name, nextValue);
+  }
+};
+
+WAC.patchDisclosureNode = function (current, next) {
+  if (!current || !next) return;
+  WAC.syncAttributes(current, next);
+  current.className = next.className;
+  const currentSummary = current.querySelector(':scope > summary');
+  const nextSummary = next.querySelector(':scope > summary');
+  if (currentSummary && nextSummary && currentSummary.innerHTML !== nextSummary.innerHTML) currentSummary.innerHTML = nextSummary.innerHTML;
+  const currentBody = current.querySelector(':scope > .wangp-assistant-chat__disclosure-body');
+  const nextBody = next.querySelector(':scope > .wangp-assistant-chat__disclosure-body');
+  if (currentBody && nextBody && currentBody.innerHTML !== nextBody.innerHTML) currentBody.innerHTML = nextBody.innerHTML;
+};
+
+WAC.reuseDisclosureNodes = function (currentBody, nextBody) {
+  if (!currentBody || !nextBody) return;
+  const existingByKey = new Map();
+  currentBody.querySelectorAll(':scope > .wangp-assistant-chat__disclosure').forEach((node) => {
+    const key = WAC.disclosureKey(node);
+    if (key) existingByKey.set(key, node);
+  });
+  nextBody.querySelectorAll(':scope > .wangp-assistant-chat__disclosure').forEach((node) => {
+    const key = WAC.disclosureKey(node);
+    if (!key) return;
+    const current = existingByKey.get(key);
+    if (!current) return;
+    WAC.patchDisclosureNode(current, node);
+    node.replaceWith(current);
+  });
+};
+
+WAC.patchMessageNode = function (current, next) {
+  if (!current || !next) return;
+  WAC.syncAttributes(current, next);
+  current.className = next.className;
+  const currentAvatar = current.querySelector(':scope > .wangp-assistant-chat__avatar');
+  const nextAvatar = next.querySelector(':scope > .wangp-assistant-chat__avatar');
+  if (currentAvatar && nextAvatar) {
+    WAC.syncAttributes(currentAvatar, nextAvatar);
+    if (currentAvatar.innerHTML !== nextAvatar.innerHTML) currentAvatar.innerHTML = nextAvatar.innerHTML;
+  }
+  const currentCard = current.querySelector(':scope > .wangp-assistant-chat__message-card');
+  const nextCard = next.querySelector(':scope > .wangp-assistant-chat__message-card');
+  if (!currentCard || !nextCard) {
+    current.replaceChildren(...Array.from(next.childNodes));
+    return;
+  }
+  WAC.syncAttributes(currentCard, nextCard);
+  currentCard.className = nextCard.className;
+  const currentMeta = currentCard.querySelector(':scope > .wangp-assistant-chat__meta');
+  const nextMeta = nextCard.querySelector(':scope > .wangp-assistant-chat__meta');
+  if (currentMeta && nextMeta) {
+    WAC.syncAttributes(currentMeta, nextMeta);
+    currentMeta.className = nextMeta.className;
+    if (currentMeta.innerHTML !== nextMeta.innerHTML) currentMeta.innerHTML = nextMeta.innerHTML;
+  }
+  const currentBody = currentCard.querySelector(':scope > .wangp-assistant-chat__body');
+  const nextBody = nextCard.querySelector(':scope > .wangp-assistant-chat__body');
+  if (currentBody && nextBody) {
+    WAC.syncAttributes(currentBody, nextBody);
+    currentBody.className = nextBody.className;
+    WAC.reuseDisclosureNodes(currentBody, nextBody);
+    currentBody.replaceChildren(...Array.from(nextBody.childNodes));
+  }
+};
+
 WAC.messageBodyText = function (node) {
   const body = node && node.querySelector ? node.querySelector('.wangp-assistant-chat__body') : null;
   return body ? WAC.normalizeText(body.innerText || body.textContent || '') : '';
@@ -1651,7 +1795,7 @@ WAC.upsertMessage = function (message) {
     }
   }
   if (existing) {
-    existing.replaceWith(node);
+    WAC.patchMessageNode(existing, node);
   } else {
     WAC.state.order.push(incomingId);
     transcript.appendChild(node);
@@ -1697,17 +1841,31 @@ WAC.setStatus = function (status, restoreAnchor) {
   WAC.applyAutoscrollState(scrollState);
 };
 
-WAC.sync = function (messages, status) {
+WAC.setStats = function (stats) {
+  WAC.ensureShell();
+  WAC.state.stats = stats || null;
+  const node = WAC.statsNode();
+  if (!node) return;
+  if (!stats || stats.visible === false || !stats.text) {
+    node.classList.remove('is-visible');
+    node.textContent = '';
+    return;
+  }
+  node.textContent = String(stats.text);
+  node.classList.add('is-visible');
+};
+
+WAC.sync = function (messages, status, stats) {
   WAC.ensureShell();
   WAC.captureDisclosureState(WAC.transcript());
   const scrollState = WAC.captureAutoscrollState();
   WAC.lastOptimisticSubmit = { id: '', text: '', ts: 0 };
-  WAC.replaceState(messages, status);
+  WAC.replaceState(messages, status, stats);
   WAC.hydrate(scrollState);
 };
 
 WAC.reset = function () {
-  WAC.state = { order: [], messages: {}, status: null };
+  WAC.state = { order: [], messages: {}, status: null, stats: null };
   WAC.lastOptimisticSubmit = { id: '', text: '', ts: 0 };
   WAC.disclosureState = {};
   WAC.ensureShell();
@@ -1715,21 +1873,37 @@ WAC.reset = function () {
   if (transcript) transcript.innerHTML = '';
   WAC.showEmptyIfNeeded();
   WAC.setStatus(null);
+  WAC.setStats(null);
 };
 
 WAC.hydrate = function (scrollState) {
   const transcript = WAC.transcript();
   if (!transcript) return;
-  transcript.innerHTML = '';
+  const existingById = new Map();
+  transcript.querySelectorAll(':scope > [data-message-id]').forEach((node) => {
+    const messageId = String(node.getAttribute('data-message-id') || '');
+    if (messageId) existingById.set(messageId, node);
+  });
+  const fragment = document.createDocumentFragment();
   for (const messageId of WAC.state.order) {
     const message = WAC.state.messages[messageId];
     if (!message) continue;
     const node = WAC.createMessageNode(message);
-    if (node) transcript.appendChild(node);
+    if (!node) continue;
+    const existing = existingById.get(String(messageId));
+    if (existing) {
+      WAC.patchMessageNode(existing, node);
+      fragment.appendChild(existing);
+      existingById.delete(String(messageId));
+      continue;
+    }
+    fragment.appendChild(node);
   }
+  transcript.replaceChildren(fragment);
   WAC.applyDisclosureState(transcript);
   WAC.showEmptyIfNeeded();
   WAC.setStatus(WAC.state.status, null);
+  WAC.setStats(WAC.state.stats);
   WAC.applyAutoscrollState(scrollState);
 };
 
@@ -1781,8 +1955,11 @@ WAC.installDockBridge = function () {
   try { window.localStorage.removeItem('wangp-assistant-chat-open'); } catch (_error) {}
   document.addEventListener('pointerdown', (event) => {
     if (WAC.handleDisclosurePointerDown(event)) return;
+    if (WAC.handleAttachmentPointerDown(event)) return;
   }, true);
   document.addEventListener('click', (event) => {
+    const attachmentLink = event.target && event.target.closest ? event.target.closest('.wangp-assistant-chat__attachment, .wangp-assistant-chat__body a') : null;
+    if (attachmentLink) return;
     const disclosureSummary = event.target && event.target.closest ? event.target.closest('summary') : null;
     if (disclosureSummary) {
       const disclosureNode = disclosureSummary.parentElement;
@@ -1874,9 +2051,16 @@ def build_reset_event() -> str:
     return _event_payload({"type": "reset"})
 
 
-def build_status_event(text: str | None, kind: str = "status", visible: bool = True) -> str:
+def build_status_event(text: str | None, kind: str = "status", visible: bool = True, stats: dict[str, Any] | None = None) -> str:
     status = None if not visible or not text else {"visible": True, "kind": str(kind or "status"), "text": str(text or "").strip()}
-    return _event_payload({"type": "status", "status": status})
+    event = {"type": "status", "status": status}
+    if stats is not None:
+        event["stats"] = stats
+    return _event_payload(event)
+
+
+def build_stats_event(stats: dict[str, Any] | None = None) -> str:
+    return _event_payload({"type": "stats", "stats": stats})
 
 
 def build_event_batch(payloads: list[str]) -> str:
@@ -1898,9 +2082,12 @@ def build_event_batch(payloads: list[str]) -> str:
     return json.dumps({"event_id": uuid.uuid4().hex, "instance_id": SERVER_INSTANCE_ID, "batch": envelopes}, ensure_ascii=False)
 
 
-def build_sync_event(session, status: dict[str, Any] | None = None) -> str:
+def build_sync_event(session, status: dict[str, Any] | None = None, stats: dict[str, Any] | None = None) -> str:
     messages = [_render_message_payload(record) for record in session.chat_transcript]
-    return _event_payload({"type": "sync", "messages": messages, "status": status})
+    event = {"type": "sync", "messages": messages, "status": status}
+    if stats is not None:
+        event["stats"] = stats
+    return _event_payload(event)
 
 
 def add_user_message(session, text: str, queued: bool = False) -> tuple[str, str]:
@@ -2147,7 +2334,7 @@ def _attachment_from_tool_result(result: dict[str, Any] | None) -> dict[str, Any
     if len(output_file) == 0:
         return None
     ext = os.path.splitext(output_file)[1].lower()
-    label = "Generated image" if ext in _IMAGE_EXTENSIONS else ("Generated video" if ext in _VIDEO_EXTENSIONS else "Generated file")
+    label = "Generated image" if ext in _IMAGE_EXTENSIONS else ("Generated video" if ext in _VIDEO_EXTENSIONS else ("Generated audio" if ext in _AUDIO_EXTENSIONS else "Generated file"))
     return _attachment_from_path(output_file, label)
 
 
@@ -2178,6 +2365,11 @@ def _attachment_from_path(path: str, label: str | None = None) -> dict[str, Any]
             thumb_url = deepy_video_tools.get_video_thumbnail_data_url(normalized_path)
         except Exception:
             thumb_url = ""
+    elif ext in _AUDIO_EXTENSIONS:
+        kind = "audio"
+        if os.path.isfile(_AUDIO_THUMBNAIL_PATH):
+            audio_thumb_path = os.path.normpath(_AUDIO_THUMBNAIL_PATH).replace("\\", "/")
+            thumb_url = f"/gradio_api/file={urllib.parse.quote(audio_thumb_path, safe='/')}"
     return {
         "path_key": path_key,
         "href": href,

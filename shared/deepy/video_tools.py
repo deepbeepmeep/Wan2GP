@@ -10,6 +10,7 @@ from collections import OrderedDict
 from datetime import datetime
 
 import ffmpeg
+from PIL import Image
 
 from shared.ffmpeg_setup import download_ffmpeg
 from shared.utils.audio_video import get_mp4_audio_codec_settings
@@ -211,13 +212,20 @@ def extract_video(source_path: str, output_path: str, start_time: float | int = 
     return output_path
 
 
-def extract_audio(source_path: str, output_path: str, start_time: float | int | None = None, end_time: float | int | None = None, duration: float | int | None = None, *, audio_codec: str | None = None) -> str:
+def extract_audio(source_path: str, output_path: str, start_time: float | int | None = None, end_time: float | int | None = None, duration: float | int | None = None, audio_track_no: int | None = None, *, audio_codec: str | None = None) -> str:
     source_path = os.path.normpath(str(source_path or "").strip())
     output_path = os.path.normpath(str(output_path or "").strip())
     if not os.path.isfile(source_path):
         raise FileNotFoundError(f"Media not found: {source_path}")
-    if not _has_audio_stream(source_path):
+    probe = ffmpeg.probe(source_path)
+    audio_streams = [stream for stream in probe.get("streams", []) if str(stream.get("codec_type", "")).strip().lower() == "audio"]
+    if len(audio_streams) == 0:
         raise RuntimeError(f"No audio stream found in {source_path}")
+    audio_track_no = 1 if audio_track_no is None else int(audio_track_no)
+    if audio_track_no <= 0:
+        raise ValueError("audio_track_no must be >= 1.")
+    if audio_track_no > len(audio_streams):
+        raise ValueError(f"audio_track_no must be between 1 and {len(audio_streams)}.")
     start_str, end_or_duration_str = _resolve_segment_args(start_time, end_time, duration)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     cmd = []
@@ -228,7 +236,7 @@ def extract_audio(source_path: str, output_path: str, start_time: float | int | 
         cmd += ["-t", end_or_duration_str]
     elif end_time is not None:
         cmd += ["-to", end_or_duration_str]
-    cmd += ["-map", "0:a:0", "-vn", *_get_standalone_audio_encode_args(audio_codec), output_path]
+    cmd += ["-map", f"0:a:{audio_track_no - 1}", "-vn", *_get_standalone_audio_encode_args(audio_codec), output_path]
     _run_ffmpeg(cmd)
     return output_path
 
@@ -313,6 +321,47 @@ def resize_crop_video(source_path: str, output_path: str, *, width: int | None =
         cmd += ["-movflags", "+faststart"]
     cmd += [output_path]
     _run_ffmpeg(cmd)
+    return output_path
+
+
+def resize_crop_image(source_path: str, output_path: str, *, width: int | None = None, height: int | None = None, crop_left: float = 0, crop_top: float = 0, crop_right: float = 0, crop_bottom: float = 0, crop_unit: str = "pixels") -> str:
+    source_path = os.path.normpath(str(source_path or "").strip())
+    output_path = os.path.normpath(str(output_path or "").strip())
+    if not os.path.isfile(source_path):
+        raise FileNotFoundError(f"Image not found: {source_path}")
+    crop_unit = str(crop_unit or "pixels").strip().lower() or "pixels"
+    if crop_unit not in {"pixels", "percent"}:
+        raise ValueError("crop_unit must be 'pixels' or 'percent'.")
+    with Image.open(source_path) as image:
+        source_width, source_height = image.size
+
+        def resolve_crop(value: float, total: int) -> int:
+            value = float(value or 0)
+            if value < 0:
+                raise ValueError("Crop values must be >= 0.")
+            return round(total * value / 100.0) if crop_unit == "percent" else round(value)
+
+        left = resolve_crop(crop_left, source_width)
+        right = resolve_crop(crop_right, source_width)
+        top = resolve_crop(crop_top, source_height)
+        bottom = resolve_crop(crop_bottom, source_height)
+        cropped_width = source_width - left - right
+        cropped_height = source_height - top - bottom
+        if cropped_width <= 0 or cropped_height <= 0:
+            raise ValueError("Crop values remove the whole image.")
+        output_image = image.crop((left, top, left + cropped_width, top + cropped_height))
+        if width is not None or height is not None:
+            if width is not None and int(width) <= 0 or height is not None and int(height) <= 0:
+                raise ValueError("width and height must be > 0 when provided.")
+            target_width = int(width) if width is not None else max(1, round(cropped_width * (int(height) / cropped_height)))
+            target_height = int(height) if height is not None else max(1, round(cropped_height * (int(width) / cropped_width)))
+            output_image = output_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        output_ext = os.path.splitext(output_path)[1].lower()
+        save_kwargs = {"quality": 95} if output_ext in {".jpg", ".jpeg", ".webp"} else {}
+        if output_ext in {".jpg", ".jpeg"} and output_image.mode not in {"RGB", "L"}:
+            output_image = output_image.convert("RGB")
+        output_image.save(output_path, **save_kwargs)
     return output_path
 
 

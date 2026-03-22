@@ -173,6 +173,7 @@ class family_handler:
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],
             "self_refiner": True,
             "self_refiner_max_plans": 2,
+            "no_background_removal": True,
         }
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"] = True

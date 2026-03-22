@@ -171,18 +171,21 @@ class DeepyController:
                 force_release_on_acquire=True,
             )
 
-    def update_tool_ui_settings(self, state, *, use_template_properties, width, height, num_frames, image_generator_variant, image_editor_variant, video_generator_variant, priority=False, persist=False):
+    def update_tool_ui_settings(self, state, *, auto_cancel_queue_tasks=None, use_template_properties=None, width=None, height=None, num_frames=None, video_with_speech_variant=None, image_generator_variant=None, image_editor_variant=None, video_generator_variant=None, speech_from_description_variant=None, speech_from_sample_variant=None, persist=False):
         session = get_or_create_assistant_session(state)
         normalized = set_assistant_tool_ui_settings(
             session,
+            auto_cancel_queue_tasks=auto_cancel_queue_tasks,
             use_template_properties=use_template_properties,
-            priority=priority,
             width=width,
             height=height,
             num_frames=num_frames,
+            video_with_speech_variant=video_with_speech_variant,
             image_generator_variant=image_generator_variant,
             image_editor_variant=image_editor_variant,
             video_generator_variant=video_generator_variant,
+            speech_from_description_variant=speech_from_description_variant,
+            speech_from_sample_variant=speech_from_sample_variant,
         )
         if persist:
             server_config = self._server_config()
@@ -193,6 +196,21 @@ class DeepyController:
                     with open(server_config_filename, "w", encoding="utf-8") as writer:
                         writer.write(json.dumps(server_config, indent=4))
         return normalized
+
+    def persist_auto_cancel_queue_tasks(self, state, auto_cancel_queue_tasks):
+        session = get_or_create_assistant_session(state)
+        current = dict(session.tool_ui_settings or deepy_ui_settings.normalize_assistant_tool_ui_settings())
+        current["auto_cancel_queue_tasks"] = auto_cancel_queue_tasks
+        normalized = deepy_ui_settings.normalize_assistant_tool_ui_settings(**current)
+        session.tool_ui_settings = dict(normalized)
+        server_config = self._server_config()
+        server_config_filename = str(self._deps.get_server_config_filename() or "").strip()
+        if deepy_ui_settings.store_assistant_tool_ui_settings(server_config, normalized):
+            set_deepy_runtime_config(server_config, server_config_filename)
+            if len(server_config_filename) > 0:
+                with open(server_config_filename, "w", encoding="utf-8") as writer:
+                    writer.write(json.dumps(server_config, indent=4))
+        return normalized["auto_cancel_queue_tasks"]
 
     def store_selected_video_time(self, state, current_time):
         gen = self._deps.get_gen_info(state)
@@ -213,6 +231,7 @@ class DeepyController:
             get_output_filepath=self._deps.get_output_filepath,
             record_file_metadata=self._deps.record_file_metadata,
             get_server_config=self._server_config,
+            get_current_model_def=lambda: self._deps.get_model_def(self._deps.get_state_model_type(state)),
         )
 
     def run_assistant_prompt_turn(self, state, model_def, prompt_enhancer_modes, original_prompts, seed, override_profile=None, send_cmd=None, tools=None) -> None:
@@ -277,12 +296,12 @@ class DeepyController:
         session = get_or_create_assistant_session(state)
         ask_request = str(ask_request or "").strip()
         if len(ask_request) == 0:
-            yield gr.update(), gr.update(), gr.update(), gr.update()
+            yield gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
             return
         if not self.is_available():
             error_turn_id = assistant_chat.create_assistant_turn(session)
             error_event = assistant_chat.set_assistant_content(session, error_turn_id, self.requirement_error_text())
-            yield error_event if error_event is not None else gr.update(), gr.update(), gr.update(value=""), gr.update()
+            yield error_event if error_event is not None else gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update()
             return
         gen = self._deps.get_gen_info(state)
         com_stream = AsyncStream()
@@ -291,9 +310,9 @@ class DeepyController:
         queued_epoch = session.chat_epoch
         session.queued_job_count += 1
         user_message_id, _user_event = assistant_chat.add_user_message(session, ask_request, queued=queued)
-        yield assistant_chat.build_sync_event(session), gr.update(), gr.update(value=""), gr.update()
+        yield assistant_chat.build_sync_event(session), gr.update(), gr.update(value=""), gr.update(), gr.update()
         if queued:
-            yield assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"), gr.update(), gr.update(), gr.update()
+            yield assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"), gr.update(), gr.update(), gr.update(), gr.update()
 
         def queue_worker_func():
             session.queued_job_count = max(0, session.queued_job_count - 1)
@@ -319,11 +338,10 @@ class DeepyController:
                     send_cmd("chat_output", error_event)
                 send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
             finally:
-                interrupted = bool(session.interrupt_requested)
                 session.worker_active = False
                 if session.control_queue is com_stream.output_queue:
                     session.control_queue = None
-                if queued_epoch == session.chat_epoch and not interrupted:
+                if queued_epoch == session.chat_epoch:
                     send_cmd("chat_output", assistant_chat.build_sync_event(session))
                 session.interrupt_requested = False
                 send_cmd("exit", None)
@@ -334,37 +352,36 @@ class DeepyController:
             if cmd == "console_output":
                 print(data)
             elif cmd == "chat_output":
-                yield drain_chat_output_batch(data), gr.update(), gr.update(), gr.update()
+                yield drain_chat_output_batch(data), gr.update(), gr.update(), gr.update(), gr.update()
             elif cmd == "load_queue_trigger":
-                yield gr.update(), str(get_refresh_id()), gr.update(), gr.update()
+                yield gr.update(), str(get_refresh_id()), gr.update(), gr.update(), gr.update()
+            elif cmd == "abort_client_id":
+                yield gr.update(), gr.update(), gr.update(), gr.update(), str(data or "")
             elif cmd == "refresh_gallery":
-                yield gr.update(), gr.update(), gr.update(), str(get_refresh_id())
+                yield gr.update(), gr.update(), gr.update(), str(get_refresh_id()), gr.update()
             elif cmd == "error":
                 error_turn_id = assistant_chat.create_assistant_turn(session)
                 error_event = assistant_chat.set_assistant_content(session, error_turn_id, str(data or "Assistant error."))
-                yield error_event if error_event is not None else gr.update(), gr.update(), gr.update(), gr.update()            
+                yield error_event if error_event is not None else gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
             elif cmd == "exit":
                 break
 
     def stop_ai(self, state):
         session = get_or_create_assistant_session(state)
         if not session.worker_active:
-            return gr.update(), gr.update(), gr.update()
+            return gr.update(), gr.update(), gr.update(), gr.update()
         request_assistant_interrupt(session)
-        return assistant_chat.build_sync_event(session, status=None), gr.update(), gr.update()
+        return assistant_chat.build_status_event(None, visible=False), gr.update(), gr.update(), gr.update()
 
     def reset_ai(self, state):
         session = get_or_create_assistant_session(state)
         if session.worker_active:
             request_assistant_reset(session)
-            gen = self._deps.get_gen_info(state)
-            if gen.get("in_progress") or len(gen.get("queue", []) or []) > 0:
-                self._deps.clear_queue_action(state)
             assistant_chat.reset_session_chat(session)
         else:
             self.release_vram(state, True)
         session.chat_html = ""
-        return assistant_chat.build_reset_event(), gr.update(), gr.update(value="")
+        return assistant_chat.build_reset_event(), gr.update(), gr.update(value=""), gr.update()
 
 
 def create_controller(**deps_kwargs) -> DeepyController:

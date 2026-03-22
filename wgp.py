@@ -1795,7 +1795,6 @@ def clear_queue_action(state):
         gr.Info("Queue is already empty or only contains the active task (which wasn't aborted now).")
 
     return update_queue_data([])
-
 def quit_application():
     print("Save and Quit requested...")
     clear_startup_lock()
@@ -2475,6 +2474,7 @@ if not Path(config_load_filename).is_file():
         "boost" : 1,
         "enable_int8_kernels": 1,
         "clear_file_list" : 5,
+        "keep_intermediate_sliding_windows": 1,
         "enable_4k_resolutions": 0,
         "max_reserved_loras": -1,
         "vae_config": 0,
@@ -3135,6 +3135,7 @@ if not "audio_stand_alone_output_codec" in server_config: server_config["audio_s
 if not "rife_version" in server_config: server_config["rife_version"] = "v4"
 if "loras_root" not in server_config: server_config["loras_root"] = DEFAULT_LORA_ROOT
 if "save_queue_if_crash" not in server_config: server_config["save_queue_if_crash"] = 1
+if "keep_intermediate_sliding_windows" not in server_config: server_config["keep_intermediate_sliding_windows"] = 1
 if "prompt_enhancer_temperature" not in server_config: server_config["prompt_enhancer_temperature"] = 0.6
 if "prompt_enhancer_top_p" not in server_config: server_config["prompt_enhancer_top_p"] = 0.9
 if "prompt_enhancer_randomize_seed" not in server_config: server_config["prompt_enhancer_randomize_seed"] = True
@@ -4055,8 +4056,22 @@ def resume_generation(state):
     gen = get_gen_info(state)
     gen["resume"] = True
 
-def abort_generation(state):
+def abort_generation(state, client_id="", notify = True):
     gen = get_gen_info(state)
+    if len(client_id):
+        queue = gen.get("queue", [])
+        with lock:
+            if len(queue):
+                for i, task in enumerate(queue):
+                    queue_client_id = task["params"].get("client_id","")
+                    if queue_client_id == client_id:
+                        if i==0:
+                            break
+                        else:
+                            del queue[i]
+                            gen["prompt_no"] += 1
+                            return gr.update(), gr.HTML(value=generate_queue_html(queue))
+
     gen["resume"] = True
     if "in_progress" in gen: # and wan_model != None:
         if wan_model != None:
@@ -4064,10 +4079,11 @@ def abort_generation(state):
         gen["abort"] = True            
         msg = "Processing Request to abort Current Generation"
         gen["status"] = msg
-        gr.Info(msg)
-        return gr.Button(interactive=  False)
+        if notify:
+            gr.Info(msg)
+        return gr.Button(interactive=  False), gr.update()
     else:
-        return gr.Button(interactive=  True)
+        return gr.Button(interactive=  True), gr.update()
 
 def early_stop_generation(state):
     gen = get_gen_info(state)
@@ -5900,11 +5916,13 @@ def get_output_filepath(file_path, is_image, audio_only):
         base_path = save_path
     return get_available_filename(base_path, file_path)
 
-def record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=None):
+def record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=None, replace_last_file=False):
     metadata_choice = server_config.get("metadata_type","metadata")
     file_list, file_settings_list, audio_file_list, audio_file_settings_list = get_processed_queue(gen)
     video_path = [video_path] if not isinstance(video_path, list) else video_path
     for no, path in enumerate(video_path):
+        previous_path = None
+        saved_configs = configs if no > 0 or configs is None else configs.copy()
         if configs is not None:
             if metadata_choice == "json":
                 json_path = os.path.splitext(path)[0] + ".json"
@@ -5927,11 +5945,21 @@ def record_file_metadata(video_path, configs, is_image, audio_only, gen, embedde
         with lock:
             if audio_only:
                 audio_file_list.append(path)
-                audio_file_settings_list.append(configs if no > 0 else configs.copy())
+                audio_file_settings_list.append(saved_configs)
             else:
-                file_list.append(path)
-                file_settings_list.append(configs if no > 0 else configs.copy())
+                if replace_last_file and not is_image and no == 0 and len(file_list) > 0:
+                    previous_path = file_list[-1]
+                    file_list[-1] = path
+                    file_settings_list[-1] = saved_configs
+                else:
+                    file_list.append(path)
+                    file_settings_list.append(saved_configs)
             gen["last_was_audio"] = audio_only
+        if previous_path is not None and previous_path != path:
+            if metadata_choice == "json":
+                previous_json_path = os.path.splitext(previous_path)[0] + ".json"
+                if os.path.isfile(previous_json_path): os.remove(previous_json_path)
+            if os.path.isfile(previous_path): os.remove(previous_path)
 
 
 def generate_video(
@@ -7193,7 +7221,7 @@ def generate_video(
                 configs["creation_date"] = datetime.fromtimestamp(end_time).isoformat(timespec="seconds")
                 configs["creation_timestamp"] = int(end_time)
                 # if sample_is_image: configs["is_image"] = True
-                record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=embedded_images)
+                record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=embedded_images, replace_last_file=sliding_window and window_no > 1 and not server_config.get("keep_intermediate_sliding_windows", 1))
 
                 embedded_images = None
                 # Play notification sound for single video
@@ -7353,7 +7381,7 @@ def process_tasks(state):
     send_cmd = com_stream.output_queue.push
 
     def queue_worker_func():
-        prompt_no = 0
+        gen["prompt_no"] = 0
         try:
             while len(queue) > 0:
                 paused_for_edit = False
@@ -7369,8 +7397,7 @@ def process_tasks(state):
                     send_cmd("status", "Resuming queue processing...")
                     send_cmd("output", None)
 
-                prompt_no += 1
-                gen["prompt_no"] = prompt_no
+                gen["prompt_no"] += 1
 
                 task = None
                 with lock:
@@ -11022,6 +11049,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 gen_status = gr.Text(interactive= False, label = "Status")
                 status_trigger = gr.Text(interactive= False, visible=False)
                 load_queue_trigger = gr.Text(interactive= False, visible=False)
+                abort_client_id= gr.Text(interactive= False, visible=False)
                 default_files = []
                 current_gallery_tab = gr.Number(0, visible=False)
                 with gr.Tabs() as gallery_tabs:
@@ -11257,7 +11285,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             )
             pause_btn.click(pause_generation, [state], [ pause_btn, resume_btn] )
             resume_btn.click(resume_generation, [state] )
-            abort_btn.click(abort_generation, [state], [ abort_btn] ) #.then(refresh_gallery, inputs = [state, gen_info], outputs = [output, gen_info, queue_html] )
+            abort_btn.click(abort_generation, [state, gr.State("")], [ abort_btn, queue_html], show_progress="hidden" ) #.then(refresh_gallery, inputs = [state, gen_info], outputs = [output, gen_info, queue_html] )
+            abort_client_id.change(abort_generation, [state, abort_client_id], [ abort_btn, queue_html], show_progress="hidden" ) #.then(refresh_gallery, inputs = [state, gen_info], outputs = [output, gen_info, queue_html] )
             earlystop_btn.click(early_stop_generation, [state], [ earlystop_btn] )
             onemoresample_btn.click(fn=one_more_sample,inputs=[state], outputs= [state])
             onemorewindow_btn.click(fn=one_more_window,inputs=[state], outputs= [state])
@@ -11319,9 +11348,11 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 selected_video_time_input=selected_video_time_input,
                 load_queue_trigger=load_queue_trigger,
                 output_trigger=output_trigger,
+                abort_client_id=abort_client_id,
                 handlers=deepy_gradio_ui.DeepyChatHandlers(
                     prepare_request_context=init_generate,
                     update_tool_ui_settings=_deepy.update_tool_ui_settings,
+                    persist_auto_cancel_queue_tasks=_deepy.persist_auto_cancel_queue_tasks,
                     store_selected_video_time=_deepy.store_selected_video_time,
                     ask_ai=_deepy.ask_ai,
                     stop_ai=_deepy.stop_ai,
@@ -11993,6 +12024,11 @@ if __name__ == "__main__":
                     validate_task=validate_task,
                     generate_video=generate_video,
                     default_model_type=transformer_type,
+                    callbacks=deepy_cli.DeepyCliCallbacks(
+                        handlers={
+                            "abort_generation": (lambda state, client_id: abort_generation(state, client_id, notify=False),),
+                        }
+                    ),
                 )
             )
         )

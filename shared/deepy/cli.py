@@ -5,9 +5,16 @@ import json
 import os
 import re
 import sys
+import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Event, Thread
 from typing import Any, Callable
+
+try:
+    import msvcrt
+except Exception:  # pragma: no cover
+    msvcrt = None
 
 try:
     from prompt_toolkit import PromptSession
@@ -60,6 +67,27 @@ def _reconfigure_stdio() -> None:
 
 
 @dataclass(slots=True)
+class DeepyCliCallbacks:
+    handlers: dict[str, Any] = field(default_factory=dict)
+
+    def _iter_handlers(self, name: str) -> tuple[Callable[..., Any], ...]:
+        registered = self.handlers.get(str(name or "").strip(), ())
+        if callable(registered):
+            return (registered,)
+        if isinstance(registered, (list, tuple)):
+            return tuple(handler for handler in registered if callable(handler))
+        return ()
+
+    def emit(self, name: str, *args, **kwargs) -> list[Any]:
+        return [handler(*args, **kwargs) for handler in self._iter_handlers(name)]
+
+    def emit_first(self, name: str, *args, **kwargs) -> Any:
+        for handler in self._iter_handlers(name):
+            return handler(*args, **kwargs)
+        return None
+
+
+@dataclass(slots=True)
 class DeepyCliDeps:
     controller: Any
     get_server_config: Callable[[], dict[str, Any]]
@@ -69,6 +97,7 @@ class DeepyCliDeps:
     validate_task: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any] | None]
     generate_video: Callable[..., Any]
     default_model_type: str
+    callbacks: DeepyCliCallbacks = field(default_factory=DeepyCliCallbacks)
 
 
 class _CliEvent:
@@ -387,6 +416,11 @@ class DeepyCliSession:
         self._assistant_live_print_state: dict[str, dict[str, str]] = {}
         self._interactive = False
         self._prompt_session = None
+        self._turn_active = False
+        self._turn_stop_requested = False
+        self._turn_hotkey_stop: Event | None = None
+        self._turn_hotkey_thread: Thread | None = None
+        self._active_generation_client_id = ""
 
     def _build_state(self) -> dict[str, Any]:
         server_config = self._deps.get_server_config()
@@ -472,6 +506,74 @@ class DeepyCliSession:
 
     def _reset_status(self) -> None:
         self._last_status_text = ""
+
+    def _emit_cli_callback(self, name: str, *args, first: bool = False, **kwargs) -> Any:
+        callbacks = self._deps.callbacks if isinstance(self._deps.callbacks, DeepyCliCallbacks) else None
+        if callbacks is None:
+            return None if first else []
+        try:
+            return callbacks.emit_first(name, *args, **kwargs) if first else callbacks.emit(name, *args, **kwargs)
+        except Exception as exc:
+            self._print(f"[ERROR] Deepy CLI callback '{name}' failed: {exc}")
+            return None if first else []
+
+    def _abort_generation(self, client_id: str = "") -> None:
+        self._emit_cli_callback("abort_generation", self._state, str(client_id or "").strip(), first=True)
+
+    def _request_stop_current_turn(self) -> bool:
+        if not self._turn_active:
+            return False
+        self._session.interrupt_requested = True
+        if not self._turn_stop_requested:
+            self._turn_stop_requested = True
+            self._print("[Deepy] Stop requested.")
+            self._emit_cli_callback("stop_requested", self, str(self._active_generation_client_id or "").strip())
+        client_id = str(self._active_generation_client_id or "").strip()
+        if len(client_id) > 0 or self._state["gen"].get("in_progress", False):
+            self._abort_generation(client_id)
+        return True
+
+    def _monitor_turn_shortcuts(self, stop_event: Event) -> None:
+        if not self._interactive or msvcrt is None:
+            return
+        while not stop_event.is_set():
+            try:
+                if not msvcrt.kbhit():
+                    time.sleep(0.05)
+                    continue
+                key = msvcrt.getwch()
+            except Exception:
+                return
+            if key in {"\x00", "\xe0"}:
+                try:
+                    if msvcrt.kbhit():
+                        msvcrt.getwch()
+                except Exception:
+                    return
+                continue
+            if key == "\x13":
+                self._request_stop_current_turn()
+
+    def _start_turn_shortcut_monitor(self) -> None:
+        self._turn_hotkey_stop = None
+        self._turn_hotkey_thread = None
+        if not self._interactive or msvcrt is None:
+            return
+        stop_event = Event()
+        thread = Thread(target=self._monitor_turn_shortcuts, args=(stop_event,), daemon=True, name="DeepyCliStopHotkey")
+        self._turn_hotkey_stop = stop_event
+        self._turn_hotkey_thread = thread
+        thread.start()
+
+    def _stop_turn_shortcut_monitor(self) -> None:
+        stop_event = self._turn_hotkey_stop
+        thread = self._turn_hotkey_thread
+        self._turn_hotkey_stop = None
+        self._turn_hotkey_thread = None
+        if stop_event is not None:
+            stop_event.set()
+        if thread is not None:
+            thread.join(timeout=0.2)
 
     def _assistant_print_state(self, message_id: str) -> dict[str, str]:
         return self._assistant_live_print_state.setdefault(str(message_id or "").strip(), {"reasoning": "", "content": ""})
@@ -622,25 +724,34 @@ class DeepyCliSession:
                 return False, task_error
         return True, ""
 
-    def _process_inline_queue(self) -> None:
+    def _process_inline_queue(self, payload: Any = None) -> None:
         before_counts = self._gallery.counts()
         self._deps.load_queue_action(None, self._state, _CliEvent())
         queue = list(self._state["gen"].get("queue", []) or [])
         if len(queue) == 0:
             return
-        success, error_text = self._run_loaded_queue(queue)
-        if not success and len(error_text) > 0:
-            self._record_queue_error(queue, error_text)
-        self._state["gen"]["queue"].clear()
-        self._gallery.sync_latest_generated(before_counts)
+        requested_client_id = ""
+        if isinstance(payload, dict):
+            requested_client_id = str(payload.get("client_id", "") or "").strip()
+        self._active_generation_client_id = requested_client_id or str(queue[0].get("params", {}).get("client_id", "") or "").strip()
+        try:
+            success, error_text = self._run_loaded_queue(queue)
+            if not success and len(error_text) > 0:
+                self._record_queue_error(queue, error_text)
+        finally:
+            self._active_generation_client_id = ""
+            self._state["gen"]["queue"].clear()
+            self._gallery.sync_latest_generated(before_counts)
 
     def _send_cmd(self, cmd: str, data: Any = None) -> None:
         if cmd == "chat_output":
             self._consume_chat_payload(str(data or ""))
         elif cmd == "load_queue_trigger":
-            self._process_inline_queue()
+            self._process_inline_queue(data)
         elif cmd == "refresh_gallery":
             self._gallery.sync_refresh_path(data)
+        elif cmd == "abort_client_id":
+            self._abort_generation(str(data or ""))
         elif cmd == "error":
             self._print(f"[ERROR] {data}")
 
@@ -776,13 +887,30 @@ class DeepyCliSession:
         begin_assistant_turn(self._session, user_message_id, prompt)
         self._reset_status()
         tools = self._deps.controller.create_tools(self._state, self._send_cmd, session=self._session)
+        completed = False
+        self._turn_active = True
+        self._turn_stop_requested = False
+        self._active_generation_client_id = ""
+        self._session.worker_active = True
+        self._session.interrupt_requested = False
+        self._emit_cli_callback("turn_started", self, prompt)
+        self._start_turn_shortcut_monitor()
         try:
             self._deps.controller.run_assistant_prompt_turn(self._state, None, "AK", [prompt], 0, override_profile=3.5, send_cmd=self._send_cmd, tools=tools)
+            completed = True
         except Exception as exc:
             self._print(f"[ERROR] {exc}")
-            return
-        self._reset_status()
-        self._print_new_assistant_messages(transcript_start)
+        finally:
+            self._stop_turn_shortcut_monitor()
+            self._turn_active = False
+            self._turn_stop_requested = False
+            self._active_generation_client_id = ""
+            self._session.worker_active = False
+            self._session.interrupt_requested = False
+            self._reset_status()
+            self._emit_cli_callback("turn_finished", self, prompt, completed=completed)
+        if completed:
+            self._print_new_assistant_messages(transcript_start)
 
     def _handle_add_command(self, value: str, preferred_type: str = "any") -> None:
         try:
@@ -832,6 +960,7 @@ class DeepyCliSession:
                 self._print("  Ctrl+Enter      Insert a newline on Windows terminals that expose it")
                 self._print("  Ctrl+J          Insert a newline fallback")
                 self._print("  Alt+Enter       Insert a newline")
+                self._print("  Ctrl+S          Stop the current Deepy turn while it is running")
                 self._print("  Shift+Enter     Not available here; the console reports it as plain Enter")
             return True
         if command == "/add":
@@ -1007,7 +1136,7 @@ class DeepyCliSession:
             self._print("[Deepy] Prompt enhancer and vLLM are ready." if warmed_vllm else "[Deepy] Prompt enhancer is ready.")
         self._print("Deepy CLI session. Use /help for commands.")
         if self._interactive and PromptSession is not None:
-            self._print("Multiline input: Enter sends, Ctrl+Enter or Alt+Enter inserts a newline, Ctrl+J remains available as fallback.")
+            self._print("Multiline input: Enter sends, Ctrl+Enter or Alt+Enter inserts a newline, Ctrl+J remains available as fallback, Ctrl+S stops the active turn.")
         while True:
             try:
                 line = self._read_line()
@@ -1032,4 +1161,4 @@ def run_deepy_cli_session(deps: DeepyCliDeps) -> int:
     return DeepyCliSession(deps).run()
 
 
-__all__ = ["DeepyCliDeps", "DeepyCliSession", "run_deepy_cli_session"]
+__all__ = ["DeepyCliCallbacks", "DeepyCliDeps", "DeepyCliSession", "run_deepy_cli_session"]

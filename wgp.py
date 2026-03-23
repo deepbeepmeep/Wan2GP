@@ -10567,7 +10567,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             with gr.Column(visible=(ui_get("hq_sampler", 0) == 1)) as hq_sampler_options:
                                 gr.Markdown("<I>Recommended settings for Res2s HQ: set Steps to 15, distilled LoRA multiplier to 0.25;0.5 (stage1;stage2), CFG to 3, Guidance Rescale to 0.45, Audio Guidance to 7, Modality Guidance to 3</I>")
                             if not update_form:
-                                hq_sampler.change(fn=lambda v: gr.update(visible=v == 1), inputs=[hq_sampler], outputs=[hq_sampler_options])
+                                def on_hq_sampler_change(v):
+                                    is_res2 = v == 1
+                                    return [
+                                        gr.update(visible=is_res2),   # hq_sampler_options (note)
+                                        gr.update(visible=not is_res2),  # apg_col
+                                        gr.update(visible=not is_res2),  # cfg_free_guidance_col
+                                        gr.update(visible=not is_res2),  # self_refiner_col
+                                    ]
+                                hq_sampler.change(fn=on_hq_sampler_change, inputs=[hq_sampler], outputs=[hq_sampler_options, apg_col, cfg_free_guidance_col, self_refiner_col])
                         with gr.Column(visible = any_perturbation ) as perturbation_row:
                             gr.Markdown("<B>Perturbation (improves video quality, requires guidance > 1)</B>")
                             perturbation_choices = model_def.get("perturbation_choices", [("OFF", 0), ("Skip Layer Guidance", 1)])
@@ -10593,7 +10601,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 perturbation_start_perc = gr.Slider(0, 100, value=ui_get("perturbation_start_perc"), step=1, label="Denoising Steps % start", show_reset_button= False)
                                 perturbation_end_perc = gr.Slider(0, 100, value=ui_get("perturbation_end_perc"), step=1, label="Denoising Steps % end", show_reset_button= False)
 
-                        with gr.Column(visible= any_apg ) as apg_col:
+                        with gr.Column(visible= any_apg and ui_get("hq_sampler", 0) != 1) as apg_col:
                             gr.Markdown("<B>Correct Progressive Color Saturation during long Video Generations")
                             apg_switch = gr.Dropdown(
                                 choices=[
@@ -10606,7 +10614,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 label="Adaptive Projected Guidance (requires Guidance > 1 or Audio Guidance > 1) " if multitalk else "Adaptive Projected Guidance (requires Guidance > 1)",
                             )
 
-                        with gr.Column(visible = any_cfg_star) as cfg_free_guidance_col:
+                        with gr.Column(visible = any_cfg_star and ui_get("hq_sampler", 0) != 1) as cfg_free_guidance_col:
                             gr.Markdown("<B>Classifier-Free Guidance Zero Star, better adherence to Text Prompt")
                             cfg_star_switch = gr.Dropdown(
                                 choices=[
@@ -10645,7 +10653,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             gr.Markdown("<B>Experimental: Accelerate Motion (1: disabled, 1.15 recommended)")
                             motion_amplitude  = gr.Slider(1, 1.4, value=ui_get("motion_amplitude"), step=0.01, label="Motion Amplitude", visible = True, show_reset_button= False) 
 
-                        with gr.Column(visible = model_def.get("self_refiner", False)) as self_refiner_col:
+                        with gr.Column(visible = model_def.get("self_refiner", False) and ui_get("hq_sampler", 0) != 1) as self_refiner_col:
                             gr.Markdown("<B>Self-Refining Video Sampling (PnP) - should improve quality of Motion</B>")
                             self_refiner_setting = gr.Dropdown(choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2)], value=ui_get("self_refiner_setting", 0), scale=1, label="Self Refiner")
                             

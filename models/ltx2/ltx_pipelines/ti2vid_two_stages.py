@@ -215,19 +215,22 @@ class TI2VidTwoStagesPipeline:
         audio_cfg_guidance_scale = cfg_guidance_scale if audio_cfg_guidance_scale is None else audio_cfg_guidance_scale
         if hq_sampler:
             from ..ltx_core.components.guiders import MultiModalGuider, MultiModalGuiderParams
+            # STG: off by default (official HQ), user can enable via Perturbation UI
+            stg_scale = 1.0 if perturbation_switch and perturbation_layers else 0.0
+            stg_blocks = perturbation_layers if perturbation_layers else []
             video_guider_params = MultiModalGuiderParams(
                 cfg_scale=cfg_guidance_scale,
-                stg_scale=0.0,
+                stg_scale=stg_scale,
                 rescale_scale=rescale_scale,
                 modality_scale=alt_guidance_scale if alt_guidance_scale != 1.0 else 1.0,
-                stg_blocks=perturbation_layers if perturbation_layers else [],
+                stg_blocks=stg_blocks,
             )
             audio_guider_params = MultiModalGuiderParams(
                 cfg_scale=audio_cfg_guidance_scale,
-                stg_scale=0.0,
+                stg_scale=stg_scale,
                 rescale_scale=1.0,  # Official HQ uses 1.0 for audio (full rescaling)
                 modality_scale=alt_guidance_scale if alt_guidance_scale != 1.0 else 1.0,
-                stg_blocks=perturbation_layers if perturbation_layers else [],
+                stg_blocks=stg_blocks,
             )
         else:
             guider_cls = CFGGuider

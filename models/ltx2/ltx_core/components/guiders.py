@@ -228,6 +228,7 @@ class MultiModalGuider:
         if self.params.rescale_scale != 0:
             factor = cond.std() / pred.std()
             factor = self.params.rescale_scale * factor + (1 - self.params.rescale_scale)
+            print(f"[RESCALE DEBUG] cond.std={cond.std().item():.4f}, pred.std={pred.std().item():.4f}, raw_factor={cond.std().item()/pred.std().item():.4f}, final_factor={factor.item():.4f}, rescale_scale={self.params.rescale_scale}")
             pred = pred * factor
         return pred
 

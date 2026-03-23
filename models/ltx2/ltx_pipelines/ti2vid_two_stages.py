@@ -453,7 +453,8 @@ class TI2VidTwoStagesPipeline:
         bind_interrupt_check(transformer, interrupt_check)
         distilled_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
         if loras_slists is not None:
-            stage_2_steps = len(distilled_sigmas) - 1
+            # +1 accounts for the final denoise step in res2s loop (step_index == n_full_steps)
+            stage_2_steps = len(distilled_sigmas) - 1 + 1
             update_loras_slists(
                 transformer,
                 loras_slists,

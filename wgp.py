@@ -10564,7 +10564,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             gr.Markdown("<B>Sampler</B>")
                             hq_sampler = gr.Dropdown(choices=[("Euler (Standard)", 0), ("Res2s (HQ)", 1)], value=ui_get("hq_sampler", 0), label="Sampler", scale=1)
                             rescale_scale = gr.State(0.0)
-                            with gr.Column(visible=(update_form and ui_get("hq_sampler", 0) == 1)) as hq_sampler_options:
+                            with gr.Column(visible=(ui_get("hq_sampler", 0) == 1)) as hq_sampler_options:
                                 gr.Markdown("<I>Res2s HQ: 15 steps, distilled LoRA 0.25;0.5 (stage1;stage2), CFG 3, Guidance Rescale 0.45, Audio Guidance 7, Modality Guidance 3</I>")
                             if not update_form:
                                 hq_sampler.change(fn=lambda v: gr.update(visible=v == 1), inputs=[hq_sampler], outputs=[hq_sampler_options])

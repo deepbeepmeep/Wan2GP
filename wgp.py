@@ -4554,7 +4554,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels += ["APG"]
             video_hq_sampler = configs.get("hq_sampler", 0)
             if video_hq_sampler:
-                video_rescale = configs.get("rescale_scale", 0.0)
+                video_rescale = configs.get("rescale_scale", configs.get("alt_scale", 0.0))
                 values += [f"Res2s (HQ), Rescale={video_rescale}"]
                 labels += ["Sampler"]
             video_motion_amplitude = configs.get("motion_amplitude", 1.)
@@ -8095,7 +8095,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         # pop += ["self_refiner_setting", "self_refiner_plan"]
 
     if not model_def.get("hq_sampler", False):
-        pop += ["hq_sampler", "rescale_scale"]
+        pop += ["hq_sampler"]
 
     if model_def.get("audio_scale_name", None) is None:
         pop += ["audio_scale"]
@@ -10563,9 +10563,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         with gr.Column(visible=any_hq_sampler) as hq_sampler_col:
                             gr.Markdown("<B>Sampler</B>")
                             hq_sampler = gr.Dropdown(choices=[("Euler (Standard)", 0), ("Res2s (HQ)", 1)], value=ui_get("hq_sampler", 0), label="Sampler", scale=1)
+                            rescale_scale = gr.State(0.0)
                             with gr.Column(visible=(update_form and ui_get("hq_sampler", 0) == 1)) as hq_sampler_options:
-                                rescale_scale = gr.Slider(0, 1, value=ui_get("rescale_scale", 0.45), step=0.05, label="Rescale Scale (0=off, 0.45=recommended for HQ)", show_reset_button=False)
-                                gr.Markdown("<I>Res2s HQ is designed for 15 steps with a distilled LoRA at 0.25;0.5 (stage1;stage2), CFG 3, Rescale 0.45</I>")
+                                gr.Markdown("<I>Res2s HQ: 15 steps, distilled LoRA 0.25;0.5 (stage1;stage2), CFG 3, Guidance Rescale 0.45, Audio Guidance 7, Modality Guidance 3</I>")
                             if not update_form:
                                 hq_sampler.change(fn=lambda v: gr.update(visible=v == 1), inputs=[hq_sampler], outputs=[hq_sampler_options])
                         with gr.Column(visible = any_perturbation ) as perturbation_row:

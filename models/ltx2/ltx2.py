@@ -1151,7 +1151,7 @@ class LTX2:
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
                 self_refiner_max_plans=self_refiner_max_plans,
                 hq_sampler=hq_sampler,
-                rescale_scale=rescale_scale,
+                rescale_scale=float(alt_scale) if hq_sampler else rescale_scale,
             )
         else:
             pipeline_output = self.pipeline(

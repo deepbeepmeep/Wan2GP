@@ -10565,16 +10565,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             rescale_scale = gr.Number(value=0.0, visible=False)
                             with gr.Column(visible=(ui_get("hq_sampler", 0) == 1)) as hq_sampler_options:
                                 gr.Markdown("<I>Recommended settings for Res2s HQ: set Steps to 15, distilled LoRA multiplier to 0.25;0.5 (stage1;stage2), CFG to 3, Guidance Rescale to 0.45, Audio Guidance to 7, Modality Guidance to 3</I>")
-                            if not update_form:
-                                def on_hq_sampler_change(v):
-                                    is_res2 = v == 1
-                                    return [
-                                        gr.update(visible=is_res2),   # hq_sampler_options (note)
-                                        gr.update(visible=not is_res2),  # apg_col
-                                        gr.update(visible=not is_res2),  # cfg_free_guidance_col
-                                        gr.update(visible=not is_res2),  # self_refiner_col
-                                    ]
-                                hq_sampler.change(fn=on_hq_sampler_change, inputs=[hq_sampler], outputs=[hq_sampler_options, apg_col, cfg_free_guidance_col, self_refiner_col])
+                            # hq_sampler.change registered after all Quality tab columns are defined
                         with gr.Column(visible = any_perturbation ) as perturbation_row:
                             gr.Markdown("<B>Perturbation (improves video quality, requires guidance > 1)</B>")
                             perturbation_choices = model_def.get("perturbation_choices", [("OFF", 0), ("Skip Layer Guidance", 1)])
@@ -10692,7 +10683,18 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             with gr.Row():
                                 self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
                                 self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
-                            
+
+                        # Register hq_sampler change handler now that all columns exist
+                        if not update_form and any_hq_sampler:
+                            def on_hq_sampler_change(v):
+                                is_res2 = v == 1
+                                return [
+                                    gr.update(visible=is_res2),      # hq_sampler_options (note)
+                                    gr.update(visible=not is_res2),  # apg_col
+                                    gr.update(visible=not is_res2),  # cfg_free_guidance_col
+                                    gr.update(visible=not is_res2),  # self_refiner_col
+                                ]
+                            hq_sampler.change(fn=on_hq_sampler_change, inputs=[hq_sampler], outputs=[hq_sampler_options, apg_col, cfg_free_guidance_col, self_refiner_col])
 
                 with gr.Tab("Sliding Window", visible= sliding_window_enabled and not image_outputs and not audio_only) as sliding_window_tab:
 

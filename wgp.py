@@ -4554,8 +4554,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels += ["APG"]
             video_hq_sampler = configs.get("hq_sampler", 0)
             if video_hq_sampler:
-                video_rescale = configs.get("rescale_scale", configs.get("alt_scale", 0.0))
-                values += [f"Res2s (HQ), Rescale={video_rescale}"]
+                values += ["Res2s (HQ)"]
                 labels += ["Sampler"]
             video_motion_amplitude = configs.get("motion_amplitude", 1.)
             if  video_motion_amplitude != 1: 

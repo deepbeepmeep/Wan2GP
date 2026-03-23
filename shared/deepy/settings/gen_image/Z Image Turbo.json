@@ -1,0 +1,10 @@
+{
+    "settings_version": 2.55,
+    "model_type": "z_image",
+    "prompt": "",
+    "image_mode": 1,
+    "resolution": "1280x720",
+    "num_inference_steps": 8,
+    "type": "Z Image Turbo",		
+    "batch_size": 1
+}

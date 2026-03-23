@@ -8,10 +8,10 @@ from shared.deepy.config import (
     DEEPY_CONTEXT_TOKENS_KEY,
     DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
     DEEPY_ENABLED_KEY,
-    DEEPY_VRAM_ALWAYS,
     DEEPY_VRAM_MODE_KEY,
-    DEEPY_VRAM_UNLOAD,
-    DEEPY_VRAM_UNLOAD_ON_REQUEST,
+    DEEPY_VRAM_MODE_ALWAYS_LOADED,
+    DEEPY_VRAM_MODE_UNLOAD,
+    DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST,
     deepy_available,
     format_deepy_context_tokens_label,
     deepy_requirement_message,
@@ -299,11 +299,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     self.deepy_vram_mode_choice = gr.Dropdown(
                         choices=[
-                            ("Unload from VRAM as soon as possible", DEEPY_VRAM_UNLOAD),
-                            ("Always loaded in VRAM", DEEPY_VRAM_ALWAYS),
-                            ("Unload from VRAM if VRAM requested by another WanGP component", DEEPY_VRAM_UNLOAD_ON_REQUEST),
+                            ("Unload from VRAM as soon as possible", DEEPY_VRAM_MODE_UNLOAD),
+                            ("Always loaded in VRAM", DEEPY_VRAM_MODE_ALWAYS_LOADED),
+                            ("Unload from VRAM if VRAM requested by another WanGP component", DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST),
                         ],
-                        value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_UNLOAD)),
+                        value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD)),
                         label="VRAM Loading Mode",
                     )
                     deepy_context_tokens_default = normalize_deepy_context_tokens(self.server_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))

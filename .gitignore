@@ -45,6 +45,8 @@ loras/
 loras_i2v/
 
 settings/
+!shared/deepy/settings/
+!shared/deepy/settings/**
 
 wgp_config.json
 plugins_local.json

@@ -23,9 +23,9 @@ from shared.deepy.config import (
     DEEPY_CONTEXT_TOKENS_DEFAULT,
     DEEPY_CONTEXT_TOKENS_KEY,
     DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
-    DEEPY_VRAM_ALWAYS,
-    DEEPY_VRAM_UNLOAD,
-    DEEPY_VRAM_UNLOAD_ON_REQUEST,
+    DEEPY_VRAM_MODE_ALWAYS_LOADED,
+    DEEPY_VRAM_MODE_UNLOAD,
+    DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST,
     get_deepy_config_value,
     normalize_deepy_auto_cancel_queue_tasks,
     normalize_deepy_context_tokens,
@@ -2466,7 +2466,7 @@ class tools:
 
 
 class AssistantEngine:
-    def __init__(self, session: AssistantSessionState, runtime_hooks: AssistantRuntimeHooks, tool_box: tools, send_cmd, debug_enabled: bool | None = None, thinking_enabled: bool = True, vram_mode: str = DEEPY_VRAM_UNLOAD):
+    def __init__(self, session: AssistantSessionState, runtime_hooks: AssistantRuntimeHooks, tool_box: tools, send_cmd, debug_enabled: bool | None = None, thinking_enabled: bool = True, vram_mode: str = DEEPY_VRAM_MODE_UNLOAD):
         self.session = session
         self.runtime_hooks = runtime_hooks
         self.tool_box = tool_box
@@ -2934,12 +2934,12 @@ class AssistantEngine:
             self.session.release_vram_callback = None
 
     def _pause_runtime(self, pause_reason: str = "idle") -> None:
-        keep_loaded = self.vram_mode in (DEEPY_VRAM_ALWAYS, DEEPY_VRAM_UNLOAD_ON_REQUEST)
+        keep_loaded = self.vram_mode in (DEEPY_VRAM_MODE_ALWAYS_LOADED, DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST)
         if pause_reason == "vision":
             keep_loaded = False
-        if pause_reason == "tool" and self.vram_mode != DEEPY_VRAM_ALWAYS:
+        if pause_reason == "tool" and self.vram_mode != DEEPY_VRAM_MODE_ALWAYS_LOADED:
             keep_loaded = False
-        allow_force_release = keep_loaded and self.vram_mode == DEEPY_VRAM_UNLOAD_ON_REQUEST and pause_reason != "tool"
+        allow_force_release = keep_loaded and self.vram_mode == DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST and pause_reason != "tool"
         release_callback = self._force_release_vram if keep_loaded else None
         if keep_loaded:
             self.session.release_vram_callback = release_callback

@@ -8,16 +8,25 @@ from pathlib import Path
 from typing import Any
 
 from shared.deepy.config import (
-    DEEPY_DEFAULT_IMAGE_EDITOR,
-    DEEPY_DEFAULT_IMAGE_EDITOR_KEY,
-    DEEPY_DEFAULT_IMAGE_GENERATOR,
-    DEEPY_DEFAULT_IMAGE_GENERATOR_KEY,
-    DEEPY_DEFAULT_VIDEO_GENERATOR,
-    DEEPY_DEFAULT_VIDEO_GENERATOR_KEY,
+    DEEPY_DEFAULT_EDIT_IMAGE,
+    DEEPY_DEFAULT_GEN_IMAGE,
+    DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
+    DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE,
+    DEEPY_DEFAULT_GEN_VIDEO,
+    DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH,
+    DEEPY_TOOL_EDIT_IMAGE_KEY,
+    DEEPY_TOOL_GEN_IMAGE_KEY,
+    DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY,
+    DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY,
+    DEEPY_TOOL_GEN_VIDEO_KEY,
+    DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY,
     get_deepy_config_value,
-    normalize_deepy_default_image_editor,
-    normalize_deepy_default_image_generator,
-    normalize_deepy_default_video_generator,
+    normalize_deepy_tool_edit_image,
+    normalize_deepy_tool_gen_image,
+    normalize_deepy_tool_gen_speech_from_description,
+    normalize_deepy_tool_gen_speech_from_sample,
+    normalize_deepy_tool_gen_video,
+    normalize_deepy_tool_gen_video_with_speech,
 )
 
 
@@ -25,14 +34,14 @@ _DEEPY_DIR = Path(__file__).resolve().parent
 SETTINGS_DIR = _DEEPY_DIR / "settings"
 CUSTOM_SETTINGS_DIR = _DEEPY_DIR / "custom_settings"
 SHARED_CUSTOM_SETTINGS_DIR = _DEEPY_DIR.parent / "custom_settings"
-DEFAULT_IMAGE_EDITOR_VARIANT = DEEPY_DEFAULT_IMAGE_EDITOR
-DEFAULT_VIDEO_WITH_SPEECH_VARIANT = "Infinitalk"
-DEFAULT_SPEECH_FROM_DESCRIPTION_VARIANT = "Qwen3 1.7B"
-DEFAULT_SPEECH_FROM_SAMPLE_VARIANT = "Index TTS 2"
+DEFAULT_IMAGE_EDITOR_VARIANT = DEEPY_DEFAULT_EDIT_IMAGE
+DEFAULT_VIDEO_WITH_SPEECH_VARIANT = DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH
+DEFAULT_SPEECH_FROM_DESCRIPTION_VARIANT = DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION
+DEFAULT_SPEECH_FROM_SAMPLE_VARIANT = DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE
 _LEGACY_VARIANT_ALIASES = {
-    "edit_image": {"Qwen_Edit": DEEPY_DEFAULT_IMAGE_EDITOR},
-    "gen_image": {"Z_Image_Turbo": DEEPY_DEFAULT_IMAGE_GENERATOR},
-    "gen_video": {"ltx2_22B_distilled": DEEPY_DEFAULT_VIDEO_GENERATOR},
+    "edit_image": {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE},
+    "gen_image": {"Z_Image_Turbo": DEEPY_DEFAULT_GEN_IMAGE},
+    "gen_video": {"ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO},
 }
 
 
@@ -167,30 +176,33 @@ def resolve_tool_variant(tool_name: str, requested_variant: Any, default_variant
 
 
 def get_default_image_generator_variant() -> str:
-    configured = normalize_deepy_default_image_generator(get_deepy_config_value(DEEPY_DEFAULT_IMAGE_GENERATOR_KEY, DEEPY_DEFAULT_IMAGE_GENERATOR))
-    return resolve_tool_variant("gen_image", configured, default_variant=DEEPY_DEFAULT_IMAGE_GENERATOR)
+    configured = normalize_deepy_tool_gen_image(get_deepy_config_value(DEEPY_TOOL_GEN_IMAGE_KEY, DEEPY_DEFAULT_GEN_IMAGE))
+    return resolve_tool_variant("gen_image", configured, default_variant=DEEPY_DEFAULT_GEN_IMAGE)
 
 
 def get_default_video_generator_variant() -> str:
-    configured = normalize_deepy_default_video_generator(get_deepy_config_value(DEEPY_DEFAULT_VIDEO_GENERATOR_KEY, DEEPY_DEFAULT_VIDEO_GENERATOR))
-    return resolve_tool_variant("gen_video", configured, default_variant=DEEPY_DEFAULT_VIDEO_GENERATOR)
+    configured = normalize_deepy_tool_gen_video(get_deepy_config_value(DEEPY_TOOL_GEN_VIDEO_KEY, DEEPY_DEFAULT_GEN_VIDEO))
+    return resolve_tool_variant("gen_video", configured, default_variant=DEEPY_DEFAULT_GEN_VIDEO)
 
 
 def get_default_image_editor_variant() -> str:
-    configured = normalize_deepy_default_image_editor(get_deepy_config_value(DEEPY_DEFAULT_IMAGE_EDITOR_KEY, DEEPY_DEFAULT_IMAGE_EDITOR))
-    return resolve_tool_variant("edit_image", configured, default_variant=DEEPY_DEFAULT_IMAGE_EDITOR)
+    configured = normalize_deepy_tool_edit_image(get_deepy_config_value(DEEPY_TOOL_EDIT_IMAGE_KEY, DEEPY_DEFAULT_EDIT_IMAGE))
+    return resolve_tool_variant("edit_image", configured, default_variant=DEEPY_DEFAULT_EDIT_IMAGE)
 
 
 def get_default_video_with_speech_variant() -> str:
-    return resolve_tool_variant("gen_video_with_speech", "", default_variant=DEFAULT_VIDEO_WITH_SPEECH_VARIANT)
+    configured = normalize_deepy_tool_gen_video_with_speech(get_deepy_config_value(DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY, DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH))
+    return resolve_tool_variant("gen_video_with_speech", configured, default_variant=DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH)
 
 
 def get_default_speech_from_description_variant() -> str:
-    return resolve_tool_variant("gen_speech_from_description", "", default_variant=DEFAULT_SPEECH_FROM_DESCRIPTION_VARIANT)
+    configured = normalize_deepy_tool_gen_speech_from_description(get_deepy_config_value(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION))
+    return resolve_tool_variant("gen_speech_from_description", configured, default_variant=DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION)
 
 
 def get_default_speech_from_sample_variant() -> str:
-    return resolve_tool_variant("gen_speech_from_sample", "", default_variant=DEFAULT_SPEECH_FROM_SAMPLE_VARIANT)
+    configured = normalize_deepy_tool_gen_speech_from_sample(get_deepy_config_value(DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE))
+    return resolve_tool_variant("gen_speech_from_sample", configured, default_variant=DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE)
 
 
 @lru_cache(maxsize=None)

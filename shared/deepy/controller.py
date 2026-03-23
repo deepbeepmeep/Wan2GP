@@ -12,7 +12,7 @@ import gradio as gr
 from shared.deepy.config import (
     DEEPY_ENABLED_KEY,
     DEEPY_VRAM_MODE_KEY,
-    DEEPY_VRAM_UNLOAD,
+    DEEPY_VRAM_MODE_UNLOAD,
     deepy_available,
     deepy_requirement_met,
     normalize_deepy_enabled,
@@ -107,7 +107,7 @@ class DeepyController:
 
     def get_vram_mode(self) -> str:
         server_config = self._server_config()
-        return normalize_deepy_vram_mode(server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_UNLOAD))
+        return normalize_deepy_vram_mode(server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD))
 
     def _ensure_vision_loaded(self, override_profile=None):
         self._deps.ensure_prompt_enhancer_loaded(override_profile=override_profile)

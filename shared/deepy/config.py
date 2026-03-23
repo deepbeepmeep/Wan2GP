@@ -7,19 +7,25 @@ from typing import Any
 
 DEEPY_ENABLED_KEY = "deepy_enabled"
 DEEPY_VRAM_MODE_KEY = "deepy_vram_mode"
-DEEPY_DEFAULT_IMAGE_GENERATOR_KEY = "deepy_default_image_generator"
-DEEPY_DEFAULT_IMAGE_EDITOR_KEY = "deepy_default_image_editor"
-DEEPY_DEFAULT_VIDEO_GENERATOR_KEY = "deepy_default_video_generator"
+DEEPY_TOOL_GEN_IMAGE_KEY = "deepy_tool_gen_image"
+DEEPY_TOOL_EDIT_IMAGE_KEY = "deepy_tool_edit_image"
+DEEPY_TOOL_GEN_VIDEO_KEY = "deepy_tool_gen_video"
+DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY = "deepy_tool_gen_video_with_speech"
+DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY = "deepy_tool_gen_speech_from_description"
+DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY = "deepy_tool_gen_speech_from_sample"
 DEEPY_CONTEXT_TOKENS_KEY = "deepy_context_tokens"
 DEEPY_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_custom_system_prompt"
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
 
-DEEPY_VRAM_UNLOAD = "unload"
-DEEPY_VRAM_ALWAYS = "always_loaded"
-DEEPY_VRAM_UNLOAD_ON_REQUEST = "unload_on_request"
-DEEPY_DEFAULT_IMAGE_GENERATOR = "Z Image Turbo"
-DEEPY_DEFAULT_IMAGE_EDITOR = "Qwen Edit 2511 lighx2v 4 steps"
-DEEPY_DEFAULT_VIDEO_GENERATOR = "LTX-2 2.3 Distilled"
+DEEPY_VRAM_MODE_UNLOAD = "unload"
+DEEPY_VRAM_MODE_ALWAYS_LOADED = "always_loaded"
+DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST = "unload_on_request"
+DEEPY_DEFAULT_GEN_IMAGE = "Z Image Turbo"
+DEEPY_DEFAULT_EDIT_IMAGE = "Flux Klein 9B"
+DEEPY_DEFAULT_GEN_VIDEO = "LTX-2 2.3 Distilled"
+DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH = "Infinitalk"
+DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION = "Qwen3 1.7B"
+DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE = "Index TTS 2"
 DEEPY_CONTEXT_TOKENS_MIN = 4096
 DEEPY_CONTEXT_TOKENS_MAX = 256000
 DEEPY_CONTEXT_TOKENS_DEFAULT = 32768
@@ -32,9 +38,9 @@ _DEEPY_QWEN_KV_CACHE_SPECS = {
     3: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
     4: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
 }
-_DEEPY_DEFAULT_IMAGE_GENERATOR_ALIASES = {"Z_Image_Turbo": DEEPY_DEFAULT_IMAGE_GENERATOR}
-_DEEPY_DEFAULT_IMAGE_EDITOR_ALIASES = {"Qwen_Edit": DEEPY_DEFAULT_IMAGE_EDITOR}
-_DEEPY_DEFAULT_VIDEO_GENERATOR_ALIASES = {"ltx2_22B_distilled": DEEPY_DEFAULT_VIDEO_GENERATOR}
+_DEEPY_DEFAULT_GEN_IMAGE_ALIASES = {"Z_Image_Turbo": DEEPY_DEFAULT_GEN_IMAGE}
+_DEEPY_DEFAULT_EDIT_IMAGE_ALIASES = {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE}
+_DEEPY_DEFAULT_GEN_VIDEO_ALIASES = {"ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO}
 _DEEPY_RUNTIME_CONFIG: dict[str, Any] | None = None
 _DEEPY_RUNTIME_CONFIG_FILENAME = ""
 
@@ -45,26 +51,40 @@ def normalize_deepy_enabled(value: Any) -> int:
 
 def normalize_deepy_vram_mode(value: Any) -> str:
     text = str(value or "").strip()
-    if text == DEEPY_VRAM_ALWAYS:
-        return DEEPY_VRAM_ALWAYS
-    if text == DEEPY_VRAM_UNLOAD_ON_REQUEST:
-        return DEEPY_VRAM_UNLOAD_ON_REQUEST
-    return DEEPY_VRAM_UNLOAD
+    if text == DEEPY_VRAM_MODE_ALWAYS_LOADED:
+        return DEEPY_VRAM_MODE_ALWAYS_LOADED
+    if text == DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST:
+        return DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST
+    return DEEPY_VRAM_MODE_UNLOAD
 
 
-def normalize_deepy_default_image_generator(value: Any) -> str:
+def _normalize_deepy_variant(value: Any, aliases: dict[str, str], default: str) -> str:
     text = str(value or "").strip()
-    return _DEEPY_DEFAULT_IMAGE_GENERATOR_ALIASES.get(text, text) or DEEPY_DEFAULT_IMAGE_GENERATOR
+    return aliases.get(text, text) or default
 
 
-def normalize_deepy_default_image_editor(value: Any) -> str:
-    text = str(value or "").strip()
-    return _DEEPY_DEFAULT_IMAGE_EDITOR_ALIASES.get(text, text) or DEEPY_DEFAULT_IMAGE_EDITOR
+def normalize_deepy_tool_gen_image(value: Any) -> str:
+    return _normalize_deepy_variant(value, _DEEPY_DEFAULT_GEN_IMAGE_ALIASES, DEEPY_DEFAULT_GEN_IMAGE)
 
 
-def normalize_deepy_default_video_generator(value: Any) -> str:
-    text = str(value or "").strip()
-    return _DEEPY_DEFAULT_VIDEO_GENERATOR_ALIASES.get(text, text) or DEEPY_DEFAULT_VIDEO_GENERATOR
+def normalize_deepy_tool_edit_image(value: Any) -> str:
+    return _normalize_deepy_variant(value, _DEEPY_DEFAULT_EDIT_IMAGE_ALIASES, DEEPY_DEFAULT_EDIT_IMAGE)
+
+
+def normalize_deepy_tool_gen_video(value: Any) -> str:
+    return _normalize_deepy_variant(value, _DEEPY_DEFAULT_GEN_VIDEO_ALIASES, DEEPY_DEFAULT_GEN_VIDEO)
+
+
+def normalize_deepy_tool_gen_video_with_speech(value: Any) -> str:
+    return _normalize_deepy_variant(value, {}, DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH)
+
+
+def normalize_deepy_tool_gen_speech_from_description(value: Any) -> str:
+    return _normalize_deepy_variant(value, {}, DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION)
+
+
+def normalize_deepy_tool_gen_speech_from_sample(value: Any) -> str:
+    return _normalize_deepy_variant(value, {}, DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE)
 
 
 def normalize_deepy_context_tokens(value: Any) -> int:
@@ -123,10 +143,13 @@ def format_deepy_context_tokens_label(enhancer_enabled: Any, context_tokens: Any
 def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict[str, Any]:
     runtime_config = dict(server_config or {})
     runtime_config[DEEPY_ENABLED_KEY] = normalize_deepy_enabled(runtime_config.get(DEEPY_ENABLED_KEY, 0))
-    runtime_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(runtime_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_UNLOAD))
-    runtime_config[DEEPY_DEFAULT_IMAGE_GENERATOR_KEY] = normalize_deepy_default_image_generator(runtime_config.get(DEEPY_DEFAULT_IMAGE_GENERATOR_KEY, DEEPY_DEFAULT_IMAGE_GENERATOR))
-    runtime_config[DEEPY_DEFAULT_IMAGE_EDITOR_KEY] = normalize_deepy_default_image_editor(runtime_config.get(DEEPY_DEFAULT_IMAGE_EDITOR_KEY, DEEPY_DEFAULT_IMAGE_EDITOR))
-    runtime_config[DEEPY_DEFAULT_VIDEO_GENERATOR_KEY] = normalize_deepy_default_video_generator(runtime_config.get(DEEPY_DEFAULT_VIDEO_GENERATOR_KEY, DEEPY_DEFAULT_VIDEO_GENERATOR))
+    runtime_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(runtime_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD))
+    runtime_config[DEEPY_TOOL_GEN_IMAGE_KEY] = normalize_deepy_tool_gen_image(runtime_config.get(DEEPY_TOOL_GEN_IMAGE_KEY, DEEPY_DEFAULT_GEN_IMAGE))
+    runtime_config[DEEPY_TOOL_EDIT_IMAGE_KEY] = normalize_deepy_tool_edit_image(runtime_config.get(DEEPY_TOOL_EDIT_IMAGE_KEY, DEEPY_DEFAULT_EDIT_IMAGE))
+    runtime_config[DEEPY_TOOL_GEN_VIDEO_KEY] = normalize_deepy_tool_gen_video(runtime_config.get(DEEPY_TOOL_GEN_VIDEO_KEY, DEEPY_DEFAULT_GEN_VIDEO))
+    runtime_config[DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY] = normalize_deepy_tool_gen_video_with_speech(runtime_config.get(DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY, DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH))
+    runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY] = normalize_deepy_tool_gen_speech_from_description(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION))
+    runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY] = normalize_deepy_tool_gen_speech_from_sample(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE))
     runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
     runtime_config[DEEPY_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_CUSTOM_SYSTEM_PROMPT_KEY, ""))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
@@ -136,10 +159,13 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
 def get_deepy_default_runtime_config() -> dict[str, Any]:
     return {
         DEEPY_ENABLED_KEY: 0,
-        DEEPY_VRAM_MODE_KEY: DEEPY_VRAM_UNLOAD,
-        DEEPY_DEFAULT_IMAGE_EDITOR_KEY: DEEPY_DEFAULT_IMAGE_EDITOR,
-        DEEPY_DEFAULT_IMAGE_GENERATOR_KEY: DEEPY_DEFAULT_IMAGE_GENERATOR,
-        DEEPY_DEFAULT_VIDEO_GENERATOR_KEY: DEEPY_DEFAULT_VIDEO_GENERATOR,
+        DEEPY_VRAM_MODE_KEY: DEEPY_VRAM_MODE_UNLOAD,
+        DEEPY_TOOL_EDIT_IMAGE_KEY: DEEPY_DEFAULT_EDIT_IMAGE,
+        DEEPY_TOOL_GEN_IMAGE_KEY: DEEPY_DEFAULT_GEN_IMAGE,
+        DEEPY_TOOL_GEN_VIDEO_KEY: DEEPY_DEFAULT_GEN_VIDEO,
+        DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY: DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH,
+        DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY: DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
+        DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY: DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE,
         DEEPY_CONTEXT_TOKENS_KEY: DEEPY_CONTEXT_TOKENS_DEFAULT,
         DEEPY_CUSTOM_SYSTEM_PROMPT_KEY: "",
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,

@@ -5,12 +5,15 @@ from typing import Any
 from shared.deepy.config import (
     DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
     DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY,
-    DEEPY_DEFAULT_IMAGE_EDITOR,
-    DEEPY_DEFAULT_IMAGE_EDITOR_KEY,
-    DEEPY_DEFAULT_IMAGE_GENERATOR,
-    DEEPY_DEFAULT_IMAGE_GENERATOR_KEY,
-    DEEPY_DEFAULT_VIDEO_GENERATOR,
-    DEEPY_DEFAULT_VIDEO_GENERATOR_KEY,
+    DEEPY_DEFAULT_EDIT_IMAGE,
+    DEEPY_DEFAULT_GEN_IMAGE,
+    DEEPY_DEFAULT_GEN_VIDEO,
+    DEEPY_TOOL_EDIT_IMAGE_KEY,
+    DEEPY_TOOL_GEN_IMAGE_KEY,
+    DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY,
+    DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY,
+    DEEPY_TOOL_GEN_VIDEO_KEY,
+    DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY,
     get_deepy_config_value,
     normalize_deepy_auto_cancel_queue_tasks,
 )
@@ -25,9 +28,6 @@ ASSISTANT_OVERRIDE_HEIGHT_DEFAULT = 720
 ASSISTANT_OVERRIDE_FRAMES_MIN = 5
 ASSISTANT_OVERRIDE_FRAMES_MAX = 768
 ASSISTANT_OVERRIDE_FRAMES_DEFAULT = 81
-ASSISTANT_VIDEO_WITH_SPEECH_VARIANT_KEY = "deepy_default_video_with_speech_generator"
-ASSISTANT_SPEECH_FROM_DESCRIPTION_VARIANT_KEY = "deepy_default_speech_from_description_generator"
-ASSISTANT_SPEECH_FROM_SAMPLE_VARIANT_KEY = "deepy_default_speech_from_sample_generator"
 ASSISTANT_USE_TEMPLATE_PROPERTIES_KEY = "deepy_use_template_properties"
 ASSISTANT_OVERRIDE_WIDTH_KEY = "deepy_width"
 ASSISTANT_OVERRIDE_HEIGHT_KEY = "deepy_height"
@@ -80,12 +80,12 @@ def get_persisted_assistant_tool_ui_settings(server_config: dict[str, Any] | Non
         width=source.get(ASSISTANT_OVERRIDE_WIDTH_KEY, get_deepy_config_value(ASSISTANT_OVERRIDE_WIDTH_KEY, ASSISTANT_OVERRIDE_WIDTH_DEFAULT)),
         height=source.get(ASSISTANT_OVERRIDE_HEIGHT_KEY, get_deepy_config_value(ASSISTANT_OVERRIDE_HEIGHT_KEY, ASSISTANT_OVERRIDE_HEIGHT_DEFAULT)),
         num_frames=source.get(ASSISTANT_OVERRIDE_NUM_FRAMES_KEY, get_deepy_config_value(ASSISTANT_OVERRIDE_NUM_FRAMES_KEY, ASSISTANT_OVERRIDE_FRAMES_DEFAULT)),
-        video_with_speech_variant=source.get(ASSISTANT_VIDEO_WITH_SPEECH_VARIANT_KEY, get_deepy_config_value(ASSISTANT_VIDEO_WITH_SPEECH_VARIANT_KEY, deepy_tool_settings.get_default_video_with_speech_variant())),
-        image_generator_variant=source.get(DEEPY_DEFAULT_IMAGE_GENERATOR_KEY, get_deepy_config_value(DEEPY_DEFAULT_IMAGE_GENERATOR_KEY, DEEPY_DEFAULT_IMAGE_GENERATOR)),
-        image_editor_variant=source.get(DEEPY_DEFAULT_IMAGE_EDITOR_KEY, get_deepy_config_value(DEEPY_DEFAULT_IMAGE_EDITOR_KEY, DEEPY_DEFAULT_IMAGE_EDITOR)),
-        video_generator_variant=source.get(DEEPY_DEFAULT_VIDEO_GENERATOR_KEY, get_deepy_config_value(DEEPY_DEFAULT_VIDEO_GENERATOR_KEY, DEEPY_DEFAULT_VIDEO_GENERATOR)),
-        speech_from_description_variant=source.get(ASSISTANT_SPEECH_FROM_DESCRIPTION_VARIANT_KEY, get_deepy_config_value(ASSISTANT_SPEECH_FROM_DESCRIPTION_VARIANT_KEY, deepy_tool_settings.get_default_speech_from_description_variant())),
-        speech_from_sample_variant=source.get(ASSISTANT_SPEECH_FROM_SAMPLE_VARIANT_KEY, get_deepy_config_value(ASSISTANT_SPEECH_FROM_SAMPLE_VARIANT_KEY, deepy_tool_settings.get_default_speech_from_sample_variant())),
+        video_with_speech_variant=source.get(DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY, get_deepy_config_value(DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY, deepy_tool_settings.get_default_video_with_speech_variant())),
+        image_generator_variant=source.get(DEEPY_TOOL_GEN_IMAGE_KEY, get_deepy_config_value(DEEPY_TOOL_GEN_IMAGE_KEY, DEEPY_DEFAULT_GEN_IMAGE)),
+        image_editor_variant=source.get(DEEPY_TOOL_EDIT_IMAGE_KEY, get_deepy_config_value(DEEPY_TOOL_EDIT_IMAGE_KEY, DEEPY_DEFAULT_EDIT_IMAGE)),
+        video_generator_variant=source.get(DEEPY_TOOL_GEN_VIDEO_KEY, get_deepy_config_value(DEEPY_TOOL_GEN_VIDEO_KEY, DEEPY_DEFAULT_GEN_VIDEO)),
+        speech_from_description_variant=source.get(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, get_deepy_config_value(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, deepy_tool_settings.get_default_speech_from_description_variant())),
+        speech_from_sample_variant=source.get(DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY, get_deepy_config_value(DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY, deepy_tool_settings.get_default_speech_from_sample_variant())),
     )
 
 
@@ -100,12 +100,12 @@ def store_assistant_tool_ui_settings(server_config: dict[str, Any] | None, setti
         ASSISTANT_OVERRIDE_WIDTH_KEY: normalized["width"],
         ASSISTANT_OVERRIDE_HEIGHT_KEY: normalized["height"],
         ASSISTANT_OVERRIDE_NUM_FRAMES_KEY: normalized["num_frames"],
-        ASSISTANT_VIDEO_WITH_SPEECH_VARIANT_KEY: normalized["video_with_speech_variant"],
-        DEEPY_DEFAULT_IMAGE_GENERATOR_KEY: normalized["image_generator_variant"],
-        DEEPY_DEFAULT_IMAGE_EDITOR_KEY: normalized["image_editor_variant"],
-        DEEPY_DEFAULT_VIDEO_GENERATOR_KEY: normalized["video_generator_variant"],
-        ASSISTANT_SPEECH_FROM_DESCRIPTION_VARIANT_KEY: normalized["speech_from_description_variant"],
-        ASSISTANT_SPEECH_FROM_SAMPLE_VARIANT_KEY: normalized["speech_from_sample_variant"],
+        DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY: normalized["video_with_speech_variant"],
+        DEEPY_TOOL_GEN_IMAGE_KEY: normalized["image_generator_variant"],
+        DEEPY_TOOL_EDIT_IMAGE_KEY: normalized["image_editor_variant"],
+        DEEPY_TOOL_GEN_VIDEO_KEY: normalized["video_generator_variant"],
+        DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY: normalized["speech_from_description_variant"],
+        DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY: normalized["speech_from_sample_variant"],
     }
     for key, value in updates.items():
         if server_config.get(key) == value:
@@ -171,12 +171,12 @@ def normalize_assistant_tool_ui_settings(
         "width": normalize_assistant_override_width(get_deepy_config_value(ASSISTANT_OVERRIDE_WIDTH_KEY, ASSISTANT_OVERRIDE_WIDTH_DEFAULT) if width is None else width),
         "height": normalize_assistant_override_height(get_deepy_config_value(ASSISTANT_OVERRIDE_HEIGHT_KEY, ASSISTANT_OVERRIDE_HEIGHT_DEFAULT) if height is None else height),
         "num_frames": normalize_assistant_override_num_frames(get_deepy_config_value(ASSISTANT_OVERRIDE_NUM_FRAMES_KEY, ASSISTANT_OVERRIDE_FRAMES_DEFAULT) if num_frames is None else num_frames),
-        "video_with_speech_variant": deepy_tool_settings.resolve_tool_variant("gen_video_with_speech", get_deepy_config_value(ASSISTANT_VIDEO_WITH_SPEECH_VARIANT_KEY, deepy_tool_settings.get_default_video_with_speech_variant()) if video_with_speech_variant is None else video_with_speech_variant, default_variant=deepy_tool_settings.get_default_video_with_speech_variant()),
-        "image_generator_variant": deepy_tool_settings.resolve_tool_variant("gen_image", get_deepy_config_value(DEEPY_DEFAULT_IMAGE_GENERATOR_KEY, DEEPY_DEFAULT_IMAGE_GENERATOR) if image_generator_variant is None else image_generator_variant, default_variant=DEEPY_DEFAULT_IMAGE_GENERATOR),
-        "image_editor_variant": deepy_tool_settings.resolve_tool_variant("edit_image", get_deepy_config_value(DEEPY_DEFAULT_IMAGE_EDITOR_KEY, DEEPY_DEFAULT_IMAGE_EDITOR) if image_editor_variant is None else image_editor_variant, default_variant=DEEPY_DEFAULT_IMAGE_EDITOR),
-        "video_generator_variant": deepy_tool_settings.resolve_tool_variant("gen_video", get_deepy_config_value(DEEPY_DEFAULT_VIDEO_GENERATOR_KEY, DEEPY_DEFAULT_VIDEO_GENERATOR) if video_generator_variant is None else video_generator_variant, default_variant=DEEPY_DEFAULT_VIDEO_GENERATOR),
-        "speech_from_description_variant": deepy_tool_settings.resolve_tool_variant("gen_speech_from_description", get_deepy_config_value(ASSISTANT_SPEECH_FROM_DESCRIPTION_VARIANT_KEY, deepy_tool_settings.get_default_speech_from_description_variant()) if speech_from_description_variant is None else speech_from_description_variant, default_variant=deepy_tool_settings.get_default_speech_from_description_variant()),
-        "speech_from_sample_variant": deepy_tool_settings.resolve_tool_variant("gen_speech_from_sample", get_deepy_config_value(ASSISTANT_SPEECH_FROM_SAMPLE_VARIANT_KEY, deepy_tool_settings.get_default_speech_from_sample_variant()) if speech_from_sample_variant is None else speech_from_sample_variant, default_variant=deepy_tool_settings.get_default_speech_from_sample_variant()),
+        "video_with_speech_variant": deepy_tool_settings.resolve_tool_variant("gen_video_with_speech", get_deepy_config_value(DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY, deepy_tool_settings.get_default_video_with_speech_variant()) if video_with_speech_variant is None else video_with_speech_variant, default_variant=deepy_tool_settings.get_default_video_with_speech_variant()),
+        "image_generator_variant": deepy_tool_settings.resolve_tool_variant("gen_image", get_deepy_config_value(DEEPY_TOOL_GEN_IMAGE_KEY, DEEPY_DEFAULT_GEN_IMAGE) if image_generator_variant is None else image_generator_variant, default_variant=DEEPY_DEFAULT_GEN_IMAGE),
+        "image_editor_variant": deepy_tool_settings.resolve_tool_variant("edit_image", get_deepy_config_value(DEEPY_TOOL_EDIT_IMAGE_KEY, DEEPY_DEFAULT_EDIT_IMAGE) if image_editor_variant is None else image_editor_variant, default_variant=DEEPY_DEFAULT_EDIT_IMAGE),
+        "video_generator_variant": deepy_tool_settings.resolve_tool_variant("gen_video", get_deepy_config_value(DEEPY_TOOL_GEN_VIDEO_KEY, DEEPY_DEFAULT_GEN_VIDEO) if video_generator_variant is None else video_generator_variant, default_variant=DEEPY_DEFAULT_GEN_VIDEO),
+        "speech_from_description_variant": deepy_tool_settings.resolve_tool_variant("gen_speech_from_description", get_deepy_config_value(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, deepy_tool_settings.get_default_speech_from_description_variant()) if speech_from_description_variant is None else speech_from_description_variant, default_variant=deepy_tool_settings.get_default_speech_from_description_variant()),
+        "speech_from_sample_variant": deepy_tool_settings.resolve_tool_variant("gen_speech_from_sample", get_deepy_config_value(DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY, deepy_tool_settings.get_default_speech_from_sample_variant()) if speech_from_sample_variant is None else speech_from_sample_variant, default_variant=deepy_tool_settings.get_default_speech_from_sample_variant()),
     }
 
 

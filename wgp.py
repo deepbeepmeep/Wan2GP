@@ -1354,7 +1354,7 @@ def clean_settings(model_type, params):
         params.setdefault(k, v)
     params.setdefault("client_id", "")
     params.setdefault("mode", "")
-    for meta_key in ['type', 'base_model_type', 'settings_version']:
+    for meta_key in ['type', 'base_model_type']:
         params.pop(meta_key, None)
 
 
@@ -3885,7 +3885,7 @@ def generate_header(model_type, compile, attention_mode):
     description = f"<DIV style=height:{60 if server_config.get('display_stats', 0) == 1 else 40}px>{description}</DIV>"
     overridden_attention = get_overridden_attention(model_type)
     attn_mode = attention_mode if overridden_attention == None else overridden_attention 
-    header = "<DIV style='align:right;width:100%'><FONT SIZE=3>Attention mode <B>" + (attn_mode if attn_mode!="auto" else "auto/" + get_auto_attention() )
+    header = "<DIV style='align:right;width:100%'><FONT SIZE=2>Attention mode <B>" + (attn_mode if attn_mode!="auto" else "auto/" + get_auto_attention() )
     if attention_mode not in attention_modes_installed:
         header += " -NOT INSTALLED-"
     elif attention_mode not in attention_modes_supported:
@@ -3904,7 +3904,7 @@ def generate_header(model_type, compile, attention_mode):
     quant_label = quant_router.detect_quantization_label_from_filename(get_local_model_filename(full_filename))
     if quant_label:
         header += f", Quantization <B>{quant_label}</B>"
-    header += "<FONT></DIV>"
+    header += "</DIV>"
 
     return description,header
 
@@ -4479,16 +4479,24 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 if neg is not None and any_letters(src, neg): return False
                 return True
             image_outputs = configs.get("image_mode",0) > 0
+            video_model_type =  configs.get("model_type", "t2v")
+            model_family = get_model_family(video_model_type)
+            model_def = get_model_def(video_model_type)
             map_video_prompt  = {"V" : "Control Image" if image_outputs else "Control Video", ("VA", "U") : "Mask Image" if image_outputs else "Mask Video", "I" : "Reference Images"}
             map_image_prompt  = {"V" : "Source Video", "L" : "Last Video", "S" : "Start Image", "E" : "End Image"}
-            map_audio_prompt  = {"A" : "Audio Source", "B" : "Audio Source #2", "K": "Control Video Audio Track", "N": "Normalized Audio Volumes"}
+            map_audio_prompt  = {"A" : "Audio Source", "O": "Force Output Audio", "B" : "Audio Source #2", "K": "Control Video Audio Track", "N": "Normalized Audio Volumes"}
+            audio_prompt_type_sources_def = model_def.get("audio_prompt_type_sources", None)
+            if isinstance(audio_prompt_type_sources_def, dict):
+                custom_flags = audio_prompt_type_sources_def.get("custom_flags", {})
+                if isinstance(custom_flags, dict):
+                    for flag, label in custom_flags.items():
+                        flag = str(flag or "")
+                        if len(flag) == 1 and flag in "0123456789" and isinstance(label, str) and len(label) > 0:
+                            map_audio_prompt[flag] = label
             video_other_prompts =  [ v for s,v in map_image_prompt.items() if all_letters(video_image_prompt_type,s)] \
                                  + [ v for s,v in map_video_prompt.items() if check(video_video_prompt_type,s)] \
                                  + [ v for s,v in map_audio_prompt.items() if all_letters(video_audio_prompt_type,s)] 
             any_mask = "A" in video_video_prompt_type and not "U" in video_video_prompt_type            
-            video_model_type =  configs.get("model_type", "t2v")
-            model_family = get_model_family(video_model_type)
-            model_def = get_model_def(video_model_type)
             multiple_submodels = model_def.get("multiple_submodels", False)
             video_other_prompts = ", ".join(video_other_prompts)
             if is_audio:
@@ -5793,7 +5801,7 @@ def truncate_audio(generated_audio, trim_video_frames_beginning, trim_video_fram
     end = len(generated_audio) - int(trim_video_frames_end * samples_per_frame)
     return generated_audio[start:end if end > 0 else None]
 
-def slice_audio_window(audio_path, start_frame, num_frames, fps, output_dir, suffix=""):
+def slice_audio_window(audio_path, start_frame, num_frames, fps, output_dir, suffix="", pad=True):
     import soundfile as sf
     import numpy as np
 
@@ -5806,8 +5814,9 @@ def slice_audio_window(audio_path, start_frame, num_frames, fps, output_dir, suf
         total_frames = len(audio_file)
         start_sample = int(round(start_sec * sample_rate))
         pad_start = 0
-        if start_sample < 0:
+        if start_sample < 0 and pad:
             pad_start = -start_sample
+        if start_sample < 0:
             start_sample = 0
         frames_to_read = int(round(duration_sec * sample_rate))
         if start_sample > total_frames:
@@ -5816,12 +5825,13 @@ def slice_audio_window(audio_path, start_frame, num_frames, fps, output_dir, suf
             audio_file.seek(min(start_sample, total_frames))
             data = audio_file.read(frames_to_read, dtype="float32", always_2d=True)
 
-    if pad_start > 0:
-        data = np.concatenate([np.zeros((pad_start, channels), dtype=np.float32), data], axis=0)
-    target_frames = pad_start + frames_to_read
-    if data.shape[0] < target_frames:
-        pad_end = target_frames - data.shape[0]
-        data = np.concatenate([data, np.zeros((pad_end, channels), dtype=np.float32)], axis=0)
+    if pad:
+        if pad_start > 0:
+            data = np.concatenate([np.zeros((pad_start, channels), dtype=np.float32), data], axis=0)
+        target_frames = pad_start + frames_to_read
+        if data.shape[0] < target_frames:
+            pad_end = target_frames - data.shape[0]
+            data = np.concatenate([data, np.zeros((pad_end, channels), dtype=np.float32)], axis=0)
     if data.ndim == 2:
         data = data.T
     return data, sample_rate
@@ -6414,7 +6424,11 @@ def generate_video(
 
             output_new_audio_filepath = original_audio_guide
 
-        current_video_length = min(int(fps * duration //latent_size) * latent_size + latent_size + 1, current_video_length)
+        if "F" in audio_prompt_type:
+            full_audio_guide_waveform, full_audio_guide_sample_rate = slice_audio_window(audio_guide, 0, max_source_video_frames, fps, save_path, suffix=f"_full", pad=False)
+        else:
+            full_audio_guide_waveform, full_audio_guide_sample_rate = None, 0
+            current_video_length = min(int(fps * duration //latent_size) * latent_size + latent_size + 1, current_video_length)
         if fantasy:
             from models.wan.fantasytalking.infer import parse_audio
             # audio_proj_split_full, audio_context_lens_full = parse_audio(audio_guide, num_frames= max_source_video_frames, fps= fps,  padded_frames_for_embeddings= (reuse_frames if reset_control_aligment else 0), device= processing_device  )
@@ -6581,7 +6595,9 @@ def generate_video(
             aligned_guide_start_frame = guide_start_frame - alignment_shift
             aligned_guide_end_frame = guide_end_frame - alignment_shift
             aligned_window_start_frame = window_start_frame - alignment_shift  
-            if audio_guide is not None and model_def.get("audio_guide_window_slicing", False):
+            if full_audio_guide_waveform is not None:
+                input_waveform, input_waveform_sample_rate = full_audio_guide_waveform, full_audio_guide_sample_rate
+            elif audio_guide is not None and model_def.get("audio_guide_window_slicing", False):
                 audio_start_frame = aligned_window_start_frame
                 if reset_control_aligment:
                     audio_start_frame += source_video_overlap_frames_count
@@ -7004,7 +7020,7 @@ def generate_video(
                     generated_audio = samples.get("audio", generated_audio)
                     overridden_inputs = samples.get("overridden_inputs", None)
                     if generated_audio is not None:
-                        if model_def.get("output_audio_is_input_audio", False) and output_new_audio_filepath is not None:  
+                        if model_def.get("output_audio_is_input_audio", False) and output_new_audio_filepath is not None and "O" not in audio_prompt_type:  
                             generated_audio = None
                         else:
                             output_new_audio_filepath = None
@@ -9224,10 +9240,14 @@ def refresh_normalize_audio_volumes(state, audio_prompt_type, normalize_audio_vo
     return audio_prompt_type
 
 def refresh_audio_prompt_type_sources(state, audio_prompt_type, audio_prompt_type_sources):
-    audio_prompt_type = del_in_sequence(audio_prompt_type, "XCPABK")
-    audio_prompt_type = add_to_sequence(audio_prompt_type, audio_prompt_type_sources)
     model_type = get_state_model_type(state)
     model_def = get_model_def(model_type)
+    letters_filter=  "XCPABOKF"
+    audio_prompt_type_sources_def = model_def.get("audio_prompt_type_sources", None)
+    if audio_prompt_type_sources_def is not None:
+        letters_filter = audio_prompt_type_sources_def.get("letters_filter", letters_filter)
+    audio_prompt_type = del_in_sequence(audio_prompt_type, letters_filter)
+    audio_prompt_type = add_to_sequence(audio_prompt_type, audio_prompt_type_sources)
     audio_only = model_def.get("audio_only", False) if model_def is not None else False
     speakers_visible = ("B" in audio_prompt_type or "X" in audio_prompt_type) and not audio_only
     remove_background_visible = any_letters(audio_prompt_type, "ABXK")
@@ -10089,7 +10109,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         guide_custom_choices_value = get_default_value(video_prompt_type_video_guide_alt_choices, filter_letters(video_prompt_type_value, guide_custom_choices["letters_filter"]), guide_custom_choices.get("default", "") )
                         video_prompt_type_video_guide_alt = gr.Dropdown(
                             choices= video_prompt_type_video_guide_alt_choices,
-                            # value=filter_letters(video_prompt_type_value, guide_custom_choices["letters_filter"], guide_custom_choices.get("default", "") ),
                             value=guide_custom_choices_value,
                             visible = dropdown_selectable and guide_custom_choices.get("visible", True),
                             label= video_prompt_type_video_guide_alt_label, show_label= guide_custom_choices.get("show_label", True), scale = guide_custom_choices.get("scale", 1),
@@ -10272,11 +10291,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     "K": "Control Video Audio Track",
                 }
                 if not isinstance(audio_prompt_type_sources_def, dict):
-                    has_multi_letter = "B" in audio_prompt_type_value or "X" in audio_prompt_type_value
-                    if not any_single_speaker and "A" in audio_prompt_type_value and not has_multi_letter:
-                        audio_prompt_type_value = del_in_sequence(audio_prompt_type_value, "XCPABK")
-                    if not any_multi_speakers:
-                        audio_prompt_type_value = del_in_sequence(audio_prompt_type_value, "XCPB")
                     selection = [""]
                     if any_single_speaker:
                         selection.append("A")
@@ -10293,12 +10307,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     audio_prompt_type_sources_choices.append((label, choice))
                 if len(audio_prompt_type_sources_choices) == 0:
                     audio_prompt_type_sources_choices = [(audio_prompt_type_sources_labels_all[""], "")]
-                letters_filter = audio_prompt_type_sources_def.get("letters_filter", "XCPABK")
+                letters_filter = audio_prompt_type_sources_def.get("letters_filter", "XCPABOKF")
                 default_choice = audio_prompt_type_sources_def.get("default", "")
                 audio_prompt_type_sources_value = filter_letters(audio_prompt_type_value, letters_filter, default_choice)
                 audio_prompt_type_sources_value = get_default_value(audio_prompt_type_sources_choices, audio_prompt_type_sources_value, default_choice)
-                audio_prompt_type_value = del_in_sequence(audio_prompt_type_value, "XCPABK")
-                audio_prompt_type_value = add_to_sequence(audio_prompt_type_value, audio_prompt_type_sources_value)
                 sources_visible = model_def.get("audio_prompt_choices") is not None and not image_outputs and audio_prompt_type_sources_def.get("visible", True)
                 audio_prompt_type_sources = gr.Dropdown(
                     audio_prompt_type_sources_choices,
@@ -10315,7 +10327,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             with gr.Row(visible = any_audio_prompt and any_letters(audio_prompt_type_value,"AB") and not image_outputs) as audio_guide_row:
                 any_audio_guide = any_audio_prompt and not image_outputs
-                audio_guide = gr.Audio(value= ui_defaults.get("audio_guide", None), type="filepath", label= model_def.get("audio_guide_label","Voice to follow"), show_download_button= True, visible= any_audio_prompt and "A" in audio_prompt_type_value )
+                audio_guide = gr.Audio(value= ui_defaults.get("audio_guide", None), type="filepath", label= model_def.get("audio_guide_label","Voice to follow"), show_download_button= True, visible= any_audio_prompt and any_letters(audio_prompt_type_value, "A") )
                 audio_guide2 = gr.Audio(value= ui_defaults.get("audio_guide2", None), type="filepath", label=model_def.get("audio_guide2_label","Voice to follow #2"), show_download_button= True, visible= any_audio_prompt and "B" in audio_prompt_type_value )
             custom_guide_def = model_def.get("custom_guide", None)
             any_custom_guide= custom_guide_def is not None
@@ -11799,7 +11811,6 @@ def create_ui():
     with open(css_path, "r", encoding="utf-8") as f:
         css = f.read()
     css += "\n" + assistant_chat.get_css()
-
     UI_theme = server_config.get("UI_theme", "default")
     UI_theme  = args.theme if len(args.theme) > 0 else UI_theme
     if UI_theme == "gradio":

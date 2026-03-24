@@ -60,6 +60,7 @@ Create a high quality image portrait that you think represents you best in your 
 *Deepy* reuses the *Qwen3VL Abliterated* checkpoints and it is highly recommended to install the *GGUF kernels* (check docs/INSTALLATION.md) for low VRAM / fast inference. You can customize Deepy to use the settings of your choice when generating a video, image, ... (please check docs/DEEPY.Md)
 
 *Go the Config > Prompt Enhancer / Deep tab to enable Deepy (you must first choose a Qwen3.5VL Prompt Enhancer)*
+
 **Important**: in order to save Deepy from learning all the specificties of each model to generate image, videos or audio, Deepy uses *Predefined Settings Templates* for its six main tools (*Generate Video*, *Generate Image*, ...). You can change the templates used in a session or even add your own settings. Just have a look at the doc.
 
 ### March 17th 2026: WanGP v10.9875, Prompt Enhancer has just Been Abliterated

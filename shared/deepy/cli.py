@@ -10,6 +10,7 @@ import traceback
 from dataclasses import dataclass, field
 from threading import Event, Thread
 from typing import Any, Callable
+import ctypes
 
 try:
     import msvcrt
@@ -33,6 +34,12 @@ from shared.utils.utils import get_video_info
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
 _VIDEO_EXTENSIONS = {".mp4", ".mkv"}
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".flac", ".m4a", ".ogg", ".wma"}
+_USER32 = getattr(ctypes, "windll", None)
+_USER32 = None if _USER32 is None else getattr(_USER32, "user32", None)
+_VK_CONTROL = 0x11
+_VK_LCONTROL = 0xA2
+_VK_RCONTROL = 0xA3
+_VK_S = 0x53
 _DEEPY_LOGO = (
     "    ____                       ",
     "   / __ \\___  ___  ____  __  __",
@@ -53,6 +60,16 @@ _TOOL_ALIASES = {
     "video": "gen_video",
     "video_gen": "gen_video",
     "generate_video": "gen_video",
+    "gen_video_with_speech": "gen_video_with_speech",
+    "video_with_speech": "gen_video_with_speech",
+    "talking_video": "gen_video_with_speech",
+    "speech_video": "gen_video_with_speech",
+    "gen_speech_from_description": "gen_speech_from_description",
+    "speech_from_description": "gen_speech_from_description",
+    "voice_description": "gen_speech_from_description",
+    "gen_speech_from_sample": "gen_speech_from_sample",
+    "speech_from_sample": "gen_speech_from_sample",
+    "voice_clone": "gen_speech_from_sample",
 }
 
 
@@ -94,7 +111,7 @@ class DeepyCliDeps:
     get_gen_info: Callable[[dict[str, Any]], dict[str, Any]]
     get_settings_from_file: Callable[[dict[str, Any], str, bool, bool, bool], tuple[Any, bool, bool]]
     load_queue_action: Callable[[Any, dict[str, Any], Any], Any]
-    validate_task: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any] | None]
+    validate_task: Callable[[dict[str, Any], dict[str, Any]], tuple[dict[str, Any] | None, str]]
     generate_video: Callable[..., Any]
     default_model_type: str
     callbacks: DeepyCliCallbacks = field(default_factory=DeepyCliCallbacks)
@@ -533,10 +550,29 @@ class DeepyCliSession:
             self._abort_generation(client_id)
         return True
 
+    def _ctrl_s_pressed(self) -> bool:
+        if _USER32 is None:
+            return False
+        try:
+            ctrl_down = any(
+                bool(_USER32.GetAsyncKeyState(vk_code) & 0x8000)
+                for vk_code in (_VK_CONTROL, _VK_LCONTROL, _VK_RCONTROL)
+            )
+            return ctrl_down and bool(_USER32.GetAsyncKeyState(_VK_S) & 0x8000)
+        except Exception:
+            return False
+
     def _monitor_turn_shortcuts(self, stop_event: Event) -> None:
         if not self._interactive or msvcrt is None:
             return
+        ctrl_s_active = False
         while not stop_event.is_set():
+            hotkey_down = self._ctrl_s_pressed()
+            if hotkey_down and not ctrl_s_active:
+                ctrl_s_active = True
+                self._request_stop_current_turn()
+            elif not hotkey_down:
+                ctrl_s_active = False
             try:
                 if not msvcrt.kbhit():
                     time.sleep(0.05)
@@ -618,6 +654,31 @@ class DeepyCliSession:
             reasoning_text = assistant_chat.get_message_reasoning_content(self._session, message_id).strip()
             self._print_assistant_delta(message_id, reasoning_text, field="reasoning", italic=True, show_prefix=False)
 
+    def _iter_tool_blocks(self, record: dict[str, Any]) -> list[dict[str, Any]]:
+        blocks = record.get("blocks", None)
+        if isinstance(blocks, list):
+            return [block for block in blocks if isinstance(block, dict) and str(block.get("type", "")).strip().lower() == "tool"]
+        legacy_tools = record.get("tools", None)
+        if isinstance(legacy_tools, list):
+            return [dict(block or {}, type="tool") for block in legacy_tools if isinstance(block, dict)]
+        return []
+
+    def _print_tool_outputs(self, record: dict[str, Any]) -> bool:
+        printed_any = False
+        for block in self._iter_tool_blocks(record):
+            result = block.get("result", None)
+            if not isinstance(result, dict):
+                continue
+            output_file = str(result.get("output_file", "") or "").strip()
+            if len(output_file) == 0:
+                continue
+            tool_label = str(block.get("label", "") or block.get("name", "") or "Tool").strip()
+            media_id = str(result.get("media_id", "") or "").strip()
+            prefix = f"{tool_label} -> {media_id}" if len(media_id) > 0 else tool_label
+            self._print(f"Deepy> {prefix}: {os.path.abspath(output_file)}")
+            printed_any = True
+        return printed_any
+
     def _consume_chat_payload(self, payload: str) -> None:
         payload_text = str(payload or "").strip()
         if len(payload_text) == 0:
@@ -654,9 +715,9 @@ class DeepyCliSession:
 
     def _run_loaded_queue(self, queue: list[dict[str, Any]]) -> tuple[bool, str]:
         for task in list(queue or []):
-            validated_params = self._deps.validate_task(task, self._state)
+            validated_params, validation_error = self._deps.validate_task(task, self._state)
             if validated_params is None:
-                return False, "Task failed validation."
+                return False, validation_error or "Task failed validation."
             params = dict(validated_params or {})
             task_stream = AsyncStream()
             task_error = ""
@@ -787,6 +848,8 @@ class DeepyCliSession:
                     self._print()
             if self._print_assistant_delta(message_id, text, field="content", italic=False):
                 printed_any = True
+            if self._print_tool_outputs(record):
+                printed_any = True
         if not printed_any:
             self._print("Deepy> (no final response)")
 
@@ -828,9 +891,13 @@ class DeepyCliSession:
             f"Template properties: {'on' if settings['use_template_properties'] else 'off'}",
             f"Default size: {settings['width']}x{settings['height']}",
             f"Video frames: {settings['num_frames']}",
+            f"Seed: {settings['seed']}",
             f"gen_image template: {self._format_template_value(settings['image_generator_variant'])}",
             f"edit_image template: {self._format_template_value(settings['image_editor_variant'])}",
             f"gen_video template: {self._format_template_value(settings['video_generator_variant'])}",
+            f"gen_video_with_speech template: {self._format_template_value(settings['video_with_speech_variant'])}",
+            f"gen_speech_from_description template: {self._format_template_value(settings['speech_from_description_variant'])}",
+            f"gen_speech_from_sample template: {self._format_template_value(settings['speech_from_sample_variant'])}",
         ]
 
     def _print_tool_settings(self) -> None:
@@ -948,7 +1015,8 @@ class DeepyCliSession:
             self._print("  /settings       Show current CLI generation settings")
             self._print("  /size [WxH]     Show or set default generation size and disable template properties")
             self._print("  /frames [count] Show or set default gen_video frame count and disable template properties")
-            self._print("  /template <tool> <variant-or-json-path>  Set the preset for gen_image, edit_image, or gen_video")
+            self._print("  /seed [value]   Show or set default generation seed and disable template properties")
+            self._print("  /template <tool> <variant>  Set the preset for any Deepy generation tool")
             self._print("  /templates [tool]  List available preset variants")
             self._print("  /template-props [on|off]  Show or toggle template resolution/frame properties")
             self._print("  /reset          Clear the Deepy conversation but keep media")
@@ -1054,23 +1122,48 @@ class DeepyCliSession:
             else:
                 self._print(f"Default gen_video frame count set to {settings['num_frames']}. Template properties disabled.")
             return True
+        if command == "/seed":
+            if len(argument) == 0:
+                settings = self._get_tool_ui_settings()
+                self._print(f"Seed: {settings['seed']} (template properties {'on' if settings['use_template_properties'] else 'off'})")
+                return True
+            try:
+                seed = int(argument)
+            except Exception:
+                self._print("Use /seed <value>. Use -1 for random.")
+                return True
+            try:
+                settings = self._update_tool_ui_settings(seed=seed, use_template_properties=False)
+            except Exception as exc:
+                self._print(f"[ERROR] {exc}")
+            else:
+                self._print(f"Default seed set to {settings['seed']}. Template properties disabled.")
+            return True
         if command in {"/template", "/preset"}:
             tool_name, _, tool_value = argument.partition(" ")
             resolved_tool = self._resolve_tool_name(tool_name)
             if resolved_tool is None or len(tool_value.strip()) == 0:
-                self._print("Use /template <gen_image|edit_image|gen_video> <variant-or-json-path>.")
+                self._print("Use /template <gen_image|edit_image|gen_video|gen_video_with_speech|gen_speech_from_description|gen_speech_from_sample> <variant>.")
                 return True
             try:
-                deepy_tool_settings.refresh_tool_presets()
                 if resolved_tool == "gen_image":
                     settings = self._update_tool_ui_settings(image_generator_variant=tool_value.strip())
                     value = settings["image_generator_variant"]
                 elif resolved_tool == "edit_image":
                     settings = self._update_tool_ui_settings(image_editor_variant=tool_value.strip())
                     value = settings["image_editor_variant"]
-                else:
+                elif resolved_tool == "gen_video":
                     settings = self._update_tool_ui_settings(video_generator_variant=tool_value.strip())
                     value = settings["video_generator_variant"]
+                elif resolved_tool == "gen_video_with_speech":
+                    settings = self._update_tool_ui_settings(video_with_speech_variant=tool_value.strip())
+                    value = settings["video_with_speech_variant"]
+                elif resolved_tool == "gen_speech_from_description":
+                    settings = self._update_tool_ui_settings(speech_from_description_variant=tool_value.strip())
+                    value = settings["speech_from_description_variant"]
+                else:
+                    settings = self._update_tool_ui_settings(speech_from_sample_variant=tool_value.strip())
+                    value = settings["speech_from_sample_variant"]
             except Exception as exc:
                 self._print(f"[ERROR] {exc}")
             else:
@@ -1078,14 +1171,21 @@ class DeepyCliSession:
             return True
         if command == "/templates":
             if len(argument) == 0:
-                for tool_name in ("gen_image", "edit_image", "gen_video"):
+                for tool_name in (
+                    "gen_image",
+                    "edit_image",
+                    "gen_video",
+                    "gen_video_with_speech",
+                    "gen_speech_from_description",
+                    "gen_speech_from_sample",
+                ):
                     variants = deepy_tool_settings.list_tool_variants(tool_name)
                     suffix = ", ".join(variants) if variants else "(none)"
                     self._print(f"{tool_name}: {suffix}")
                 return True
             resolved_tool = self._resolve_tool_name(argument)
             if resolved_tool is None:
-                self._print("Use /templates [gen_image|edit_image|gen_video].")
+                self._print("Use /templates [gen_image|edit_image|gen_video|gen_video_with_speech|gen_speech_from_description|gen_speech_from_sample].")
                 return True
             variants = deepy_tool_settings.list_tool_variants(resolved_tool)
             self._print(f"{resolved_tool}: {', '.join(variants) if variants else '(none)'}")
@@ -1136,7 +1236,7 @@ class DeepyCliSession:
             self._print("[Deepy] Prompt enhancer and vLLM are ready." if warmed_vllm else "[Deepy] Prompt enhancer is ready.")
         self._print("Deepy CLI session. Use /help for commands.")
         if self._interactive and PromptSession is not None:
-            self._print("Multiline input: Enter sends, Ctrl+Enter or Alt+Enter inserts a newline, Ctrl+J remains available as fallback, Ctrl+S stops the active turn.")
+            self._print("Multiline input: Enter sends, Ctrl+Enter or Alt+Enter inserts a newline, Ctrl+S stops the active turn.")
         while True:
             try:
                 line = self._read_line()

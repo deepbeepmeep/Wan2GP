@@ -9,6 +9,7 @@ When the user asks for the selected frame or current frame from a selected video
 If a selected-media query and an older semantic media lookup point to different items, do not silently choose the older semantic match. Ask a short clarification question unless the user explicitly named an internal media id.
 Use Inspect Media when the user asks what is visible in a previously generated image or video. For video, pass `frame_no` if the user wants a specific moment; otherwise Inspect Media uses the first frame.
 Tool routing:
+- Create Color Frame is for a solid-color still image at an exact width and height, for example a black frame, white card, or colored transition plate.
 - Generate Video can use a start image and an end image for transitions between two images.
 - Generate Video With Speech is for speaking or lip-synced video from a still image and a speech audio clip.
 - Edit Image is for modifying a previously generated image; use a concise instruction prompt.

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from PIL import Image
+from PIL import Image, ImageColor
 
 from shared.utils.audio_video import extract_audio_tracks
 from shared.utils.utils import get_video_frame, get_video_info
@@ -302,6 +302,7 @@ class AssistantSessionState:
     rendered_token_ids: list[int] = field(default_factory=list)
     rendered_messages_len: int = 0
     runtime_snapshot: dict[str, Any] | None = None
+    discard_runtime_snapshot_on_release: bool = False
     media_registry: list[dict[str, Any]] = field(default_factory=list)
     media_registry_counter: int = 0
     chat_html: str = ""
@@ -357,6 +358,7 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.rendered_token_ids.clear()
     session.rendered_messages_len = 0
     session.runtime_snapshot = None
+    session.discard_runtime_snapshot_on_release = False
     session.media_registry.clear()
     session.media_registry_counter = 0
     session.chat_html = ""
@@ -674,6 +676,7 @@ class tools:
         if ui_settings["use_template_properties"]:
             return task
         task["resolution"] = f"{ui_settings['width']}x{ui_settings['height']}"
+        task["seed"] = int(ui_settings["seed"])
         if include_num_frames:
             task["video_length"] = int(ui_settings["num_frames"])
         return task
@@ -866,12 +869,12 @@ class tools:
                 return resolved
         return os.path.abspath(os.path.normpath(file_path))
 
-    def _record_direct_media(self, output_path: str, settings: dict[str, Any], *, is_image: bool, audio_only: bool, label: str | None = None) -> dict[str, Any] | None:
+    def _record_direct_media(self, output_path: str, settings: dict[str, Any], *, is_image: bool, audio_only: bool, label: str | None = None, persist_metadata: bool = True) -> dict[str, Any] | None:
         if not os.path.isfile(output_path):
             raise RuntimeError(f"Output file was not created: {output_path}")
         if not callable(self.record_file_metadata):
             raise RuntimeError("WanGP direct media recording is not available.")
-        self.record_file_metadata(output_path, settings, is_image, audio_only, self.gen)
+        self.record_file_metadata(output_path, settings if persist_metadata else None, is_image, audio_only, self.gen)
         self.send_cmd("refresh_gallery", {"path": output_path})
         return self._register_tool_media(output_path, settings, label=label)
 
@@ -970,6 +973,21 @@ class tools:
         end_time = time.time()
         settings["creation_date"] = datetime.fromtimestamp(end_time).isoformat(timespec="seconds")
         settings["creation_timestamp"] = int(end_time)
+        for key, value in updates.items():
+            if value is not None:
+                settings[key] = value
+        return settings
+
+    def _build_direct_image_settings(self, comments: str, width: int, height: int, **updates: Any) -> dict[str, Any]:
+        end_time = time.time()
+        settings = {
+            "client_id": _next_ai_client_id(),
+            "comments": str(comments or "").strip(),
+            "creation_date": datetime.fromtimestamp(end_time).isoformat(timespec="seconds"),
+            "creation_timestamp": int(end_time),
+            "image_mode": 1,
+            "resolution": f"{int(width)}x{int(height)}",
+        }
         for key, value in updates.items():
             if value is not None:
                 settings[key] = value
@@ -1410,6 +1428,72 @@ class tools:
         if len(template_file) > 0:
             result["template_file"] = template_file
         result["source_media_id"] = media_record.get("media_id", "")
+        return result
+
+    @assistant_tool(
+        display_name="Create Color Frame",
+        description="Create a solid-color image with the requested width and height, rounded to the nearest multiple of 16, and add it to WanGP galleries. Use this for blank frames, color cards, or transition plates.",
+        parameters={
+            "width": {
+                "type": "integer",
+                "description": "Output image width in pixels.",
+            },
+            "height": {
+                "type": "integer",
+                "description": "Output image height in pixels.",
+            },
+            "color": {
+                "type": "string",
+                "description": "Optional fill color. Accepts common names like black, white, red, or hex values like #000000.",
+                "required": False,
+            },
+        },
+        pause_runtime=False,
+    )
+    def create_color_frame(self, width: int, height: int, color: str = "black") -> dict[str, Any]:
+        try:
+            width = int(width)
+            height = int(height)
+        except Exception:
+            return {"status": "error", "width": width, "height": height, "color": str(color or "").strip() or "black", "output_file": "", "error": "width and height must be integers."}
+        if width <= 0 or height <= 0:
+            return {"status": "error", "width": width, "height": height, "color": str(color or "").strip() or "black", "output_file": "", "error": "width and height must be >= 1."}
+        width = max(16, int(round(width / 16.0) * 16))
+        height = max(16, int(round(height / 16.0) * 16))
+        resolved_color = str(color or "black").strip() or "black"
+        try:
+            rgb_color = ImageColor.getrgb(resolved_color)
+        except Exception:
+            return {"status": "error", "width": width, "height": height, "color": resolved_color, "output_file": "", "error": "color must be a valid color name or hex value."}
+        if len(rgb_color) == 4:
+            rgb_color = tuple(rgb_color[:3])
+        safe_color_name = re.sub(r"[^a-z0-9]+", "_", resolved_color.lower()).strip("_") or "color"
+        output_name = f"color_{safe_color_name}_{width}x{height}.png"
+        self._set_status("Creating color frame...", kind="tool")
+        self._update_tool_progress("running", "Creating", {"status": "running", "width": width, "height": height, "color": resolved_color})
+        output_path = self._resolve_direct_output_path(output_name, True, False)
+        try:
+            image = Image.new("RGB", (width, height), rgb_color)
+            image.save(output_path)
+        except Exception as exc:
+            result = {"status": "error", "width": width, "height": height, "color": resolved_color, "output_file": "", "error": str(exc)}
+            self._update_tool_progress("error", "Error", result)
+            self._set_status(f"Color frame creation failed: {exc}", kind="error")
+            return result
+        settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}', width, height, prompt=f"Solid {resolved_color} image", seed=-1)
+        media_record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label="Color frame", persist_metadata=False)
+        result = {
+            "status": "done",
+            "media_id": "" if media_record is None else media_record.get("media_id", ""),
+            "width": width,
+            "height": height,
+            "resolution": f"{width}x{height}",
+            "color": resolved_color,
+            "output_file": output_path,
+            "error": "",
+        }
+        self._update_tool_progress("done", "Done", result)
+        self._set_status("Color frame created.", kind="tool")
         return result
 
     @assistant_tool(
@@ -2921,8 +3005,13 @@ class AssistantEngine:
 
     def _force_release_vram(self) -> None:
         self.runtime_hooks.clear_gpu_resident()
+        discard_runtime_snapshot = bool(self.session.discard_runtime_snapshot_on_release)
         try:
-            if self.runtime is not None and self.session.runtime_snapshot is None and len(self.session.rendered_token_ids) > 0:
+            if discard_runtime_snapshot:
+                self.session.runtime_snapshot = None
+                if len(self.session.rendered_token_ids) > 0:
+                    self.session.pending_replay_reason = "Deepy RAM unload discarded the cached runtime snapshot"
+            elif self.runtime is not None and self.session.runtime_snapshot is None and len(self.session.rendered_token_ids) > 0:
                 self.session.runtime_snapshot = self.runtime.snapshot_context()
         except Exception as exc:
             self._log(f"Resident snapshot before VRAM release failed: {exc}")
@@ -2932,6 +3021,7 @@ class AssistantEngine:
             self.runtime_hooks.unload_weights()
             self.runtime = None
             self.session.release_vram_callback = None
+            self.session.discard_runtime_snapshot_on_release = False
 
     def _pause_runtime(self, pause_reason: str = "idle") -> None:
         keep_loaded = self.vram_mode in (DEEPY_VRAM_MODE_ALWAYS_LOADED, DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST)

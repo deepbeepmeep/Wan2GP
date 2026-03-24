@@ -131,13 +131,21 @@ class DeepyController:
 
         return _release_preloaded_runtime
 
-    def release_vram(self, state, clear_session_state = False):
+    def release_vram(self, state, clear_session_state = False, discard_runtime_snapshot = False):
         session = get_or_create_assistant_session(state)
         release_callback = session.release_vram_callback
         session.release_vram_callback = None
+        session.discard_runtime_snapshot_on_release = bool(discard_runtime_snapshot)
         self._deps.clear_gpu_resident(state)
-        if callable(release_callback):
-            release_callback()
+        try:
+            if callable(release_callback):
+                release_callback()
+        finally:
+            if discard_runtime_snapshot:
+                session.runtime_snapshot = None
+                if len(session.rendered_token_ids) == 0:
+                    session.pending_replay_reason = ""
+            session.discard_runtime_snapshot_on_release = False
         if clear_session_state:
             clear_assistant_session(session)
 
@@ -171,7 +179,7 @@ class DeepyController:
                 force_release_on_acquire=True,
             )
 
-    def update_tool_ui_settings(self, state, *, auto_cancel_queue_tasks=None, use_template_properties=None, width=None, height=None, num_frames=None, video_with_speech_variant=None, image_generator_variant=None, image_editor_variant=None, video_generator_variant=None, speech_from_description_variant=None, speech_from_sample_variant=None, persist=False):
+    def update_tool_ui_settings(self, state, *, auto_cancel_queue_tasks=None, use_template_properties=None, width=None, height=None, num_frames=None, seed=None, video_with_speech_variant=None, image_generator_variant=None, image_editor_variant=None, video_generator_variant=None, speech_from_description_variant=None, speech_from_sample_variant=None, persist=False):
         session = get_or_create_assistant_session(state)
         normalized = set_assistant_tool_ui_settings(
             session,
@@ -180,6 +188,7 @@ class DeepyController:
             width=width,
             height=height,
             num_frames=num_frames,
+            seed=seed,
             video_with_speech_variant=video_with_speech_variant,
             image_generator_variant=image_generator_variant,
             image_editor_variant=image_editor_variant,

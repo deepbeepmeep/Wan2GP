@@ -324,7 +324,7 @@ def validate_edit(state):
     inputs = state.get("edit_state", None)
     if inputs is None: 
         return
-    override_inputs, prompts, image_start, image_end = validate_settings(state, model_type, True, inputs)
+    override_inputs, prompts, image_start, image_end, _validation_error = validate_settings(state, model_type, True, inputs)
     if override_inputs is None: 
         return
     inputs.update(override_inputs) 
@@ -464,7 +464,7 @@ def process_prompt_and_add_tasks(state, current_gallery_tab, model_choice):
         queue= gen.get("queue", [])
         return update_queue_data(queue), gr.update(open=True) if new_prompts_count > 1 else gr.update()
 
-    inputs, prompts, image_start, image_end = validate_settings(state, model_type, False, inputs)
+    inputs, prompts, image_start, image_end, _validation_error = validate_settings(state, model_type, False, inputs)
 
     if inputs is None:
         return ret()
@@ -676,9 +676,12 @@ def clear_custom_setting_slots(inputs):
     for idx in range(CUSTOM_SETTINGS_MAX):
         inputs.pop(get_custom_setting_key(idx), None)
 
-def validate_settings(state, model_type, single_prompt, inputs):
-    def ret():
-        return None, None, None, None
+def validate_settings(state, model_type, single_prompt, inputs, silent=False):
+    def err(error=""):
+        error = str(error or "")
+        if len(error) > 0 and not silent:
+            gr.Info(error)
+        return None, None, None, None, error
 
     model_def = get_model_def(model_type)
     model_handler = get_model_handler(model_type)
@@ -690,20 +693,15 @@ def validate_settings(state, model_type, single_prompt, inputs):
 
 
     if inputs.get("cfg_star_switch", 0) != 0 and inputs.get("apg_switch", 0) != 0:
-        gr.Info("Adaptive Progressive Guidance and Classifier Free Guidance Star can not be set at the same time")
-        return ret()
+        return err("Adaptive Progressive Guidance and Classifier Free Guidance Star can not be set at the same time")
     prompt = inputs["prompt"]
     prompt, errors = prompt_parser.process_template(prompt, keep_empty_lines=model_def.get("preserve_empty_prompt_lines", False))
     if len(errors) > 0:
-        gr.Info("Error processing prompt template: " + errors)
-        return ret()
+        return err("Error processing prompt template: " + errors)
     prompt = prompt.strip("\n").strip()
 
     if len(prompt) == 0:
-        gr.Info("Prompt cannot be empty.")
-        gen = get_gen_info(state)
-        queue = gen.get("queue", [])
-        return ret()
+        return err("Prompt cannot be empty.")
 
     multi_prompts_gen_type = inputs["multi_prompts_gen_type"]
     if single_prompt or multi_prompts_gen_type == 2:
@@ -713,8 +711,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
 
     parsed_custom_settings, custom_settings_error = collect_custom_settings_from_inputs(model_def, inputs, strict=True)
     if custom_settings_error is not None:
-        gr.Info(custom_settings_error)
-        return ret()
+        return err(custom_settings_error)
     inputs["custom_settings"] = parsed_custom_settings
     clear_custom_setting_slots(inputs)
 
@@ -722,8 +719,7 @@ def validate_settings(state, model_type, single_prompt, inputs):
         for one_prompt in prompts:
             error = model_handler.validate_generative_prompt(model_type, model_def, inputs, one_prompt)
             if error is not None and len(error) > 0:
-                gr.Info(error)
-                return ret()
+                return err(error)
 
     resolution = inputs["resolution"]
     width, height = resolution.split("x")
@@ -797,20 +793,17 @@ def validate_settings(state, model_type, single_prompt, inputs):
         max_p = model_def.get("self_refiner_max_plans", 1)
         _, error = normalize_self_refiner_plan(self_refiner_plan, max_plans=max_p)
         if len(error):
-            gr.Info(error)
-            return ret()
+            return err(error)
 
     if not model_def.get("motion_amplitude", False): motion_amplitude = 1.
     if "vae" in spatial_upsampling:
         if image_mode not in model_def.get("vae_upsampler", []):
-            gr.Info(f"VAE Spatial Upsampling is not available for {medium}")
-            return ret()
+            return err(f"VAE Spatial Upsampling is not available for {medium}")
 
     if len(activated_loras) > 0:
         error = check_loras_exist(model_type, activated_loras)
         if len(error) > 0:
-            gr.Info(error)
-            return ret()
+            return err(error)
     if  model_def.get("lock_guidance_phases", False):
         guidance_phases = model_def.get("guidance_max_phases", 0)
     else:
@@ -819,37 +812,31 @@ def validate_settings(state, model_type, single_prompt, inputs):
     if len(loras_multipliers) > 0:
         _, _, errors =  parse_loras_multipliers(loras_multipliers, len(activated_loras), num_inference_steps, nb_phases= guidance_phases)
         if len(errors) > 0: 
-            gr.Info(f"Error parsing Loras Multipliers: {errors}")
-            return ret()
+            return err(f"Error parsing Loras Multipliers: {errors}")
     if guidance_phases == 3:
         if switch_threshold < switch_threshold2:
-            gr.Info(f"Phase 1-2 Switch Noise Level ({switch_threshold}) should be Greater than Phase 2-3 Switch Noise Level ({switch_threshold2}). As a reminder, noise will gradually go down from 1000 to 0.")
-            return ret()
+            return err(f"Phase 1-2 Switch Noise Level ({switch_threshold}) should be Greater than Phase 2-3 Switch Noise Level ({switch_threshold2}). As a reminder, noise will gradually go down from 1000 to 0.")
     else:
         model_switch_phase = 1
         
     if not any_steps_skipping: skip_steps_cache_type = ""
     if not model_def.get("lock_inference_steps", False) and model_type in ["ltxv_13B"] and num_inference_steps < 20:
-        gr.Info("The minimum number of steps should be 20") 
-        return ret()
+        return err("The minimum number of steps should be 20")
     if skip_steps_cache_type == "mag":
         if num_inference_steps > 50:
-            gr.Info("Mag Cache maximum number of steps is 50")
-            return ret()
+            return err("Mag Cache maximum number of steps is 50")
         
     if image_mode > 0:
         audio_prompt_type = ""
 
     if "K" in audio_prompt_type and "V" not in video_prompt_type:
-        gr.Info("You must enable a Control Video to use the Control Video Audio Track as an audio prompt")
-        return ret()
+        return err("You must enable a Control Video to use the Control Video Audio Track as an audio prompt")
 
     if ("B" in audio_prompt_type or "X" in audio_prompt_type) and not model_def.get("one_speaker_only", False):
         from models.wan.multitalk.multitalk import parse_speakers_locations
         speakers_bboxes, error = parse_speakers_locations(speakers_locations)
         if len(error) > 0:
-            gr.Info(error)
-            return ret()
+            return err(error)
 
     if MMAudio_setting != 0 and get_mmaudio_settings(server_config)[0] and video_length <16: #should depend on the architecture
         gr.Info("MMAudio can generate an Audio track only if the Video is at least 1s long")
@@ -859,22 +846,18 @@ def validate_settings(state, model_type, single_prompt, inputs):
             for pos_str in positions:
                 if not pos_str in ["L", "l"] and len(pos_str)>0: 
                     if not is_integer(pos_str):
-                        gr.Info(f"Invalid Frame Position '{pos_str}'")
-                        return ret()
+                        return err(f"Invalid Frame Position '{pos_str}'")
                     pos = int(pos_str)
                     if pos <1 or pos > max_source_video_frames:
-                        gr.Info(f"Invalid Frame Position Value'{pos_str}'")
-                        return ret()
+                        return err(f"Invalid Frame Position Value'{pos_str}'")
     else:
         frames_positions = None
 
     if audio_source is not None and MMAudio_setting != 0:
-        gr.Info("MMAudio and Custom Audio Soundtrack can't not be used at the same time")
-        return ret()
+        return err("MMAudio and Custom Audio Soundtrack can't not be used at the same time")
     if len(filter_letters(image_prompt_type, "VLG")) > 0 and len(keep_frames_video_source) > 0:
         if not is_integer(keep_frames_video_source) or int(keep_frames_video_source) == 0:
-            gr.Info("The number of frames to keep must be a non null integer") 
-            return ret()
+            return err("The number of frames to keep must be a non null integer")
     else:
         keep_frames_video_source = ""
 
@@ -883,15 +866,13 @@ def validate_settings(state, model_type, single_prompt, inputs):
     custom_guide_def = model_def.get("custom_guide", None)
     if custom_guide_def is not None:
         if custom_guide is None and custom_guide_def.get("required", False):
-            gr.Info(f"You must provide a {custom_guide_def.get('label', 'Custom Guide')}")
-            return ret()
+            return err(f"You must provide a {custom_guide_def.get('label', 'Custom Guide')}")
     else:
         custom_guide = None
 
     if "V" in image_prompt_type:
         if video_source == None:
-            gr.Info("You must provide a Source Video file to continue")
-            return ret()
+            return err("You must provide a Source Video file to continue")
     else:
         video_source = None
 
@@ -900,16 +881,14 @@ def validate_settings(state, model_type, single_prompt, inputs):
 
     if "A" in audio_prompt_type:
         if audio_guide == None:
-            gr.Info("You must provide an Audio Source")
-            return ret()
+            return err("You must provide an Audio Source")
     else:
         audio_guide = None
 
 
     if "B" in audio_prompt_type:
         if audio_guide2 == None:
-            gr.Info("You must provide a second Audio Source")
-            return ret()
+            return err("You must provide a second Audio Source")
     else:
         audio_guide2 = None
     if not all_letters(audio_prompt_type, "AB"):
@@ -920,46 +899,37 @@ def validate_settings(state, model_type, single_prompt, inputs):
             gr.Info("To get good results with Multitalk and two people speaking, it is recommended to set a Reference Frame or a Control Video (potentially truncated) that contains the two people one on each side")
 
     if model_def.get("one_image_ref_needed", False):
-        if image_refs  == None :
-            gr.Info("You must provide an Image Reference") 
-            return ret()
+        if image_refs is None:
+            return err("You must provide an Image Reference")
         if len(image_refs) > 1:
-            gr.Info("Only one Image Reference (a person) is supported for the moment by this model") 
-            return ret()
+            return err("Only one Image Reference (a person) is supported for the moment by this model")
     if model_def.get("at_least_one_image_ref_needed", False):
-        if image_refs  == None :
-            gr.Info("You must provide at least one Image Reference") 
-            return ret()
+        if image_refs is None:
+            return err("You must provide at least one Image Reference")
         
     if "I" in video_prompt_type:
         if image_refs == None or len(image_refs) == 0:
-            gr.Info("You must provide at least one Reference Image")
-            return ret()
+            return err("You must provide at least one Reference Image")
         image_refs = clean_image_list(image_refs)
         if image_refs == None :
-            gr.Info("A Reference Image should be an Image") 
-            return ret()
+            return err("A Reference Image should be an Image")
     else:
         image_refs = None
 
     if "V" in video_prompt_type:
         if image_outputs:
             if image_guide is None:
-                gr.Info("You must provide a Control Image")
-                return ret()
+                return err("You must provide a Control Image")
         else:
             if video_guide is None:
-                gr.Info("You must provide a Control Video")
-                return ret()
+                return err("You must provide a Control Video")
         if "A" in video_prompt_type and not "U" in video_prompt_type:             
             if image_outputs:
                 if image_mask is None:
-                    gr.Info("You must provide a Image Mask")
-                    return ret()
+                    return err("You must provide a Image Mask")
             else:
                 if video_mask is None:
-                    gr.Info("You must provide a Video Mask")
-                    return ret()
+                    return err("You must provide a Video Mask")
         else:
             video_mask = None
             image_mask = None
@@ -978,12 +948,10 @@ def validate_settings(state, model_type, single_prompt, inputs):
         else: 
             masking_strength = 1.0
         if len(keep_frames_video_guide) > 0 and model_type in ["ltxv_13B"]:
-            gr.Info("Keep Frames for Control Video is not supported with LTX Video")
-            return ret()
+            return err("Keep Frames for Control Video is not supported with LTX Video")
         _, error = parse_keep_frames_video_guide(keep_frames_video_guide, video_length)
         if len(error) > 0:
-            gr.Info(f"Invalid Keep Frames property: {error}")
-            return ret()
+            return err(f"Invalid Keep Frames property: {error}")
     else:
         video_guide = None
         image_guide = None
@@ -999,10 +967,11 @@ def validate_settings(state, model_type, single_prompt, inputs):
     else:
         image_guide = None
         image_mask = None
-
-
-
+    image_prompt_types_allowed = model_def.get("image_prompt_types_allowed", "")
     if "S" in image_prompt_type:
+        if "S" not in image_prompt_types_allowed:
+            return err("This model doesn't accept a Start Image")
+    
         if model_def.get("black_frame", False) and len(image_start or [])==0:
             if "E" in image_prompt_type and len(image_end or []):
                 image_end = clean_image_list(image_end)        
@@ -1011,36 +980,32 @@ def validate_settings(state, model_type, single_prompt, inputs):
                 image_start = [Image.new("RGB", (width, height), (0, 0, 0, 255))] 
 
         if image_start == None or isinstance(image_start, list) and len(image_start) == 0:
-            gr.Info("You must provide a Start Image")
-            return ret()
+            return err("You must provide a Start Image")
         image_start = clean_image_list(image_start)        
         if image_start == None :
-            gr.Info("Start Image should be an Image") 
-            return ret()
+            return err("Start Image should be an Image")
         if  multi_prompts_gen_type in [1] and len(image_start) > 1:
-            gr.Info("Only one Start Image is supported if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is set") 
-            return ret()       
+            return err("Only one Start Image is supported if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is set")
     else:
         image_start = None
 
     if not end_frames_always_enabled(model_def) and not any_letters(image_prompt_type, "SVL"):
         image_prompt_type = image_prompt_type.replace("E", "")
     if "E" in image_prompt_type:
+        if "E" not in image_prompt_types_allowed:
+            return err("This model doesn't accept an End Image")
+    
         if image_end == None or isinstance(image_end, list) and len(image_end) == 0:
-            gr.Info("You must provide an End Image") 
-            return ret()
+            return err("You must provide an End Image")
         image_end = clean_image_list(image_end)        
         if image_end == None :
-            gr.Info("End Image should be an Image") 
-            return ret()
+            return err("End Image should be an Image")
         if (video_source is not None or "L" in image_prompt_type):
             if multi_prompts_gen_type in [0,2] and len(image_end)> 1:
-                gr.Info("If you want to Continue a Video, you can use Multiple End Images only if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is set")
-                return ret()        
+                return err("If you want to Continue a Video, you can use Multiple End Images only if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is set")        
         elif multi_prompts_gen_type in [0, 2]:
             if len(image_start or []) > 0 and len(image_start or []) != len(image_end or []):
-                gr.Info("The number of Start and End Images should be the same if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is not set")
-                return ret()    
+                return err("The number of Start and End Images should be the same if the option 'Each Line Will be used for a new Sliding Window of the same Video Generation' is not set")    
     else:        
         image_end = None
 
@@ -1048,34 +1013,26 @@ def validate_settings(state, model_type, single_prompt, inputs):
     if test_any_sliding_window(model_type) and image_mode == 0:
         if video_length > sliding_window_size:
             if test_class_t2v(model_type) and not "G" in video_prompt_type :
-                gr.Info(f"You have requested to Generate Sliding Windows with a Text to Video model. Unless you use the Video to Video feature this is useless as a t2v model doesn't see past frames and it will generate the same video in each new window.") 
-                return ret()
+                return err(f"You have requested to Generate Sliding Windows with a Text to Video model. Unless you use the Video to Video feature this is useless as a t2v model doesn't see past frames and it will generate the same video in each new window.")
             full_video_length = video_length if video_source is None else video_length +  sliding_window_overlap -1
             extra = "" if full_video_length == video_length else f" including {sliding_window_overlap} added for Video Continuation"
             no_windows = compute_sliding_window_no(full_video_length, sliding_window_size, sliding_window_discard_last_frames, sliding_window_overlap)
             gr.Info(f"The Number of Frames to generate ({video_length}{extra}) is greater than the Sliding Window Size ({sliding_window_size}), {no_windows} Windows will be generated")
     if "recam" in model_filename:
         if video_guide == None:
-            gr.Info("You must provide a Control Video")
-            return ret()
+            return err("You must provide a Control Video")
         computed_fps = get_computed_fps(force_fps, model_type , video_guide, video_source )
         frames = get_resampled_video(video_guide, 0, 81, computed_fps)
         if len(frames)<81:
-            gr.Info(f"Recammaster Control video should be at least 81 frames once the resampling at {computed_fps} fps has been done")
-            return ret()
+            return err(f"Recammaster Control video should be at least 81 frames once the resampling at {computed_fps} fps has been done")
 
     if "hunyuan_custom_custom_edit" in model_filename:
         if len(keep_frames_video_guide) > 0: 
-            gr.Info("Filtering Frames with this model is not supported")
-            return ret()
+            return err("Filtering Frames with this model is not supported")
 
     if multi_prompts_gen_type in [1] or single_prompt:
         if image_start != None and len(image_start) > 1:
-            if single_prompt:
-                gr.Info("Only one Start Image can be provided in Edit Mode") 
-            else:
-                gr.Info("Only one Start Image must be provided if multiple prompts are used for different windows") 
-            return ret()
+            return err("Only one Start Image can be provided in Edit Mode" if single_prompt else "Only one Start Image must be provided if multiple prompts are used for different windows")
 
         # if image_end != None and len(image_end) > 1:
         #     gr.Info("Only one End Image must be provided if multiple prompts are used for different windows") 
@@ -1115,9 +1072,8 @@ def validate_settings(state, model_type, single_prompt, inputs):
     if hasattr(model_handler, "validate_generative_settings"):
         error = model_handler.validate_generative_settings(model_type, model_def, inputs)
         if error is not None and len(error) > 0:
-            gr.Info(error)
-            return ret()
-    return inputs, prompts, image_start, image_end
+            return err(error)
+    return inputs, prompts, image_start, image_end, ""
 
 
 def get_preview_images(inputs):
@@ -6384,6 +6340,7 @@ def generate_video(
     audio_proj_full = None
     audio_scale = audio_scale if model_def.get("audio_scale_name") else None
     audio_context_lens = None
+    full_audio_guide_waveform, full_audio_guide_sample_rate = None, 0
     if audio_guide != None:
         from preprocessing.extract_vocals import get_vocals
         import librosa
@@ -6427,7 +6384,6 @@ def generate_video(
         if "F" in audio_prompt_type:
             full_audio_guide_waveform, full_audio_guide_sample_rate = slice_audio_window(audio_guide, 0, max_source_video_frames, fps, save_path, suffix=f"_full", pad=False)
         else:
-            full_audio_guide_waveform, full_audio_guide_sample_rate = None, 0
             current_video_length = min(int(fps * duration //latent_size) * latent_size + latent_size + 1, current_video_length)
         if fantasy:
             from models.wan.fantasytalking.infer import parse_audio
@@ -7430,17 +7386,12 @@ def process_tasks(state):
                 
                 try:
                     import inspect
-                    model_type = params.get('model_type')
-                    if model_type:
-                        default_settings = get_default_settings(model_type)
-                        expected_args = set(inspect.signature(generate_video).parameters.keys())
-                        for arg_name in expected_args:
-                            if arg_name not in params and arg_name in default_settings:
-                                params[arg_name] = default_settings[arg_name]
-                    else:
-                        expected_args = set(inspect.signature(generate_video).parameters.keys())
-                    
-                    filtered_params = {k: v for k, v in params.items() if k in expected_args}
+                    validated_params, validation_error = validate_task(task, state)
+                    if validated_params is None:
+                        send_cmd("error", validation_error or "Task failed validation.")
+                        return
+                    expected_args = set(inspect.signature(generate_video).parameters.keys())
+                    filtered_params = {k: v for k, v in validated_params.items() if k in expected_args}
                     filtered_params.setdefault("client_id", "")
                     plugin_data = task.pop('plugin_data', {})
                     success = generate_video(task, send_cmd, plugin_data=plugin_data,  **filtered_params)
@@ -7548,22 +7499,22 @@ def process_tasks(state):
 
 
 def validate_task(task, state):
-    """Validate a task's settings. Returns updated params dict or None if invalid."""
+    """Validate a task's settings. Returns (updated params dict or None, validation error)."""
     params = task.get('params', {})
     model_type = params.get('model_type')
     if not model_type:
         print("  [SKIP] No model_type specified")
-        return None
+        return None, "No model_type specified"
 
     inputs = params.copy()
     clean_settings(model_type, inputs)
 
     inputs.setdefault('mode', "")
-    override_inputs, _, _, _ = validate_settings(state, model_type, single_prompt=True, inputs=inputs)
+    override_inputs, _, _, _, validation_error = validate_settings(state, model_type, single_prompt=True, inputs=inputs, silent=True)
     if override_inputs is None:
-        return None
+        return None, validation_error or "Task failed validation."
     inputs.update(override_inputs)
-    return inputs
+    return inputs, ""
 
 
 def process_tasks_cli(queue, state):
@@ -7583,9 +7534,9 @@ def process_tasks_cli(queue, state):
         print(f"\n[Task {task_no}/{total_tasks}] {prompt_preview}...")
 
         # Validate task settings before processing
-        validated_params = validate_task(task, state)
+        validated_params, validation_error = validate_task(task, state)
         if validated_params is None:
-            print(f"  [SKIP] Task {task_no} failed validation")
+            print(f"  [SKIP] Task {task_no} failed validation: {validation_error or 'Task failed validation.'}")
             skipped += 1
             continue
 
@@ -8194,6 +8145,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     state = inputs.pop("state")
 
     plugin_data = inputs.pop("plugin_data", {})
+    if "lset_name" in inputs:
+        inputs["lset_name"] = get_lset_name(state, inputs["lset_name"])    
     if "loras_choices" in inputs:
         loras_choices = inputs.pop("loras_choices")
         inputs.pop("model_filename", None)
@@ -9894,6 +9847,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
 
     if len(launch_preset) == 0:
         launch_preset = ui_defaults.get("lset_name","")
+    launch_preset = get_lset_name(state_dict, launch_preset)
     if len(launch_prompt) == 0:
         launch_prompt = ui_defaults.get("prompt","")
     if len(launch_loras) == 0:
@@ -9910,7 +9864,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             with gr.Row(visible= True): #len(loras)>0) as presets_column:
                 lset_choices = compute_lset_choices(model_type, loras_presets) + [(get_new_preset_msg(advanced_ui), "")]
                 with gr.Column(scale=6):
-                    lset_name = gr.Dropdown(show_label=False, allow_custom_value= True, scale=5, filterable=True, choices= lset_choices, value=launch_preset)
+                    lset_name = gr.Dropdown(show_label=False, allow_custom_value= True, scale=6, filterable=True, choices= lset_choices, value=launch_preset)
                 with gr.Column(scale=1):
                     with gr.Row(height=17): 
                         apply_lset_btn = gr.Button("Apply", size="sm", min_width= 1)
@@ -12122,9 +12076,9 @@ if __name__ == "__main__":
                 length = task.get('params', {}).get('video_length', '?')
                 print(f"  Task {i}: model={model}, steps={steps}, frames={length}")
                 print(f"          prompt: {prompt}...")
-                validated = validate_task(task, state)
+                validated, validation_error = validate_task(task, state)
                 if validated is None:
-                    print(f"          [INVALID]")
+                    print(f"          [INVALID] {validation_error or 'Task failed validation.'}")
                 else:
                     print(f"          [OK]")
                     valid_count += 1

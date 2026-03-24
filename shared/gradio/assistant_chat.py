@@ -1104,6 +1104,429 @@ def get_css() -> str:
     cursor: default;
 }
 
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-grid {
+    position: relative;
+    gap: 12px;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-grid-row {
+    gap: 12px;
+    align-items: stretch;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-card {
+    min-width: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-card > .form {
+    min-width: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-row {
+    gap: 10px;
+    align-items: flex-end;
+    flex-wrap: nowrap;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-dropdown {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-dropdown > .form,
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-dropdown > .wrap {
+    min-width: 0 !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-actions {
+    flex: 0 0 auto !important;
+    gap: 4px;
+    width: 34px !important;
+    min-width: 34px !important;
+    max-width: 34px !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-actions > .form {
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-icon-btn {
+    width: 34px !important;
+    min-width: 34px !important;
+    max-width: 34px !important;
+    height: 34px;
+    min-height: 34px;
+    padding: 0 !important;
+    border: 1px solid rgba(17, 84, 118, 0.14);
+    border-radius: 12px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(236, 244, 249, 0.99) 100%);
+    color: #155574;
+    box-shadow: 0 10px 18px rgba(11, 44, 63, 0.08);
+    font-size: calc(0.88rem * var(--dock-font-scale));
+    line-height: 1;
+    font-weight: 700;
+    transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-icon-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 14px 24px rgba(11, 44, 63, 0.12);
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-icon-btn--danger {
+    color: #8b2d2d;
+    background: linear-gradient(180deg, rgba(255, 252, 252, 0.99) 0%, rgba(249, 239, 239, 0.99) 100%);
+    border-color: rgba(156, 62, 62, 0.16);
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-modal-wrap.hide {
+    display: none !important;
+    pointer-events: none !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-modal-wrap:not(.hide) {
+    position: absolute !important;
+    inset: 0;
+    z-index: 40;
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    margin: 0 !important;
+    padding: 12px !important;
+    border: 0 !important;
+    background: rgba(10, 38, 53, 0.18) !important;
+    backdrop-filter: blur(3px);
+    overflow: hidden !important;
+    box-sizing: border-box;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-modal-wrap > .form {
+    width: 100% !important;
+    height: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-modal-wrap > .styler {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: min(100%, 450px) !important;
+    max-width: 450px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+    flex: 0 1 auto !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-modal-card {
+    width: 100% !important;
+    max-width: 450px !important;
+    min-width: 0 !important;
+    flex: 0 1 auto !important;
+    padding: 0 !important;
+    gap: 0 !important;
+    border: 1px solid rgba(14, 71, 99, 0.18) !important;
+    border-radius: 22px !important;
+    background: #ffffff !important;
+    box-shadow: 0 28px 56px rgba(8, 33, 49, 0.2) !important;
+    overflow: hidden !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-modal-card > .form {
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-modal-card .html-container {
+    padding: 0 !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-modal-card .prose {
+    margin: 0 !important;
+    max-width: none !important;
+}
+
+.wangp-assistant-chat__template-modal-titlebar {
+    padding: 16px 18px 14px;
+    background: linear-gradient(180deg, rgba(16, 86, 121, 0.98) 0%, rgba(10, 59, 84, 0.98) 100%);
+    color: #f3fbff;
+}
+
+.wangp-assistant-chat__template-modal-kicker {
+    font-size: calc(0.66rem * var(--dock-font-scale));
+    font-weight: 800;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    opacity: 0.78;
+}
+
+.wangp-assistant-chat__template-modal-heading {
+    font-size: calc(1rem * var(--dock-font-scale));
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    color: #f3fbff !important;
+}
+
+.wangp-assistant-chat__template-modal-context {
+    margin: 16px 18px 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.wangp-assistant-chat__template-modal-context-label {
+    font-size: calc(0.7rem * var(--dock-font-scale));
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #5b7282;
+}
+
+.wangp-assistant-chat__template-modal-context-value {
+    margin-top: 5px;
+    color: #174a67;
+    font-size: calc(0.95rem * var(--dock-font-scale));
+    font-weight: 700;
+    word-break: break-word;
+}
+
+.wangp-assistant-chat__template-modal-message {
+    margin: 14px 18px 0;
+    padding: 0;
+    border-radius: 0;
+    font-size: calc(0.9rem * var(--dock-font-scale));
+    line-height: 1.5;
+    font-weight: 600;
+    background: transparent !important;
+}
+
+.wangp-assistant-chat__template-modal-message.is-info {
+    color: #164f70;
+}
+
+.wangp-assistant-chat__template-modal-message.is-warning {
+    color: #7a5415;
+}
+
+.wangp-assistant-chat__template-modal-message.is-error {
+    color: #b33434;
+}
+
+.wangp-assistant-chat__template-modal-actions {
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 18px;
+}
+
+.wangp-assistant-chat__template-modal-btn {
+    min-width: 92px;
+    height: 40px;
+    min-height: 40px;
+    border-radius: 14px;
+    border: 1px solid rgba(17, 84, 118, 0.14);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(237, 245, 250, 0.99) 100%);
+    color: #155574;
+    box-shadow: 0 10px 18px rgba(11, 44, 63, 0.08);
+    font-weight: 700;
+}
+
+.wangp-assistant-chat__template-modal-btn--primary {
+    color: #f4fbff;
+    border-color: rgba(10, 59, 84, 0.12);
+    background: linear-gradient(180deg, rgba(16, 86, 121, 0.98) 0%, rgba(10, 59, 84, 0.98) 100%);
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_toggle {
+    border-color: rgba(28, 104, 145, 0.28);
+    background: linear-gradient(180deg, rgba(13, 79, 113, 0.98) 0%, rgba(7, 50, 72, 0.98) 100%);
+    box-shadow: 0 18px 34px rgba(0, 0, 0, 0.34);
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_toggle .wangp-assistant-chat__toggle-text {
+    color: #f4fbff;
+}
+
+#assistant_chat_dock.is-dark.is-open #assistant_chat_toggle {
+    border-color: rgba(115, 120, 126, 0.6);
+    background: linear-gradient(180deg, rgba(92, 96, 102, 0.98) 0%, rgba(58, 61, 66, 0.98) 100%);
+}
+
+#assistant_chat_dock.is-dark.is-open #assistant_chat_toggle .wangp-assistant-chat__toggle-text {
+    color: #f4fbff;
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_settings_toggle {
+    border-color: rgba(28, 104, 145, 0.28);
+    background: linear-gradient(180deg, rgba(13, 79, 113, 0.98) 0%, rgba(7, 50, 72, 0.98) 100%);
+    box-shadow: 0 16px 28px rgba(0, 0, 0, 0.3);
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_settings_toggle .wangp-assistant-chat__settings-toggle-text {
+    color: #f4fbff;
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_panel.is-settings-open #assistant_chat_settings_toggle {
+    border-color: rgba(115, 120, 126, 0.6);
+    background: linear-gradient(180deg, rgba(92, 96, 102, 0.98) 0%, rgba(58, 61, 66, 0.98) 100%);
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_panel.is-settings-open #assistant_chat_settings_toggle .wangp-assistant-chat__settings-toggle-text {
+    color: #f4fbff;
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_panel,
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel {
+    border-color: rgba(92, 96, 102, 0.78);
+    background: #000000;
+    box-shadow: 0 30px 60px rgba(0, 0, 0, 0.46), inset 0 0 0 1px rgba(70, 73, 78, 0.42);
+    color: #eaf2f7;
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap {
+    border-color: rgba(112, 138, 156, 0.18);
+    background: linear-gradient(180deg, rgba(9, 9, 9, 0.98) 0%, rgba(20, 20, 20, 0.98) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap span {
+    color: #e6eef4;
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_request textarea,
+#assistant_chat_dock.is-dark #assistant_chat_request input {
+    color: #eef6fb !important;
+    caret-color: #eef6fb !important;
+    border-color: rgba(103, 132, 151, 0.24) !important;
+    background: linear-gradient(180deg, rgba(10, 10, 10, 0.96) 0%, rgba(19, 19, 19, 0.96) 100%) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 18px rgba(0, 0, 0, 0.22) !important;
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_request textarea::placeholder,
+#assistant_chat_dock.is-dark #assistant_chat_request input::placeholder {
+    color: #93a6b4 !important;
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_reset_button {
+    color: #e8f1f6;
+    border-color: rgba(103, 132, 151, 0.22);
+    background: linear-gradient(180deg, rgba(12, 12, 12, 0.98) 0%, rgba(22, 22, 22, 0.98) 100%);
+    box-shadow: 0 12px 22px rgba(0, 0, 0, 0.22);
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat {
+    --chat-surface: #000000;
+    --assistant-bg: linear-gradient(180deg, #0f4a69 0%, #082f45 100%);
+    --assistant-border: rgba(67, 114, 143, 0.34);
+    --assistant-text: #f2fbff;
+    --user-bg: linear-gradient(180deg, #12181d 0%, #090d10 100%);
+    --user-border: rgba(101, 127, 145, 0.2);
+    --user-text: #edf4f9;
+    --muted-text: #b3c1cb;
+    --soft-text: #98a9b5;
+    --tool-bg: rgba(17, 24, 30, 0.96);
+    --tool-border: rgba(103, 132, 151, 0.18);
+    --empty-border: rgba(103, 132, 151, 0.16);
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__empty strong,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body p,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body li,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body strong,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body em,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body blockquote,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body h1,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body h2,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body h3,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body h4 {
+    color: #edf4f9;
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__stats {
+    color: #9eb0bd;
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__message--user .wangp-assistant-chat__avatar {
+    color: #eef6fb;
+    background: linear-gradient(180deg, rgba(24, 31, 37, 0.99) 0%, rgba(10, 12, 14, 0.99) 100%);
+    border-color: rgba(103, 132, 151, 0.2);
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body code {
+    background: rgba(130, 162, 183, 0.12);
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__body pre {
+    color: #eaf2f7;
+    border-color: rgba(103, 132, 151, 0.16);
+    background: rgba(10, 14, 17, 0.96);
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel .wangp-assistant-chat__template-tool-icon-btn,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__template-modal-btn {
+    color: #ecf4f9;
+    border-color: rgba(103, 132, 151, 0.22);
+    background: linear-gradient(180deg, rgba(10, 10, 10, 0.99) 0%, rgba(21, 21, 21, 0.99) 100%);
+    box-shadow: 0 10px 18px rgba(0, 0, 0, 0.22);
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel .wangp-assistant-chat__template-tool-icon-btn--danger {
+    color: #ffb1b1;
+    border-color: rgba(173, 84, 84, 0.24);
+    background: linear-gradient(180deg, rgba(22, 10, 10, 0.99) 0%, rgba(32, 14, 14, 0.99) 100%);
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel .wangp-assistant-chat__template-modal-wrap:not(.hide) {
+    background: rgba(0, 0, 0, 0.52) !important;
+}
+
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel .wangp-assistant-chat__template-modal-card {
+    border-color: rgba(92, 96, 102, 0.82) !important;
+    background: #000000 !important;
+    box-shadow: 0 28px 56px rgba(0, 0, 0, 0.42), inset 0 0 0 1px rgba(70, 73, 78, 0.44) !important;
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__template-modal-context-label {
+    color: #9fb1be;
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__template-modal-context-value,
+#assistant_chat_dock.is-dark .wangp-assistant-chat__template-modal-message.is-info {
+    color: #ecf4f9;
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__template-modal-message.is-warning {
+    color: #f3d189;
+}
+
+#assistant_chat_dock.is-dark .wangp-assistant-chat__template-modal-message.is-error {
+    color: #ff9e9e;
+}
+
 @keyframes wangp-assistant-chat-pulse {
     0%, 80%, 100% { transform: scale(0.66); opacity: 0.46; }
     40% { transform: scale(1); opacity: 1; }
@@ -1228,6 +1651,41 @@ def get_css() -> str:
     #assistant_chat_panel.is-settings-open #assistant_chat_settings_panel {
         transform: translateY(0) scale(1);
     }
+
+    #assistant_chat_settings_panel .wangp-assistant-chat__template-tool-grid-row,
+    #assistant_chat_settings_panel .wangp-assistant-chat__template-tool-row {
+        flex-wrap: wrap;
+    }
+
+    #assistant_chat_settings_panel .wangp-assistant-chat__template-tool-actions {
+        width: 100%;
+        min-width: 0 !important;
+        max-width: none !important;
+        flex-direction: row;
+    }
+
+    #assistant_chat_settings_panel .wangp-assistant-chat__template-tool-actions > .form {
+        width: 100%;
+    }
+
+    #assistant_chat_settings_panel .wangp-assistant-chat__template-tool-icon-btn {
+        flex: 1 1 calc(50% - 4px);
+    }
+
+    #assistant_chat_settings_panel .wangp-assistant-chat__template-modal-wrap {
+        inset: 0;
+        padding: 8px !important;
+    }
+
+    #assistant_chat_settings_panel .wangp-assistant-chat__template-modal-wrap > .styler {
+        width: 100% !important;
+        max-width: none !important;
+    }
+
+    #assistant_chat_settings_panel .wangp-assistant-chat__template-modal-card {
+        width: 100% !important;
+        max-width: none !important;
+    }
 }
 """
 
@@ -1237,6 +1695,7 @@ def get_javascript() -> str:
 window.__wangpAssistantChatNS = window.__wangpAssistantChatNS || {};
 window.__wangpAssistantChatPending = window.__wangpAssistantChatPending || [];
 const WAC = window.__wangpAssistantChatNS;
+window.WAC = WAC;
 
 WAC.state = WAC.state || { order: [], messages: {}, status: null, stats: null };
 WAC.init = WAC.init || false;
@@ -1312,6 +1771,72 @@ WAC.serverInstanceId = WAC.serverInstanceId || '';
 
 WAC.normalizeText = function (value) {
   return String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').trim();
+};
+
+WAC.gradioConfig = function () {
+  return window.gradio_config || window.__gradio_config__ || null;
+};
+
+WAC.componentNode = function (id) {
+  if (id === null || typeof id === 'undefined') return null;
+  return document.getElementById(`component-${id}`);
+};
+
+WAC.isVisibleNode = function (node) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+};
+
+WAC.dropdownChoiceTexts = function (component) {
+  const rawChoices = component && component.props ? component.props.choices : [];
+  if (!Array.isArray(rawChoices)) return [];
+  const texts = [];
+  for (const choice of rawChoices) {
+    if (Array.isArray(choice)) {
+      texts.push(String(choice[0] || '').toLowerCase());
+      texts.push(String(choice[1] || '').toLowerCase());
+      continue;
+    }
+    if (choice && typeof choice === 'object') {
+      texts.push(String(choice.label || choice.name || '').toLowerCase());
+      texts.push(String(choice.value || '').toLowerCase());
+      continue;
+    }
+    texts.push(String(choice || '').toLowerCase());
+  }
+  return texts;
+};
+
+WAC.findWanGpSettingsDropdown = function () {
+  const cfg = WAC.gradioConfig();
+  const components = cfg && Array.isArray(cfg.components) ? cfg.components : [];
+  let fallback = null;
+  for (const component of components) {
+    if (!component || String(component.type || '').toLowerCase() !== 'dropdown') continue;
+    const texts = WAC.dropdownChoiceTexts(component);
+    const hasSettings = texts.some((text) => text.includes('>settings'));
+    const hasProfiles = texts.some((text) => text.includes('>profiles'));
+    const hasLoraPresetHint = texts.some((text) => text.includes('lora preset'));
+    if (!hasSettings || (!hasProfiles && !hasLoraPresetHint)) continue;
+    const node = WAC.componentNode(component.id);
+    if (node && WAC.isVisibleNode(node)) return { component, node };
+    if (!fallback) fallback = { component, node };
+  }
+  return fallback;
+};
+
+WAC.getWanGpSettingsSelection = function () {
+  const located = WAC.findWanGpSettingsDropdown();
+  if (!located || !located.component) return { value: '', label: '' };
+  const component = located.component;
+  const node = located.node || WAC.componentNode(component.id);
+  const input = node ? node.querySelector('input[role="listbox"], input, textarea') : null;
+  const label = WAC.normalizeText(input ? (input.value || input.getAttribute('value') || '') : '');
+  const value = WAC.normalizeText(component && component.props ? component.props.value : '');
+  return { value, label };
 };
 
 WAC.pushOptimisticUserMessage = function (text) {
@@ -1546,8 +2071,61 @@ WAC.syncDockVisibility = function () {
   });
 };
 
+WAC.parseThemeColor = function (value) {
+  const match = String(value || '').trim().match(/^rgba?\(([^)]+)\)$/i);
+  if (!match) return null;
+  const parts = match[1].split(',').map((part) => parseFloat(part.trim()));
+  if (parts.length < 3 || parts.slice(0, 3).some((part) => !Number.isFinite(part))) return null;
+  const alpha = Number.isFinite(parts[3]) ? parts[3] : 1;
+  if (alpha <= 0.01) return null;
+  return { r: parts[0], g: parts[1], b: parts[2], a: alpha };
+};
+
+WAC.resolveThemeBackground = function (node) {
+  let current = node;
+  while (current) {
+    const resolved = WAC.parseThemeColor(window.getComputedStyle(current).backgroundColor);
+    if (resolved) return resolved;
+    current = current.parentElement;
+  }
+  return WAC.parseThemeColor(window.getComputedStyle(document.body).backgroundColor);
+};
+
+WAC.relativeLuminance = function (rgb) {
+  if (!rgb) return 1;
+  const normalize = function (value) {
+    const channel = Math.max(0, Math.min(255, Number(value || 0))) / 255;
+    return channel <= 0.03928 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * normalize(rgb.r) + 0.7152 * normalize(rgb.g) + 0.0722 * normalize(rgb.b);
+};
+
+WAC.isDarkTheme = function () {
+  const nodes = [
+    document.querySelector('.gradio-container'),
+    document.body,
+    document.documentElement,
+    document.querySelector('gradio-app'),
+  ].filter(Boolean);
+  if (nodes.some((node) => node.classList && node.classList.contains('dark'))) return true;
+  if (nodes.some((node) => String(node.getAttribute('data-theme') || node.getAttribute('theme') || '').toLowerCase().includes('dark'))) return true;
+  const sample = document.querySelector('.gradio-container') || document.body;
+  const background = WAC.resolveThemeBackground(sample);
+  const foreground = WAC.parseThemeColor(window.getComputedStyle(sample).color) || WAC.parseThemeColor(window.getComputedStyle(document.body).color);
+  const backgroundLuminance = WAC.relativeLuminance(background);
+  const foregroundLuminance = WAC.relativeLuminance(foreground);
+  return backgroundLuminance < 0.18 || (foreground && backgroundLuminance < foregroundLuminance);
+};
+
+WAC.syncThemeState = function () {
+  const dock = WAC.dock();
+  if (!dock) return;
+  dock.classList.toggle('is-dark', !!WAC.isDarkTheme());
+};
+
 WAC.syncDockState = function () {
   WAC.syncDockVisibility();
+  WAC.syncThemeState();
   const dock = WAC.dock();
   const launcher = WAC.launcher();
   if (dock) dock.classList.toggle('is-open', !!WAC.dockOpen);
@@ -1597,7 +2175,6 @@ WAC.syncDockLayout = function () {
 
 WAC.setDockOpen = function (open, persist) {
   WAC.dockOpen = !!open;
-  if (!WAC.dockOpen) WAC.settingsOpen = false;
   WAC.syncDockState();
   WAC.syncDockLayout();
   if (WAC.dockOpen) {
@@ -1929,12 +2506,13 @@ WAC.installObserver = function () {
     window.requestAnimationFrame(() => {
       WAC.observerScheduled = false;
       if (WAC.host()) WAC.ensureShell();
+      WAC.syncThemeState();
       WAC.syncDockLayout();
       WAC.handleEventNodeMutation();
       WAC.readEventSource();
     });
   });
-  WAC.observer.observe(target, { childList: true, subtree: true });
+  WAC.observer.observe(target, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'data-theme', 'theme', 'style'] });
 };
 
 WAC.installEventBridge = function () {

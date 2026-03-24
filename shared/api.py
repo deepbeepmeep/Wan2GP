@@ -481,10 +481,10 @@ class WanGPSession:
                     return
                 stream.output_queue.push(command, data)
 
-            validated_settings = wgp.validate_task(task, self._state)
+            validated_settings, validation_error = wgp.validate_task(task, self._state)
             if validated_settings is None:
                 failure = GenerationError(
-                    message=f"Task {task_index} failed validation",
+                    message=validation_error or f"Task {task_index} failed validation",
                     task_index=task_index,
                     task_id=task_id,
                     stage="validation",

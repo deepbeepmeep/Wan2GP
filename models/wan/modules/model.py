@@ -968,14 +968,27 @@ class WanModel(ModelMixin, ConfigMixin):
         if first.startswith("lora_unet_"):
             new_sd = {}
             print("Converting Lora Safetensors format to Lora Diffusers format")
-            alphas = {}
             repl_list = ["cross_attn", "self_attn", "ffn"]
             src_list = ["_" + k + "_" for k in repl_list]
             tgt_list = ["." + k + "." for k in repl_list]
+            top_level_repl_list = [
+                ("lora_unet__head_head", "diffusion_model.head.head"),
+                ("lora_unet_head_head", "diffusion_model.head.head"),
+                ("lora_unet__img_emb_proj_", "diffusion_model.img_emb.proj."),
+                ("lora_unet_img_emb_proj_", "diffusion_model.img_emb.proj."),
+                ("lora_unet__text_embedding_", "diffusion_model.text_embedding."),
+                ("lora_unet_text_embedding_", "diffusion_model.text_embedding."),
+                ("lora_unet__time_embedding_", "diffusion_model.time_embedding."),
+                ("lora_unet_time_embedding_", "diffusion_model.time_embedding."),
+                ("lora_unet__time_projection_", "diffusion_model.time_projection."),
+                ("lora_unet_time_projection_", "diffusion_model.time_projection."),
+            ]
 
             for k,v in sd.items():
                 k = k.replace("lora_unet_blocks_","diffusion_model.blocks.")
                 k = k.replace("lora_unet__blocks_","diffusion_model.blocks.")
+                for src, tgt in top_level_repl_list:
+                    k = k.replace(src, tgt)
 
                 for s,t in zip(src_list, tgt_list):
                     k = k.replace(s,t)

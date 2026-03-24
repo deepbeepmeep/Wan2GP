@@ -64,7 +64,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("generate_dropdown_model_list")
         self.request_global("get_unique_id")
         self.request_global("reset_prompt_enhancer")
+        self.request_global("reset_prompt_enhancer_if_requested")
         self.request_global("release_deepy_vram")
+        self.request_global("any_GPU_process_running")
         self.request_global("apply_int8_kernel_setting")
 
         self.request_component("model_description")
@@ -229,36 +231,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.release_RAM_btn = gr.Button("Force Unload Models from RAM")
 
                 with gr.Tab("Extensions"):
-                    with gr.Group():
-                        self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1), ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2), ("Qwen3.5VL Abliterated 4B (captioning + uncensored text enhancement, vllm accelerated if available)", 3), ("Qwen3.5VL Abliterated 9B (captioning + uncensored high end text enhancement, vllm accelerated if available)", 4)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires extra model files)")
-                        self.enhancer_quantization_choice = gr.Dropdown(
-                            choices=[("Quanto Int8 (better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")],
-                            value=self.server_config.get("prompt_enhancer_quantization", "quanto_int8"),
-                            label="Prompt Enhancer Qwen3.5 LLM Quantization",
-                        )
-                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
-                    with gr.Row():
-                        self.prompt_enhancer_temperature_choice = gr.Slider(
-                            0.1,
-                            1.5,
-                            value=self.server_config.get("prompt_enhancer_temperature", 0.6),
-                            step=0.01,
-                            label="Prompt Enhancer Temperature (High = More Creativity)",
-                            interactive=not self.args.lock_config,
-                        )
-                        self.prompt_enhancer_top_p_choice = gr.Slider(
-                            0.1,
-                            1.0,
-                            value=self.server_config.get("prompt_enhancer_top_p", 0.9),
-                            step=0.01,
-                            label="Prompt Enhancer Top-p (High = More Variety)",
-                            interactive=not self.args.lock_config,
-                        )
-                    self.prompt_enhancer_randomize_seed_choice = gr.Checkbox(
-                        value=self.server_config.get("prompt_enhancer_randomize_seed", True),
-                        label="Randomize Prompt Enhancer Seed",
-                        interactive=not self.args.lock_config,
-                    )
                     mmaudio_mode_default = self.server_config.get("mmaudio_mode", None)
                     mmaudio_persistence_default = self.server_config.get("mmaudio_persistence", None)
                     if mmaudio_mode_default is None:
@@ -291,7 +263,37 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         interactive=not self.args.lock_config
                     )
 
-                with gr.Tab("Deepy"):
+                with gr.Tab("Prompt Enhancer / Deepy"):
+                    with gr.Group():
+                        self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1), ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2), ("Qwen3.5VL Abliterated 4B (captioning + uncensored text enhancement, vllm accelerated if available)", 3), ("Qwen3.5VL Abliterated 9B (captioning + uncensored high end text enhancement, vllm accelerated if available)", 4)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires extra model files)")
+                        self.enhancer_quantization_choice = gr.Dropdown(
+                            choices=[("Quanto Int8 (better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")],
+                            value=self.server_config.get("prompt_enhancer_quantization", "quanto_int8"),
+                            label="Qwen3.5 LLM Quantization",
+                        )
+                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
+                    with gr.Row():
+                        self.prompt_enhancer_temperature_choice = gr.Slider(
+                            0.1,
+                            1.5,
+                            value=self.server_config.get("prompt_enhancer_temperature", 0.6),
+                            step=0.01,
+                            label="Prompt Enhancer Temperature (High = More Creativity)",
+                            interactive=not self.args.lock_config,
+                        )
+                        self.prompt_enhancer_top_p_choice = gr.Slider(
+                            0.1,
+                            1.0,
+                            value=self.server_config.get("prompt_enhancer_top_p", 0.9),
+                            step=0.01,
+                            label="Prompt Enhancer Top-p (High = More Variety)",
+                            interactive=not self.args.lock_config,
+                        )
+                    self.prompt_enhancer_randomize_seed_choice = gr.Checkbox(
+                        value=self.server_config.get("prompt_enhancer_randomize_seed", True),
+                        label="Randomize Prompt Enhancer Seed",
+                        interactive=not self.args.lock_config,
+                    )
                     self.deepy_enabled_choice = gr.Dropdown(
                         choices=[("Off", 0), ("On", 1)],
                         value=normalize_deepy_enabled(self.server_config.get(DEEPY_ENABLED_KEY, 0)),
@@ -300,11 +302,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.deepy_vram_mode_choice = gr.Dropdown(
                         choices=[
                             ("Unload from VRAM as soon as possible", DEEPY_VRAM_MODE_UNLOAD),
-                            ("Always loaded in VRAM", DEEPY_VRAM_MODE_ALWAYS_LOADED),
                             ("Unload from VRAM if VRAM requested by another WanGP component", DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST),
+                            ("Always loaded in VRAM", DEEPY_VRAM_MODE_ALWAYS_LOADED),
                         ],
                         value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD)),
-                        label="VRAM Loading Mode",
+                        label="Deepy VRAM Loading Mode (the longer Deepy stays in VRAM, the faster Deeper is    )",
                     )
                     deepy_context_tokens_default = normalize_deepy_context_tokens(self.server_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
                     self.deepy_context_tokens_choice = gr.Slider(
@@ -429,14 +431,34 @@ class ConfigTabPlugin(WAN2GPPlugin):
             ]
         )
 
-        def release_ram_and_notify():
-            if self.is_generation_in_progress():
-                gr.Info("Unable to unload Models when a generation is in progress.")            
-            else:
-                self.release_model()
-                gr.Info("Models unloaded from RAM.")
-        
-        self.release_RAM_btn.click(fn=release_ram_and_notify)
+        def _unload_targets_text():
+            targets = ["Models"]
+            try:
+                enhancer_enabled = int(self.server_config.get("enhancer_enabled", 0) or 0) > 0
+            except Exception:
+                enhancer_enabled = False
+            if enhancer_enabled:
+                targets.append("Prompt Enhancer")
+            if deepy_available(self.server_config):
+                targets.append("Deepy")
+            if len(targets) == 1:
+                return targets[0]
+            return ", ".join(targets[:-1]) + f", and {targets[-1]}" if len(targets) > 2 else " and ".join(targets)
+
+        def release_ram_and_notify(state):
+            unload_targets = _unload_targets_text()
+            if self.any_GPU_process_running(state, "configuration"):
+                gr.Info(f"Unable to unload {unload_targets} while GPU resources are allocated.")
+                return
+            if deepy_available(self.server_config):
+                self.release_deepy_vram(state, clear_session_state=False, discard_runtime_snapshot=True)
+            if "Prompt Enhancer" in unload_targets:
+                self.reset_prompt_enhancer()
+                self.reset_prompt_enhancer_if_requested()
+            self.release_model()
+            gr.Info(f"{unload_targets} unloaded from RAM.")
+
+        self.release_RAM_btn.click(fn=release_ram_and_notify, inputs=[self.state])
         return [self.release_RAM_btn]
 
     def _save_changes(self, state, *args):

@@ -33,6 +33,33 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### March 24th 2026: WanGP v11, The Machine Within The Machine
+
+Meet **Deepy** your friendly *WanGP Agent*.
+
+It works *offline* with as little of *8 GB of VRAM* and won't *divulge your secrets*. It is *100% free* (no need for a ChatGPT/Claude subscription).
+
+You can ask him to do for you tedious tasks such as: 
+```text
+generate a black frame, crop a  video, extract a specific frame from a video, trim an audio, ...
+```
+
+He can also perform full workflows:
+```text
+1) generate a robot that dances disco on top of a horse in a night club
+2) now edit the image, the place hasn't changed but now the robot has gotten off the horse and the horse is standing next to the robot
+3) verify the edited image is as expected otherwise generate another one
+4) generate the transition between the two images
+```
+or
+
+```text
+Create a high quality image portrait that you think represents you best in your favorite setting. Then create an audio sample in which you will introduce the users to your capabilities. When done generate a video based on these two files.
+```
+
+*Deepy* reuses the *Qwen3VL Abliterated* checkpoints and it is highly recommended to install the *GGUF kernels* (check docs/INSTALLATION.md) for low VRAM / fast inference. You can customize Deepy to use the settings of your choice when generating a video, image, ... (please check docs/DEEPY.Md)
+
+
 ### March 17th 2026: WanGP v10.9875, Prompt Enhancer has just Been Abliterated
 
 - **Qwen3.5 VL Abliterated Prompt Enhancer**: new choice of Prompt Enhancer
@@ -469,7 +496,7 @@ For detailed installation instructions for different GPU generations:
 - **[Prompts Guide](docs/PROMPTS.md)** - How WanGP interprets prompts, images as prompts, enhancers, and macros
 
 ### Advanced Features
-- **[Deepy Assistant](DEEPY.md)** - Enable Deepy, configure its tool presets, use selected media and frames, and run Deepy from the CLI
+- **[Deepy Assistant](docs/DEEPY.md)** - Enable Deepy, configure its tool presets, use selected media and frames, and run Deepy from the CLI
 - **[Loras Guide](docs/LORAS.md)** - Using and managing Loras for customization
 - **[Finetunes](docs/FINETUNES.md)** - Add manually new models to WanGP
 - **[VACE ControlNet](docs/VACE.md)** - Advanced video control and manipulation

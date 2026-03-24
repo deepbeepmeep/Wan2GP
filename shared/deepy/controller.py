@@ -240,7 +240,6 @@ class DeepyController:
             get_output_filepath=self._deps.get_output_filepath,
             record_file_metadata=self._deps.record_file_metadata,
             get_server_config=self._server_config,
-            get_current_model_def=lambda: self._deps.get_model_def(self._deps.get_state_model_type(state)),
         )
 
     def run_assistant_prompt_turn(self, state, model_def, prompt_enhancer_modes, original_prompts, seed, override_profile=None, send_cmd=None, tools=None) -> None:
@@ -257,7 +256,7 @@ class DeepyController:
         randomize_seed = server_config.get("prompt_enhancer_randomize_seed", True)
         assistant_seed = secrets.randbits(32) if randomize_seed else (seed if seed is not None and seed >= 0 else 0)
         session = get_or_create_assistant_session(state)
-        assistant_model_def = model_def if model_def is not None else self._deps.get_model_def(self._deps.get_state_model_type(state))
+        assistant_model_def = model_def
         _assistant_instructions, assistant_max_new_tokens = self._deps.resolve_prompt_enhancer_settings(assistant_model_def, prompt_enhancer_modes, is_image=False, text_encoder_max_tokens=1024)
         assistant = AssistantEngine(
             session,

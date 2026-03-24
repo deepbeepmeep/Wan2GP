@@ -530,7 +530,7 @@ def _strip_partial_tool_markup(text: str) -> str:
 
 
 class tools:
-    def __init__(self, gen, get_processed_queue, send_cmd, session: AssistantSessionState | None = None, get_output_filepath: Callable[[str, bool, bool], str] | None = None, record_file_metadata: Callable[..., None] | None = None, get_server_config: Callable[[], dict[str, Any]] | None = None, get_current_model_def: Callable[[], dict[str, Any] | None] | None = None):
+    def __init__(self, gen, get_processed_queue, send_cmd, session: AssistantSessionState | None = None, get_output_filepath: Callable[[str, bool, bool], str] | None = None, record_file_metadata: Callable[..., None] | None = None, get_server_config: Callable[[], dict[str, Any]] | None = None):
         self.gen = gen
         self.get_processed_queue = get_processed_queue
         self.send_cmd = send_cmd
@@ -538,7 +538,6 @@ class tools:
         self.get_output_filepath = get_output_filepath
         self.record_file_metadata = record_file_metadata
         self.get_server_config = get_server_config
-        self.get_current_model_def = get_current_model_def
         self._vision_query_callback: Callable[[dict[str, Any], str], dict[str, Any]] | None = None
         self._tool_progress_callback: Callable[..., None] | None = None
 
@@ -616,17 +615,18 @@ class tools:
                 return True
         return False
 
-    def _get_current_model_def(self) -> dict[str, Any]:
-        if not callable(self.get_current_model_def):
+    def _get_effective_tool_model_def(self, tool_name: str) -> dict[str, Any]:
+        variant = self.get_tool_variant(tool_name)
+        if len(variant) == 0:
             return {}
         try:
-            model_def = self.get_current_model_def()
+            model_def = deepy_tool_settings.get_tool_variant_model_def(tool_name, variant)
         except Exception:
             return {}
-        return dict(model_def or {})
+        return dict(model_def or {}) if isinstance(model_def, dict) else {}
 
     def _get_deepy_tool_config(self, tool_name: str) -> dict[str, Any]:
-        deepy_tools = self._get_current_model_def().get("deepy_tools", None)
+        deepy_tools = self._get_effective_tool_model_def(tool_name).get("deepy_tools", None)
         if not isinstance(deepy_tools, dict):
             return {}
         tool_config = deepy_tools.get(str(tool_name or "").strip(), None)

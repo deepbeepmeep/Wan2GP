@@ -286,6 +286,15 @@ def get_tool_variant_path(tool_name: str, requested_variant: Any, current_varian
     return None
 
 
+def get_tool_variant_model_def(tool_name: str, variant: Any) -> dict[str, Any] | None:
+    try:
+        payload = load_tool_preset(tool_name, str(variant or "").strip())
+    except Exception:
+        return None
+    model_def = _get_model_def_from_settings_payload(payload)
+    return dict(model_def or {}) if isinstance(model_def, dict) else None
+
+
 def resolve_wangp_settings_file(state: Any, selected_value: Any) -> Path | None:
     value = str(selected_value or "").strip()
     if len(value) == 0 or "/" in value or "\\" in value or not value.lower().endswith(".json"):
@@ -583,6 +592,7 @@ __all__ = [
     "get_default_speech_from_sample_variant",
     "get_default_video_generator_variant",
     "get_default_video_with_speech_variant",
+    "get_tool_variant_model_def",
     "get_tool_variant_path",
     "is_linked_tool_variant",
     "list_tool_variant_choices",

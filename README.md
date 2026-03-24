@@ -46,10 +46,10 @@ generate a black frame, crop a  video, extract a specific frame from a video, tr
 
 Deepy can also perform full workflows:
 ```text
-1) generate a robot that dances disco on top of a horse in a night club
-2) now edit the image, the place hasn't changed but now the robot has gotten off the horse and the horse is standing next to the robot
-3) verify the edited image is as expected otherwise generate another one
-4) generate the transition between the two images
+1) Generate an image of a robot disco dancing on top of a horse in a nightclub.
+2) Now edit the image so the setting stays the same, but the robot has gotten off the horse and the horse is standing next to the robot.
+3) Verify that the edited image matches the description; if it does not, generate another one.
+4) Generate a transition between the two images.
 ```
 or
 
@@ -59,6 +59,7 @@ Create a high quality image portrait that you think represents you best in your 
 
 *Deepy* reuses the *Qwen3VL Abliterated* checkpoints and it is highly recommended to install the *GGUF kernels* (check docs/INSTALLATION.md) for low VRAM / fast inference. You can customize Deepy to use the settings of your choice when generating a video, image, ... (please check docs/DEEPY.Md)
 
+*Go the Config > Prompt Enhancer / Deep tab to enable Deepy (you must first choose a Qwen3.5VL Prompt Enhancer)*
 
 ### March 17th 2026: WanGP v10.9875, Prompt Enhancer has just Been Abliterated
 

@@ -227,10 +227,10 @@ How do I use VACE for outpainting?
 Multisteps requests:
 
 ```text
-1) generate a robot that dances disco on top of a horse in a night club
-2) now edit the image, the place hasn't changed but now the robot has gotten off the horse and the horse is standing next to the robot
-3) verify the edited image is as expected otherwise generate another one
-4) generate the transition between the two images
+1) Generate an image of a robot disco dancing on top of a horse in a nightclub.
+2) Now edit the image so the setting stays the same, but the robot has gotten off the horse and the horse is standing next to the robot.
+3) Verify that the edited image matches the description; if it does not, generate another one.
+4) Generate a transition between the two images.
 ```
 	
 ```text

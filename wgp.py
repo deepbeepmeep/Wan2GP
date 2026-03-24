@@ -30,6 +30,8 @@ except ImportError:
 from pathlib import Path
 from datetime import datetime
 import gradio as gr
+from shared.gradio import gradio_queue_focus_patch
+gradio_queue_focus_patch.install()
 from gradio.themes.utils.sizes import Size
 import random
 import json

@@ -1064,6 +1064,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         "image_prompt_type": image_prompt_type,
         "video_prompt_type": video_prompt_type,        
         "audio_prompt_type": audio_prompt_type,
+        "guidance_phases": guidance_phases,
         "skip_steps_cache_type": skip_steps_cache_type,
         "model_switch_phase": model_switch_phase,
         "motion_amplitude": motion_amplitude,

@@ -803,6 +803,8 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             return err(f"VAE Spatial Upsampling is not available for {medium}")
 
     if len(activated_loras) > 0:
+        activated_loras = update_loras_url_cache(get_lora_dir(model_type), activated_loras)
+        inputs["activated_loras"] = activated_loras
         error = check_loras_exist(model_type, activated_loras)
         if len(error) > 0:
             return err(error)

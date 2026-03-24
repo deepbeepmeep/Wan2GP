@@ -1142,9 +1142,23 @@ def get_css() -> str:
     min-width: 0 !important;
 }
 
-#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-dropdown > .form,
-#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-dropdown > .wrap {
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-row > .form,
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-dropdown {
     min-width: 0 !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-row > .form,
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-dropdown,
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-dropdown .wrap {
+    overflow: visible !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__template-tool-dropdown .wrap > ul.options[role="listbox"] {
+    position: absolute !important;
+    inset: calc(100% - 8px) auto auto 0 !important;
+    width: 100% !important;
+    max-height: min(280px, 40vh) !important;
+    z-index: 2147483647 !important;
 }
 
 #assistant_chat_settings_panel .wangp-assistant-chat__template-tool-actions {

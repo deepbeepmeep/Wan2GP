@@ -17,7 +17,7 @@ from .text_projection import PixArtAlphaTextProjection
 from .timestep_embedding import get_timestep_embedding
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class TransformerArgs:
     x: torch.Tensor
     context: torch.Tensor

@@ -3584,7 +3584,8 @@ def init_pipe(pipe, kwargs, profile):
     kwargs["extraModelsToQuantize"]=  None
     source_budgets = kwargs.get("budgets", None)
     if source_budgets is None:  kwargs["budgets"] = source_budgets = {}
-    if profile in (2, 4, 5):
+    mmgp_profile = int(profile)
+    if mmgp_profile in (2, 4, 5):
         default_transformer_budget = default_transformer2_budget= kwargs.get("budgets", 100) 
         if isinstance(default_transformer_budget, dict):
             default_transformer_budget = default_transformer_budget.get("transformer", 100) 
@@ -3594,7 +3595,7 @@ def init_pipe(pipe, kwargs, profile):
         if "transformer2" in pipe:
             budgets["transformer2"] = default_transformer2_budget if preload  == 0 else preload
         source_budgets.update(budgets)
-    elif profile == 3:
+    elif mmgp_profile == 3:
         source_budgets.update({ "*" : "70%" })
 
     if "transformer2" in pipe:
@@ -3602,13 +3603,9 @@ def init_pipe(pipe, kwargs, profile):
             kwargs["pinnedMemory"] = ["transformer", "transformer2"]
     
     if profile == 4.5:
-        mmgp_profile = 4
         kwargs["asyncTransfers"] = False
     elif profile == 3.5:
-        mmgp_profile = 3
         kwargs["pinnedMemory"] = False
-    else:
-        mmgp_profile = profile
 
     return mmgp_profile
 

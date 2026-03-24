@@ -355,6 +355,15 @@ def _sequence_setting_has_value(payload: dict[str, Any], key: str) -> bool:
     return len(str(value or "").strip()) > 0
 
 
+def _add_unique_flags(value: Any, flags: str) -> str:
+    text = str(value or "").strip()
+    for flag in str(flags or ""):
+        if len(flag.strip()) == 0 or flag in text:
+            continue
+        text += flag
+    return text
+
+
 def validate_wangp_settings_payload_for_tool(tool_name: str, payload: dict[str, Any]) -> str | None:
     lookup_name = str(tool_name or "").strip()
     if lookup_name not in _TOOL_TEMPLATE_VALIDATION_ERRORS:
@@ -543,6 +552,9 @@ def build_generation_task(
     task = clone_tool_preset(tool_name, variant)
     task["prompt"] = str(prompt or "").strip()
     task["client_id"] = str(client_id or "").strip()
+    uses_image_refs = str(image_start_target or "image_start").strip() == "image_refs"
+    model_def = _get_model_def_from_settings_payload(task)
+    image_prompt_types_allowed = str((model_def or {}).get("image_prompt_types_allowed", "") or "").strip()
     if alt_prompt is not None:
         alt_prompt = str(alt_prompt).strip()
         if len(alt_prompt) > 0:
@@ -554,7 +566,7 @@ def build_generation_task(
     if image_start is not None:
         image_start = str(image_start).strip()
         if len(image_start) > 0:
-            if str(image_start_target or "image_start").strip() == "image_refs":
+            if uses_image_refs:
                 existing_image_refs = task.get("image_refs", None)
                 image_refs_list = [] if not isinstance(existing_image_refs, list) else [str(path).strip() for path in existing_image_refs if len(str(path).strip()) > 0]
                 image_refs_list.insert(0, image_start)
@@ -575,6 +587,19 @@ def build_generation_task(
             task["image_refs"] = merged_image_refs
         else:
             task["image_refs"] = image_refs_list
+    has_image_start = len(str(task.get("image_start", "") or "").strip()) > 0
+    has_image_end = len(str(task.get("image_end", "") or "").strip()) > 0
+    has_image_refs = any(len(str(path).strip()) > 0 for path in task.get("image_refs", []) or [])
+    if has_image_start:
+        if "S" not in image_prompt_types_allowed:
+            raise ValueError("This preset does not support a Start Image.")
+        task["image_prompt_type"] = _add_unique_flags(task.get("image_prompt_type", ""), "S")
+    if has_image_end:
+        if "E" not in image_prompt_types_allowed:
+            raise ValueError("This preset does not support an End Image.")
+        task["image_prompt_type"] = _add_unique_flags(task.get("image_prompt_type", ""), "E")
+    if has_image_refs and str(tool_name or "").strip() in {"gen_video", "gen_video_with_speech"} and "I" not in str(task.get("video_prompt_type", "") or ""):
+        raise ValueError("This preset received Reference Images but its Video Prompt Type does not enable them.")
     return task
 
 

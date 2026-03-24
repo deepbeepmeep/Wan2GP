@@ -681,6 +681,19 @@ class tools:
             task["video_length"] = int(ui_settings["num_frames"])
         return task
 
+    def _build_generation_task(self, tool_name: str, variant: str, *, prompt: str, client_id: str, **kwargs) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        try:
+            task = deepy_tool_settings.build_generation_task(tool_name, variant, prompt=prompt, client_id=client_id, **kwargs)
+        except ValueError as exc:
+            return None, {
+                "status": "error",
+                "client_id": client_id,
+                "output_file": "",
+                "prompt": str(prompt or "").strip(),
+                "error": str(exc),
+            }
+        return task, None
+
     def _sync_recent_media(self, max_items: int = 5) -> None:
         if self.session is None:
             return
@@ -1126,7 +1139,12 @@ class tools:
         client_id = _next_ai_client_id()
         generator_variant = self._get_tool_ui_settings()["image_generator_variant"]
         template_file = self.get_tool_template_filename("gen_image")
-        task = deepy_tool_settings.build_generation_task("gen_image", generator_variant, prompt=prompt, client_id=client_id)
+        task, error_result = self._build_generation_task("gen_image", generator_variant, prompt=prompt, client_id=client_id)
+        if error_result is not None:
+            error_result["generator_variant"] = generator_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            return error_result
         task = self._apply_generation_overrides(task, include_num_frames=False)
         if len(task["prompt"]) == 0:
             self._set_status("Image generation failed: prompt is empty.", kind="error")
@@ -1177,7 +1195,7 @@ class tools:
         client_id = _next_ai_client_id()
         generator_variant = self._get_tool_ui_settings()["video_generator_variant"]
         template_file = self.get_tool_template_filename("gen_video")
-        task = deepy_tool_settings.build_generation_task(
+        task, error_result = self._build_generation_task(
             "gen_video",
             generator_variant,
             prompt=prompt,
@@ -1185,6 +1203,15 @@ class tools:
             image_start=None if start_media is None else str(start_media.get("path", "")).strip(),
             image_end=None if end_media is None else str(end_media.get("path", "")).strip(),
         )
+        if error_result is not None:
+            error_result["generator_variant"] = generator_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            if start_media is not None:
+                error_result["source_start_media_id"] = start_media.get("media_id", "")
+            if end_media is not None:
+                error_result["source_end_media_id"] = end_media.get("media_id", "")
+            return error_result
         task = self._apply_generation_overrides(task, include_num_frames=True)
         if len(task["prompt"]) == 0:
             self._set_status("Video generation failed: prompt is empty.", kind="error")
@@ -1237,7 +1264,7 @@ class tools:
         client_id = _next_ai_client_id()
         generator_variant = self.get_tool_variant("gen_video_with_speech")
         template_file = self.get_tool_template_filename("gen_video_with_speech")
-        task = deepy_tool_settings.build_generation_task(
+        task, error_result = self._build_generation_task(
             "gen_video_with_speech",
             generator_variant,
             prompt=prompt,
@@ -1246,6 +1273,14 @@ class tools:
             image_start_target=self._get_image_start_target("gen_video_with_speech"),
             image_start=str(start_media.get("path", "")).strip(),
         )
+        if error_result is not None:
+            error_result["generator_variant"] = generator_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            error_result["source_start_media_id"] = start_media.get("media_id", "")
+            error_result["source_audio_media_id"] = audio_media.get("media_id", "")
+            error_result["image_start_target"] = self._get_image_start_target("gen_video_with_speech")
+            return error_result
         task = self._apply_generation_overrides(task, include_num_frames=True)
         if len(task["prompt"]) == 0:
             self._set_status("Video generation failed: prompt is empty.", kind="error")
@@ -1293,7 +1328,12 @@ class tools:
         client_id = _next_ai_client_id()
         generator_variant = self.get_tool_variant("gen_speech_from_description")
         template_file = self.get_tool_template_filename("gen_speech_from_description")
-        task = deepy_tool_settings.build_generation_task("gen_speech_from_description", generator_variant, prompt=prompt, client_id=client_id, alt_prompt=voice_description)
+        task, error_result = self._build_generation_task("gen_speech_from_description", generator_variant, prompt=prompt, client_id=client_id, alt_prompt=voice_description)
+        if error_result is not None:
+            error_result["generator_variant"] = generator_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            return error_result
         if len(task["prompt"]) == 0:
             self._set_status("Speech generation failed: prompt is empty.", kind="error")
             return {
@@ -1342,13 +1382,19 @@ class tools:
         client_id = _next_ai_client_id()
         generator_variant = self.get_tool_variant("gen_speech_from_sample")
         template_file = self.get_tool_template_filename("gen_speech_from_sample")
-        task = deepy_tool_settings.build_generation_task(
+        task, error_result = self._build_generation_task(
             "gen_speech_from_sample",
             generator_variant,
             prompt=prompt,
             client_id=client_id,
             audio_guide=str(sample_media.get("path", "")).strip(),
         )
+        if error_result is not None:
+            error_result["generator_variant"] = generator_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            error_result["source_media_id"] = sample_media.get("media_id", "")
+            return error_result
         if len(task["prompt"]) == 0:
             self._set_status("Speech generation failed: prompt is empty.", kind="error")
             return {
@@ -1407,13 +1453,19 @@ class tools:
         editor_variant = self._get_tool_ui_settings()["image_editor_variant"]
         template_file = self.get_tool_template_filename("edit_image")
         client_id = _next_ai_client_id()
-        task = deepy_tool_settings.build_generation_task(
+        task, error_result = self._build_generation_task(
             "edit_image",
             editor_variant,
             prompt=prompt,
             client_id=client_id,
             image_refs=[str(media_record.get("path", "")).strip()],
         )
+        if error_result is not None:
+            error_result["editor_variant"] = editor_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            error_result["media_id"] = media_record.get("media_id", "")
+            return error_result
         task = self._apply_generation_overrides(task, include_num_frames=False)
         if len(task["prompt"]) == 0:
             return {

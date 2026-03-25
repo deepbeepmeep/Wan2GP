@@ -62,8 +62,6 @@ def _set_default_dtype_from_loader(dtype):
 def _resolve_default_dtype(dtype, fallback=None):
     if dtype is None:
         return _GGUF_DEFAULT_DTYPE or fallback
-    if _GGUF_DEFAULT_DTYPE is not None and fallback is not None and dtype == fallback:
-        return _GGUF_DEFAULT_DTYPE
     return dtype
 
 
@@ -118,7 +116,7 @@ def _probe_gguf_cuda_runtime(force=False):
         _GGUF_CUDA_KERNELS_ENABLED_CACHE = False
         _GGUF_CUDA_MODULE = None
         _GGUF_CUDA_LOAD_ERROR = exc
-        _gguf_log_once("gguf_cuda_probe_failed", f"[GGUF][llama.cpp CUDA] kernels unavailable, using fallback: {exc}")
+        _gguf_log_once("gguf_cuda_probe_failed", f"[GGUF][llama.cpp CUDA] kernels unavailable, using fallback")
         return False
     _GGUF_CUDA_KERNELS_ENABLED_CACHE = True
     _GGUF_CUDA_MODULE = gguf_cuda_module

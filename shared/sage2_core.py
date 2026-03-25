@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import sys
 import torch
 import torch.nn.functional as F
 
@@ -25,6 +26,13 @@ from sageattention.triton.attn_qk_int8_block_varlen import forward as attn_false
 from sageattention.triton.attn_qk_int8_per_block_causal_varlen import forward as attn_true_varlen
 
 from sageattention.triton.quant_per_thread import per_thread_int8 as per_thread_int8_triton
+
+try:
+    from sageattention import _fused
+    if not hasattr(_fused, "transpose_pad_permute_cuda"):
+        _fused = torch.ops.sageattention_fused
+except:
+    _fused = torch.ops.sageattention_fused
 
 try:
     from sageattention import _qattn_sm80
@@ -91,12 +99,36 @@ def get_cuda_arch_versions():
         cuda_archs.append(f"sm{major}{minor}")
     return cuda_archs
 
+
+_CUDA_ARCHS = tuple(get_cuda_arch_versions())
+_SINGLE_CUDA_DEVICE = torch.cuda.device_count() <= 1
+
+
+def _get_device_index(device: torch.device) -> int:
+    return torch.cuda.current_device() if device.index is None else device.index
+
+
+def _get_cuda_arch(device: torch.device) -> str:
+    idx = _get_device_index(device)
+    if idx < len(_CUDA_ARCHS):
+        return _CUDA_ARCHS[idx]
+    return get_cuda_arch_versions()[idx]
+
+
+def _maybe_set_device(device: torch.device):
+    if _SINGLE_CUDA_DEVICE:
+        return
+    idx = _get_device_index(device)
+    if idx != torch.cuda.current_device():
+        torch.cuda.set_device(idx)
+
 def sageattn(
     qkv_list,
     tensor_layout: str = "HND",
     is_causal: bool = False,
     sm_scale: Optional[float] = None,
     return_lse: bool = False,
+    recycle_q: bool = False,
     **kwargs: Any,
 ):
     """
@@ -153,17 +185,17 @@ def sageattn(
     - All tensors must be on the same cuda device.
     """
         
-    arch = get_cuda_arch_versions()[qkv_list[0].device.index]
+    arch = _get_cuda_arch(qkv_list[0].device)
     if arch == "sm80":
         return sageattn_qk_int8_pv_fp16_cuda(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype="fp32")
     elif arch == "sm86":
         return sageattn_qk_int8_pv_fp16_triton(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse)
     elif arch == "sm89":
-        return sageattn_qk_int8_pv_fp8_cuda(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype="fp32+fp16" if sg2pp else "fp32+fp32")
+        return sageattn_qk_int8_pv_fp8_cuda(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype="fp32+fp16" if sg2pp else "fp32+fp32", recycle_q = recycle_q)
     elif arch == "sm90":
-        return sageattn_qk_int8_pv_fp8_cuda_sm90(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype="fp32+fp32")
+        return sageattn_qk_int8_pv_fp8_cuda_sm90(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype="fp32+fp32", recycle_q = recycle_q)
     elif arch == "sm120":
-        return sageattn_qk_int8_pv_fp8_cuda(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, qk_quant_gran="per_warp", sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype= "fp32+fp16" if sg2pp else "fp32", smooth_v= not sg2pp) # sm120 has accurate fp32 accumulator for fp8 mma and triton kernel is currently not usable on sm120.
+        return sageattn_qk_int8_pv_fp8_cuda(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, qk_quant_gran="per_warp", sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype= "fp32+fp16" if sg2pp else "fp32", smooth_v= not sg2pp, recycle_q = recycle_q) # sm120 has accurate fp32 accumulator for fp8 mma and triton kernel is currently not usable on sm120.
     else:
         raise ValueError(f"Unsupported CUDA architecture: {arch}")
 
@@ -258,7 +290,7 @@ def sageattn_qk_int8_pv_fp16_triton(
     # inference step in distributed env for multi gpus inference. This small
     # workaround also make sage attention work compatible with torch.compile
     # through non-fullgraph compile mode.
-    torch.cuda.set_device(v.device)
+    _maybe_set_device(v.device)
 
     head_dim_og = q.size(-1)
 
@@ -392,7 +424,7 @@ def sageattn_varlen(
     # inference step in distributed env for multi gpus inference. This small
     # workaround also make sage attention work compatible with torch.compile
     # through non-fullgraph compile mode.
-    torch.cuda.set_device(v.device)
+    _maybe_set_device(v.device)
 
     head_dim_og = q.size(-1)
 
@@ -537,7 +569,7 @@ def sageattn_qk_int8_pv_fp16_cuda(
     # inference step in distributed env for multi gpus inference. This small
     # workaround also make sage attention work compatible with torch.compile
     # through non-fullgraph compile mode.
-    torch.cuda.set_device(v.device)
+    _maybe_set_device(v.device)
 
     _tensor_layout = 0 if tensor_layout == "NHD" else 1
     _is_caual = 1 if is_causal else 0
@@ -624,6 +656,7 @@ def sageattn_qk_int8_pv_fp8_cuda(
     smooth_k: bool = True,
     smooth_v: bool = False,
     return_lse: bool = False,
+    recycle_q: bool = False,
     **kwargs: Any,
 ) -> torch.Tensor:
     if pv_accum_dtype == None:
@@ -725,7 +758,7 @@ def sageattn_qk_int8_pv_fp8_cuda(
     # inference step in distributed env for multi gpus inference. This small
     # workaround also make sage attention work compatible with torch.compile
     # through non-fullgraph compile mode.
-    torch.cuda.set_device(v.device)
+    _maybe_set_device(v.device)
 
     _tensor_layout = 0 if tensor_layout == "NHD" else 1
     _is_caual = 1 if is_causal else 0
@@ -750,8 +783,27 @@ def sageattn_qk_int8_pv_fp8_cuda(
 
     if sm_scale is None:
         sm_scale = head_dim_og**-0.5
-
     seq_dim = 1 if _tensor_layout == 0 else 2
+
+    if pv_accum_dtype == 'fp32+fp32' and smooth_v:
+        warnings.warn("pv_accum_dtype is 'fp32+fp32', smooth_v will be ignored.")
+        smooth_v = False
+
+    # v_list = v
+    v_list = [v]
+    del v
+    if sg2pp:
+        if pv_accum_dtype == 'fp32+fp16' and smooth_v:
+            warnings.warn("pv_accum_dtype is 'fp32+fp16', smooth_v will be ignored.")
+            smooth_v = False
+
+        quant_v_scale_max = 448.0
+        if pv_accum_dtype == 'fp32+fp16':
+            quant_v_scale_max = 2.25
+        v_fp8, v_scale, vm = per_channel_fp8(v_list, tensor_layout=tensor_layout, scale_max=quant_v_scale_max, smooth_v=smooth_v)
+    else:
+        v_fp8, v_scale, vm = per_channel_fp8(v_list, tensor_layout=tensor_layout, smooth_v=smooth_v)
+    # del v
 
     if smooth_k:
         km = k.mean(dim=seq_dim, keepdim=True)
@@ -769,25 +821,12 @@ def sageattn_qk_int8_pv_fp8_cuda(
         q_int8, q_scale, k_int8, k_scale = per_thread_int8_triton(q, k, km, tensor_layout=tensor_layout, BLKQ=128, WARPQ=32, BLKK=64, WARPK=64)
     q_size = q.size()
     q_device = q.device
-    del q,k,km
-
-    if pv_accum_dtype == 'fp32+fp32' and smooth_v:
-        warnings.warn("pv_accum_dtype is 'fp32+fp32', smooth_v will be ignored.")
-        smooth_v = False
-    if sg2pp:
-        if pv_accum_dtype == 'fp32+fp16' and smooth_v:
-            warnings.warn("pv_accum_dtype is 'fp32+fp16', smooth_v will be ignored.")
-            smooth_v = False
-
-        quant_v_scale_max = 448.0
-        if pv_accum_dtype == 'fp32+fp16':
-            quant_v_scale_max = 2.25
-
-        v_fp8, v_scale, vm = per_channel_fp8(v, tensor_layout=tensor_layout, scale_max=quant_v_scale_max, smooth_v=smooth_v)
+    if recycle_q:
+        del k,km
+        o = q
     else:
-        v_fp8, v_scale, vm = per_channel_fp8(v, tensor_layout=tensor_layout, smooth_v=smooth_v)
-    del v
-    o = torch.empty(q_size, dtype=dtype, device=q_device)
+        del q,k,km
+        o = torch.empty(q_size, dtype=dtype, device=q_device)
     if pv_accum_dtype == "fp32":
         if smooth_v:
             lse = _qattn_sm89.qk_int8_sv_f8_accum_f32_fuse_v_scale_fuse_v_mean_attn(q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, vm, _tensor_layout, _is_caual, _qk_quant_gran, sm_scale, _return_lse)
@@ -822,6 +861,7 @@ def sageattn_qk_int8_pv_fp8_window_cuda(
     smooth_v: bool = False,
     return_lse: bool = False,
     window = -1,
+    recycle_q: bool = False,
     **kwargs: Any,
 ) -> torch.Tensor:
     """
@@ -913,7 +953,7 @@ def sageattn_qk_int8_pv_fp8_window_cuda(
     # inference step in distributed env for multi gpus inference. This small
     # workaround also make sage attention work compatible with torch.compile
     # through non-fullgraph compile mode.
-    torch.cuda.set_device(v.device)
+    _maybe_set_device(v.device)
 
     _tensor_layout = 0 if tensor_layout == "NHD" else 1
     _is_caual = 1 if is_causal else 0
@@ -941,6 +981,14 @@ def sageattn_qk_int8_pv_fp8_window_cuda(
 
     seq_dim = 1 if _tensor_layout == 0 else 2
 
+    if pv_accum_dtype == 'fp32+fp32' and smooth_v:
+        warnings.warn("pv_accum_dtype is 'fp32+fp32', smooth_v will be ignored.")
+        smooth_v = False
+
+    v_list = [v]
+    del v
+    v_fp8, v_scale, vm = per_channel_fp8(v_list, tensor_layout=tensor_layout, smooth_v=smooth_v)
+
     if smooth_k:
         km = k.mean(dim=seq_dim, keepdim=True)
         if return_lse:
@@ -958,15 +1006,12 @@ def sageattn_qk_int8_pv_fp8_window_cuda(
 
     q_size = q.size()
     q_device = q.device
-    del q,k
-
-    if pv_accum_dtype == 'fp32+fp32' and smooth_v:
-        warnings.warn("pv_accum_dtype is 'fp32+fp32', smooth_v will be ignored.")
-        smooth_v = False
-
-    v_fp8, v_scale, vm = per_channel_fp8(v, tensor_layout=tensor_layout, smooth_v=smooth_v)
-    del v
-    o = torch.empty(q_size, dtype=dtype, device=q_device)
+    if recycle_q:
+        del k
+        o = q
+    else:
+        del q,k
+        o = torch.empty(q_size, dtype=dtype, device=q_device)
 
     if pv_accum_dtype == "fp32":
         if smooth_v:
@@ -996,6 +1041,7 @@ def sageattn_qk_int8_pv_fp8_cuda_sm90(
     pv_accum_dtype: str = "fp32+fp32",
     smooth_k: bool = True,
     return_lse: bool = False,
+    recycle_q: bool = False,
     **kwargs: Any,
 ) -> torch.Tensor:
     """
@@ -1076,7 +1122,7 @@ def sageattn_qk_int8_pv_fp8_cuda_sm90(
     assert q.device == k.device == v.device, "All tensors must be on the same device."
     assert q.dtype == k.dtype == v.dtype, "All tensors must have the same dtype."
 
-    torch.cuda.set_device(v.device)
+    _maybe_set_device(v.device)
 
     _tensor_layout = 0 if tensor_layout == "NHD" else 1
     _is_caual = 1 if is_causal else 0
@@ -1104,6 +1150,21 @@ def sageattn_qk_int8_pv_fp8_cuda_sm90(
 
     seq_dim = 1 if _tensor_layout == 0 else 2
 
+    # pad v to multiple of 128
+
+    # TODO: modify per_channel_fp8 kernel to handle this
+    kv_len = k.size(seq_dim)
+    v_pad_len = 128 - (kv_len % 128) if kv_len % 128 != 0 else 0
+    if v_pad_len > 0:
+        if tensor_layout == "HND":
+            v = torch.cat([v, torch.zeros(v.size(0), v.size(1), v_pad_len, v.size(3), dtype=v.dtype, device=v.device)], dim=2)
+        else:
+            v = torch.cat([v, torch.zeros(v.size(0), v_pad_len, v.size(2), v.size(3), dtype=v.dtype, device=v.device)], dim=1)
+
+    v_list = [v]
+    del v
+    v_fp8, v_scale, _ = per_channel_fp8(v_list, tensor_layout=tensor_layout, smooth_v=False)
+
     if smooth_k:
         km = k.mean(dim=seq_dim, keepdim=True)
         if return_lse:
@@ -1120,23 +1181,13 @@ def sageattn_qk_int8_pv_fp8_cuda_sm90(
         q_int8, q_scale, k_int8, k_scale = per_thread_int8_triton(q, k, km, tensor_layout=tensor_layout, BLKQ=64, WARPQ=16, BLKK=128, WARPK=128)
 
     q_size = q.size()
-    kv_len = k.size(seq_dim)
     q_device = q.device
-    del q,k
-
-
-    # pad v to multiple of 128
-    # TODO: modify per_channel_fp8 kernel to handle this
-    v_pad_len = 128 - (kv_len % 128) if kv_len % 128 != 0 else 0
-    if v_pad_len > 0:
-        if tensor_layout == "HND":
-            v = torch.cat([v, torch.zeros(v.size(0), v.size(1), v_pad_len, v.size(3), dtype=v.dtype, device=v.device)], dim=2)
-        else:
-            v = torch.cat([v, torch.zeros(v.size(0), v_pad_len, v.size(2), v.size(3), dtype=v.dtype, device=v.device)], dim=1)
-
-    v_fp8, v_scale, _ = per_channel_fp8(v, tensor_layout=tensor_layout, smooth_v=False)
-    del v
-    o = torch.empty(q_size, dtype=dtype, device=q_device)
+    if recycle_q:
+        del k
+        o = q
+    else:
+        del q,k
+        o = torch.empty(q_size, dtype=dtype, device=q_device)
 
     if pv_accum_dtype == "fp32":
         raise NotImplementedError("Please use pv_accum_dtype='fp32+fp32' for sm90.")
@@ -1150,3 +1201,57 @@ def sageattn_qk_int8_pv_fp8_cuda_sm90(
         return o, lse / 1.44269504 + lse_correction * sm_scale if smooth_k else lse / 1.44269504
     else:
         return o
+    
+_sage_per_channel_fp8 = per_channel_fp8
+
+
+def xper_channel_fp8(
+    v_or_list: Union[torch.Tensor, list],
+    tensor_layout: str ="HND",
+    scale_max: float = 448.0,
+    smooth_v: bool = True
+):
+    _tensor_layout = 0 if tensor_layout == "NHD" else 1
+    if isinstance(v_or_list, list):
+        v = v_or_list[0]
+        v_or_list.clear()
+    else:
+        v = v_or_list
+    device = v.device
+    if tensor_layout == "HND":
+        b, h_kv, kv_len, head_dim = v.shape
+        padded_len = (kv_len + 63) // 64 * 64
+        v_transposed_permutted = torch.empty((b, h_kv, head_dim, padded_len), dtype=v.dtype, device=device)
+
+    elif tensor_layout == "NHD":
+        b, kv_len, h_kv, head_dim = v.shape
+        padded_len = (kv_len + 63) // 64 * 64
+        v_transposed_permutted = torch.empty((b, head_dim, h_kv, padded_len), dtype=v.dtype, device=device)
+    
+    _fused.transpose_pad_permute_cuda(v, v_transposed_permutted, _tensor_layout)
+    del v
+    v_fp8 = torch.empty(v_transposed_permutted.shape, dtype=torch.float8_e4m3fn, device=device)
+
+    v_scale = torch.empty((b, h_kv, head_dim), dtype=torch.float32, device=device)
+    vm = torch.empty((b, h_kv, head_dim), dtype=torch.float32, device=device)
+
+    if smooth_v:
+        _fused.mean_scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, vm, v_scale, kv_len, scale_max, _tensor_layout)
+        return v_fp8, v_scale, vm
+    else:
+        _fused.scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, v_scale, kv_len, scale_max, _tensor_layout)
+        return v_fp8, v_scale, None
+
+
+def _install_per_channel_fp8_monkey_patch():
+    global per_channel_fp8
+    per_channel_fp8 = xper_channel_fp8
+    sage_quant = sys.modules.get("sageattention.quant")
+    if sage_quant is not None:
+        sage_quant.per_channel_fp8 = xper_channel_fp8
+    sage_core = sys.modules.get("sageattention.core")
+    if sage_core is not None:
+        sage_core.per_channel_fp8 = xper_channel_fp8
+
+
+_install_per_channel_fp8_monkey_patch()

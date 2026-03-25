@@ -1,0 +1,8 @@
+{
+    "num_inference_steps": 8,
+    "video_length": 241,
+    "sliding_window_size": 761,
+    "resolution": "1280x720",
+    "type": "LTX-2 2.3 Distilled",
+	"model_type": "ltx2_22B_distilled"
+}

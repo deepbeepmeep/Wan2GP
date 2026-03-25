@@ -421,6 +421,11 @@ class family_handler():
         if base_model_type in ["infinitetalk"]: 
             extra_model_def["no_background_removal"] = True
             extra_model_def["all_image_refs_are_background_ref"] = True
+            extra_model_def["deepy_tools"] = {
+                "gen_video_with_speech": {
+                    "image_start": "image_refs",
+                }
+            }
             extra_model_def["guide_custom_choices"] = {
             "choices":[
                 ("Images to Video, each Reference Image will start a new shot with a new Sliding Window", "KI"),

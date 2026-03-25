@@ -35,6 +35,41 @@ function() {
         if (closeButton) closeButton.click();
     };
 
+    let lastSelectedVideoTime = null;
+    let selectedVideoTimeTimer = null;
+
+    function pushSelectedVideoTime(currentTime) {
+        const hiddenTextbox = document.querySelector('#selected_video_time_input textarea, #selected_video_time_input input');
+        if (!hiddenTextbox) return;
+        hiddenTextbox.value = String(currentTime);
+        hiddenTextbox.dispatchEvent(new Event('input', { bubbles: true }));
+        hiddenTextbox.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function scheduleSelectedVideoTimeUpdate(video, immediate = false) {
+        if (!(video instanceof HTMLVideoElement) || !video.closest('#gallery')) return;
+        const currentTime = Math.max(0, Math.round(Number(video.currentTime || 0) * 1000) / 1000);
+        if (!Number.isFinite(currentTime)) return;
+        const commit = () => {
+            if (lastSelectedVideoTime === currentTime) return;
+            lastSelectedVideoTime = currentTime;
+            pushSelectedVideoTime(currentTime);
+        };
+        if (immediate) {
+            clearTimeout(selectedVideoTimeTimer);
+            commit();
+            return;
+        }
+        clearTimeout(selectedVideoTimeTimer);
+        selectedVideoTimeTimer = setTimeout(commit, 180);
+    }
+
+    function handleGalleryVideoEvent(event, immediate = false) {
+        const video = event?.target;
+        if (!(video instanceof HTMLVideoElement) || !video.closest('#gallery')) return;
+        scheduleSelectedVideoTimeUpdate(video, immediate);
+    }
+
     let draggedItem = null;
 
     function attachDelegatedDragAndDrop(container) {
@@ -111,6 +146,10 @@ function() {
     const targetNode = document.querySelector('gradio-app');
     if (targetNode) {
         observer.observe(targetNode, { childList: true, subtree: true });
+        ['loadedmetadata', 'seeked', 'pause', 'click'].forEach((eventName) => {
+            document.addEventListener(eventName, (event) => handleGalleryVideoEvent(event, true), true);
+        });
+        document.addEventListener('timeupdate', (event) => handleGalleryVideoEvent(event, false), true);
     }
 
     const hit = n => n?.id === "img_editor" || n?.classList?.contains("wheel-pass");

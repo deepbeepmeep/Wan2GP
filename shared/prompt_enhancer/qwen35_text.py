@@ -221,7 +221,7 @@ def _resolve_prompt_runtime_extra_tokens(model, thinking_enabled: bool | None = 
 def _print_thinking_process(message_index: int, total_messages: int, thinking_text: str) -> None:
     if len(thinking_text) == 0:
         return
-    print(f"[Prompt Enhancer][Thinking {message_index + 1}/{total_messages}]")
+    print(f"[Qwen3.5VL][Thinking {message_index + 1}/{total_messages}]")
     try:
         print(thinking_text)
     except UnicodeEncodeError:
@@ -270,7 +270,7 @@ class _PresencePenaltyState:
 
 
 class _ThinkingBudgetState:
-    def __init__(self, close_think_token_id: int | None, max_thinking_tokens: int | None):
+    def __init__(self, close_think_token_id: int | None, max_thinking_tokens: int | None, stop_token_ids: list[int] | tuple[int, ...] | None = None):
         try:
             close_think_token_id = int(close_think_token_id)
         except (TypeError, ValueError):
@@ -283,6 +283,11 @@ class _ThinkingBudgetState:
         self.max_thinking_tokens = max_thinking_tokens
         self.in_thinking = close_think_token_id >= 0 and max_thinking_tokens > 0
         self.generated_thinking_tokens = 0
+        self.stop_token_ids = tuple(
+            token_id
+            for token_id in {int(token_id) for token_id in tuple(stop_token_ids or ()) if int(token_id) >= 0}
+            if token_id != self.close_think_token_id
+        )
 
     def enabled(self) -> bool:
         return self.in_thinking
@@ -297,7 +302,13 @@ class _ThinkingBudgetState:
         self.generated_thinking_tokens += 1
 
     def apply_(self, logits: torch.Tensor) -> torch.Tensor:
-        if not self.in_thinking or self.generated_thinking_tokens < self.max_thinking_tokens:
+        if not self.in_thinking:
+            return logits
+        if self.generated_thinking_tokens < self.max_thinking_tokens:
+            if self.stop_token_ids:
+                blocked_ids = [token_id for token_id in self.stop_token_ids if token_id < logits.shape[-1]]
+                if blocked_ids:
+                    logits[..., blocked_ids] = float("-inf")
             return logits
         logits.fill_(float("-inf"))
         logits[..., self.close_think_token_id] = 0
@@ -355,6 +366,7 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None):
         thinking_state = _ThinkingBudgetState(
             getattr(model, "_prompt_enhancer_close_think_token_id", None),
             getattr(model, "_prompt_enhancer_thinking_max_tokens", QWEN35_PROMPT_THINKING_MAX_TOKENS),
+            getattr(model, "_prompt_enhancer_stop_token_ids", ()),
         )
         if thinking_state.enabled():
             def thinking_logits_processor(_input_ids, logits):
@@ -898,7 +910,7 @@ def load_qwen35_text_prompt_enhancer(
 
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Qwen3.5 text checkpoint not found: {model_path}")
-    print(f"[Prompt Enhancer][{spec['display_name']}][{backend}] Loading text checkpoint: {model_path}")
+    print(f"[Qwen3.5VL][{spec['display_name']}][{backend}] Loading text checkpoint: {model_path}")
 
     model = _load_local_text_model(
         model_path,
@@ -932,6 +944,8 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_default_min_p = QWEN35_PROMPT_DEFAULT_MIN_P_GGUF if backend == enhancer_quantization_GGUF else None
     model._prompt_enhancer_enable_presence_penalty = backend != enhancer_quantization_GGUF and QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY
     model._prompt_enhancer_presence_penalty = QWEN35_PROMPT_PRESENCE_PENALTY
+    model._prompt_enhancer_min_model_len_hint = 8000
+    model._prompt_enhancer_allow_extended_context = True
     model._prompt_enhancer_min_new_tokens = (
         QWEN35_PROMPT_MIN_NEW_TOKENS
         if backend == enhancer_quantization_GGUF and _env_enabled(QWEN35_GGUF_LLAMACPP_ENV, default=True)
@@ -950,7 +964,7 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_use_legacy_cuda_runner = engine_name == "legacy"
     if model._prompt_enhancer_use_vllm or model._prompt_enhancer_use_legacy_cuda_runner:
         model._budget = 0
-    print(f"[Prompt Enhancer][{spec['display_name']}] Text generation engine: {engine_name}")
+    print(f"[Qwen3.5VL][{spec['display_name']}] Text generation engine: {engine_name}")
     model.generate_messages = types.MethodType(_generate_messages, model)
     model.unload = types.MethodType(_unload_prompt_enhancer_text_runtime, model)
     model._offload_hooks = ["forward"]

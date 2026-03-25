@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, io, tempfile, mimetypes
+import os, io, tempfile, mimetypes, urllib.parse
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, Literal
 
 import gradio as gr
@@ -20,6 +20,18 @@ def get_list( objs):
     if objs is None:
         return []
     return [ obj[0] if isinstance(obj, tuple) else obj for obj in objs]
+
+def get_gradio_file_path(item: Any) -> Optional[str]:
+    if isinstance(item, tuple): item = item[0]
+    if not isinstance(item, str):
+        if isinstance(item, dict): item = item.get("path") or item.get("name") or item.get("orig_name") or item.get("url")
+        else: item = getattr(item, "path", None) or getattr(item, "name", None)
+    if not isinstance(item, str) or len(item) == 0: return None
+    if item.startswith("/gradio_api/file="): item = urllib.parse.unquote(item.split("=", 1)[1])
+    elif item.startswith("file://"):
+        item = urllib.parse.unquote(urllib.parse.urlparse(item).path)
+        if os.name == "nt" and len(item) > 2 and item[0] == "/" and item[2] == ":": item = item[1:]
+    return os.path.abspath(os.path.normpath(item))
 
 def record_last_action(st, last_action):
     st["last_action"] = last_action
@@ -115,26 +127,7 @@ class AdvancedMediaGallery:
 
     @staticmethod
     def _extract_path(obj: Any) -> Optional[str]:
-        # Try to get a filesystem path (for mode filtering); otherwise None.
-        if isinstance(obj, str):
-            return obj
-        try:
-            import pathlib
-            if isinstance(obj, pathlib.Path):  # type: ignore
-                return str(obj)
-        except Exception:
-            pass
-        if isinstance(obj, dict):
-            return obj.get("path") or obj.get("name")
-        for attr in ("path", "name"):
-            if hasattr(obj, attr):
-                try:
-                    val = getattr(obj, attr)
-                    if isinstance(val, str):
-                        return val
-                except Exception:
-                    pass
-        return None
+        return get_gradio_file_path(obj)
 
     @staticmethod
     def _is_image_path(p: str) -> bool:

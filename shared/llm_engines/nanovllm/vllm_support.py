@@ -1,3 +1,4 @@
+import copy
 import os
 from typing import Any, Callable, Optional
 
@@ -191,6 +192,15 @@ class NanoVllmTextEngine:
         max_num_batched_tokens = max_model_len * max_num_seqs
         return max_model_len, max_num_seqs, max_num_batched_tokens
 
+    def _get_min_model_len_hint(self):
+        min_model_len = getattr(self.model, "_prompt_enhancer_min_model_len_hint", None)
+        if min_model_len is None:
+            return 8
+        try:
+            return max(8, int(min_model_len))
+        except Exception:
+            return 8
+
     def _ensure_runtime_capacity(self, max_model_len: int, max_num_seqs: int, max_num_batched_tokens: int):
         if self._max_model_len_hint is None:
             self._max_model_len_hint = max_model_len
@@ -217,6 +227,8 @@ class NanoVllmTextEngine:
             max_tokens=max_tokens,
             cfg_scale=cfg_scale,
         )
+        req_model_len = max(req_model_len, self._get_min_model_len_hint())
+        req_num_batched = max(req_num_batched, req_model_len * req_num_seqs)
         self._ensure_runtime_capacity(req_model_len, req_num_seqs, req_num_batched)
 
     def _ensure_llm(self):
@@ -238,6 +250,13 @@ class NanoVllmTextEngine:
         max_model_len = self._max_model_len_hint or 4096
         max_num_seqs = self._max_num_seqs_hint or 1
         max_num_batched_tokens = self._max_num_batched_tokens_hint or (max_model_len * max_num_seqs)
+        hf_config = self.hf_config
+        if hf_config is not None and bool(getattr(self.model, "_prompt_enhancer_allow_extended_context", False)):
+            requested_max_model_len = int(self._max_model_len_hint or 0)
+            configured_max_position_embeddings = int(getattr(hf_config, "max_position_embeddings", 0) or 0)
+            if requested_max_model_len > configured_max_position_embeddings:
+                hf_config = copy.deepcopy(hf_config)
+                hf_config.max_position_embeddings = requested_max_model_len
         self._llm = LLM(
             model=self.model_path,
             enforce_eager=self.enforce_eager,
@@ -245,7 +264,7 @@ class NanoVllmTextEngine:
             max_model_len=max_model_len,
             max_num_seqs=max_num_seqs,
             max_num_batched_tokens=max_num_batched_tokens,
-            hf_config=self.hf_config,
+            hf_config=hf_config,
             tokenizer=self.tokenizer,
             model_object=self.model,
         )

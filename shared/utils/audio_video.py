@@ -1,6 +1,7 @@
 import subprocess
 import tempfile, os
 import ffmpeg
+import struct
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 import cv2
@@ -14,6 +15,7 @@ import os.path as osp
 import json
 import numpy as np
 import soundfile as sf
+import zlib
 
 def rand_name(length=8, suffix=''):
     name = binascii.b2a_hex(os.urandom(length)).decode('utf-8')
@@ -562,21 +564,85 @@ def _dec_uc(b):
     if b.startswith(b"UNICODE\0"):   return b[8:].decode("utf-16le", "ignore")
     return b.decode("utf-8", "ignore")
 
+
+def _blank_exif_dict():
+    return {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
+
+
+def _load_exif_dict(image_path, ext):
+    import piexif
+    try:
+        if ext in (".jpg", ".jpeg"):
+            return piexif.load(image_path)
+        if ext == ".webp":
+            with Image.open(image_path) as im:
+                exif_bytes = im.info.get("exif")
+            return piexif.load(exif_bytes) if exif_bytes else _blank_exif_dict()
+    except Exception:
+        pass
+    return _blank_exif_dict()
+
+
+def _insert_exif_user_comment(image_path, comment_text, ext):
+    import piexif
+    exif_dict = _load_exif_dict(image_path, ext)
+    exif_dict.setdefault("Exif", {})
+    exif_dict["Exif"][piexif.ExifIFD.UserComment] = _enc_uc(comment_text)
+    piexif.insert(piexif.dump(exif_dict), image_path)
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _build_png_chunk(chunk_type, data):
+    return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", zlib.crc32(chunk_type + data) & 0xffffffff)
+
+
+def _is_png_comment_chunk(chunk_type, data):
+    if chunk_type not in {b"tEXt", b"zTXt", b"iTXt"}:
+        return False
+    return data.split(b"\x00", 1)[0] == b"comment"
+
+
+def _write_png_comment_metadata(image_path, comment_text):
+    raw = open(image_path, "rb").read()
+    if not raw.startswith(_PNG_SIGNATURE):
+        raise ValueError("Invalid PNG signature")
+    comment_chunk = _build_png_chunk(b"iTXt", b"comment\x00\x00\x00\x00\x00" + comment_text.encode("utf-8"))
+    out = bytearray(_PNG_SIGNATURE)
+    pos = len(_PNG_SIGNATURE)
+    inserted = False
+    while pos < len(raw):
+        if pos + 8 > len(raw):
+            raise ValueError("Corrupted PNG chunk header")
+        length = struct.unpack(">I", raw[pos:pos + 4])[0]
+        chunk_type = raw[pos + 4:pos + 8]
+        end = pos + 12 + length
+        if end > len(raw):
+            raise ValueError("Corrupted PNG chunk payload")
+        chunk_data = raw[pos + 8:pos + 8 + length]
+        chunk = raw[pos:end]
+        pos = end
+        if _is_png_comment_chunk(chunk_type, chunk_data):
+            continue
+        if not inserted and chunk_type == b"IDAT":
+            out.extend(comment_chunk)
+            inserted = True
+        out.extend(chunk)
+    if not inserted:
+        raise ValueError("PNG image data chunk not found")
+    with open(image_path, "wb") as writer:
+        writer.write(out)
+
 def save_image_metadata(image_path, metadata_dict, **save_kwargs):
     try:
         j = json.dumps(metadata_dict, ensure_ascii=False)
         ext = os.path.splitext(image_path)[1].lower()
-        with Image.open(image_path) as im:
-            if ext == ".png":
-                pi = PngImagePlugin.PngInfo(); pi.add_text("comment", j)
-                im.save(image_path, pnginfo=pi, **save_kwargs); return True
-            if ext in (".jpg", ".jpeg"):
-                im.save(image_path, comment=j.encode("utf-8"), **save_kwargs); return True
-            if ext == ".webp":
-                import piexif
-                exif = {"0th":{}, "Exif":{piexif.ExifIFD.UserComment:_enc_uc(j)}, "GPS":{}, "1st":{}, "thumbnail":None}
-                im.save(image_path, format="WEBP", exif=piexif.dump(exif), **save_kwargs); return True
-            raise ValueError("Unsupported format")
+        if ext == ".png":
+            _write_png_comment_metadata(image_path, j); return True
+        if ext in (".jpg", ".jpeg", ".webp"):
+            _insert_exif_user_comment(image_path, j, ext); return True
+        raise ValueError("Unsupported format")
     except Exception as e:
         print(f"Error saving metadata: {e}"); return False
 
@@ -588,6 +654,14 @@ def read_image_metadata(image_path):
                 val = (getattr(im, "text", {}) or {}).get("comment") or im.info.get("comment")
                 return json.loads(val) if val else None
             if ext in (".jpg", ".jpeg"):
+                import piexif
+                try:
+                    uc = piexif.load(image_path).get("Exif", {}).get(piexif.ExifIFD.UserComment)
+                    s = _dec_uc(uc) if uc else None
+                    if s:
+                        return json.loads(s)
+                except Exception:
+                    pass
                 val = im.info.get("comment")
                 if isinstance(val, (bytes, bytearray)): val = val.decode("utf-8", "ignore")
                 if val:
@@ -602,9 +676,9 @@ def read_image_metadata(image_path):
                         except Exception: pass
                 return None
             if ext == ".webp":
-                exif_bytes = Image.open(image_path).info.get("exif")
-                if not exif_bytes: return None
                 import piexif
+                exif_bytes = im.info.get("exif")
+                if not exif_bytes: return None
                 uc = piexif.load(exif_bytes).get("Exif", {}).get(piexif.ExifIFD.UserComment)
                 s = _dec_uc(uc) if uc else None
                 return json.loads(s) if s else None

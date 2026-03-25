@@ -1,4 +1,5 @@
 {
+	"client_id": "",
 	"prompt": "",
 	"alt_prompt": "",
 	"image_mode":0,
@@ -82,6 +83,7 @@
 	"sliding_window_color_correction_strength": 0,
 	"sliding_window_overlap_noise": 0,
 	"sliding_window_discard_last_frames": 0,
+	"keep_intermediate_sliding_windows": 1,
 	"RIFLEx_setting": 0,
 	"override_profile": -1,
 	"override_attention": "",
@@ -99,6 +101,5 @@
 	"audio_guide": null,
 	"audio_guide2": null,
 	"custom_guide": null,
-	"audio_source": null,
-	"matanyone_version": "v1"
+	"audio_source": null
 }

@@ -1,6 +1,26 @@
 import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 import json
+from shared.deepy.engine import get_or_create_assistant_session
+from shared.gradio import assistant_chat
+from shared.deepy.config import (
+    DEEPY_CONTEXT_TOKENS_DEFAULT,
+    DEEPY_CONTEXT_TOKENS_KEY,
+    DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
+    DEEPY_ENABLED_KEY,
+    DEEPY_VRAM_MODE_KEY,
+    DEEPY_VRAM_MODE_ALWAYS_LOADED,
+    DEEPY_VRAM_MODE_UNLOAD,
+    DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST,
+    deepy_available,
+    format_deepy_context_tokens_label,
+    deepy_requirement_message,
+    normalize_deepy_context_tokens,
+    normalize_deepy_custom_system_prompt,
+    normalize_deepy_enabled,
+    normalize_deepy_vram_mode,
+    set_deepy_runtime_config,
+)
 
 class ConfigTabPlugin(WAN2GPPlugin):
     def __init__(self):
@@ -44,6 +64,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("generate_dropdown_model_list")
         self.request_global("get_unique_id")
         self.request_global("reset_prompt_enhancer")
+        self.request_global("reset_prompt_enhancer_if_requested")
+        self.request_global("release_deepy_vram")
+        self.request_global("any_GPU_process_running")
         self.request_global("apply_int8_kernel_setting")
 
         self.request_component("model_description")
@@ -54,6 +77,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_component("refresh_form_trigger")      
         self.request_component("state")
         self.request_component("resolution")
+        self.request_component("assistant_launcher_host")
+        self.request_component("assistant_panel")
 
         self.add_tab(
             tab_id="configuration",
@@ -62,6 +87,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         )
 
     def create_config_ui(self):
+        set_deepy_runtime_config(self.server_config, self.server_config_filename)
         with gr.Column():
             with gr.Tabs():
                 with gr.Tab("General"):
@@ -178,7 +204,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         label="VAE Tiling (higher presets use less VRAM and may increase artifacts like banding)",
                     )
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
-                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled if Triton availabe", 1)], value=self.server_config.get("enable_int8_kernels", 1), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
+                    self.enable_int8_kernels_choice = gr.Dropdown(choices=[("Disabled", 0), ("Enabled if Triton available", 1)], value=self.server_config.get("enable_int8_kernels", 1), label="Int8 Kernels (Experimental, 10% faster with INT8 quantized checkpoints, requires Triton)")
                     self.video_profile_choice = gr.Dropdown(
                         choices=self.memory_profile_choices,
                         value=self.default_profile_video,
@@ -205,36 +231,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.release_RAM_btn = gr.Button("Force Unload Models from RAM")
 
                 with gr.Tab("Extensions"):
-                    with gr.Group():
-                        self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1), ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2), ("Qwen3.5VL Abliterated 4B (captioning + uncensored text enhancement, vllm accelerated if available)", 3), ("Qwen3.5VL Abliterated 9B (captioning + uncensored high end text enhancement, vllm accelerated if available)", 4)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires extra model files)")
-                        self.enhancer_quantization_choice = gr.Dropdown(
-                            choices=[("Quanto Int8 (better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")],
-                            value=self.server_config.get("prompt_enhancer_quantization", "quanto_int8"),
-                            label="Prompt Enhancer Qwen3.5 LLM Quantization",
-                        )
-                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
-                    with gr.Row():
-                        self.prompt_enhancer_temperature_choice = gr.Slider(
-                            0.1,
-                            1.5,
-                            value=self.server_config.get("prompt_enhancer_temperature", 0.6),
-                            step=0.01,
-                            label="Prompt Enhancer Temperature (High = More Creativity)",
-                            interactive=not self.args.lock_config,
-                        )
-                        self.prompt_enhancer_top_p_choice = gr.Slider(
-                            0.1,
-                            1.0,
-                            value=self.server_config.get("prompt_enhancer_top_p", 0.9),
-                            step=0.01,
-                            label="Prompt Enhancer Top-p (High = More Variety)",
-                            interactive=not self.args.lock_config,
-                        )
-                    self.prompt_enhancer_randomize_seed_choice = gr.Checkbox(
-                        value=self.server_config.get("prompt_enhancer_randomize_seed", True),
-                        label="Randomize Prompt Enhancer Seed",
-                        interactive=not self.args.lock_config,
-                    )
                     mmaudio_mode_default = self.server_config.get("mmaudio_mode", None)
                     mmaudio_persistence_default = self.server_config.get("mmaudio_persistence", None)
                     if mmaudio_mode_default is None:
@@ -266,6 +262,67 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         label="MatAnyone Video Mask Model",
                         interactive=not self.args.lock_config
                     )
+
+                with gr.Tab("Prompt Enhancer / Deepy"):
+                    with gr.Group():
+                        self.enhancer_enabled_choice = gr.Dropdown(choices=[("Off", 0), ("Florence 2 (image captioning) + LLama 3.2 3B (text generation)", 1), ("Florence 2 (image captioning) + Llama Joy 8B (uncensored, richer)", 2), ("Qwen3.5VL Abliterated 4B (captioning + uncensored text enhancement, vllm accelerated if available)", 3), ("Qwen3.5VL Abliterated 9B (captioning + uncensored high end text enhancement, vllm accelerated if available)", 4)], value=self.server_config.get("enhancer_enabled", 0), label="Prompt Enhancer (requires extra model files)")
+                        self.enhancer_quantization_choice = gr.Dropdown(
+                            choices=[("Quanto Int8 (better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")],
+                            value=self.server_config.get("prompt_enhancer_quantization", "quanto_int8"),
+                            label="Qwen3.5 LLM Quantization",
+                        )
+                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
+                    with gr.Row():
+                        self.prompt_enhancer_temperature_choice = gr.Slider(
+                            0.1,
+                            1.5,
+                            value=self.server_config.get("prompt_enhancer_temperature", 0.6),
+                            step=0.01,
+                            label="Prompt Enhancer Temperature (High = More Creativity)",
+                            interactive=not self.args.lock_config,
+                        )
+                        self.prompt_enhancer_top_p_choice = gr.Slider(
+                            0.1,
+                            1.0,
+                            value=self.server_config.get("prompt_enhancer_top_p", 0.9),
+                            step=0.01,
+                            label="Prompt Enhancer Top-p (High = More Variety)",
+                            interactive=not self.args.lock_config,
+                        )
+                    self.prompt_enhancer_randomize_seed_choice = gr.Checkbox(
+                        value=self.server_config.get("prompt_enhancer_randomize_seed", True),
+                        label="Randomize Prompt Enhancer Seed",
+                        interactive=not self.args.lock_config,
+                    )
+                    self.deepy_enabled_choice = gr.Dropdown(
+                        choices=[("Off", 0), ("On", 1)],
+                        value=normalize_deepy_enabled(self.server_config.get(DEEPY_ENABLED_KEY, 0)),
+                        label="Enable Deepy",
+                    )
+                    self.deepy_vram_mode_choice = gr.Dropdown(
+                        choices=[
+                            ("Unload from VRAM as soon as possible", DEEPY_VRAM_MODE_UNLOAD),
+                            ("Unload from VRAM if VRAM requested by another WanGP component", DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST),
+                            ("Always loaded in VRAM", DEEPY_VRAM_MODE_ALWAYS_LOADED),
+                        ],
+                        value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD)),
+                        label="Deepy VRAM Loading Mode (the longer Deepy stays in VRAM, the faster Deeper is    )",
+                    )
+                    deepy_context_tokens_default = normalize_deepy_context_tokens(self.server_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
+                    self.deepy_context_tokens_choice = gr.Slider(
+                        minimum=4096,
+                        maximum=256000,
+                        value=deepy_context_tokens_default,
+                        step=512,
+                        label=format_deepy_context_tokens_label(self.server_config.get("enhancer_enabled", 0), deepy_context_tokens_default),
+                    )
+                    self.deepy_custom_system_prompt_choice = gr.Textbox(
+                        value=normalize_deepy_custom_system_prompt(self.server_config.get(DEEPY_CUSTOM_SYSTEM_PROMPT_KEY, "")),
+                        lines=6,
+                        label="Custom System Prompt",
+                        info="Added after the built-in Deepy system prompt on the next user interaction.",
+                    )
+                    self.deepy_requirement_md = gr.Markdown(value=deepy_requirement_message(self.server_config))
 
                 with gr.Tab("Outputs"):
                     self.video_output_codec_choice = gr.Dropdown(choices=[("x265 CRF 28 (Balanced)", 'libx265_28'), ("x264 Level 8 (Balanced)", 'libx264_8'), ("x265 CRF 8 (High Quality)", 'libx265_8'), ("x264 Level 10 (High Quality)", 'libx264_10'), ("x264 Lossless", 'libx264_lossless')], value=self.server_config.get("video_output_codec", "libx264_8"), label="Video Codec")
@@ -300,6 +357,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         choices=[("Export JSON files", "json"), ("Embed metadata in file (Exif/tag)", "metadata"), ("None", "none")],
                         value=self.server_config.get("metadata_type", "metadata"), label="Metadata Handling"
                     )
+                    self.keep_intermediate_sliding_windows_choice = gr.Dropdown(
+                        choices=[("Yes", 1), ("No", 0)],
+                        value=self.server_config.get("keep_intermediate_sliding_windows", 1),
+                        label="Keep Intermediate Sliding Windows"
+                    )
                     self.embed_source_images_choice = gr.Checkbox(
                         value=self.server_config.get("embed_source_images", False),
                         label="Embed Source Images",
@@ -317,10 +379,23 @@ class ConfigTabPlugin(WAN2GPPlugin):
             with gr.Row():
                 self.apply_btn = gr.Button("Save Settings")
 
+        def update_deepy_requirement(enhancer_enabled_choice):
+            runtime_config = dict(self.server_config)
+            runtime_config["enhancer_enabled"] = enhancer_enabled_choice
+            return deepy_requirement_message(runtime_config)
+
+        self.enhancer_enabled_choice.input(fn=update_deepy_requirement, inputs=[self.enhancer_enabled_choice], outputs=[self.deepy_requirement_md], show_progress="hidden")
+
+        def update_deepy_context_label(enhancer_enabled_choice, deepy_context_tokens_choice):
+            return gr.update(label=format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice))
+
+        self.enhancer_enabled_choice.input(fn=update_deepy_context_label, inputs=[self.enhancer_enabled_choice, self.deepy_context_tokens_choice], outputs=[self.deepy_context_tokens_choice], show_progress="hidden")
+        self.deepy_context_tokens_choice.input(fn=update_deepy_context_label, inputs=[self.enhancer_enabled_choice, self.deepy_context_tokens_choice], outputs=[self.deepy_context_tokens_choice], show_progress="hidden")
+
         inputs = [
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
-            self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice,
+            self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.keep_intermediate_sliding_windows_choice,
             self.display_stats_choice, self.max_frames_multiplier_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice, self.save_queue_if_crash_choice,
             self.UI_theme_choice, self.queue_color_scheme_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
@@ -331,6 +406,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.enhancer_enabled_choice, self.enhancer_quantization_choice, self.enhancer_mode_choice,
             self.prompt_enhancer_temperature_choice, self.prompt_enhancer_top_p_choice, self.prompt_enhancer_randomize_seed_choice,
             self.mmaudio_mode_choice, self.mmaudio_persistence_choice, self.rife_version_choice, self.matanyone_version_choice,
+            self.deepy_enabled_choice, self.deepy_vram_mode_choice,
+            self.deepy_context_tokens_choice, self.deepy_custom_system_prompt_choice,
             self.video_output_codec_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
@@ -348,18 +425,40 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 self.model_family,
                 self.model_base_type_choice,
                 self.model_choice,
-                self.refresh_form_trigger
+                self.refresh_form_trigger,
+                self.assistant_launcher_host,
+                self.assistant_panel
             ]
         )
 
-        def release_ram_and_notify():
-            if self.is_generation_in_progress():
-                gr.Info("Unable to unload Models when a generation is in progress.")            
-            else:
-                self.release_model()
-                gr.Info("Models unloaded from RAM.")
-        
-        self.release_RAM_btn.click(fn=release_ram_and_notify)
+        def _unload_targets_text():
+            targets = ["Models"]
+            try:
+                enhancer_enabled = int(self.server_config.get("enhancer_enabled", 0) or 0) > 0
+            except Exception:
+                enhancer_enabled = False
+            if enhancer_enabled:
+                targets.append("Prompt Enhancer")
+            if deepy_available(self.server_config):
+                targets.append("Deepy")
+            if len(targets) == 1:
+                return targets[0]
+            return ", ".join(targets[:-1]) + f", and {targets[-1]}" if len(targets) > 2 else " and ".join(targets)
+
+        def release_ram_and_notify(state):
+            unload_targets = _unload_targets_text()
+            if self.any_GPU_process_running(state, "configuration"):
+                gr.Info(f"Unable to unload {unload_targets} while GPU resources are allocated.")
+                return
+            if deepy_available(self.server_config):
+                self.release_deepy_vram(state, clear_session_state=False, discard_runtime_snapshot=True)
+            if "Prompt Enhancer" in unload_targets:
+                self.reset_prompt_enhancer()
+                self.reset_prompt_enhancer_if_requested()
+            self.release_model()
+            gr.Info(f"{unload_targets} unloaded from RAM.")
+
+        self.release_RAM_btn.click(fn=release_ram_and_notify, inputs=[self.state])
         return [self.release_RAM_btn]
 
     def _save_changes(self, state, *args):
@@ -367,13 +466,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
         # return "<div style='color:red; text-align:center;'>Unable to change config when a generation is in progress.</div>", *[gr.update()]*5
 
         if self.args.lock_config:
-            return "<div style='color:red; text-align:center;'>Configuration is locked by command-line arguments.</div>", *[gr.update()]*5
+            return "<div style='color:red; text-align:center;'>Configuration is locked by command-line arguments.</div>", *[gr.update()]*8
 
         old_server_config = self.server_config.copy()
 
         (
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
-            attention_choice, preload_model_policy_choice, clear_file_list_choice,
+            attention_choice, preload_model_policy_choice, clear_file_list_choice, keep_intermediate_sliding_windows_choice,
             display_stats_choice, max_frames_multiplier_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice, save_queue_if_crash_choice,
             UI_theme_choice, queue_color_scheme_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
@@ -384,6 +483,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             enhancer_enabled_choice, enhancer_quantization_choice, enhancer_mode_choice,
             prompt_enhancer_temperature_choice, prompt_enhancer_top_p_choice, prompt_enhancer_randomize_seed_choice,
             mmaudio_mode_choice, mmaudio_persistence_choice, rife_version_choice, matanyone_version_choice,
+            deepy_enabled_choice, deepy_vram_mode_choice,
+            deepy_context_tokens_choice, deepy_custom_system_prompt_choice,
             video_output_codec_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice,
@@ -400,7 +501,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         mmaudio_enabled_choice = 0 if mmaudio_mode_choice == 0 else mmaudio_persistence_choice
 
-        new_server_config = {
+        new_server_config = dict(old_server_config)
+        new_server_config.update({
             "attention_mode": attention_choice, "transformer_types": transformer_types_choices,
             "text_encoder_quantization": text_encoder_quantization_choice, "save_path": save_path_choice,
             "image_save_path": image_save_path_choice, "audio_save_path": audio_save_path_choice,
@@ -411,6 +513,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "mixed_precision": mixed_precision_choice, "metadata_type": metadata_choice,
             "transformer_quantization": quantization_choice, "transformer_dtype_policy": transformer_dtype_policy_choice,
             "boost": boost_choice, "enable_int8_kernels": enable_int8_kernels_choice, "clear_file_list": clear_file_list_choice,
+            "keep_intermediate_sliding_windows": keep_intermediate_sliding_windows_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
             "fit_canvas": fit_canvas_choice, "enhancer_enabled": enhancer_enabled_choice,
             "prompt_enhancer_quantization": enhancer_quantization_choice,
@@ -420,6 +523,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "prompt_enhancer_temperature": prompt_enhancer_temperature_choice,
             "prompt_enhancer_top_p": prompt_enhancer_top_p_choice,
             "prompt_enhancer_randomize_seed": prompt_enhancer_randomize_seed_choice,
+            DEEPY_ENABLED_KEY: normalize_deepy_enabled(deepy_enabled_choice),
+            DEEPY_VRAM_MODE_KEY: normalize_deepy_vram_mode(deepy_vram_mode_choice),
+            DEEPY_CONTEXT_TOKENS_KEY: normalize_deepy_context_tokens(deepy_context_tokens_choice),
+            DEEPY_CUSTOM_SYSTEM_PROMPT_KEY: normalize_deepy_custom_system_prompt(deepy_custom_system_prompt_choice),
             "preload_in_VRAM": preload_in_VRAM_choice, "depth_anything_v2_variant": depth_anything_v2_variant_choice,
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
@@ -441,10 +548,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "last_model_per_type": state["last_model_per_type"],
             "last_advanced_choice": state["advanced"], "last_resolution_choice": last_resolution_choice,
             "last_resolution_per_group": state["last_resolution_per_group"],
-        }
-        
-        if "enabled_plugins" in self.server_config:
-            new_server_config["enabled_plugins"] = self.server_config["enabled_plugins"]
+        })
 
         if self.args.lock_config:
             if "attention_mode" in old_server_config: new_server_config["attention_mode"] = old_server_config["attention_mode"]
@@ -457,10 +561,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         no_reload_keys = [
             "attention_mode", "vae_config", "boost", "enable_int8_kernels", "save_path", "image_save_path", "audio_save_path",
-            "metadata_type", "clear_file_list", "fit_canvas", "depth_anything_v2_variant",
+            "metadata_type", "clear_file_list", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", "mmaudio_mode",
             "mmaudio_persistence", "mmaudio_enabled", "rife_version", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization",
+            DEEPY_ENABLED_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
             "model_hierarchy_type", "UI_theme", "queue_color_scheme"
@@ -488,10 +593,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.set_global("transformer_quantization", new_server_config["transformer_quantization"])
         self.set_global("transformer_dtype_policy", new_server_config["transformer_dtype_policy"])
         self.set_global("transformer_types", new_server_config["transformer_types"])
-        self.set_global("reload_needed", needs_reload)
+        set_deepy_runtime_config(new_server_config, self.server_config_filename)
+        if needs_reload: self.set_global("reload_needed", True)
         self.server_config.update(new_server_config)
 
-        if "enhancer_enabled" in changes or "enhancer_mode" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes:
+        if "enhancer_enabled" in changes or "enhancer_mode" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes or DEEPY_ENABLED_KEY in changes or DEEPY_VRAM_MODE_KEY in changes:
+            get_or_create_assistant_session(state).force_loading_status_once = True
+            self.release_deepy_vram(state, clear_session_state=False)
             self.reset_prompt_enhancer()
         if "enable_int8_kernels" in changes:
             self.apply_int8_kernel_setting(new_server_config["enable_int8_kernels"], True)
@@ -506,12 +614,18 @@ class ConfigTabPlugin(WAN2GPPlugin):
         else:
             msg = "<div style='color:green; text-align:center;'>The new configuration has been succesfully applied.</div>"
 
-        return (msg
-            ,
+        deepy_visible = deepy_available(new_server_config)
+        launcher_update = gr.update(value=assistant_chat.render_launcher_html() if deepy_visible else "", visible=deepy_visible)
+        panel_update = gr.update(visible=deepy_visible)
+
+        return (
+            msg,
             description_update,
             header_update,
             model_family_update,
             model_base_type_update,
             model_choice_update,
-            self.get_unique_id()
+            self.get_unique_id(),
+            launcher_update,
+            panel_update,
         )

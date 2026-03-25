@@ -10,7 +10,7 @@ from ..ltx_core.components.protocols import DiffusionStepProtocol
 from ..ltx_core.components.schedulers import LTX2Scheduler
 from ..ltx_core.loader import LoraPathStrengthAndSDOps
 from ..ltx_core.model.audio_vae import decode_audio as vae_decode_audio
-from ..ltx_core.model.video_vae import decode_video as vae_decode_video
+from ..ltx_core.model.video_vae import decode_video_to_tensor as vae_decode_video_to_tensor
 from ..ltx_core.text_encoders.gemma import encode_text, postprocess_text_embeddings, resolve_text_connectors
 from ..ltx_core.tools import VideoLatentTools
 from ..ltx_core.types import LatentState, VideoPixelShape
@@ -269,7 +269,14 @@ class TI2VidOneStagePipeline:
         del transformer
         cleanup_memory()
 
-        decoded_video = vae_decode_video(video_state.latent, self.model_ledger.video_decoder())
+        decoded_video = vae_decode_video_to_tensor(
+            video_state.latent,
+            self.model_ledger.video_decoder(),
+            expected_frames=int(stage_1_output_shape.frames),
+            expected_height=int(stage_1_output_shape.height),
+            expected_width=int(stage_1_output_shape.width),
+            interrupt_check=interrupt_check,
+        )
         decoded_audio = vae_decode_audio(
             audio_state.latent, self.model_ledger.audio_decoder(), self.model_ledger.vocoder()
         )

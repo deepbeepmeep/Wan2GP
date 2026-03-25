@@ -19,6 +19,7 @@ from typing import Any, Iterator, Sequence
 
 from PIL import Image
 
+from shared.utils.process_locks import set_main_generation_running
 from shared.utils.thread_utils import AsyncStream
 
 _RUNTIME_LOCK = threading.RLock()
@@ -480,10 +481,10 @@ class WanGPSession:
                     return
                 stream.output_queue.push(command, data)
 
-            validated_settings = wgp.validate_task(task, self._state)
+            validated_settings, validation_error = wgp.validate_task(task, self._state)
             if validated_settings is None:
                 failure = GenerationError(
-                    message=f"Task {task_index} failed validation",
+                    message=validation_error or f"Task {task_index} failed validation",
                     task_index=task_index,
                     task_id=task_id,
                     stage="validation",
@@ -668,6 +669,7 @@ class WanGPSession:
     def _prepare_state_for_run(self, tasks: list[dict[str, Any]]) -> None:
         gen = self._state["gen"]
         gen["queue"] = tasks
+        set_main_generation_running(self._state, True)
         gen["process_status"] = "process:main"
         gen["progress_status"] = ""
         gen["progress_phase"] = ("", -1)
@@ -682,6 +684,7 @@ class WanGPSession:
     def _reset_state_after_run(self) -> None:
         gen = self._state["gen"]
         gen["queue"] = []
+        set_main_generation_running(self._state, False)
         gen["process_status"] = "process:main"
         gen["progress_status"] = ""
         gen["progress_phase"] = ("", -1)

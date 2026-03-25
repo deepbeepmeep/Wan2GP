@@ -7,7 +7,7 @@ from .model_configurator import (
     VideoEncoderConfigurator,
 )
 from .tiling import SpatialTilingConfig, TemporalTilingConfig, TilingConfig
-from .video_vae import VideoDecoder, VideoEncoder, decode_video, encode_video, get_video_chunks_number
+from .video_vae import VideoDecoder, VideoEncoder, decode_video, decode_video_to_tensor, encode_video, get_video_chunks_number
 
 __all__ = [
     "VAE_DECODER_COMFY_KEYS_FILTER",
@@ -20,6 +20,7 @@ __all__ = [
     "VideoEncoder",
     "VideoEncoderConfigurator",
     "decode_video",
+    "decode_video_to_tensor",
     "encode_video",
     "get_video_chunks_number",
 ]

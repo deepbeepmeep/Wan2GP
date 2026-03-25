@@ -258,17 +258,17 @@ class WanSelfAttention(nn.Module):
             qvl_list=[q, k, v]
             if not return_q: del q
             del k, v
-            x = pay_attention(qvl_list,  cross_attn= True)
+            x = pay_attention(qvl_list, recycle_q = not return_q)
             x = x.flatten(2, 3)
         else:
             nag_tau = offload.shared_state["_nag_tau"]
             nag_alpha = offload.shared_state["_nag_alpha"]
             qvl_list=[q, k[:1], v[:1]]
-            x_pos = pay_attention(qvl_list,  cross_attn= True)
+            x_pos = pay_attention(qvl_list)
             qvl_list=[q, k[1:], v[1:]]
             if not return_q: del q
             del k, v
-            x_neg = pay_attention(qvl_list,  cross_attn= True)
+            x_neg = pay_attention(qvl_list, recycle_q = not return_q)
 
             x_pos = x_pos.flatten(2, 3)
             x_neg = x_neg.flatten(2, 3)
@@ -379,7 +379,7 @@ class WanSelfAttention(nn.Module):
             qkv_list = [q,k,v]
             del q,k,v
 
-            x = pay_attention( qkv_list, window_size=self.window_size)
+            x = pay_attention( qkv_list, recycle_q=True)
 
         else:
             with sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
@@ -435,7 +435,7 @@ class WanT2VCrossAttention(WanSelfAttention):
             ip_value = ip_value.view(batch_size, -1, self.num_heads, ip_head_dim)
             qkv_list = [q, ip_key, ip_value]
             del q, ip_key, ip_value
-            ip_hidden_states = pay_attention(qkv_list).reshape(*x.shape)
+            ip_hidden_states = pay_attention(qkv_list, recycle_q= True).reshape(*x.shape)
             x.add_(ip_hidden_states, alpha= lynx_ip_scale)
 
         x = self.o(x)
@@ -484,7 +484,7 @@ class WanI2VCrossAttention(WanSelfAttention):
             k_img, v_img = k_img.expand(b, -1, -1, -1), v_img.expand(b, -1, -1, -1)
         qkv_list = [q, k_img, v_img]
         del q, k_img, v_img
-        img_x = pay_attention(qkv_list)
+        img_x = pay_attention(qkv_list, recycle_q = True)
         img_x = img_x.flatten(2)
 
         # output
@@ -968,14 +968,27 @@ class WanModel(ModelMixin, ConfigMixin):
         if first.startswith("lora_unet_"):
             new_sd = {}
             print("Converting Lora Safetensors format to Lora Diffusers format")
-            alphas = {}
             repl_list = ["cross_attn", "self_attn", "ffn"]
             src_list = ["_" + k + "_" for k in repl_list]
             tgt_list = ["." + k + "." for k in repl_list]
+            top_level_repl_list = [
+                ("lora_unet__head_head", "diffusion_model.head.head"),
+                ("lora_unet_head_head", "diffusion_model.head.head"),
+                ("lora_unet__img_emb_proj_", "diffusion_model.img_emb.proj."),
+                ("lora_unet_img_emb_proj_", "diffusion_model.img_emb.proj."),
+                ("lora_unet__text_embedding_", "diffusion_model.text_embedding."),
+                ("lora_unet_text_embedding_", "diffusion_model.text_embedding."),
+                ("lora_unet__time_embedding_", "diffusion_model.time_embedding."),
+                ("lora_unet_time_embedding_", "diffusion_model.time_embedding."),
+                ("lora_unet__time_projection_", "diffusion_model.time_projection."),
+                ("lora_unet_time_projection_", "diffusion_model.time_projection."),
+            ]
 
             for k,v in sd.items():
                 k = k.replace("lora_unet_blocks_","diffusion_model.blocks.")
                 k = k.replace("lora_unet__blocks_","diffusion_model.blocks.")
+                for src, tgt in top_level_repl_list:
+                    k = k.replace(src, tgt)
 
                 for s,t in zip(src_list, tgt_list):
                     k = k.replace(s,t)

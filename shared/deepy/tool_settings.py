@@ -590,6 +590,13 @@ def build_generation_task(
     has_image_start = len(str(task.get("image_start", "") or "").strip()) > 0
     has_image_end = len(str(task.get("image_end", "") or "").strip()) > 0
     has_image_refs = any(len(str(path).strip()) > 0 for path in task.get("image_refs", []) or [])
+    image_prompt_type = str(task.get("image_prompt_type", "") or "").strip()
+    if not uses_image_refs and not has_image_start and "S" in image_prompt_type and "T" in image_prompt_types_allowed:
+        image_prompt_type = image_prompt_type.replace("S", "")
+        image_prompt_type = _add_unique_flags(image_prompt_type, "T")
+    if not has_image_end and "E" in image_prompt_type:
+        image_prompt_type = image_prompt_type.replace("E", "")
+    task["image_prompt_type"] = image_prompt_type
     if has_image_start:
         if "S" not in image_prompt_types_allowed:
             raise ValueError("This preset does not support a Start Image.")

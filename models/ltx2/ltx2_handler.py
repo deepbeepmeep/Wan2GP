@@ -174,6 +174,7 @@ class family_handler:
             "self_refiner": True,
             "self_refiner_max_plans": 2,
             "no_background_removal": True,
+            "vae_block_size": 64,
         }
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"] = True
@@ -272,10 +273,6 @@ class family_handler:
         # if base_model_type == "ltx2_22B":
         #     return getattr(args, "lora_dir_ltx2_22b", None) or os.path.join(lora_root, "ltx2_22B")
         return getattr(args, "lora_dir_ltx2", None) or os.path.join(lora_root, "ltx2")
-
-    @staticmethod
-    def get_vae_block_size(base_model_type):
-        return 64
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

@@ -282,7 +282,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                                 deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
                                 value=tool_ui_state["width"],
                                 step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
-                                label="Width",
+                                label="Default Width",
                                 interactive=not tool_ui_state["use_template_properties"],
                             )
                             override_height = gr.Slider(
@@ -290,7 +290,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                                 deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
                                 value=tool_ui_state["height"],
                                 step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
-                                label="Height",
+                                label="Default Height",
                                 interactive=not tool_ui_state["use_template_properties"],
                             )
                         override_num_frames = gr.Slider(
@@ -298,7 +298,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                             deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MAX,
                             value=tool_ui_state["num_frames"],
                             step=1,
-                            label="Number of Frames",
+                            label="Default Number of Frames",
                             interactive=not tool_ui_state["use_template_properties"],
                         )
                         override_seed = gr.Slider(

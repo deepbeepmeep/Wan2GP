@@ -548,10 +548,10 @@ class tools:
     def _is_interrupted(self) -> bool:
         return self.session is not None and self.session.interrupt_requested
 
-    def _interrupted_result(self, client_id: str, task: dict[str, Any]) -> dict[str, Any]:
+    def _interrupted_result(self, client_id: str, task: dict[str, Any], *, force_cancel_queue: bool = False) -> dict[str, Any]:
         self._log(f"Generation interrupted for {client_id}")
         cancel_result = {}
-        if self._auto_cancel_queue_tasks_enabled() and len(str(client_id or "").strip()) > 0:
+        if (force_cancel_queue or self._auto_cancel_queue_tasks_enabled()) and len(str(client_id or "").strip()) > 0:
             queue = list((self.gen or {}).get("queue", []) or [])
             if self._queue_contains_client_id(queue, client_id):
                 self.send_cmd("abort_client_id", str(client_id))
@@ -671,15 +671,49 @@ class tools:
         template_label = Path(self.get_tool_template_filename(tool_name)).stem.strip()
         return label if len(template_label) == 0 else f"{label} [{template_label}]"
 
-    def _apply_generation_overrides(self, task: dict[str, Any], *, include_num_frames: bool) -> dict[str, Any]:
+    def _parse_generation_resolution(self, resolution: Any) -> tuple[int | None, int | None]:
+        width_text, separator, height_text = str(resolution or "").strip().lower().partition("x")
+        if separator != "x":
+            return None, None
+        try:
+            return int(width_text), int(height_text)
+        except Exception:
+            return None, None
+
+    def _apply_generation_overrides(self, tool_name: str, task: dict[str, Any], *, include_num_frames: bool, width: int | None = None, height: int | None = None, num_frames: int | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         ui_settings = self._get_tool_ui_settings()
         if ui_settings["use_template_properties"]:
-            return task
-        task["resolution"] = f"{ui_settings['width']}x{ui_settings['height']}"
-        task["seed"] = int(ui_settings["seed"])
+            base_resolution = str(task.get("resolution", "") or "").strip()
+            base_num_frames = task.get("video_length", None) if include_num_frames else None
+        else:
+            base_resolution = f"{ui_settings['width']}x{ui_settings['height']}"
+            task["seed"] = int(ui_settings["seed"])
+            if include_num_frames:
+                base_num_frames = int(ui_settings["num_frames"])
+        default_width, default_height = self._parse_generation_resolution(base_resolution)
+        if default_width is None or default_height is None or default_width <= 0 or default_height <= 0:
+            return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": base_resolution, "error": "Template/default settings do not define a valid resolution."}
+        try:
+            width = default_width if width is None or str(width).strip() == "" else int(width)
+            height = default_height if height is None or str(height).strip() == "" else int(height)
+        except Exception:
+            return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": base_resolution, "error": "width and height must be integers."}
+        min_dim = int(deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN)
+        max_dim = int(deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX)
+        if width < min_dim or width > max_dim or height < min_dim or height > max_dim:
+            return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": f"{width}x{height}", "error": f"width and height must stay between {min_dim} and {max_dim}."}
+        task["resolution"] = f"{width}x{height}"
         if include_num_frames:
-            task["video_length"] = int(ui_settings["num_frames"])
-        return task
+            try:
+                num_frames = base_num_frames if num_frames is None or str(num_frames).strip() == "" else int(num_frames)
+            except Exception:
+                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "num_frames must be an integer."}
+            min_frames = int(deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MIN)
+            max_frames = int(deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MAX)
+            if num_frames is None or num_frames < min_frames or num_frames > max_frames:
+                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": f"num_frames must stay between {min_frames} and {max_frames}."}
+            task["video_length"] = int(num_frames)
+        return task, None
 
     def _build_generation_task(self, tool_name: str, variant: str, *, prompt: str, client_id: str, **kwargs) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         try:
@@ -1040,10 +1074,14 @@ class tools:
         self.send_cmd("load_queue_trigger", {"client_id": client_id})
         self._log(f"Queued {activity_label} for {client_id}")
 
-        queue_detect_deadline = time.time() + 5
-        while time.time() < queue_detect_deadline:
+        queue_admitted = False
+        queue_wait_started_at = time.time()
+        queue_wait_suspended = False
+        queue_wait_suspend_logged = False
+        activity_console_label = activity_label.capitalize()
+        while True:
             if self._is_interrupted():
-                return self._interrupted_result(client_id, task)
+                return self._interrupted_result(client_id, task, force_cancel_queue=True)
             queue_errors = gen.get("queue_errors", None) or {}
             if client_id in queue_errors:
                 error_text = str(queue_errors[client_id][0])
@@ -1061,14 +1099,21 @@ class tools:
                 return result
             queue = list(gen.get("queue", []) or [])
             if self._queue_contains_client_id(queue, client_id):
+                queue_admitted = True
+                if queue_wait_suspended:
+                    print(f"WanGP back in focus tool {activity_console_label} resumed")
                 self._set_status(f"{activity_label.capitalize()} started...", kind="tool")
                 self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
                 break
+            if not queue_wait_suspend_logged and time.time() - queue_wait_started_at >= 10:
+                print(f"Tool {activity_console_label} suspended while waiting than WanGP Video Generator gets in focus")
+                queue_wait_suspend_logged = True
+                queue_wait_suspended = True
             time.sleep(0.25)
 
         while True:
             if self._is_interrupted():
-                return self._interrupted_result(client_id, task)
+                return self._interrupted_result(client_id, task, force_cancel_queue=True)
             queue_errors = gen.get("queue_errors", None) or {}
             if client_id in queue_errors:
                 error_text = str(queue_errors[client_id][0])
@@ -1132,10 +1177,20 @@ class tools:
             "prompt": {
                 "type": "string",
                 "description": "The image generation prompt to send to WanGP.",
-            }
+            },
+            "width": {
+                "type": "integer",
+                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
+            "height": {
+                "type": "integer",
+                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
         },
     )
-    def gen_image(self, prompt: str) -> dict[str, Any]:
+    def gen_image(self, prompt: str, width: int | None = None, height: int | None = None) -> dict[str, Any]:
         client_id = _next_ai_client_id()
         generator_variant = self._get_tool_ui_settings()["image_generator_variant"]
         template_file = self.get_tool_template_filename("gen_image")
@@ -1145,7 +1200,12 @@ class tools:
             if len(template_file) > 0:
                 error_result["template_file"] = template_file
             return error_result
-        task = self._apply_generation_overrides(task, include_num_frames=False)
+        task, error_result = self._apply_generation_overrides("gen_image", task, include_num_frames=False, width=width, height=height)
+        if error_result is not None:
+            error_result["generator_variant"] = generator_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            return error_result
         if len(task["prompt"]) == 0:
             self._set_status("Image generation failed: prompt is empty.", kind="error")
             return {
@@ -1180,9 +1240,24 @@ class tools:
                 "description": "Optional media id of the end image returned by Resolve Media.",
                 "required": False,
             },
+            "width": {
+                "type": "integer",
+                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
+            "height": {
+                "type": "integer",
+                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
+            "num_frames": {
+                "type": "integer",
+                "description": "Optional output frame count. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
         },
     )
-    def gen_video(self, prompt: str, image_start: str | None = None, image_end: str | None = None) -> dict[str, Any]:
+    def gen_video(self, prompt: str, image_start: str | None = None, image_end: str | None = None, width: int | None = None, height: int | None = None, num_frames: int | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         start_media, error_result = self._resolve_image_media(image_start or "", "image_start")
         if error_result is not None:
@@ -1212,7 +1287,16 @@ class tools:
             if end_media is not None:
                 error_result["source_end_media_id"] = end_media.get("media_id", "")
             return error_result
-        task = self._apply_generation_overrides(task, include_num_frames=True)
+        task, error_result = self._apply_generation_overrides("gen_video", task, include_num_frames=True, width=width, height=height, num_frames=num_frames)
+        if error_result is not None:
+            error_result["generator_variant"] = generator_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            if start_media is not None:
+                error_result["source_start_media_id"] = start_media.get("media_id", "")
+            if end_media is not None:
+                error_result["source_end_media_id"] = end_media.get("media_id", "")
+            return error_result
         if len(task["prompt"]) == 0:
             self._set_status("Video generation failed: prompt is empty.", kind="error")
             return {
@@ -1249,9 +1333,24 @@ class tools:
                 "type": "string",
                 "description": "The media id of the speech audio returned by Resolve Media.",
             },
+            "width": {
+                "type": "integer",
+                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
+            "height": {
+                "type": "integer",
+                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
+            "num_frames": {
+                "type": "integer",
+                "description": "Optional output frame count. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
         },
     )
-    def gen_video_with_speech(self, prompt: str, image_start: str, audio_media_id: str) -> dict[str, Any]:
+    def gen_video_with_speech(self, prompt: str, image_start: str, audio_media_id: str, width: int | None = None, height: int | None = None, num_frames: int | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         start_media, error_result = self._resolve_image_media(image_start, "image_start")
         if error_result is not None:
@@ -1281,7 +1380,15 @@ class tools:
             error_result["source_audio_media_id"] = audio_media.get("media_id", "")
             error_result["image_start_target"] = self._get_image_start_target("gen_video_with_speech")
             return error_result
-        task = self._apply_generation_overrides(task, include_num_frames=True)
+        task, error_result = self._apply_generation_overrides("gen_video_with_speech", task, include_num_frames=True, width=width, height=height, num_frames=num_frames)
+        if error_result is not None:
+            error_result["generator_variant"] = generator_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            error_result["source_start_media_id"] = start_media.get("media_id", "")
+            error_result["source_audio_media_id"] = audio_media.get("media_id", "")
+            error_result["image_start_target"] = self._get_image_start_target("gen_video_with_speech")
+            return error_result
         if len(task["prompt"]) == 0:
             self._set_status("Video generation failed: prompt is empty.", kind="error")
             return {
@@ -1432,9 +1539,19 @@ class tools:
                 "type": "string",
                 "description": "The instruction prompt describing how to modify the image.",
             },
+            "width": {
+                "type": "integer",
+                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
+            "height": {
+                "type": "integer",
+                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
         },
     )
-    def edit_image(self, media_id: str, prompt: str) -> dict[str, Any]:
+    def edit_image(self, media_id: str, prompt: str, width: int | None = None, height: int | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         if self.session is None:
             return {"status": "error", "media_id": str(media_id or "").strip(), "prompt": str(prompt or "").strip(), "output_file": "", "error": "Assistant session is not available."}
@@ -1466,7 +1583,13 @@ class tools:
                 error_result["template_file"] = template_file
             error_result["media_id"] = media_record.get("media_id", "")
             return error_result
-        task = self._apply_generation_overrides(task, include_num_frames=False)
+        task, error_result = self._apply_generation_overrides("edit_image", task, include_num_frames=False, width=width, height=height)
+        if error_result is not None:
+            error_result["editor_variant"] = editor_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            error_result["media_id"] = media_record.get("media_id", "")
+            return error_result
         if len(task["prompt"]) == 0:
             return {
                 "status": "error",

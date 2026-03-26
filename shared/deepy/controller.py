@@ -76,6 +76,7 @@ def _unload_prompt_enhancer_runtime(prompt_enhancer_image_caption_model, prompt_
 class DeepyController:
     def __init__(self, deps: DeepyDeps):
         self._deps = deps
+        self._active_assistant_session: Any | None = None
 
     def get_verbose_level(self) -> int:
         try:
@@ -93,6 +94,15 @@ class DeepyController:
 
     def _server_config(self) -> dict[str, Any]:
         return self._deps.get_server_config() or {}
+
+    def _reset_foreign_active_session(self, session) -> bool:
+        active_session = self._active_assistant_session
+        if active_session is None or active_session is session:
+            return False
+        request_assistant_reset(active_session)
+        assistant_chat.reset_session_chat(active_session)
+        active_session.chat_html = ""
+        return True
 
     def is_available(self) -> bool:
         return deepy_available(self._server_config())
@@ -302,6 +312,7 @@ class DeepyController:
             return assistant_chat.build_event_batch(payloads)
 
         session = get_or_create_assistant_session(state)
+        foreign_session_reset = self._reset_foreign_active_session(session)
         ask_request = str(ask_request or "").strip()
         if len(ask_request) == 0:
             yield gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
@@ -314,7 +325,7 @@ class DeepyController:
         gen = self._deps.get_gen_info(state)
         com_stream = AsyncStream()
         send_cmd = com_stream.output_queue.push
-        queued = session.worker_active or session.queued_job_count > 0
+        queued = foreign_session_reset or session.worker_active or session.queued_job_count > 0
         queued_epoch = session.chat_epoch
         session.queued_job_count += 1
         user_message_id, _user_event = assistant_chat.add_user_message(session, ask_request, queued=queued)
@@ -330,6 +341,7 @@ class DeepyController:
             session.interrupt_requested = False
             session.control_queue = com_stream.output_queue
             session.worker_active = True
+            self._active_assistant_session = session
             begin_assistant_turn(session, user_message_id, ask_request)
             send_cmd("chat_output", assistant_chat.build_sync_event(session))
             queued_badge_event = assistant_chat.set_message_badge(session, user_message_id, None)
@@ -346,6 +358,8 @@ class DeepyController:
                     send_cmd("chat_output", error_event)
                 send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
             finally:
+                if self._active_assistant_session is session:
+                    self._active_assistant_session = None
                 session.worker_active = False
                 if session.control_queue is com_stream.output_queue:
                     session.control_queue = None
@@ -388,6 +402,17 @@ class DeepyController:
             assistant_chat.reset_session_chat(session)
         else:
             self.release_vram(state, True)
+        session.chat_html = ""
+        return assistant_chat.build_reset_event(), gr.update(), gr.update(value=""), gr.update()
+
+    def browser_session_started(self, state):
+        session = get_or_create_assistant_session(state)
+        if self._reset_foreign_active_session(session):
+            return assistant_chat.build_reset_event(), gr.update(), gr.update(value=""), gr.update()
+        if not session.worker_active and session.queued_job_count <= 0:
+            return gr.update(), gr.update(), gr.update(), gr.update()
+        request_assistant_reset(session)
+        assistant_chat.reset_session_chat(session)
         session.chat_html = ""
         return assistant_chat.build_reset_event(), gr.update(), gr.update(value=""), gr.update()
 

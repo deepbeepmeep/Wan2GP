@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### March 24th 2026: WanGP v11, The Machine Within The Machine
+### March 26th 2026: WanGP v11.1, The Machine Within The Machine
 
 Meet **Deepy** your friendly *WanGP Agent*.
 
@@ -61,7 +61,14 @@ Create a high quality image portrait that you think represents you best in your 
 
 *Go the Config > Prompt Enhancer / Deep tab to enable Deepy (you must first choose a Qwen3.5VL Prompt Enhancer)*
 
-**Important**: in order to save Deepy from learning all the specificties of each model to generate image, videos or audio, Deepy uses *Predefined Settings Templates* for its six main tools (*Generate Video*, *Generate Image*, ...). You can change the templates used in a session or even add your own settings. Just have a look at the doc.
+**Important**: in order to save Deepy from learning all the specificities of each model to generate image, videos or audio, Deepy uses *Predefined Settings Templates* for its six main tools (*Generate Video*, *Generate Image*, ...). You can change the templates used in a session or even add your own settings. Just have a look at the doc.
+
+With WanGP 11.1 you can *ask Deepy to generate a Video or an Image in specific dimensions and also a number of frames for a video*. If you don't mention any of these to Deepy, Deepy Default settings or the current Template settings will be used instead.
+
+WanGP 11 addresses a long standing Gradio issue: *Queues keep being processed even if your Web Browser is in the background*. Beware this feature may drain more battery, so you can disable it in the *Config / General tab*.
+
+You have maybe also noticed the new option *Keep Intermediate Sliding Windows* in the *Config / Outputs* tab that allows you to discard intermediate *Sliding Windows*
+
 
 ### March 17th 2026: WanGP v10.9875, Prompt Enhancer has just Been Abliterated
 

@@ -31,7 +31,6 @@ from pathlib import Path
 from datetime import datetime
 import gradio as gr
 from shared.gradio import gradio_queue_focus_patch
-gradio_queue_focus_patch.install()
 from gradio.themes.utils.sizes import Size
 import random
 import json
@@ -115,7 +114,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11"
+WanGP_version = "11.1"
 settings_version = 2.55
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2448,7 +2447,8 @@ if not Path(config_load_filename).is_file():
         "checkpoints_paths": fl.default_checkpoints_paths,
         "loras_root": DEFAULT_LORA_ROOT,
         "save_queue_if_crash": 1,
-		"queue_color_scheme": "pastel",
+        "queue_color_scheme": "pastel",
+        "process_queues_when_browser_unfocused": 1,
         "model_hierarchy_type": 1,
         "mmaudio_mode": 0,
         "mmaudio_persistence": 1,
@@ -2469,6 +2469,9 @@ else:
     server_config = json.loads(text)
 
 server_config.setdefault("prompt_enhancer_quantization", "quanto_int8")
+server_config.setdefault(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1)
+gradio_queue_focus_patch.BACKGROUND_SCHEDULER_DEFAULT_ENABLED = bool(server_config.get(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1))
+gradio_queue_focus_patch.install()
 
 checkpoints_paths = server_config.get("checkpoints_paths", None)
 if checkpoints_paths is None: checkpoints_paths = server_config["checkpoints_paths"] = fl.default_checkpoints_paths
@@ -6041,8 +6044,6 @@ def generate_video(
     plugin_data=None,
 ):
 
-
-
     def remove_temp_filenames(temp_filenames_list):
         for temp_filename in temp_filenames_list: 
             if temp_filename!= None and os.path.isfile(temp_filename):
@@ -6094,7 +6095,7 @@ def generate_video(
     
     base_model_type = get_base_model_type(model_type)
     model_handler = get_model_handler(base_model_type)
-    block_size = model_handler.get_vae_block_size(base_model_type) if hasattr(model_handler, "get_vae_block_size") else 16
+    block_size = model_def.get("vae_block_size", 16)
 
     if "P" in preload_model_policy and not "U" in preload_model_policy:
         while wan_model == None:
@@ -7388,13 +7389,16 @@ def process_tasks(state):
                 
                 try:
                     import inspect
-                    validated_params, validation_error = validate_task(task, state)
-                    if validated_params is None:
-                        send_cmd("error", validation_error or "Task failed validation.")
-                        return
-                    expected_args = set(inspect.signature(generate_video).parameters.keys())
-                    filtered_params = {k: v for k, v in validated_params.items() if k in expected_args}
-                    filtered_params.setdefault("client_id", "")
+                    model_type = params.get('model_type')
+                    if model_type:
+                        default_settings = get_default_settings(model_type)
+                        expected_args = set(inspect.signature(generate_video).parameters.keys())
+                        for arg_name in expected_args:
+                            if arg_name not in params and arg_name in default_settings:
+                                params[arg_name] = default_settings[arg_name]
+                    else:
+                        expected_args = set(inspect.signature(generate_video).parameters.keys())                    
+                    filtered_params = {k: v for k, v in params.items() if k in expected_args}
                     plugin_data = task.pop('plugin_data', {})
                     success = generate_video(task, send_cmd, plugin_data=plugin_data,  **filtered_params)
                     
@@ -11005,9 +11009,13 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         lora_url = gr.Text(label ="Lora URL", placeholder= "Enter Lora URL", scale=4, show_label=False, elem_classes="compact_text" )
                         download_lora_btn = gr.Button("Download Lora", scale=1, min_width=10)
 
-                assistant_ui = deepy_gradio_ui.build_deepy_chat_ui(deepy_visible=_deepy.is_available())
-                assistant_launcher_host = assistant_ui.launcher_host
-                assistant_panel = assistant_ui.panel
+                assistant_ui = None
+                assistant_launcher_host = None
+                assistant_panel = None
+                if tab_id == 'generate':
+                    assistant_ui = deepy_gradio_ui.build_deepy_chat_ui(deepy_visible=_deepy.is_available())
+                    assistant_launcher_host = assistant_ui.launcher_host
+                    assistant_panel = assistant_ui.panel
 
             mode = gr.Text(value="", visible = False)
 
@@ -11015,9 +11023,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             if not update_form:
                 state = default_state if default_state is not None else gr.State(state_dict)
                 gen_status = gr.Text(interactive= False, label = "Status")
-                status_trigger = gr.Text(interactive= False, visible=False)
-                load_queue_trigger = gr.Text(interactive= False, visible=False)
-                abort_client_id= gr.Text(interactive= False, visible=False)
+                main_bridge_elem_ids = tab_id == 'generate'
+                status_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_status_trigger" if main_bridge_elem_ids else None)
+                load_queue_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_load_queue_trigger" if main_bridge_elem_ids else None)
+                abort_client_id= gr.Text(interactive= False, visible=False, elem_id="wangp_main_abort_client_id" if main_bridge_elem_ids else None)
                 default_files = []
                 current_gallery_tab = gr.Number(0, visible=False)
                 with gr.Tabs() as gallery_tabs:
@@ -11026,8 +11035,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     with gr.Tab("Audio Files", id="audio"):
                         output_audio = AudioGallery(audio_paths=[], max_thumbnails=999, height=40, update_only=update_form)
                         audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger = output_audio.get_state()
-                output_trigger = gr.Text(interactive= False, visible=False)
-                selected_video_time_input = gr.Text(interactive= False, visible=False, elem_id="selected_video_time_input")
+                output_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_output_trigger" if main_bridge_elem_ids else None)
+                selected_video_time_input = gr.Text(interactive= False, visible=False, elem_id="selected_video_time_input" if main_bridge_elem_ids else None)
                 refresh_models_trigger = gr.Text(interactive= False, visible=False)
                 refresh_form_trigger = gr.Text(interactive= False, visible=False)
                 fill_wizard_prompt_trigger = gr.Text(interactive= False, visible=False)
@@ -11306,27 +11315,35 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 )
             
             set_save_form_event(save_form_trigger.change)
-            deepy_gradio_ui.bind_deepy_chat_ui(
-                assistant_ui,
-                state=state,
-                output=output,
-                last_choice=last_choice,
-                audio_files_paths=audio_files_paths,
-                audio_file_selected=audio_file_selected,
-                selected_video_time_input=selected_video_time_input,
-                load_queue_trigger=load_queue_trigger,
-                output_trigger=output_trigger,
-                abort_client_id=abort_client_id,
-                handlers=deepy_gradio_ui.DeepyChatHandlers(
-                    prepare_request_context=init_generate,
-                    update_tool_ui_settings=_deepy.update_tool_ui_settings,
-                    persist_auto_cancel_queue_tasks=_deepy.persist_auto_cancel_queue_tasks,
-                    store_selected_video_time=_deepy.store_selected_video_time,
-                    ask_ai=_deepy.ask_ai,
-                    stop_ai=_deepy.stop_ai,
-                    reset_ai=_deepy.reset_ai,
-                ),
-            )
+            if assistant_ui is not None:
+                deepy_gradio_ui.bind_deepy_chat_ui(
+                    assistant_ui,
+                    state=state,
+                    output=output,
+                    last_choice=last_choice,
+                    audio_files_paths=audio_files_paths,
+                    audio_file_selected=audio_file_selected,
+                    selected_video_time_input=selected_video_time_input,
+                    load_queue_trigger=load_queue_trigger,
+                    output_trigger=output_trigger,
+                    abort_client_id=abort_client_id,
+                    handlers=deepy_gradio_ui.DeepyChatHandlers(
+                        prepare_request_context=init_generate,
+                        update_tool_ui_settings=_deepy.update_tool_ui_settings,
+                        persist_auto_cancel_queue_tasks=_deepy.persist_auto_cancel_queue_tasks,
+                        store_selected_video_time=_deepy.store_selected_video_time,
+                        ask_ai=_deepy.ask_ai,
+                        stop_ai=_deepy.stop_ai,
+                        reset_ai=_deepy.reset_ai,
+                    ),
+                )
+                main.load(
+                    fn=_deepy.browser_session_started,
+                    inputs=[state],
+                    outputs=[assistant_ui.chat_event, load_queue_trigger, assistant_ui.request, abort_client_id],
+                    queue=False,
+                    show_progress="hidden",
+                )
             gr.on(triggers=[video_info_eject_video_btn.click, video_info_eject_video2_btn.click, video_info_eject_video3_btn.click, video_info_eject_deleted_video_btn.click,  video_info_eject_image_btn.click], fn=eject_video_from_gallery, inputs =[state, output, last_choice], outputs = [output, video_info, video_buttons_row] )
             video_info_to_control_video_btn.click(fn=video_to_control_video, inputs =[state, output, last_choice], outputs = [video_guide] )            
             video_info_to_video_source_btn.click(fn=video_to_source_video, inputs =[state, output, last_choice], outputs = [video_source] )
@@ -11804,6 +11821,7 @@ def create_ui():
         target_edit_state = gr.Text(value = "edit_state", interactive= False, visible= False)
         edit_queue_trigger = gr.Text(value='', interactive= False, visible=False)
         with gr.Tabs(selected="video_gen", ) as main_tabs:
+            # JS keepalive patch targets the stable Gradio tab id "video_gen"; the label can change, but if this id changes the patch must be updated too.
             with gr.Tab("Video Generator", id="video_gen") as video_generator_tab:
                 with gr.Row():
                     if args.lock_model:    

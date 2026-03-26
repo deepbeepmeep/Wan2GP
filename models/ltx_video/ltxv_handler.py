@@ -38,6 +38,7 @@ class family_handler():
 
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"]= True
+        extra_model_def["vae_block_size"] = 32
         return extra_model_def
 
     @staticmethod
@@ -74,10 +75,6 @@ class family_handler():
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
         return getattr(args, "lora_dir_ltxv", None) or os.path.join(lora_root, "ltxv")
-
-    @staticmethod
-    def get_vae_block_size(base_model_type):
-        return 32
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

@@ -2,7 +2,7 @@ import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 import json
 from shared.deepy.engine import get_or_create_assistant_session
-from shared.gradio import assistant_chat
+from shared.gradio import assistant_chat, gradio_queue_focus_patch
 from shared.deepy.config import (
     DEEPY_CONTEXT_TOKENS_DEFAULT,
     DEEPY_CONTEXT_TOKENS_KEY,
@@ -26,7 +26,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "Configuration Tab"
-        self.version = "1.1.0"
+        self.version = "1.1.1"
         self.description = "Lets you adjust all your performance and UI options for WAN2GP"
 
     def setup_ui(self):
@@ -172,6 +172,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         ],
                         value=self.server_config.get("queue_color_scheme", "pastel"),
                         label="Queue Color Scheme"
+                    )
+                    self.process_queues_when_browser_unfocused_choice = gr.Dropdown(
+                        choices=[("Yes", 1), ("No", 0)],
+                        value=self.server_config.get(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1),
+                        label="Process Queues when Browser is not in focus (may drain more energy)",
+                        interactive=not self.args.lock_config
                     )
 
                 with gr.Tab("Performance"):
@@ -391,13 +397,26 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         self.enhancer_enabled_choice.input(fn=update_deepy_context_label, inputs=[self.enhancer_enabled_choice, self.deepy_context_tokens_choice], outputs=[self.deepy_context_tokens_choice], show_progress="hidden")
         self.deepy_context_tokens_choice.input(fn=update_deepy_context_label, inputs=[self.enhancer_enabled_choice, self.deepy_context_tokens_choice], outputs=[self.deepy_context_tokens_choice], show_progress="hidden")
+        self.process_queues_when_browser_unfocused_choice.change(
+            fn=None,
+            inputs=[self.process_queues_when_browser_unfocused_choice],
+            js="""
+                (enabled) => {
+                    if (window.__gradioFocusQueuePatch) {
+                        window.__gradioFocusQueuePatch.enableBackgroundScheduler = Number(enabled) !== 0;
+                    }
+                }
+            """,
+            queue=False,
+            show_progress="hidden",
+        )
 
         inputs = [
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
             self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.keep_intermediate_sliding_windows_choice,
             self.display_stats_choice, self.max_frames_multiplier_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice, self.save_queue_if_crash_choice,
-            self.UI_theme_choice, self.queue_color_scheme_choice,
+            self.UI_theme_choice, self.queue_color_scheme_choice, self.process_queues_when_browser_unfocused_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.lm_decoder_engine_choice, self.VAE_precision_choice, self.compile_choice,
             self.depth_anything_v2_variant_choice, self.vae_config_choice, self.boost_choice, self.enable_int8_kernels_choice,
@@ -474,7 +493,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
             attention_choice, preload_model_policy_choice, clear_file_list_choice, keep_intermediate_sliding_windows_choice,
             display_stats_choice, max_frames_multiplier_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice, save_queue_if_crash_choice,
-            UI_theme_choice, queue_color_scheme_choice,
+            UI_theme_choice, queue_color_scheme_choice, process_queues_when_browser_unfocused_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, lm_decoder_engine_choice, VAE_precision_choice, compile_choice,
             depth_anything_v2_variant_choice, vae_config_choice, boost_choice, enable_int8_kernels_choice,
@@ -541,6 +560,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "loras_root": loras_root_choice,
             "save_queue_if_crash": save_queue_if_crash_choice,
             "queue_color_scheme": queue_color_scheme_choice,
+            gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY: process_queues_when_browser_unfocused_choice,
             "embed_source_images": embed_source_images_choice,
             "video_container": "mp4", # Fixed to MP4
             "last_model_type": state["model_type"],
@@ -568,7 +588,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             DEEPY_ENABLED_KEY, DEEPY_VRAM_MODE_KEY, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
             "max_frames_multiplier", "display_stats", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
-            "model_hierarchy_type", "UI_theme", "queue_color_scheme"
+            "model_hierarchy_type", "UI_theme", "queue_color_scheme", gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY
         ]
 
         needs_reload = not all(change in no_reload_keys for change in changes)

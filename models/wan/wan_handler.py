@@ -258,6 +258,7 @@ class family_handler():
 
         if  (test_class_t2v(base_model_type) or vace_class or base_model_type in ["chrono_edit"]) and not test_alpha(base_model_type):
             extra_model_def["vae_upsampler"] = [1,2]
+        extra_model_def["vae_block_size"] = 32 if test_wan_5B(base_model_type) or base_model_type in ["scail"] else 16
 
         extra_model_def["profiles_dir"] = [profiles_dir]
         extra_model_def["group"] = group
@@ -715,10 +716,6 @@ class family_handler():
 
         return extra_model_def
         
-
-    @staticmethod
-    def get_vae_block_size(base_model_type):
-        return 32 if test_wan_5B(base_model_type) or base_model_type in ["scail"] else 16
 
     @staticmethod
     def get_rgb_factors(base_model_type ):

@@ -1411,11 +1411,7 @@ def _build_runtime_task(task_id_val, params, plugin_data=None):
     }
 
 
-def _process_task_params(params, state, log_prefix="[load]"):
-    """Apply defaults, fix settings, and prepare params for a task.
-
-    Returns (model_type, error_msg or None). Modifies params in place.
-    """
+def _extract_model_type(params, state, log_prefix="[load]"):
     base_model_type = params.get('base_model_type', None)
     model_type = original_model_type = params.get('model_type', base_model_type)
 
@@ -1427,8 +1423,6 @@ def _process_task_params(params, state, log_prefix="[load]"):
     params["model_type"] = model_type
     if get_model_def(model_type) is None:
         return None, f"Unknown model type: {original_model_type}"
-    clean_settings(model_type, params)
-    params['state'] = state
     return model_type, None
 
 
@@ -1447,16 +1441,24 @@ def _parse_task_manifest(manifest, state, media_base_path, cache_dir=None, log_p
         params = task_data.get('params', {})
         task_id_loaded = task_data.get('id', task_id + 1)
 
-        # Process params (merge defaults, fix settings)
-        model_type, error = _process_task_params(params, state, log_prefix)
+        model_type, error = _extract_model_type(params, state, log_prefix)
         if error:
             if first_error is None:
                 first_error = error
             print(f"{log_prefix} {error} for task #{task_id_loaded}. Skipping.")
             continue
 
+        params['state'] = state
+
         if media_base_path is not None or _task_has_path_attachments(params):
             _load_task_attachments(params, media_base_path or os.path.dirname(os.path.abspath(__file__)), cache_dir, log_prefix)
+
+        params, error = validate_task(task_data, state)
+        if error:
+            if first_error is None:
+                first_error = error
+            print(f"{log_prefix} {error} for task #{task_id_loaded}. Skipping.")
+            continue
 
         # Build runtime task
         runtime_task = _build_runtime_task(task_id_loaded, params, task_data.get('plugin_data', {}))

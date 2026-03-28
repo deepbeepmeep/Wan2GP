@@ -1,14 +1,38 @@
 # Deepy
 
-Deepy is WanGP's assistant for multi-step media work. It can generate, inspect, edit, extract, merge, and transform media by calling WanGP tools while keeping conversation context.
+Deepy is WanGP's assistant for multi-step media work. It can generate, inspect, edit, extract, transcribe, merge, and transform image, video, and audio while keeping conversation context.
 
 This guide covers:
 
+- general guidelines
 - enabling Deepy
 - configuring Deepy in the web UI
 - linking WanGP settings files to Deepy generation tools
-- using selected media, selected videos, and selected frames
+- using selected and previous media naturally
+- understanding which generation settings Deepy can override directly
+- asking Deepy about available LoRAs and current defaults
 - using Deepy from the CLI
+
+## General Guidelines
+Once enabled (see below), Deepy becomes accessible by opening Deepy chat window when you click on the left dock `Ask Deepy`
+
+Deepy is capable to generate image, video & audio, and then combine them to produce new media. All content produced by Deepy will be found in the `Image / Video Gallery` and the `Audio Gallery` at the top right of the WanGP `Video Generator` tab.
+
+Deepy can also work with User Imported Media:
+1) Expand the section  `Media Info / Late Post Processing / Import Media`
+2) Switch to the `Import Media to Galleries` tab
+3) Select files to Import
+4) Click `Import Videos / Images / Audio Files`
+
+Once the media are in the galleries, you can refer to them using wording like `the last audio file`, `the selected video` or describe their content (Deepy will query the prompts stored in the generation metadata if they exist).
+
+Deepy simply can not infer the best generation settings based for your request, since the combinations are too many and depend on the generation model you want to use. So Deepy relies on predefined Template Settings for its main 6 generation tools (`Generate Image`, `Generate Video`, `Edit Image`, `Generate Video with Speaker`, `Generate Audio from description`, `Generate Audio from Sample`). 
+
+WanGP comes with builtin templates ready to use but you may as well link presaved settings. You can access Deepy settings by clicking the `Settings` doc on the right of the Deepy Chat Window.
+
+You can also define Default Width & Height to use for all the generation tools in Deepy Settings Window. These will be used only if the checkbox `Use Properties defined in Settings in Templates files` is not checked. This is convenient if you want to override the values defined in the templates without modifying them.
+
+Last but not least you can ask directly Deepy to override the following template settings: `width`, `height`, `num of frames`, `fps`, `loras` or `num inference steps`. 
 
 ## Enabling Deepy
 
@@ -29,7 +53,7 @@ Deepy settings in that tab:
 - `Enable Deepy`: turns Deepy on or off
 - `Deepy VRAM Loading Mode`: controls whether Deepy stays in VRAM, unloads when idle, or unloads only when another WanGP component needs VRAM. The more Deepy stays in VRAM, the more responsive.
 - `Context Window Tokens`: how much conversation and tool history Deepy tries to keep live
-- `Custom System Prompt`: text appended after the built-in Deepy system prompt on the next user turn
+- `Custom System Prompt`: extra instructions appended to Deepy on the next user turn
 
 When the requirement is met, the `Ask Deepy` launcher appears in the WanGP web UI.
 
@@ -43,7 +67,7 @@ Open `Ask Deepy`, then open the `Settings` panel.
   Controls whether Deepy-created queue work is cancelled or removed when you stop/reset Deepy. This setting is persisted immediately when changed.
 
 - `Use Properties defined in Settings Templates files.`  
-  When enabled, Deepy uses the resolution, frame-count, and seed values already stored in the selected tool template.
+  When enabled, Deepy uses the selected tool template as-is. When disabled, Deepy still starts from the template, but replaces only width, height, video frame count, and seed with the panel defaults below.
 
 - `Width` and `Height`  
   Default size overrides used only when template properties are disabled.
@@ -53,6 +77,8 @@ Open `Ask Deepy`, then open the `Settings` panel.
 
 - `Seed (-1 for random)`  
   Default seed override, used only when template properties are disabled. `-1` means random.
+
+Inference steps, FPS, LoRAs, and other model-specific values remain template-driven unless you ask for one of the supported per-request overrides described later in this guide.
 
 The remaining Deepy settings in this panel are persisted when you use `Ask`.
 
@@ -70,7 +96,7 @@ Deepy has 6 generation-tool template selectors:
 Each row has:
 
 - a dropdown that selects the current template for that tool
-- `+` to link that tool to the currently selected WanGP user settings file
+- `+` to link that tool to the currently selected WanGP user settings file (in the dropdown in the upper left part of video gen tab )
 - `trash` to remove the current live link and go back to the previous or default template
 
 Deepy shows the selected template in the chat transcript for generation tools, for example:
@@ -88,7 +114,6 @@ Deepy templates are either:
 - built-in Deepy templates shipped with WanGP
 - live links to WanGP user settings files
 
-
 ### Link a tool from the UI
 
 Practical workflow:
@@ -100,7 +125,7 @@ Practical workflow:
 5. click `+` next to the Deepy tool you want to link
 6. confirm the link
 
-When the tool is used later, Deepy rebuilds the real path from that logical reference and loads the original WanGP settings file directly. So any change made to the settings file will be directly usable with Deepy.
+When you use the tool later, Deepy reads the linked WanGP settings file directly, so changes to that file are picked up automatically.
 
 ### Important behavior
 
@@ -110,6 +135,7 @@ When the tool is used later, Deepy rebuilds the real path from that logical refe
 - If the linked file disappears, Deepy falls back to that tool's default template.
 - If the linked file still exists but is no longer eligible for that tool, the tool returns an eligibility error.
 - Built-in templates cannot be deleted from the UI.
+- Linked templates are the right place for model-specific settings that Deepy does not expose directly. Deepy can still override width, height, frame count, FPS, inference steps, and LoRAs on the supported tools.
 
 ## How Deepy Interprets Media References
 
@@ -117,10 +143,11 @@ Deepy is designed to let you refer to existing media naturally.
 
 In practice, Deepy will usually:
 
-- prefer the currently selected gallery item when you say `selected`, `current`, `this image`, `this video`, or `this frame`
-- resolve older outputs when you say things like `last image`, `previous video`, or describe a previous result
+- prefer the currently selected image, video, or audio item when you say `selected`, `current`, `this image`, `this video`, `this audio`, or `this frame`
 - use the selected video's current playback time when you refer to `the selected frame` or `the current frame`
-- ask for clarification instead of inventing missing results when a reference is ambiguous
+- resolve short references such as `last image`, `previous video`, or `last audio`
+- resolve older outputs when you describe a previous result
+- ask for clarification instead of inventing a result when a reference is ambiguous
 
 You can still use internal media ids such as `image_1` or `video_3`, but usually you do not need to.
 
@@ -135,6 +162,7 @@ For an image:
    - `edit this image so the sky is stormy`
    - `inspect the selected image and tell me whether the hands look correct`
    - `use the selected image as the start frame for a short video`
+   - `use this image and the last audio clip to make a talking video`
 
 For a video:
 
@@ -144,8 +172,20 @@ For a video:
    - `inspect this frame and tell me whether the face is sharp`
    - `extract the selected frame as an image`
    - `cut a 3 second clip starting at the selected time`
+   - `transcribe this video`
    - `mute this video`
    - `replace the audio of the selected video with the last extracted audio`
+
+For audio:
+
+1. select or import an audio file
+2. ask Deepy something like:
+   - `transcribe this audio`
+   - `transcribe this audio with word timestamps`
+   - `create speech from this sample saying: Welcome to WanGP`
+   - `use this audio with the selected image to make a talking video`
+
+If your voice sample is inside a video, Deepy can extract the audio first.
 
 ### Previous outputs
 
@@ -153,34 +193,43 @@ Deepy can also resolve references such as:
 
 - `last image`
 - `previous video`
+- `last audio`
 - `the robot dancing image`
 - `image_2`
 - `video_3`
 
-## Deepy Tool Surface
+## What You Can Ask Deepy To Do
 
-Deepy currently exposes these main tool categories:
+- generate images, edit images, generate videos, generate talking videos from a still image plus speech audio, and create speech audio from a voice description or a voice sample
+- create solid-color frames for transitions, blank frames, or color cards
+- inspect images and video frames, and read local image, video, or audio details such as dimensions, duration, FPS, frame count, or audio track count
+- extract images, video clips, or audio clips; transcribe audio or video; mute videos; replace audio; resize/crop media; and merge videos
+- tell you which LoRAs are available for the current generation tool and which defaults a generation tool will use right now
+- answer WanGP-specific usage questions by searching the bundled docs
 
-- creation and editing:
-  - `Create Color Frame`
-  - `Generate Image`
-  - `Generate Video`
-  - `Edit Image`
-- media lookup and inspection:
-  - `Get Selected Media`
-  - `Get Media Details`
-  - `Resolve Media`
-  - `Inspect Media`
-- extraction and conversion:
-  - `Extract Image`
-  - `Extract Video`
-  - `Extract Audio`
-  - `Mute Video`
-  - `Replace Audio`
-  - `Resize Crop`
-  - `Merge Videos`
-- WanGP documentation lookup:
-  - `Load Doc`
+
+## Audio Transcription
+
+Deepy can transcribe either audio or video.
+
+- Segment timestamps are returned by default.
+- Ask for word timestamps if you need more detailed timing.
+- If a source has multiple audio tracks, mention which track you want.
+
+Example requests:
+
+```text
+Transcribe the selected video.
+```
+
+
+```text
+Transcribe audio track 2 from the selected video.
+```
+
+```text
+Extract the video excerpt that starts with 'I will be back'.
+```
 
 ## Example Requests
 
@@ -189,52 +238,40 @@ Generate a cinematic image of a robot violinist on a rainy Paris rooftop at nigh
 ```
 
 ```text
-Create a black frame at 1280x720 so we can use it as a transition plate.
+Edit the selected image so the background becomes a neon alley while keeping the character identity, and use 8 inference steps.
 ```
 
 ```text
-Generate a short video of a paper boat floating through a glowing cave river.
+Generate a short video of a paper boat floating through a glowing cave river at 24 fps with 97 frames and 8 inference steps.
 ```
 
 ```text
-Inspect the selected image and tell me whether the composition is centered.
+Generate a video of a dog playing under the rain using the Lego lora
 ```
 
 ```text
-Extract the selected frame from the current video and save it as an image.
+Use the selected portrait and the last audio clip to make a talking video.
 ```
 
 ```text
-Take the last image and edit it so the background becomes a neon alley, while keeping the character identity.
-```
-
-```text
-Use the robot-on-horse image as the start image and the robot-standing-next-to-horse image as the end image, then generate a smooth transition video.
-```
-
-```text
-Cut a 5 second clip from the selected video starting at the selected time.
-```
-
-```text
-Merge the last two generated videos into one clip.
+Create speech from this sample saying: Welcome to WanGP.
 ```
 
 ```text
 How do I use VACE for outpainting?
 ```
 
-Multisteps requests:
+Multi-step requests:
 
 ```text
 1) Generate an image of a robot disco dancing on top of a horse in a nightclub.
-2) Now edit the image so the setting stays the same, but the robot has gotten off the horse and the horse is standing next to the robot.
+2) Edit the image so the setting stays the same, but the robot has gotten off the horse and the horse is standing next to the robot.
 3) Verify that the edited image matches the description; if it does not, generate another one.
 4) Generate a transition between the two images.
 ```
-	
+
 ```text
-Create a high quality image portrait that you think represents you best in your favorite setting. Then create an audio sample in which you will introduce the users to your capabilities. When done generate a video based on these two files.
+Create a high quality portrait that represents you well. Then create a speech sample in which you introduce your capabilities. When done generate a talking video from the portrait and the generated speech.
 ```
 
 ## Deepy CLI Mode
@@ -258,22 +295,22 @@ Interactive multiline entry:
 - `Ctrl+S`: stop the current Deepy turn while it is running
 - `Shift+Enter`: not available here because the console reports it as plain `Enter`
 
-For debug output and replay/prefill logs:
-
-```bash
-python wgp.py --ask-deepy --verbose 2
-```
 
 ### CLI media selection
 
 The CLI has its own virtual gallery. Add files to it, select one, and optionally set a playback time or frame for the selected video.
 
-Example:
+Examples:
 
 ```text
 /video E:\media\my_clip.mp4
 /frame 120
 inspect the selected frame and tell me whether the subject is centered
+```
+
+```text
+/audio E:\media\voice.wav
+transcribe the selected audio with word timestamps
 ```
 
 When a Deepy tool generates media in CLI mode, the CLI prints the generated output path.
@@ -328,9 +365,12 @@ Examples:
 ## Practical Tips
 
 - Deepy works best when your request clearly states the goal and how current media should be reused.
-- It helps to drive Deepy by listing each step
+- For multi-step tasks, list the steps in order.
+- If you need a model-specific setting that Deepy cannot override directly, store it in the linked template.
+- Ask Deepy for available LoRAs or current defaults when you switch templates and want to confirm the setup.
+- For image and video requests, be explicit about any must-keep details such as subject identity, composition, or mood.
 - If you want Deepy to use the current video moment, scrub the selected video first, then refer to `this frame` or `the selected frame`.
-- If a tool fails, Deepy is instructed to say so rather than inventing a result.
+- For transcription, mention if you want word timestamps or a specific audio track.
+- If a tool fails, Deepy will tell you rather than inventing a result.
 - For WanGP-specific questions, you can ask Deepy directly instead of searching the docs manually.
-- Install GGUF kernels for fast inference and low VRAM
-
+- Install GGUF kernels for fast inference and low VRAM.

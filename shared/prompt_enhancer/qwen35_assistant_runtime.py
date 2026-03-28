@@ -225,17 +225,57 @@ class Qwen35AssistantRuntime:
         if self.debug_enabled:
             print(f"[AssistantRuntime] {message}")
 
+    @staticmethod
+    def _format_preview(text: str, limit: int = 120) -> str:
+        normalized = str(text or "").replace("\r", "\\r").replace("\n", "\\n")
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[:limit]}..."
+
+    @staticmethod
+    def _describe_tensor(value: Any) -> str:
+        if value is None:
+            return "None"
+        if not torch.is_tensor(value):
+            return type(value).__name__
+        try:
+            ptr = int(value.data_ptr())
+        except Exception:
+            ptr = None
+        return f"shape={tuple(int(x) for x in value.shape)} dtype={str(value.dtype).replace('torch.', '')} device={value.device} ptr={ptr}"
+
+    def _describe_engine_state(self, engine) -> str:
+        llm = None if engine is None else getattr(engine, "_llm", None)
+        runner = None if llm is None else getattr(llm, "model_runner", None)
+        live_model_len = 0 if llm is None else int(getattr(llm.config, "max_model_len", 0) or 0)
+        runtime_ready = None if runner is None else getattr(runner, "_runtime_ready", None)
+        runtime_signature = None if runner is None else getattr(runner, "_runtime_signature", None)
+        kv_cache = None if runner is None else getattr(runner, "kv_cache", None)
+        return (
+            f"engine_id={id(engine) if engine is not None else None} "
+            f"llm_id={id(llm) if llm is not None else None} "
+            f"hints=(model_len={getattr(engine, '_max_model_len_hint', None)}, seqs={getattr(engine, '_max_num_seqs_hint', None)}, batched={getattr(engine, '_max_num_batched_tokens_hint', None)}) "
+            f"live_model_len={live_model_len} runtime_ready={runtime_ready} runtime_signature={runtime_signature} "
+            f"kv_cache={self._describe_tensor(kv_cache)}"
+        )
+
     def _get_engine(self, max_context_tokens: int, max_new_tokens: int):
         engine = qwen35_text._get_or_create_vllm_engine(self.model, usage_mode="assistant")
         desired_model_len, desired_num_seqs, desired_num_batched_tokens = engine._compute_runtime_hints(prompt_len=max_context_tokens, max_tokens=max_new_tokens, cfg_scale=1.0)
         desired_model_len = max(desired_model_len, engine._get_min_model_len_hint())
         desired_num_batched_tokens = max(desired_num_batched_tokens, desired_model_len * desired_num_seqs)
         live_llm = getattr(engine, "_llm", None)
+        self._log(
+            "Requesting assistant engine "
+            f"context={int(max_context_tokens)} max_new={int(max_new_tokens)} desired=(model_len={desired_model_len}, seqs={desired_num_seqs}, batched={desired_num_batched_tokens}) "
+            f"live_before={self._describe_engine_state(engine)}"
+        )
         if live_llm is not None and (
             int(getattr(live_llm.config, "max_model_len", 0) or 0) != desired_model_len
             or int(getattr(engine, "_max_num_seqs_hint", 0) or 0) != desired_num_seqs
             or int(getattr(engine, "_max_num_batched_tokens_hint", 0) or 0) != desired_num_batched_tokens
         ):
+            self._log("Closing assistant engine before reserve because live runtime hints do not match the requested embedded decode.")
             engine.close()
             engine._max_model_len_hint = None
             engine._max_num_seqs_hint = None
@@ -244,6 +284,7 @@ class Qwen35AssistantRuntime:
         engine._ensure_llm()
         if engine._llm is None:
             raise RuntimeError("Assistant NanoVLLM runtime is not available.")
+        self._log(f"Assistant engine ready after reserve: {self._describe_engine_state(engine)}")
         return engine
 
     def _get_linear_state_modules(self):
@@ -425,6 +466,12 @@ class Qwen35AssistantRuntime:
         top_p: float | None,
         top_k: int | None,
     ) -> str:
+        self._log(
+            "Embedded decode request "
+            f"prompt_tokens={len(prompt_token_ids)} prompt_embeds={self._describe_tensor(prompt_embeds)} "
+            f"prompt_position_ids={self._describe_tensor(prompt_position_ids)} position_offset={int(position_offset or 0)} "
+            f"max_new={int(max_new_tokens)} seed={seed} do_sample={bool(do_sample)}"
+        )
         snapshot = self.snapshot_context()
         engine = self._get_engine(max_context_tokens=len(prompt_token_ids), max_new_tokens=max_new_tokens)
         try:
@@ -449,11 +496,15 @@ class Qwen35AssistantRuntime:
                 ignore_eos=False,
                 position_offset=int(position_offset or 0),
             )
-            return qwen35_text._clean_generated_text("" if response is None else response.get("text", ""))
+            cleaned = qwen35_text._clean_generated_text("" if response is None else response.get("text", ""))
+            self._log(f"Embedded decode response preview={self._format_preview(cleaned)}")
+            return cleaned
         finally:
             if snapshot is not None:
+                self._log("Embedded decode finished; restoring assistant snapshot.")
                 self.restore_snapshot(snapshot)
             else:
+                self._log("Embedded decode finished without an active assistant snapshot; releasing runtime allocations.")
                 engine.release_runtime_allocations()
 
     def start_generation_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool) -> Sequence:
@@ -522,6 +573,7 @@ class Qwen35AssistantRuntime:
     def snapshot_context(self) -> dict[str, Any] | None:
         seq = self._get_active_sequence()
         if seq is None:
+            self._log("Snapshot requested but no active assistant sequence is available.")
             return None
         llm = self._get_live_llm()
         runner = llm.model_runner
@@ -568,7 +620,11 @@ class Qwen35AssistantRuntime:
                 for module in linear_modules
             ],
         }
-        self._log(f"Snapshotted assistant context with {len(seq.token_ids)} tokens.")
+        self._log(
+            f"Snapshotted assistant context with {len(seq.token_ids)} tokens. "
+            f"saved_hints=(model_len={snapshot['max_model_len_hint']}, seqs={snapshot['max_num_seqs_hint']}, batched={snapshot['max_num_batched_tokens_hint']}) "
+            f"runner_state={self._describe_engine_state(getattr(self.model, '_prompt_enhancer_vllm_engine', None))}"
+        )
         return snapshot
 
     def restore_snapshot(self, snapshot: dict[str, Any]) -> None:
@@ -580,11 +636,17 @@ class Qwen35AssistantRuntime:
         saved_num_seqs = max(1, saved_num_seqs)
         saved_num_batched_tokens = max(saved_num_batched_tokens, saved_model_len * saved_num_seqs)
         live_llm = getattr(engine, "_llm", None)
+        self._log(
+            "Restoring assistant snapshot "
+            f"saved=(model_len={saved_model_len}, seqs={saved_num_seqs}, batched={saved_num_batched_tokens}) "
+            f"live_before={self._describe_engine_state(engine)}"
+        )
         if live_llm is not None and (
             int(getattr(live_llm.config, "max_model_len", 0) or 0) != saved_model_len
             or int(getattr(engine, "_max_num_seqs_hint", 0) or 0) != saved_num_seqs
             or int(getattr(engine, "_max_num_batched_tokens_hint", 0) or 0) != saved_num_batched_tokens
         ):
+            self._log("Closing assistant engine before restore because live runtime hints do not match the saved snapshot.")
             engine.close()
         engine._max_model_len_hint = saved_model_len
         engine._max_num_seqs_hint = saved_num_seqs
@@ -598,6 +660,9 @@ class Qwen35AssistantRuntime:
             raise RuntimeError("Assistant runtime has no KV cache to restore into.")
         kv_cache = snapshot.get("kv_cache")
         if kv_cache is None or tuple(kv_cache.shape) != tuple(runner.kv_cache.shape):
+            saved_shape = None if kv_cache is None else tuple(int(x) for x in kv_cache.shape)
+            live_shape = tuple(int(x) for x in runner.kv_cache.shape)
+            self._log(f"Assistant KV cache snapshot mismatch saved_shape={saved_shape} live_shape={live_shape}")
             raise RuntimeError("Assistant KV cache snapshot shape does not match current runtime.")
         with torch.inference_mode():
             runner.kv_cache.copy_(kv_cache.to(device=runner.kv_cache.device, dtype=runner.kv_cache.dtype))
@@ -643,4 +708,7 @@ class Qwen35AssistantRuntime:
         else:
             restored_seq.status = SequenceStatus.RUNNING
             llm.scheduler.running.append(restored_seq)
-        self._log(f"Restored assistant context with {len(restored_seq.token_ids)} tokens.")
+        self._log(
+            f"Restored assistant context with {len(restored_seq.token_ids)} tokens. "
+            f"runner_state={self._describe_engine_state(engine)}"
+        )

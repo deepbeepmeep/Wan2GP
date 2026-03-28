@@ -114,7 +114,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.1"
+WanGP_version = "11.11"
 settings_version = 2.55
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -8525,7 +8525,8 @@ def eject_audio_from_gallery(state, input_file_list, choice):
 def add_videos_to_gallery(state, input_file_list, choice, audio_files_paths, audio_file_selected, files_to_load):
     gen = get_gen_info(state)
     if files_to_load == None:
-        return [gr.update()]*7
+        gr.Info("Please Select a File To Import")
+        return [gr.update()]*9
     new_audio= False
     new_video= False
 
@@ -8564,7 +8565,8 @@ def add_videos_to_gallery(state, input_file_list, choice, audio_files_paths, aud
             valid_files_count +=1
 
     if valid_files_count== 0 and invalid_files_count ==0:
-        gr.Info("No Video to Add")
+        gr.Info("No Valid Media to Import")
+        return [gr.update()] * 9
     else:
         txt = ""
         if valid_files_count > 0:
@@ -11047,7 +11049,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 model_choice_target = gr.Text(interactive= False, visible=False)
 
 
-            with gr.Accordion("Video Info and Late Post Processing & Audio Remuxing", open=False) as video_info_accordion:
+            with gr.Accordion("Media Info / Late Post Processing / Import Media", open=False) as video_info_accordion:
                 with gr.Tabs() as video_info_tabs:
                     default_visibility_false = {} if update_form else {"visible" : False}                        
                     default_visibility_true = {} if update_form else {"visible" : True}                        
@@ -11104,10 +11106,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                         with gr.Row():
                             video_info_remux_audio_btn = gr.Button("Remux Audio", size ="sm", visible=True)
                             video_info_eject_video3_btn = gr.Button("Eject Video", size ="sm", visible=True)
-                    with gr.Tab("Add Videos / Images / Audio Files", id= "video_add"):
-                        files_to_load = gr.Files(label= "Files to Load in Gallery", height=120)
+                    with gr.Tab("Import Media to Galleries", id= "video_add"):
+                        files_to_load = gr.Files(label= "Media to Import in Galleries", height=120)
                         with gr.Row():
-                            video_info_add_videos_btn = gr.Button("Add Videos / Images / Audio Files", size ="sm")
+                            video_info_add_videos_btn = gr.Button("Import Videos / Images / Audio Files", size ="sm")
  
             if not update_form:
                 generate_btn = gr.Button("Generate")

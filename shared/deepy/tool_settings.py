@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from shared.utils.loras_mutipliers import merge_loras_settings
 from shared.deepy.config import (
     DEEPY_DEFAULT_EDIT_IMAGE,
     DEEPY_DEFAULT_GEN_IMAGE,
@@ -85,6 +87,7 @@ _LEGACY_VARIANT_ALIASES = {
     "gen_video": {"ltx2_22B_distilled": DEEPY_DEFAULT_GEN_VIDEO},
 }
 _LIVE_FILE_PRESET_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+GENERATION_TOOL_IDS = tuple(_TOOL_CONFIG_SPECS.keys())
 
 
 def _canonical_variant(tool_name: str, variant: Any) -> str:
@@ -336,6 +339,79 @@ def _get_model_def_from_settings_payload(payload: dict[str, Any]) -> dict[str, A
     return model_def if isinstance(model_def, dict) else None
 
 
+def _basename_lora_key(value: Any) -> str:
+    return Path(str(value or "").strip().replace("\\", "/")).name.casefold()
+
+
+def _normalize_lora_cache_path(value: Any) -> str:
+    path = str(value or "").strip().replace("\\", "/")
+    while "//" in path:
+        path = path.replace("//", "/")
+    return path.casefold()
+
+
+def _read_loras_url_cache() -> dict[str, str]:
+    cache_path = _DEEPY_DIR.parents[1] / "loras_url_cache.json"
+    if not cache_path.is_file():
+        return {}
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        _normalize_lora_cache_path(key): str(value).strip()
+        for key, value in payload.items()
+        if len(str(key).strip()) > 0 and len(str(value).strip()) > 0
+    }
+
+
+def _format_lora_multiplier(value: Any) -> str:
+    if value is None:
+        return "1"
+    if isinstance(value, bool):
+        raise TypeError("LoRA multiplier values must be strings or numbers.")
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("LoRA multiplier values must be finite.")
+        return f"{number:g}"
+    text = str(value).strip()
+    return text if len(text) > 0 else "1"
+
+
+def _resolve_tool_lora_dir(tool_name: str, variant: str) -> tuple[str, Path]:
+    payload = load_tool_preset(tool_name, variant)
+    model_type = str(payload.get("model_type", "") or "").strip()
+    if len(model_type) == 0:
+        raise ValueError(f"Deepy preset '{variant}' for tool '{tool_name}' does not define a model_type.")
+    get_lora_dir = _get_main_callable("get_lora_dir")
+    if not callable(get_lora_dir):
+        raise RuntimeError("WanGP get_lora_dir(model_type) is not available.")
+    return model_type, Path(get_lora_dir(model_type))
+
+
+def _list_tool_lora_entries(tool_name: str, variant: str) -> list[tuple[str, str]]:
+    lookup_name = str(tool_name or "").strip()
+    if lookup_name not in GENERATION_TOOL_IDS:
+        raise ValueError(f"LoRAs are only available for the 6 generation tools: {', '.join(GENERATION_TOOL_IDS)}.")
+    _model_type, lora_dir = _resolve_tool_lora_dir(lookup_name, variant)
+    if not lora_dir.is_dir():
+        return []
+    url_cache = _read_loras_url_cache()
+    discovered: dict[str, tuple[str, str]] = {}
+    for pattern in ("*.safetensors", "*.sft"):
+        for path in sorted(lora_dir.glob(pattern)):
+            if not path.is_file():
+                continue
+            filename = path.name
+            cache_key = _normalize_lora_cache_path(lora_dir / filename)
+            original_entry = url_cache.get(cache_key, filename)
+            discovered.setdefault(_basename_lora_key(filename), (filename, original_entry))
+    return sorted(discovered.values(), key=lambda item: item[0].casefold())
+
+
 def _int_setting(payload: dict[str, Any], key: str) -> int | None:
     value = payload.get(key, None)
     if isinstance(value, bool):
@@ -536,6 +612,64 @@ def refresh_tool_presets() -> None:
     _LIVE_FILE_PRESET_CACHE.clear()
 
 
+def list_tool_loras(tool_name: str, variant: str) -> list[str]:
+    return [filename for filename, _original_entry in _list_tool_lora_entries(tool_name, variant)]
+
+
+def normalize_tool_loras(tool_name: str, variant: str, loras: Any) -> tuple[list[str], str]:
+    if loras is None:
+        return [], ""
+    if not isinstance(loras, list):
+        raise TypeError("loras must be an array of objects.")
+    available_loras = _list_tool_lora_entries(tool_name, variant)
+    available_by_key = {_basename_lora_key(filename): (filename, original_entry) for filename, original_entry in available_loras}
+    normalized_loras = []
+    multiplier_tokens = []
+    seen_keys: set[str] = set()
+    for index, item in enumerate(loras, start=1):
+        if isinstance(item, str):
+            raw_name = item
+            raw_multiplier = 1
+        elif isinstance(item, dict):
+            raw_name = item.get("name", "")
+            raw_multiplier = item.get("multiplier", 1)
+        else:
+            raise TypeError(f"LoRA entry #{index} must be an object with a name.")
+        raw_name = Path(str(raw_name or "").strip().replace("\\", "/")).name
+        if len(raw_name) == 0:
+            raise ValueError(f"LoRA entry #{index} is missing a filename.")
+        lora_key = _basename_lora_key(raw_name)
+        if lora_key in seen_keys:
+            raise ValueError(f"LoRA '{raw_name}' was provided more than once.")
+        resolved_entry = available_by_key.get(lora_key, None)
+        if resolved_entry is None:
+            raise ValueError(f"Unknown LoRA filename '{raw_name}' for tool '{tool_name}'. Call get_loras first.")
+        _resolved_name, original_entry = resolved_entry
+        normalized_loras.append(original_entry)
+        multiplier_tokens.append(_format_lora_multiplier(raw_multiplier))
+        seen_keys.add(lora_key)
+    return normalized_loras, " ".join(multiplier_tokens).strip()
+
+
+def apply_tool_loras(tool_name: str, variant: str, task: dict[str, Any], loras: Any) -> dict[str, Any]:
+    normalized_loras, normalized_multipliers = normalize_tool_loras(tool_name, variant, loras)
+    if len(normalized_loras) == 0:
+        return task
+    existing_loras = [str(value).strip() for value in list(task.get("activated_loras", []) or []) if len(str(value).strip()) > 0]
+    existing_multipliers = str(task.get("loras_multipliers", "") or "").strip()
+    merged_loras, merged_multipliers = merge_loras_settings(
+        existing_loras,
+        existing_multipliers,
+        normalized_loras,
+        normalized_multipliers,
+        "merge after",
+        path_key=_basename_lora_key,
+    )
+    task["activated_loras"] = merged_loras
+    task["loras_multipliers"] = merged_multipliers
+    return task
+
+
 def build_generation_task(
     tool_name: str,
     variant: str,
@@ -611,6 +745,8 @@ def build_generation_task(
 
 
 __all__ = [
+    "GENERATION_TOOL_IDS",
+    "apply_tool_loras",
     "DEFAULT_IMAGE_EDITOR_VARIANT",
     "TOOL_DISPLAY_NAMES",
     "SETTINGS_DIR",
@@ -624,11 +760,13 @@ __all__ = [
     "get_default_speech_from_sample_variant",
     "get_default_video_generator_variant",
     "get_default_video_with_speech_variant",
+    "list_tool_loras",
     "get_tool_variant_model_def",
     "get_tool_variant_path",
     "is_linked_tool_variant",
     "list_tool_variant_choices",
     "list_tool_variants",
+    "normalize_tool_loras",
     "load_tool_preset",
     "refresh_tool_presets",
     "resolve_tool_variant",

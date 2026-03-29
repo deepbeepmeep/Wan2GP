@@ -62,12 +62,38 @@ def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on: str | l
     # Dependency validation is handled server-side by the create-task edge function.
     # No client-side pre-check needed.
 
+    # Map legacy task_type to the new family-based resolver format.
+    # The create-task edge function requires { family, project_id, input }.
+    _TASK_TYPE_TO_FAMILY = {
+        "travel_segment": "individual_travel_segment",
+        "individual_travel_segment": "individual_travel_segment",
+        "travel_stitch": "crossfade_join",
+        "join_clips_orchestrator": "join_clips",
+        "join_final_stitch": "crossfade_join",
+        "image_upscale": "image_upscale",
+        "image-upscale": "image_upscale",
+        "video_enhance": "video_enhance",
+        "animate_character": "character_animate",
+        "travel_orchestrator": "travel_between_images",
+        "edit_video_orchestrator": "edit_video_orchestrator",
+        "magic_edit": "magic_edit",
+        "image_inpaint": "masked_edit",
+        "image_edit": "masked_edit",
+        "annotated_image_edit": "masked_edit",
+        "qwen_image_edit": "masked_edit",
+        "single_image": "image_generation",
+        "z_image_turbo_i2i": "z_image_turbo_i2i",
+    }
+    family = _TASK_TYPE_TO_FAMILY.get(task_type_str, task_type_str)
+
     payload_edge = {
-        "task_id": actual_db_row_id,
-        "params": params_for_db,
-        "task_type": task_type_str,
+        "family": family,
         "project_id": project_id,
-        "dependant_on": dependant_on_list,  # Always list or None for Edge Function
+        "input": {
+            **params_for_db,
+            "task_id": actual_db_row_id,
+            "dependant_on": dependant_on_list,
+        },
     }
 
     headless_logger.debug(f"Supabase Edge call >>> POST {edge_url} payload={str(payload_edge)[:120]}\u2026")

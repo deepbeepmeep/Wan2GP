@@ -17,7 +17,7 @@ python-multipart>=0.0.20  # For file uploads
 
 # ===== Database and Storage =====
 supabase>=2.23.0  # For Supabase DB (via RPC) and Storage
-pydantic>=2.10.6,<3.0  # Must be compatible with both supabase-auth and Wan2GP (==2.10.6)
+# pydantic  # REMOVED: Wan2GP pins pydantic==2.10.6; --upgrade here would override it
 python-dotenv>=1.0.0  # For .env file management
 
 # ===== Utilities =====

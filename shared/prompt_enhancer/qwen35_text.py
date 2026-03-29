@@ -492,6 +492,19 @@ def _use_legacy_cuda_runner_prompt_enhancer(model) -> bool:
     return bool(getattr(model, "_prompt_enhancer_use_legacy_cuda_runner", False)) and torch.cuda.is_available()
 
 
+def _get_assistant_graph_pool_handle(model, usage_mode: str | None, enable_cudagraph: bool):
+    if usage_mode != "assistant" or not enable_cudagraph or not torch.cuda.is_available():
+        return None
+    handle = getattr(model, "_prompt_enhancer_assistant_graph_pool_handle", None)
+    if handle is None:
+        try:
+            handle = torch.cuda.graph_pool_handle()
+        except Exception:
+            handle = None
+        model._prompt_enhancer_assistant_graph_pool_handle = handle
+    return handle
+
+
 def _get_or_create_vllm_engine(model, usage_mode: str | None = None):
     register_qwen35_config()
     engine = getattr(model, "_prompt_enhancer_vllm_engine", None)
@@ -515,12 +528,14 @@ def _get_or_create_vllm_engine(model, usage_mode: str | None = None):
     if tokenizer is None:
         raise RuntimeError("Qwen3.5 prompt enhancer tokenizer is not configured.")
     enable_cudagraph = bool(getattr(model, "_prompt_enhancer_enable_cudagraph", False))
+    graph_pool_handle = _get_assistant_graph_pool_handle(model, usage_mode, enable_cudagraph)
 
     engine = NanoVllmTextEngine(
         model=model,
         model_path=runtime_model_path,
         tokenizer=tokenizer,
         enforce_eager=not enable_cudagraph,
+        graph_pool_handle=graph_pool_handle,
     )
     model._prompt_enhancer_vllm_engine = engine
     model._prompt_enhancer_vllm_mode = usage_mode
@@ -959,6 +974,7 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_vllm_model_path = runtime_model_path
     model._prompt_enhancer_vllm_engine = None
     model._prompt_enhancer_vllm_mode = None
+    model._prompt_enhancer_assistant_graph_pool_handle = None
     model._prompt_enhancer_safe_legacy = safe_legacy_mode
     model._prompt_enhancer_use_vllm = engine_name in ("cg", "vllm")
     model._prompt_enhancer_use_legacy_cuda_runner = engine_name == "legacy"

@@ -42,7 +42,7 @@ def find_available_port(start_port: int = 2333, max_attempts: int = 100) -> int:
 
 class ModelRunner:
 
-    def __init__(self, config: Config, rank: int, event: Event | list[Event], model_object=None):
+    def __init__(self, config: Config, rank: int, event: Event | list[Event], model_object=None, graph_pool_handle=None):
         # Enable capturing scalar outputs to avoid graph breaks from Tensor.item() calls
         torch._dynamo.config.capture_scalar_outputs = True
         
@@ -95,6 +95,7 @@ class ModelRunner:
         self._logits_bias_cache = {}
         self._sampling_generator = None
         self._runtime_signature = None
+        self._graph_pool_seed = graph_pool_handle
         self._guard_counts = {}
         self._guard_seen_details = set()
         torch.set_default_dtype(config_dtype)
@@ -935,7 +936,7 @@ class ModelRunner:
         if not self.graph_bs:
             self.graph_bs = [max_bs]
         self.graphs = {}
-        self.graph_pool = None
+        self.graph_pool = self._graph_pool_seed
 
         for bs in reversed(self.graph_bs):
             graph = torch.cuda.CUDAGraph()

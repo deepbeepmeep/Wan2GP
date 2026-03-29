@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### March 28th 2026: WanGP v11.11, The Machine Within The Machine
+### March 28th 2026: WanGP v11.12, The Machine Within The Machine
 
 Meet **Deepy** your friendly *WanGP Agent*.
 
@@ -62,7 +62,11 @@ Deepy can also transcribe the audio content of a video (*new to WanGP 11.11*)
 extract the video from the moment it says "Deepy changed my life"
 ```
 
-*Deepy* reuses the *Qwen3VL Abliterated* checkpoints and it is highly recommended to install the *GGUF kernels* (check docs/INSTALLATION.md) for low VRAM / fast inference. You can customize Deepy to use the settings of your choice when generating a video, image, ... (please check docs/DEEPY.Md)
+*Deepy* reuses the *Qwen3VL Abliterated* checkpoints and it is highly recommended to install the *GGUF kernels* (check docs/INSTALLATION.md) for low VRAM / fast inference. **now available with Linux!**
+
+Please install also *flash attention 2* and *triton* to enable *vllm* and get x2/x3 speed gain and lower VRAM usage.
+
+You can customize Deepy to use the settings of your choice when generating a video, image, ... (please check docs/DEEPY.Md). 
 
 *Go the Config > Prompt Enhancer / Deep tab to enable Deepy (you must first choose a Qwen3.5VL Prompt Enhancer)*
 

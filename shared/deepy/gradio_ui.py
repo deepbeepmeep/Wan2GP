@@ -75,6 +75,7 @@ class DeepyChatUI:
     launcher_host: Any
     panel: Any
     settings_launcher_host: Any
+    settings_save_btn: Any
     html_output: Any
     chat_event: Any
     stats_output: Any
@@ -111,7 +112,6 @@ class DeepyChatUI:
 class DeepyChatHandlers:
     prepare_request_context: Callable[[Any, Any, Any, Any, Any], Any]
     update_tool_ui_settings: Callable[..., Any]
-    persist_auto_cancel_queue_tasks: Callable[[Any, Any], Any]
     store_selected_video_time: Callable[[Any, Any], Any]
     ask_ai: Callable[[Any, str], Any]
     stop_ai: Callable[[Any], Any]
@@ -309,7 +309,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                             label="Seed (-1 for random)",
                             interactive=not tool_ui_state["use_template_properties"],
                         )
-                    with gr.Accordion("Template Settings used by Tools", open=False):
+                    with gr.Accordion("Template Settings used by Tools", open=True):
                         with gr.Column(elem_classes=["wangp-assistant-chat__template-tool-grid"]):
                             for tool_pair in _TEMPLATE_TOOL_LAYOUT:
                                 with gr.Row(elem_classes=["wangp-assistant-chat__template-tool-grid-row"]):
@@ -328,6 +328,8 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                                         control = DeepyTemplateToolControl(tool_name=tool_name, dropdown=dropdown, add_btn=add_btn, delete_btn=delete_btn)
                                         controls_by_tool[tool_name] = control
                                         template_controls.append(control)
+                    with gr.Row(elem_classes=["wangp-assistant-chat__settings-actions"]):
+                        settings_save_btn = gr.Button("Save Deepy Settings", variant="primary", elem_id=assistant_chat.SAVE_SETTINGS_BUTTON_ID)
                 template_selection_history = gr.State(_build_template_selection_history(initial_tool_values))
                 template_modal_state = gr.State({})
                 captured_lset_value = gr.Text(value="", interactive=False, visible=False)
@@ -345,6 +347,7 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         launcher_host=launcher_host,
         panel=panel,
         settings_launcher_host=settings_launcher_host,
+        settings_save_btn=settings_save_btn,
         html_output=html_output,
         chat_event=chat_event,
         stats_output=stats_output,
@@ -452,7 +455,41 @@ def bind_deepy_chat_ui(
         default_speech_from_sample,
     ):
         handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
-        handlers.update_tool_ui_settings(
+        update_session_ui_settings(
+            state_value,
+            auto_cancel_queue_tasks,
+            use_template_properties,
+            override_height,
+            override_width,
+            override_num_frames,
+            override_seed,
+            default_video_generator,
+            default_video_with_speech,
+            default_image_generator,
+            default_image_editor,
+            default_speech_from_description,
+            default_speech_from_sample,
+        )
+        yield from handlers.ask_ai(state_value, ask_request)
+
+    def _apply_ui_settings(
+        state_value,
+        auto_cancel_queue_tasks,
+        use_template_properties,
+        override_height,
+        override_width,
+        override_num_frames,
+        override_seed,
+        default_video_generator,
+        default_video_with_speech,
+        default_image_generator,
+        default_image_editor,
+        default_speech_from_description,
+        default_speech_from_sample,
+        *,
+        persist,
+    ):
+        return handlers.update_tool_ui_settings(
             state_value,
             auto_cancel_queue_tasks=auto_cancel_queue_tasks,
             use_template_properties=use_template_properties,
@@ -466,18 +503,78 @@ def bind_deepy_chat_ui(
             video_generator_variant=default_video_generator,
             speech_from_description_variant=default_speech_from_description,
             speech_from_sample_variant=default_speech_from_sample,
+            persist=persist,
+        )
+
+    def update_session_ui_settings(
+        state_value,
+        auto_cancel_queue_tasks,
+        use_template_properties,
+        override_height,
+        override_width,
+        override_num_frames,
+        override_seed,
+        default_video_generator,
+        default_video_with_speech,
+        default_image_generator,
+        default_image_editor,
+        default_speech_from_description,
+        default_speech_from_sample,
+    ):
+        return _apply_ui_settings(
+            state_value,
+            auto_cancel_queue_tasks,
+            use_template_properties,
+            override_height,
+            override_width,
+            override_num_frames,
+            override_seed,
+            default_video_generator,
+            default_video_with_speech,
+            default_image_generator,
+            default_image_editor,
+            default_speech_from_description,
+            default_speech_from_sample,
+            persist=False,
+        )
+
+    def persist_ui_settings(
+        state_value,
+        auto_cancel_queue_tasks,
+        use_template_properties,
+        override_height,
+        override_width,
+        override_num_frames,
+        override_seed,
+        default_video_generator,
+        default_video_with_speech,
+        default_image_generator,
+        default_image_editor,
+        default_speech_from_description,
+        default_speech_from_sample,
+    ):
+        _apply_ui_settings(
+            state_value,
+            auto_cancel_queue_tasks,
+            use_template_properties,
+            override_height,
+            override_width,
+            override_num_frames,
+            override_seed,
+            default_video_generator,
+            default_video_with_speech,
+            default_image_generator,
+            default_image_editor,
+            default_speech_from_description,
+            default_speech_from_sample,
             persist=True,
         )
-        yield from handlers.ask_ai(state_value, ask_request)
 
     def stop_ai_with_ui(state_value):
         return handlers.stop_ai(state_value)
 
     def reset_ai_with_ui(state_value):
         return handlers.reset_ai(state_value)
-
-    def persist_auto_cancel_queue_tasks(state_value, auto_cancel_queue_tasks):
-        handlers.persist_auto_cancel_queue_tasks(state_value, auto_cancel_queue_tasks)
 
     def open_add_template_modal(tool_name, state_value, lset_value, lset_label, current_variant):
         selected_label = str(Path(str(lset_value or "").strip()).name or str(lset_label or "").strip() or "Nothing selected").strip()
@@ -560,13 +657,6 @@ def bind_deepy_chat_ui(
             modal_updates = _open_template_modal({}, _modal_title_html(tool_name), body_html, close_visible=True)
             return (*dropdown_noops, normalized_history, *modal_updates)
 
-    ui.auto_cancel_queue_tasks.change(
-        fn=persist_auto_cancel_queue_tasks,
-        inputs=[state, ui.auto_cancel_queue_tasks],
-        outputs=None,
-        show_progress="hidden",
-        queue=False,
-    )
     ui.use_template_properties.change(
         fn=toggle_override_controls,
         inputs=[ui.use_template_properties],
@@ -617,6 +707,26 @@ def bind_deepy_chat_ui(
         outputs=None,
         show_progress="hidden",
         queue=False,
+    )
+    ui.settings_save_btn.click(
+        fn=persist_ui_settings,
+        inputs=[
+            state,
+            ui.auto_cancel_queue_tasks,
+            ui.use_template_properties,
+            ui.override_height,
+            ui.override_width,
+            ui.override_num_frames,
+            ui.override_seed,
+            ui.default_video_generator,
+            ui.default_video_with_speech,
+            ui.default_image_generator,
+            ui.default_image_editor,
+            ui.default_speech_from_description,
+            ui.default_speech_from_sample,
+        ],
+        outputs=None,
+        show_progress="hidden",
     )
     ui.ask_btn.click(
         fn=ask_ai_with_ui_settings,

@@ -5,8 +5,10 @@
 	"image_mode": 1,
 	"loras_multipliers": "1",
 	"num_inference_steps": 4,
+    "resolution": "1280x720",
     "guidance_scale": 1,
 	"video_prompt_type": "KI",
+    "settings_version": 2.55,
     "type": "Qwen Edit 2511 lighx2v 4 steps",	
 	"model_type": "qwen_image_edit_plus2_20B"
 }

@@ -11334,7 +11334,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     handlers=deepy_gradio_ui.DeepyChatHandlers(
                         prepare_request_context=init_generate,
                         update_tool_ui_settings=_deepy.update_tool_ui_settings,
-                        persist_auto_cancel_queue_tasks=_deepy.persist_auto_cancel_queue_tasks,
                         store_selected_video_time=_deepy.store_selected_video_time,
                         ask_ai=_deepy.ask_ai,
                         stop_ai=_deepy.stop_ai,

@@ -305,18 +305,18 @@ def get_css() -> str:
     z-index: 2;
     width: min(var(--dock-settings-panel-width), calc(100vw - 150px));
     height: 100%;
-    padding: 12px;
+    padding: 0;
     display: block;
-    border: 1px solid rgba(16, 78, 109, 0.16);
+    border: 0;
     border-radius: 24px;
-    background: #ffffff;
-    box-shadow: 0 30px 60px rgba(8, 34, 50, 0.16);
+    background: transparent;
+    box-shadow: none;
     opacity: 0;
     visibility: hidden;
     transform: translateX(-24px) scale(0.98);
     transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s step-end;
     pointer-events: none;
-    overflow: hidden !important;
+    overflow: visible !important;
 }
 
 #assistant_chat_panel.is-settings-open #assistant_chat_settings_panel {
@@ -335,21 +335,45 @@ def get_css() -> str:
     min-width: 0 !important;
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll {
-    display: block !important;
-    height: 100%;
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
-    padding-right: 4px;
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-width: 0 !important;
+    padding: 0 !important;
+    gap: 0 !important;
+    border: 1px solid rgba(14, 71, 99, 0.18) !important;
+    border-radius: 22px !important;
+    background: #ffffff !important;
+    box-shadow: 0 28px 56px rgba(8, 33, 49, 0.2) !important;
+    overflow: hidden !important;
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block {
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .form {
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll {
+    display: block !important;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    padding: 12px 12px 12px;
+}
+
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block {
     display: block !important;
     margin: 0 0 12px !important;
     overflow: visible;
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap {
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > .label-wrap {
     align-items: center;
     padding: 10px 14px;
     border: 1px solid rgba(23, 90, 125, 0.16);
@@ -358,15 +382,15 @@ def get_css() -> str:
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap.open {
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > .label-wrap.open {
     margin-bottom: 8px;
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap span {
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > .label-wrap span {
     color: #174a67;
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > div:last-child {
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > div:last-child {
     overflow: visible;
 }
 
@@ -1290,6 +1314,19 @@ def get_css() -> str:
     overflow: hidden !important;
 }
 
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card.wangp-assistant-chat__template-modal-card {
+    width: 100% !important;
+    max-width: none !important;
+    flex: 1 1 auto !important;
+}
+
+#assistant_chat_settings_panel .tab-nav button,
+#assistant_chat_settings_panel button[role="tab"] {
+    font-size: calc(0.82rem * var(--dock-font-scale));
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+}
+
 #assistant_chat_settings_panel .wangp-assistant-chat__template-modal-card > .form {
     padding: 0 !important;
     border: 0 !important;
@@ -1307,7 +1344,7 @@ def get_css() -> str:
 }
 
 .wangp-assistant-chat__template-modal-titlebar {
-    padding: 16px 18px 14px;
+    padding: 10px 16px 9px;
     background: linear-gradient(180deg, rgba(16, 86, 121, 0.98) 0%, rgba(10, 59, 84, 0.98) 100%);
     color: #f3fbff;
 }
@@ -1321,7 +1358,7 @@ def get_css() -> str:
 }
 
 .wangp-assistant-chat__template-modal-heading {
-    font-size: calc(1rem * var(--dock-font-scale));
+    font-size: calc(0.9rem * var(--dock-font-scale));
     font-weight: 800;
     letter-spacing: 0.02em;
     color: #f3fbff !important;
@@ -1443,13 +1480,13 @@ def get_css() -> str:
     color: #eaf2f7;
 }
 
-#assistant_chat_dock.is-dark #assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap {
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > .label-wrap {
     border-color: rgba(112, 138, 156, 0.18);
     background: linear-gradient(180deg, rgba(9, 9, 9, 0.98) 0%, rgba(20, 20, 20, 0.98) 100%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-#assistant_chat_dock.is-dark #assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap span {
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > .label-wrap span {
     color: #e6eef4;
 }
 

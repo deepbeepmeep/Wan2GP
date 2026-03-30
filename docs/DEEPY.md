@@ -13,6 +13,8 @@ This guide covers:
 - asking Deepy about available LoRAs and current defaults
 - using Deepy from the CLI
 
+**Please note Deepy make errors, so be sure to verify Deep's work**
+
 ## General Guidelines
 Once enabled (see below), Deepy becomes accessible by opening Deepy chat window when you click on the left dock `Ask Deepy`
 
@@ -26,7 +28,7 @@ Deepy can also work with User Imported Media:
 
 Once the media are in the galleries, you can refer to them using wording like `the last audio file`, `the selected video` or describe their content (Deepy will query the prompts stored in the generation metadata if they exist).
 
-Deepy simply can not infer the best generation settings based for your request, since the combinations are too many and depend on the generation model you want to use. So Deepy relies on predefined Template Settings for its main 6 generation tools (`Generate Image`, `Generate Video`, `Edit Image`, `Generate Video with Speaker`, `Generate Audio from description`, `Generate Audio from Sample`). 
+Deepy simply can not infer the best generation settings based for your request, since the combinations are too many and depend on the generation model you want to use. So Deepy relies on predefined Templates Settings for its main 6 generation tools (`Generate Image`, `Generate Video`, `Edit Image`, `Generate Video with Speaker`, `Generate Audio from description`, `Generate Audio from Sample`). 
 
 WanGP comes with builtin templates ready to use but you may as well link presaved settings. You can access Deepy settings by clicking the `Settings` control on the right of the Deepy chat window.
 
@@ -34,7 +36,7 @@ In the web UI, Deepy settings changes take effect for the current Deepy session 
 
 You can also define Default Width & Height to use for all the generation tools in Deepy Settings Window. These will be used only if the checkbox `Use Properties defined in Settings in Templates files` is not checked. This is convenient if you want to override the values defined in the templates without modifying them.
 
-Last but not least you can ask directly Deepy to override the following template settings: `width`, `height`, `num of frames`, `fps`, `loras` or `num inference steps`. 
+Last but not least you can ask directly Deepy to override the following templates settings: `width`, `height`, `num of frames`, `fps`, `loras` or `num inference steps`. 
 
 ## Enabling Deepy
 
@@ -75,7 +77,7 @@ All changes in this panel are used immediately by the current Deepy web session.
 - `Auto-abort or remove Deepy-started generation on Stop/Reset.`  
   Controls whether Deepy-created queue work is cancelled or removed when you stop/reset Deepy.
 
-- `Use Properties defined in Settings Templates files.`  
+- `Use Properties defined in Templates Settings files.`  
   When enabled, Deepy uses the selected tool template as-is. When disabled, Deepy still starts from the template, but replaces only width, height, video frame count, and seed with the panel defaults below.
 
 - `Width` and `Height`  

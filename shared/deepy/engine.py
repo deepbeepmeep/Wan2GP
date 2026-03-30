@@ -766,6 +766,49 @@ class tools:
                 return None
         return None
 
+    def _get_effective_video_latent_size(self, task: dict[str, Any]) -> int | None:
+        model_type = str(task.get("model_type", "") or task.get("base_model_type", "") or "").strip()
+        get_base_model_type = _get_main_callable("get_base_model_type")
+        base_model_type = model_type
+        if callable(get_base_model_type) and len(model_type) > 0:
+            try:
+                base_model_type = str(get_base_model_type(model_type) or model_type).strip() or model_type
+            except Exception:
+                base_model_type = model_type
+        get_model_min_frames_and_step = _get_main_callable("get_model_min_frames_and_step")
+        if callable(get_model_min_frames_and_step) and len(base_model_type) > 0:
+            try:
+                _frames_minimum, _frames_steps, latent_size = get_model_min_frames_and_step(base_model_type)
+                latent_size = int(latent_size)
+                if latent_size > 0:
+                    return latent_size
+            except Exception:
+                pass
+        get_model_def = _get_main_callable("get_model_def")
+        if callable(get_model_def) and len(base_model_type) > 0:
+            try:
+                model_def = get_model_def(base_model_type)
+            except Exception:
+                model_def = None
+            if isinstance(model_def, dict):
+                try:
+                    latent_size = int(model_def.get("latent_size", model_def.get("frames_steps", 0)) or 0)
+                except Exception:
+                    latent_size = 0
+                if latent_size > 0:
+                    return latent_size
+        return None
+
+    @staticmethod
+    def _snap_video_frame_count_to_latent_grid(frame_count: int, latent_size: int | None) -> int:
+        raw_frames = int(frame_count)
+        if raw_frames <= 0:
+            return raw_frames
+        if latent_size is None or int(latent_size) <= 0:
+            return raw_frames
+        step = int(latent_size)
+        return max(1, int(round((raw_frames - 1) / float(step))) * step + 1)
+
     def _get_effective_generation_defaults(self, tool_name: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         lookup_name = str(tool_name or "").strip()
         if lookup_name not in deepy_tool_settings.GENERATION_TOOL_IDS:
@@ -830,6 +873,7 @@ class tools:
         width: int | None = None,
         height: int | None = None,
         num_frames: int | None = None,
+        duration_seconds: float | None = None,
         fps: int | None = None,
         num_inference_steps: int | None = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -861,8 +905,32 @@ class tools:
         max_dim = int(deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX)
         if width < min_dim or width > max_dim or height < min_dim or height > max_dim:
             return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": f"{width}x{height}", "error": f"width and height must stay between {min_dim} and {max_dim}."}
-        task["resolution"] = f"{width}x{height}"
+        parsed_duration_seconds = None
         if include_num_frames:
+            parsed_duration_seconds, error_result = self._parse_time_value(duration_seconds, "duration_seconds", required=False)
+            if error_result is not None:
+                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": f"{width}x{height}", "error": str(error_result.get("error", "") or "duration_seconds is invalid.")}
+            if parsed_duration_seconds is not None:
+                if parsed_duration_seconds <= 0:
+                    return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": f"{width}x{height}", "error": "duration_seconds must be > 0."}
+                if num_frames is not None and str(num_frames).strip() != "":
+                    return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": f"{width}x{height}", "error": "Specify either num_frames or duration_seconds, not both."}
+        task["resolution"] = f"{width}x{height}"
+        if fps is not None:
+            try:
+                fps = int(fps)
+            except Exception:
+                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "fps must be an integer."}
+            if fps < 15 or fps > 60:
+                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "fps must stay between 15 and 60."}
+            task["force_fps"] = str(int(fps))
+        if include_num_frames:
+            if parsed_duration_seconds is not None:
+                effective_fps = int(fps) if fps is not None else self._compute_effective_video_fps(task)
+                if effective_fps is None or effective_fps <= 0:
+                    return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "Could not determine FPS to convert duration_seconds. Pass fps explicitly."}
+                num_frames = int(round(float(parsed_duration_seconds) * float(effective_fps)))
+                num_frames = self._snap_video_frame_count_to_latent_grid(num_frames, self._get_effective_video_latent_size(task))
             try:
                 num_frames = base_num_frames if num_frames is None or str(num_frames).strip() == "" else int(num_frames)
             except Exception:
@@ -872,14 +940,6 @@ class tools:
             if num_frames is None or num_frames < min_frames or num_frames > max_frames:
                 return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": f"num_frames must stay between {min_frames} and {max_frames}."}
             task["video_length"] = int(num_frames)
-        if fps is not None:
-            try:
-                fps = int(fps)
-            except Exception:
-                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "fps must be an integer."}
-            if fps < 15 or fps > 60:
-                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "fps must stay between 15 and 60."}
-            task["force_fps"] = str(int(fps))
         if num_inference_steps is not None:
             try:
                 num_inference_steps = int(num_inference_steps)
@@ -1755,6 +1815,11 @@ class tools:
                 "description": "Optional output frame count. If omitted, use the current Deepy/template setting.",
                 "required": False,
             },
+            "duration_seconds": {
+                "type": "number",
+                "description": "Optional output duration in seconds. Deepy converts it to num_frames using the effective FPS. Do not pass this together with num_frames.",
+                "required": False,
+            },
             "fps": {
                 "type": "integer",
                 "description": "Optional output FPS between 15 and 60. If omitted, keep the template FPS behavior.",
@@ -1788,6 +1853,7 @@ class tools:
         width: int | None = None,
         height: int | None = None,
         num_frames: int | None = None,
+        duration_seconds: float | None = None,
         fps: int | None = None,
         num_inference_steps: int | None = None,
         loras: list[dict[str, Any]] | None = None,
@@ -1840,7 +1906,7 @@ class tools:
             if end_media is not None:
                 error_result["source_end_media_id"] = end_media.get("media_id", "")
             return error_result
-        task, error_result = self._apply_generation_overrides("gen_video", task, include_num_frames=True, width=width, height=height, num_frames=num_frames, fps=fps, num_inference_steps=num_inference_steps)
+        task, error_result = self._apply_generation_overrides("gen_video", task, include_num_frames=True, width=width, height=height, num_frames=num_frames, duration_seconds=duration_seconds, fps=fps, num_inference_steps=num_inference_steps)
         if error_result is not None:
             error_result["generator_variant"] = generator_variant
             if len(template_file) > 0:
@@ -1901,6 +1967,11 @@ class tools:
                 "description": "Optional output frame count. If omitted, use the current Deepy/template setting.",
                 "required": False,
             },
+            "duration_seconds": {
+                "type": "number",
+                "description": "Optional output duration in seconds. Deepy converts it to num_frames using the effective FPS. Do not pass this together with num_frames.",
+                "required": False,
+            },
             "fps": {
                 "type": "integer",
                 "description": "Optional output FPS between 15 and 60. If omitted, keep the template FPS behavior.",
@@ -1934,6 +2005,7 @@ class tools:
         width: int | None = None,
         height: int | None = None,
         num_frames: int | None = None,
+        duration_seconds: float | None = None,
         fps: int | None = None,
         num_inference_steps: int | None = None,
         loras: list[dict[str, Any]] | None = None,
@@ -1985,7 +2057,7 @@ class tools:
             error_result["source_audio_media_id"] = audio_media.get("media_id", "")
             error_result["image_start_target"] = self._get_image_start_target("gen_video_with_speech")
             return error_result
-        task, error_result = self._apply_generation_overrides("gen_video_with_speech", task, include_num_frames=True, width=width, height=height, num_frames=num_frames, fps=fps, num_inference_steps=num_inference_steps)
+        task, error_result = self._apply_generation_overrides("gen_video_with_speech", task, include_num_frames=True, width=width, height=height, num_frames=num_frames, duration_seconds=duration_seconds, fps=fps, num_inference_steps=num_inference_steps)
         if error_result is not None:
             error_result["generator_variant"] = generator_variant
             if len(template_file) > 0:

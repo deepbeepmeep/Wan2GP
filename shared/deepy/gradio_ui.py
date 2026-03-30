@@ -177,6 +177,14 @@ def _modal_title_html(tool_name: str) -> str:
     )
 
 
+def _settings_title_html() -> str:
+    return (
+        "<div class='wangp-assistant-chat__template-modal-titlebar'>"
+        "<div class='wangp-assistant-chat__template-modal-heading'>Deepy Settings</div>"
+        "</div>"
+    )
+
+
 def _tool_display_name(tool_name: str) -> str:
     return deepy_tool_settings.TOOL_DISPLAY_NAMES.get(tool_name, tool_name.replace("_", " ").title())
 
@@ -269,67 +277,71 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                 reset_btn = gr.Button("Reset", scale=1, min_width=10, elem_id=assistant_chat.RESET_BUTTON_ID)
             stats_output = gr.HTML(assistant_chat.render_stats_html(), elem_id=assistant_chat.STATS_BLOCK_ID)
             with gr.Column(elem_id=assistant_chat.SETTINGS_PANEL_ID):
-                with gr.Column(elem_classes=["wangp-assistant-chat__settings-scroll"]):
-                    with gr.Accordion("Generation Properties", open=True):
-                        auto_cancel_queue_tasks = gr.Checkbox(
-                            value=tool_ui_state["auto_cancel_queue_tasks"],
-                            label="Auto-abort or remove Deepy-started generation on Stop/Reset.",
-                        )
-                        use_template_properties = gr.Checkbox(value=tool_ui_state["use_template_properties"], label="Use Properties defined in Settings Templates files.")
-                        with gr.Row():
-                            override_width = gr.Slider(
-                                deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
-                                deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
-                                value=tool_ui_state["width"],
-                                step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
-                                label="Default Width",
-                                interactive=not tool_ui_state["use_template_properties"],
-                            )
-                            override_height = gr.Slider(
-                                deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
-                                deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
-                                value=tool_ui_state["height"],
-                                step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
-                                label="Default Height",
-                                interactive=not tool_ui_state["use_template_properties"],
-                            )
-                        override_num_frames = gr.Slider(
-                            deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MIN,
-                            deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MAX,
-                            value=tool_ui_state["num_frames"],
-                            step=1,
-                            label="Default Number of Frames",
-                            interactive=not tool_ui_state["use_template_properties"],
-                        )
-                        override_seed = gr.Slider(
-                            -1,
-                            999999999,
-                            value=tool_ui_state["seed"],
-                            step=1,
-                            label="Seed (-1 for random)",
-                            interactive=not tool_ui_state["use_template_properties"],
-                        )
-                    with gr.Accordion("Template Settings used by Tools", open=True):
-                        with gr.Column(elem_classes=["wangp-assistant-chat__template-tool-grid"]):
-                            for tool_pair in _TEMPLATE_TOOL_LAYOUT:
-                                with gr.Row(elem_classes=["wangp-assistant-chat__template-tool-grid-row"]):
-                                    for tool_name in tool_pair:
-                                        with gr.Column(elem_classes=["wangp-assistant-chat__template-tool-card"]):
-                                            with gr.Row(elem_classes=["wangp-assistant-chat__template-tool-row"]):
-                                                dropdown = gr.Dropdown(
-                                                    choices=template_selector_state[_TEMPLATE_TOOL_SELECTOR_CHOICE_KEY[tool_name]],
-                                                    value=tool_ui_state[_TEMPLATE_TOOL_UI_KEY[tool_name]],
-                                                    label=deepy_tool_settings.TOOL_DISPLAY_NAMES[tool_name],
-                                                    elem_classes=["wangp-assistant-chat__template-tool-dropdown"],
-                                                )
-                                                with gr.Column(scale=0, min_width=34, elem_classes=["wangp-assistant-chat__template-tool-actions"]):
-                                                    add_btn = gr.Button("\u2795", size="sm", min_width=1, elem_classes=["wangp-assistant-chat__template-tool-icon-btn"])
-                                                    delete_btn = gr.Button("\U0001F5D1\uFE0F", size="sm", min_width=1, elem_classes=["wangp-assistant-chat__template-tool-icon-btn", "wangp-assistant-chat__template-tool-icon-btn--danger"])
-                                        control = DeepyTemplateToolControl(tool_name=tool_name, dropdown=dropdown, add_btn=add_btn, delete_btn=delete_btn)
-                                        controls_by_tool[tool_name] = control
-                                        template_controls.append(control)
-                    with gr.Row(elem_classes=["wangp-assistant-chat__settings-actions"]):
-                        settings_save_btn = gr.Button("Save Deepy Settings", variant="primary", elem_id=assistant_chat.SAVE_SETTINGS_BUTTON_ID)
+                with gr.Column(elem_classes=["wangp-assistant-chat__template-modal-card", "wangp-assistant-chat__settings-card"]):
+                    gr.HTML(_settings_title_html())
+                    with gr.Column(elem_classes=["wangp-assistant-chat__settings-scroll"]):
+                        with gr.Tabs():
+                            with gr.Tab("Generation Properties"):
+                                auto_cancel_queue_tasks = gr.Checkbox(
+                                    value=tool_ui_state["auto_cancel_queue_tasks"],
+                                    label="Auto-abort or remove Deepy-started generation on Stop/Reset.",
+                                )
+                                use_template_properties = gr.Checkbox(value=tool_ui_state["use_template_properties"], label="Use Properties defined in Templates Settings files.")
+                                with gr.Row():
+                                    override_width = gr.Slider(
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
+                                        value=tool_ui_state["width"],
+                                        step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
+                                        label="Default Width",
+                                        interactive=not tool_ui_state["use_template_properties"],
+                                    )
+                                    override_height = gr.Slider(
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
+                                        value=tool_ui_state["height"],
+                                        step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
+                                        label="Default Height",
+                                        interactive=not tool_ui_state["use_template_properties"],
+                                    )
+                                override_num_frames = gr.Slider(
+                                    deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MIN,
+                                    deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MAX,
+                                    value=tool_ui_state["num_frames"],
+                                    step=1,
+                                    label="Default Number of Frames",
+                                    interactive=not tool_ui_state["use_template_properties"],
+                                )
+                                override_seed = gr.Slider(
+                                    -1,
+                                    999999999,
+                                    value=tool_ui_state["seed"],
+                                    step=1,
+                                    label="Seed (-1 for random)",
+                                    interactive=not tool_ui_state["use_template_properties"],
+                                )
+                            with gr.Tab("Templates Settings used by Tools"):
+                                with gr.Column(elem_classes=["wangp-assistant-chat__template-tool-grid"]):
+                                    gr.Markdown("Please Match here Prerecorded Models Settings to each Generation Tool used by Deepy.")
+                                    for tool_pair in _TEMPLATE_TOOL_LAYOUT:
+                                        with gr.Row(elem_classes=["wangp-assistant-chat__template-tool-grid-row"]):
+                                            for tool_name in tool_pair:
+                                                with gr.Column(elem_classes=["wangp-assistant-chat__template-tool-card"]):
+                                                    with gr.Row(elem_classes=["wangp-assistant-chat__template-tool-row"]):
+                                                        dropdown = gr.Dropdown(
+                                                            choices=template_selector_state[_TEMPLATE_TOOL_SELECTOR_CHOICE_KEY[tool_name]],
+                                                            value=tool_ui_state[_TEMPLATE_TOOL_UI_KEY[tool_name]],
+                                                            label=deepy_tool_settings.TOOL_DISPLAY_NAMES[tool_name],
+                                                            elem_classes=["wangp-assistant-chat__template-tool-dropdown"],
+                                                        )
+                                                        with gr.Column(scale=0, min_width=34, elem_classes=["wangp-assistant-chat__template-tool-actions"]):
+                                                            add_btn = gr.Button("\u2795", size="sm", min_width=1, elem_classes=["wangp-assistant-chat__template-tool-icon-btn"])
+                                                            delete_btn = gr.Button("\U0001F5D1\uFE0F", size="sm", min_width=1, elem_classes=["wangp-assistant-chat__template-tool-icon-btn", "wangp-assistant-chat__template-tool-icon-btn--danger"])
+                                                control = DeepyTemplateToolControl(tool_name=tool_name, dropdown=dropdown, add_btn=add_btn, delete_btn=delete_btn)
+                                                controls_by_tool[tool_name] = control
+                                                template_controls.append(control)
+                        with gr.Row(elem_classes=["wangp-assistant-chat__settings-actions"]):
+                            settings_save_btn = gr.Button("Save Deepy Settings", variant="primary", elem_id=assistant_chat.SAVE_SETTINGS_BUTTON_ID)
                 template_selection_history = gr.State(_build_template_selection_history(initial_tool_values))
                 template_modal_state = gr.State({})
                 captured_lset_value = gr.Text(value="", interactive=False, visible=False)

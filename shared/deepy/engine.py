@@ -832,14 +832,21 @@ class tools:
             task["seed"] = int(ui_settings["seed"])
             if include_num_frames:
                 base_num_frames = int(ui_settings["num_frames"])
-        default_width, default_height = self._parse_generation_resolution(base_resolution)
-        if default_width is None or default_height is None or default_width <= 0 or default_height <= 0:
-            return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": base_resolution, "error": "Template/default settings do not define a valid resolution."}
+        default_width = default_height = None
+        if len(base_resolution) > 0:
+            default_width, default_height = self._parse_generation_resolution(base_resolution)
         try:
-            width = default_width if width is None or str(width).strip() == "" else int(width)
-            height = default_height if height is None or str(height).strip() == "" else int(height)
+            width = None if width is None or str(width).strip() == "" else int(width)
+            height = None if height is None or str(height).strip() == "" else int(height)
         except Exception:
             return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": base_resolution, "error": "width and height must be integers."}
+        if width is None or height is None:
+            if default_width is None or default_height is None or default_width <= 0 or default_height <= 0:
+                if width is not None or height is not None:
+                    return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": base_resolution, "error": "width and height must both be provided because the template/default settings do not define a valid resolution."}
+                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": base_resolution, "error": "Template/default settings do not define a valid resolution."}
+            width = default_width if width is None else width
+            height = default_height if height is None else height
         min_dim = int(deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN)
         max_dim = int(deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX)
         if width < min_dim or width > max_dim or height < min_dim or height > max_dim:
@@ -1639,12 +1646,12 @@ class tools:
             },
             "width": {
                 "type": "integer",
-                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output width in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "height": {
                 "type": "integer",
-                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output height in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "num_inference_steps": {
@@ -1706,12 +1713,12 @@ class tools:
             },
             "width": {
                 "type": "integer",
-                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output width in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "height": {
                 "type": "integer",
-                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output height in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "num_frames": {
@@ -1852,12 +1859,12 @@ class tools:
             },
             "width": {
                 "type": "integer",
-                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output width in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "height": {
                 "type": "integer",
-                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output height in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "num_frames": {
@@ -2110,12 +2117,12 @@ class tools:
             },
             "width": {
                 "type": "integer",
-                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output width in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "height": {
                 "type": "integer",
-                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output height in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "num_inference_steps": {

@@ -95,6 +95,16 @@ class DeepyController:
     def _server_config(self) -> dict[str, Any]:
         return self._deps.get_server_config() or {}
 
+    def _persist_tool_ui_settings(self, normalized: dict[str, Any]) -> None:
+        server_config = self._server_config()
+        server_config_filename = str(self._deps.get_server_config_filename() or "").strip()
+        deepy_ui_settings.store_assistant_tool_ui_settings(server_config, normalized)
+        set_deepy_runtime_config(server_config, server_config_filename)
+        if len(server_config_filename) > 0:
+            with open(server_config_filename, "w", encoding="utf-8") as writer:
+                writer.write(json.dumps(server_config, indent=4))
+        gr.Info("New Deepy Setting Saved")
+
     def _reset_foreign_active_session(self, session) -> bool:
         active_session = self._active_assistant_session
         if active_session is None or active_session is session:
@@ -207,29 +217,8 @@ class DeepyController:
             speech_from_sample_variant=speech_from_sample_variant,
         )
         if persist:
-            server_config = self._server_config()
-            server_config_filename = str(self._deps.get_server_config_filename() or "").strip()
-            if deepy_ui_settings.store_assistant_tool_ui_settings(server_config, normalized):
-                set_deepy_runtime_config(server_config, server_config_filename)
-                if len(server_config_filename) > 0:
-                    with open(server_config_filename, "w", encoding="utf-8") as writer:
-                        writer.write(json.dumps(server_config, indent=4))
+            self._persist_tool_ui_settings(normalized)
         return normalized
-
-    def persist_auto_cancel_queue_tasks(self, state, auto_cancel_queue_tasks):
-        session = get_or_create_assistant_session(state)
-        current = dict(session.tool_ui_settings or deepy_ui_settings.normalize_assistant_tool_ui_settings())
-        current["auto_cancel_queue_tasks"] = auto_cancel_queue_tasks
-        normalized = deepy_ui_settings.normalize_assistant_tool_ui_settings(**current)
-        session.tool_ui_settings = dict(normalized)
-        server_config = self._server_config()
-        server_config_filename = str(self._deps.get_server_config_filename() or "").strip()
-        if deepy_ui_settings.store_assistant_tool_ui_settings(server_config, normalized):
-            set_deepy_runtime_config(server_config, server_config_filename)
-            if len(server_config_filename) > 0:
-                with open(server_config_filename, "w", encoding="utf-8") as writer:
-                    writer.write(json.dumps(server_config, indent=4))
-        return normalized["auto_cancel_queue_tasks"]
 
     def store_selected_video_time(self, state, current_time):
         gen = self._deps.get_gen_info(state)

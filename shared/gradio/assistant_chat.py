@@ -31,6 +31,7 @@ REQUEST_ID = "assistant_chat_request"
 ASK_BUTTON_ID = "assistant_chat_ask_button"
 RESET_BUTTON_ID = "assistant_chat_reset_button"
 STOP_BRIDGE_ID = "assistant_chat_stop_bridge"
+SAVE_SETTINGS_BUTTON_ID = "assistant_chat_save_settings_button"
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jfif", ".pjpeg"}
 _VIDEO_EXTENSIONS = deepy_video_tools.VIDEO_EXTENSIONS
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus"}
@@ -494,6 +495,28 @@ def get_css() -> str:
 
 #assistant_chat_stop_bridge {
     display: none !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__settings-actions {
+    margin-top: 10px;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__settings-actions > .form {
+    width: 100%;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#assistant_chat_save_settings_button {
+    width: 100%;
+    min-height: 42px;
+    border-radius: 14px;
+    background: linear-gradient(180deg, #0e5b81 0%, #0a415e 100%);
+    color: #f3fbff;
+    border: 0;
+    box-shadow: 0 12px 22px rgba(11, 43, 63, 0.12);
 }
 
 #assistant_chat_html {
@@ -2187,7 +2210,7 @@ WAC.syncDockLayout = function () {
   dock.style.setProperty('--dock-settings-panel-width', `${settingsWidth}px`);
 };
 
-WAC.setDockOpen = function (open, persist) {
+WAC.setDockOpen = function (open) {
   WAC.dockOpen = !!open;
   WAC.syncDockState();
   WAC.syncDockLayout();

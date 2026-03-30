@@ -114,7 +114,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.11"
+WanGP_version = "11.12"
 settings_version = 2.55
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -11034,9 +11034,9 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 default_files = []
                 current_gallery_tab = gr.Number(0, visible=False)
                 with gr.Tabs() as gallery_tabs:
-                    with gr.Tab("Video / Images", id="video_images"):
+                    with gr.Tab("Video / Images Gallery", id="video_images"):
                         output = gr.Gallery(value =default_files, label="Generated videos", preview= True, show_label=False, elem_id="gallery" , columns=[3], rows=[1], object_fit="contain", height=450, selected_index=0, interactive= False)
-                    with gr.Tab("Audio Files", id="audio"):
+                    with gr.Tab("Audio Files Gallery", id="audio"):
                         output_audio = AudioGallery(audio_paths=[], max_thumbnails=999, height=40, update_only=update_form)
                         audio_files_paths, audio_file_selected, audio_gallery_refresh_trigger = output_audio.get_state()
                 output_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_output_trigger" if main_bridge_elem_ids else None)
@@ -11334,7 +11334,6 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                     handlers=deepy_gradio_ui.DeepyChatHandlers(
                         prepare_request_context=init_generate,
                         update_tool_ui_settings=_deepy.update_tool_ui_settings,
-                        persist_auto_cancel_queue_tasks=_deepy.persist_auto_cancel_queue_tasks,
                         store_selected_video_time=_deepy.store_selected_video_time,
                         ask_ai=_deepy.ask_ai,
                         stop_ai=_deepy.stop_ai,

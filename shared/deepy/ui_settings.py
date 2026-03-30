@@ -100,7 +100,6 @@ def store_assistant_tool_ui_settings(server_config: dict[str, Any] | None, setti
     if not isinstance(server_config, dict):
         return False
     normalized = normalize_assistant_tool_ui_settings(**dict(settings or {}))
-    changed = False
     updates = {
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: normalized["auto_cancel_queue_tasks"],
         ASSISTANT_USE_TEMPLATE_PROPERTIES_KEY: normalized["use_template_properties"],
@@ -115,12 +114,8 @@ def store_assistant_tool_ui_settings(server_config: dict[str, Any] | None, setti
         DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY: normalized["speech_from_description_variant"],
         DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY: normalized["speech_from_sample_variant"],
     }
-    for key, value in updates.items():
-        if server_config.get(key) == value:
-            continue
-        server_config[key] = value
-        changed = True
-    return changed
+    server_config.update(updates)
+    return True
 
 
 def get_template_selector_state() -> dict[str, Any]:

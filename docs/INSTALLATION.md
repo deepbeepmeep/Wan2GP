@@ -333,7 +333,7 @@ These kernels are only useful for GGUF models.
 
 - Linux
    ```
-  # placeholder: Linux GGUF wheel for Python 3.11 / PyTorch 2.10 / CUDA 13 not published yet
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch210cu13py311-cp311-cp311-linux_x86_64.whl
    ```
 
 ### GGUF Kernels Wheels for Python 3.10 / Pytorch 2.7.1 / Cuda 12.8
@@ -345,7 +345,7 @@ These kernels are only useful for GGUF models.
 
 - Linux
    ```
-  # placeholder: Linux GGUF wheel for Python 3.10 / PyTorch 2.7.1 / CUDA 12.8 not published yet
+  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch271cu128py310-cp310-cp310-linux_x86_64.whl
    ```
 
 ### INT4 / FP4 quantized support

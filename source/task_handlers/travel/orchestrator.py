@@ -2014,10 +2014,17 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             # Consolidated segment frame count log for easy debugging
             travel_logger.debug(f"[SEGMENT_FRAMES] Segment {idx}: FINAL frame target = {segment_frames_target_with_context} (valid {frame_step}N+1: ✓)")
 
+            # Resolve start/end image URLs for this segment
+            segment_start_image_url = input_images[idx] if idx < len(input_images) else None
+            segment_end_image_url = input_images[idx + 1] if idx + 1 < len(input_images) else None
+
             segment_payload = {
                 "orchestrator_task_id_ref": orchestrator_task_id_str,
                 "orchestrator_run_id": run_id,
                 "project_id": orchestrator_project_id, # Added project_id
+                # Start/end image URLs (required by create-task edge function resolver)
+                "start_image_url": segment_start_image_url,
+                **({"end_image_url": segment_end_image_url} if segment_end_image_url else {}),
                 # Parent generation ID for linking to shot_generations
                 "parent_generation_id": (
                     task_params_from_db.get("parent_generation_id")

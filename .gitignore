@@ -1,4 +1,5 @@
 .*
+!.env.example
 *.py[cod]
 venv_headless_wan2gp/
 # *.jpg
@@ -26,6 +27,7 @@ venv_headless_wan2gp/
 !Wan2GP/configs/*.json
 !Wan2GP/models/_settings.json
 !Wan2GP/models/wan/configs/*.json
+!Wan2GP/models/ltx2/configs/*.json
 !Wan2GP/models/z_image/configs/*.json
 !Wan2GP/models/qwen/configs/*.json
 !Wan2GP/models/flux/configs/*.json

@@ -157,8 +157,17 @@ def get_oldest_queued_task():
     """Gets the oldest queued task from Supabase."""
     return get_oldest_queued_task_supabase()
 
-def get_oldest_queued_task_supabase(worker_id: str = None):
-    """Fetches the oldest task via Supabase Edge Function. First checks task counts to avoid unnecessary claim attempts."""
+def get_oldest_queued_task_supabase(
+    worker_id: str = None,
+    same_model_only: bool = False,
+    max_task_wait_minutes: int | None = None,
+):
+    """Fetch the oldest task via Supabase Edge Function.
+
+    First checks task counts to avoid unnecessary claim attempts.
+    same_model_only: prefer tasks matching worker's current_model
+    max_task_wait_minutes: starvation protection — bypass model affinity after this many minutes
+    """
     if not _cfg.SUPABASE_URL or not _cfg.SUPABASE_ACCESS_TOKEN:
         headless_logger.error("Supabase URL or access token not configured. Cannot get task.")
         return None
@@ -214,8 +223,14 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
                 'Authorization': f'Bearer {_cfg.SUPABASE_ACCESS_TOKEN}'
             }
 
-            # Pass worker_id and run_type in the request body for edge function to use
-            payload = {"worker_id": worker_id, "run_type": "gpu"}
+            # Pass worker_id, run_type, and model affinity params to edge function
+            payload = {
+                "worker_id": worker_id,
+                "run_type": "gpu",
+                "same_model_only": same_model_only,
+            }
+            if max_task_wait_minutes is not None:
+                payload["max_task_wait_minutes"] = max_task_wait_minutes
 
             resp = httpx.post(edge_url, json=payload, headers=headers, timeout=15)
             headless_logger.debug(f"Edge Function response status: {resp.status_code}")

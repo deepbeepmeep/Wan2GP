@@ -120,6 +120,20 @@ def _get_main_callable(name: str) -> Any:
     return None if main_module is None else getattr(main_module, str(name or "").strip(), None)
 
 
+def _get_main_attribute(name: str) -> Any:
+    lookup_name = str(name or "").strip()
+    if len(lookup_name) == 0:
+        return None
+    for module_name in ("__main__", "wgp"):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        value = getattr(module, lookup_name, None)
+        if value is not None:
+            return value
+    return None
+
+
 def assistant_tool(
     name: str | None = None,
     description: str = "",
@@ -358,6 +372,7 @@ class AssistantSessionState:
     generated_client_ids: list[str] = field(default_factory=list)
     selected_visual_runtime_signature: str = ""
     selected_audio_runtime_signature: str = ""
+    video_tool_runtime_variants: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -412,6 +427,7 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.generated_client_ids = []
     session.selected_visual_runtime_signature = ""
     session.selected_audio_runtime_signature = ""
+    session.video_tool_runtime_variants = {}
     assistant_chat.reset_session_chat(session)
 
 
@@ -759,28 +775,23 @@ class tools:
                 "error": f"tool_id must be one of: {', '.join(deepy_tool_settings.GENERATION_TOOL_IDS)}.",
             }
         generator_variant = self.get_tool_variant(lookup_name)
-        template_file = self.get_tool_template_filename(lookup_name)
         try:
             task = deepy_tool_settings.build_generation_task(lookup_name, generator_variant, prompt="", client_id="__deepy_defaults__")
         except Exception as exc:
             return None, {
                 "status": "error",
                 "tool_id": lookup_name,
-                "generator_variant": generator_variant,
-                "template_file": template_file,
+                "template": generator_variant,
                 "error": str(exc),
             }
         include_num_frames = self._is_video_generation_tool(lookup_name)
         task, error_result = self._apply_generation_overrides(lookup_name, task, include_num_frames=include_num_frames)
         if error_result is not None:
             error_result["tool_id"] = lookup_name
-            error_result["generator_variant"] = generator_variant
-            if len(template_file) > 0:
-                error_result["template_file"] = template_file
+            error_result["template"] = generator_variant
             return None, error_result
         model_def = self._get_effective_tool_model_def(lookup_name)
         audio_only = bool(model_def.get("audio_only", False))
-        ui_settings = self._get_tool_ui_settings()
         width = height = None
         if not audio_only:
             width, height = self._parse_generation_resolution(task.get("resolution", ""))
@@ -792,10 +803,7 @@ class tools:
         result = {
             "status": "ok",
             "tool_id": lookup_name,
-            "generator_variant": generator_variant,
-            "template_file": template_file,
-            "uses_template_properties": bool(ui_settings["use_template_properties"]),
-            "effective_source": "template" if bool(ui_settings["use_template_properties"]) else "deepy_window_defaults",
+            "template": generator_variant,
             "width": width,
             "height": height,
             "seed": seed,
@@ -809,6 +817,8 @@ class tools:
         if include_num_frames:
             result["num_frames"] = None if task.get("video_length", None) is None else int(task.get("video_length"))
             result["fps"] = self._compute_effective_video_fps(task)
+        if lookup_name == "gen_video":
+            result["multimedia_generation"] = bool(model_def.get("multimedia_generation", False))
         return result, None
 
     def _apply_generation_overrides(
@@ -1314,6 +1324,18 @@ class tools:
             return None, {"status": "error", "error": f"{parameter_name} must be >= 0."}
         return resolved, None
 
+    def _parse_bool_value(self, value: Any, parameter_name: str, *, required: bool = False) -> tuple[bool | None, dict[str, Any] | None]:
+        if value is None or str(value).strip() == "":
+            return (None, {"status": "error", "error": f"{parameter_name} is required."}) if required else (None, None)
+        if isinstance(value, bool):
+            return value, None
+        normalized = str(value).strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True, None
+        if normalized in {"false", "0", "no", "off"}:
+            return False, None
+        return None, {"status": "error", "error": f"{parameter_name} must be true or false."}
+
     def _resolve_segment_args(
         self,
         source_media: dict[str, Any],
@@ -1407,8 +1429,28 @@ class tools:
             start_time = 0.0
         return {"mode": "time", "start_time": start_time, "end_time": end_time, "duration": duration, "start_frame": None, "end_frame": None, "num_frames": None}, None
 
-    def _build_direct_media_settings(self, source_media: dict[str, Any], comments: str, **updates: Any) -> dict[str, Any]:
+    def _build_deepy_settings(self, prompt: str, comments: str = "", **updates: Any) -> dict[str, Any]:
+        wangp_version = str(_get_main_attribute("WanGP_version") or "").strip()
+        settings = {
+            "type": f"WanGP v{wangp_version} DeepBeepMeep - Deepy" if len(wangp_version) > 0 else "WanGP DeepBeepMeep - Deepy",
+            "model_type": "Deepy",
+            "prompt": str(prompt or "").strip(),
+            "client_id": _next_ai_client_id(),
+        }
+        self._remember_generated_client_id(settings["client_id"])
+        settings["comments"] = str(comments or "").strip()
+        end_time = time.time()
+        settings["creation_date"] = datetime.fromtimestamp(end_time).isoformat(timespec="seconds")
+        settings["creation_timestamp"] = int(end_time)
+        for key, value in updates.items():
+            if value is not None:
+                settings[key] = value
+        return settings
+
+    def _build_direct_media_settings(self, source_media: dict[str, Any], comments: str, fallback_prompt: str | None = None, **updates: Any) -> dict[str, Any]:
         settings = dict(source_media.get("settings", {}) or {})
+        if fallback_prompt is not None and (len(settings) == 0 or str(settings.get("model_type", "") or "").strip() == "Deepy"):
+            return self._build_deepy_settings(fallback_prompt, comments, **updates)
         settings["client_id"] = _next_ai_client_id()
         self._remember_generated_client_id(settings["client_id"])
         settings["comments"] = str(comments or "").strip()
@@ -1421,20 +1463,7 @@ class tools:
         return settings
 
     def _build_direct_image_settings(self, comments: str, width: int, height: int, **updates: Any) -> dict[str, Any]:
-        end_time = time.time()
-        settings = {
-            "client_id": _next_ai_client_id(),
-            "comments": str(comments or "").strip(),
-            "creation_date": datetime.fromtimestamp(end_time).isoformat(timespec="seconds"),
-            "creation_timestamp": int(end_time),
-            "image_mode": 1,
-            "resolution": f"{int(width)}x{int(height)}",
-        }
-        self._remember_generated_client_id(settings["client_id"])
-        for key, value in updates.items():
-            if value is not None:
-                settings[key] = value
-        return settings
+        return self._build_deepy_settings(updates.pop("prompt", f"An image at {int(width)}x{int(height)}."), comments, image_mode=1, resolution=f"{int(width)}x{int(height)}", **updates)
 
     def _update_video_metadata_fields(self, output_path: str, settings: dict[str, Any]) -> None:
         try:
@@ -2243,8 +2272,8 @@ class tools:
             self._update_tool_progress("error", "Error", result)
             self._set_status(f"Color frame creation failed: {exc}", kind="error")
             return result
-        settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}', width, height, prompt=f"Solid {resolved_color} image", seed=-1)
-        media_record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label="Color frame", persist_metadata=False)
+        settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}', width, height, prompt=f"A solid {resolved_color} image at {width}x{height}.")
+        media_record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label="Color frame")
         result = {
             "status": "done",
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
@@ -2320,7 +2349,8 @@ class tools:
             self._set_status(f"Image extraction failed: {exc}", kind="error")
             return result
         comments = f'Extracted frame {resolved_frame_no} from "{os.path.basename(source_path)}"' if time_seconds is None else f'Extracted frame {resolved_frame_no} at {time_seconds:.3f}s from "{os.path.basename(source_path)}"'
-        extracted_settings = self._build_direct_media_settings(source_media, comments)
+        prompt_summary = f"An image extracted from a video at {time_seconds:.3f} seconds." if time_seconds is not None else f"An image extracted from frame {resolved_frame_no} of a video."
+        extracted_settings = self._build_direct_media_settings(source_media, comments, fallback_prompt=prompt_summary)
         media_record = self._record_direct_media(output_path, extracted_settings, is_image=True, audio_only=False, label="Extracted image")
         result = {
             "status": "done",
@@ -2454,7 +2484,17 @@ class tools:
                 comments += f" ending at {segment_args['end_time']:.3f}s"
             elif segment_args["duration"] is not None:
                 comments += f" with duration {segment_args['duration']:.3f}s"
-        extracted_settings = self._build_direct_media_settings(source_media, comments)
+        prompt_summary = f"Audio extracted from a source media item."
+        if audio_track_no is not None:
+            prompt_summary = f"Audio extracted from track {audio_track_no} of a source media item."
+        if segment_args["mode"] == "frame" and (start_frame is not None or end_frame is not None or num_frames is not None):
+            prompt_summary += f" Keep audio aligned to frames starting at {segment_args['start_frame']}."
+        elif segment_args["start_time"] is not None or segment_args["end_time"] is not None or segment_args["duration"] is not None:
+            if segment_args["end_time"] is not None:
+                prompt_summary += f" From {segment_args['start_time']:.3f} to {segment_args['end_time']:.3f} seconds."
+            elif segment_args["duration"] is not None:
+                prompt_summary += f" Starting at {segment_args['start_time']:.3f} seconds for {segment_args['duration']:.3f} seconds."
+        extracted_settings = self._build_direct_media_settings(source_media, comments, fallback_prompt=prompt_summary)
         self._update_video_metadata_fields(output_path, extracted_settings)
         media_record = self._record_direct_media(output_path, extracted_settings, is_image=False, audio_only=False, label="Extracted video")
         result = {
@@ -2831,7 +2871,7 @@ class tools:
 
     @assistant_tool(
         display_name="Resize Crop",
-        description="Resize and crop a previously resolved image or video in one step. Crop values can be expressed in pixels or percent.",
+        description="Resize and crop a previously resolved image or video in one step. Crop values can be expressed in pixels or percent. When both width and height are provided, aspect ratio is preserved by default by cropping extra area instead of stretching.",
         parameters={
             "media_id": {
                 "type": "string",
@@ -2872,10 +2912,21 @@ class tools:
                 "description": "Crop unit: pixels or percent.",
                 "required": False,
             },
+            "crop_anchor": {
+                "type": "string",
+                "description": "Optional. Defaults to center. Controls which area stays in frame when aspect-ratio-preserving auto-crop trims extra area.",
+                "enum": ["center", "left", "right", "top", "bottom", "top_left", "top_right", "bottom_left", "bottom_right"],
+                "required": False,
+            },
+            "stretch_to_fit": {
+                "type": "boolean",
+                "description": "Optional. Defaults to false. When width and height are both provided, set this to true only if the user explicitly wants stretching or distortion instead of cropping extra area.",
+                "required": False,
+            },
         },
         pause_runtime=False,
     )
-    def resize_crop(self, media_id: str, width: int | None = None, height: int | None = None, crop_left: float | None = None, crop_top: float | None = None, crop_right: float | None = None, crop_bottom: float | None = None, crop_unit: str | None = None) -> dict[str, Any]:
+    def resize_crop(self, media_id: str, width: int | None = None, height: int | None = None, crop_left: float | None = None, crop_top: float | None = None, crop_right: float | None = None, crop_bottom: float | None = None, crop_unit: str | None = None, crop_anchor: str | None = None, stretch_to_fit: bool | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         if self.session is None:
             return {"status": "error", "media_id": str(media_id or "").strip(), "output_file": "", "error": "Assistant session is not available."}
@@ -2894,39 +2945,66 @@ class tools:
             crop_bottom = 0 if crop_bottom is None or str(crop_bottom).strip() == "" else float(crop_bottom)
         except Exception:
             return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": "width and height must be integers, crop values must be numbers."}
+        stretch_to_fit, error_result = self._parse_bool_value(stretch_to_fit, "stretch_to_fit")
+        if error_result is not None:
+            error_result["media_id"] = source_media.get("media_id", "")
+            error_result["output_file"] = ""
+            return error_result
+        if stretch_to_fit is None:
+            stretch_to_fit = False
+        preserve_aspect_ratio = not bool(stretch_to_fit)
         crop_unit = str(crop_unit or "pixels").strip().lower() or "pixels"
         if crop_unit not in {"pixels", "percent"}:
             return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": "crop_unit must be 'pixels' or 'percent'."}
+        crop_anchor = str(crop_anchor or "center").strip().lower().replace("-", "_").replace(" ", "_") or "center"
+        if crop_anchor not in {"center", "left", "right", "top", "bottom", "top_left", "top_right", "bottom_left", "bottom_right"}:
+            return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": "crop_anchor must be center, left, right, top, bottom, top_left, top_right, bottom_left, or bottom_right."}
         source_media_type = str(source_media.get("media_type", "") or "").strip() or "media"
         self._set_status(f"Resizing and cropping {source_media_type}...", kind="tool")
-        self._update_tool_progress("running", "Processing", {"status": "running", "media_id": source_media.get("media_id", ""), "width": width, "height": height, "crop_left": crop_left, "crop_top": crop_top, "crop_right": crop_right, "crop_bottom": crop_bottom, "crop_unit": crop_unit})
+        self._update_tool_progress("running", "Processing", {"status": "running", "media_id": source_media.get("media_id", ""), "width": width, "height": height, "crop_left": crop_left, "crop_top": crop_top, "crop_right": crop_right, "crop_bottom": crop_bottom, "crop_unit": crop_unit, "crop_anchor": crop_anchor, "stretch_to_fit": stretch_to_fit, "preserve_aspect_ratio": preserve_aspect_ratio})
         source_path = str(source_media.get("path", "")).strip()
         base_name = os.path.splitext(os.path.basename(source_path))[0]
         try:
             if source_media_type == "video":
                 video_codec, video_container = self._get_video_output_settings()
                 output_path = self._resolve_direct_output_path(f"{base_name}_resized{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
-                output_path = deepy_video_tools.resize_crop_video(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
+                output_path = deepy_video_tools.resize_crop_video(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit, preserve_aspect_ratio=preserve_aspect_ratio, crop_anchor=crop_anchor, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
             else:
                 image_ext = os.path.splitext(source_path)[1].lower()
                 if image_ext not in {".png", ".jpg", ".jpeg", ".webp"}:
                     image_ext = ".png"
                 output_path = self._resolve_direct_output_path(f"{base_name}_resized{image_ext}", True, False)
-                output_path = deepy_video_tools.resize_crop_image(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit)
+                output_path = deepy_video_tools.resize_crop_image(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit, preserve_aspect_ratio=preserve_aspect_ratio, crop_anchor=crop_anchor)
         except Exception as exc:
             result = {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": str(exc)}
             self._update_tool_progress("error", "Error", result)
             self._set_status(f"Resize/crop failed: {exc}", kind="error")
             return result
-        comments = f'Resized/cropped "{os.path.basename(source_path)}"'
+        has_manual_crop = any(value > 0 for value in (crop_left, crop_top, crop_right, crop_bottom))
+        uses_aspect_crop = width is not None and height is not None and not stretch_to_fit
+        action_text = "cropped" if has_manual_crop or uses_aspect_crop else "resized" if width is not None or height is not None else "processed"
+        action_label = action_text.capitalize()
+        comments = f'{action_label} "{os.path.basename(source_path)}"'
         if width is not None or height is not None:
             comments += f" to {width if width is not None else 'auto'}x{height if height is not None else 'auto'}"
-        if any(value > 0 for value in (crop_left, crop_top, crop_right, crop_bottom)):
+        if width is not None and height is not None:
+            comments += " with stretching" if stretch_to_fit else " with preserved aspect ratio"
+            if action_text == "cropped" and not stretch_to_fit and crop_anchor != "center":
+                comments += f" anchored {crop_anchor}"
+        if has_manual_crop:
             comments += f" with crop {crop_left}/{crop_top}/{crop_right}/{crop_bottom} {crop_unit}"
-        resized_settings = self._build_direct_media_settings(source_media, comments)
+        prompt_summary = None
+        if source_media_type == "image":
+            if action_text == "cropped":
+                prompt_summary = f"An image cropped to {width if width is not None else 'auto'}x{height if height is not None else 'auto'}."
+                if width is not None and height is not None and crop_anchor != "center":
+                    prompt_summary = f"An image cropped to {width}x{height}, keeping the {crop_anchor.replace('_', ' ')} area."
+            elif action_text == "resized":
+                prompt_summary = f"An image resized to {width if width is not None else 'auto'}x{height if height is not None else 'auto'}."
+        resized_settings = self._build_direct_media_settings(source_media, comments, fallback_prompt=prompt_summary)
         if source_media_type == "video":
             self._update_video_metadata_fields(output_path, resized_settings)
-        media_record = self._record_direct_media(output_path, resized_settings, is_image=source_media_type == "image", audio_only=False, label=f"Resized/cropped {source_media_type}")
+        media_record = self._record_direct_media(output_path, resized_settings, is_image=source_media_type == "image", audio_only=False, label=f"{action_label} {source_media_type}")
         result = {
             "status": "done",
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
@@ -3740,10 +3818,65 @@ class AssistantEngine:
     def _pending_tool_render_contents(self) -> list[str]:
         return [self._message_render_content(message).strip() for message in self._get_pending_render_messages() if str(message.get("role", "")).strip().lower() == "tool" and len(self._message_render_content(message).strip()) > 0]
 
+    def _get_runtime_tool_template_label(self, tool_name: str) -> str:
+        try:
+            variant = str(self.tool_box.get_tool_variant(tool_name) or "").strip()
+        except Exception:
+            variant = ""
+        if len(variant) == 0:
+            return ""
+        template_label = Path(variant).name.strip()
+        return template_label if len(template_label) > 0 else variant
+
+    def _build_video_tool_runtime_instruction(self, tool_name: str, *, changed: bool) -> str:
+        template_label = self._get_runtime_tool_template_label(tool_name)
+        if len(template_label) == 0:
+            return ""
+        model_def = self.tool_box._get_effective_tool_model_def(tool_name)
+        image_prompt_types_allowed = str(model_def.get("image_prompt_types_allowed", "") or "").strip()
+        sentences = [
+            f"The {tool_name} tool {'has changed and now uses' if changed else 'uses'} Settings '{template_label}'."
+        ]
+        if tool_name == "gen_video" and bool(model_def.get("multimedia_generation", False)):
+            sentences.append(
+                "The gen_video tool can generate a video with an audio output from a text prompt. So if the user provides only a text prompt and wants a talking or voiced video, you must use gen_video directly, keep the spoken words in the prompt, and do not call gen_speech_from_description, gen_speech_from_sample, or gen_video_with_speech first."
+            )
+        if "T" in image_prompt_types_allowed:
+            sentences.append(
+                f"The {tool_name} tool can generate a video even if a start image is not provided. So if the user does not provide a start image or asks you explicitly to generate the start image, do not create a start image; just describe the starting situation in the prompt."
+            )
+        elif "S" in image_prompt_types_allowed:
+            sentences.append(
+                f"The {tool_name} tool needs a start image. So if the user does not provide a start image, you will need to create a start image first to use this tool."
+            )
+        return " ".join(sentences).strip()
+
+    def _get_video_tool_runtime_updates(self) -> list[str]:
+        if self.session is None:
+            return []
+        previous_variants = dict(self.session.video_tool_runtime_variants or {})
+        current_variants: dict[str, str] = {}
+        updates = []
+        for tool_name in ("gen_video", "gen_video_with_speech"):
+            variant = str(self.tool_box.get_tool_variant(tool_name) or "").strip()
+            if len(variant) == 0:
+                continue
+            current_variants[tool_name] = variant
+            previous_variant = str(previous_variants.get(tool_name, "") or "").strip()
+            if previous_variant == variant:
+                continue
+            instruction = self._build_video_tool_runtime_instruction(tool_name, changed=len(previous_variant) > 0)
+            if len(instruction) > 0:
+                updates.append(instruction)
+        self.session.video_tool_runtime_variants = current_variants
+        return updates
+
     def _refresh_runtime_status_note(self) -> None:
         note_blocks = []
 
         runtime_lines = []
+
+        runtime_lines.extend(self._get_video_tool_runtime_updates())
 
         new_user_gallery_media = self.tool_box._get_new_user_gallery_media()
         if "image" in new_user_gallery_media:
@@ -3791,7 +3924,7 @@ class AssistantEngine:
                 )
             )
             if self.debug_enabled:
-                self._log(f"Prepared gallery media runtime update with {len(runtime_lines)} instruction(s).")
+                self._log(f"Prepared runtime update with {len(runtime_lines)} instruction(s).")
 
         if _INJECT_SELECTED_MEDIA_RUNTIME_UPDATES:
             snapshot = self.tool_box._get_selected_runtime_snapshot()

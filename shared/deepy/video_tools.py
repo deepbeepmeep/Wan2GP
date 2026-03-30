@@ -257,6 +257,96 @@ def extract_video_frame(source_path: str, output_path: str, *, frame_no: int | N
     return output_path
 
 
+def _resolve_crop_anchor(crop_anchor: str | None) -> tuple[str, str]:
+    normalized = str(crop_anchor or "center").strip().lower().replace("-", "_").replace(" ", "_") or "center"
+    anchor_aliases = {
+        "centre": "center",
+        "middle": "center",
+        "center_left": "left",
+        "left_center": "left",
+        "center_right": "right",
+        "right_center": "right",
+        "top_center": "top",
+        "center_top": "top",
+        "bottom_center": "bottom",
+        "center_bottom": "bottom",
+    }
+    normalized = anchor_aliases.get(normalized, normalized)
+    if normalized in {"center", "left", "right", "top", "bottom"}:
+        return {
+            "center": ("center", "center"),
+            "left": ("left", "center"),
+            "right": ("right", "center"),
+            "top": ("center", "top"),
+            "bottom": ("center", "bottom"),
+        }[normalized]
+    corner_anchors = {
+        "top_left": ("left", "top"),
+        "top_right": ("right", "top"),
+        "bottom_left": ("left", "bottom"),
+        "bottom_right": ("right", "bottom"),
+    }
+    if normalized in corner_anchors:
+        return corner_anchors[normalized]
+    raise ValueError("crop_anchor must be one of center, left, right, top, bottom, top_left, top_right, bottom_left, or bottom_right.")
+
+
+def _resolve_resize_crop_geometry(
+    source_width: int,
+    source_height: int,
+    *,
+    crop_left: float = 0,
+    crop_top: float = 0,
+    crop_right: float = 0,
+    crop_bottom: float = 0,
+    crop_unit: str = "pixels",
+    target_width: int | None = None,
+    target_height: int | None = None,
+    preserve_aspect_ratio: bool = True,
+    crop_anchor: str = "center",
+) -> tuple[int, int, int, int]:
+    crop_unit = str(crop_unit or "pixels").strip().lower() or "pixels"
+    if crop_unit not in {"pixels", "percent"}:
+        raise ValueError("crop_unit must be 'pixels' or 'percent'.")
+    align_x, align_y = _resolve_crop_anchor(crop_anchor)
+
+    def resolve_crop(value: float, total: int) -> int:
+        value = float(value or 0)
+        if value < 0:
+            raise ValueError("Crop values must be >= 0.")
+        return round(total * value / 100.0) if crop_unit == "percent" else round(value)
+
+    left = resolve_crop(crop_left, source_width)
+    right = resolve_crop(crop_right, source_width)
+    top = resolve_crop(crop_top, source_height)
+    bottom = resolve_crop(crop_bottom, source_height)
+    cropped_width = source_width - left - right
+    cropped_height = source_height - top - bottom
+    if cropped_width <= 0 or cropped_height <= 0:
+        raise ValueError("Crop values remove the whole frame.")
+    if not preserve_aspect_ratio or target_width is None or target_height is None:
+        return left, top, cropped_width, cropped_height
+    if target_width <= 0 or target_height <= 0:
+        raise ValueError("width and height must be > 0 when provided.")
+    target_ratio = float(target_width) / float(target_height)
+    current_ratio = float(cropped_width) / float(cropped_height)
+    if math.isclose(current_ratio, target_ratio, rel_tol=0.0, abs_tol=1e-6):
+        return left, top, cropped_width, cropped_height
+    if current_ratio > target_ratio:
+        adjusted_width = min(cropped_width, max(1, int(round(cropped_height * target_ratio))))
+        trim = cropped_width - adjusted_width
+        left += 0 if align_x == "left" else trim if align_x == "right" else trim // 2
+        cropped_width = adjusted_width
+    else:
+        adjusted_height = min(cropped_height, max(1, int(round(cropped_width / target_ratio))))
+        trim = cropped_height - adjusted_height
+        top += 0 if align_y == "top" else trim if align_y == "bottom" else trim // 2
+        cropped_height = adjusted_height
+    if cropped_width <= 0 or cropped_height <= 0:
+        raise ValueError("Unable to preserve aspect ratio with the requested crop.")
+    return left, top, cropped_width, cropped_height
+
+
 def mute_video(source_path: str, output_path: str) -> str:
     source_path = os.path.normpath(str(source_path or "").strip())
     output_path = os.path.normpath(str(output_path or "").strip())
@@ -282,7 +372,7 @@ def replace_audio(video_path: str, audio_path: str, output_path: str, *, audio_c
     return output_path
 
 
-def resize_crop_video(source_path: str, output_path: str, *, width: int | None = None, height: int | None = None, crop_left: float = 0, crop_top: float = 0, crop_right: float = 0, crop_bottom: float = 0, crop_unit: str = "pixels", video_codec: str | None = None, video_container: str | None = None, audio_codec: str | None = None) -> str:
+def resize_crop_video(source_path: str, output_path: str, *, width: int | None = None, height: int | None = None, crop_left: float = 0, crop_top: float = 0, crop_right: float = 0, crop_bottom: float = 0, crop_unit: str = "pixels", preserve_aspect_ratio: bool = True, crop_anchor: str = "center", video_codec: str | None = None, video_container: str | None = None, audio_codec: str | None = None) -> str:
     source_path = os.path.normpath(str(source_path or "").strip())
     output_path = os.path.normpath(str(output_path or "").strip())
     if not os.path.isfile(source_path):
@@ -290,22 +380,19 @@ def resize_crop_video(source_path: str, output_path: str, *, width: int | None =
     stream = _probe_video_stream(source_path)
     source_width = int(stream["width"])
     source_height = int(stream["height"])
-    crop_unit = str(crop_unit or "pixels").strip().lower() or "pixels"
-    if crop_unit not in {"pixels", "percent"}:
-        raise ValueError("crop_unit must be 'pixels' or 'percent'.")
-    def resolve_crop(value: float, total: int) -> int:
-        value = float(value or 0)
-        if value < 0:
-            raise ValueError("Crop values must be >= 0.")
-        return round(total * value / 100.0) if crop_unit == "percent" else round(value)
-    left = resolve_crop(crop_left, source_width)
-    right = resolve_crop(crop_right, source_width)
-    top = resolve_crop(crop_top, source_height)
-    bottom = resolve_crop(crop_bottom, source_height)
-    cropped_width = source_width - left - right
-    cropped_height = source_height - top - bottom
-    if cropped_width <= 0 or cropped_height <= 0:
-        raise ValueError("Crop values remove the whole video frame.")
+    left, top, cropped_width, cropped_height = _resolve_resize_crop_geometry(
+        source_width,
+        source_height,
+        crop_left=crop_left,
+        crop_top=crop_top,
+        crop_right=crop_right,
+        crop_bottom=crop_bottom,
+        crop_unit=crop_unit,
+        target_width=width,
+        target_height=height,
+        preserve_aspect_ratio=preserve_aspect_ratio,
+        crop_anchor=crop_anchor,
+    )
     filters = [f"crop={cropped_width}:{cropped_height}:{left}:{top}"]
     if width is not None or height is not None:
         scale_w = int(width) if width is not None else -1
@@ -324,31 +411,26 @@ def resize_crop_video(source_path: str, output_path: str, *, width: int | None =
     return output_path
 
 
-def resize_crop_image(source_path: str, output_path: str, *, width: int | None = None, height: int | None = None, crop_left: float = 0, crop_top: float = 0, crop_right: float = 0, crop_bottom: float = 0, crop_unit: str = "pixels") -> str:
+def resize_crop_image(source_path: str, output_path: str, *, width: int | None = None, height: int | None = None, crop_left: float = 0, crop_top: float = 0, crop_right: float = 0, crop_bottom: float = 0, crop_unit: str = "pixels", preserve_aspect_ratio: bool = True, crop_anchor: str = "center") -> str:
     source_path = os.path.normpath(str(source_path or "").strip())
     output_path = os.path.normpath(str(output_path or "").strip())
     if not os.path.isfile(source_path):
         raise FileNotFoundError(f"Image not found: {source_path}")
-    crop_unit = str(crop_unit or "pixels").strip().lower() or "pixels"
-    if crop_unit not in {"pixels", "percent"}:
-        raise ValueError("crop_unit must be 'pixels' or 'percent'.")
     with Image.open(source_path) as image:
         source_width, source_height = image.size
-
-        def resolve_crop(value: float, total: int) -> int:
-            value = float(value or 0)
-            if value < 0:
-                raise ValueError("Crop values must be >= 0.")
-            return round(total * value / 100.0) if crop_unit == "percent" else round(value)
-
-        left = resolve_crop(crop_left, source_width)
-        right = resolve_crop(crop_right, source_width)
-        top = resolve_crop(crop_top, source_height)
-        bottom = resolve_crop(crop_bottom, source_height)
-        cropped_width = source_width - left - right
-        cropped_height = source_height - top - bottom
-        if cropped_width <= 0 or cropped_height <= 0:
-            raise ValueError("Crop values remove the whole image.")
+        left, top, cropped_width, cropped_height = _resolve_resize_crop_geometry(
+            source_width,
+            source_height,
+            crop_left=crop_left,
+            crop_top=crop_top,
+            crop_right=crop_right,
+            crop_bottom=crop_bottom,
+            crop_unit=crop_unit,
+            target_width=width,
+            target_height=height,
+            preserve_aspect_ratio=preserve_aspect_ratio,
+            crop_anchor=crop_anchor,
+        )
         output_image = image.crop((left, top, left + cropped_width, top + cropped_height))
         if width is not None or height is not None:
             if width is not None and int(width) <= 0 or height is not None and int(height) <= 0:

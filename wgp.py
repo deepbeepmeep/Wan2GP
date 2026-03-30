@@ -42,9 +42,9 @@ from shared.utils.utils import convert_tensor_to_image, save_image, get_video_in
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_frame_location, get_outpainting_full_area_dimensions
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_image
-from shared.utils.audio_video import save_image_metadata, read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension
-from shared.utils.audio_metadata import save_audio_metadata, read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
-from shared.utils.video_metadata import save_video_metadata
+from shared.utils.audio_video import read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension
+from shared.utils.audio_metadata import read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
+from shared.utils.media_recording import record_file_metadata as shared_record_file_metadata
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
@@ -114,7 +114,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.12"
+WanGP_version = "11.13"
 settings_version = 2.55
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -4280,6 +4280,10 @@ def resolve_media_creation_date(file_name, configs=None):
     return creation_date
 
 
+def is_deepy_display_metadata(configs):
+    return isinstance(configs, dict) and str(configs.get("model_type", "") or "").strip() == "Deepy"
+
+
 def update_video_prompt_type(state, any_video_guide = False, any_video_mask = False, any_background_image_ref = False, process_type = None, default_update = ""):
     letters = default_update
     settings = get_current_model_settings(state)
@@ -4408,7 +4412,31 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 pp_labels += [ "MMAudio" ]
 
 
-        if configs == None or not "seed" in configs:
+        if is_deepy_display_metadata(configs):
+            values += ["Deepy"]
+            labels += ["Made By"]
+            video_prompt = html.escape(str(configs.get("prompt", "") or "")[:1024]).replace("\n", "<BR>")
+            if len(video_prompt) > 0:
+                values += [video_prompt]
+                labels += ["Prompt"]
+            video_creation_date = "Deleted" if is_deleted else resolve_media_creation_date(file_name, configs)
+            if is_image:
+                values += [f"{width}x{height}"]
+                labels += ["Resolution"]
+            elif is_video:
+                values += [f"{width}x{height}", f"{frames_count} frames (duration={frames_count/fps:.1f} s, fps={round(fps)})"]
+                labels += ["Resolution", "Frames"]
+            else:
+                duration_seconds = configs.get("duration_seconds", None)
+                if duration_seconds is not None:
+                    values += [f"{duration_seconds}s"]
+                    labels += ["Duration"]
+            if nb_audio_tracks > 0:
+                values += [nb_audio_tracks]
+                labels += ["Nb Audio Tracks"]
+            values += [video_creation_date]
+            labels += ["Creation Date"]
+        elif configs == None or not "seed" in configs:
             values += misc_values
             labels += misc_labels
             
@@ -5890,49 +5918,7 @@ def get_output_filepath(file_path, is_image, audio_only):
     return get_available_filename(base_path, file_path)
 
 def record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=None, replace_last_file=False):
-    metadata_choice = server_config.get("metadata_type","metadata")
-    file_list, file_settings_list, audio_file_list, audio_file_settings_list = get_processed_queue(gen)
-    video_path = [video_path] if not isinstance(video_path, list) else video_path
-    for no, path in enumerate(video_path):
-        previous_path = None
-        saved_configs = configs if no > 0 or configs is None else configs.copy()
-        if configs is not None:
-            if metadata_choice == "json":
-                json_path = os.path.splitext(path)[0] + ".json"
-                with open(json_path, 'w') as f:
-                    json.dump(configs, f, indent=4)
-            elif metadata_choice == "metadata":
-                if audio_only:
-                    save_audio_metadata(path, configs)
-                if is_image:
-                    save_image_metadata(path, configs)
-                else:
-                    save_video_metadata(path, configs, embedded_images)
-        if verbose_level > 0:
-            if audio_only:
-                print(f"New audio file saved to Path: "+ path)
-            elif is_image:
-                print(f"New image saved to Path: "+ path)
-            else:
-                print(f"New video saved to Path: "+ path)
-        with lock:
-            if audio_only:
-                audio_file_list.append(path)
-                audio_file_settings_list.append(saved_configs)
-            else:
-                if replace_last_file and not is_image and no == 0 and len(file_list) > 0:
-                    previous_path = file_list[-1]
-                    file_list[-1] = path
-                    file_settings_list[-1] = saved_configs
-                else:
-                    file_list.append(path)
-                    file_settings_list.append(saved_configs)
-            gen["last_was_audio"] = audio_only
-        if previous_path is not None and previous_path != path:
-            if metadata_choice == "json":
-                previous_json_path = os.path.splitext(previous_path)[0] + ".json"
-                if os.path.isfile(previous_json_path): os.remove(previous_json_path)
-            if os.path.isfile(previous_path): os.remove(previous_path)
+    return shared_record_file_metadata(video_path, configs, is_image, audio_only, gen, get_processed_queue=get_processed_queue, metadata_choice=server_config.get("metadata_type", "metadata"), embedded_images=embedded_images, replace_last_file=replace_last_file, lock=lock, verbose_level=verbose_level)
 
 
 def generate_video(
@@ -8644,6 +8630,8 @@ def use_video_settings(state, input_file_list, choice, source):
         file_name= file_list[choice]
         if configs == None:
             gr.Info("No Settings to Extract")
+        elif is_deepy_display_metadata(configs):
+            gr.Info("Deepy helper metadata is display-only and cannot be loaded as WanGP settings")
         else:
             current_model_type = get_state_model_type(state)
             model_type = configs["model_type"] 
@@ -8752,6 +8740,8 @@ def get_settings_from_file(state, file_path, allow_json, merge_with_defaults, sw
     except:
         configs = None
     if configs is None: return None, False, False
+    if is_deepy_display_metadata(configs):
+        return configs, any_image_or_video, any_audio
         
 
     current_model_type = get_state_model_type(state)
@@ -8845,6 +8835,9 @@ def load_settings_from_file(state, file_path):
     configs, any_video_or_image_file, any_audio = get_settings_from_file(state, file_path, True, True, True)
     if configs == None:
         gr.Info("File not supported")
+        return gr.update(), gr.update(), gr.update(), gr.update(), None
+    if is_deepy_display_metadata(configs):
+        gr.Info("Deepy helper metadata is display-only and cannot be loaded as WanGP settings")
         return gr.update(), gr.update(), gr.update(), gr.update(), None
 
     current_model_type = get_state_model_type(state)

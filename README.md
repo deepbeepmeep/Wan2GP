@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### March 28th 2026: WanGP v11.12, The Machine Within The Machine
+### March 30th 2026: WanGP v11.13, The Machine Within The Machine
 
 Meet **Deepy** your friendly *WanGP Agent*.
 

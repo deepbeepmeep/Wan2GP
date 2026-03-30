@@ -168,6 +168,7 @@ class family_handler:
             },
             "audio_guide_window_slicing": True,
             "output_audio_is_input_audio": True,
+            "multimedia_generation": True,
             "custom_denoising_strength": distilled,
             "profiles_dir": [spec["profiles_dir"]],
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],

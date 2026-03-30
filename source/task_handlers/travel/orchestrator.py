@@ -1830,6 +1830,16 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
 
         # Loop to queue all segment tasks (skip existing ones for idempotency)
         segments_created = 0
+        raw_pair_shot_generation_ids = orchestrator_payload.get("pair_shot_generation_ids")
+        pair_shot_generation_ids = raw_pair_shot_generation_ids if isinstance(raw_pair_shot_generation_ids, list) else []
+        if pair_shot_generation_ids and len(pair_shot_generation_ids) < num_segments:
+            travel_logger.warning(
+                "[PAIR_SHOT_GENERATION_IDS] Received fewer pair_shot_generation_ids than segments; "
+                "missing segment payloads will be left unset",
+                task_id=orchestrator_task_id_str,
+                pair_shot_generation_id_count=len(pair_shot_generation_ids),
+                segment_count=num_segments,
+            )
         for idx in range(num_segments):
             # Get travel mode for dependency logic
             travel_mode = orchestrator_payload.get("model_type", "vace")
@@ -2017,6 +2027,24 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             # Resolve start/end image URLs for this segment
             segment_start_image_url = input_images[idx] if idx < len(input_images) else None
             segment_end_image_url = input_images[idx + 1] if idx + 1 < len(input_images) else None
+            segment_pair_shot_generation_id = None
+            if idx < len(pair_shot_generation_ids):
+                pair_value = pair_shot_generation_ids[idx]
+                if isinstance(pair_value, str) and pair_value:
+                    segment_pair_shot_generation_id = pair_value
+                else:
+                    travel_logger.warning(
+                        "[PAIR_SHOT_GENERATION_IDS] Ignoring blank or non-string pair_shot_generation_id entry",
+                        task_id=orchestrator_task_id_str,
+                        segment_index=idx,
+                        pair_shot_generation_id=pair_value,
+                    )
+            elif pair_shot_generation_ids:
+                travel_logger.warning(
+                    "[PAIR_SHOT_GENERATION_IDS] Missing pair_shot_generation_id entry for segment payload",
+                    task_id=orchestrator_task_id_str,
+                    segment_index=idx,
+                )
 
             segment_payload = {
                 "orchestrator_task_id_ref": orchestrator_task_id_str,
@@ -2025,6 +2053,7 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 # Start/end image URLs (required by create-task edge function resolver)
                 "start_image_url": segment_start_image_url,
                 **({"end_image_url": segment_end_image_url} if segment_end_image_url else {}),
+                **({"pair_shot_generation_id": segment_pair_shot_generation_id} if segment_pair_shot_generation_id else {}),
                 # Parent generation ID for linking to shot_generations
                 "parent_generation_id": (
                     task_params_from_db.get("parent_generation_id")

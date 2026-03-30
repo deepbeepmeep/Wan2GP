@@ -16,7 +16,7 @@ fastapi>=0.120.0  # Often needed for gradio apps
 python-multipart>=0.0.20  # For file uploads
 
 # ===== Database and Storage =====
-supabase>=2.23.0  # For Supabase DB (via RPC) and Storage
+supabase==2.23.0  # Pinned: >=2.28 pulls pydantic>=2.12 which conflicts with Wan2GP's pydantic==2.10.6
 # pydantic  # REMOVED: Wan2GP pins pydantic==2.10.6; --upgrade here would override it
 python-dotenv>=1.0.0  # For .env file management
 

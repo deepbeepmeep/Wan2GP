@@ -650,6 +650,12 @@ class WanOrchestrator:
             if control_net_weight2 is None:
                 control_net_weight2 = 1.0
             generation_logger.debug(f"VACE parameters - guide: {video_guide}, type: {video_prompt_type}, weights: {control_net_weight}/{control_net_weight2}")
+        elif video_guide or video_mask:
+            # Non-VACE model with guide/mask: default control weights to avoid NoneType crash in wgp.py
+            if control_net_weight is None:
+                control_net_weight = 1.0
+            if control_net_weight2 is None:
+                control_net_weight2 = 1.0
 
         # Resolve media paths before validation
         video_guide = self._resolve_media_path(video_guide)

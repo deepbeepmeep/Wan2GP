@@ -400,14 +400,11 @@ def main():
 
     STATUS_COMPLETE = "Complete"
     STATUS_IN_PROGRESS = "In Progress"
-    max_task_wait_minutes = int(os.getenv("MAX_TASK_WAIT_MINUTES", "5"))
 
     try:
         while True:
             task_info = get_oldest_queued_task_supabase(
                 worker_id=cli_args.worker,
-                same_model_only=True,
-                max_task_wait_minutes=max_task_wait_minutes,
             )
 
             if not task_info:

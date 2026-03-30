@@ -257,7 +257,10 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
         output_location_val: Output file location or URL
         thumbnail_url_val: Optional thumbnail URL to pass to edge function
     """
-    headless_logger.debug(f"[DEBUG] update_task_status_supabase called: task_id={task_id_str}, status={status_str}, output_location={output_location_val}, thumbnail={thumbnail_url_val}")
+    try:
+        headless_logger.debug(f"[DEBUG] update_task_status_supabase called: task_id={task_id_str}, status={status_str}, output_location={output_location_val}, thumbnail={thumbnail_url_val}")
+    except Exception:
+        pass  # Logging must never prevent status updates
 
     if not _cfg.SUPABASE_URL or not _cfg.SUPABASE_ACCESS_TOKEN:
         headless_logger.error("Supabase URL or access token not configured. Cannot update task status.", task_id=task_id_str)

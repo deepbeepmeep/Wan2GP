@@ -70,8 +70,9 @@ class LogBuffer:
         if self.shared_queue:
             try:
                 self.shared_queue.put_nowait(log_entry)
-            except (OSError, ValueError):
-                # Queue full or not available - not critical, guardian will catch up
+            except Exception:
+                # Queue full or not available - not critical, guardian will catch up.
+                # Must catch broadly: queue.Full is not a subclass of OSError/ValueError.
                 pass
 
         with self.lock:
@@ -205,9 +206,13 @@ class CustomLogInterceptor:
             message: Log message
             task_id: Task ID (uses current_task_id if not provided)
         """
-        self.log_buffer.add(
-            level=level,
-            message=message,
-            task_id=task_id if task_id is not None else getattr(self._task_context, "current_task_id", None),
-            metadata={}
-        )
+        try:
+            self.log_buffer.add(
+                level=level,
+                message=message,
+                task_id=task_id if task_id is not None else getattr(self._task_context, "current_task_id", None),
+                metadata={}
+            )
+        except Exception:
+            # Logging must never crash the caller — silently drop if buffer fails
+            pass

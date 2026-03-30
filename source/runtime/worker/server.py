@@ -314,11 +314,18 @@ def main():
 
     # Centralized logging with heartbeat guardian
     from source.core.log import LogBuffer, CustomLogInterceptor, set_log_interceptor
+    from source.runtime.worker.guardian import send_heartbeat_with_logs
     from source.task_handlers.worker.heartbeat_utils import start_heartbeat_guardian_process
 
     _log_interceptor_instance = None
+    guardian_process = None
+    guardian_config = None
     if cli_args.worker:
         guardian_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or access_token
+        guardian_config = {
+            "db_url": cli_args.supabase_url,
+            "api_key": guardian_key,
+        }
         guardian_process, log_queue = start_heartbeat_guardian_process(
             cli_args.worker, cli_args.supabase_url, guardian_key
         )
@@ -393,10 +400,15 @@ def main():
 
     STATUS_COMPLETE = "Complete"
     STATUS_IN_PROGRESS = "In Progress"
+    max_task_wait_minutes = int(os.getenv("MAX_TASK_WAIT_MINUTES", "5"))
 
     try:
         while True:
-            task_info = get_oldest_queued_task_supabase(worker_id=cli_args.worker)
+            task_info = get_oldest_queued_task_supabase(
+                worker_id=cli_args.worker,
+                same_model_only=True,
+                max_task_wait_minutes=max_task_wait_minutes,
+            )
 
             if not task_info:
                 time.sleep(cli_args.poll_interval)
@@ -407,83 +419,116 @@ def main():
             current_project_id = task_info.get("project_id")
             current_task_id = task_info["task_id"]
 
-            if current_project_id is None and current_task_type in {"travel_orchestrator", "edit_video_orchestrator"}:
-                _update_task_complete(current_task_id, STATUS_FAILED, "Orchestrator missing project_id")
-                continue
+            try:
+                if current_project_id is None and current_task_type in {"travel_orchestrator", "edit_video_orchestrator"}:
+                    _update_task_complete(current_task_id, STATUS_FAILED, "Orchestrator missing project_id")
+                    continue
 
-            current_task_params["task_id"] = current_task_id
-            if "orchestrator_details" in current_task_params:
-                current_task_params["orchestrator_details"]["orchestrator_task_id"] = current_task_id
+                current_task_params["task_id"] = current_task_id
+                if "orchestrator_details" in current_task_params:
+                    current_task_params["orchestrator_details"]["orchestrator_task_id"] = current_task_id
 
-            if _log_interceptor_instance:
-                _log_interceptor_instance.set_current_task(current_task_id)
+                if _log_interceptor_instance:
+                    _log_interceptor_instance.set_current_task(current_task_id)
 
-            raw_result = process_single_task(
-                task_params_dict=current_task_params,
-                main_output_dir_base=main_output_dir,
-                task_type=current_task_type,
-                project_id_for_task=current_project_id,
-                image_download_dir=current_task_params.get("segment_image_download_dir"),
-                colour_match_videos=cli_args.colour_match_videos,
-                mask_active_frames=cli_args.mask_active_frames,
-                task_queue=task_queue,
-            )
+                raw_result = process_single_task(
+                    task_params_dict=current_task_params,
+                    main_output_dir_base=main_output_dir,
+                    task_type=current_task_type,
+                    project_id_for_task=current_project_id,
+                    image_download_dir=current_task_params.get("segment_image_download_dir"),
+                    colour_match_videos=cli_args.colour_match_videos,
+                    mask_active_frames=cli_args.mask_active_frames,
+                    task_queue=task_queue,
+                )
 
-            if isinstance(raw_result, TaskResult):
-                result = raw_result
-                task_succeeded, output_location = raw_result  # __iter__ unpacking
-            else:
-                task_succeeded, output_location = raw_result
-                result = None
+                if isinstance(raw_result, TaskResult):
+                    result = raw_result
+                    task_succeeded, output_location = raw_result  # __iter__ unpacking
+                else:
+                    task_succeeded, output_location = raw_result
+                    result = None
 
-            if task_succeeded:
-                reset_fatal_error_counter()
+                if task_succeeded:
+                    reset_fatal_error_counter()
 
-                orchestrator_types = {"travel_orchestrator", "join_clips_orchestrator", "edit_video_orchestrator"}
+                    orchestrator_types = {"travel_orchestrator", "join_clips_orchestrator", "edit_video_orchestrator"}
 
-                if current_task_type in orchestrator_types:
-                    if result and result.outcome == TaskOutcome.ORCHESTRATOR_COMPLETE:
-                        _update_task_complete(
-                            current_task_id, STATUS_COMPLETE,
-                            result.output_path, result.thumbnail_url)
-                    elif result and result.outcome == TaskOutcome.ORCHESTRATING:
-                        update_task_status(current_task_id, STATUS_IN_PROGRESS, result.output_path)
-                    elif isinstance(output_location, str) and output_location.startswith("[ORCHESTRATOR_COMPLETE]"):
-                        import json as _json
-                        actual_output = output_location.replace("[ORCHESTRATOR_COMPLETE]", "")
-                        thumbnail_url = None
-                        try:
-                            data = _json.loads(actual_output)
-                            actual_output = data.get("output_location", actual_output)
-                            thumbnail_url = data.get("thumbnail_url")
-                        except (ValueError, TypeError, KeyError):
-                            pass
-                        _update_task_complete(current_task_id, STATUS_COMPLETE, actual_output, thumbnail_url)
+                    if current_task_type in orchestrator_types:
+                        if result and result.outcome == TaskOutcome.ORCHESTRATOR_COMPLETE:
+                            _update_task_complete(
+                                current_task_id, STATUS_COMPLETE,
+                                result.output_path, result.thumbnail_url)
+                        elif result and result.outcome == TaskOutcome.ORCHESTRATING:
+                            update_task_status(current_task_id, STATUS_IN_PROGRESS, result.output_path)
+                        elif isinstance(output_location, str) and output_location.startswith("[ORCHESTRATOR_COMPLETE]"):
+                            import json as _json
+                            actual_output = output_location.replace("[ORCHESTRATOR_COMPLETE]", "")
+                            thumbnail_url = None
+                            try:
+                                data = _json.loads(actual_output)
+                                actual_output = data.get("output_location", actual_output)
+                                thumbnail_url = data.get("thumbnail_url")
+                            except (ValueError, TypeError, KeyError):
+                                pass
+                            _update_task_complete(current_task_id, STATUS_COMPLETE, actual_output, thumbnail_url)
+                        else:
+                            update_task_status(current_task_id, STATUS_IN_PROGRESS, output_location)
                     else:
-                        update_task_status(current_task_id, STATUS_IN_PROGRESS, output_location)
+                        _update_task_complete(current_task_id, STATUS_COMPLETE, output_location)
+                        cleanup_generated_files(output_location, current_task_id, debug_mode)
                 else:
-                    _update_task_complete(current_task_id, STATUS_COMPLETE, output_location)
-                    cleanup_generated_files(output_location, current_task_id, debug_mode)
-            else:
-                error_message = (result.error_message if result else output_location) or "Unknown error"
-                is_retryable, error_category, max_attempts = is_retryable_error(error_message)
-                current_attempts = task_info.get("attempts", 0)
+                    error_message = (result.error_message if result else output_location) or "Unknown error"
+                    is_retryable, error_category, max_attempts = is_retryable_error(error_message)
+                    current_attempts = task_info.get("attempts", 0)
 
-                if is_retryable and current_attempts < max_attempts:
-                    headless_logger.warning(
-                        f"Task {current_task_id} failed with retryable error ({error_category}), "
-                        f"requeuing for retry (attempt {current_attempts + 1}/{max_attempts})"
-                    )
-                    requeue_task_for_retry(current_task_id, error_message, current_attempts, error_category)
-                else:
-                    if is_retryable and current_attempts >= max_attempts:
-                        headless_logger.error(
-                            f"Task {current_task_id} exhausted {max_attempts} retry attempts for {error_category}"
+                    if is_retryable and current_attempts < max_attempts:
+                        headless_logger.warning(
+                            f"Task {current_task_id} failed with retryable error ({error_category}), "
+                            f"requeuing for retry (attempt {current_attempts + 1}/{max_attempts})"
                         )
-                    _update_task_complete(current_task_id, STATUS_FAILED, output_location)
+                        requeue_task_for_retry(current_task_id, error_message, current_attempts, error_category)
+                    else:
+                        if is_retryable and current_attempts >= max_attempts:
+                            headless_logger.error(
+                                f"Task {current_task_id} exhausted {max_attempts} retry attempts for {error_category}"
+                            )
+                        _update_task_complete(current_task_id, STATUS_FAILED, output_location)
+            except FatalWorkerError:
+                raise
+            except Exception as e:
+                headless_logger.error(
+                    f"Unhandled exception while processing task {current_task_id}: {e}",
+                    task_id=current_task_id,
+                    exc_info=True,
+                )
+                try:
+                    error_message = str(e) or e.__class__.__name__
+                    is_retryable, error_category, max_attempts = is_retryable_error(error_message)
+                    current_attempts = task_info.get("attempts", 0)
 
-            if _log_interceptor_instance:
-                _log_interceptor_instance.set_current_task(None)
+                    if is_retryable and current_attempts < max_attempts:
+                        headless_logger.warning(
+                            f"Task {current_task_id} failed with retryable error ({error_category}), "
+                            f"requeuing for retry (attempt {current_attempts + 1}/{max_attempts})"
+                        )
+                        requeue_task_for_retry(current_task_id, error_message, current_attempts, error_category)
+                    else:
+                        if is_retryable and current_attempts >= max_attempts:
+                            headless_logger.error(
+                                f"Task {current_task_id} exhausted {max_attempts} retry attempts for {error_category}"
+                            )
+                        _update_task_complete(current_task_id, STATUS_FAILED, error_message)
+                except:
+                    headless_logger.error(
+                        f"Failed to persist task failure for {current_task_id} after unhandled exception",
+                        task_id=current_task_id,
+                        exc_info=True,
+                    )
+                continue
+            finally:
+                if _log_interceptor_instance:
+                    _log_interceptor_instance.set_current_task(None)
 
             time.sleep(1)
 
@@ -493,5 +538,17 @@ def main():
     except KeyboardInterrupt:
         headless_logger.essential("Shutting down...")
     finally:
+        if guardian_process:
+            guardian_process.terminate()
+            guardian_process.join(5)
+        if cli_args.worker and guardian_config:
+            send_heartbeat_with_logs(
+                cli_args.worker,
+                0,
+                0,
+                [],
+                guardian_config,
+                status="terminated",
+            )
         if task_queue:
             task_queue.stop()

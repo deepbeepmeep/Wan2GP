@@ -62,33 +62,12 @@ def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on: str | l
     # Dependency validation is handled server-side by the create-task edge function.
     # No client-side pre-check needed.
 
-    # Map legacy task_type to the new family-based resolver format.
-    # The create-task edge function requires { family, project_id, input }.
-    _TASK_TYPE_TO_FAMILY = {
-        "travel_segment": "individual_travel_segment",
-        "individual_travel_segment": "individual_travel_segment",
-        "travel_stitch": "crossfade_join",
-        "join_clips_orchestrator": "join_clips",
-        "join_clips_segment": "join_clips_segment",
-        "join_final_stitch": "join_final_stitch",
-        "image_upscale": "image_upscale",
-        "image-upscale": "image_upscale",
-        "video_enhance": "video_enhance",
-        "animate_character": "character_animate",
-        "travel_orchestrator": "travel_between_images",
-        "edit_video_orchestrator": "edit_video_orchestrator",
-        "magic_edit": "magic_edit",
-        "image_inpaint": "masked_edit",
-        "image_edit": "masked_edit",
-        "annotated_image_edit": "masked_edit",
-        "qwen_image_edit": "masked_edit",
-        "single_image": "image_generation",
-        "z_image_turbo_i2i": "z_image_turbo_i2i",
-    }
-    family = _TASK_TYPE_TO_FAMILY.get(task_type_str, task_type_str)
-
+    # The create-task edge function uses { family, project_id, input }.
+    # Family matches task_types.name in the DB. The edge function has explicit
+    # resolvers for frontend-initiated types and a DB-backed passthrough for
+    # worker-created types (checks task_types table).
     payload_edge = {
-        "family": family,
+        "family": task_type_str,
         "project_id": project_id,
         "input": {
             **params_for_db,

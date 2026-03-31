@@ -434,9 +434,12 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
 
         chain_segments = bool(orchestrator_payload.get("chain_segments", True))
         generation_policy = GenerationPolicy.from_payload(orchestrator_payload)
+        stitch_config = orchestrator_payload.get("stitch_config")
         should_create_stitch = bool(
-            use_svi
-            or generation_policy.continuation.enabled
+            not stitch_config and (
+                use_svi
+                or generation_policy.continuation.enabled
+            )
         )
         required_stitch_count = 1 if should_create_stitch else 0
         
@@ -2284,7 +2287,9 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
         
         # Determine if we should create a stitch task
         should_create_stitch = False
-        if use_svi:
+        if stitch_config:
+            travel_logger.debug("[STITCHING] stitch_config present: skipping travel_stitch in favor of join_clips_orchestrator")
+        elif use_svi:
             # SVI mode: Always create stitch task (segments are sequential with end frame chaining)
             should_create_stitch = True
             # For SVI, use the small overlap value
@@ -2362,7 +2367,6 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
         # === JOIN CLIPS ORCHESTRATOR (for AI-generated transitions) ===
         # If stitch_config is provided, create a join_clips_orchestrator that will generate
         # smooth AI transitions between segments using VACE, instead of simple crossfades
-        stitch_config = orchestrator_payload.get("stitch_config")
         join_orchestrator_created = False
 
         # Check if join orchestrator already exists (idempotency)
@@ -2377,9 +2381,20 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             all_segment_task_ids = [actual_segment_db_id_by_index[i] for i in range(num_segments)]
             travel_logger.debug(f"[JOIN_STITCH] All segment task IDs ({len(all_segment_task_ids)}): {all_segment_task_ids}")
 
+            raw_stitch_loras = stitch_config.get("loras", {})
+            if isinstance(raw_stitch_loras, dict):
+                additional_loras = dict(raw_stitch_loras)
+            else:
+                additional_loras = {
+                    lora["path"]: lora.get("strength", 1.0)
+                    for lora in raw_stitch_loras
+                    if isinstance(lora, dict) and "path" in lora
+                }
+
             # Build join_clips_orchestrator payload from stitch_config
             join_orchestrator_payload = {
                 "orchestrator_task_id_ref": orchestrator_task_id_str,
+                "run_id": run_id,
                 "orchestrator_run_id": run_id,
                 "project_id": orchestrator_project_id,
                 "parent_generation_id": (
@@ -2402,7 +2417,7 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 # Model and generation settings
                 "model": stitch_config.get("model", orchestrator_payload.get("model", "wan_2_2_vace_lightning_baseline_2_2_2")),
                 "phase_config": stitch_config.get("phase_config", orchestrator_payload.get("phase_config")),
-                "additional_loras": stitch_config.get("loras", []),
+                "additional_loras": additional_loras,
                 "seed": -1 if stitch_config.get("random_seed", True) else stitch_config.get("seed", orchestrator_payload.get("seed_base", -1)),
 
                 # Resolution/FPS from original orchestrator

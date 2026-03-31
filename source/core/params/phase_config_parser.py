@@ -235,6 +235,25 @@ def parse_phase_config(phase_config: dict, num_inference_steps: int, task_id: st
         phases_config, steps_per_phase, num_phases, task_id
     )
 
+    # Filter out LoRAs incompatible with the target model architecture.
+    # Wan 2.2 LoRAs (wan2.2_*) are incompatible with LTX-2 models and vice versa.
+    if model_name and all_lora_urls:
+        is_ltx2 = "ltx2" in model_name.lower()
+        filtered_indices = []
+        for i, url in enumerate(all_lora_urls):
+            url_lower = url.lower()
+            wan_lora = "wan2.2" in url_lower or "wan_2.2" in url_lower
+            if is_ltx2 and wan_lora:
+                headless_logger.warning(
+                    f"Skipping Wan 2.2 LoRA incompatible with LTX-2 model '{model_name}': {url}",
+                    task_id=task_id,
+                )
+                continue
+            filtered_indices.append(i)
+        if len(filtered_indices) < len(all_lora_urls):
+            all_lora_urls = [all_lora_urls[i] for i in filtered_indices]
+            lora_multipliers = [lora_multipliers[i] for i in filtered_indices]
+
     if model_name:
         patch = _prepare_patch_config(phase_config, phases_config, num_phases, all_lora_urls, model_name, task_id)
         if patch:

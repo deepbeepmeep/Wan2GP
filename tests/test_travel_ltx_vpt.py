@@ -5,6 +5,7 @@ import pytest
 
 from source.core.params.structure_guidance import StructureGuidanceConfig, StructureVideoEntry
 from source.core.params.travel_guidance import TravelGuidanceConfig
+from source.models.wgp.generation_helpers import is_t2v
 from source.task_handlers.tasks.task_registry import _apply_uni3c_config
 from source.task_handlers.tasks.task_registry import SegmentContext, GenerationInputs, StructureOutputs
 from source.task_handlers.travel.guide_builder import create_guide_video
@@ -24,6 +25,14 @@ VIDEO_ENTRY = {
     "end_frame": 16,
     "treatment": "adjust",
 }
+
+
+class _T2VProbe:
+    def __init__(self, model_name: str):
+        self.current_model = model_name
+
+    def _get_base_model_type(self, model_name: str) -> str:
+        return model_name.removesuffix("_distilled")
 
 
 def _make_processor(mode: str, *, model_name: str = "ltx2_22B_distilled") -> TravelSegmentProcessor:
@@ -47,6 +56,23 @@ def _make_processor(mode: str, *, model_name: str = "ltx2_22B_distilled") -> Tra
         debug_enabled=False,
     )
     return TravelSegmentProcessor(ctx)
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected"),
+    [
+        ("t2v", True),
+        ("t2v_1.3B", True),
+        ("hunyuan", True),
+        ("ltxv_13B", True),
+        ("ltx2_19B", True),
+        ("ltx2_22B", True),
+        ("ltx2_22B_distilled", True),
+        ("flux", False),
+    ],
+)
+def test_is_t2v_recognizes_supported_base_model_types(model_name, expected):
+    assert is_t2v(_T2VProbe(model_name)) is expected
 
 
 @pytest.mark.parametrize("mode", ["pose", "depth", "canny", "video"])

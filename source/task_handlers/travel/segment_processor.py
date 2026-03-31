@@ -255,10 +255,11 @@ class TravelSegmentProcessor:
                     task_id=ctx.task_id,
                 )
             elif travel_guidance_config.kind == "uni3c":
-                # Uni3c provides a guide video — LTX needs VG to use it
-                video_prompt_type_str = "VG"
+                # Uni3C needs VG for LTX-2, but VACE must still suppress the
+                # raw video guide to avoid double-feeding motion guidance.
+                video_prompt_type_str = "VG" if self._is_ltx2_model() else ""
                 travel_logger.debug(
-                    f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance uni3c -> video_prompt_type='VG'",
+                    f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance uni3c -> video_prompt_type='{video_prompt_type_str}'",
                     task_id=ctx.task_id,
                 )
             elif travel_guidance_config.kind == "none":

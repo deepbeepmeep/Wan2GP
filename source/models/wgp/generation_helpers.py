@@ -59,7 +59,7 @@ def notify_worker_model_switch(old_model: Optional[str], new_model: str):
             json={
                 "worker_id": worker_id,
                 # Keep payload minimal to avoid schema mismatches server-side.
-                "model": new_model,
+                "current_model": new_model,
             },
             timeout=5.0  # Don't block model loading on this
         )
@@ -239,7 +239,7 @@ def is_flux(orchestrator) -> bool:
 def is_t2v(orchestrator) -> bool:
     """Check if current model is a T2V model."""
     base_type = orchestrator._get_base_model_type(orchestrator.current_model)
-    return base_type in ["t2v", "t2v_1.3B", "hunyuan", "ltxv_13B", "ltx2_19B"]
+    return base_type in ["t2v", "t2v_1.3B", "hunyuan", "ltxv_13B", "ltx2_19B", "ltx2_22B"]
 
 
 def is_qwen(orchestrator) -> bool:

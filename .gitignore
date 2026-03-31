@@ -112,3 +112,4 @@ Wan2GP_original
 
 # Supabase edge functions (managed separately)
 supabase/
+.env.example

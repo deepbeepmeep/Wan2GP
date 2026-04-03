@@ -161,6 +161,7 @@ class family_handler:
             "one_speaker_only": True,
             "audio_guide_label": "Audio Prompt (Soundtrack)",
             "audio_scale_name": "Prompt Audio Strength",
+            "multiple_images_as_text_prompts": True,
             "audio_prompt_type_sources": {
                 "selection": audio_prompt_selection,
                 "labels": audio_prompt_labels,
@@ -312,12 +313,23 @@ class family_handler:
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
+        if model_def.get("ltx2_pipeline", "two_stage") == "distilled":
+            inputs.update(
+                {
+                    "num_inference_steps": 8,
+                    "guidance_scale": 1.0,
+                    "audio_guidance_scale": 1.0,
+                    "audio_cfg_scale": 1.0,
+                    "alt_guidance_scale": 1.0,
+                    "alt_scale": 0.0,
+                }
+            )
         audio_prompt_type = inputs.get("audio_prompt_type") or ""
         if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
             audio_source = inputs.get("audio_source")
             if audio_source is not None:
                 inputs["audio_guide"] = audio_source
-
+    
     @staticmethod
     def load_model(
         model_filename,

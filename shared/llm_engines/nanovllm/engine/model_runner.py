@@ -548,6 +548,7 @@ class ModelRunner:
         max_seqlen_k = 0
         slot_mapping = []
         block_tables = None
+        has_previous_state = any(int(getattr(seq, "num_cached_tokens", 0) or 0) > 0 for seq in seqs)
         for seq in seqs:
             seqlen = len(seq)
             input_ids.extend(seq[seq.num_cached_tokens:])
@@ -579,13 +580,18 @@ class ModelRunner:
             if not seq.block_table:    # warmup: no blocks allocated yet
                 slot_mapping.extend([-1] * seqlen_q)
                 continue
+            cached_tokens = max(0, int(seq.num_cached_tokens or 0))
+            cached_partial_tokens = cached_tokens % self.block_size
             for i in range(seq.num_cached_blocks, seq.num_blocks):
                 start = seq.block_table[i] * self.block_size
+                if i == seq.num_cached_blocks and cached_partial_tokens > 0:
+                    start += cached_partial_tokens
                 if i != seq.num_blocks - 1:
-                    end = start + self.block_size
+                    end = seq.block_table[i] * self.block_size + self.block_size
                 else:
-                    end = start + seq.last_block_num_tokens
-                slot_mapping.extend(list(range(start, end)))
+                    end = seq.block_table[i] * self.block_size + seq.last_block_num_tokens
+                if end > start:
+                    slot_mapping.extend(list(range(start, end)))
         if cu_seqlens_k[-1] > cu_seqlens_q[-1]:    # prefix cache
             block_tables = self.prepare_block_tables(seqs)
         if use_prompt_embeds:
@@ -599,8 +605,17 @@ class ModelRunner:
         cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        set_context(True, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, slot_mapping, None, block_tables)
+        set_context(True, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, slot_mapping, None, block_tables, has_previous_state=has_previous_state)
         return input_ids, positions, inputs_embeds
+
+    @torch.inference_mode()
+    def prefill_only(self, seqs: list[Sequence]) -> None:
+        self.ensure_runtime_ready()
+        input_ids, positions, inputs_embeds = self.prepare_prefill(seqs)
+        self.run_model(input_ids, positions, True, inputs_embeds=inputs_embeds)
+        for seq in seqs:
+            seq.clear_prompt_data()
+        reset_context()
 
     def prepare_decode(self, seqs: list[Sequence]):
         """Optimized decode preparation using pre-allocated buffers."""

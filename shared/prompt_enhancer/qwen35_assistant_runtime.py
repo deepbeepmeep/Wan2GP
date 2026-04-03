@@ -22,8 +22,7 @@ _FUNCTION_TAG_RE = re.compile(r"<function(?:=|\s+name=)([^\s>]+)[^>]*>(.*?)</fun
 _FUNCTION_START_RE = re.compile(r"<function(?:=|\s+name=)([^\s>]+)[^>]*>", flags=re.IGNORECASE)
 _PARAM_TAG_RE = re.compile(r"<parameter(?:=|\s+name=)([^\s>]+)[^>]*>(.*?)</parameter>", flags=re.DOTALL | re.IGNORECASE)
 _GENERIC_PARAM_TAG_RE = re.compile(r"<([A-Za-z_][A-Za-z0-9_]*)>\s*(.*?)\s*</(?:parameter|\1)>", flags=re.DOTALL | re.IGNORECASE)
-_MIN_PREFILL_REBUILD_SUFFIX_TOKENS = 256
-_PREFILL_REBUILD_SUFFIX_RATIO_DIVISOR = 2
+_ASSISTANT_CONTINUATION_PREFILL_CHUNK_TOKENS = 1000
 
 
 @dataclass(slots=True)
@@ -89,9 +88,10 @@ def _clean_tag_name(name: str) -> str:
     return name
 
 
-def _parse_tagged_tool_call(payload: str) -> dict[str, Any] | None:
+def _parse_tagged_tool_call(payload: str, allow_incomplete_function: bool = False) -> dict[str, Any] | None:
     function_match = _FUNCTION_TAG_RE.search(str(payload or ""))
     function_body = ""
+    matched_closed_function = function_match is not None
     if function_match is not None:
         name = _clean_tag_name(function_match.group(1))
         function_body = function_match.group(2)
@@ -122,6 +122,8 @@ def _parse_tagged_tool_call(payload: str) -> dict[str, Any] | None:
             arguments[clean_name] = json.loads(clean_value)
         except Exception:
             arguments[clean_name] = clean_value
+    if not matched_closed_function and (not allow_incomplete_function or len(arguments) == 0):
+        return None
     return {"name": name, "arguments": arguments}
 
 
@@ -159,11 +161,11 @@ def _extract_bare_json_tool_call(text: str) -> tuple[dict[str, Any] | None, tupl
     return None, None
 
 
-def _extract_inline_tool_call(text: str) -> tuple[dict[str, Any] | None, tuple[int, int] | None]:
+def _extract_inline_tool_call(text: str, allow_incomplete_function: bool = False) -> tuple[dict[str, Any] | None, tuple[int, int] | None]:
     candidate = strip_trailing_stop_markup(str(text or "")).strip()
     if len(candidate) == 0:
         return None, None
-    tagged_tool_call = _parse_tagged_tool_call(candidate)
+    tagged_tool_call = _parse_tagged_tool_call(candidate, allow_incomplete_function=allow_incomplete_function)
     if tagged_tool_call is not None:
         return tagged_tool_call, (0, len(candidate))
     return _extract_bare_json_tool_call(candidate)
@@ -186,8 +188,12 @@ def extract_tool_calls(raw_text: str) -> list[dict[str, Any]]:
         tool_calls.append(tool_call)
     if len(tool_calls) > 0:
         return tool_calls
+    inline_tool_call, _inline_span = _extract_inline_tool_call(source_text, allow_incomplete_function=True)
+    if inline_tool_call is not None:
+        tool_calls.append(inline_tool_call)
+        return tool_calls
     _thinking_text, answer_text = qwen35_text._split_generated_text(source_text)
-    inline_tool_call, _inline_span = _extract_inline_tool_call(answer_text)
+    inline_tool_call, _inline_span = _extract_inline_tool_call(answer_text, allow_incomplete_function=True)
     if inline_tool_call is not None:
         tool_calls.append(inline_tool_call)
     return tool_calls
@@ -205,10 +211,22 @@ def strip_inline_tool_call_text(raw_text: str) -> str:
 
 def has_complete_tool_call(raw_text: str) -> bool:
     text = str(raw_text or "")
-    if len(_TOOL_CALL_RE.findall(text)) > 0:
-        return text.count("<tool_call>") == text.count("</tool_call>")
-    _thinking_text, answer_text = qwen35_text._split_generated_text(text)
-    inline_tool_call, _inline_span = _extract_inline_tool_call(answer_text)
+    if text.count("<tool_call>") != text.count("</tool_call>"):
+        return False
+    for match in _TOOL_CALL_RE.finditer(text):
+        payload = match.group(1).strip()
+        if len(payload) == 0:
+            continue
+        try:
+            parsed = json.loads(payload)
+        except Exception:
+            parsed = _parse_tagged_tool_call(payload)
+        if _normalize_tool_call_dict(parsed) is not None:
+            return True
+    inline_tool_call, _inline_span = _extract_inline_tool_call(text)
+    if inline_tool_call is None:
+        _thinking_text, answer_text = qwen35_text._split_generated_text(text)
+        inline_tool_call, _inline_span = _extract_inline_tool_call(answer_text)
     return inline_tool_call is not None
 
 
@@ -318,19 +336,30 @@ class Qwen35AssistantRuntime:
         llm.scheduler.running.clear()
         return engine, llm
 
-    def _build_sampling_params(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool):
+    def _build_sampling_params(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, available_tokens: int | None = None):
+        requested_new_tokens = max(1, int(max_new_tokens))
+        resolved_available_tokens = None if available_tokens is None else max(0, int(available_tokens))
+        effective_new_tokens = requested_new_tokens if resolved_available_tokens is None else min(requested_new_tokens, resolved_available_tokens)
+        requested_runtime_extra = qwen35_text._resolve_prompt_runtime_extra_tokens(self.model, thinking_enabled=thinking_enabled)
+        if resolved_available_tokens is None:
+            effective_runtime_extra = int(requested_runtime_extra)
+        else:
+            effective_runtime_extra = min(int(requested_runtime_extra), max(0, resolved_available_tokens - effective_new_tokens))
         logits_bias = qwen35_text._build_suppressed_token_logits_bias(self.model, thinking_enabled=thinking_enabled)
-        logits_processor, logits_processor_update_state = qwen35_text._build_prompt_logits_processor(self.model, thinking_enabled=thinking_enabled)
+        logits_processor, logits_processor_update_state = qwen35_text._build_prompt_logits_processor(
+            self.model,
+            thinking_enabled=thinking_enabled,
+            max_thinking_tokens_override=effective_runtime_extra if thinking_enabled else None,
+        )
         temp, normalized_top_p, normalized_top_k = qwen35_text._normalize_vllm_sampling(
             do_sample=bool(do_sample),
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
         )
-        runtime_extra = qwen35_text._resolve_prompt_runtime_extra_tokens(self.model, thinking_enabled=thinking_enabled)
         return SamplingParams(
             temperature=temp,
-            max_tokens=int(max_new_tokens) + int(runtime_extra),
+            max_tokens=effective_new_tokens + effective_runtime_extra,
             cfg_scale=1.0,
             top_k=normalized_top_k,
             top_p=normalized_top_p,
@@ -340,7 +369,13 @@ class Qwen35AssistantRuntime:
             logits_processor_update_state=logits_processor_update_state,
             logits_bias=logits_bias,
             seed=None if seed is None else int(seed),
-        )
+        ), {
+            "requested_new_tokens": requested_new_tokens,
+            "effective_new_tokens": effective_new_tokens,
+            "requested_runtime_extra": int(requested_runtime_extra),
+            "effective_runtime_extra": int(effective_runtime_extra),
+            "available_tokens": None if resolved_available_tokens is None else int(resolved_available_tokens),
+        }
 
     def _get_active_sequence(self):
         try:
@@ -358,14 +393,7 @@ class Qwen35AssistantRuntime:
         seq.logits_processor = None
         seq.logits_processor_update_state = None
         seq.ignore_eos = True
-
-    def _should_rebuild_with_prefill(self, current_len: int, suffix_len: int) -> bool:
-        suffix_len = int(suffix_len)
-        if suffix_len <= 0:
-            return False
-        current_len = max(0, int(current_len))
-        rebuild_threshold = max(_MIN_PREFILL_REBUILD_SUFFIX_TOKENS, current_len // _PREFILL_REBUILD_SUFFIX_RATIO_DIVISOR)
-        return suffix_len >= rebuild_threshold
+        self._get_live_llm().scheduler.block_manager.normalize_tail_after_prefill(seq)
 
     def _prefill_context(self, token_ids: list[int], seed: int | None = None) -> Sequence:
         normalized_token_ids = [int(token_id) for token_id in token_ids]
@@ -383,8 +411,9 @@ class Qwen35AssistantRuntime:
         self._log(f"Primed assistant context with {len(normalized_token_ids)} tokens.")
         return seq
 
-    def _force_append_tokens(self, seq: Sequence, token_ids: list[int]) -> Sequence:
-        if len(token_ids) == 0:
+    def _chunk_prefill_suffix(self, seq: Sequence, token_ids: list[int]) -> Sequence:
+        suffix = [int(token_id) for token_id in list(token_ids or [])]
+        if len(suffix) == 0:
             return seq
         llm = self._get_live_llm()
         original_processor = seq.logits_processor
@@ -393,13 +422,27 @@ class Qwen35AssistantRuntime:
         seq.logits_processor = None
         seq.logits_processor_update_state = None
         seq.ignore_eos = True
-        seq.max_tokens = max(int(original_max_tokens), seq.num_completion_tokens + len(token_ids) + 8)
+        seq.max_tokens = max(int(original_max_tokens), int(seq.num_completion_tokens or 0) + len(suffix) + 8)
         try:
-            for forced_token in token_ids:
-                scheduled, is_prefill = llm.scheduler.schedule()
-                llm.model_runner.call("run", scheduled, is_prefill)
-                llm.scheduler.postprocess(scheduled, [int(forced_token)])
-                seq = scheduled[0]
+            total_suffix_tokens = len(suffix)
+            total_chunks = (total_suffix_tokens + _ASSISTANT_CONTINUATION_PREFILL_CHUNK_TOKENS - 1) // _ASSISTANT_CONTINUATION_PREFILL_CHUNK_TOKENS
+            for chunk_index, chunk_start in enumerate(range(0, total_suffix_tokens, _ASSISTANT_CONTINUATION_PREFILL_CHUNK_TOKENS), start=1):
+                chunk = suffix[chunk_start : chunk_start + _ASSISTANT_CONTINUATION_PREFILL_CHUNK_TOKENS]
+                old_num_tokens = int(seq.num_tokens)
+                seq.token_ids.extend(chunk)
+                seq.last_token = int(seq.token_ids[-1])
+                seq.num_tokens = len(seq.token_ids)
+                if not llm.scheduler.block_manager.can_prompt_append(seq, old_num_tokens):
+                    raise RuntimeError("Assistant chunk prefill exceeded the available KV cache blocks.")
+                llm.scheduler.block_manager.begin_prompt_append(seq, old_num_tokens)
+                seq.num_cached_tokens = old_num_tokens
+                llm.model_runner.call("prefill_only", [seq])
+                llm.scheduler.block_manager.finalize_prompt_append(seq, old_num_tokens)
+                seq.num_cached_tokens = seq.num_tokens
+                self._log(
+                    f"Chunk-prefilled assistant suffix chunk {chunk_index}/{total_chunks} "
+                    f"with {len(chunk)} tokens (context={int(seq.num_tokens)})."
+                )
         finally:
             seq.logits_processor = original_processor
             seq.logits_processor_update_state = original_update
@@ -415,29 +458,24 @@ class Qwen35AssistantRuntime:
                 self.restore_snapshot(snapshot)
                 return "restored", "exact KV snapshot restored"
             except Exception as exc:
-                self._log(f"Exact restore failed, falling back to replay: {exc}")
+                self._log(f"Exact restore failed, falling back to prefill: {exc}")
                 self.prime_context(fallback_tokens, seed=seed)
-                return "replayed", f"exact KV restore failed: {exc}"
+                return "prefilled", f"exact KV restore failed: {exc}"
         self.prime_context(fallback_tokens, seed=seed)
-        return "replayed", "no exact runtime snapshot was available"
+        return "prefilled", "no exact runtime snapshot was available"
 
     def extend_context(self, target_token_ids: list[int]) -> str:
         seq = self._get_active_sequence()
         if seq is None:
-            self.prime_context(target_token_ids)
-            return "replayed"
+            raise RuntimeError("Assistant context is not initialized.")
         current_token_ids = [int(token_id) for token_id in seq.token_ids]
         if target_token_ids[: len(current_token_ids)] != current_token_ids:
-            self.prime_context(target_token_ids)
-            return "replayed"
+            raise RuntimeError("Assistant context target does not extend the active runtime prefix.")
         suffix = [int(token_id) for token_id in target_token_ids[len(current_token_ids) :]]
         if suffix:
-            if self._should_rebuild_with_prefill(len(current_token_ids), len(suffix)):
-                self.prime_context(target_token_ids)
-                return "prefilled"
-            seq = self._force_append_tokens(seq, suffix)
+            seq = self._chunk_prefill_suffix(seq, suffix)
         self._seal_sequence(seq)
-        return "extended"
+        return "chunk_prefilled" if suffix else "extended"
 
     def append_suffix(self, suffix_token_ids: list[int]) -> str:
         seq = self._get_active_sequence()
@@ -445,12 +483,9 @@ class Qwen35AssistantRuntime:
             raise RuntimeError("Assistant context is not initialized.")
         suffix = [int(token_id) for token_id in suffix_token_ids]
         if suffix:
-            if self._should_rebuild_with_prefill(len(seq.token_ids), len(suffix)):
-                self.prime_context([int(token_id) for token_id in seq.token_ids] + suffix)
-                return "prefilled"
-            seq = self._force_append_tokens(seq, suffix)
+            seq = self._chunk_prefill_suffix(seq, suffix)
         self._seal_sequence(seq)
-        return "extended"
+        return "chunk_prefilled" if suffix else "extended"
 
     def generate_embedded_answer(
         self,
@@ -511,7 +546,25 @@ class Qwen35AssistantRuntime:
         seq = self._get_active_sequence()
         if seq is None:
             raise RuntimeError("Assistant context is not initialized.")
-        sampling_params = self._build_sampling_params(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled)
+        llm = self._get_live_llm()
+        available_tokens = max(0, int(llm.config.max_model_len) - int(seq.num_tokens))
+        sampling_params, budget_info = self._build_sampling_params(
+            max_new_tokens=max_new_tokens,
+            seed=seed,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            thinking_enabled=thinking_enabled,
+            available_tokens=available_tokens,
+        )
+        if budget_info["effective_new_tokens"] != budget_info["requested_new_tokens"] or budget_info["effective_runtime_extra"] != budget_info["requested_runtime_extra"]:
+            self._log(
+                "Adjusted assistant segment budget to fit available context: "
+                f"available={budget_info['available_tokens']} "
+                f"new={budget_info['effective_new_tokens']}/{budget_info['requested_new_tokens']} "
+                f"thinking_extra={budget_info['effective_runtime_extra']}/{budget_info['requested_runtime_extra']}."
+            )
         seq.num_prompt_tokens = seq.num_tokens
         seq.max_tokens = sampling_params.max_tokens
         seq.temperature = sampling_params.temperature
@@ -523,16 +576,17 @@ class Qwen35AssistantRuntime:
         seq.logits_processor = sampling_params.logits_processor
         seq.logits_processor_update_state = sampling_params.logits_processor_update_state
         seq.logits_bias = sampling_params.logits_bias
-        llm = self._get_live_llm()
         llm.model_runner.call("set_sampling_seed", sampling_params.seed)
         return seq
 
     def generate_segment(self, max_new_tokens: int, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0) -> AssistantDecodeResult:
         seq = self.start_generation_segment(max_new_tokens=max_new_tokens, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled)
+        requested_segment_tokens = max(0, int(seq.max_tokens or 0))
+        seq.max_tokens = max(int(seq.max_tokens or 0), requested_segment_tokens + 1)
         stop_token_ids = {int(token_id) for token_id in getattr(self.model, "_prompt_enhancer_stop_token_ids", []) or [] if int(token_id) >= 0}
         stream_emitter = ThrottledStreamEmitter(stream_interval_seconds) if callable(stream_callback) else None
         raw_text = ""
-        for step_no in range(int(seq.max_tokens)):
+        for step_no in range(requested_segment_tokens):
             if callable(stop_requested) and stop_requested():
                 if stream_emitter is not None:
                     stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=step_no, stop_reason="interrupted", is_final=True, force=True)
@@ -565,10 +619,12 @@ class Qwen35AssistantRuntime:
                 if stream_emitter is not None:
                     stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=step_no + 1, stop_reason="stop_token", is_final=True, force=True)
                 return AssistantDecodeResult(raw_text=raw_text, stop_reason="stop_token", token_count=step_no + 1, stop_token_id=last_token_id)
+        self._seal_sequence(seq)
+        seq.max_tokens = requested_segment_tokens
         raw_text = self.tokenizer.decode(seq.completion_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
         if stream_emitter is not None:
-            stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=int(seq.max_tokens), stop_reason="max_tokens", is_final=True, force=True)
-        return AssistantDecodeResult(raw_text=raw_text, stop_reason="max_tokens", token_count=int(seq.max_tokens))
+            stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=requested_segment_tokens, stop_reason="max_tokens", is_final=True, force=True)
+        return AssistantDecodeResult(raw_text=raw_text, stop_reason="max_tokens", token_count=requested_segment_tokens)
 
     def snapshot_context(self) -> dict[str, Any] | None:
         seq = self._get_active_sequence()
@@ -708,6 +764,7 @@ class Qwen35AssistantRuntime:
         else:
             restored_seq.status = SequenceStatus.RUNNING
             llm.scheduler.running.append(restored_seq)
+        llm.scheduler.block_manager.normalize_tail_after_prefill(restored_seq)
         self._log(
             f"Restored assistant context with {len(restored_seq.token_ids)} tokens. "
             f"runner_state={self._describe_engine_state(engine)}"

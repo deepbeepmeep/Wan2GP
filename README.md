@@ -33,6 +33,19 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+### 3rd of April 2026: WanGP v11.20, this is no joke
+- **Magi Human**: this is a newly *Talking Head* model that accepts either a *custom soundrack* or can generate the *audio speech* that comes with the video. 
+   - *The bad news* :it is VRAM hungry (targets RTX 5090+) and very res picky, that is the ouput res must be either 256p or 1080p (using a 2 stage pipeline with upsampling). There is also a 540p version (using also an upsampler) but it is not included as I found it unpractical (ghosting guaranteed if your output is not exactly the right height/width ratio), 
+   - *The good news* : now that it is WanGP optimized, 101 frames at 1080p requires "only" 16 GB of VRAM. If you dont have that much VRAM I recommend to still go for 1080p but set a 49 frames *Sliding Window* (not too low to avoid artifacts) as *Sliding Windows* seems to work quite well with this model.  
+
+- **More Deepy** : 
+   - *UI Improvements*: you can *queue* requests by inserting empty lines between two requests, get the last turn by clicking the *Down Arrow*
+   - *More Responsive*: Deepy should execute much more quickly consecutive actions
+   - *More Reliable*: fast full context compaction (when deepy ran out of tokens), Deepy will remember what you stopped / aborted
+   - *More Capabilities*: you can ask Deepy to specifiy a specific *guidance*, *denoising strength* value (the value defined in the *tool template* will be overridden)
+
+As a reminder beside writting huge essays about how great you are, Deepy can generate Video, Image & Audio, extract / transcribe / trim / resize (when applicable) video or audio clip, inspect the content of an image or a video frame, generate black frames, ... Deepy used Tool templates but you can specify for one task the loras, number of frames, dimensions, ... There is also a CLI version of Deepy quite useful for remote use. Please check the fulldoc *docs/DEEPY.md*. 
+ 
 ### March 30th 2026: WanGP v11.13, The Machine Within The Machine
 
 Meet **Deepy** your friendly *WanGP Agent*.

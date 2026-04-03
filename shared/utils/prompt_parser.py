@@ -1,5 +1,85 @@
 import re
 
+PROMPT_UNIT_PREFIX = "#!PROMPT!:"
+ENHANCED_PROMPT_PREFIX = "!enhanced!\n"
+
+def normalize_multi_prompts_mode(value):
+    if value is None:
+        return "G"
+    if isinstance(value, str):
+        value = value.strip().upper()
+    elif isinstance(value, (int, float)):
+        value = int(value)
+    else:
+        return "G"
+    value = {0: "G", 1: "W", 2: "FG", "": "FG", "0": "G", "1": "W", "2": "FG", "P": "PG"}.get(value, value)
+    return value if value in {"FG", "G", "PG", "W", "PW"} else "G"
+
+def split_prompt_units(prompt_text, multi_prompts_gen_type, single_prompt=False, originals=False):
+    prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
+    if prompt_text.startswith(ENHANCED_PROMPT_PREFIX):
+        prompt_text = prompt_text[len(ENHANCED_PROMPT_PREFIX):]
+    separator = "\n\n" if "P" in multi_prompts_gen_type else "\n"
+    prefixed_prompts, prefixed_originals, current_prompt_lines = [], [], None
+    for raw_line in prompt_text.split("\n"):
+        if raw_line.startswith(PROMPT_UNIT_PREFIX):
+            if current_prompt_lines is not None:
+                prefixed_prompts.append("\n".join(current_prompt_lines).strip())
+            current_prompt_lines = []
+            prefixed_originals.append(raw_line[len(PROMPT_UNIT_PREFIX):].strip())
+        elif current_prompt_lines is not None:
+            current_prompt_lines.append(raw_line)
+    if current_prompt_lines is not None:
+        prefixed_prompts.append("\n".join(current_prompt_lines).strip())
+    if prefixed_prompts:
+        if originals:
+            return [prompt for prompt in prefixed_originals if prompt]
+        prefixed_prompts = [prompt for prompt in prefixed_prompts if prompt]
+        if not single_prompt:
+            return prefixed_prompts
+        prompt_text = prefixed_prompts[0] if multi_prompts_gen_type == "FG" else separator.join(prefixed_prompts)
+    prompt_lines = [line.rstrip() for line in prompt_text.split("\n") if not line.strip().startswith("#")]
+    prompt_text = "\n".join(prompt_lines).strip()
+    if not prompt_text:
+        return []
+    if single_prompt or multi_prompts_gen_type == "FG":
+        return [prompt_text]
+    if "P" in multi_prompts_gen_type:
+        prompts, current_lines = [], []
+        for raw_line in prompt_text.split("\n"):
+            if not raw_line.strip():
+                if current_lines:
+                    prompts.append("\n".join(current_lines).strip())
+                    current_lines = []
+                continue
+            current_lines.append(raw_line)
+        if current_lines:
+            prompts.append("\n".join(current_lines).strip())
+        return prompts
+    return [one_line.strip() for one_line in prompt_text.split("\n") if one_line.strip()]
+
+def serialize_prompt_units(prompt_text, prompts, multi_prompts_gen_type):
+    prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
+    if prompt_text.startswith(ENHANCED_PROMPT_PREFIX):
+        prompt_text = prompt_text[len(ENHANCED_PROMPT_PREFIX):]
+    prompt_text = prompt_text.strip()
+    if prompt_text.startswith(PROMPT_UNIT_PREFIX):
+        return prompt_text
+    prompts = [prompt.strip() for prompt in prompts if prompt.strip()]
+    if not prompts:
+        return ""
+    return prompts[0] if multi_prompts_gen_type == "FG" else ("\n\n" if "P" in multi_prompts_gen_type else "\n").join(prompts)
+
+def serialize_prompt_blocks_with_prefix(prompts, original_prompts=None):
+    blocks = []
+    prompts = [prompt.strip() for prompt in prompts if prompt.strip()]
+    if original_prompts is None:
+        original_prompts = []
+    for idx, prompt in enumerate(prompts, start=1):
+        original_prompt = original_prompts[idx - 1] if idx - 1 < len(original_prompts) else f"Prompt {idx}"
+        blocks.append(f"{PROMPT_UNIT_PREFIX} {original_prompt.strip()}\n{prompt}")
+    return "\n\n".join(blocks)
+
 def process_template(input_text, keep_comments=False, keep_empty_lines=False):
     """
     Process a text template with macro instructions and variable substitution.

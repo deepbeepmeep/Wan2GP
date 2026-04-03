@@ -817,21 +817,9 @@ class DeepyCliSession:
             self._print(f"[ERROR] {data}")
 
     def _reset_conversation(self) -> None:
-        self._session.messages.clear()
-        self._session.rendered_token_ids.clear()
-        self._session.runtime_snapshot = None
-        self._session.chat_html = ""
-        self._session.chat_transcript_counter = 0
+        self._deps.controller.reset_ai(self._state)
         self._assistant_live_print_state.clear()
-        self._session.current_turn = None
-        self._session.interrupt_requested = False
-        self._session.drop_state_requested = False
-        self._session.interruption_notice = ""
-        self._session.runtime_status_note = ""
-        self._session.runtime_status_signature = ""
-        self._session.rendered_system_prompt_signature = ""
-        self._session.rendered_context_window_tokens = 0
-        assistant_chat.reset_session_chat(self._session)
+        self._reset_status()
 
     def _print_new_assistant_messages(self, transcript_start: int) -> None:
         printed_any = False

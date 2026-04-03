@@ -167,14 +167,30 @@ def _split_generated_text(text: str) -> tuple[str, str]:
     think_chunks = [match.group(1) for match in re.finditer(r"<think>\s*(.*?)\s*</think>", text, flags=re.DOTALL | re.IGNORECASE)]
     answer_text = re.sub(r"<think>.*?</think>", "\n", text, flags=re.DOTALL | re.IGNORECASE)
     if len(think_chunks) == 0:
-        forced_open_match = re.search(r"</think>", text, flags=re.IGNORECASE)
-        if forced_open_match is not None:
-            forced_reasoning = text[:forced_open_match.start()]
-            forced_reasoning = forced_reasoning.replace("<think>", "\n")
-            forced_reasoning = _normalize_generated_text(forced_reasoning)
-            if len(forced_reasoning) > 0:
-                think_chunks.append(forced_reasoning)
-            answer_text = text[forced_open_match.end():]
+        close_matches = list(re.finditer(r"</think>", text, flags=re.IGNORECASE))
+        if len(close_matches) >= 2:
+            trailing_text = text[close_matches[-1].end():]
+            trailing_preview = re.sub(r"(?:<\|im_end\|>\s*|</s>\s*)+$", "", trailing_text, flags=re.IGNORECASE).lstrip()
+            if len(trailing_preview) == 0 or trailing_preview.lower().startswith("<tool_call>"):
+                recovered_chunks = []
+                leading_reasoning = _normalize_generated_text(text[: close_matches[0].start()].replace("<think>", "\n"))
+                middle_reasoning = _normalize_generated_text(text[close_matches[0].end() : close_matches[-1].start()].replace("<think>", "\n"))
+                if len(leading_reasoning) > 0:
+                    recovered_chunks.append(leading_reasoning)
+                if len(middle_reasoning) > 0:
+                    recovered_chunks.append(middle_reasoning)
+                if len(recovered_chunks) > 0:
+                    think_chunks.extend(recovered_chunks)
+                    answer_text = trailing_text
+        if len(think_chunks) == 0:
+            forced_open_match = re.search(r"</think>", text, flags=re.IGNORECASE)
+            if forced_open_match is not None:
+                forced_reasoning = text[:forced_open_match.start()]
+                forced_reasoning = forced_reasoning.replace("<think>", "\n")
+                forced_reasoning = _normalize_generated_text(forced_reasoning)
+                if len(forced_reasoning) > 0:
+                    think_chunks.append(forced_reasoning)
+                answer_text = text[forced_open_match.end():]
     if len(think_chunks) == 0:
         timeline_match = re.search(r"(?mi)^\(at\s+[0-9]+(?:\.[0-9]+)?\s+seconds?\s*:", text)
         if timeline_match is not None:
@@ -352,7 +368,7 @@ def _build_presence_penalty_logits_processor(presence_penalty: float | None):
     return logits_processor, update_state
 
 
-def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None):
+def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, max_thinking_tokens_override: int | None = None):
     processors = []
     update_callbacks = []
 
@@ -363,9 +379,10 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None):
         update_callbacks.append(presence_update_state)
 
     if _prompt_enhancer_thinking_enabled(model, thinking_enabled=thinking_enabled):
+        thinking_max_tokens = max_thinking_tokens_override if max_thinking_tokens_override is not None else getattr(model, "_prompt_enhancer_thinking_max_tokens", QWEN35_PROMPT_THINKING_MAX_TOKENS)
         thinking_state = _ThinkingBudgetState(
             getattr(model, "_prompt_enhancer_close_think_token_id", None),
-            getattr(model, "_prompt_enhancer_thinking_max_tokens", QWEN35_PROMPT_THINKING_MAX_TOKENS),
+            thinking_max_tokens,
             getattr(model, "_prompt_enhancer_stop_token_ids", ()),
         )
         if thinking_state.enabled():

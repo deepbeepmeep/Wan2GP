@@ -110,6 +110,7 @@ class ACEStep15Pipeline:
         lm_weights_path: str,
         lm_tokenizer_dir: str,
         silence_latent_path: str | None = None,
+        transformer_model_class=AceStepConditionGenerationModel,
         enable_lm: bool = True,
         ignore_lm_cache_seed: bool = False,
         lm_decoder_engine: str = "legacy",
@@ -136,6 +137,7 @@ class ACEStep15Pipeline:
         self.lm_weights_path = lm_weights_path
         self.lm_tokenizer_dir = lm_tokenizer_dir
         self.silence_latent_path = silence_latent_path
+        self.transformer_model_class = transformer_model_class
         self.ignore_lm_cache_seed = bool(ignore_lm_cache_seed)
         self.lm_engine = str(lm_decoder_engine or "legacy").strip().lower()
         if self.lm_engine not in {"legacy", "vllm"}:
@@ -168,7 +170,7 @@ class ACEStep15Pipeline:
     def _load_models(self, transformer_weights_path, transformer_config_path, vae_weights_path, vae_config_path):
         self.ace_step_transformer = offload.fast_load_transformers_model(
             transformer_weights_path,
-            modelClass=AceStepConditionGenerationModel,
+            modelClass=self.transformer_model_class,
             defaultConfigPath=transformer_config_path,
             default_dtype=self.dtype,
             writable_tensors=False,

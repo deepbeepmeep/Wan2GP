@@ -205,7 +205,7 @@ class family_handler:
                 "temperature": 1.0,
                 "guidance_scale": model_def.get("heartmula_cfg_scale", 1.5),
                 "top_k": model_def.get("heartmula_topk", 50),
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
             }
         )
 

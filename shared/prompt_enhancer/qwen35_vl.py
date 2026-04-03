@@ -378,6 +378,26 @@ class _SharedQwen35LmHeadAdapter(torch.nn.Module):
         return self.lm_head(*args, **kwargs)
 
 
+class _PromptEnhancerQwen2VLProcessor(Qwen2VLProcessor):
+    def __repr__(self):
+        tokenizer = getattr(self, "tokenizer", None)
+        image_processor = getattr(self, "image_processor", None)
+        video_processor = getattr(self, "video_processor", None)
+        name_or_path = getattr(tokenizer, "name_or_path", None) or getattr(self, "name_or_path", None)
+        parts = []
+        if name_or_path:
+            parts.append(f"name_or_path={name_or_path!r}")
+        if tokenizer is not None:
+            parts.append(f"tokenizer={tokenizer.__class__.__name__}")
+        if image_processor is not None:
+            parts.append(f"image_processor={image_processor.__class__.__name__}")
+        if video_processor is not None:
+            parts.append(f"video_processor={video_processor.__class__.__name__}")
+        return f"Qwen2VLProcessor({', '.join(parts)})"
+
+    __str__ = __repr__
+
+
 class _Qwen35CaptionWrapper(torch.nn.Module):
     def __init__(
         self,
@@ -871,7 +891,7 @@ def load_qwen35_vl_prompt_enhancer(
     tokenizer = _load_qwen35_tokenizer(assets_dir)
     image_processor = _load_qwen35_image_processor(assets_dir)
     video_processor = Qwen2VLVideoProcessor.from_pretrained(assets_dir)
-    processor = Qwen2VLProcessor(
+    processor = _PromptEnhancerQwen2VLProcessor(
         image_processor=image_processor,
         tokenizer=tokenizer,
         video_processor=video_processor,

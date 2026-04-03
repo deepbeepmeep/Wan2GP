@@ -87,18 +87,24 @@ def _sdpa_attention(
     value_states: torch.Tensor,
     scaling: float,
     num_key_value_groups: int,
+    attention_bias: torch.Tensor | None = None,
+    is_causal: bool = True,
 ) -> torch.Tensor:
     # Avoid enable_gqa here: on the local Torch 2.10 + CUDA 13 build it can pick
     # a much higher-workspace backend than the explicit-repeat SDPA path.
     key_states = _repeat_kv(key_states, num_key_value_groups)
     value_states = _repeat_kv(value_states, num_key_value_groups)
+    if attention_bias is not None and not torch.is_floating_point(attention_bias):
+        attention_bias = attention_bias.to(dtype=query_states.dtype)
+    elif attention_bias is not None and attention_bias.dtype != query_states.dtype:
+        attention_bias = attention_bias.to(dtype=query_states.dtype)
     return F.scaled_dot_product_attention(
         query_states,
         key_states,
         value_states,
-        attn_mask=None,
+        attn_mask=attention_bias,
         dropout_p=0.0,
-        is_causal=True,
+        is_causal=bool(is_causal),
         scale=scaling,
     )
 
@@ -149,7 +155,7 @@ def _flash_attention_fallback_prefill(
             v_i = _gather_cache_tokens(v_cache, context.block_tables[idx], k_len).transpose(0, 1).unsqueeze(0)
             query_offset = k_len - q_len
             bias = _build_causal_bias(q_len, k_len, q.device, query_offset=query_offset).view(1, 1, q_len, k_len)
-            output = _eager_attention(q_i, k_i, v_i, scale, num_key_value_groups, attention_bias=bias)
+            output = _sdpa_attention(q_i, k_i, v_i, scale, num_key_value_groups, attention_bias=bias, is_causal=False)
         else:
             k_i = k[k_start:k_end].transpose(0, 1).unsqueeze(0)
             v_i = v[k_start:k_end].transpose(0, 1).unsqueeze(0)

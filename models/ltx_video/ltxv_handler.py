@@ -39,6 +39,7 @@ class family_handler():
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"]= True
         extra_model_def["vae_block_size"] = 32
+        extra_model_def["multiple_images_as_text_prompts"] = True
         return extra_model_def
 
     @staticmethod

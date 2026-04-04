@@ -96,7 +96,7 @@ class family_handler:
                 "overlap_max": 1,
                 "overlap_step": 1,
                 "overlap_default": 1,
-                "window_min": 26,
+                "window_min": 25,
                 "window_max": 251,
                 "window_step": 4,
                 "window_default": 101,

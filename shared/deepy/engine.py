@@ -33,6 +33,7 @@ from shared.deepy.config import (
     normalize_deepy_vram_mode,
 )
 from shared.deepy import DEFAULT_SYSTEM_PROMPT as ASSISTANT_SYSTEM_PROMPT
+from shared.deepy.debug_bootstrap import capture_external_logs
 from shared import extra_settings
 from shared.deepy import media_registry, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
 from shared.gradio import assistant_chat
@@ -77,6 +78,7 @@ _RUNTIME_UPDATE_BLOCK_RE = re.compile(r"\s*<wangp_runtime_update>.*?</wangp_runt
 _POST_TRIM_WINDOW_FRACTION = 0.25
 _GENERATION_RESERVE_TOKENS = 128
 _THINKING_HEADROOM_TOKENS = 512
+_VIDEO_TOOL_RUNTIME_REINJECT_TOKENS = 2000
 _CONTEXT_LIMIT_MAX_RETRIES = 2
 _ASSISTANT_STREAM_INTERVAL_SECONDS = 0.25
 _INJECT_LAST_SELECTED_MEDIA_RUNTIME_REFERENCES = False
@@ -391,6 +393,8 @@ class AssistantSessionState:
     selected_visual_runtime_signature: str = ""
     selected_audio_runtime_signature: str = ""
     video_tool_runtime_variants: dict[str, str] = field(default_factory=dict)
+    video_tool_runtime_signature: str = ""
+    video_tool_runtime_last_injected_tokens: int = 0
     reset_base_token_ids: list[int] = field(default_factory=list)
     reset_base_snapshot: dict[str, Any] | None = None
     reset_base_signature: str = ""
@@ -453,6 +457,8 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.selected_visual_runtime_signature = ""
     session.selected_audio_runtime_signature = ""
     session.video_tool_runtime_variants = {}
+    session.video_tool_runtime_signature = ""
+    session.video_tool_runtime_last_injected_tokens = 0
     session.reset_base_token_ids = []
     session.reset_base_snapshot = None
     session.reset_base_signature = ""
@@ -627,6 +633,86 @@ def _summarize_interrupted_committed_messages(messages: list[dict[str, Any]]) ->
     return "; ".join(summary_parts[:4]).strip()
 
 
+def _normalize_interrupted_committed_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized_messages: list[dict[str, Any]] = []
+    for message in list(messages or []):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "")).strip().lower()
+        if len(role) == 0:
+            continue
+        normalized_message: dict[str, Any] = {"role": role}
+        if role == "user":
+            content = str(message.get("content", "") or "").strip()
+            if len(content) > 0:
+                normalized_message["content"] = content
+        else:
+            content = str(message.get("content", "") or "").strip()
+            if len(content) > 0:
+                normalized_message["content"] = content
+            model_content = str(message.get("model_content", "") or "").strip()
+            if len(model_content) > 0:
+                normalized_message["model_content"] = model_content
+        if role == "assistant" and isinstance(message.get("tool_calls"), list) and len(message.get("tool_calls") or []) > 0:
+            normalized_message["tool_calls"] = copy.deepcopy(list(message.get("tool_calls") or []))
+        if role == "tool":
+            tool_call_id = str(message.get("tool_call_id", "") or "").strip()
+            if len(tool_call_id) > 0:
+                normalized_message["tool_call_id"] = tool_call_id
+        normalized_messages.append(normalized_message)
+    return normalized_messages
+
+
+def _merge_visible_fragment_text(existing_text: str, visible_text: str) -> str:
+    existing = str(existing_text or "").strip()
+    visible = str(visible_text or "").strip()
+    if len(visible) == 0:
+        return existing
+    if len(existing) == 0 or visible.startswith(existing):
+        return visible
+    if existing.startswith(visible):
+        return existing
+    return visible
+
+
+def _build_interrupted_assistant_content(reasoning_text: str, answer_text: str) -> str:
+    reasoning = str(reasoning_text or "").strip()
+    answer = str(answer_text or "").strip()
+    if len(reasoning) > 0:
+        return f"<think>\n{reasoning}\n</think>\n\n{answer}".strip() if len(answer) > 0 else f"<think>\n{reasoning}\n</think>"
+    return answer
+
+
+def _merge_interrupted_visible_assistant_fragments(session: AssistantSessionState, assistant_message_id: str, committed_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    message_id = str(assistant_message_id or "").strip()
+    if len(message_id) == 0:
+        return committed_messages
+    visible_reasoning = str(assistant_chat.get_message_reasoning_content(session, message_id) or "").strip()
+    visible_answer = str(assistant_chat.get_message_content(session, message_id) or "").strip()
+    if len(visible_reasoning) == 0 and len(visible_answer) == 0:
+        return committed_messages
+    if len(committed_messages) > 0:
+        last_message = committed_messages[-1]
+        if str(last_message.get("role", "")).strip().lower() == "assistant" and not last_message.get("tool_calls"):
+            existing_content = str(last_message.get("content", "") or last_message.get("model_content", "") or "").strip()
+            existing_reasoning, existing_answer = qwen35_text._split_generated_text(existing_content)
+            merged_reasoning = _merge_visible_fragment_text(existing_reasoning, visible_reasoning)
+            merged_answer = _merge_visible_fragment_text(existing_answer, visible_answer)
+            merged_content = _build_interrupted_assistant_content(merged_reasoning, merged_answer)
+            if len(merged_content) == 0:
+                return committed_messages
+            if merged_content == existing_content:
+                return committed_messages
+            last_message["content"] = merged_content
+            last_message["model_content"] = merged_content
+            return committed_messages
+    merged_content = _build_interrupted_assistant_content(visible_reasoning, visible_answer)
+    if len(merged_content) == 0:
+        return committed_messages
+    committed_messages.append({"role": "assistant", "content": merged_content, "model_content": merged_content})
+    return committed_messages
+
+
 def record_interruption_history(session: AssistantSessionState, user_text: str, interruption_notice: str, committed_messages: list[dict[str, Any]] | None = None) -> None:
     collapsed = re.sub(r"\s+", " ", str(user_text or "").strip())
     if len(collapsed) == 0:
@@ -662,10 +748,13 @@ def rollback_assistant_turn(session: AssistantSessionState, interrupted_badge: s
     interruption_notice = build_interruption_notice(checkpoint.get("user_text", ""))
     base_len = int(checkpoint.get("messages_len", len(session.messages)))
     target_len = max(base_len, int(checkpoint.get("committed_messages_len", base_len)))
-    committed_messages = copy.deepcopy(session.messages[base_len:target_len])
+    committed_messages = _normalize_interrupted_committed_messages(copy.deepcopy(session.messages[base_len:target_len]))
+    committed_messages = _merge_interrupted_visible_assistant_fragments(session, checkpoint.get("assistant_message_id", ""), committed_messages)
     preserved_tail_interruptions = _extract_preserved_interruption_tail(session.messages[target_len:])
-    if len(session.messages) > target_len:
-        del session.messages[target_len:]
+    if len(session.messages) > base_len:
+        del session.messages[base_len:]
+    if len(committed_messages) > 0:
+        session.messages.extend(copy.deepcopy(committed_messages))
     interrupted_user_text = str(checkpoint.get("user_text", "") or "").strip()
     if target_len <= base_len and len(interrupted_user_text) > 0:
         session.messages.append({"role": "user", "content": interrupted_user_text})
@@ -723,7 +812,7 @@ def rollback_assistant_turn(session: AssistantSessionState, interrupted_badge: s
     user_message_id = str(checkpoint.get("user_message_id", "") or "").strip()
     if len(user_message_id) > 0:
         assistant_chat.set_message_badge(session, user_message_id, interrupted_badge)
-    if not has_visible_assistant_trace:
+    if not has_visible_assistant_trace and len(user_message_id) == 0:
         assistant_chat.add_assistant_note(session, interruption_notice, badge=interrupted_badge, author="System")
     session.interruption_notice = interruption_notice
     record_interruption_history(session, checkpoint.get("user_text", ""), interruption_notice, committed_messages=committed_messages)
@@ -2025,60 +2114,99 @@ class tools:
         self.send_cmd("load_queue_trigger", {"client_id": client_id})
         self._log(f"Queued {activity_label} for {client_id}")
 
-        queue_admitted = False
-        queue_wait_started_at = time.time()
-        queue_wait_suspended = False
-        queue_wait_suspend_logged = False
-        activity_console_label = activity_label.capitalize()
-        while True:
-            if self._is_interrupted():
-                return self._interrupted_result(client_id, task, force_cancel_queue=True)
-            queue_errors = gen.get("queue_errors", None) or {}
-            if client_id in queue_errors:
-                error_text = str(queue_errors[client_id][0])
-                self._log(f"Queue error detected for {client_id}: {error_text}")
-                self._set_status(f"{activity_label.capitalize()} failed: {error_text}", kind="error")
-                result = {
-                    "status": "error",
-                    "client_id": client_id,
-                    "output_file": "",
-                    "prompt": prompt,
-                    "resolution": resolution,
-                    "error": error_text,
-                }
-                self._update_tool_progress("error", "Error", result)
-                return result
-            file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
-            media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
-            media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
-            file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
-            if file_path is not None and isinstance(file_settings, dict):
-                self._log(f"{activity_label.capitalize()} already completed before queue admission wait observed for {client_id}; skipping browser-style queue admission wait.")
-                self._set_status(f"{activity_label.capitalize()} started...", kind="tool")
-                self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
-                break
-            queue = list(gen.get("queue", []) or [])
-            if self._queue_contains_client_id(queue, client_id):
-                queue_admitted = True
-                if queue_wait_suspended:
-                    print(f"WanGP back in focus tool {activity_console_label} resumed")
-                self._set_status(f"{activity_label.capitalize()} started...", kind="tool")
-                self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
-                break
-            if not queue_wait_suspend_logged and time.time() - queue_wait_started_at >= 10:
-                print(f"Tool {activity_console_label} suspended while waiting than WanGP Video Generator gets in focus")
-                queue_wait_suspend_logged = True
-                queue_wait_suspended = True
-            time.sleep(0.25)
+        with capture_external_logs():
+            queue_wait_started_at = time.time()
+            queue_wait_suspended = False
+            queue_wait_suspend_logged = False
+            activity_console_label = activity_label.capitalize()
+            while True:
+                if self._is_interrupted():
+                    return self._interrupted_result(client_id, task, force_cancel_queue=True)
+                queue_errors = gen.get("queue_errors", None) or {}
+                if client_id in queue_errors:
+                    error_text = str(queue_errors[client_id][0])
+                    self._log(f"Queue error detected for {client_id}: {error_text}")
+                    self._set_status(f"{activity_label.capitalize()} failed: {error_text}", kind="error")
+                    result = {
+                        "status": "error",
+                        "client_id": client_id,
+                        "output_file": "",
+                        "prompt": prompt,
+                        "resolution": resolution,
+                        "error": error_text,
+                    }
+                    self._update_tool_progress("error", "Error", result)
+                    return result
+                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
+                media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
+                media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
+                file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
+                if file_path is not None and isinstance(file_settings, dict):
+                    self._log(f"{activity_label.capitalize()} already completed before queue admission wait observed for {client_id}; skipping browser-style queue admission wait.")
+                    self._set_status(f"{activity_label.capitalize()} started...", kind="tool")
+                    self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
+                    break
+                queue = list(gen.get("queue", []) or [])
+                if self._queue_contains_client_id(queue, client_id):
+                    if queue_wait_suspended:
+                        print(f"WanGP back in focus tool {activity_console_label} resumed")
+                    self._set_status(f"{activity_label.capitalize()} started...", kind="tool")
+                    self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
+                    break
+                if not queue_wait_suspend_logged and time.time() - queue_wait_started_at >= 10:
+                    print(f"Tool {activity_console_label} suspended while waiting than WanGP Video Generator gets in focus")
+                    queue_wait_suspend_logged = True
+                    queue_wait_suspended = True
+                time.sleep(0.25)
 
-        while True:
-            if self._is_interrupted():
-                return self._interrupted_result(client_id, task, force_cancel_queue=True)
-            queue_errors = gen.get("queue_errors", None) or {}
-            if client_id in queue_errors:
-                error_text = str(queue_errors[client_id][0])
-                self._log(f"Generation error detected for {client_id}: {error_text}")
-                self._set_status(f"{activity_label.capitalize()} failed: {error_text}", kind="error")
+            while True:
+                if self._is_interrupted():
+                    return self._interrupted_result(client_id, task, force_cancel_queue=True)
+                queue_errors = gen.get("queue_errors", None) or {}
+                if client_id in queue_errors:
+                    error_text = str(queue_errors[client_id][0])
+                    self._log(f"Generation error detected for {client_id}: {error_text}")
+                    self._set_status(f"{activity_label.capitalize()} failed: {error_text}", kind="error")
+                    result = {
+                        "status": "error",
+                        "client_id": client_id,
+                        "output_file": "",
+                        "prompt": prompt,
+                        "resolution": resolution,
+                        "error": error_text,
+                    }
+                    self._update_tool_progress("error", "Error", result)
+                    return result
+                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
+                media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
+                media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
+                queue = list(gen.get("queue", []) or [])
+                client_id_still_in_queue = self._queue_contains_client_id(queue, client_id)
+                if client_id_still_in_queue:
+                    time.sleep(0.5)
+                    continue
+                file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
+                if file_path is not None and isinstance(file_settings, dict):
+                    media_record = self._register_tool_media(str(file_path), file_settings, label=output_label)
+                    result = {
+                        "status": "done",
+                        "client_id": client_id,
+                        "output_file": str(file_path),
+                        "media_id": "" if media_record is None else media_record.get("media_id", ""),
+                        "prompt": prompt,
+                        "resolution": resolution,
+                        "error": "",
+                    }
+                    if gallery_media_type in {"video", "audio"}:
+                        result["output_duration"] = self._get_output_duration_seconds(str(file_path), file_settings)
+                    self._log(f"{activity_label.capitalize()} completed for {client_id}: {file_path}")
+                    self._set_status(f"{activity_label.capitalize()} finished.", kind="tool")
+                    self.send_cmd("refresh_gallery", {"path": str(file_path)})
+                    self._update_tool_progress("done", "Done", result)
+                    return result
+                error_text = f"{activity_label.capitalize()} finished queue processing but no {gallery_media_type} output with client_id '{client_id}' was found in the gallery."
+                self._log(error_text)
+                self._set_status(error_text, kind="error")
                 result = {
                     "status": "error",
                     "client_id": client_id,
@@ -2089,46 +2217,6 @@ class tools:
                 }
                 self._update_tool_progress("error", "Error", result)
                 return result
-            file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
-            media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
-            media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
-            queue = list(gen.get("queue", []) or [])
-            client_id_still_in_queue = self._queue_contains_client_id(queue, client_id)
-            if client_id_still_in_queue:
-                time.sleep(0.5)
-                continue
-            file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
-            if file_path is not None and isinstance(file_settings, dict):
-                media_record = self._register_tool_media(str(file_path), file_settings, label=output_label)
-                result = {
-                    "status": "done",
-                    "client_id": client_id,
-                    "output_file": str(file_path),
-                    "media_id": "" if media_record is None else media_record.get("media_id", ""),
-                    "prompt": prompt,
-                    "resolution": resolution,
-                    "error": "",
-                }
-                if gallery_media_type in {"video", "audio"}:
-                    result["output_duration"] = self._get_output_duration_seconds(str(file_path), file_settings)
-                self._log(f"{activity_label.capitalize()} completed for {client_id}: {file_path}")
-                self._set_status(f"{activity_label.capitalize()} finished.", kind="tool")
-                self.send_cmd("refresh_gallery", {"path": str(file_path)})
-                self._update_tool_progress("done", "Done", result)
-                return result
-            error_text = f"{activity_label.capitalize()} finished queue processing but no {gallery_media_type} output with client_id '{client_id}' was found in the gallery."
-            self._log(error_text)
-            self._set_status(error_text, kind="error")
-            result = {
-                "status": "error",
-                "client_id": client_id,
-                "output_file": "",
-                "prompt": prompt,
-                "resolution": resolution,
-                "error": error_text,
-            }
-            self._update_tool_progress("error", "Error", result)
-            return result
 
     @assistant_tool(
         display_name="Get Loras",
@@ -4321,6 +4409,26 @@ class AssistantEngine:
         self._segment_generated_tokens = 0
         self._emit_stats(force=True)
 
+    def _max_tokens_hit_context_ceiling(self, result: Any) -> bool:
+        if str(getattr(result, "stop_reason", "") or "").strip().lower() != "max_tokens":
+            return False
+        try:
+            produced_tokens = int(getattr(result, "token_count", 0) or 0)
+        except Exception:
+            produced_tokens = 0
+        if produced_tokens >= max(1, int(self._current_requested_max_new_tokens or 1024)):
+            return False
+        if self.runtime is None:
+            return False
+        current_seq = self.runtime._get_active_sequence()
+        if current_seq is None:
+            return False
+        try:
+            current_tokens = int(current_seq.num_tokens or 0)
+        except Exception:
+            current_tokens = len(list(current_seq.token_ids or []))
+        return current_tokens >= max(1, self._get_context_window_tokens())
+
     def _get_custom_system_prompt(self) -> str:
         return normalize_deepy_custom_system_prompt(get_deepy_config_value(DEEPY_CUSTOM_SYSTEM_PROMPT_KEY, ""))
 
@@ -4502,23 +4610,32 @@ class AssistantEngine:
     def _get_video_tool_runtime_updates(self) -> list[str]:
         if self.session is None:
             return []
-        previous_variants = dict(self.session.video_tool_runtime_variants or {})
         current_variants: dict[str, str] = {}
-        updates = []
-        force_emit = len(self.session.messages) == 0 and int(self.session.rendered_messages_len or 0) == 0
+        current_lines: list[str] = []
         for tool_name in ("gen_video", "gen_video_with_speech"):
             variant = str(self.tool_box.get_tool_variant(tool_name) or "").strip()
             if len(variant) == 0:
                 continue
             current_variants[tool_name] = variant
-            previous_variant = str(previous_variants.get(tool_name, "") or "").strip()
-            if not force_emit and previous_variant == variant:
-                continue
-            instruction = self._build_video_tool_runtime_instruction(tool_name, changed=not force_emit and len(previous_variant) > 0)
+            instruction = self._build_video_tool_runtime_instruction(tool_name, changed=False)
             if len(instruction) > 0:
-                updates.append(instruction)
+                current_lines.append(instruction)
         self.session.video_tool_runtime_variants = current_variants
-        return updates
+        if len(current_lines) == 0:
+            self.session.video_tool_runtime_signature = ""
+            self.session.video_tool_runtime_last_injected_tokens = 0
+            return []
+        current_signature = _json_dumps(current_lines)
+        current_token_count = len(self.session.rendered_token_ids or [])
+        force_emit = len(self.session.messages) == 0 and int(self.session.rendered_messages_len or 0) == 0
+        last_signature = str(self.session.video_tool_runtime_signature or "").strip()
+        last_injected_tokens = int(self.session.video_tool_runtime_last_injected_tokens or 0)
+        should_emit = force_emit or current_signature != last_signature or current_token_count - last_injected_tokens >= _VIDEO_TOOL_RUNTIME_REINJECT_TOKENS
+        if not should_emit:
+            return []
+        self.session.video_tool_runtime_signature = current_signature
+        self.session.video_tool_runtime_last_injected_tokens = current_token_count
+        return current_lines
 
     def _ensure_current_turn_video_runtime_update_for_compaction(self) -> bool:
         instruction = self._build_video_tool_runtime_instruction("gen_video", changed=False)
@@ -4596,8 +4713,6 @@ class AssistantEngine:
         return runtime_lines
 
     def _refresh_runtime_status_note(self) -> None:
-        note_blocks = []
-
         runtime_lines = []
         media_entries = []
 
@@ -4635,20 +4750,6 @@ class AssistantEngine:
             media_entries.extend(self.tool_box._get_selected_gallery_media_updates())
         runtime_lines.extend(self._build_runtime_media_lines(media_entries))
 
-        if len(runtime_lines) > 0:
-            note_blocks.append(
-                "\n".join(
-                    [
-                        "<wangp_runtime_update>",
-                        "Hidden WanGP runtime state. This is environment metadata, not a user message.",
-                        *runtime_lines,
-                        "</wangp_runtime_update>",
-                    ]
-                )
-            )
-            if self.debug_enabled:
-                self._log(f"Prepared runtime update with {len(runtime_lines)} instruction(s).")
-
         if _INJECT_SELECTED_MEDIA_RUNTIME_UPDATES:
             snapshot = self.tool_box._get_selected_runtime_snapshot()
             previous_snapshot = {}
@@ -4682,27 +4783,34 @@ class AssistantEngine:
                         if any(key in changed_keys for key in _RUNTIME_STATUS_AUDIO_KEYS):
                             emitted_keys.extend(_RUNTIME_STATUS_AUDIO_KEYS)
                     if len(emitted_keys) > 0:
-                        lines = [
-                            "<wangp_runtime_update>",
-                            "Hidden WanGP runtime state. This is environment metadata, not a user message.",
-                            "Use it as factual UI context only. Omitted keys keep their previous runtime-update values.",
-                        ]
+                        runtime_lines.append("Use it as factual UI context only. Omitted keys keep their previous runtime-update values.")
                         for key in emitted_keys:
                             value = normalized_snapshot.get(key, None)
                             if isinstance(value, str):
                                 rendered_value = value if len(value) > 0 else "none"
                             else:
                                 rendered_value = "none" if value is None else value
-                            lines.append(f"{key}: {rendered_value}")
-                        lines.append("</wangp_runtime_update>")
-                        note_blocks.append("\n".join(lines))
+                            runtime_lines.append(f"{key}: {rendered_value}")
                         if self.debug_enabled:
                             self._log(f"Prepared runtime status update: {signature}")
                 self.session.runtime_status_signature = signature
         else:
             self.session.runtime_status_signature = ""
 
-        self.session.runtime_status_note = "\n\n".join(note_blocks)
+        self.session.runtime_status_note = (
+            "\n".join(
+                [
+                    "<wangp_runtime_update>",
+                    "Hidden WanGP runtime state. This is environment metadata, not a user message.",
+                    *runtime_lines,
+                    "</wangp_runtime_update>",
+                ]
+            )
+            if len(runtime_lines) > 0
+            else ""
+        )
+        if len(runtime_lines) > 0 and self.debug_enabled:
+            self._log(f"Prepared runtime update with {len(runtime_lines)} instruction(s).")
 
     def _build_pending_user_message(self, user_text: str) -> dict[str, Any]:
         message = {"role": "user", "content": str(user_text or "").strip()}
@@ -5636,11 +5744,18 @@ class AssistantEngine:
             record_if=lambda result: result in ("prefilled", "chunk_prefilled"),
         )
 
-    def _render_turn_delta_suffix(self, base_messages_len: int) -> list[int] | None:
-        if self.runtime is None:
-            return None
-        target_messages = list(self.session.messages or [])
-        rendered_messages = [
+    @staticmethod
+    def _find_token_subsequence(haystack: list[int], needle: list[int]) -> int:
+        if len(needle) == 0:
+            return 0
+        limit = len(haystack) - len(needle)
+        for start_idx in range(max(0, limit) + 1):
+            if haystack[start_idx : start_idx + len(needle)] == needle:
+                return start_idx
+        return -1
+
+    def _render_messages_for_delta(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
             {"role": "system", "content": self._build_system_prompt(log_injections=True)},
             *[
                 {"role": str(message.get("role", "")).strip().lower(), "content": self._message_render_content(message)}
@@ -5650,21 +5765,61 @@ class AssistantEngine:
                     "role": "assistant",
                     "content": str(message.get("model_content", "") or message.get("content", "") or ""),
                 }
-                for message in target_messages
+                for message in list(messages or [])
             ],
         ]
+
+    def _render_turn_delta_suffix(self, base_messages_len: int, *, add_generation_prompt: bool) -> list[int] | None:
+        if self.runtime is None:
+            return None
+        target_messages = list(self.session.messages or [])
+        if base_messages_len < 0 or base_messages_len > len(target_messages):
+            return None
         thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
+        tools = self.tool_box.get_tool_schemas()
+        if base_messages_len == 0:
+            base_tokens = [int(token_id) for token_id in list(self.session.rendered_token_ids or self.session.reset_base_token_ids or [])]
+        else:
+            base_tokens = render_assistant_messages(
+                self.runtime.tokenizer,
+                self._render_messages_for_delta(target_messages[:base_messages_len]),
+                tools,
+                add_generation_prompt=False,
+                thinking_enabled=thinking_enabled,
+            )
         target_tokens = render_assistant_messages(
             self.runtime.tokenizer,
-            rendered_messages,
-            self.tool_box.get_tool_schemas(),
-            add_generation_prompt=False,
+            self._render_messages_for_delta(target_messages),
+            tools,
+            add_generation_prompt=bool(add_generation_prompt),
             thinking_enabled=thinking_enabled,
         )
-        base_tokens = [int(token_id) for token_id in list(self.session.rendered_token_ids or self.session.reset_base_token_ids or [])]
         if target_tokens[: len(base_tokens)] != base_tokens:
             return None
         return [int(token_id) for token_id in target_tokens[len(base_tokens) :]]
+
+    def _render_current_turn_slice_suffix(self, messages: list[dict[str, Any]], *, add_generation_prompt: bool) -> list[int] | None:
+        if self.runtime is None:
+            return None
+        current_turn_messages = list(messages or [])
+        if len(current_turn_messages) == 0:
+            return None
+        if str(current_turn_messages[0].get("role", "")).strip().lower() != "user":
+            return None
+        thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
+        rendered_tokens = render_assistant_messages(
+            self.runtime.tokenizer,
+            self._render_messages_for_delta(current_turn_messages),
+            self.tool_box.get_tool_schemas(),
+            add_generation_prompt=bool(add_generation_prompt),
+            thinking_enabled=thinking_enabled,
+        )
+        user_prefix_tokens = self.runtime.tokenizer.encode("<|im_start|>user\n", add_special_tokens=False)
+        user_prefix_tokens = [int(token_id) for token_id in list(user_prefix_tokens or [])]
+        start_idx = self._find_token_subsequence(rendered_tokens, user_prefix_tokens)
+        if start_idx < 0:
+            return None
+        return [int(token_id) for token_id in rendered_tokens[start_idx:]]
 
     def _sync_context_from_turn_start_snapshot(self, *, context_label: str, log_label: str, add_generation_prompt: bool, target_tokens: list[int] | None = None) -> bool:
         checkpoint = self.session.current_turn
@@ -5688,7 +5843,7 @@ class AssistantEngine:
             thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
             suffix_tokens = render_text_user_turn_suffix(self.runtime.tokenizer, self._pending_user_render_content(), thinking_enabled=thinking_enabled)
         if suffix_tokens is None:
-            suffix_tokens = self._render_turn_delta_suffix(base_messages_len)
+            suffix_tokens = self._render_turn_delta_suffix(base_messages_len, add_generation_prompt=add_generation_prompt)
         if suffix_tokens is None:
             suffix_tokens = self._render_simple_interrupted_turn_suffix(base_messages_len)
         if suffix_tokens is None:
@@ -5712,11 +5867,28 @@ class AssistantEngine:
         )
 
     def _sync_interrupted_rollback_context_from_turn_start_snapshot(self) -> bool:
-        return self._sync_context_from_turn_start_snapshot(
-            context_label="Interrupted-turn start context",
-            log_label="Interrupted-turn context synchronized before pause.",
-            add_generation_prompt=False,
-        )
+        checkpoint = self.session.current_turn
+        if not isinstance(checkpoint, dict):
+            return False
+        base_messages_len = int(checkpoint.get("messages_len", 0) or 0)
+        current_turn_messages = list(self.session.messages[base_messages_len:] or [])
+        if len(current_turn_messages) == 0:
+            return False
+        if not self._restore_turn_start_snapshot(preserve_current_turn_messages=True):
+            return False
+        if self.runtime is None:
+            self._acquire_runtime()
+        if self.runtime is None:
+            return False
+        restore_mode = self._restore_or_replay_session("Interrupted-turn start context")
+        suffix_tokens = self._render_current_turn_slice_suffix(current_turn_messages, add_generation_prompt=False)
+        if suffix_tokens is None:
+            raise RuntimeError("Interrupted-turn slice suffix could not be rendered.")
+        mode = "extended"
+        if len(suffix_tokens) > 0:
+            mode = self._run_prefill_call(len(suffix_tokens), lambda: self.runtime.append_suffix(suffix_tokens), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
+        self._record_live_context(f"Interrupted-turn context synchronized before pause. (restore={restore_mode}, sync={mode})")
+        return True
 
     def _recover_from_context_limit(self, raw_text: str, retry_no: int) -> bool:
         if retry_no >= _CONTEXT_LIMIT_MAX_RETRIES:
@@ -5991,7 +6163,9 @@ class AssistantEngine:
                     if self.session.interrupt_requested:
                         break
                     continue
-                if result.stop_reason == "context_limit":
+                if result.stop_reason == "context_limit" or self._max_tokens_hit_context_ceiling(result):
+                    if result.stop_reason == "max_tokens":
+                        self._log("Model hit max_tokens at the context ceiling; compacting the current turn and continuing.")
                     if self._recover_from_context_limit(raw_text, context_limit_retries):
                         context_limit_retries += 1
                         continue
@@ -6015,10 +6189,12 @@ class AssistantEngine:
                 rollback_assistant_turn(self.session, rendered_system_prompt_signature=self._current_system_prompt_signature())
                 try:
                     if not self._sync_interrupted_rollback_context_from_turn_start_snapshot():
-                        self._skip_pause_snapshot = True
+                        self._skip_pause_snapshot = False
+                        self._log("Interrupted-turn context stayed on the clean turn-start snapshot for the next turn.")
                 except Exception as exc:
-                    self._skip_pause_snapshot = True
+                    self._skip_pause_snapshot = False
                     self._log(f"Interrupted-turn context sync failed: {exc}")
+                    self._log("Interrupted-turn context stayed on the clean turn-start snapshot for the next turn.")
                 if self.debug_enabled and len(str(self.session.interruption_notice or "").strip()) > 0:
                     self._log(f"Interruption recorded: {self.session.interruption_notice}")
             try:

@@ -502,7 +502,9 @@ def _reduce_positions(positions: torch.Tensor, use_middle_indices_grid: bool) ->
 
 
 def _infer_grid_sizes(positions: torch.Tensor) -> tuple[list[torch.Tensor], tuple[int, ...]]:
-    axis_values = [torch.unique(positions[0, axis], sorted=True) for axis in range(positions.shape[1])]
+    # Cast to float for compatibility with environments where unique lacks bf16 support.
+    orig_dtype = positions.dtype
+    axis_values = [torch.unique(positions[0, axis].float(), sorted=True).to(orig_dtype) for axis in range(positions.shape[1])]
     grid_sizes = tuple(values.numel() for values in axis_values)
     return axis_values, grid_sizes
 
@@ -566,7 +568,7 @@ def _matches_sorted_grid_order(positions: torch.Tensor, axis_values_all: list[to
     for batch_positions in batches:
         actual = []
         for axis, axis_values in enumerate(axis_values_all):
-            _, inverse = torch.unique(batch_positions[axis], sorted=True, return_inverse=True)
+            _, inverse = torch.unique(batch_positions[axis].float(), sorted=True, return_inverse=True)
             if inverse.numel() != expected.shape[1]:
                 return False
             actual.append(inverse)
@@ -650,7 +652,7 @@ def _build_axis_cache(
     axis_max: int,
     freqs_dtype: torch.dtype,
 ) -> RopeAxisCache:
-    axis_values = torch.unique(positions_mid[0, axis], sorted=True)
+    axis_values = torch.unique(positions_mid[0, axis].float(), sorted=True).to(positions_mid.dtype)
     axis_freqs = _build_axis_freqs(indices, axis_values.to(device=indices.device), axis_max)
     return RopeAxisCache(
         values=axis_values,

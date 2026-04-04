@@ -70,5 +70,14 @@
     "url": "https://github.com/Tophness/wan2gp-queue-editor",
     "date": "",
     "wan2gp_version": ""
-  }
+  },
+  {
+    "name": "Multi-Angle Prompt Helper",
+    "author": "CodeBarrie",
+    "version": "2.2.0",
+    "description": "3D orbit gizmo + prompt helper for multi-angle camera control. Drag to set azimuth, elevation, and distance with visual feedback.",
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/CodeBarrie/wan2gp-multiangle-prompt-helper"
+  }  
 ]

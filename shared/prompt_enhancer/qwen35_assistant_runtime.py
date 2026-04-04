@@ -433,6 +433,10 @@ class Qwen35AssistantRuntime:
                 seq.last_token = int(seq.token_ids[-1])
                 seq.num_tokens = len(seq.token_ids)
                 if not llm.scheduler.block_manager.can_prompt_append(seq, old_num_tokens):
+                    del seq.token_ids[old_num_tokens:]
+                    seq.num_tokens = old_num_tokens
+                    seq.last_token = int(seq.token_ids[-1]) if seq.token_ids else 0
+                    seq.num_cached_tokens = min(int(getattr(seq, "num_cached_tokens", old_num_tokens) or 0), old_num_tokens)
                     raise RuntimeError("Assistant chunk prefill exceeded the available KV cache blocks.")
                 llm.scheduler.block_manager.begin_prompt_append(seq, old_num_tokens)
                 seq.num_cached_tokens = old_num_tokens

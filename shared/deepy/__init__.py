@@ -6,8 +6,6 @@ from . import debug_bootstrap as _debug_bootstrap
 
 
 _debug_bootstrap.bootstrap_deepy_debug()
-DEBUG_DEEPY_ENABLED = _debug_bootstrap.DEBUG_DEEPY_ENABLED
-DEBUG_DEEPY_LOG_PATH = _debug_bootstrap.DEBUG_DEEPY_LOG_PATH
 
 
 _DEEPY_DIR = Path(__file__).resolve().parent
@@ -22,6 +20,12 @@ def load_default_system_prompt() -> str:
 
 
 DEFAULT_SYSTEM_PROMPT = load_default_system_prompt()
+
+
+def __getattr__(name: str):
+    if name in {"DEBUG_DEEPY_ENABLED", "DEBUG_DEEPY_LOG_PATH"}:
+        return getattr(_debug_bootstrap, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

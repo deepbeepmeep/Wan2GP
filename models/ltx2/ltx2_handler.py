@@ -15,6 +15,7 @@ _ARCH_SPECS = {
         "spatial_upscaler": "ltx-2-spatial-upscaler-x2-1.0.safetensors",
         "temporal_upscaler": "ltx-2-temporal-upscaler-x2-1.0.safetensors",
         "distilled_lora": "ltx-2-19b-distilled-lora-384.safetensors",
+        "id_lora": "id-lora-celebvhq-ltx2.safetensors",
         "video_vae": "ltx-2-19b_vae.safetensors",
         "audio_vae": "ltx-2-19b_audio_vae.safetensors",
         "vocoder": "ltx-2-19b_vocoder.safetensors",
@@ -31,6 +32,7 @@ _ARCH_SPECS = {
         "temporal_upscaler": "ltx-2.3-temporal-upscaler-x2-1.0.safetensors",
         "distilled_lora": "ltx-2.3-22b-distilled-lora-384.safetensors",
         "union_control_lora": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+        "id_lora": "id-lora-celebvhq-ltx2.3.safetensors",
         "video_vae": "ltx-2.3-22b_vae.safetensors",
         "audio_vae": "ltx-2.3-22b_audio_vae.safetensors",
         "vocoder": "ltx-2.3-22b_vocoder.safetensors",
@@ -65,6 +67,10 @@ def _default_dev_settings(base_model_type: str | None) -> dict:
         "cfg_star_switch": 0,
         "guidance_phases": 2,
     }
+
+
+def _get_distilled_upscale_passes(model_def: dict | None) -> int:
+    return max(1, int((model_def or {}).get("ltx2_distilled_upscale_passes", 1)))
 
 
 def _get_embeddings_connector_filename(model_def, base_model_type):
@@ -133,10 +139,12 @@ class family_handler:
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
 
         distilled = pipeline_kind == "distilled"
-        audio_prompt_selection = ["", "A", "K"] if distilled else ["", "A"]
+        distilled_upscale_passes = _get_distilled_upscale_passes(model_def) if distilled else 1
+        audio_prompt_selection = ["", "A", "K"] if distilled else ["", "A", "A1OF"]
         audio_prompt_labels = {
             "": "Generate Video & Soundtrack based on Text Prompt",
             "A": "Generate Video based on Soundtrack and Text Prompt",
+            "A1OF": "Generate Video based on Reference Voice (ID-LoRA) and Text Prompt",
         }
         if distilled:
             audio_prompt_labels["K"] = "Generate Video based on Control Video + its Audio Track and Text Prompt"
@@ -161,20 +169,24 @@ class family_handler:
             "one_speaker_only": True,
             "audio_guide_label": "Audio Prompt (Soundtrack)",
             "audio_scale_name": "Prompt Audio Strength",
-            "multiple_images_as_text_prompts": True,
             "audio_prompt_type_sources": {
                 "selection": audio_prompt_selection,
                 "labels": audio_prompt_labels,
+                "custom_flags": {
+                    "1": "Reference Voice (ID-LoRA)",
+                },
+                "letters_filter": "A1OFK",
                 "show_label": False,
             },
             "audio_guide_window_slicing": True,
             "output_audio_is_input_audio": True,
             "multimedia_generation": True,
+            "multiple_images_as_text_prompts": True,
             "custom_denoising_strength": distilled,
             "profiles_dir": [spec["profiles_dir"]],
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],
             "self_refiner": True,
-            "self_refiner_max_plans": 2,
+            "self_refiner_max_plans": distilled_upscale_passes + 1 if distilled else 2,
             "no_background_removal": True,
             "vae_block_size": 64,
         }
@@ -324,12 +336,14 @@ class family_handler:
                     "alt_scale": 0.0,
                 }
             )
+            if inputs.get("perturbation",0) == 2:
+                inputs["perturbation"] = 0
         audio_prompt_type = inputs.get("audio_prompt_type") or ""
         if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
             audio_source = inputs.get("audio_source")
             if audio_source is not None:
                 inputs["audio_guide"] = audio_source
-    
+
     @staticmethod
     def load_model(
         model_filename,
@@ -461,3 +475,8 @@ class family_handler:
             ui_defaults.update(_default_dev_settings(base_model_type))
         else:
             ui_defaults.setdefault("guidance_phases", 1)
+
+    @staticmethod
+    def get_custom_prompt_enhancer_instructions(model_type, prompt_enhancer_mode, is_image, enhancer_kwargs):
+        from .prompt_enhancer import  get_custom_prompt_enhancer_instructions
+        return get_custom_prompt_enhancer_instructions(model_type, prompt_enhancer_mode, is_image, enhancer_kwargs)

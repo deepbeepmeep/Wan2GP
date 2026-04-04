@@ -20,6 +20,7 @@ from shared.deepy.config import (
     set_deepy_runtime_config,
 )
 from shared.deepy import ui_settings as deepy_ui_settings
+from shared.deepy.debug_bootstrap import deepy_log_scope
 from shared.deepy.engine import (
     AssistantEngine,
     AssistantRuntimeHooks,
@@ -142,11 +143,6 @@ class DeepyController:
         session.queued_job_count = max(0, int(session.queued_job_count or 0) - 1)
         session.queued_cancel_count = max(0, int(session.queued_cancel_count or 0)) + 1
         assistant_chat.set_message_badge(session, message_id, "Interrupted")
-        assistant_chat.add_assistant_note(session, interruption_notice, badge="Interrupted", author="System")
-        if len(str(user_text or "").strip()) > 0:
-            session.messages.append({"role": "user", "content": str(user_text).strip()})
-        session.messages.append({"role": "assistant", "content": interruption_notice})
-        session.interruption_notice = interruption_notice
         record_interruption_history(session, user_text, interruption_notice)
         return True
 
@@ -299,63 +295,64 @@ class DeepyController:
             assistant_turn_id = assistant_chat.create_assistant_turn(session)
 
         def queue_worker_func():
-            started_turn = False
-            if queued_epoch != session.chat_epoch:
-                if session.control_queue is output_queue:
-                    session.control_queue = None
-                raw_send_cmd("exit", None)
-                return
-            if int(session.queued_cancel_count or 0) > 0:
-                session.queued_cancel_count = max(0, int(session.queued_cancel_count or 0) - 1)
-                assistant_chat.set_message_badge(session, user_message_id, "Interrupted")
-                if session.control_queue is output_queue and session.queued_job_count <= 0:
-                    session.control_queue = None
-                raw_send_cmd("chat_output", assistant_chat.build_sync_event(session))
-                if session.queued_job_count > 0:
-                    raw_send_cmd("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"))
-                else:
-                    raw_send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
+            with deepy_log_scope(start_if_needed=True):
+                started_turn = False
+                if queued_epoch != session.chat_epoch:
+                    if session.control_queue is output_queue:
+                        session.control_queue = None
                     raw_send_cmd("exit", None)
-                return
-            session.queued_job_count = max(0, session.queued_job_count - 1)
-            session.interrupt_requested = False
-            session.control_queue = output_queue
-            session.worker_active = True
-            self._active_assistant_session = session
-            begin_assistant_turn(session, user_message_id, ask_request)
-            started_turn = True
-            assistant_chat.set_message_badge(session, user_message_id, None)
-            active_turn_id = assistant_turn_id or assistant_chat.create_assistant_turn(session)
-            mark_assistant_turn_message(session, active_turn_id)
-            send_cmd("chat_output", assistant_chat.build_sync_event(session))
-            my_tools = self.create_tools(state, send_cmd, session=session)
-            try:
-                self._deps.exec_prompt_enhancer_engine(state, None, "AK", [ask_request], None, None, False, False, 0, None, 3.5, send_cmd, my_tools)
-            except Exception as e:
-                traceback.print_exc()
-                error_turn_id = assistant_turn_id or assistant_chat.create_assistant_turn(session)
-                error_event = assistant_chat.set_assistant_content(session, error_turn_id, f"Assistant crashed: {e}")
-                if error_event is not None:
-                    send_cmd("chat_output", error_event)
-                send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
-            finally:
-                if self._active_assistant_session is session:
-                    self._active_assistant_session = None
-                session.worker_active = False
-                stale_turn = queued_epoch != session.chat_epoch
-                has_more_work = not stale_turn and session.queued_job_count > 0
-                if not has_more_work and session.control_queue is output_queue:
-                    session.control_queue = None
-                if stale_turn:
-                    if started_turn:
-                        raw_send_cmd("chat_output", assistant_chat.build_reset_event())
-                else:
+                    return
+                if int(session.queued_cancel_count or 0) > 0:
+                    session.queued_cancel_count = max(0, int(session.queued_cancel_count or 0) - 1)
+                    assistant_chat.set_message_badge(session, user_message_id, "Interrupted")
+                    if session.control_queue is output_queue and session.queued_job_count <= 0:
+                        session.control_queue = None
                     raw_send_cmd("chat_output", assistant_chat.build_sync_event(session))
-                    if has_more_work:
+                    if session.queued_job_count > 0:
                         raw_send_cmd("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"))
+                    else:
+                        raw_send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
+                        raw_send_cmd("exit", None)
+                    return
+                session.queued_job_count = max(0, session.queued_job_count - 1)
                 session.interrupt_requested = False
-                if not has_more_work:
-                    raw_send_cmd("exit", None)
+                session.control_queue = output_queue
+                session.worker_active = True
+                self._active_assistant_session = session
+                begin_assistant_turn(session, user_message_id, ask_request)
+                started_turn = True
+                assistant_chat.set_message_badge(session, user_message_id, None)
+                active_turn_id = assistant_turn_id or assistant_chat.create_assistant_turn(session)
+                mark_assistant_turn_message(session, active_turn_id)
+                send_cmd("chat_output", assistant_chat.build_sync_event(session))
+                my_tools = self.create_tools(state, send_cmd, session=session)
+                try:
+                    self._deps.exec_prompt_enhancer_engine(state, "", None, "AK", [ask_request], None, None, False, False, 0, None, 3.5, send_cmd, my_tools)
+                except Exception as e:
+                    traceback.print_exc()
+                    error_turn_id = assistant_turn_id or assistant_chat.create_assistant_turn(session)
+                    error_event = assistant_chat.set_assistant_content(session, error_turn_id, f"Assistant crashed: {e}")
+                    if error_event is not None:
+                        send_cmd("chat_output", error_event)
+                    send_cmd("chat_output", assistant_chat.build_status_event(None, visible=False))
+                finally:
+                    if self._active_assistant_session is session:
+                        self._active_assistant_session = None
+                    session.worker_active = False
+                    stale_turn = queued_epoch != session.chat_epoch
+                    has_more_work = not stale_turn and session.queued_job_count > 0
+                    if not has_more_work and session.control_queue is output_queue:
+                        session.control_queue = None
+                    if stale_turn:
+                        if started_turn:
+                            raw_send_cmd("chat_output", assistant_chat.build_reset_event())
+                    else:
+                        raw_send_cmd("chat_output", assistant_chat.build_sync_event(session))
+                        if has_more_work:
+                            raw_send_cmd("chat_output", assistant_chat.build_status_event("Queued behind the current assistant task.", kind="queued"))
+                    session.interrupt_requested = False
+                    if not has_more_work:
+                        raw_send_cmd("exit", None)
 
         async_run_in("assistant", queue_worker_func)
 
@@ -395,7 +392,7 @@ class DeepyController:
         assistant_seed = secrets.randbits(32) if randomize_seed else (seed if seed is not None and seed >= 0 else 0)
         session = get_or_create_assistant_session(state)
         assistant_model_def = model_def
-        _assistant_instructions, assistant_max_new_tokens = self._deps.resolve_prompt_enhancer_settings(assistant_model_def, prompt_enhancer_modes, is_image=False, text_encoder_max_tokens=1024)
+        _assistant_instructions, assistant_max_new_tokens = self._deps.resolve_prompt_enhancer_settings("", assistant_model_def, prompt_enhancer_modes, is_image=False, text_encoder_max_tokens=1024)
         assistant = AssistantEngine(
             session,
             AssistantRuntimeHooks(
@@ -414,14 +411,15 @@ class DeepyController:
             thinking_enabled="K" in prompt_enhancer_modes,
             vram_mode=self.get_vram_mode(),
         )
-        assistant.run_turn(
-            original_prompts[0] if len(original_prompts) > 0 else "",
-            max_new_tokens=max(1024, int(assistant_max_new_tokens)),
-            seed=assistant_seed,
-            do_sample=True,
-            temperature=enhancer_temperature,
-            top_p=enhancer_top_p,
-        )
+        with deepy_log_scope(start_if_needed=debug_enabled):
+            assistant.run_turn(
+                original_prompts[0] if len(original_prompts) > 0 else "",
+                max_new_tokens=max(1024, int(assistant_max_new_tokens)),
+                seed=assistant_seed,
+                do_sample=True,
+                temperature=enhancer_temperature,
+                top_p=enhancer_top_p,
+            )
 
     def ask_ai(self, state, ask_request):
         self._sync_debug_enabled()
@@ -509,6 +507,8 @@ class DeepyController:
     def stop_ai(self, state):
         session = get_or_create_assistant_session(state)
         if session.worker_active:
+            if session.interrupt_requested and self._cancel_next_queued_request(session):
+                return assistant_chat.build_sync_event(session), gr.update(), gr.update(), gr.update()
             request_assistant_interrupt(session)
             return assistant_chat.build_status_event("Interrupting the current assistant task...", kind="queued"), gr.update(), gr.update(), gr.update()
         if not session.worker_active and self._cancel_next_queued_request(session):

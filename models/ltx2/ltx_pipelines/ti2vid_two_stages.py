@@ -148,6 +148,8 @@ class TI2VidTwoStagesPipeline:
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
         audio_conditionings: list | None = None,
+        audio_conditionings_stage2: list | None = None,
+        audio_identity_guidance_scale: float = 0.0,
         callback: Callable[..., None] | None = None,
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
@@ -291,6 +293,7 @@ class TI2VidTwoStagesPipeline:
                     perturbation_layers=perturbation_layers,
                     perturbation_start=perturbation_start,
                     perturbation_end=perturbation_end,
+                    audio_identity_guidance_scale=audio_identity_guidance_scale,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
@@ -482,10 +485,12 @@ class TI2VidTwoStagesPipeline:
             generator=mask_generator,
             num_steps=len(distilled_sigmas) - 1,
         )
+        freeze_audio_stage2 = audio_identity_guidance_scale > 0.0
+        stage_2_audio_conditionings = audio_conditionings if audio_conditionings_stage2 is None else audio_conditionings_stage2
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_2_output_shape,
             conditionings=stage_2_conditionings,
-            audio_conditionings=audio_conditionings,
+            audio_conditionings=stage_2_audio_conditionings,
             noiser=noiser,
             sigmas=distilled_sigmas,
             stepper=stepper,
@@ -494,9 +499,11 @@ class TI2VidTwoStagesPipeline:
             dtype=dtype,
             device=self.device,
             noise_scale=distilled_sigmas[0],
+            audio_noise_scale=0.0 if freeze_audio_stage2 else distilled_sigmas[0],
             initial_video_latent=upscaled_video_latent,
             initial_audio_latent=audio_state.latent,
             mask_context=mask_context,
+            freeze_audio=freeze_audio_stage2,
         )
         if video_state is None or audio_state is None:
             return None, None

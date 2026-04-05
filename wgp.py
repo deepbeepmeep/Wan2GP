@@ -7382,24 +7382,47 @@ def get_new_preset_msg(advanced = True):
         return "Enter here a Name for a Lora Preset or a Settings or Choose one"
     else:
         return "Choose a Lora Preset or a Settings file in this List"
-    
-def compute_lset_choices(model_type, loras_presets):
-    global_list = []
-    if model_type is not None:
-        top_dir = "profiles" # get_lora_dir(model_type)
-        model_def = get_model_def(model_type)
-        settings_dir = get_model_recursive_prop(model_type, "profiles_dir", return_list=False)
-        if settings_dir is None or len(settings_dir) == 0: settings_dir = [""]
-        for dir in settings_dir:
-            if len(dir) == "": continue
-            cur_path = os.path.join(top_dir, dir)
-            if os.path.isdir(cur_path):
-                cur_dir_presets = glob.glob( os.path.join(cur_path, "*.json") )
-                cur_dir_presets =[ os.path.join(dir, os.path.basename(path)) for path in cur_dir_presets]
-                global_list += cur_dir_presets
-            global_list = sorted(global_list, key=lambda n: os.path.basename(n))
 
-            
+
+def _normalize_builtin_lset_dirs(settings_dirs):
+    if settings_dirs is None:
+        return []
+    if isinstance(settings_dirs, str):
+        return [settings_dirs] if len(settings_dirs) > 0 else []
+    return [str(dir) for dir in settings_dirs if isinstance(dir, str) and len(dir) > 0]
+
+
+def _get_builtin_lset_groups(model_type):
+    if model_type is None:
+        return []
+    top_dir = "profiles"
+    group_defs = [
+        ("accelerator_profiles", "Accelerators Profiles", "profiles_dir"),
+        ("preset_settings", "Presets", "preset_profiles_dir"),
+    ]
+    builtin_groups = []
+    for group_id, title, prop_name in group_defs:
+        paths = []
+        for dir_name in _normalize_builtin_lset_dirs(get_model_recursive_prop(model_type, prop_name, return_list=False)):
+            cur_path = os.path.join(top_dir, dir_name)
+            if not os.path.isdir(cur_path):
+                continue
+            cur_dir_presets = glob.glob(os.path.join(cur_path, "*.json"))
+            paths += [os.path.join(dir_name, os.path.basename(path)) for path in cur_dir_presets]
+        paths = sorted(dict.fromkeys(paths), key=lambda n: os.path.basename(n).lower())
+        if len(paths) > 0:
+            builtin_groups.append((group_id, title, paths))
+    return builtin_groups
+
+
+def _get_builtin_lset_type(model_type, lset_name):
+    for group_id, _, paths in _get_builtin_lset_groups(model_type):
+        if lset_name in paths:
+            return group_id
+    return None
+
+
+def compute_lset_choices(model_type, loras_presets):
     lset_list = []
     settings_list = []
     for item in loras_presets:
@@ -7411,9 +7434,12 @@ def compute_lset_choices(model_type, loras_presets):
     sep = '\u2500' 
     indent = chr(160) * 4
     lset_choices = []
-    if len(global_list) > 0:
-        lset_choices += [( (sep*12) +"Accelerators Profiles" + (sep*13), ">profiles")]
-        lset_choices += [ ( indent   + os.path.splitext(os.path.basename(preset))[0], preset) for preset in global_list ]
+    for group_id, title, paths in _get_builtin_lset_groups(model_type):
+        header_value = f">{group_id}"
+        left_sep = 12 if group_id == "accelerator_profiles" else 17
+        right_sep = 13 if group_id == "accelerator_profiles" else 17
+        lset_choices += [((sep * left_sep) + title + (sep * right_sep), header_value)]
+        lset_choices += [(indent + os.path.splitext(os.path.basename(preset))[0], preset) for preset in paths]
     if len(settings_list) > 0:
         settings_list.sort()
         lset_choices += [( (sep*16) +"Settings" + (sep*17), ">settings")]
@@ -7440,7 +7466,7 @@ def validate_delete_lset(state, lset_name):
         gr.Info(f"Choose a Preset to delete")
         return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False) 
     elif "/" in lset_name or "\\" in lset_name:
-        gr.Info(f"You can't Delete a Profile")
+        gr.Info(f"You can't delete a built-in profile or preset")
         return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False) 
     else:
         return  gr.Button(visible= False), gr.Checkbox(visible= False), gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= True), gr.Button(visible= True) 
@@ -7451,7 +7477,7 @@ def validate_save_lset(state, lset_name):
         gr.Info("Please enter a name for the preset")
         return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False),gr.Checkbox(visible= False) 
     elif "/" in lset_name or "\\" in lset_name:
-        gr.Info(f"You can't Edit a Profile")
+        gr.Info(f"You can't edit a built-in profile or preset")
         return  gr.Button(visible= True), gr.Checkbox(visible= True), gr.Button(visible= True), gr.Button(visible= True), gr.Button(visible= False), gr.Button(visible= False),gr.Checkbox(visible= False) 
     else:
         return  gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= False), gr.Button(visible= True), gr.Button(visible= True),gr.Checkbox(visible= True)
@@ -7629,9 +7655,12 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
 
             return wizard_prompt_activated, loras_choices, loras_mult_choices, prompt, get_unique_id(), gr.update(), gr.update(), gr.update(), gr.update()
         else:
-            accelerator_profile =  len(Path(lset_name).parts)>1 
-            lset_path =  os.path.join("profiles" if accelerator_profile else get_lora_dir(current_model_type), lset_name)
-            configs, _, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = "merge after" if  len(Path(lset_name).parts)<=1 else "merge before" )
+            builtin_lset_type = _get_builtin_lset_type(current_model_type, lset_name)
+            accelerator_profile = builtin_lset_type == "accelerator_profiles"
+            builtin_preset_settings = builtin_lset_type == "preset_settings"
+            lset_path = os.path.join("profiles", lset_name) if builtin_lset_type is not None else os.path.join(get_lora_dir(current_model_type), lset_name)
+            merge_loras = "merge before" if accelerator_profile else "merge after"
+            configs, _, _ = get_settings_from_file(state,lset_path , True, True, True, min_settings_version=2.38, merge_loras = merge_loras )
 
             if configs == None:
                 gr.Info("File not supported")
@@ -7640,6 +7669,8 @@ def apply_lset(state, wizard_prompt_activated, lset_name, loras_choices, loras_m
             configs["lset_name"] = lset_name
             if accelerator_profile:
                 gr.Info(f"Accelerator Profile '{os.path.splitext(os.path.basename(lset_name))[0]}' has been applied")
+            elif builtin_preset_settings:
+                gr.Info(f"Preset Settings '{os.path.splitext(os.path.basename(lset_name))[0]}' have been applied")
             else:
                 gr.Info(f"Settings File '{os.path.basename(lset_name)}' has been applied")
             help = configs.get("help", None)

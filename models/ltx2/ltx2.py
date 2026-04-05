@@ -352,18 +352,23 @@ def _coerce_image_list(image_value):
     return image_value
 
 
-def _adjust_dev_id_lora_phase2_strength(model_def, pipeline, audio_prompt_type, loras_slists, loras_selected):
-    if not isinstance(pipeline, TI2VidTwoStagesPipeline) or "1" not in (audio_prompt_type or ""):
+def _adjust_dev_distilled_lora_strengths(model_def, pipeline, sample_solver, audio_prompt_type, loras_slists, loras_selected):
+    if not isinstance(pipeline, TI2VidTwoStagesPipeline):
         return loras_slists
     if not loras_slists or (model_def or {}).get("ltx2_pipeline", "two_stage") == "distilled":
         return loras_slists
+    use_hq_sampler = (sample_solver or "").lower() == "res2s"
+    use_id_lora = "1" in (audio_prompt_type or "")
+    if not use_hq_sampler and not use_id_lora:
+        return loras_slists
+    phase1 = loras_slists.get("phase1")
     phase2 = loras_slists.get("phase2")
-    if not isinstance(phase2, list) or not phase2:
+    if not isinstance(phase2, list) or not phase2 or not isinstance(phase1, list) or not phase1:
         return loras_slists
     builtin_loras = (model_def or {}).get("loras") or []
     adjusted_slists = None
     for idx, builtin_lora in enumerate(builtin_loras):
-        if idx >= len(phase2):
+        if idx >= len(phase1) or idx >= len(phase2):
             break
         builtin_name = os.path.basename(builtin_lora).lower()
         if "distilled-lora" not in builtin_name:
@@ -372,7 +377,11 @@ def _adjust_dev_id_lora_phase2_strength(model_def, pipeline, audio_prompt_type, 
             continue
         if adjusted_slists is None:
             adjusted_slists = copy.deepcopy(loras_slists)
-        adjusted_slists["phase2"][idx] = 0.8
+        if use_hq_sampler:
+            adjusted_slists["phase1"][idx] = 0.25
+            adjusted_slists["phase2"][idx] = 0.5
+        elif use_id_lora:
+            adjusted_slists["phase2"][idx] = 0.8
     return adjusted_slists or loras_slists
 
 
@@ -575,7 +584,6 @@ class LTX2:
 
         # Internal FP8 handling is disabled; mmgp manages quantization/dtypes.
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
-        distilled_upscale_passes = max(1, int(model_def.get("ltx2_distilled_upscale_passes", 1)))
 
         pipeline_models = self._init_models(
             transformer_path=transformer_path,
@@ -588,7 +596,6 @@ class LTX2:
             self.pipeline = DistilledPipeline(
                 device=self.device,
                 models=pipeline_models,
-                upscale_passes=distilled_upscale_passes,
             )
         else:
             self.pipeline = TI2VidTwoStagesPipeline(
@@ -827,6 +834,7 @@ class LTX2:
         perturbation_end: float = 1.0,
         audio_cfg_scale: float | None = None,
         alt_scale: float = 0.0,
+        sample_solver: str = "",
         self_refiner_setting: int = 0,
         self_refiner_plan: str = "",
         self_refiner_f_uncertainty: float = 0.1,
@@ -1143,10 +1151,7 @@ class LTX2:
 
         target_height = int(height)
         target_width = int(width)
-        upscale_passes = 1
-        if self.model_def.get("ltx2_pipeline", "two_stage") == "distilled":
-            upscale_passes = max(1, int(self.model_def.get("ltx2_distilled_upscale_passes", 1)))
-        resolution_divisor = 32 * (2 ** upscale_passes)
+        resolution_divisor = 64
         if target_height % resolution_divisor != 0:
             target_height = int(math.ceil(target_height / resolution_divisor) * resolution_divisor)
         if target_width % resolution_divisor != 0:
@@ -1170,7 +1175,15 @@ class LTX2:
             effective_audio_cfg_scale = float(audio_cfg_scale)
         if "1" in audio_prompt_type and effective_audio_cfg_scale <= 1.0:
             effective_audio_cfg_scale = LTX2_ID_LORA_AUDIO_CFG_SCALE
-        loras_slists = _adjust_dev_id_lora_phase2_strength(self.model_def, self.pipeline, audio_prompt_type, loras_slists, loras_selected)
+        sample_solver = (sample_solver or "euler").lower()
+        loras_slists = _adjust_dev_distilled_lora_strengths(
+            self.model_def,
+            self.pipeline,
+            sample_solver,
+            audio_prompt_type,
+            loras_slists,
+            loras_selected,
+        )
         if isinstance(self.pipeline, TI2VidTwoStagesPipeline):
             pipeline_output = self.pipeline(
                 prompt=input_prompt,
@@ -1191,6 +1204,7 @@ class LTX2:
                 perturbation_end=perturbation_end,
                 alt_guidance_scale=float(alt_guide_scale),
                 alt_scale=float(alt_scale),
+                sample_solver=sample_solver,
                 images=images,
                 guiding_images=guiding_images or None,
                 guiding_images_stage2=guiding_images_stage2 or None,

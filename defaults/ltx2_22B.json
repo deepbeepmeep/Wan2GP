@@ -21,6 +21,7 @@
     "num_inference_steps": 30,
     "video_length": 241,
     "resolution": "1280x720",
+    "sample_solver": "euler",
     "guidance_scale": 3.0,
     "audio_guidance_scale": 7.0,
     "alt_guidance_scale": 3.0,

@@ -3,8 +3,8 @@ from collections.abc import Callable, Iterator
 
 import torch
 
-from ..ltx_core.components.diffusion_steps import EulerDiffusionStep
-from ..ltx_core.components.guiders import CFGGuider, CFGStarRescalingGuider, LtxAPGGuider
+from ..ltx_core.components.diffusion_steps import EulerDiffusionStep, Res2sDiffusionStep
+from ..ltx_core.components.guiders import CFGGuider, CFGStarRescalingGuider, LtxAPGGuider, MultiModalGuider, MultiModalGuiderParams
 from ..ltx_core.components.noisers import GaussianNoiser
 from ..ltx_core.components.protocols import DiffusionStepProtocol
 from ..ltx_core.components.schedulers import LTX2Scheduler
@@ -15,7 +15,7 @@ from ..ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
 from ..ltx_core.model.video_vae import decode_video_to_tensor as vae_decode_video_to_tensor
 from ..ltx_core.text_encoders.gemma import encode_text, postprocess_text_embeddings, resolve_text_connectors
 from ..ltx_core.tools import VideoLatentTools
-from ..ltx_core.types import LatentState, VideoPixelShape
+from ..ltx_core.types import LatentState, VideoLatentShape, VideoPixelShape
 from .utils import ModelLedger
 from .utils.args import default_2_stage_arg_parser
 from .utils.constants import (
@@ -35,6 +35,8 @@ from .utils.helpers import (
     image_conditionings_by_replacing_latent,
     latent_conditionings_by_latent_sequence,
     prepare_mask_injection,
+    multi_modal_guider_denoising_func,
+    res2s_audio_video_denoising_loop,
     simple_denoising_func,
     video_conditionings_by_keyframe,
     video_conditionings_by_reference_latent,
@@ -139,6 +141,7 @@ class TI2VidTwoStagesPipeline:
         perturbation_end: float = 1.0,
         alt_guidance_scale: float = 1.0,
         alt_scale: float = 0.0,
+        sample_solver: str = "euler",
         guiding_images: list[tuple[str, int, float]] | None = None,
         guiding_images_stage2: list[tuple] | None = None,
         images_stage2: list[tuple[str, int, float]] | None = None,
@@ -168,12 +171,16 @@ class TI2VidTwoStagesPipeline:
         generator = torch.Generator(device=self.device).manual_seed(seed)
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
-        stepper = EulerDiffusionStep()
+        sample_solver = (sample_solver or "euler").lower()
+        use_hq_sampler = sample_solver == "res2s"
+        if sample_solver not in {"euler", "res2s"}:
+            raise ValueError(f"Unsupported LTX2 sampler '{sample_solver}'.")
+        stepper = Res2sDiffusionStep() if use_hq_sampler else EulerDiffusionStep()
         self_refiner_handler = None
         self_refiner_handler_audio = None
         self_refiner_handler_stage2 = None
         self_refiner_handler_audio_stage2 = None
-        if self_refiner_setting and self_refiner_setting > 0:
+        if self_refiner_setting and self_refiner_setting > 0 and not use_hq_sampler:
             plans, _ = normalize_self_refiner_plan(self_refiner_plan or "", max_plans=self_refiner_max_plans)
             plan_stage1 = plans[0] if plans else []
             plan_stage2 = plans[1] if len(plans) > 1 else []
@@ -249,10 +256,29 @@ class TI2VidTwoStagesPipeline:
         v_context_n, a_context_n = context_n
 
         # Stage 1: Initial low resolution video generation.
+        stage_1_output_shape = VideoPixelShape(
+            batch=1,
+            frames=num_frames,
+            width=width // 2,
+            height=height // 2,
+            fps=frame_rate,
+        )
         video_encoder = self._get_stage_model(1, "video_encoder")
         transformer = self._get_stage_model(1, "transformer")
         bind_interrupt_check(transformer, interrupt_check)
-        sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
+        if use_hq_sampler:
+            empty_latent = torch.empty(
+                VideoLatentShape.from_pixel_shape(
+                    stage_1_output_shape,
+                    latent_channels=self.pipeline_components.video_latent_channels,
+                    scale_factors=self.pipeline_components.video_scale_factors,
+                ).to_torch_shape()
+            )
+            sigmas = LTX2Scheduler().execute(latent=empty_latent, steps=num_inference_steps).to(
+                dtype=torch.float32, device=self.device
+            )
+        else:
+            sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
         if loras_slists is not None:
             stage_1_steps = len(sigmas) - 1
             update_loras_slists(
@@ -274,6 +300,46 @@ class TI2VidTwoStagesPipeline:
             preview_tools: VideoLatentTools | None = None,
             mask_context=None,
         ) -> tuple[LatentState, LatentState]:
+            if use_hq_sampler:
+                return res2s_audio_video_denoising_loop(
+                    sigmas=sigmas,
+                    video_state=video_state,
+                    audio_state=audio_state,
+                    stepper=stepper,
+                    denoise_fn=multi_modal_guider_denoising_func(
+                        video_guider=MultiModalGuider(
+                            params=MultiModalGuiderParams(
+                                cfg_scale=cfg_guidance_scale,
+                                stg_scale=0.0,
+                                stg_blocks=[],
+                                rescale_scale=alt_scale,
+                                modality_scale=alt_guidance_scale,
+                            ),
+                            negative_context=v_context_n,
+                        ),
+                        audio_guider=MultiModalGuider(
+                            params=MultiModalGuiderParams(
+                                cfg_scale=audio_cfg_guidance_scale,
+                                stg_scale=0.0,
+                                stg_blocks=[],
+                                rescale_scale=1.0,
+                                modality_scale=alt_guidance_scale,
+                            ),
+                            negative_context=a_context_n,
+                        ),
+                        v_context_p=v_context_p,
+                        a_context_p=a_context_p,
+                        transformer=transformer,  # noqa: F821
+                        audio_identity_guidance_scale=audio_identity_guidance_scale,
+                    ),
+                    noise_seed=seed,
+                    mask_context=mask_context,
+                    interrupt_check=interrupt_check,
+                    callback=callback,
+                    preview_tools=preview_tools,
+                    pass_no=1,
+                    transformer=transformer,
+                )
             return euler_denoising_loop(
                 sigmas=sigmas,
                 video_state=video_state,
@@ -305,14 +371,6 @@ class TI2VidTwoStagesPipeline:
                 self_refiner_handler_audio=self_refiner_handler_audio,
                 self_refiner_generator=generator,
             )
-
-        stage_1_output_shape = VideoPixelShape(
-            batch=1,
-            frames=num_frames,
-            width=width // 2,
-            height=height // 2,
-            fps=frame_rate,
-        )
         stage_1_conditionings = image_conditionings_by_replacing_latent(
             images=images,
             height=stage_1_output_shape.height,
@@ -424,17 +482,34 @@ class TI2VidTwoStagesPipeline:
             preview_tools: VideoLatentTools | None = None,
             mask_context=None,
         ) -> tuple[LatentState, LatentState]:
+            denoise_fn = simple_denoising_func(
+                video_context=v_context_p,
+                audio_context=a_context_p,
+                transformer=transformer,  # noqa: F821
+                alt_guidance_scale=1.0,
+                manage_lora_step=not use_hq_sampler,
+            )
+            if use_hq_sampler:
+                return res2s_audio_video_denoising_loop(
+                    sigmas=sigmas,
+                    video_state=video_state,
+                    audio_state=audio_state,
+                    stepper=stepper,
+                    denoise_fn=denoise_fn,
+                    noise_seed=seed + 20000,
+                    mask_context=mask_context,
+                    interrupt_check=interrupt_check,
+                    callback=callback,
+                    preview_tools=preview_tools,
+                    pass_no=2,
+                    transformer=transformer,
+                )
             return euler_denoising_loop(
                 sigmas=sigmas,
                 video_state=video_state,
                 audio_state=audio_state,
                 stepper=stepper,
-                denoise_fn=simple_denoising_func(
-                    video_context=v_context_p,
-                    audio_context=a_context_p,
-                    transformer=transformer,  # noqa: F821
-                    alt_guidance_scale=1.0,
-                ),
+                denoise_fn=denoise_fn,
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,

@@ -107,9 +107,9 @@ class _TransformerBenchWrapper:
 
 class DistilledPipeline:
     """
-    Multi-stage distilled video generation pipeline.
-    Stage 1 generates video at a reduced resolution, then one or more distilled
-    x2 upscale/refine passes bring it to the requested output resolution.
+    Two-stage distilled video generation pipeline.
+    Stage 1 generates video at half resolution, then Stage 2 performs the
+    distilled x2 upscale/refine pass to reach the requested output resolution.
     """
 
     def __init__(
@@ -122,12 +122,10 @@ class DistilledPipeline:
         fp8transformer: bool = False,
         model_device: torch.device | None = None,
         models: object | None = None,
-        upscale_passes: int = 1,
     ):
         self.device = device
         self.dtype = torch.bfloat16
         self.models = models
-        self.upscale_passes = max(1, int(upscale_passes))
 
         if self.models is None:
             if checkpoint_path is None or gemma_root is None or spatial_upsampler_path is None:
@@ -192,7 +190,7 @@ class DistilledPipeline:
         self_refiner_certain_percentage: float = 0.999,
         self_refiner_max_plans: int = 1,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
-        assert_resolution(height=height, width=width, upscale_passes=self.upscale_passes)
+        assert_resolution(height=height, width=width, is_two_stage=True)
         alt_guidance_scale = 1.0
         negative_prompt = negative_prompt or DEFAULT_NEGATIVE_PROMPT
 
@@ -200,37 +198,38 @@ class DistilledPipeline:
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
         noiser = GaussianNoiser(generator=generator)
         stepper = EulerDiffusionStep()
-        total_passes = self.upscale_passes + 1
-        self_refiner_handlers = [None] * total_passes
-        self_refiner_audio_handlers = [None] * total_passes
+        self_refiner_handler = None
+        self_refiner_handler_audio = None
+        self_refiner_handler_stage2 = None
+        self_refiner_handler_audio_stage2 = None
         if self_refiner_setting and self_refiner_setting > 0:
             plans, _ = normalize_self_refiner_plan(self_refiner_plan or "", max_plans=self_refiner_max_plans)
-            self_refiner_handlers[0] = create_self_refiner_handler(
-                plans[0] if plans else [],
+            plan_stage1 = plans[0] if plans else []
+            plan_stage2 = plans[1] if len(plans) > 1 else []
+            self_refiner_handler = create_self_refiner_handler(
+                plan_stage1,
                 self_refiner_f_uncertainty,
                 self_refiner_setting,
                 self_refiner_certain_percentage,
                 channel_dim=-1,
             )
-            self_refiner_audio_handlers[0] = create_self_refiner_handler(
-                plans[0] if plans else [],
+            self_refiner_handler_audio = create_self_refiner_handler(
+                plan_stage1,
                 self_refiner_f_uncertainty,
                 self_refiner_setting,
                 self_refiner_certain_percentage,
                 channel_dim=-1,
             )
-            for pass_index in range(1, min(total_passes, len(plans))):
-                if not plans[pass_index]:
-                    continue
-                self_refiner_handlers[pass_index] = create_self_refiner_handler(
-                    plans[pass_index],
+            if plan_stage2:
+                self_refiner_handler_stage2 = create_self_refiner_handler(
+                    plan_stage2,
                     self_refiner_f_uncertainty,
                     self_refiner_setting,
                     self_refiner_certain_percentage,
                     channel_dim=-1,
                 )
-                self_refiner_audio_handlers[pass_index] = create_self_refiner_handler(
-                    plans[pass_index],
+                self_refiner_handler_audio_stage2 = create_self_refiner_handler(
+                    plan_stage2,
                     self_refiner_f_uncertainty,
                     self_refiner_setting,
                     self_refiner_certain_percentage,
@@ -306,17 +305,16 @@ class DistilledPipeline:
                 preview_tools=preview_tools,
                 pass_no=1,
                 transformer=transformer,
-                self_refiner_handler=self_refiner_handlers[0],
-                self_refiner_handler_audio=self_refiner_audio_handlers[0],
+                self_refiner_handler=self_refiner_handler,
+                self_refiner_handler_audio=self_refiner_handler_audio,
                 self_refiner_generator=generator,
             )
 
-        stage_1_scale_divisor = 2 ** self.upscale_passes
         stage_1_output_shape = VideoPixelShape(
             batch=1,
             frames=num_frames,
-            width=width // stage_1_scale_divisor,
-            height=height // stage_1_scale_divisor,
+            width=width // 2,
+            height=height // 2,
             fps=frame_rate,
         )
         stage_1_conditionings = image_conditionings_by_replacing_latent(
@@ -388,10 +386,10 @@ class DistilledPipeline:
             device=self.device,
             mask_context=mask_context,
         )
-        bench_results: list[tuple[int, float, int]] = []
+        stage1_transformer_ms = 0.0
+        stage1_transformer_calls = 0
         if bench_transformer:
             stage1_transformer_ms, stage1_transformer_calls = transformer.consume()
-            bench_results.append((1, stage1_transformer_ms, stage1_transformer_calls))
             print(
                 "[WAN2GP][LTX2][bench] transformer pass1: "
                 f"{stage1_transformer_ms / 1000.0:.3f}s ({stage1_transformer_calls} calls)"
@@ -402,153 +400,138 @@ class DistilledPipeline:
             return None, None
 
         stage_2_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
-        current_output_shape = stage_1_output_shape
-        for upscale_index in range(self.upscale_passes):
-            pass_no = upscale_index + 2
-            upscaled_video_latent = upsample_video(
-                latent=video_state.latent[:1],
-                video_encoder=video_encoder,
-                upsampler=self._get_model("spatial_upsampler"),
-            )
+        upscaled_video_latent = upsample_video(
+            latent=video_state.latent[:1],
+            video_encoder=video_encoder,
+            upsampler=self._get_model("spatial_upsampler"),
+        )
 
-            torch.cuda.synchronize()
-            cleanup_memory()
+        torch.cuda.synchronize()
+        cleanup_memory()
 
-            if loras_slists is not None:
-                stage_2_steps = len(stage_2_sigmas) - 1
-                update_loras_slists(
-                    transformer,
-                    loras_slists,
-                    stage_2_steps,
-                    phase_switch_step=0,
-                    phase_switch_step2=stage_2_steps,
-                )
-            if callback is not None:
-                callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=pass_no)
+        pass_no = 2
+        if loras_slists is not None:
+            stage_2_steps = len(stage_2_sigmas) - 1
+            update_loras_slists(
+                transformer,
+                loras_slists,
+                stage_2_steps,
+                phase_switch_step=0,
+                phase_switch_step2=stage_2_steps,
+            )
+        if callback is not None:
+            callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=pass_no)
 
-            def denoising_loop_stage_n(
-                sigmas: torch.Tensor,
-                video_state: LatentState,
-                audio_state: LatentState,
-                stepper: DiffusionStepProtocol,
-                preview_tools: VideoLatentTools | None = None,
-                mask_context=None,
-                current_pass_no: int = pass_no,
-                refiner_handler=self_refiner_handlers[pass_no - 1],
-                refiner_audio_handler=self_refiner_audio_handlers[pass_no - 1],
-            ) -> tuple[LatentState, LatentState]:
-                return euler_denoising_loop(
-                    sigmas=sigmas,
-                    video_state=video_state,
-                    audio_state=audio_state,
-                    stepper=stepper,
-                    denoise_fn=simple_denoising_func(
-                        video_context=video_context,
-                        audio_context=audio_context,
-                        transformer=transformer,  # noqa: F821
-                        alt_guidance_scale=alt_guidance_scale,
-                    ),
-                    mask_context=mask_context,
-                    interrupt_check=interrupt_check,
-                    callback=callback,
-                    preview_tools=preview_tools,
-                    pass_no=current_pass_no,
-                    transformer=transformer,
-                    self_refiner_handler=refiner_handler,
-                    self_refiner_handler_audio=refiner_audio_handler,
-                    self_refiner_generator=generator,
-                )
-
-            scale_divisor = 2 ** (self.upscale_passes - upscale_index - 1)
-            current_output_shape = VideoPixelShape(
-                batch=1,
-                frames=num_frames,
-                width=width // scale_divisor,
-                height=height // scale_divisor,
-                fps=frame_rate,
-            )
-            stage_2_conditionings = image_conditionings_by_replacing_latent(
-                images=images,
-                height=current_output_shape.height,
-                width=current_output_shape.width,
-                video_encoder=video_encoder,
-                dtype=dtype,
-                device=self.device,
-                tiling_config=tiling_config,
-            )
-            if guiding_images_stage2:
-                stage_2_conditionings += image_conditionings_by_adding_guiding_latent(
-                    images=guiding_images_stage2,
-                    height=current_output_shape.height,
-                    width=current_output_shape.width,
-                    video_encoder=video_encoder,
-                    dtype=dtype,
-                    device=self.device,
-                    tiling_config=tiling_config,
-                )
-            if latent_conditioning_stage2 is not None:
-                expected_latent_height = current_output_shape.height // 32
-                expected_latent_width = current_output_shape.width // 32
-                if (
-                    latent_conditioning_stage2.shape[3] == expected_latent_height
-                    and latent_conditioning_stage2.shape[4] == expected_latent_width
-                ):
-                    stage_2_conditionings += latent_conditionings_by_latent_sequence(
-                        latent_conditioning_stage2,
-                        strength=1.0,
-                        start_index=0,
-                    )
-            mask_context = prepare_mask_injection(
-                masking_source=masking_source,
-                masking_strength=masking_strength,
-                output_shape=current_output_shape,
-                video_encoder=video_encoder,
-                components=self.pipeline_components,
-                dtype=dtype,
-                device=self.device,
-                tiling_config=tiling_config,
-                generator=mask_generator,
-                num_steps=len(stage_2_sigmas) - 1,
-            )
-            freeze_audio_stage2 = audio_identity_guidance_scale > 0.0
-            stage_2_audio_conditionings = audio_conditionings if audio_conditionings_stage2 is None else audio_conditionings_stage2
-            video_state, audio_state = denoise_audio_video(
-                output_shape=current_output_shape,
-                conditionings=stage_2_conditionings,
-                audio_conditionings=stage_2_audio_conditionings,
-                noiser=noiser,
-                sigmas=stage_2_sigmas,
+        def denoising_loop_stage2(
+            sigmas: torch.Tensor,
+            video_state: LatentState,
+            audio_state: LatentState,
+            stepper: DiffusionStepProtocol,
+            preview_tools: VideoLatentTools | None = None,
+            mask_context=None,
+        ) -> tuple[LatentState, LatentState]:
+            return euler_denoising_loop(
+                sigmas=sigmas,
+                video_state=video_state,
+                audio_state=audio_state,
                 stepper=stepper,
-                denoising_loop_fn=denoising_loop_stage_n,
-                components=self.pipeline_components,
+                denoise_fn=simple_denoising_func(
+                    video_context=video_context,
+                    audio_context=audio_context,
+                    transformer=transformer,  # noqa: F821
+                    alt_guidance_scale=alt_guidance_scale,
+                ),
+                mask_context=mask_context,
+                interrupt_check=interrupt_check,
+                callback=callback,
+                preview_tools=preview_tools,
+                pass_no=2,
+                transformer=transformer,
+                self_refiner_handler=self_refiner_handler_stage2,
+                self_refiner_handler_audio=self_refiner_handler_audio_stage2,
+                self_refiner_generator=generator,
+            )
+
+        stage_2_output_shape = VideoPixelShape(
+            batch=1,
+            frames=num_frames,
+            width=width,
+            height=height,
+            fps=frame_rate,
+        )
+        stage_2_conditionings = image_conditionings_by_replacing_latent(
+            images=images,
+            height=stage_2_output_shape.height,
+            width=stage_2_output_shape.width,
+            video_encoder=video_encoder,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+        )
+        if guiding_images_stage2:
+            stage_2_conditionings += image_conditionings_by_adding_guiding_latent(
+                images=guiding_images_stage2,
+                height=stage_2_output_shape.height,
+                width=stage_2_output_shape.width,
+                video_encoder=video_encoder,
                 dtype=dtype,
                 device=self.device,
-                noise_scale=stage_2_sigmas[0],
-                audio_noise_scale=0.0 if freeze_audio_stage2 else stage_2_sigmas[0],
-                initial_video_latent=upscaled_video_latent,
-                initial_audio_latent=audio_state.latent,
-                mask_context=mask_context,
-                freeze_audio=freeze_audio_stage2,
+                tiling_config=tiling_config,
             )
-            if bench_transformer:
-                stage_transformer_ms, stage_transformer_calls = transformer.consume()
-                bench_results.append((pass_no, stage_transformer_ms, stage_transformer_calls))
-                print(
-                    f"[WAN2GP][LTX2][bench] transformer pass{pass_no}: "
-                    f"{stage_transformer_ms / 1000.0:.3f}s ({stage_transformer_calls} calls)"
-                )
-            if video_state is None or audio_state is None:
-                return None, None
-            if interrupt_check is not None and interrupt_check():
-                return None, None
-
+        if latent_conditioning_stage2 is not None:
+            stage_2_conditionings += latent_conditionings_by_latent_sequence(
+                latent_conditioning_stage2,
+                strength=1.0,
+                start_index=0,
+            )
+        mask_context = prepare_mask_injection(
+            masking_source=masking_source,
+            masking_strength=masking_strength,
+            output_shape=stage_2_output_shape,
+            video_encoder=video_encoder,
+            components=self.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            tiling_config=tiling_config,
+            generator=mask_generator,
+            num_steps=len(stage_2_sigmas) - 1,
+        )
+        freeze_audio_stage2 = audio_identity_guidance_scale > 0.0
+        stage_2_audio_conditionings = audio_conditionings if audio_conditionings_stage2 is None else audio_conditionings_stage2
+        video_state, audio_state = denoise_audio_video(
+            output_shape=stage_2_output_shape,
+            conditionings=stage_2_conditionings,
+            audio_conditionings=stage_2_audio_conditionings,
+            noiser=noiser,
+            sigmas=stage_2_sigmas,
+            stepper=stepper,
+            denoising_loop_fn=denoising_loop_stage2,
+            components=self.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            noise_scale=stage_2_sigmas[0],
+            audio_noise_scale=0.0 if freeze_audio_stage2 else stage_2_sigmas[0],
+            initial_video_latent=upscaled_video_latent,
+            initial_audio_latent=audio_state.latent,
+            mask_context=mask_context,
+            freeze_audio=freeze_audio_stage2,
+        )
         if bench_transformer:
-            total_transformer_ms = sum(result[1] for result in bench_results)
-            total_transformer_calls = sum(result[2] for result in bench_results)
+            stage2_transformer_ms, stage2_transformer_calls = transformer.consume()
+            total_transformer_ms = stage1_transformer_ms + stage2_transformer_ms
+            total_transformer_calls = stage1_transformer_calls + stage2_transformer_calls
+            print(
+                "[WAN2GP][LTX2][bench] transformer pass2: "
+                f"{stage2_transformer_ms / 1000.0:.3f}s ({stage2_transformer_calls} calls)"
+            )
             print(
                 "[WAN2GP][LTX2][bench] transformer total: "
                 f"{total_transformer_ms / 1000.0:.3f}s ({total_transformer_calls} calls)"
             )
+        if video_state is None or audio_state is None:
+            return None, None
+        if interrupt_check is not None and interrupt_check():
+            return None, None
 
         torch.cuda.synchronize()
         del transformer
@@ -562,9 +545,9 @@ class DistilledPipeline:
             video_state.latent,
             self._get_model("video_decoder"),
             tiling_config,
-            expected_frames=int(current_output_shape.frames),
-            expected_height=int(current_output_shape.height),
-            expected_width=int(current_output_shape.width),
+            expected_frames=int(stage_2_output_shape.frames),
+            expected_height=int(stage_2_output_shape.height),
+            expected_width=int(stage_2_output_shape.width),
             interrupt_check=interrupt_check,
         )
         decoded_audio = vae_decode_audio(

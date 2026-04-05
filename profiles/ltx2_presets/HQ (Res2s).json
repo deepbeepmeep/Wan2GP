@@ -1,0 +1,18 @@
+{
+    "model_type": "ltx2_22B",
+    "sample_solver": "res2s",
+    "num_inference_steps": 15,
+    "guidance_phases": 2,
+    "guidance_scale": 3.0,
+    "audio_guidance_scale": 7.0,
+    "alt_guidance_scale": 3.0,
+    "alt_scale": 0.45,
+    "perturbation_switch": 0,
+    "perturbation_layers": [28],
+    "perturbation_start_perc": 0,
+    "perturbation_end_perc": 100,
+    "apg_switch": 0,
+    "cfg_star_switch": 0,
+    "self_refiner_setting": 0,
+    "settings_version": 2.56
+}

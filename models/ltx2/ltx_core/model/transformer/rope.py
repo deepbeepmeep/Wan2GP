@@ -34,6 +34,7 @@ class RopeLayoutCache:
     grid_sizes: tuple[int, ...]
     axis_cos: tuple[torch.Tensor, ...]
     axis_sin: tuple[torch.Tensor, ...]
+    axis_token_indices: tuple[torch.Tensor, ...]
 
 
 @dataclass(frozen=True)
@@ -286,6 +287,72 @@ def _apply_axis_rotation(
     x1_axis.copy_(x1_tmp)
 
 
+def _apply_split_rope_layout_compile_safe(input_tensor: torch.Tensor, rope_cache: RopeCache, layout: RopeLayoutCache) -> None:
+    num_heads = rope_cache.num_attention_heads
+    if num_heads is None or not rope_cache.split_groups:
+        return
+    b, tokens, dim = input_tensor.shape
+    grid_sizes = layout.grid_sizes
+    if math.prod(grid_sizes) != tokens:
+        return
+
+    dim_head = dim // num_heads
+    if dim_head % 2 != 0:
+        return
+    half_dim = dim_head // 2
+    expected_freqs = num_heads * half_dim
+    x_dtype = input_tensor.dtype
+    work_dtype = torch.float32 if rope_cache.use_fp32_freqs else x_dtype
+    axis_count = len(rope_cache.axes)
+    axis_width = rope_cache.axes[0].cos.shape[-1] if axis_count else 0
+    dim_no_pad = expected_freqs - rope_cache.pad_size
+    if axis_width <= 0 or dim_no_pad <= 0 or dim_no_pad % axis_count != 0 or axis_width * axis_count != dim_no_pad:
+        return
+
+    x_view = input_tensor.reshape(b, tokens, num_heads, dim_head)
+    x0 = x_view[..., :half_dim]
+    x1 = x_view[..., half_dim:]
+    prefix_shape = x0.shape[:-2]
+    buffers_by_group: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]] = {}
+
+    for axis_index, axis in enumerate(rope_cache.rope_axes or ()):
+        cos_axis = layout.axis_cos[axis_index]
+        sin_axis = layout.axis_sin[axis_index]
+        token_axis_indices = layout.axis_token_indices[axis_index]
+        if cos_axis.device != input_tensor.device or cos_axis.dtype != work_dtype:
+            cos_axis = cos_axis.to(device=input_tensor.device, dtype=work_dtype)
+        if sin_axis.device != input_tensor.device or sin_axis.dtype != work_dtype:
+            sin_axis = sin_axis.to(device=input_tensor.device, dtype=work_dtype)
+        if token_axis_indices.device != input_tensor.device:
+            token_axis_indices = token_axis_indices.to(device=input_tensor.device)
+        for group in rope_cache.split_groups[axis_index]:
+            x0_group = x0[..., group.head_start :: axis_count, group.local_start :: axis_count]
+            x1_group = x1[..., group.head_start :: axis_count, group.local_start :: axis_count]
+            cos_group = _split_group_freq_view(cos_axis, group, half_dim).index_select(0, token_axis_indices)
+            sin_group = _split_group_freq_view(sin_axis, group, half_dim).index_select(0, token_axis_indices)
+            group_key = (group.head_count, group.freq_width)
+            x0_buf, x1_buf = buffers_by_group.get(group_key, (None, None))
+            if x0_buf is None or x1_buf is None:
+                group_shape = (*prefix_shape, group.head_count, group.freq_width)
+                x0_buf = torch.empty(group_shape, dtype=work_dtype, device=input_tensor.device)
+                x1_buf = torch.empty(group_shape, dtype=work_dtype, device=input_tensor.device)
+                buffers_by_group[group_key] = (x0_buf, x1_buf)
+            x0_buf.copy_(x0_group)
+            x0_buf.mul_(cos_group)
+            x0_buf.addcmul_(x1_group, sin_group, value=-1)
+            x1_buf.copy_(x1_group)
+            x1_buf.mul_(cos_group)
+            x1_buf.addcmul_(x0_group, sin_group)
+            x0_group.copy_(x0_buf)
+            x1_group.copy_(x1_buf)
+
+
+def _build_layout_axis_token_indices(grid_sizes: tuple[int, ...], axis: int, device: torch.device) -> torch.Tensor:
+    shape = [1] * len(grid_sizes)
+    shape[axis] = grid_sizes[axis]
+    return torch.arange(grid_sizes[axis], dtype=torch.long, device=device).view(*shape).expand(*grid_sizes).reshape(-1)
+
+
 def _apply_split_rope_layout_inplace(input_tensor: torch.Tensor, rope_cache: RopeCache, layout: RopeLayoutCache) -> None:
     num_heads = rope_cache.num_attention_heads
     if num_heads is None or not rope_cache.split_groups:
@@ -306,6 +373,9 @@ def _apply_split_rope_layout_inplace(input_tensor: torch.Tensor, rope_cache: Rop
     axis_width = rope_cache.axes[0].cos.shape[-1] if axis_count else 0
     dim_no_pad = expected_freqs - rope_cache.pad_size
     if axis_width <= 0 or dim_no_pad <= 0 or dim_no_pad % axis_count != 0 or axis_width * axis_count != dim_no_pad:
+        return
+    if _is_compiling_graph():
+        _apply_split_rope_layout_compile_safe(input_tensor, rope_cache, layout)
         return
 
     x_view = input_tensor.reshape(b, *grid_sizes, num_heads, dim_head)
@@ -675,18 +745,21 @@ def _make_layout(
 ) -> RopeLayoutCache:
     axis_cos: list[torch.Tensor] = []
     axis_sin: list[torch.Tensor] = []
+    axis_token_indices: list[torch.Tensor] = []
     for axis_index, axis in enumerate(rope_axes):
         axis_indices = _map_axis_values(axis_caches[axis_index].values, axis_values_all[axis])
         cos_axis = axis_caches[axis_index].cos.index_select(0, axis_indices)
         sin_axis = axis_caches[axis_index].sin.index_select(0, axis_indices)
         axis_cos.append(cos_axis)
         axis_sin.append(sin_axis)
+        axis_token_indices.append(_build_layout_axis_token_indices(grid_sizes, axis, cos_axis.device))
     return RopeLayoutCache(
         token_start=token_start,
         token_stop=token_stop,
         grid_sizes=grid_sizes,
         axis_cos=tuple(axis_cos),
         axis_sin=tuple(axis_sin),
+        axis_token_indices=tuple(axis_token_indices),
     )
 
 

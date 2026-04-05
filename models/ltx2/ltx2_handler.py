@@ -22,7 +22,8 @@ _ARCH_SPECS = {
         "text_embedding_projection": "ltx-2-19b_text_embedding_projection.safetensors",
         "dev_embeddings_connector": "ltx-2-19b-dev_embeddings_connector.safetensors",
         "distilled_embeddings_connector": "ltx-2-19b-distilled_embeddings_connector.safetensors",
-        "profiles_dir": "ltx2_19B",
+        "profiles_dir": "ltx2",
+        "preset_profiles_dir": "ltx2_presets",
         "lora_dir": "ltx2",
     },
     "ltx2_22B": {
@@ -38,7 +39,8 @@ _ARCH_SPECS = {
         "vocoder": "ltx-2.3-22b_vocoder.safetensors",
         "text_embedding_projection": "ltx-2.3-22b_text_embedding_projection.safetensors",
         "embeddings_connector": "ltx-2.3-22b_embeddings_connector.safetensors",
-        "profiles_dir": "ltx2_22B",
+        "profiles_dir": "ltx2",
+        "preset_profiles_dir": "ltx2_presets",
         "lora_dir": "ltx2_22B",
     },
 }
@@ -67,12 +69,6 @@ def _default_dev_settings(base_model_type: str | None) -> dict:
         "cfg_star_switch": 0,
         "guidance_phases": 2,
     }
-
-
-def _get_distilled_upscale_passes(model_def: dict | None) -> int:
-    return max(1, int((model_def or {}).get("ltx2_distilled_upscale_passes", 1)))
-
-
 def _get_embeddings_connector_filename(model_def, base_model_type):
     spec = _get_arch_spec(base_model_type)
     shared_connector = spec.get("embeddings_connector")
@@ -139,7 +135,6 @@ class family_handler:
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
 
         distilled = pipeline_kind == "distilled"
-        distilled_upscale_passes = _get_distilled_upscale_passes(model_def) if distilled else 1
         audio_prompt_selection = ["", "A", "K"] if distilled else ["", "A", "A1OF"]
         audio_prompt_labels = {
             "": "Generate Video & Soundtrack based on Text Prompt",
@@ -186,10 +181,13 @@ class family_handler:
             "profiles_dir": [spec["profiles_dir"]],
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],
             "self_refiner": True,
-            "self_refiner_max_plans": distilled_upscale_passes + 1 if distilled else 2,
+            "self_refiner_max_plans": 2,
             "no_background_removal": True,
             "vae_block_size": 64,
         }
+        preset_profiles_dir = spec.get("preset_profiles_dir")
+        if preset_profiles_dir and not distilled:
+            extra_model_def["preset_profiles_dir"] = [preset_profiles_dir]
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"] = True
         extra_model_def["input_video_strength"] = "Image / Source Video Strength (you may try values lower value than 1 to get more motion)"
@@ -243,6 +241,8 @@ class family_handler:
                     "perturbation_layers_max": 48,
                 }
             )
+            if base_model_type == "ltx2_22B":
+                extra_model_def["sample_solvers"] = [("Euler", "euler"), ("HQ (res2s)", "res2s")]
         extra_model_def["guidance_max_phases"] = 2
         extra_model_def["visible_phases"] = 0 if distilled else 1
         extra_model_def["lock_guidance_phases"] = True
@@ -325,7 +325,8 @@ class family_handler:
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
-        if model_def.get("ltx2_pipeline", "two_stage") == "distilled":
+        pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
+        if pipeline_kind == "distilled":
             inputs.update(
                 {
                     "num_inference_steps": 8,
@@ -338,6 +339,22 @@ class family_handler:
             )
             if inputs.get("perturbation",0) == 2:
                 inputs["perturbation"] = 0
+        else:
+            sample_solver = (inputs.get("sample_solver") or ("euler" if base_model_type == "ltx2_22B" else "")).lower()
+            if base_model_type == "ltx2_22B":
+                if sample_solver not in {"euler", "res2s"}:
+                    return f"Unsupported LTX2 sampler '{sample_solver}'."
+                inputs["sample_solver"] = sample_solver
+                if sample_solver == "res2s":
+                    if inputs.get("apg_switch", 0):
+                        return "HQ sampler does not support APG yet."
+                    if inputs.get("cfg_star_switch", 0):
+                        return "HQ sampler does not support CFG Star yet."
+                    if inputs.get("self_refiner_setting", 0):
+                        return "HQ sampler does not support Self Refiner yet."
+                    inputs["perturbation_switch"] = 0
+            elif sample_solver not in {"", "euler"}:
+                return f"Sampler '{sample_solver}' is not supported for {base_model_type}."
         audio_prompt_type = inputs.get("audio_prompt_type") or ""
         if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
             audio_source = inputs.get("audio_source")
@@ -417,6 +434,8 @@ class family_handler:
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
         if pipeline_kind != "distilled" and ui_defaults.get("guidance_phases", 0) < 2:
             ui_defaults["guidance_phases"] = 2
+        if pipeline_kind != "distilled" and ui_defaults.get("sample_solver", "") in {"", None}:
+            ui_defaults["sample_solver"] = "euler"
 
         if settings_version < 2.43:
             ui_defaults.update(
@@ -473,6 +492,7 @@ class family_handler:
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
         if pipeline_kind != "distilled":
             ui_defaults.update(_default_dev_settings(base_model_type))
+            ui_defaults.setdefault("sample_solver", "euler")
         else:
             ui_defaults.setdefault("guidance_phases", 1)
 

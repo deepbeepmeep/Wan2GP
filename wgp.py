@@ -4700,9 +4700,13 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 # values += [f"Norm P{video_self_refiner_setting}, Plan='{video_self_refiner_plan}'"]
                 labels += ["Self Refiner"]      
             video_apg_switch = configs.get("apg_switch", None)
-            if video_apg_switch is not None and video_apg_switch != 0: 
+            if video_apg_switch is not None and video_apg_switch != 0:
                 values += ["on"]
-                labels += ["APG"]      
+                labels += ["APG"]
+            video_hq_sampler = configs.get("hq_sampler", 0)
+            if video_hq_sampler:
+                values += ["Res2s (HQ)"]
+                labels += ["Sampler"]
             video_motion_amplitude = configs.get("motion_amplitude", 1.)
             if  video_motion_amplitude != 1: 
                 values += [video_motion_amplitude]
@@ -6025,6 +6029,8 @@ def generate_video(
     self_refiner_plan,
     self_refiner_f_uncertainty,
     self_refiner_certain_percentage,
+    hq_sampler,
+    rescale_scale,
     output_filename,
     state,
     model_type,
@@ -6904,6 +6910,8 @@ def generate_video(
                     self_refiner_plan=self_refiner_plan,
                     self_refiner_f_uncertainty = self_refiner_f_uncertainty,
                     self_refiner_certain_percentage = self_refiner_certain_percentage,
+                    hq_sampler=int(hq_sampler) if hq_sampler else 0,
+                    rescale_scale=float(rescale_scale) if rescale_scale else 0.0,
                     duration_seconds=duration_seconds,
                     pause_seconds=pause_seconds,
                     top_p=top_p,
@@ -8247,6 +8255,9 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["self_refiner_setting", "self_refiner_f_uncertainty", "self_refiner_plan", "self_refiner_certain_percentage"]
         # pop += ["self_refiner_setting", "self_refiner_plan"]
 
+    if not model_def.get("hq_sampler", False):
+        pop += ["hq_sampler"]
+
     if model_def.get("audio_scale_name", None) is None:
         pop += ["audio_scale"]
 
@@ -8989,6 +9000,8 @@ def save_inputs(
             self_refiner_plan,            
             self_refiner_f_uncertainty,
             self_refiner_certain_percentage,
+            hq_sampler,
+            rescale_scale,
             output_filename,
             mode,
             state,
@@ -10763,7 +10776,15 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_motion_amplitude = model_def.get("motion_amplitude", False) and not image_outputs
                 any_pnp = True # Enable PnP for all supported models (or restriction logic here)
 
-                with gr.Tab("Quality", visible = (vace and image_outputs or any_perturbation or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude or any_pnp) and not audio_only ) as quality_tab:
+                any_hq_sampler = model_def.get("hq_sampler", False)
+                with gr.Tab("Quality", visible = (vace and image_outputs or any_perturbation or any_cfg_zero or any_cfg_star or any_apg or any_motion_amplitude or any_pnp or any_hq_sampler) and not audio_only ) as quality_tab:
+                        with gr.Column(visible=any_hq_sampler) as hq_sampler_col:
+                            gr.Markdown("<B>Sampler</B>")
+                            hq_sampler = gr.Dropdown(choices=[("Euler (Standard)", 0), ("Res2s (HQ)", 1)], value=ui_get("hq_sampler", 0), label="Sampler", scale=1)
+                            rescale_scale = gr.Number(value=0.0, visible=False)
+                            with gr.Column(visible=(ui_get("hq_sampler", 0) == 1)) as hq_sampler_options:
+                                gr.Markdown("<I>Recommended settings for Res2s HQ: set Steps to 15, distilled LoRA multiplier to 0.25;0.5 (stage1;stage2), CFG to 3, Guidance Rescale to 0.45, Audio Guidance to 7, Modality Guidance to 3</I>")
+                            # hq_sampler.change registered after all Quality tab columns are defined
                         with gr.Column(visible = any_perturbation ) as perturbation_row:
                             gr.Markdown("<B>Perturbation (improves video quality, requires guidance > 1)</B>")
                             perturbation_choices = model_def.get("perturbation_choices", [("OFF", 0), ("Skip Layer Guidance", 1)])
@@ -10789,7 +10810,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 perturbation_start_perc = gr.Slider(0, 100, value=ui_get("perturbation_start_perc"), step=1, label="Denoising Steps % start", show_reset_button= False)
                                 perturbation_end_perc = gr.Slider(0, 100, value=ui_get("perturbation_end_perc"), step=1, label="Denoising Steps % end", show_reset_button= False)
 
-                        with gr.Column(visible= any_apg ) as apg_col:
+                        with gr.Column(visible= any_apg and ui_get("hq_sampler", 0) != 1) as apg_col:
                             gr.Markdown("<B>Correct Progressive Color Saturation during long Video Generations")
                             apg_switch = gr.Dropdown(
                                 choices=[
@@ -10802,7 +10823,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 label="Adaptive Projected Guidance (requires Guidance > 1 or Audio Guidance > 1) " if multitalk else "Adaptive Projected Guidance (requires Guidance > 1)",
                             )
 
-                        with gr.Column(visible = any_cfg_star) as cfg_free_guidance_col:
+                        with gr.Column(visible = any_cfg_star and ui_get("hq_sampler", 0) != 1) as cfg_free_guidance_col:
                             gr.Markdown("<B>Classifier-Free Guidance Zero Star, better adherence to Text Prompt")
                             cfg_star_switch = gr.Dropdown(
                                 choices=[
@@ -10841,7 +10862,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             gr.Markdown("<B>Experimental: Accelerate Motion (1: disabled, 1.15 recommended)")
                             motion_amplitude  = gr.Slider(1, 1.4, value=ui_get("motion_amplitude"), step=0.01, label="Motion Amplitude", visible = True, show_reset_button= False) 
 
-                        with gr.Column(visible = model_def.get("self_refiner", False)) as self_refiner_col:
+                        with gr.Column(visible = model_def.get("self_refiner", False) and ui_get("hq_sampler", 0) != 1) as self_refiner_col:
                             gr.Markdown("<B>Self-Refining Video Sampling (PnP) - should improve quality of Motion</B>")
                             self_refiner_setting = gr.Dropdown(choices=[("Disabled", 0),("Enabled with P1-Norm", 1), ("Enabled with P2-Norm", 2)], value=ui_get("self_refiner_setting", 0), scale=1, label="Self Refiner")
                             
@@ -10881,7 +10902,18 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             with gr.Row():
                                 self_refiner_f_uncertainty = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_f_uncertainty", 0.0), step=0.01, label="Uncertainty Threshold", show_reset_button= False)
                                 self_refiner_certain_percentage = gr.Slider(0.0, 1.0, value=ui_get("self_refiner_certain_percentage", 0.999), step=0.001, label="Certainty Percentage Skip", show_reset_button= False)
-                            
+
+                        # Register hq_sampler change handler now that all columns exist
+                        if not update_form and any_hq_sampler:
+                            def on_hq_sampler_change(v):
+                                is_res2 = v == 1
+                                return [
+                                    gr.update(visible=is_res2),      # hq_sampler_options (note)
+                                    gr.update(visible=not is_res2),  # apg_col
+                                    gr.update(visible=not is_res2),  # cfg_free_guidance_col
+                                    gr.update(visible=not is_res2),  # self_refiner_col
+                                ]
+                            hq_sampler.change(fn=on_hq_sampler_change, inputs=[hq_sampler], outputs=[hq_sampler_options, apg_col, cfg_free_guidance_col, self_refiner_col])
 
                 with gr.Tab("Sliding Window", visible= sliding_window_enabled and not image_outputs and not audio_only) as sliding_window_tab:
 
@@ -11157,7 +11189,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       NAG_col, audio_options_row, remove_background_sound, normalize_audio_volumes, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, prompt_enhancer_mode_dropdown, prompt_enhancer_think,
                                       min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temperature_row, *custom_settings_rows, top_pk_row, 
                                       number_frames_row, negative_prompt_row,
-                                      self_refiner_col, pause_row]+\
+                                      self_refiner_col, hq_sampler_col, hq_sampler_options, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,
         if update_form:
             locals_dict = locals()

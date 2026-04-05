@@ -804,6 +804,8 @@ class LTX2:
         seed: int = 0,
         callback=None,
         VAE_tile_size=None,
+        hq_sampler: int = 0,
+        rescale_scale: float = 0.0,
         **kwargs,
     ):
         if self._interrupt:
@@ -1148,6 +1150,8 @@ class LTX2:
                 self_refiner_f_uncertainty=self_refiner_f_uncertainty,
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
                 self_refiner_max_plans=self_refiner_max_plans,
+                hq_sampler=hq_sampler,
+                rescale_scale=float(alt_scale) if hq_sampler else rescale_scale,
             )
         else:
             pipeline_output = self.pipeline(

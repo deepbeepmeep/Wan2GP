@@ -228,6 +228,7 @@ class family_handler:
                         ("Skip Self Attention", 2),
                     ],
                     "perturbation_layers_max": 48,
+                    "hq_sampler": True,
                 }
             )
         extra_model_def["guidance_max_phases"] = 2

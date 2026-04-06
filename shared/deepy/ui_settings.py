@@ -8,6 +8,8 @@ from shared.deepy.config import (
     DEEPY_DEFAULT_EDIT_IMAGE,
     DEEPY_DEFAULT_GEN_IMAGE,
     DEEPY_DEFAULT_GEN_VIDEO,
+    DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT,
+    DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY,
     DEEPY_TOOL_EDIT_IMAGE_KEY,
     DEEPY_TOOL_GEN_IMAGE_KEY,
     DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY,
@@ -16,12 +18,13 @@ from shared.deepy.config import (
     DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY,
     get_deepy_config_value,
     normalize_deepy_auto_cancel_queue_tasks,
+    normalize_deepy_separate_requests_with_empty_line,
 )
 from shared.deepy import tool_settings as deepy_tool_settings
 
 
 ASSISTANT_OVERRIDE_DIMENSION_MIN = 256
-ASSISTANT_OVERRIDE_DIMENSION_MAX = 1920
+ASSISTANT_OVERRIDE_DIMENSION_MAX = 3840
 ASSISTANT_OVERRIDE_DIMENSION_STEP = 16
 ASSISTANT_OVERRIDE_WIDTH_DEFAULT = 1280
 ASSISTANT_OVERRIDE_HEIGHT_DEFAULT = 720
@@ -78,10 +81,15 @@ def normalize_assistant_override_seed(value: Any) -> int:
     return _clamp_int(value, ASSISTANT_OVERRIDE_SEED_DEFAULT, -1, 999999999, 1)
 
 
+def normalize_assistant_separate_requests_with_empty_line(value: Any) -> bool:
+    return normalize_deepy_separate_requests_with_empty_line(value)
+
+
 def get_persisted_assistant_tool_ui_settings(server_config: dict[str, Any] | None = None) -> dict[str, Any]:
     source = server_config if isinstance(server_config, dict) else {}
     return normalize_assistant_tool_ui_settings(
         auto_cancel_queue_tasks=source.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, get_deepy_config_value(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT)),
+        separate_requests_with_empty_line=source.get(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, get_deepy_config_value(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT)),
         use_template_properties=source.get(ASSISTANT_USE_TEMPLATE_PROPERTIES_KEY, get_deepy_config_value(ASSISTANT_USE_TEMPLATE_PROPERTIES_KEY, True)),
         width=source.get(ASSISTANT_OVERRIDE_WIDTH_KEY, get_deepy_config_value(ASSISTANT_OVERRIDE_WIDTH_KEY, ASSISTANT_OVERRIDE_WIDTH_DEFAULT)),
         height=source.get(ASSISTANT_OVERRIDE_HEIGHT_KEY, get_deepy_config_value(ASSISTANT_OVERRIDE_HEIGHT_KEY, ASSISTANT_OVERRIDE_HEIGHT_DEFAULT)),
@@ -100,9 +108,9 @@ def store_assistant_tool_ui_settings(server_config: dict[str, Any] | None, setti
     if not isinstance(server_config, dict):
         return False
     normalized = normalize_assistant_tool_ui_settings(**dict(settings or {}))
-    changed = False
     updates = {
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: normalized["auto_cancel_queue_tasks"],
+        DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY: normalized["separate_requests_with_empty_line"],
         ASSISTANT_USE_TEMPLATE_PROPERTIES_KEY: normalized["use_template_properties"],
         ASSISTANT_OVERRIDE_WIDTH_KEY: normalized["width"],
         ASSISTANT_OVERRIDE_HEIGHT_KEY: normalized["height"],
@@ -115,12 +123,8 @@ def store_assistant_tool_ui_settings(server_config: dict[str, Any] | None, setti
         DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY: normalized["speech_from_description_variant"],
         DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY: normalized["speech_from_sample_variant"],
     }
-    for key, value in updates.items():
-        if server_config.get(key) == value:
-            continue
-        server_config[key] = value
-        changed = True
-    return changed
+    server_config.update(updates)
+    return True
 
 
 def get_template_selector_state() -> dict[str, Any]:
@@ -162,6 +166,7 @@ def refresh_template_selector_state(current_image_generator: Any, current_image_
 def normalize_assistant_tool_ui_settings(
     *,
     auto_cancel_queue_tasks: Any = None,
+    separate_requests_with_empty_line: Any = None,
     use_template_properties: Any = None,
     priority: Any = None,
     width: Any = None,
@@ -177,6 +182,7 @@ def normalize_assistant_tool_ui_settings(
 ) -> dict[str, Any]:
     return {
         "auto_cancel_queue_tasks": normalize_deepy_auto_cancel_queue_tasks(get_deepy_config_value(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT) if auto_cancel_queue_tasks is None else auto_cancel_queue_tasks),
+        "separate_requests_with_empty_line": normalize_assistant_separate_requests_with_empty_line(get_deepy_config_value(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT) if separate_requests_with_empty_line is None else separate_requests_with_empty_line),
         "use_template_properties": normalize_assistant_use_template_properties(get_deepy_config_value(ASSISTANT_USE_TEMPLATE_PROPERTIES_KEY, True) if use_template_properties is None else use_template_properties),
         "width": normalize_assistant_override_width(get_deepy_config_value(ASSISTANT_OVERRIDE_WIDTH_KEY, ASSISTANT_OVERRIDE_WIDTH_DEFAULT) if width is None else width),
         "height": normalize_assistant_override_height(get_deepy_config_value(ASSISTANT_OVERRIDE_HEIGHT_KEY, ASSISTANT_OVERRIDE_HEIGHT_DEFAULT) if height is None else height),
@@ -213,6 +219,7 @@ __all__ = [
     "normalize_assistant_override_num_frames",
     "normalize_assistant_override_seed",
     "normalize_assistant_override_width",
+    "normalize_assistant_separate_requests_with_empty_line",
     "normalize_assistant_tool_ui_settings",
     "normalize_assistant_use_template_properties",
     "refresh_template_selector_state",

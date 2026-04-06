@@ -48,11 +48,13 @@ class CUDAGraphRunner:
         self._static_inputs = [tensor.detach().clone() for tensor in inputs]
         self._graph = torch.cuda.CUDAGraph()
         try:
-            with torch.cuda.graph(self._graph):
-                self._output = self._fn(*self._static_inputs)
+            with torch.inference_mode():
+                with torch.cuda.graph(self._graph, capture_error_mode="thread_local"):
+                    self._output = self._fn(*self._static_inputs)
             # The capture pass records kernels but does not populate outputs for immediate use.
             # Replay once so the first caller receives valid results.
-            self._graph.replay()
+            with torch.inference_mode():
+                self._graph.replay()
         except Exception:
             self.release()
             raise
@@ -73,7 +75,8 @@ class CUDAGraphRunner:
         if self._graph is None:
             return self._capture(*inputs)
         self._copy_inputs(*inputs)
-        self._graph.replay()
+        with torch.inference_mode():
+            self._graph.replay()
         return self._output
 
     def release(self) -> None:

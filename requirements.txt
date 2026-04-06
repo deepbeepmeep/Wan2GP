@@ -25,6 +25,7 @@ mutagen
 pyloudnorm
 librosa==0.11.0
 speechbrain==1.0.3
+openai-whisper==20250625
 audio-separator==0.36.1
 pyannote.audio==3.3.2
 torchcodec

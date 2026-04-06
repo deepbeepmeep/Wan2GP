@@ -31,6 +31,9 @@ REQUEST_ID = "assistant_chat_request"
 ASK_BUTTON_ID = "assistant_chat_ask_button"
 RESET_BUTTON_ID = "assistant_chat_reset_button"
 STOP_BRIDGE_ID = "assistant_chat_stop_bridge"
+BUSY_QUEUE_INPUT_ID = "assistant_chat_busy_queue_input"
+BUSY_QUEUE_BUTTON_ID = "assistant_chat_busy_queue_button"
+SAVE_SETTINGS_BUTTON_ID = "assistant_chat_save_settings_button"
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jfif", ".pjpeg"}
 _VIDEO_EXTENSIONS = deepy_video_tools.VIDEO_EXTENSIONS
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus"}
@@ -59,6 +62,9 @@ def _shell_markup() -> str:
     <div class="wangp-assistant-chat__status-text"></div>
     <button class="wangp-assistant-chat__status-stop" type="button" aria-label="Stop Deepy" disabled>Stop</button>
   </div>
+  <button class="wangp-assistant-chat__jump-bottom" type="button" aria-label="Jump to latest messages" aria-hidden="true" tabindex="-1">
+    <span aria-hidden="true"></span>
+  </button>
 </section>
 """.strip()
 
@@ -304,18 +310,18 @@ def get_css() -> str:
     z-index: 2;
     width: min(var(--dock-settings-panel-width), calc(100vw - 150px));
     height: 100%;
-    padding: 12px;
+    padding: 0;
     display: block;
-    border: 1px solid rgba(16, 78, 109, 0.16);
+    border: 0;
     border-radius: 24px;
-    background: #ffffff;
-    box-shadow: 0 30px 60px rgba(8, 34, 50, 0.16);
+    background: transparent;
+    box-shadow: none;
     opacity: 0;
     visibility: hidden;
     transform: translateX(-24px) scale(0.98);
     transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s step-end;
     pointer-events: none;
-    overflow: hidden !important;
+    overflow: visible !important;
 }
 
 #assistant_chat_panel.is-settings-open #assistant_chat_settings_panel {
@@ -334,21 +340,45 @@ def get_css() -> str:
     min-width: 0 !important;
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll {
-    display: block !important;
-    height: 100%;
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
-    padding-right: 4px;
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-width: 0 !important;
+    padding: 0 !important;
+    gap: 0 !important;
+    border: 1px solid rgba(14, 71, 99, 0.18) !important;
+    border-radius: 22px !important;
+    background: #ffffff !important;
+    box-shadow: 0 28px 56px rgba(8, 33, 49, 0.2) !important;
+    overflow: hidden !important;
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block {
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .form {
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll {
+    display: block !important;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    padding: 12px 12px 12px;
+}
+
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block {
     display: block !important;
     margin: 0 0 12px !important;
     overflow: visible;
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap {
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > .label-wrap {
     align-items: center;
     padding: 10px 14px;
     border: 1px solid rgba(23, 90, 125, 0.16);
@@ -357,15 +387,15 @@ def get_css() -> str:
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap.open {
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > .label-wrap.open {
     margin-bottom: 8px;
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap span {
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > .label-wrap span {
     color: #174a67;
 }
 
-#assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > div:last-child {
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > div:last-child {
     overflow: visible;
 }
 
@@ -494,6 +524,28 @@ def get_css() -> str:
 
 #assistant_chat_stop_bridge {
     display: none !important;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__settings-actions {
+    margin-top: 10px;
+}
+
+#assistant_chat_settings_panel .wangp-assistant-chat__settings-actions > .form {
+    width: 100%;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#assistant_chat_save_settings_button {
+    width: 100%;
+    min-height: 42px;
+    border-radius: 14px;
+    background: linear-gradient(180deg, #0e5b81 0%, #0a415e 100%);
+    color: #f3fbff;
+    border: 0;
+    box-shadow: 0 12px 22px rgba(11, 43, 63, 0.12);
 }
 
 #assistant_chat_html {
@@ -1104,6 +1156,56 @@ def get_css() -> str:
     cursor: default;
 }
 
+.wangp-assistant-chat__jump-bottom {
+    position: absolute;
+    left: 50%;
+    bottom: calc(var(--chat-status-offset) + 8px);
+    z-index: 4;
+    width: 42px;
+    height: 42px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid rgba(251, 254, 255, 0.88);
+    border-radius: 999px;
+    background: transparent;
+    color: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    transform: translate(-50%, 10px);
+    opacity: 0;
+    pointer-events: none;
+    filter: drop-shadow(0 2px 4px rgba(9, 31, 46, 0.28));
+    transition: opacity 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+}
+
+.wangp-assistant-chat__jump-bottom.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0);
+}
+
+.wangp-assistant-chat__jump-bottom span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    box-sizing: border-box;
+    border-right: 3px solid rgba(251, 254, 255, 0.98);
+    border-bottom: 3px solid rgba(251, 254, 255, 0.98);
+    transform: translateY(-2px) rotate(45deg);
+}
+
+.wangp-assistant-chat__jump-bottom:hover {
+    border-color: rgba(251, 254, 255, 1);
+}
+
+.wangp-assistant-chat__jump-bottom:hover span {
+    border-right-color: rgba(251, 254, 255, 1);
+    border-bottom-color: rgba(251, 254, 255, 1);
+}
+
 #assistant_chat_settings_panel .wangp-assistant-chat__template-tool-grid {
     position: relative;
     gap: 12px;
@@ -1267,6 +1369,19 @@ def get_css() -> str:
     overflow: hidden !important;
 }
 
+#assistant_chat_settings_panel > .wangp-assistant-chat__settings-card.wangp-assistant-chat__template-modal-card {
+    width: 100% !important;
+    max-width: none !important;
+    flex: 1 1 auto !important;
+}
+
+#assistant_chat_settings_panel .tab-nav button,
+#assistant_chat_settings_panel button[role="tab"] {
+    font-size: calc(0.82rem * var(--dock-font-scale));
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+}
+
 #assistant_chat_settings_panel .wangp-assistant-chat__template-modal-card > .form {
     padding: 0 !important;
     border: 0 !important;
@@ -1284,7 +1399,7 @@ def get_css() -> str:
 }
 
 .wangp-assistant-chat__template-modal-titlebar {
-    padding: 16px 18px 14px;
+    padding: 10px 16px 9px;
     background: linear-gradient(180deg, rgba(16, 86, 121, 0.98) 0%, rgba(10, 59, 84, 0.98) 100%);
     color: #f3fbff;
 }
@@ -1298,7 +1413,7 @@ def get_css() -> str:
 }
 
 .wangp-assistant-chat__template-modal-heading {
-    font-size: calc(1rem * var(--dock-font-scale));
+    font-size: calc(0.9rem * var(--dock-font-scale));
     font-weight: 800;
     letter-spacing: 0.02em;
     color: #f3fbff !important;
@@ -1420,13 +1535,13 @@ def get_css() -> str:
     color: #eaf2f7;
 }
 
-#assistant_chat_dock.is-dark #assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap {
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > .label-wrap {
     border-color: rgba(112, 138, 156, 0.18);
     background: linear-gradient(180deg, rgba(9, 9, 9, 0.98) 0%, rgba(20, 20, 20, 0.98) 100%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-#assistant_chat_dock.is-dark #assistant_chat_settings_panel > .wangp-assistant-chat__settings-scroll > .block > .label-wrap span {
+#assistant_chat_dock.is-dark #assistant_chat_settings_panel > .wangp-assistant-chat__settings-card > .wangp-assistant-chat__settings-scroll > .block > .label-wrap span {
     color: #e6eef4;
 }
 
@@ -1774,17 +1889,45 @@ WAC.applyAutoscrollState = function (state) {
   if (!scroll) return;
   if (state && state.atBottom) {
     scroll.scrollTop = scroll.scrollHeight;
+    WAC.syncJumpToBottom();
     return;
   }
-  if (!state) return;
+  if (!state) {
+    WAC.syncJumpToBottom();
+    return;
+  }
   scroll.scrollTop = Math.max(0, Number(state.top || 0));
+  WAC.syncJumpToBottom();
 };
 
-WAC.lastOptimisticSubmit = WAC.lastOptimisticSubmit || { id: '', text: '', ts: 0 };
+WAC.optimisticSubmits = Array.isArray(WAC.optimisticSubmits) ? WAC.optimisticSubmits : [];
 WAC.serverInstanceId = WAC.serverInstanceId || '';
 
 WAC.normalizeText = function (value) {
   return String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').trim();
+};
+
+WAC.splitRequestBlocks = function (value) {
+  const normalized = String(value || '').replace(/\r\n?/g, '\n').trim();
+  if (!normalized) return [];
+  const blocks = [];
+  let current = [];
+  for (const rawLine of normalized.split('\n')) {
+    if (!String(rawLine).trim()) {
+      if (current.length > 0) {
+        const block = current.join('\n').trim();
+        if (block) blocks.push(block);
+        current = [];
+      }
+      continue;
+    }
+    current.push(String(rawLine).replace(/\s+$/, ''));
+  }
+  if (current.length > 0) {
+    const block = current.join('\n').trim();
+    if (block) blocks.push(block);
+  }
+  return blocks;
 };
 
 WAC.gradioConfig = function () {
@@ -1853,13 +1996,7 @@ WAC.getWanGpSettingsSelection = function () {
   return { value, label };
 };
 
-WAC.pushOptimisticUserMessage = function (text) {
-  const content = WAC.normalizeText(text);
-  if (!content) return;
-  const now = Date.now();
-  if (WAC.lastOptimisticSubmit.text === content && (now - WAC.lastOptimisticSubmit.ts) < 900) return;
-  const optimisticId = `optimistic_${now}`;
-  WAC.lastOptimisticSubmit = { id: optimisticId, text: content, ts: now };
+WAC.buildOptimisticUserMessage = function (optimisticId, content) {
   const contentHtml = WAC.escapeHtml(content).replace(/\n/g, '<br>');
   const html = [
     `<article class='wangp-assistant-chat__message wangp-assistant-chat__message--user' data-message-id='${optimisticId}'>`,
@@ -1870,7 +2007,76 @@ WAC.pushOptimisticUserMessage = function (text) {
     `<div class='wangp-assistant-chat__body'><p>${contentHtml}</p></div>`,
     "</div></article>",
   ].join('');
-  WAC.upsertMessage({ id: optimisticId, role: 'user', html });
+  return { id: optimisticId, role: 'user', html };
+};
+
+WAC.dropOptimisticSubmit = function (optimisticId) {
+  const targetId = String(optimisticId || '');
+  WAC.optimisticSubmits = (WAC.optimisticSubmits || []).filter((item) => String(item && item.id || '') !== targetId);
+};
+
+WAC.clearRequestInput = function (expectedText) {
+  const input = WAC.requestInput();
+  if (!input) return;
+  const current = WAC.normalizeText(input.value || '');
+  const expected = WAC.normalizeText(expectedText || '');
+  if (expected && current && current !== expected) return;
+  input.value = '';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+};
+
+WAC.reconcileOptimisticSubmits = function () {
+  const optimistic = Array.isArray(WAC.optimisticSubmits) ? WAC.optimisticSubmits.slice() : [];
+  if (optimistic.length === 0) return;
+  const serverUserTexts = [];
+  for (const messageId of WAC.state.order) {
+    const message = WAC.state.messages[messageId];
+    if (!message || message.role !== 'user' || String(message.id || '').startsWith('optimistic_')) continue;
+    const node = WAC.createMessageNode(message);
+    serverUserTexts.push(WAC.messageBodyText(node));
+  }
+  let matchedPrefix = 0;
+  const maxMatch = Math.min(serverUserTexts.length, optimistic.length);
+  for (let count = maxMatch; count > 0; count -= 1) {
+    const serverSuffix = serverUserTexts.slice(serverUserTexts.length - count);
+    const optimisticPrefix = optimistic.slice(0, count).map((item) => WAC.normalizeText(item && item.text || ''));
+    if (serverSuffix.length === optimisticPrefix.length && serverSuffix.every((text, index) => text === optimisticPrefix[index])) {
+      matchedPrefix = count;
+      break;
+    }
+    const flattenedPrefix = [];
+    for (const item of optimistic.slice(0, count)) {
+      const content = WAC.normalizeText(item && item.text || '');
+      if (!content) continue;
+      const blocks = WAC.splitRequestBlocks(content);
+      flattenedPrefix.push(...(blocks.length > 1 ? blocks : [content]).map((block) => WAC.normalizeText(block)));
+    }
+    const splitServerSuffix = flattenedPrefix.length > count ? serverUserTexts.slice(serverUserTexts.length - flattenedPrefix.length) : [];
+    if (splitServerSuffix.length === flattenedPrefix.length && splitServerSuffix.every((text, index) => text === flattenedPrefix[index])) {
+      matchedPrefix = count;
+      break;
+    }
+  }
+  WAC.optimisticSubmits = optimistic.slice(matchedPrefix);
+  for (const item of WAC.optimisticSubmits) {
+    const optimisticId = String(item && item.id || '').trim();
+    const content = WAC.normalizeText(item && item.text || '');
+    if (!optimisticId || !content || WAC.state.messages[optimisticId]) continue;
+    WAC.state.order.push(optimisticId);
+    WAC.state.messages[optimisticId] = WAC.buildOptimisticUserMessage(optimisticId, content);
+  }
+};
+
+WAC.pushOptimisticUserMessage = function (text) {
+  const content = WAC.normalizeText(text);
+  if (!content) return;
+  const now = Date.now();
+  const lastOptimistic = (WAC.optimisticSubmits || [])[WAC.optimisticSubmits.length - 1] || { text: '', ts: 0 };
+  if (WAC.normalizeText(lastOptimistic.text || '') === content && (now - Number(lastOptimistic.ts || 0)) < 900) return;
+  const optimisticId = `optimistic_${now}`;
+  WAC.optimisticSubmits.push({ id: optimisticId, text: content, ts: now });
+  WAC.upsertMessage(WAC.buildOptimisticUserMessage(optimisticId, content));
 };
 
 WAC.host = function () {
@@ -1895,6 +2101,10 @@ WAC.empty = function () {
 
 WAC.statusNode = function () {
   return document.querySelector('#assistant_chat_html .wangp-assistant-chat__status');
+};
+
+WAC.jumpBottomNode = function () {
+  return document.querySelector('#assistant_chat_html .wangp-assistant-chat__jump-bottom');
 };
 
 WAC.statsNode = function () {
@@ -1984,6 +2194,23 @@ WAC.stopBridgeTargets = function () {
   const button = wrapper.querySelector('button');
   if (button) targets.unshift(button);
   return targets.filter((target, index, items) => !!target && items.indexOf(target) === index);
+};
+
+WAC.queueBusyRequest = function (text) {
+  const input = document.querySelector('#assistant_chat_busy_queue_input textarea, #assistant_chat_busy_queue_input input');
+  const button = document.querySelector('#assistant_chat_busy_queue_button button, #assistant_chat_busy_queue_button');
+  if (!input || !button) return false;
+  input.value = String(text || '');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  if (typeof button.click === 'function') button.click();
+  return true;
+};
+
+WAC.isAssistantBusy = function () {
+  if (WAC.state && WAC.state.status && WAC.state.status.visible && WAC.state.status.text) return true;
+  const stopButton = document.querySelector('#assistant_chat_html .wangp-assistant-chat__status-stop');
+  return !!(stopButton && !stopButton.disabled);
 };
 
 WAC.eventSource = function () {
@@ -2187,7 +2414,7 @@ WAC.syncDockLayout = function () {
   dock.style.setProperty('--dock-settings-panel-width', `${settingsWidth}px`);
 };
 
-WAC.setDockOpen = function (open, persist) {
+WAC.setDockOpen = function (open) {
   WAC.dockOpen = !!open;
   WAC.syncDockState();
   WAC.syncDockLayout();
@@ -2241,6 +2468,9 @@ WAC.ensureShell = function () {
         <div class="wangp-assistant-chat__status-text"></div>
         <button class="wangp-assistant-chat__status-stop" type="button" aria-label="Stop Deepy" disabled>Stop</button>
       </div>
+      <button class="wangp-assistant-chat__jump-bottom" type="button" aria-label="Jump to latest messages" aria-hidden="true" tabindex="-1">
+        <span aria-hidden="true"></span>
+      </button>
     </section>
   `;
   host.dataset.wangpAssistantChatMounted = 'true';
@@ -2249,6 +2479,7 @@ WAC.ensureShell = function () {
   WAC.syncDockState();
   WAC.syncDockLayout();
   WAC.syncDisclosureBridge();
+  WAC.syncScrollBridge();
   return true;
 };
 
@@ -2256,6 +2487,22 @@ WAC.isNearBottom = function () {
   const scroll = WAC.scroll();
   if (!scroll) return true;
   return (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) <= WAC.bottomThreshold();
+};
+
+WAC.syncJumpToBottom = function () {
+  const node = WAC.jumpBottomNode();
+  if (!node) return;
+  const show = WAC.state.order.length > 0 && !WAC.isNearBottom();
+  node.classList.toggle('is-visible', show);
+  node.setAttribute('aria-hidden', show ? 'false' : 'true');
+  node.tabIndex = show ? 0 : -1;
+};
+
+WAC.scrollToBottom = function () {
+  const scroll = WAC.scroll();
+  if (!scroll) return;
+  scroll.scrollTop = scroll.scrollHeight;
+  WAC.syncJumpToBottom();
 };
 
 WAC.hideEmpty = function () {
@@ -2269,6 +2516,7 @@ WAC.showEmptyIfNeeded = function () {
   const isEmpty = WAC.state.order.length === 0;
   if (empty) empty.style.display = isEmpty ? 'flex' : 'none';
   if (transcript) transcript.style.display = isEmpty ? 'none' : 'flex';
+  WAC.syncJumpToBottom();
 };
 
 WAC.createMessageNode = function (message) {
@@ -2368,17 +2616,18 @@ WAC.upsertMessage = function (message) {
   const node = WAC.createMessageNode(message);
   if (!node) return;
   const existing = transcript.querySelector(`[data-message-id="${CSS.escape(String(message.id))}"]`);
-  const optimistic = WAC.lastOptimisticSubmit || { id: '', text: '', ts: 0 };
   const incomingId = String(message.id);
-  if (!existing && message.role === 'user' && !incomingId.startsWith('optimistic_') && optimistic.id) {
-    const optimisticNode = transcript.querySelector(`[data-message-id="${CSS.escape(String(optimistic.id))}"]`);
+  if (!existing && message.role === 'user' && !incomingId.startsWith('optimistic_') && Array.isArray(WAC.optimisticSubmits) && WAC.optimisticSubmits.length > 0) {
     const incomingText = WAC.messageBodyText(node);
-    if (optimisticNode && incomingText && incomingText === WAC.normalizeText(optimistic.text)) {
+    const optimistic = WAC.optimisticSubmits.find((item) => WAC.normalizeText(item && item.text || '') === incomingText);
+    const optimisticId = String(optimistic && optimistic.id || '');
+    const optimisticNode = optimisticId ? transcript.querySelector(`[data-message-id="${CSS.escape(optimisticId)}"]`) : null;
+    if (optimisticNode && optimisticId && incomingText) {
       optimisticNode.replaceWith(node);
-      delete WAC.state.messages[String(optimistic.id)];
-      WAC.state.order = WAC.state.order.map((id) => id === String(optimistic.id) ? incomingId : id);
+      delete WAC.state.messages[optimisticId];
+      WAC.state.order = WAC.state.order.map((id) => id === optimisticId ? incomingId : id);
       WAC.state.messages[incomingId] = message;
-      WAC.lastOptimisticSubmit = { id: '', text: '', ts: 0 };
+      WAC.dropOptimisticSubmit(optimisticId);
       WAC.hideEmpty();
       WAC.applyDisclosureState(transcript);
       WAC.applyAutoscrollState(scrollState);
@@ -2450,14 +2699,14 @@ WAC.sync = function (messages, status, stats) {
   WAC.ensureShell();
   WAC.captureDisclosureState(WAC.transcript());
   const scrollState = WAC.captureAutoscrollState();
-  WAC.lastOptimisticSubmit = { id: '', text: '', ts: 0 };
   WAC.replaceState(messages, status, stats);
+  WAC.reconcileOptimisticSubmits();
   WAC.hydrate(scrollState);
 };
 
 WAC.reset = function () {
   WAC.state = { order: [], messages: {}, status: null, stats: null };
-  WAC.lastOptimisticSubmit = { id: '', text: '', ts: 0 };
+  WAC.optimisticSubmits = [];
   WAC.disclosureState = {};
   WAC.ensureShell();
   const transcript = WAC.transcript();
@@ -2510,21 +2759,38 @@ WAC.syncDisclosureBridge = function () {
   WAC.disclosureNode.addEventListener('toggle', WAC.handleDisclosureToggle, true);
 };
 
+WAC.handleScroll = function () {
+  WAC.syncJumpToBottom();
+};
+
+WAC.syncScrollBridge = function () {
+  const scroll = WAC.scroll();
+  if (!scroll || scroll === WAC.scrollNode) {
+    WAC.syncJumpToBottom();
+    return;
+  }
+  if (WAC.scrollNode) WAC.scrollNode.removeEventListener('scroll', WAC.handleScroll, { passive: true });
+  WAC.scrollNode = scroll;
+  WAC.scrollNode.addEventListener('scroll', WAC.handleScroll, { passive: true });
+  WAC.syncJumpToBottom();
+};
+
 WAC.installObserver = function () {
   if (WAC.observer) return;
   const target = document.querySelector('gradio-app') || document.body;
   if (!target) return;
   WAC.observer = new MutationObserver(() => {
-    if (WAC.observerScheduled) return;
-    WAC.observerScheduled = true;
-    window.requestAnimationFrame(() => {
-      WAC.observerScheduled = false;
-      if (WAC.host()) WAC.ensureShell();
-      WAC.syncThemeState();
-      WAC.syncDockLayout();
-      WAC.handleEventNodeMutation();
-      WAC.readEventSource();
-    });
+      if (WAC.observerScheduled) return;
+      WAC.observerScheduled = true;
+      window.requestAnimationFrame(() => {
+        WAC.observerScheduled = false;
+        if (WAC.host()) WAC.ensureShell();
+        WAC.syncScrollBridge();
+        WAC.syncThemeState();
+        WAC.syncDockLayout();
+        WAC.handleEventNodeMutation();
+        WAC.readEventSource();
+      });
   });
   WAC.observer.observe(target, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'data-theme', 'theme', 'style'] });
 };
@@ -2532,6 +2798,7 @@ WAC.installObserver = function () {
 WAC.installEventBridge = function () {
   WAC.handleEventNodeMutation();
   WAC.syncDisclosureBridge();
+  WAC.syncScrollBridge();
   if (!WAC.pollTimer) WAC.pollTimer = window.setInterval(() => { WAC.readEventSource(); }, 250);
   window.addEventListener('focus', () => { WAC.readEventSource(); }, { passive: true });
   document.addEventListener('visibilitychange', () => {
@@ -2582,6 +2849,12 @@ WAC.installDockBridge = function () {
       }
       return;
     }
+    const jumpBottomButton = event.target && event.target.closest ? event.target.closest('.wangp-assistant-chat__jump-bottom') : null;
+    if (jumpBottomButton) {
+      event.preventDefault();
+      WAC.scrollToBottom();
+      return;
+    }
     const askButton = event.target && event.target.closest ? event.target.closest('#assistant_chat_ask_button') : null;
     if (!askButton) return;
     const input = WAC.requestInput();
@@ -2589,6 +2862,13 @@ WAC.installDockBridge = function () {
     if (!text) return;
     WAC.setDockOpen(true);
     WAC.pushOptimisticUserMessage(text);
+    window.setTimeout(() => { WAC.clearRequestInput(text); }, 0);
+    if (WAC.isAssistantBusy()) {
+      event.preventDefault();
+      event.stopPropagation();
+      WAC.queueBusyRequest(text);
+      return;
+    }
   }, true);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
@@ -2608,6 +2888,11 @@ WAC.installDockBridge = function () {
     event.stopPropagation();
     WAC.setDockOpen(true);
     WAC.pushOptimisticUserMessage(text);
+    window.setTimeout(() => { WAC.clearRequestInput(text); }, 0);
+    if (WAC.isAssistantBusy()) {
+      WAC.queueBusyRequest(text);
+      return;
+    }
     const askButton = document.querySelector('#assistant_chat_ask_button button, #assistant_chat_ask_button');
     if (askButton && typeof askButton.click === 'function') askButton.click();
   }, true);
@@ -2682,6 +2967,21 @@ def build_sync_event(session, status: dict[str, Any] | None = None, stats: dict[
     return _event_payload(event)
 
 
+def _queued_tail_insert_index(session) -> int:
+    records = list(session.chat_transcript or [])
+    insert_index = len(records)
+    while insert_index > 0:
+        record = records[insert_index - 1]
+        if not isinstance(record, dict):
+            break
+        if str(record.get("role", "")).strip() != "user":
+            break
+        if str(record.get("badge", "")).strip() != "Queued":
+            break
+        insert_index -= 1
+    return insert_index
+
+
 def add_user_message(session, text: str, queued: bool = False) -> tuple[str, str]:
     record = {
         "id": _next_message_id(session, "user"),
@@ -2709,8 +3009,25 @@ def create_assistant_turn(session) -> str:
         "attachments": [],
         "badge": "",
     }
-    session.chat_transcript.append(record)
+    session.chat_transcript.insert(_queued_tail_insert_index(session), record)
     return record["id"]
+
+
+def add_assistant_note(session, text: str, badge: str | None = None, author: str = "System") -> tuple[str, str | None]:
+    content = str(text or "").strip()
+    if len(content) == 0:
+        return "", None
+    record = {
+        "id": _next_message_id(session, "assistant"),
+        "role": "assistant",
+        "author": str(author or "").strip() or "System",
+        "created_at": _time_label(),
+        "blocks": [{"id": _next_block_id("content"), "type": "markdown", "text": content}],
+        "attachments": [],
+        "badge": str(badge or "").strip(),
+    }
+    session.chat_transcript.insert(_queued_tail_insert_index(session), record)
+    return record["id"], _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
 
 
 def get_message_content(session, message_id: str) -> str:
@@ -2734,6 +3051,28 @@ def set_message_badge(session, message_id: str, badge: str | None) -> str | None
     if record is None:
         return None
     record["badge"] = str(badge or "").strip()
+    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+
+
+def clear_message_blocks(session, message_id: str) -> str | None:
+    record = _find_message(session, message_id)
+    if record is None:
+        return None
+    record["blocks"] = []
+    record["attachments"] = []
+    return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
+
+
+def clear_assistant_content(session, message_id: str) -> str | None:
+    record = _find_message(session, message_id)
+    if record is None:
+        return None
+    blocks = _ensure_message_blocks(record)
+    kept_blocks = [block for block in blocks if not (isinstance(block, dict) and block.get("type") == "markdown")]
+    if len(kept_blocks) == len(blocks):
+        return None
+    record["blocks"] = kept_blocks
+    record["content"] = ""
     return _event_payload({"type": "upsert_message", "message": _render_message_payload(record)})
 
 

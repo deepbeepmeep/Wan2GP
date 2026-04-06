@@ -1,4 +1,4 @@
-"""Runtime monkey patch that injects a Gradio background-scheduler fix into templates."""
+"""Runtime monkey patch that keeps WanGP's main tab responsive across tab switches and backgrounding."""
 
 from __future__ import annotations
 
@@ -8,6 +8,9 @@ from typing import Callable
 
 ENABLE_GRADIO_FOCUS_QUEUE_MONKEYPATCH = True
 GRADIO_FOCUS_QUEUE_MONKEYPATCH_VERBOSE = False
+FOCUS_QUEUE_SERVER_CONFIG_KEY = "process_queues_when_browser_unfocused"
+BACKGROUND_SCHEDULER_DEFAULT_ENABLED = True
+OFFTAB_KEEPALIVE_DEFAULT_ENABLED = True
 
 _PATCH_SENTINEL = "window.__gradioFocusQueuePatch"
 _TARGET_TEMPLATES = {"frontend/index.html", "frontend/share.html"}
@@ -18,15 +21,30 @@ def get_javascript() -> str:
     if not ENABLE_GRADIO_FOCUS_QUEUE_MONKEYPATCH:
         return ""
     verbose = "true" if GRADIO_FOCUS_QUEUE_MONKEYPATCH_VERBOSE else "false"
+    background_default_enabled = "true" if BACKGROUND_SCHEDULER_DEFAULT_ENABLED else "false"
+    offtab_default_enabled = "true" if OFFTAB_KEEPALIVE_DEFAULT_ENABLED else "false"
     return f"""
 (function () {{
   if (typeof window === "undefined" || window.__gradioFocusQueuePatch) {{
     return;
   }}
 
+  const MAIN_TAB_ID = "video_gen";
+  const OFFTAB_DELAY_MS = 25;
+  const INTERACTION_KEEPALIVE_MS = 1500;
+  const KEEPALIVE_CLASS = "wangp-main-tab-keepalive";
+  const KEEPALIVE_STYLE_ID = "wangp-main-tab-keepalive-style";
   const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window);
   const nativeCancelAnimationFrame = window.cancelAnimationFrame.bind(window);
+  const nativeAddEventListener = EventTarget.prototype.addEventListener;
+  const nativeRemoveEventListener = EventTarget.prototype.removeEventListener;
   const channel = typeof MessageChannel === "function" ? new MessageChannel() : null;
+  const wrappedListeners = new WeakMap();
+  const wrappedHandleEventListeners = new WeakMap();
+  const syntheticJobs = new Map();
+  const backgroundQueue = [];
+  let nextSyntheticId = 1;
+  let activeOfftabContext = null;
 
   function isElementVisible(element) {{
     if (!element) {{
@@ -37,30 +55,374 @@ def get_javascript() -> str:
     return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
   }}
 
-  function getVideoGenTab() {{
-    return Array.from(document.querySelectorAll('[role="tab"]')).find((element) => element.textContent.trim() === "Video Generator") || null;
+  function getMainTab() {{
+    if (patch.mainTab && patch.mainTab.isConnected) {{
+      return patch.mainTab;
+    }}
+    patch.mainTab = document.querySelector(`[role="tab"][data-tab-id="${{MAIN_TAB_ID}}"]`);
+    return patch.mainTab;
   }}
 
-  function getVideoGenPanel() {{
-    const tab = getVideoGenTab();
-    const panelId = tab?.getAttribute("aria-controls");
-    const panel = panelId ? document.getElementById(panelId) : null;
-    return isElementVisible(panel) ? panel : null;
+  function getMainTabPanel() {{
+    const tab = getMainTab();
+    const panelId = tab ? tab.getAttribute("aria-controls") : null;
+    if (!panelId) {{
+      patch.mainTabPanel = null;
+      patch.mainTabPanelId = null;
+      return null;
+    }}
+    if (patch.mainTabPanel && patch.mainTabPanelId === panelId && patch.mainTabPanel.isConnected) {{
+      return patch.mainTabPanel;
+    }}
+    patch.mainTabPanelId = panelId;
+    patch.mainTabPanel = document.getElementById(panelId);
+    return patch.mainTabPanel;
   }}
 
-  function isVideoGenActive() {{
-    return getVideoGenPanel() !== null;
+  function isMainTabSelected() {{
+    const tab = getMainTab();
+    return !!tab && tab.getAttribute("aria-selected") === "true";
+  }}
+
+  function isMainTabActive() {{
+    return isElementVisible(getMainTabPanel());
+  }}
+
+  function ensureKeepAliveStyle() {{
+    if (document.getElementById(KEEPALIVE_STYLE_ID)) {{
+      return;
+    }}
+    const style = document.createElement("style");
+    style.id = KEEPALIVE_STYLE_ID;
+    style.textContent = `
+      .${{KEEPALIVE_CLASS}} {{
+        display: flex !important;
+        position: absolute !important;
+        left: -200vw !important;
+        top: 0 !important;
+        width: 1px !important;
+        height: 1px !important;
+        min-height: 0 !important;
+        max-height: 1px !important;
+        overflow: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        z-index: -1 !important;
+        contain: layout style paint !important;
+      }}
+    `;
+    document.head.appendChild(style);
+  }}
+
+  function syncMainTabKeepAlive() {{
+    const panel = getMainTabPanel();
+    if (!panel) {{
+      return false;
+    }}
+    panel.classList.toggle(KEEPALIVE_CLASS, patch.shouldKeepMainTabAlive());
+    patch.mainTabKeepAliveActive = panel.classList.contains(KEEPALIVE_CLASS);
+    return patch.mainTabKeepAliveActive;
+  }}
+
+  function primeMainTabKeepAlive() {{
+    const panel = getMainTabPanel();
+    if (!panel) {{
+      return false;
+    }}
+    panel.classList.add(KEEPALIVE_CLASS);
+    patch.mainTabKeepAliveActive = true;
+    return true;
+  }}
+
+  function primeMainTabInteraction() {{
+    patch.interactionKeepAliveUntil = Date.now() + INTERACTION_KEEPALIVE_MS;
+  }}
+
+  function isSameTopLevelTabList(tab) {{
+    const mainTab = getMainTab();
+    if (!tab || !mainTab || tab === mainTab) {{
+      return false;
+    }}
+    return tab.closest('[role="tablist"]') === mainTab.closest('[role="tablist"]');
+  }}
+
+  function installTopLevelTabPrime() {{
+    if (patch.topLevelTabPrimeInstalled) {{
+      return;
+    }}
+    patch.topLevelTabPrimeInstalled = true;
+    const handler = (event) => {{
+      const tab = event && event.target && event.target.closest ? event.target.closest('[role="tab"]') : null;
+      if (!patch.enableOfftabKeepAlive || !isMainTabSelected() || !isSameTopLevelTabList(tab)) {{
+        return;
+      }}
+      primeMainTabKeepAlive();
+    }};
+    document.addEventListener("pointerdown", handler, true);
+    document.addEventListener("click", handler, true);
+  }}
+
+  function installMainTabInteractionPrime() {{
+    if (patch.mainTabInteractionPrimeInstalled) {{
+      return;
+    }}
+    patch.mainTabInteractionPrimeInstalled = true;
+    const handler = (event) => {{
+      if (!patch.enableOfftabKeepAlive) {{
+        return;
+      }}
+      const panel = getMainTabPanel();
+      const target = event && event.target ? event.target : null;
+      if (!panel || !target || !panel.contains(target)) {{
+        return;
+      }}
+      primeMainTabInteraction();
+    }};
+    document.addEventListener("pointerdown", handler, true);
+    document.addEventListener("click", handler, true);
+  }}
+
+  function scheduleMainTabKeepAliveSync() {{
+    if (patch.keepAliveSyncQueued) {{
+      return;
+    }}
+    patch.keepAliveSyncQueued = true;
+    Promise.resolve().then(() => {{
+      patch.keepAliveSyncQueued = false;
+      patch.mainTabKeepAliveActive = syncMainTabKeepAlive();
+    }});
+  }}
+
+  function installMainTabKeepAliveObserver() {{
+    if (patch.keepAliveObserverInstalled) {{
+      return;
+    }}
+    patch.keepAliveObserverInstalled = true;
+    const target = document.body || document.documentElement;
+    if (!target) {{
+      return;
+    }}
+    const observer = new MutationObserver(() => {{
+      patch.targetComponentIds = null;
+      patch.targetComponentIdsPanelId = null;
+      scheduleMainTabKeepAliveSync();
+    }});
+    observer.observe(target, {{
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-selected", "class", "style"],
+    }});
+    patch.keepAliveObserver = observer;
+    scheduleMainTabKeepAliveSync();
+  }}
+
+  function getTargetComponentIds() {{
+    if (patch.targetComponentIds !== null && patch.targetComponentIdsPanelId === patch.getMainTabPanelId()) {{
+      return patch.targetComponentIds;
+    }}
+    const panel = getMainTabPanel();
+    if (!panel) {{
+      return null;
+    }}
+    const componentNodes = [panel, ...panel.querySelectorAll('[id^="component-"]')];
+    const componentIds = new Set();
+    for (const node of componentNodes) {{
+      const match = /^component-(\\d+)$/.exec(String(node && node.id || ""));
+      if (match) {{
+        componentIds.add(Number(match[1]));
+      }}
+    }}
+    patch.targetComponentIds = componentIds;
+    patch.targetComponentIdsPanelId = patch.getMainTabPanelId();
+    return patch.targetComponentIds;
+  }}
+
+  function isTargetGradioEvent(detail) {{
+    if (!detail || !Number.isInteger(detail.id)) {{
+      return false;
+    }}
+    const targetComponentIds = getTargetComponentIds();
+    return !!targetComponentIds && targetComponentIds.has(detail.id);
+  }}
+
+  function shouldPatchBackgroundAnimationFrame(stack, callback) {{
+    if (!patch.shouldPatchBackground()) {{
+      return false;
+    }}
+    const stackText = String(stack || "");
+    const source = String(callback || "");
+    const isBlocksDispatch = stackText.includes("/assets/Blocks-") && source.includes("Jt(");
+    const isCoreFlush = stackText.includes("/assets/index-") && source.includes("l.update(") && source.includes("ge.length") && source.includes("f.props[v.prop]=j");
+    return isBlocksDispatch || isCoreFlush;
+  }}
+
+  function scheduleBackgroundAnimationFrame(callback) {{
+    if (!channel) {{
+      return nativeRequestAnimationFrame(callback);
+    }}
+    const syntheticId = -nextSyntheticId++;
+    const job = {{ id: syntheticId, kind: "background", callback, canceled: false }};
+    syntheticJobs.set(syntheticId, job);
+    backgroundQueue.push(job);
+    channel.port2.postMessage(syntheticId);
+    patch.backgroundDispatchCount += 1;
+    patch.lastBackgroundDispatch = {{ timestamp: Date.now() }};
+    if (patch.verbose) {{
+      console.debug("[Gradio] background synthetic animation frame", syntheticId);
+    }}
+    return syntheticId;
+  }}
+
+  function dispatchBackgroundJob(job) {{
+    if (!job || job.canceled) {{
+      return;
+    }}
+    syntheticJobs.delete(job.id);
+    try {{
+      job.callback(window.performance.now());
+    }} catch (error) {{
+      window.setTimeout(() => {{
+        throw error;
+      }}, 0);
+    }}
+  }}
+
+  function shouldUseOfftabScheduler(detail) {{
+    return patch.shouldPatchOfftab() && isTargetGradioEvent(detail);
+  }}
+
+  function shouldPatchOfftabDeferredCallback(callback) {{
+    if (!patch.shouldPatchOfftab() || Date.now() > patch.syntheticWindowUntil) {{
+      return false;
+    }}
+    const source = String(callback || "");
+    const isBlocksDispatch = source.includes("Jt(");
+    const isCoreFlush = source.includes("l.update(") && source.includes("ge.length") && source.includes("f.props[v.prop]=j");
+    return isBlocksDispatch || isCoreFlush;
+  }}
+
+  function scheduleOfftabAnimationFrame(callback, context) {{
+    const syntheticId = -nextSyntheticId++;
+    const timeoutId = window.setTimeout(() => {{
+      syntheticJobs.delete(syntheticId);
+      try {{
+        callback(window.performance.now());
+      }} catch (error) {{
+        window.setTimeout(() => {{
+          throw error;
+        }}, 0);
+      }}
+    }}, context.delay);
+    syntheticJobs.set(syntheticId, {{ kind: "offtab", timeoutId }});
+    patch.offtabDispatchCount += 1;
+    patch.lastOfftabDispatch = {{
+      componentId: context.componentId,
+      eventName: context.eventName,
+      delay: context.delay,
+      timestamp: Date.now(),
+    }};
+    return syntheticId;
+  }}
+
+  function cancelSyntheticAnimationFrame(syntheticId) {{
+    const job = syntheticJobs.get(syntheticId);
+    if (typeof job === "undefined") {{
+      return false;
+    }}
+    syntheticJobs.delete(syntheticId);
+    if (job.kind === "offtab") {{
+      window.clearTimeout(job.timeoutId);
+    }} else {{
+      job.canceled = true;
+    }}
+    return true;
+  }}
+
+  function withOfftabScheduler(detail, invoke) {{
+    const previousContext = activeOfftabContext;
+    const context = {{
+      componentId: detail && Number.isInteger(detail.id) ? detail.id : null,
+      eventName: detail && typeof detail.event === "string" ? detail.event : "",
+      delay: OFFTAB_DELAY_MS,
+    }};
+    patch.syntheticWindowUntil = Date.now() + Math.max(200, context.delay * 4);
+    activeOfftabContext = context;
+    try {{
+      return invoke();
+    }} finally {{
+      activeOfftabContext = previousContext;
+    }}
+  }}
+
+  function wrapGradioListener(listener) {{
+    if (wrappedListeners.has(listener)) {{
+      return wrappedListeners.get(listener);
+    }}
+    const wrapped = function (event) {{
+      const detail = event && event.detail ? event.detail : null;
+      if (!shouldUseOfftabScheduler(detail)) {{
+        return listener.apply(this, arguments);
+      }}
+      patch.lastTargetedEvent = {{
+        componentId: detail.id,
+        eventName: typeof detail.event === "string" ? detail.event : "",
+        timestamp: Date.now(),
+      }};
+      return withOfftabScheduler(detail, () => listener.apply(this, arguments));
+    }};
+    wrappedListeners.set(listener, wrapped);
+    return wrapped;
+  }}
+
+  function wrapGradioHandleEventListener(listener) {{
+    if (!listener || typeof listener.handleEvent !== "function") {{
+      return listener;
+    }}
+    if (wrappedHandleEventListeners.has(listener)) {{
+      return wrappedHandleEventListeners.get(listener);
+    }}
+    const wrapped = {{
+      handleEvent(event) {{
+        const detail = event && event.detail ? event.detail : null;
+        if (!shouldUseOfftabScheduler(detail)) {{
+          return listener.handleEvent.call(listener, event);
+        }}
+        patch.lastTargetedEvent = {{
+          componentId: detail.id,
+          eventName: typeof detail.event === "string" ? detail.event : "",
+          timestamp: Date.now(),
+        }};
+        return withOfftabScheduler(detail, () => listener.handleEvent.call(listener, event));
+      }},
+    }};
+    wrappedHandleEventListeners.set(listener, wrapped);
+    return wrapped;
   }}
 
   const patch = {{
-    enabled: true,
+    enableBackgroundScheduler: {background_default_enabled},
+    enableOfftabKeepAlive: {offtab_default_enabled},
     forceBackground: false,
     verbose: {verbose},
-    nextId: 1,
-    pending: new Map(),
-    queue: [],
-    nativeRequestAnimationFrame,
-    nativeCancelAnimationFrame,
+    targetComponentIds: null,
+    targetComponentIdsPanelId: null,
+    syntheticWindowUntil: 0,
+    lastTargetedEvent: null,
+    mainTab: null,
+    mainTabPanel: null,
+    mainTabPanelId: null,
+    keepAliveObserver: null,
+    keepAliveObserverInstalled: false,
+    keepAliveSyncQueued: false,
+    topLevelTabPrimeInstalled: false,
+    mainTabInteractionPrimeInstalled: false,
+    mainTabKeepAliveActive: false,
+    interactionKeepAliveUntil: 0,
+    backgroundDispatchCount: 0,
+    offtabDispatchCount: 0,
+    lastBackgroundDispatch: null,
+    lastOfftabDispatch: null,
     isBackground() {{
       if (this.forceBackground) {{
         return true;
@@ -71,95 +433,96 @@ def get_javascript() -> str:
         return false;
       }}
     }},
-    shouldPatch() {{
-      return this.enabled && this.isBackground() && isVideoGenActive();
+    shouldKeepMainTabAlive() {{
+      return this.enableOfftabKeepAlive && !isMainTabSelected();
     }},
-    shouldPatchAnimationFrame(stack, callback) {{
-      if (!this.shouldPatch()) {{
-        return false;
-      }}
-      const stackText = String(stack || "");
-      const source = String(callback || "");
-      const isBlocksDispatch = stackText.includes("/assets/Blocks-") && source.includes("Jt(");
-      const isCoreFlush = stackText.includes("/assets/index-") && source.includes("l.update(") && source.includes("ge.length") && source.includes("f.props[v.prop]=j");
-      return isBlocksDispatch || isCoreFlush;
-    }}
+    shouldPatchBackground() {{
+      return this.enableBackgroundScheduler && this.isBackground() && isMainTabActive();
+    }},
+    shouldPatchOfftab() {{
+      return this.enableOfftabKeepAlive && !this.isBackground() && (this.mainTabKeepAliveActive || Date.now() < this.interactionKeepAliveUntil);
+    }},
+    getMainTabPanelId() {{
+      const panel = getMainTabPanel();
+      return panel ? panel.id : null;
+    }},
+    getTargetComponentIds,
+    syncMainTabKeepAlive,
+    scheduleMainTabKeepAliveSync,
+    primeMainTabKeepAlive,
+    primeMainTabInteraction,
   }};
 
-  function cancelSynthetic(id) {{
-    const job = patch.pending.get(id);
-    if (!job) {{
-      return false;
-    }}
-    job.canceled = true;
-    patch.pending.delete(id);
-    return true;
-  }}
-
-  function dispatchSynthetic(job) {{
-    if (!job || job.canceled) {{
-      return;
-    }}
-    patch.pending.delete(job.id);
-    try {{
-      if (job.kind === "raf") {{
-        job.callback(window.performance.now());
-      }}
-    }} catch (error) {{
-      window.setTimeout(() => {{
-        throw error;
-      }}, 0);
-    }}
-  }}
-
-  function flushOne() {{
-    const job = patch.queue.shift();
-    dispatchSynthetic(job);
-  }}
-
-  function scheduleSyntheticAnimationFrame(callback) {{
-    if (!channel) {{
-      return nativeRequestAnimationFrame(callback);
-    }}
-    const id = -patch.nextId++;
-    const job = {{ id, kind: "raf", callback, args: null, canceled: false }};
-    patch.pending.set(id, job);
-    patch.queue.push(job);
-    channel.port2.postMessage(id);
-    if (patch.verbose) {{
-      console.debug("[Gradio] focus queue synthetic animation frame", id);
-    }}
-    return id;
-  }}
-
   if (channel) {{
-    channel.port1.onmessage = flushOne;
+    channel.port1.onmessage = () => {{
+      dispatchBackgroundJob(backgroundQueue.shift());
+    }};
   }}
 
   window.__gradioFocusQueuePatch = patch;
+  ensureKeepAliveStyle();
+  installMainTabKeepAliveObserver();
+  installTopLevelTabPrime();
+  installMainTabInteractionPrime();
 
   window.requestAnimationFrame = function (callback) {{
     if (typeof callback !== "function") {{
       return nativeRequestAnimationFrame(callback);
     }}
-    if (!patch.shouldPatch()) {{
+    if (activeOfftabContext) {{
+      return scheduleOfftabAnimationFrame(callback, activeOfftabContext);
+    }}
+    const backgroundActive = patch.shouldPatchBackground();
+    const offtabActive = patch.shouldPatchOfftab();
+    if (!backgroundActive && !offtabActive) {{
       return nativeRequestAnimationFrame(callback);
     }}
     const stack = new Error().stack || "";
-    if (!patch.shouldPatchAnimationFrame(stack, callback)) {{
-      return nativeRequestAnimationFrame(callback);
+    if (backgroundActive && shouldPatchBackgroundAnimationFrame(stack, callback)) {{
+      return scheduleBackgroundAnimationFrame(callback);
     }}
-    return scheduleSyntheticAnimationFrame(callback);
+    if (offtabActive && shouldPatchOfftabDeferredCallback(callback)) {{
+      return scheduleOfftabAnimationFrame(callback, {{
+        componentId: patch.lastTargetedEvent ? patch.lastTargetedEvent.componentId : null,
+        eventName: patch.lastTargetedEvent ? patch.lastTargetedEvent.eventName : "",
+        delay: OFFTAB_DELAY_MS,
+      }});
+    }}
+    return nativeRequestAnimationFrame(callback);
   }};
 
-  window.cancelAnimationFrame = function (id) {{
-    if (cancelSynthetic(id)) {{
+  window.cancelAnimationFrame = function (animationFrameId) {{
+    if (cancelSyntheticAnimationFrame(animationFrameId)) {{
       return;
     }}
-    return nativeCancelAnimationFrame(id);
+    return nativeCancelAnimationFrame(animationFrameId);
   }};
 
-  console.info("[Gradio] focus queue patch installed");
+  EventTarget.prototype.addEventListener = function (type, listener, options) {{
+    if (type === "gradio") {{
+      if (typeof listener === "function") {{
+        return nativeAddEventListener.call(this, type, wrapGradioListener(listener), options);
+      }}
+      if (listener && typeof listener.handleEvent === "function") {{
+        return nativeAddEventListener.call(this, type, wrapGradioHandleEventListener(listener), options);
+      }}
+    }}
+    return nativeAddEventListener.call(this, type, listener, options);
+  }};
+
+  EventTarget.prototype.removeEventListener = function (type, listener, options) {{
+    if (type === "gradio") {{
+      if (typeof listener === "function" && wrappedListeners.has(listener)) {{
+        return nativeRemoveEventListener.call(this, type, wrappedListeners.get(listener), options);
+      }}
+      if (listener && typeof listener.handleEvent === "function" && wrappedHandleEventListeners.has(listener)) {{
+        return nativeRemoveEventListener.call(this, type, wrappedHandleEventListeners.get(listener), options);
+      }}
+    }}
+    return nativeRemoveEventListener.call(this, type, listener, options);
+  }};
+
+  console.info("[Gradio] main tab keepalive patch installed");
 }})();
 """
 
@@ -210,8 +573,11 @@ def install() -> bool:
 
 
 __all__ = [
+    "BACKGROUND_SCHEDULER_DEFAULT_ENABLED",
     "ENABLE_GRADIO_FOCUS_QUEUE_MONKEYPATCH",
+    "FOCUS_QUEUE_SERVER_CONFIG_KEY",
     "GRADIO_FOCUS_QUEUE_MONKEYPATCH_VERBOSE",
+    "OFFTAB_KEEPALIVE_DEFAULT_ENABLED",
     "get_javascript",
     "install",
 ]

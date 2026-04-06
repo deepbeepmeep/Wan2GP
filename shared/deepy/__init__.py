@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import debug_bootstrap as _debug_bootstrap
+
+
+_debug_bootstrap.bootstrap_deepy_debug()
+
 
 _DEEPY_DIR = Path(__file__).resolve().parent
 DEFAULT_SYSTEM_PROMPT_PATH = _DEEPY_DIR / "default_system_prompt.txt"
@@ -17,4 +22,16 @@ def load_default_system_prompt() -> str:
 DEFAULT_SYSTEM_PROMPT = load_default_system_prompt()
 
 
-__all__ = ["DEFAULT_SYSTEM_PROMPT", "DEFAULT_SYSTEM_PROMPT_PATH", "load_default_system_prompt"]
+def __getattr__(name: str):
+    if name in {"DEBUG_DEEPY_ENABLED", "DEBUG_DEEPY_LOG_PATH"}:
+        return getattr(_debug_bootstrap, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "DEBUG_DEEPY_ENABLED",
+    "DEBUG_DEEPY_LOG_PATH",
+    "DEFAULT_SYSTEM_PROMPT",
+    "DEFAULT_SYSTEM_PROMPT_PATH",
+    "load_default_system_prompt",
+]

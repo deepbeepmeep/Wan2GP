@@ -33,7 +33,31 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### March 24th 2026: WanGP v11, The Machine Within The Machine
+### 5rd of April 2026: WanGP v11.20, Self Destructing Model
+- **Magi Human**: this is a newly *Talking Head* model that accepts either a *custom soundrack* or can generate the *audio speech* that comes with the video. 
+   - *The bad news* :it is VRAM hungry (targets RTX 5090+) and very res picky, that is the ouput res must be either 256p or 1080p (using a 2 stage pipeline with upsampling). There is also a 540p version (using also an upsampler) but it is not included as I found it unpractical (ghosting guaranteed if your output is not exactly the right height/width ratio), 
+   - *The good news* : now that it is WanGP optimized, 101 frames at 1080p requires "only" 16 GB of VRAM. If you dont have that much VRAM I recommend to still go for 1080p but set a 45 frames *Sliding Window* (not too low to avoid artifacts) as *Sliding Windows* sometime works well with this model.  
+
+**I have spent a lot of time optimizing Magi Human, but I am not yet sure it is worth keeping it given all the constraints to run this model. So this is where I need YOU. Please share your experience using Magi Human on the Discord server and you shall decide its fate. Should we keep it or send it to the model graveyard ?**
+
+- **LTX 2 Id Lora**: due to a huge popular demand I have added this one (it is a new *Generate Video* option). You can provide a voice audio sample, a start image and text script and it will turn LTX 2/2.3 into talking heads. Cost is high to get this feature as **Id Lora works only with LTX2/2.3 DEV**. By chance it seems it can produce decent results in only 10 inference steps. To get the best results it is recommended to use prefix tags [VISUAL], [SPEECH] & [SOUND]. Alternatively you can use WanGP *Prompt Enhancer* that has been to tuned to generate a prompt following this syntax. 
+
+- **LTX 2 DEV HQ Mode**: this High Quality mode should produce better output at higher res. You can turn it on using the new *HQ (res2s)* Sampler and set 15 steps and guidance rescaler to 0.45. It is compatible with *Id Loras*. Note that a HQ steps is twice as slow as a vanilla Dev step, so it is going to be as slow as Dev if not slower.
+
+- **LTX2 DEV Presets**: Vanilla Dev mode & HQ Mode have lots of tunable settings. To make your life easier I have added selectionable presets in the *Settings Drop Downbox*
+
+- **More Deepy** : 
+   - *UI Improvements*: you can *queue* requests by inserting empty lines between two requests, get the last turn by clicking the *Down Arrow*
+   - *More Responsive*: Deepy should execute much more quickly consecutive actions
+   - *More Reliable*: fast full context compaction (when deepy ran out of tokens), Deepy will remember what you stopped / aborted
+   - *More Capabilities*: you can ask Deepy to specifiy a *guidance*, *denoising strength*, ... value (the value defined in the *tool template* will be overridden)
+
+As a reminder beside writting huge essays about how great you are, Deepy can generate Video, Image & Audio, extract / transcribe / trim / resize (when applicable) video or audio clip, inspect the content of an image or a video frame, generate black frames, ... Deepy used Tool templates but you can specify for one task the loras, number of frames, dimensions, ... There is also a CLI version of Deepy quite useful for remote use. Please check the fulldoc *docs/DEEPY.md*. 
+
+- **Multi Multilines Prompts**: check new options in *"How to Process each Line of the Text Prompt"*, you can now have multiple multi lines prompts. They just need to be separated by an empty line.
+   
+ 
+### March 30th 2026: WanGP v11.13, The Machine Within The Machine
 
 Meet **Deepy** your friendly *WanGP Agent*.
 
@@ -57,11 +81,27 @@ or
 Create a high quality image portrait that you think represents you best in your favorite setting. Then create an audio sample in which you will introduce the users to your capabilities. When done generate a video based on these two files.
 ```
 
-*Deepy* reuses the *Qwen3VL Abliterated* checkpoints and it is highly recommended to install the *GGUF kernels* (check docs/INSTALLATION.md) for low VRAM / fast inference. You can customize Deepy to use the settings of your choice when generating a video, image, ... (please check docs/DEEPY.Md)
+Deepy can also transcribe the audio content of a video (*new to WanGP 11.11*)
+```text
+extract the video from the moment it says "Deepy changed my life"
+```
+
+*Deepy* reuses the *Qwen3VL Abliterated* checkpoints and it is highly recommended to install the *GGUF kernels* (check docs/INSTALLATION.md) for low VRAM / fast inference. **now available with Linux!**
+
+Please install also *flash attention 2* and *triton* to enable *vllm* and get x2/x3 speed gain and lower VRAM usage.
+
+You can customize Deepy to use the settings of your choice when generating a video, image, ... (please check docs/DEEPY.Md). 
 
 *Go the Config > Prompt Enhancer / Deep tab to enable Deepy (you must first choose a Qwen3.5VL Prompt Enhancer)*
 
-**Important**: in order to save Deepy from learning all the specificties of each model to generate image, videos or audio, Deepy uses *Predefined Settings Templates* for its six main tools (*Generate Video*, *Generate Image*, ...). You can change the templates used in a session or even add your own settings. Just have a look at the doc.
+**Important**: in order to save Deepy from learning all the specificities of each model to generate image, videos or audio, Deepy uses *Predefined Settings Templates* for its six main tools (*Generate Video*, *Generate Image*, ...). You can change the templates used in a session or even add your own settings. Just have a look at the doc.
+
+With WanGP 11.11 you can *ask Deepy to generate a Video or an Image in specific dimensions and also a number of frames for a video*. You can also specify an optional *number of inference of steps* or *loras* to use with *multipliers*. If you don't mention any of these to Deepy, Deepy Default settings or the current Templated Settings will be used instead.
+
+WanGP 11 addresses a long standing Gradio issue: *Queues keep being processed even if your Web Browser is in the background*. Beware this feature may drain more battery, so you can disable it in the *Config / General tab*.
+
+You have maybe also noticed the new option *Keep Intermediate Sliding Windows* in the *Config / Outputs* tab that allows you to discard intermediate *Sliding Windows*
+
 
 ### March 17th 2026: WanGP v10.9875, Prompt Enhancer has just Been Abliterated
 

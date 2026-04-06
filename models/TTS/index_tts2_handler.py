@@ -332,7 +332,7 @@ class family_handler:
                 "temperature": 0.8,
                 "top_p": 0.8,
                 "top_k": 30,
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
             }
         )
 
@@ -363,13 +363,13 @@ class family_handler:
                 return (
                     "Two-speaker mode requires prompt lines using Speaker 1: and Speaker 2: "
                     "(or any two numeric speaker IDs). For headless settings, keep "
-                    "'multi_prompts_gen_type' = 2 so dialogue lines stay in one prompt."
+                    "'multi_prompts_gen_type' = 'FG' so dialogue lines stay in one prompt."
                 )
             speaker_ids = sorted({int(match.group(1)) for match in speaker_matches})
             if len(speaker_ids) != 2:
                 return (
                     "Two-speaker mode requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:. "
-                    "For headless settings, keep 'multi_prompts_gen_type' = 2."
+                    "For headless settings, keep 'multi_prompts_gen_type' = 'FG'."
                 )
         elif has_speaker_syntax:
             return "Speaker-tag dialogue requires two-speaker mode (set audio prompt mode to Dialogue)."

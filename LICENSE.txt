@@ -1,57 +1,455 @@
-WanGP NON-COMMERCIAL EVALUATION LICENSE 1.1
+WanGP Community License 2.0
+(for the WanGP / Wan2GP project)
 
-Definitions
-1.1 "Software" means the source code, binaries, libraries, utilities, user interface, APIs, bindings, wrappers, bridges, and related components released under this license.
-1.2 "Output" means images, videos, audio, or other media produced by running the Software.
-1.3 "Headless Usage" means invoking or automating the Software without the standard interactive user interface, including CLI usage, queue processing, automation scripts, batch jobs, embedded runtimes, or programmatic calls.
-1.4 "API" or "Integration" means any interface, wrapper, binding, SDK, library call, local service, IPC bridge, plugin, network endpoint, or other mechanism that exposes functionality of the Software to another program, product, service, or user.
-1.5 "Commercial Use" means:
-a) selling, sublicensing, renting, leasing, or otherwise distributing the Software, in whole or in part, for a fee or other consideration; or
-b) offering the Software, or any derivative of it, including through Headless Usage, an API, or an Integration, as part of a paid product or hosted service; or
-c) using the Software, or any derivative of it, including through Headless Usage, an API, or an Integration, to provide cloud-based, backend, embedded, automated, or other end-user-accessible services where users access, invoke, or pay for those services.
+IMPORTANT: READ CAREFULLY. BY USING, COPYING, MODIFYING, OR
+DISTRIBUTING THE SOFTWARE, YOU AGREE TO THIS LICENSE.
 
-License Grant
-Subject to Section 3:
-a) You are granted a worldwide, non-exclusive, royalty-free, revocable license to use, reproduce, modify, and distribute the Software for non-commercial purposes only.
-b) You are granted a worldwide, non-exclusive, royalty-free, irrevocable license to use, reproduce, modify, and distribute the Output for any purpose, including commercial sale, only if that Output was generated through use of the Software that was authorized under this license or under a separate commercial license from the Licensor. Any commercial distribution of the Output must include a clear notice that the Output was produced, in whole or in part, using WanGP, along with a hyperlink to the WanGP application's About tab or repository.
+PLAIN-ENGLISH SUMMARY (NON-BINDING)
 
-Restrictions
-3.1 You MAY NOT distribute, sublicense, or otherwise make available the Software, or any derivative of it, for Commercial Use.
-3.2 You MAY sell, license, or otherwise commercially exploit the Output without restriction, subject to Section 2(b).
-3.3 If you wish to use the Software for Commercial Use, you must obtain a separate commercial license from the Licensor.
-3.4 Exposing, embedding, or automating the Software through Headless Usage, an API, or an Integration constitutes making the Software available under this license when it is provided to another program, product, service, or user.
-3.5 Any API, wrapper, binding, headless deployment, embedded runtime, plugin, or bridge built on top of WanGP is treated as part of the Software, or as a derivative of it, for purposes of this license.
-3.6 For the avoidance of doubt, the right to commercially exploit Output does not grant any right to use the Software itself, including through Headless Usage, an API, or an Integration, for Commercial Use without a separate commercial license.
+You may use WanGP for free, including inside a company.
+You may modify WanGP for your own use.
+You may use WanGP to create outputs and you may sell or license those
+outputs.
+You are only asked to credit WanGP when you directly sell or license an
+output created with WanGP.
+You may not sell WanGP itself, white-label it, embed it in a paid
+product, or offer paid API / SaaS / hosted / OEM access to it without a
+separate written reseller or commercial license.
+Third-party open-source code, models, weights, datasets, and other
+components keep their own licenses. This License applies only to the
+Licensor's own copyrightable WanGP implementation and does not reduce
+rights granted under separate third-party licenses.
+For redistributed WanGP source or bundles, a reasonable compliance path
+for bundled open-source code is sufficient, such as preserving in-tree
+notices and including standard open-source license texts in a LICENSES
+or similar directory. This License does not require a full inventory of
+separately installed package-manager requirements or transitive
+dependencies that are not packaged with WanGP.
+In practical terms, the Software covers WanGP's added engineering and
+productization layer as embodied in the Licensor's own implementation,
+such as low-VRAM and VRAM-management work, speed improvements,
+multi-model automation, Deepy agentic assistant workflows, UI and
+queueing layers, API and headless interfaces, packaging, and
+integration glue.
+Illegal or seriously abusive uses are prohibited.
 
-Third-Party Components
-4.1 The Software includes components licensed under various open-source or other third-party licenses, including Apache 2.0, MIT, and BSD.
-4.2 You must comply with all applicable terms of those third-party licenses, including preservation of copyright notices, inclusion of required license texts, and patent-grant provisions.
-4.3 You can find the full text of each third-party license via the "About" tab in the WanGP application, which provides links to their original repositories.
-4.4 Accessing the Software through Headless Usage, an API, or an Integration does not remove, replace, or supersede any applicable third-party license, model, weight, or component terms.
+If this summary conflicts with the binding terms below, the binding
+terms below control.
 
-Attribution
-5.1 You must give appropriate credit by including:
-- a copy of this license, or a link to it; and
-- a notice that your use is based on "WanGP".
-5.2 You may do so in any reasonable manner, but not in any way that suggests the Licensor endorses you or your use.
-5.3 Any product, application, service, or automated workflow that integrates, embeds, or exposes WanGP, whether through the UI, Headless Usage, an API, or another Integration, must clearly disclose that it uses WanGP in its user interface, About section, or equivalent product surface, and in its documentation.
+1. DEFINITIONS
 
-Disclaimer of Warranty and Liability
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+1.1 "Licensor" means the copyright holder or holders for the Software.
 
-Commercial Licensing
-The Licensor may offer commercial licenses for the Software, which grant rights to use the Software for Commercial Use. Please contact deepbeepmeep@yahoo.com for terms and pricing.
+1.2 "Third-Party Materials" means any code, model, weight, dataset,
+library, binary, asset, documentation, or other material that is
+licensed under separate terms, including without limitation Apache-2.0,
+MIT, BSD, other open-source licenses, model licenses, dataset licenses,
+or third-party commercial terms, or any material for which the Licensor
+does not have authority to apply this License.
 
-Effective Date and Previous Versions
-8.1 This license is effective as of the date the LICENSE file is updated in the WanGP repository.
-8.2 Any copies of the Software obtained under prior license terms before this Effective Date remain governed by those prior terms; such granted rights are irrevocable.
-8.3 Use of the Software after the release of any subsequent version by the Licensor is subject to the terms of the then-current license, unless a separate agreement is in place.
+1.3 "Software" means the Licensor's copyrightable WanGP code and other
+materials distributed by the Licensor as part of the official WanGP
+repository, releases, installers, containers, binaries, APIs,
+documentation, or other official WanGP distributions, including any
+copies, modifications, and derivative works of that Licensor-owned
+material, but excluding Third-Party Materials except to the extent the
+Licensor may lawfully license its own separable contributions.
 
-Acceptable Use / Moral Clause
-9.1 You MAY NOT use the Software or the Output to facilitate or produce content that is illegal, harmful, violent, harassing, defamatory, fraudulent, or otherwise violates applicable laws or fundamental human rights.
-9.2 You MAY NOT deploy the Software or Output in contexts that promote hate speech, extremist ideology, human rights abuses, or other actions that could foreseeably cause significant harm to individuals or groups.
-9.3 The Licensor reserves the right to terminate the rights granted under this license if a licensee materially breaches this Acceptable Use clause.
-9.4 If you expose WanGP to third-party users through Headless Usage, an API, or an Integration, you must communicate restrictions consistent with this Acceptable Use clause and take reasonable measures to prevent clearly prohibited uses.
+For context, the Software includes, to the extent embodied in the
+Licensor's own distributed implementation, without limitation:
+    (a) memory or VRAM optimization layers, scheduling, packing,
+        quantization handling, model-loading logic, or low-resource
+        execution techniques;
+    (b) speed, throughput, caching, offloading, batching, or performance
+        optimizations;
+    (c) orchestration, automation, chaining, queueing, Deepy
+        agentic assistant workflows, or workflow logic across
+        multiple models, tools, or tasks;
+    (d) user interfaces, web interfaces, APIs, local services,
+        headless modes, automation surfaces, plugins, bridges,
+        wrappers, or machine interfaces;
+    (e) packaging, installers, configuration flows, operational
+        tooling, metadata handling, or workflow templates; and
+    (f) combinations of the foregoing.
 
-END OF LICENSE
+If a file, package, binary, archive, model bundle, or other item
+contains both Third-Party Materials and Licensor-owned material, this
+License applies only to the Licensor's own copyrightable contributions
+and does not reduce permissions granted by the licenses that govern the
+Third-Party Materials.
+
+The list above is illustrative only. For clarity, "Software" refers to
+the Licensor's implementation. It does not, by itself, claim rights in
+abstract ideas, methods, concepts, formats, protocols, interfaces, or
+compatibility as such.
+
+1.4 "Output" means any image, video, audio, text, metadata, file, or
+other content produced by running the Software.
+
+1.5 "Headless Usage" means invoking or automating the Software without
+the standard interactive user interface, including CLI usage, queue
+processing, automation scripts, batch jobs, local services, embedded
+runtimes, programmatic calls, or similar non-interactive operation.
+
+1.6 "API" or "Integration" means any interface, wrapper, binding, SDK,
+library call, local service, IPC bridge, plugin, network endpoint,
+embedded surface, or other mechanism that exposes functionality of the
+Software to another program, product, service, or user.
+
+1.7 "Direct Output Sale" means selling, licensing, or otherwise
+charging separate consideration for an Output, or a collection of
+Outputs, where the principal value of the transaction is the Output
+itself. Direct Output Sale does not include:
+    (a) private or internal use;
+    (b) free publication or free sharing;
+    (c) agency, studio, or client work where the Software is used as an
+        internal production tool and the customer is paying primarily
+        for creative or production services; or
+    (d) use of an Output that is merely incidental to a broader product
+        or service, unless the Output itself is being sold, licensed,
+        or provided for separate consideration.
+
+1.8 "Free Use" means personal use, hobby use, research use,
+educational use, evaluation, internal company use, internal business
+use, studio use, agency use, client work, implementation work, support
+work, private deployment, and free redistribution, provided that the
+activity does not constitute Restricted Commercialization.
+
+1.9 "Restricted Commercialization" means any of the following:
+    (a) selling, sublicensing, renting, leasing, licensing for a fee,
+        or otherwise monetizing access to the Software;
+    (b) offering the Software through a paid, metered, sponsored,
+        ad-supported, subscription, hosted, managed, API, SaaS,
+        white-label, OEM, embedded, marketplace, platform, or similar
+        product or service;
+    (c) distributing the Software as part of a paid product or service
+        where the Software is a material feature or a material part of
+        the value offered;
+    (d) enabling third parties to invoke, access, automate, or consume
+        the Software through Headless Usage, an API, an Integration, a
+        local service, a plugin, an IPC bridge, a remote endpoint, or
+        similar mechanism in exchange for consideration; or
+    (e) charging a separate fee for unlocking, activating, hosting,
+        enabling, bundling, or providing access to the Software.
+
+For clarity, Restricted Commercialization does NOT include:
+    (i) internal company use or internal business use;
+    (ii) using the Software to create Outputs for yourself or for
+         clients;
+    (iii) charging reasonable service fees for installation,
+          customization, consulting, support, training, or integration
+          labor, provided that no separate fee is charged for access to
+          the Software itself, and the recipient receives the Software
+          subject to this License and any applicable third-party terms;
+          or
+    (iv) Direct Output Sales governed by Section 6.
+
+2. SCOPE AND THIRD-PARTY RIGHTS
+
+2.1 This License applies only to the Software.
+
+2.2 Third-Party Materials remain licensed under their own terms.
+
+2.3 Nothing in this License limits, replaces, overrides, or narrows any
+rights you receive directly under the licenses or terms applicable to
+Third-Party Materials.
+
+2.4 Where an act is permitted by an applicable third-party license for
+Third-Party Materials, that permission remains effective for those
+Third-Party Materials notwithstanding anything else in this License.
+
+2.5 If a file, directory, package, model card, weight package, header,
+notice, repository note, or other material states a different license
+or separate terms for a particular item, those terms control for that
+item.
+
+2.6 In case of ambiguity, this License must be interpreted narrowly so
+that it does not over-claim rights in Third-Party Materials or reduce
+permissions granted by their own licenses.
+
+2.7 No file-level marking is required for the Licensor's official WanGP
+distributions. However, no one may use this License to claim that
+Third-Party Materials are subject to restrictions that their own
+licenses do not impose.
+
+3. FREE USE LICENSE GRANT
+
+3.1 Subject to this License, the Licensor grants you a worldwide,
+non-exclusive, royalty-free license to use, run, reproduce, display,
+perform, modify, and create derivative works of the Software for
+Free Use.
+
+3.2 You may privately deploy and use the Software in interactive mode,
+batch mode, queue mode, Headless Usage, local-service mode, scripted
+mode, automated mode, or API mode for Free Use.
+
+3.3 No separate reseller or commercial license is required solely
+because the user is a company, studio, agency, or revenue-generating
+business, so long as the Software is not sold, monetized, or made
+available to third parties in a manner described in Section 5.
+
+4. REDISTRIBUTION FOR FREE USE
+
+4.1 You may copy and redistribute the Software, with or without
+modification, only for Free Use and only if you:
+    (a) provide a copy of this License with the redistribution;
+    (b) preserve copyright notices, attribution notices, license
+        notices, patent notices, disclaimer notices, and other
+        required notices;
+    (c) preserve and comply with any notices and license texts required
+        for Third-Party Materials that are packaged with that
+        redistribution;
+    (d) clearly state that you modified the Software, if you distribute
+        modified versions, and identify the date of your changes in a
+        reasonable manner;
+    (e) do not imply sponsorship, endorsement, or affiliation by the
+        Licensor unless the Licensor has given prior written
+        permission; and
+    (f) do not impose terms on recipients that purport to restrict
+        rights those recipients receive directly under applicable
+        licenses for Third-Party Materials.
+
+4.2 Each recipient of the Software automatically receives a license
+from the Licensor to use the Software under this License.
+
+4.3 Redistribution that constitutes Restricted Commercialization is not
+permitted under this License and requires a separate written reseller
+or commercial license from the Licensor.
+
+4.4 If you redistribute mixed materials containing both Software and
+Third-Party Materials, you must preserve a reasonable path for
+recipients to identify the separate third-party notices and terms for
+the Third-Party Materials packaged with that redistribution, such as a
+LICENSES directory, THIRD_PARTY_NOTICES file, documentation page, or
+equivalent release documentation. Unless a bundled Third-Party Material
+requires something more specific under its own terms, a small directory
+containing the standard open-source license texts used by the bundled
+open-source components is sufficient.
+
+5. RESTRICTED COMMERCIALIZATION
+
+5.1 You may not engage in Restricted Commercialization without a
+separate written reseller or commercial license from the Licensor.
+
+5.2 By way of example, the following require a separate written
+reseller or commercial license:
+    (a) selling WanGP itself;
+    (b) offering paid API, paid SaaS, paid hosted, or paid managed
+        access to WanGP;
+    (c) white-labeling WanGP;
+    (d) embedding the Software in a paid product or paid service;
+    (e) offering OEM or reseller packages built around the Software;
+    (f) charging separately for access to the Software, even if the
+        Software is bundled with other tools or services; or
+    (g) exposing the Software to customers or end users as a paid
+        feature, add-on, or monetized backend component.
+
+5.3 The following do not require a separate written reseller or
+commercial license, provided you comply with this License:
+    (a) internal company use, internal business use, and team use;
+    (b) client work, studio work, agency work, or production work where
+        the Software is used as an internal production tool;
+    (c) charging for labor to install, customize, support, train on, or
+        integrate the Software, so long as you do not charge a
+        separate fee for access to the Software itself, and you do not
+        reduce the recipient's rights under this License or applicable
+        third-party licenses;
+    (d) distributing free, non-monetized builds, wrappers, or
+        integrations that comply with this License; and
+    (e) using the Software to create Outputs and exploiting those
+        Outputs as allowed by Section 6.
+
+5.4 The Licensor may offer separate reseller, OEM, embedded, hosting,
+API, or commercial licenses on different terms.
+Commercial licensing contact: deepbeepmeep@yahoo.com or contact deepbeepmeep on discord server (check GitHub for link).
+
+6. OUTPUTS AND CREDIT
+
+6.1 Subject to applicable law, Section 10, and any separate terms that
+govern Third-Party Materials, you may use, reproduce, publish,
+perform, display, distribute, sell, and license Outputs for any lawful
+purpose.
+
+6.2 You must provide reasonable credit to WanGP only when you engage in
+a Direct Output Sale.
+
+6.3 Reasonable credit under Section 6.2 may be satisfied by wording
+such as:
+    "Made with WanGP"
+    "Created using WanGP"
+or wording of similar meaning.
+
+6.4 Reasonable credit should be placed where credits are customarily
+shown, such as a credits page, product page, invoice, project
+documentation, metadata field, About page, or similar location. If
+technically practical, the credit should include a link to the official
+WanGP project page or repository. If linking is not technically
+practical, plain-text credit is sufficient.
+
+6.5 No credit is required under this License for:
+    (a) private or internal use;
+    (b) free sharing or free publication of Outputs;
+    (c) agency, studio, or client work where the Software is used as an
+        internal production tool and the Output is not itself being
+        directly sold or licensed as a separate deliverable; or
+    (d) use of Outputs that is not a Direct Output Sale.
+
+6.6 This License governs the Software, not ownership of Outputs as
+such. You are responsible for complying with any separate terms that
+may apply to Third-Party Materials used with or through the Software.
+
+7. INTEGRATIONS, APIS, AND HEADLESS USE
+
+7.1 Private use of the Software through an API, local service,
+automation, batch processing, queue processing, script, plugin, or
+Headless Usage is permitted for Free Use.
+
+7.2 Exposing the Software to third parties through an API, local
+service, hosted endpoint, plugin, Integration, wrapper, bridge, or
+Headless Usage in exchange for consideration is Restricted
+Commercialization and requires a separate written reseller or
+commercial license.
+
+7.3 Free, non-monetized integrations and wrappers are permitted so long
+as they:
+    (a) comply with this License;
+    (b) clearly disclose WanGP use in reasonable documentation or an
+        About section; and
+    (c) preserve all notices required for the Software and for
+        Third-Party Materials.
+
+7.4 A project is not subject to this License merely because it can
+interoperate with WanGP. This License applies only to the Software that
+is included, copied, embedded, or distributed by or through that
+project.
+
+8. TRADEMARKS, NAMES, AND NO ENDORSEMENT
+
+8.1 This License does not grant any right to use the Licensor's trade
+names, trademarks, service marks, logos, or branding, except:
+    (a) for reasonable nominative use to describe origin or
+        compatibility; and
+    (b) as necessary to give the credit required by Section 6.
+
+8.2 You may not state or imply that the Licensor endorses you, your
+organization, your products, your services, or your modifications,
+except with the Licensor's prior written permission.
+
+9. THIRD-PARTY NOTICE COMPLIANCE
+
+9.1 If you distribute a package, repository, archive, installer,
+container, binary, or build that includes Third-Party Materials, you
+must preserve and include the license texts, notices, attribution
+statements, and patent notices, if any, required by the terms governing
+the Third-Party Materials that are packaged with that distribution.
+
+9.2 For clarity, this License does not require you to enumerate or
+bundle the full license tree for separately installed dependencies,
+package-manager requirements, or transitive libraries that are not
+themselves redistributed as part of your WanGP package, archive,
+repository, installer, or build.
+
+9.3 A THIRD_PARTY_NOTICES file, LICENSES directory, About-page
+references, or equivalent documentation is strongly recommended for
+mixed-license distributions, and a compact directory of the standard
+open-source license texts used by bundled open-source components is a
+reasonable default approach, but the absence of such a file does not
+convert Third-Party Materials into Software under this License.
+
+9.4 Nothing in this License authorizes you to remove, obscure, or
+replace any required attribution, license, or notice for Third-Party
+Materials.
+
+10. ACCEPTABLE USE
+
+10.1 To the extent permitted by law, you may not use the Software or
+knowingly use Outputs generated with the Software:
+    (a) in violation of applicable law;
+    (b) to produce, facilitate, or materially support child sexual
+        abuse material, sexual exploitation of minors, non-consensual
+        intimate imagery, human trafficking, terrorism, unlawful
+        harassment or stalking, fraud or impersonation, malware,
+        unauthorized cyber abuse, or other comparable serious abuse;
+    (c) to promote or facilitate extremist violence, genocide, crimes
+        against humanity, or other serious human rights abuses;
+    (d) in a manner primarily intended to materially infringe the
+        privacy, publicity, intellectual property, or other legal
+        rights of others; or
+    (e) in a manner primarily intended to cause reasonably foreseeable
+        significant harm to identified individuals or groups through
+        deception, coercion, or abuse.
+
+10.2 If you expose the Software or Outputs to third-party users through
+Headless Usage, an API, an Integration, or a hosted deployment, you
+must communicate restrictions consistent with this Section and take
+reasonable measures to deter and respond to clearly prohibited uses.
+
+10.3 This Section is intended to address clearly abusive uses and must
+be interpreted reasonably. It does not prohibit good-faith criticism,
+journalism, research, documentation, security work, content-moderation
+work, or artistic works merely because they depict, discuss, or analyze
+sensitive topics without facilitating the prohibited harm.
+
+10.4 Material breach of this Section is a material breach of this
+License and may result in termination under Section 12.
+
+11. RESERVATION OF RIGHTS
+
+11.1 Except for the rights expressly granted in this License, the
+Licensor reserves all rights in the Software.
+
+11.2 No implied license is granted by this License.
+
+12. WARRANTY DISCLAIMER, LIMITATION OF LIABILITY, AND TERMINATION
+
+12.1 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND
+NON-INFRINGEMENT.
+
+12.2 TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR SHALL NOT BE
+LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION
+WITH THE SOFTWARE OR THIS LICENSE OR THE USE OF OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+12.3 This License remains in effect until terminated.
+
+12.4 If you materially breach this License, your rights under this
+License terminate automatically if you fail to cure the breach within
+thirty (30) days after receiving written notice from the Licensor that
+reasonably describes the breach.
+
+12.5 If you cure the breach within that thirty (30) day period, your
+rights under this License are automatically reinstated as of the date
+of cure.
+
+12.6 Termination of rights under this License does not terminate,
+revoke, or reduce any rights you may have independently under licenses
+applicable to Third-Party Materials.
+
+12.7 Outputs created before termination remain governed by Section 6,
+subject to Section 10 and applicable law.
+
+12.8 Sections 2, 6, 8, 9, 10, 11, 12.1, 12.2, 12.6, 12.7, and 13
+survive termination.
+
+13. GENERAL
+
+13.1 If any provision of this License is unenforceable, that provision
+shall be enforced to the maximum extent permitted by law, and the
+remainder of the License shall remain in effect.
+
+13.2 Failure by the Licensor to enforce any provision of this License
+is not a waiver of future enforcement of that or any other provision.
+
+13.3 You may always continue to exercise any rights you receive
+directly under licenses that apply to Third-Party Materials, regardless
+of this License.
+
+13.4 The Licensor may publish updated versions of this License.
+Unless the Licensor expressly states otherwise for a particular release
+or material, you may continue using the version of this License that
+applied when you received that Software.
+
+END OF TERMS

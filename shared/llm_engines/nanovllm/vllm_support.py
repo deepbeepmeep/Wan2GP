@@ -172,11 +172,12 @@ def _clear_inductor_cuda_pools():
 class NanoVllmTextEngine:
     keep_loaded_for_phase2 = True
 
-    def __init__(self, model, model_path: str, tokenizer, enforce_eager: bool = False):
+    def __init__(self, model, model_path: str, tokenizer, enforce_eager: bool = False, graph_pool_handle=None):
         self.model = model
         self.model_path = model_path
         self.tokenizer = tokenizer
         self.enforce_eager = bool(enforce_eager)
+        self.graph_pool_handle = graph_pool_handle
         self.hf_config = getattr(model, "config", None)
         self._llm = None
         self._sampling_params_cls = None
@@ -267,6 +268,7 @@ class NanoVllmTextEngine:
             hf_config=hf_config,
             tokenizer=self.tokenizer,
             model_object=self.model,
+            graph_pool_handle=self.graph_pool_handle,
         )
         self._sampling_params_cls = SamplingParams
 

@@ -75,3 +75,44 @@ class AudioConditionByLatent(ConditioningItem):
         latent_state.denoise_mask[:, : tokens.shape[1]] = 1.0 - self.strength
 
         return latent_state
+
+
+class AudioConditionByReferenceLatent(ConditioningItem):
+    """
+    Prepends clean reference-audio tokens to the audio latent state.
+    The prepended tokens use negative temporal positions and a zero denoise mask so
+    they act as a fixed identity reference during denoising.
+    """
+
+    def __init__(self, latent: torch.Tensor):
+        self.latent = latent
+
+    def apply_to(self, latent_state: LatentState, latent_tools: LatentTools) -> LatentState:
+        if not isinstance(latent_tools.target_shape, AudioLatentShape):
+            raise ConditioningError("Audio reference conditioning requires an audio latent target shape.")
+
+        cond_batch, cond_channels, _, cond_bins = self.latent.shape
+        tgt_batch, tgt_channels, _, tgt_bins = latent_tools.target_shape.to_torch_shape()
+        if (cond_batch, cond_channels, cond_bins) != (tgt_batch, tgt_channels, tgt_bins):
+            raise ConditioningError(
+                f"Can't apply audio reference conditioning item to latent with shape {latent_tools.target_shape}, "
+                f"expected shape is ({tgt_batch}, {tgt_channels}, *, {tgt_bins})."
+            )
+
+        ref_shape = AudioLatentShape.from_torch_shape(self.latent.shape)
+        tokens = latent_tools.patchifier.patchify(self.latent)
+        positions = latent_tools.patchifier.get_patch_grid_bounds(ref_shape, device=tokens.device).to(dtype=torch.float32)
+        time_per_latent = float(latent_tools.patchifier.hop_length)
+        time_per_latent *= float(latent_tools.patchifier.audio_latent_downsample_factor)
+        time_per_latent /= float(latent_tools.patchifier.sample_rate)
+        ref_duration = positions[:, :, -1:, 1]
+        positions = positions - ref_duration - time_per_latent
+        ref_mask = torch.zeros((tokens.shape[0], tokens.shape[1], 1), device=tokens.device, dtype=torch.float32)
+
+        latent_state = latent_state.clone()
+        return LatentState(
+            latent=torch.cat([tokens, latent_state.latent], dim=1),
+            denoise_mask=torch.cat([ref_mask, latent_state.denoise_mask], dim=1),
+            positions=torch.cat([positions.to(latent_state.positions.dtype), latent_state.positions], dim=2),
+            clean_latent=torch.cat([tokens, latent_state.clean_latent], dim=1),
+        )

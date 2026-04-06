@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 from typing import Any
 
@@ -10,6 +11,16 @@ from omegaconf import OmegaConf
 from shared.utils import files_locator as fl
 
 from .model_signature import MATANYONE_V1, MATANYONE_V2, detect_matanyone_model_version
+
+
+def _replace_file(src: str, dst: str) -> None:
+    try:
+        os.replace(src, dst)
+    except OSError as err:
+        if err.errno != getattr(os, "EXDEV", 18):
+            raise
+        shutil.copy2(src, dst)
+        os.remove(src)
 
 MATANYONE_SETTINGS_KEY = "matanyone_version"
 MATANYONE_DEFAULT_VERSION = MATANYONE_V1
@@ -129,7 +140,7 @@ def migrate_matanyone_install(server_config=None):
         if os.path.isfile(target_path):
             os.remove(legacy_path)
         else:
-            os.replace(legacy_path, target_path)
+            _replace_file(legacy_path, target_path)
 
     config_changed = False
     if legacy_version == MATANYONE_V2 and runtime_config.get(MATANYONE_SETTINGS_KEY) != MATANYONE_V2:

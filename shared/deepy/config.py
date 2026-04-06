@@ -16,6 +16,7 @@ DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY = "deepy_tool_gen_speech_from_sample"
 DEEPY_CONTEXT_TOKENS_KEY = "deepy_context_tokens"
 DEEPY_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_custom_system_prompt"
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
+DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY = "deepy_separate_requests_with_empty_line"
 
 DEEPY_VRAM_MODE_UNLOAD = "unload"
 DEEPY_VRAM_MODE_ALWAYS_LOADED = "always_loaded"
@@ -26,10 +27,11 @@ DEEPY_DEFAULT_GEN_VIDEO = "LTX-2 2.3 Distilled"
 DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH = "Infinitalk"
 DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION = "Qwen3 1.7B"
 DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE = "Index TTS 2"
-DEEPY_CONTEXT_TOKENS_MIN = 4096
+DEEPY_CONTEXT_TOKENS_MIN = 8192
 DEEPY_CONTEXT_TOKENS_MAX = 256000
 DEEPY_CONTEXT_TOKENS_DEFAULT = 16386
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
+DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT = True
 DEEPY_CONFIG_FILENAME = "wgp_config.json"
 
 DEEPY_QWEN_ENHANCER_IDS = {3, 4}
@@ -110,6 +112,16 @@ def normalize_deepy_auto_cancel_queue_tasks(value: Any) -> bool:
     return bool(value)
 
 
+def normalize_deepy_separate_requests_with_empty_line(value: Any) -> bool:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"", "0", "false", "off", "no"}:
+            return False
+        if text in {"1", "true", "on", "yes"}:
+            return True
+    return bool(value)
+
+
 def estimate_deepy_kv_cache_mb(enhancer_enabled: Any, context_tokens: Any) -> tuple[str | None, int | None]:
     try:
         enhancer_no = int(enhancer_enabled or 0)
@@ -153,6 +165,7 @@ def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict
     runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
     runtime_config[DEEPY_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_CUSTOM_SYSTEM_PROMPT_KEY, ""))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
+    runtime_config[DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY] = normalize_deepy_separate_requests_with_empty_line(runtime_config.get(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT))
     return runtime_config
 
 
@@ -169,6 +182,7 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_CONTEXT_TOKENS_KEY: DEEPY_CONTEXT_TOKENS_DEFAULT,
         DEEPY_CUSTOM_SYSTEM_PROMPT_KEY: "",
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
+        DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY: DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT,
     }
 
 

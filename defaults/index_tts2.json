@@ -11,7 +11,7 @@
     "alt_prompt": "",
     "duration_seconds": 25,
     "pause_seconds": 0.2,
-    "multi_prompts_gen_type": 2,
+    "multi_prompts_gen_type": "FG",
     "temperature": 0.8,
     "top_p": 0.8,
     "top_k": 30

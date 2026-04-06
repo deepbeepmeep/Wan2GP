@@ -81,6 +81,34 @@ def _eager_attention(
     return torch.matmul(attn_weights, value_states)
 
 
+def _sdpa_attention(
+    query_states: torch.Tensor,
+    key_states: torch.Tensor,
+    value_states: torch.Tensor,
+    scaling: float,
+    num_key_value_groups: int,
+    attention_bias: torch.Tensor | None = None,
+    is_causal: bool = True,
+) -> torch.Tensor:
+    # Avoid enable_gqa here: on the local Torch 2.10 + CUDA 13 build it can pick
+    # a much higher-workspace backend than the explicit-repeat SDPA path.
+    key_states = _repeat_kv(key_states, num_key_value_groups)
+    value_states = _repeat_kv(value_states, num_key_value_groups)
+    if attention_bias is not None and not torch.is_floating_point(attention_bias):
+        attention_bias = attention_bias.to(dtype=query_states.dtype)
+    elif attention_bias is not None and attention_bias.dtype != query_states.dtype:
+        attention_bias = attention_bias.to(dtype=query_states.dtype)
+    return F.scaled_dot_product_attention(
+        query_states,
+        key_states,
+        value_states,
+        attn_mask=attention_bias,
+        dropout_p=0.0,
+        is_causal=bool(is_causal),
+        scale=scaling,
+    )
+
+
 def _build_causal_bias(query_len: int, key_len: int, device: torch.device, query_offset: int = 0) -> torch.Tensor:
     q_pos = torch.arange(query_len, device=device, dtype=torch.long) + int(query_offset)
     k_pos = torch.arange(key_len, device=device, dtype=torch.long)
@@ -126,12 +154,13 @@ def _flash_attention_fallback_prefill(
             k_i = _gather_cache_tokens(k_cache, context.block_tables[idx], k_len).transpose(0, 1).unsqueeze(0)
             v_i = _gather_cache_tokens(v_cache, context.block_tables[idx], k_len).transpose(0, 1).unsqueeze(0)
             query_offset = k_len - q_len
+            bias = _build_causal_bias(q_len, k_len, q.device, query_offset=query_offset).view(1, 1, q_len, k_len)
+            output = _sdpa_attention(q_i, k_i, v_i, scale, num_key_value_groups, attention_bias=bias, is_causal=False)
         else:
             k_i = k[k_start:k_end].transpose(0, 1).unsqueeze(0)
             v_i = v[k_start:k_end].transpose(0, 1).unsqueeze(0)
-            query_offset = 0
-        bias = _build_causal_bias(q_len, k_len, q.device, query_offset=query_offset).view(1, 1, q_len, k_len)
-        outputs.append(_eager_attention(q_i, k_i, v_i, scale, num_key_value_groups, attention_bias=bias).squeeze(0).transpose(0, 1))
+            output = _sdpa_attention(q_i, k_i, v_i, scale, num_key_value_groups)
+        outputs.append(output.squeeze(0).transpose(0, 1))
     return torch.cat(outputs, dim=0) if outputs else torch.empty_like(q)
 
 

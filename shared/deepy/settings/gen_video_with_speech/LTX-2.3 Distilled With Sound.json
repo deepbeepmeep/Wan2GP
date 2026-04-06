@@ -1,7 +1,7 @@
 {
     "num_inference_steps": 8,
     "video_length": 241,
-    "sliding_window_size": 761,
+    "sliding_window_size": 501,
     "resolution": "1280x720",
     "type": "LTX-2 2.3 Distilled",
     "audio_prompt_type": "A",	

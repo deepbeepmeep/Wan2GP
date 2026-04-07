@@ -801,7 +801,8 @@ class ACEStep15Pipeline:
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
-            cfg_scale=cfg_scale,
+            # Upstream ACE-Step 1.5 disables CFG during CoT metadata generation.
+            cfg_scale=1.0,
             seed=metadata_seed,
             callback=callback,
             logits_processor=processor,
@@ -1886,7 +1887,7 @@ class ACEStep15Pipeline:
                         refine_caption=refine_caption,
                         infer_language=infer_language,
                         seed=phase1_seed,
-                        cfg_scale=1.0 if lm_cfg_scale is None else float(lm_cfg_scale),
+                        cfg_scale=1.0,
                         negative_prompt=lm_negative_prompt,
                         temperature=temperature,
                         top_p=top_p,
@@ -1903,10 +1904,22 @@ class ACEStep15Pipeline:
                 if infer_duration:
                     duration_value = self._parse_optional_int_custom_setting(phase1_metadata.get("duration", None))
                     if duration_value is None:
-                        raise RuntimeError("LM phase1 failed to resolve required metadata 'duration'.")
-                    duration_value = max(_ACE_STEP15_DURATION_MIN_SECONDS, min(_ACE_STEP15_DURATION_MAX_SECONDS, int(duration_value)))
-                    duration_seconds = float(duration_value)
-                    computed_phase1_metadata["duration"] = int(duration_value)
+                        fallback_duration = self._parse_optional_int_custom_setting(duration_seconds)
+                        if fallback_duration is None:
+                            fallback_duration = int(math.ceil(float(duration_seconds)))
+                        fallback_duration = max(
+                            _ACE_STEP15_DURATION_MIN_SECONDS,
+                            min(_ACE_STEP15_DURATION_MAX_SECONDS, int(fallback_duration)),
+                        )
+                        print(
+                            f"[ace_step15][phase1] duration metadata missing; "
+                            f"falling back to requested duration {fallback_duration}s."
+                        )
+                        duration_seconds = float(fallback_duration)
+                    else:
+                        duration_value = max(_ACE_STEP15_DURATION_MIN_SECONDS, min(_ACE_STEP15_DURATION_MAX_SECONDS, int(duration_value)))
+                        duration_seconds = float(duration_value)
+                        computed_phase1_metadata["duration"] = int(duration_value)
                 if len(computed_phase1_metadata) > 0:
                     print(f"[ace_step15][phase1] computed metadata: {computed_phase1_metadata}")
                 if refined_caption is not None:

@@ -1,6 +1,10 @@
 import ast
 import os
 import re
+import struct
+import sys
+import numpy as np
+from dataclasses import dataclass
 
 import torch
 from torch.utils import _pytree as pytree
@@ -34,11 +38,70 @@ _GGUF_QTYPE = _quanto_qtypes[_GGUF_QTYPE_NAME]
 
 _GGUF_DEFAULT_DTYPE = None
 _GGUF_LABEL_CACHE = {}
+_GGUF_METADATA_CACHE = {}
+_GGUF_INDEX_CACHE = {}
 _GGUF_RUNTIME_LOGGED = set()
 _GGUF_CUDA_KERNELS_ENV = "WGP_GGUF_LLAMACPP_CUDA"
 _GGUF_CUDA_KERNELS_ENABLED_CACHE = None
 _GGUF_CUDA_MODULE = None
 _GGUF_CUDA_LOAD_ERROR = None
+_GGUF_NATIVE_BYTE_ORDER = "<" if sys.byteorder == "little" else ">"
+_GGUF_ORIG_SHAPE_PREFIX = "comfy.gguf.orig_shape."
+_GGUF_FAST_METADATA_SCALARS = {
+    None if gguf is None else gguf.GGUFValueType.UINT8: np.uint8,
+    None if gguf is None else gguf.GGUFValueType.INT8: np.int8,
+    None if gguf is None else gguf.GGUFValueType.UINT16: np.uint16,
+    None if gguf is None else gguf.GGUFValueType.INT16: np.int16,
+    None if gguf is None else gguf.GGUFValueType.UINT32: np.uint32,
+    None if gguf is None else gguf.GGUFValueType.INT32: np.int32,
+    None if gguf is None else gguf.GGUFValueType.FLOAT32: np.float32,
+    None if gguf is None else gguf.GGUFValueType.BOOL: np.bool_,
+    None if gguf is None else gguf.GGUFValueType.UINT64: np.uint64,
+    None if gguf is None else gguf.GGUFValueType.INT64: np.int64,
+    None if gguf is None else gguf.GGUFValueType.FLOAT64: np.float64,
+}
+_GGUF_FAST_METADATA_STRUCT_FORMATS = {
+    None if gguf is None else gguf.GGUFValueType.UINT8: "B",
+    None if gguf is None else gguf.GGUFValueType.INT8: "b",
+    None if gguf is None else gguf.GGUFValueType.UINT16: "H",
+    None if gguf is None else gguf.GGUFValueType.INT16: "h",
+    None if gguf is None else gguf.GGUFValueType.UINT32: "I",
+    None if gguf is None else gguf.GGUFValueType.INT32: "i",
+    None if gguf is None else gguf.GGUFValueType.FLOAT32: "f",
+    None if gguf is None else gguf.GGUFValueType.BOOL: "?",
+    None if gguf is None else gguf.GGUFValueType.UINT64: "Q",
+    None if gguf is None else gguf.GGUFValueType.INT64: "q",
+    None if gguf is None else gguf.GGUFValueType.FLOAT64: "d",
+}
+_GGUF_TYPED_TENSOR_DTYPES = {
+    None if gguf is None else gguf.GGMLQuantizationType.F16: np.float16,
+    None if gguf is None else gguf.GGMLQuantizationType.F32: np.float32,
+    None if gguf is None else gguf.GGMLQuantizationType.F64: np.float64,
+    None if gguf is None else gguf.GGMLQuantizationType.I8: np.int8,
+    None if gguf is None else gguf.GGMLQuantizationType.I16: np.int16,
+    None if gguf is None else gguf.GGMLQuantizationType.I32: np.int32,
+    None if gguf is None else gguf.GGMLQuantizationType.I64: np.int64,
+}
+
+
+@dataclass(frozen=True)
+class _GGUFTensorInfo:
+    name: str
+    tensor_type: object
+    raw_shape: tuple[int, ...]
+    data_offset: int
+    n_elements: int
+    n_bytes: int
+
+
+@dataclass(frozen=True)
+class _GGUFParsedIndex:
+    byte_order: str
+    data_alignment: int
+    data_offset: int
+    tensor_infos: tuple[_GGUFTensorInfo, ...]
+    config: object | None
+    orig_shapes: tuple[tuple[str, tuple[int, ...]], ...]
 
 
 def _normalize_gguf_path(file_path):
@@ -155,18 +218,263 @@ def set_gguf_cuda_kernels_enabled(enabled=None):
 
 _probe_gguf_cuda_runtime()
 
+
+def _gguf_read_array(data, offset, dtype, byte_order):
+    dtype = np.dtype(dtype).newbyteorder(byte_order)
+    value = np.frombuffer(data, dtype=dtype, count=1, offset=offset)
+    return value, offset + int(value.nbytes)
+
+
+def _gguf_read_string_fast(data, offset, byte_order):
+    str_len_arr, offset = _gguf_read_array(data, offset, np.uint64, byte_order)
+    str_len = int(str_len_arr[0])
+    raw = bytes(data[offset : offset + str_len])
+    return raw.decode("utf-8"), offset + str_len
+
+
+def _gguf_decode_value_fast(data, offset, raw_type, byte_order):
+    value_type = gguf.GGUFValueType(int(raw_type))
+    scalar_dtype = _GGUF_FAST_METADATA_SCALARS.get(value_type)
+    if scalar_dtype is not None:
+        value_arr, offset = _gguf_read_array(data, offset, scalar_dtype, byte_order)
+        value = value_arr[0]
+        return (bool(value) if value_type == gguf.GGUFValueType.BOOL else value.item()), offset
+    if value_type == gguf.GGUFValueType.STRING:
+        return _gguf_read_string_fast(data, offset, byte_order)
+    if value_type == gguf.GGUFValueType.ARRAY:
+        item_type_arr, offset = _gguf_read_array(data, offset, np.uint32, byte_order)
+        item_count_arr, offset = _gguf_read_array(data, offset, np.uint64, byte_order)
+        item_type = int(item_type_arr[0])
+        item_count = int(item_count_arr[0])
+        items = []
+        for _ in range(item_count):
+            item, offset = _gguf_decode_value_fast(data, offset, item_type, byte_order)
+            items.append(item)
+        return items, offset
+    raise ValueError(f"Unsupported GGUF metadata field type: {value_type}")
+
+
+def _gguf_stream_read_exact(reader, size):
+    data = reader.read(int(size))
+    if len(data) != int(size):
+        raise EOFError("Unexpected end of GGUF metadata header.")
+    return data
+
+
+def _gguf_stream_unpack(reader, fmt):
+    return struct.unpack(fmt, _gguf_stream_read_exact(reader, struct.calcsize(fmt)))
+
+
+def _gguf_read_string_stream(reader, byte_order):
+    str_len = int(_gguf_stream_unpack(reader, byte_order + "Q")[0])
+    return _gguf_stream_read_exact(reader, str_len).decode("utf-8")
+
+
+def _gguf_decode_value_stream(reader, raw_type, byte_order):
+    value_type = gguf.GGUFValueType(int(raw_type))
+    scalar_fmt = _GGUF_FAST_METADATA_STRUCT_FORMATS.get(value_type)
+    if scalar_fmt is not None:
+        return _gguf_stream_unpack(reader, byte_order + scalar_fmt)[0]
+    if value_type == gguf.GGUFValueType.STRING:
+        return _gguf_read_string_stream(reader, byte_order)
+    if value_type == gguf.GGUFValueType.ARRAY:
+        item_type = int(_gguf_stream_unpack(reader, byte_order + "I")[0])
+        item_count = int(_gguf_stream_unpack(reader, byte_order + "Q")[0])
+        return [_gguf_decode_value_stream(reader, item_type, byte_order) for _ in range(item_count)]
+    raise ValueError(f"Unsupported GGUF metadata field type: {value_type}")
+
+
+def _gguf_stream_skip(reader, size):
+    if int(size) <= 0:
+        return
+    reader.seek(int(size), os.SEEK_CUR)
+
+
+def _gguf_skip_value_stream(reader, raw_type, byte_order):
+    value_type = gguf.GGUFValueType(int(raw_type))
+    scalar_fmt = _GGUF_FAST_METADATA_STRUCT_FORMATS.get(value_type)
+    if scalar_fmt is not None:
+        _gguf_stream_skip(reader, struct.calcsize(byte_order + scalar_fmt))
+        return
+    if value_type == gguf.GGUFValueType.STRING:
+        str_len = int(_gguf_stream_unpack(reader, byte_order + "Q")[0])
+        _gguf_stream_skip(reader, str_len)
+        return
+    if value_type == gguf.GGUFValueType.ARRAY:
+        item_type = int(_gguf_stream_unpack(reader, byte_order + "I")[0])
+        item_count = int(_gguf_stream_unpack(reader, byte_order + "Q")[0])
+        item_value_type = gguf.GGUFValueType(item_type)
+        item_scalar_fmt = _GGUF_FAST_METADATA_STRUCT_FORMATS.get(item_value_type)
+        if item_scalar_fmt is not None:
+            _gguf_stream_skip(reader, struct.calcsize(byte_order + item_scalar_fmt) * item_count)
+            return
+        if item_value_type == gguf.GGUFValueType.STRING:
+            for _ in range(item_count):
+                item_len = int(_gguf_stream_unpack(reader, byte_order + "Q")[0])
+                _gguf_stream_skip(reader, item_len)
+            return
+        for _ in range(item_count):
+            _gguf_skip_value_stream(reader, item_type, byte_order)
+        return
+    raise ValueError(f"Unsupported GGUF metadata field type: {value_type}")
+
+
+def _gguf_quant_byte_shape(shape, tensor_type):
+    if len(shape) == 0:
+        return tuple(shape)
+    block_size, type_size = gguf.GGML_QUANT_SIZES[tensor_type]
+    last_dim = int(shape[-1])
+    if block_size <= 0 or last_dim % block_size != 0:
+        raise ValueError(f"Invalid GGUF tensor shape {tuple(shape)} for tensor type {getattr(tensor_type, 'name', tensor_type)}")
+    return tuple(int(dim) for dim in shape[:-1]) + (last_dim // block_size * type_size,)
+
+
+def _gguf_cache_identity(file_path):
+    try:
+        stat = os.stat(file_path)
+    except OSError:
+        return None
+    return (int(stat.st_size), int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9))))
+
+
+def _gguf_parse_index(file_path):
+    if gguf is None:
+        raise RuntimeError("GGUF support requires the 'gguf' package.")
+    with open(file_path, "rb") as reader:
+        magic = int(_gguf_stream_unpack(reader, "<I")[0])
+        if magic != int(gguf.GGUF_MAGIC):
+            raise ValueError("GGUF magic invalid")
+        version_le = int(_gguf_stream_unpack(reader, "<I")[0])
+        byte_order = ">" if (version_le & 0xFFFF) == 0 else "<"
+        tensor_count = int(_gguf_stream_unpack(reader, byte_order + "Q")[0])
+        kv_count = int(_gguf_stream_unpack(reader, byte_order + "Q")[0])
+        data_alignment = int(getattr(gguf, "GGUF_DEFAULT_ALIGNMENT", 32))
+        config = None
+        orig_shapes = {}
+        for _ in range(kv_count):
+            key = _gguf_read_string_stream(reader, byte_order)
+            raw_type = int(_gguf_stream_unpack(reader, byte_order + "I")[0])
+            if key == "general.alignment":
+                data_alignment = int(_gguf_decode_value_stream(reader, raw_type, byte_order))
+                continue
+            if key == "config":
+                config = _gguf_decode_value_stream(reader, raw_type, byte_order)
+                continue
+            if key.startswith(_GGUF_ORIG_SHAPE_PREFIX):
+                value = _gguf_decode_value_stream(reader, raw_type, byte_order)
+                if isinstance(value, (list, tuple)):
+                    tensor_name = key[len(_GGUF_ORIG_SHAPE_PREFIX):]
+                    orig_shapes[tensor_name] = tuple(int(dim) for dim in value)
+                continue
+            _gguf_skip_value_stream(reader, raw_type, byte_order)
+
+        tensor_infos = []
+        for _ in range(tensor_count):
+            name = _gguf_read_string_stream(reader, byte_order)
+            n_dims = int(_gguf_stream_unpack(reader, byte_order + "I")[0])
+            raw_shape = tuple(int(_gguf_stream_unpack(reader, byte_order + "Q")[0]) for _ in range(n_dims))
+            tensor_type = gguf.GGMLQuantizationType(int(_gguf_stream_unpack(reader, byte_order + "I")[0]))
+            rel_offset = int(_gguf_stream_unpack(reader, byte_order + "Q")[0])
+            n_elements = 1
+            for dim in raw_shape:
+                n_elements *= int(dim)
+            block_size, type_size = gguf.GGML_QUANT_SIZES[tensor_type]
+            n_bytes = int(n_elements * type_size // block_size)
+            tensor_infos.append(
+                _GGUFTensorInfo(
+                    name=name,
+                    tensor_type=tensor_type,
+                    raw_shape=raw_shape,
+                    data_offset=rel_offset,
+                    n_elements=n_elements,
+                    n_bytes=n_bytes,
+                )
+            )
+
+        data_offset = int(reader.tell())
+        padding = data_offset % data_alignment
+        if padding != 0:
+            data_offset += data_alignment - padding
+        tensor_infos = tuple(
+            _GGUFTensorInfo(
+                name=info.name,
+                tensor_type=info.tensor_type,
+                raw_shape=info.raw_shape,
+                data_offset=data_offset + info.data_offset,
+                n_elements=info.n_elements,
+                n_bytes=info.n_bytes,
+            )
+            for info in tensor_infos
+        )
+        return _GGUFParsedIndex(
+            byte_order=byte_order,
+            data_alignment=data_alignment,
+            data_offset=data_offset,
+            tensor_infos=tensor_infos,
+            config=config,
+            orig_shapes=tuple((name, shape) for name, shape in orig_shapes.items()),
+        )
+
+
+def _gguf_get_index(file_path):
+    cache_key = _normalize_gguf_path(file_path)
+    identity = _gguf_cache_identity(file_path)
+    cached = _GGUF_INDEX_CACHE.get(cache_key)
+    if cached is not None and cached[0] == identity:
+        return cached[1]
+    parsed = _gguf_parse_index(file_path)
+    _GGUF_INDEX_CACHE[cache_key] = (identity, parsed)
+    return parsed
+
+
+def _gguf_open_tensor_numpy(mmap_data, index, tensor_info):
+    logical_shape = tuple(int(dim) for dim in reversed(tensor_info.raw_shape))
+    tensor_type = tensor_info.tensor_type
+    np_dtype = _GGUF_TYPED_TENSOR_DTYPES.get(tensor_type)
+    if np_dtype is None:
+        byte_shape = _gguf_quant_byte_shape(logical_shape, tensor_type)
+        return np.ndarray(shape=byte_shape, dtype=np.uint8, buffer=mmap_data, offset=tensor_info.data_offset)
+    dtype = np.dtype(np_dtype)
+    if index.byte_order != _GGUF_NATIVE_BYTE_ORDER:
+        dtype = dtype.newbyteorder(index.byte_order)
+        return np.ndarray(shape=logical_shape, dtype=dtype, buffer=mmap_data, offset=tensor_info.data_offset).byteswap().newbyteorder()
+    return np.ndarray(shape=logical_shape, dtype=dtype, buffer=mmap_data, offset=tensor_info.data_offset)
+
+
+def _get_lightweight_gguf_metadata(file_path):
+    try:
+        parsed = _gguf_get_index(file_path)
+    except Exception:
+        return {}
+    metadata = {}
+    if parsed.config is not None:
+        metadata["config"] = parsed.config
+    return metadata
+
+
+def ensure_gguf_handler_registered() -> None:
+    try:
+        from mmgp import quant_router
+    except Exception:
+        return
+    quant_router.register_handler(__name__)
+    quant_router.register_file_extension("gguf", sys.modules[__name__])
+
+
+ensure_gguf_handler_registered()
+
 def get_file_metadata(file_path):
     if gguf is None:
         raise RuntimeError("GGUF support requires the 'gguf' package.")
-    reader = gguf.GGUFReader(file_path)
-    metadata = {}
-    field = reader.get_field("config")
-    if field is not None:
-        try:
-            metadata["config"] = field.contents() if callable(getattr(field, "contents", None)) else field.contents
-        except Exception:
-            pass
-    return OrderedDict(), metadata
+    cache_key = _normalize_gguf_path(file_path)
+    cached = _GGUF_METADATA_CACHE.get(cache_key)
+    if cached is not None:
+        state_dict, metadata = cached
+        return OrderedDict(state_dict), dict(metadata)
+    metadata = _get_lightweight_gguf_metadata(file_path)
+    result = (OrderedDict(), metadata)
+    _GGUF_METADATA_CACHE[cache_key] = (OrderedDict(result[0]), dict(result[1]))
+    return OrderedDict(result[0]), dict(result[1])
 
 
 def _filter_state_dict_basic(state_dict, base_model_prefix, keep_prefix=False):
@@ -191,18 +499,6 @@ def _filter_state_dict_basic(state_dict, base_model_prefix, keep_prefix=False):
             start = new_start
             new_state_dict[k[start:]] = v
     return new_state_dict
-
-
-def _gguf_get_orig_shape(reader, tensor_name):
-    if gguf is None:
-        raise RuntimeError("GGUF support requires the 'gguf' package.")
-    field_key = f"comfy.gguf.orig_shape.{tensor_name}"
-    field = reader.get_field(field_key)
-    if field is None:
-        return None
-    if len(field.types) != 2 or field.types[0] != gguf.GGUFValueType.ARRAY or field.types[1] != gguf.GGUFValueType.INT32:
-        raise TypeError(f"Bad GGUF shape metadata for {field_key}: {field.types}")
-    return torch.Size(tuple(int(field.parts[part_idx][0]) for part_idx in field.data))
 
 
 def _gguf_resolve_prefix(tensor_names, prefixes):
@@ -255,32 +551,36 @@ def load_gguf_state_dict(
             return gguf.GGMLQuantizationType.F32
         return None
 
-    reader = gguf.GGUFReader(file_path)
+    parsed = _gguf_get_index(file_path)
+    orig_shapes = dict(parsed.orig_shapes)
+    mmap_data = np.memmap(file_path, mode="r")
     if verboseLevel >= 2:
         try:
             from mmgp import safetensors2
             safetensors2.verboseLevel = verboseLevel
             tracker = safetensors2.MmapTracker(file_path)
-            tracker.register(reader.data, 0, 0, int(reader.data.nbytes))
+            tracker.register(mmap_data, 0, 0, int(mmap-_data.nbytes))
         except Exception:
             tracker = None
-    tensor_names = [tensor.name for tensor in reader.tensors]
+    tensor_names = [tensor.name for tensor in parsed.tensor_infos]
     prefix = _gguf_resolve_prefix(tensor_names, ("model.diffusion_model.", "diffusion_model."))
 
     state_dict = {}
     qtype_counts = {}
-    for tensor in reader.tensors:
+    for tensor in parsed.tensor_infos:
         name = tensor.name
         if prefix and name.startswith(prefix):
             name = name[len(prefix):]
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
-            torch_tensor = torch.from_numpy(tensor.data)
+            torch_tensor = torch.from_numpy(_gguf_open_tensor_numpy(mmap_data, parsed, tensor))
 
-        shape = _gguf_get_orig_shape(reader, tensor.name)
+        shape = orig_shapes.get(tensor.name, None)
         if shape is None:
-            shape = torch.Size(tuple(int(v) for v in reversed(tensor.shape)))
+            shape = torch.Size(tuple(int(v) for v in reversed(tensor.raw_shape)))
+        else:
+            shape = torch.Size(tuple(int(v) for v in shape))
         if tensor.tensor_type in (
             gguf.GGMLQuantizationType.F32,
             gguf.GGMLQuantizationType.F16,
@@ -486,7 +786,10 @@ def _try_llamacpp_cuda_linear(weight_tensor, input_tensor, bias, target_dtype):
         gguf_llamacpp_cuda = _gguf_cuda_module()
         if gguf_llamacpp_cuda is None or not gguf_llamacpp_cuda.may_support_linear_qtype_name(qtype_name):
             return None
-        return gguf_llamacpp_cuda.linear(raw, qtype_name, tuple(getattr(weight_tensor, "_tensor_shape", weight_tensor.shape)), input_tensor, bias, target_dtype)
+        fast_out = gguf_llamacpp_cuda.linear(raw, qtype_name, tuple(getattr(weight_tensor, "_tensor_shape", weight_tensor.shape)), input_tensor, bias, target_dtype)
+        if fast_out is not None:
+            _gguf_log_once(f"llamacpp_cuda_linear_active_{qtype_name}", f"[GGUF][llama.cpp CUDA] linear fast path active for {qtype_name}.")
+        return fast_out
     except Exception as exc:
         _gguf_log_once(f"llamacpp_cuda_linear_{qtype_name}", f"[GGUF][llama.cpp CUDA] linear GGUF CUDA kernels failed for {qtype_name}, using fallback: {exc}")
         return None
@@ -505,7 +808,10 @@ def _try_llamacpp_cuda_embedding(weight_tensor, index_tensor, target_dtype):
         gguf_llamacpp_cuda = _gguf_cuda_module()
         if gguf_llamacpp_cuda is None or not gguf_llamacpp_cuda.may_support_embedding_qtype_name(qtype_name):
             return None
-        return gguf_llamacpp_cuda.embedding(raw, qtype_name, tuple(getattr(weight_tensor, "_tensor_shape", weight_tensor.shape)), index_tensor, target_dtype)
+        fast_out = gguf_llamacpp_cuda.embedding(raw, qtype_name, tuple(getattr(weight_tensor, "_tensor_shape", weight_tensor.shape)), index_tensor, target_dtype)
+        if fast_out is not None:
+            _gguf_log_once(f"llamacpp_cuda_embedding_active_{qtype_name}", f"[GGUF][llama.cpp CUDA] embedding fast path active for {qtype_name}.")
+        return fast_out
     except Exception as exc:
         _gguf_log_once(f"llamacpp_cuda_embedding_{qtype_name}", f"[GGUF][llama.cpp CUDA] embedding GGUF CUDA kernels failed for {qtype_name}, using fallback: {exc}")
         return None
@@ -555,11 +861,11 @@ def detect_gguf_quantization_variant(file_path, verboseLevel=1):
     if gguf is None:
         return None
     try:
-        reader = gguf.GGUFReader(file_path)
+        parsed = _gguf_get_index(file_path)
     except Exception:
         return None
     counts = {}
-    for tensor in reader.tensors:
+    for tensor in parsed.tensor_infos:
         qtype = getattr(tensor, "tensor_type", None)
         if qtype in (
             gguf.GGMLQuantizationType.F32,

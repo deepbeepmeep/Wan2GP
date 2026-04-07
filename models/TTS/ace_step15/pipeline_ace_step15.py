@@ -176,6 +176,7 @@ class ACEStep15Pipeline:
             writable_tensors=False,
             ignore_unused_weights=True,
         )
+        self._promote_xl_quantizer_to_fp32_before_mmgp()
         self.ace_step_transformer.eval()
         self.model = self.ace_step_transformer
 
@@ -212,6 +213,21 @@ class ACEStep15Pipeline:
                 folded += 1
         # if folded > 0:
         #     print(f"[ace_step15] Folded Oobleck decoder weight_norm once for {folded} layers.")
+
+    def _promote_xl_quantizer_to_fp32_before_mmgp(self):
+        class_module = str(getattr(self.transformer_model_class, "__module__", ""))
+        if "_xl_" not in class_module:
+            return
+        transformer = getattr(self, "ace_step_transformer", None)
+        tokenizer = getattr(transformer, "tokenizer", None)
+        quantizer = getattr(tokenizer, "quantizer", None)
+        if quantizer is None:
+            return
+        first_param = next(iter(quantizer.parameters()), None)
+        if first_param is None or first_param.dtype == torch.float32:
+            return
+        quantizer.float()
+        print("[ace_step15] keeping XL tokenizer quantizer in float32 before MMGP.")
 
     def _init_lm_hint_modules(self):
         self._lm_hint_quantizer = None

@@ -101,25 +101,6 @@ class AceStepTimbreEncoder(_BaseAceStepTimbreEncoder):
 
 
 class AceStepAudioTokenizer(_BaseAceStepAudioTokenizer):
-    @staticmethod
-    def _set_quantizer_dtype(quantizer, dtype):
-        for module in (quantizer.project_in, quantizer.project_out):
-            weight = getattr(module, "weight", None)
-            if isinstance(weight, torch.Tensor) and torch.is_floating_point(weight):
-                weight.data = weight.data.to(dtype=dtype)
-            bias = getattr(module, "bias", None)
-            if isinstance(bias, torch.Tensor) and torch.is_floating_point(bias):
-                bias.data = bias.data.to(dtype=dtype)
-        if hasattr(quantizer, "scales") and torch.is_floating_point(quantizer.scales):
-            quantizer.scales.data = quantizer.scales.data.to(dtype=dtype)
-        clamp_value = getattr(quantizer, "soft_clamp_input_value", None)
-        if isinstance(clamp_value, torch.Tensor) and torch.is_floating_point(clamp_value):
-            clamp_value.data = clamp_value.data.to(dtype=dtype)
-        for layer in getattr(quantizer, "layers", []):
-            codebook = getattr(layer, "implicit_codebook", None)
-            if isinstance(codebook, torch.Tensor) and torch.is_floating_point(codebook):
-                codebook.data = codebook.data.to(dtype=dtype)
-
     @can_return_tuple
     def forward(
         self,
@@ -129,12 +110,7 @@ class AceStepAudioTokenizer(_BaseAceStepAudioTokenizer):
         hidden_states = self.audio_acoustic_proj(hidden_states)
         hidden_states = self.attention_pooler(hidden_states)
         input_dtype = hidden_states.dtype
-        quantizer_dtype = next(self.quantizer.parameters()).dtype
-        if quantizer_dtype != torch.float32:
-            self._set_quantizer_dtype(self.quantizer, torch.float32)
         quantized, indices = self.quantizer(hidden_states.float())
-        if quantizer_dtype != torch.float32:
-            self._set_quantizer_dtype(self.quantizer, quantizer_dtype)
         quantized = quantized.to(input_dtype)
         return quantized, indices
 

@@ -190,7 +190,18 @@ class family_handler:
             extra_model_def["preset_profiles_dir"] = [preset_profiles_dir]
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"] = True
-        extra_model_def["input_video_strength"] = "Image / Source Video Strength (you may try values lower value than 1 to get more motion)"
+        extra_model_def["input_video_strength"] = {
+            "label": "Start Image / Source Strength (lower values may create more motion)",
+            "name": "Start Image / Source Strength",
+        }
+        extra_model_def["denoising_strength"] = {
+            "label": "Control Video Strength (higher = closer to the Control Video)",
+            "name": "Control Video Strength",
+        }
+        extra_model_def["masking_strength"] = {
+            "label": "Masked Control Duration (higher = longer masked reinjection)",
+            "name": "Masked Control Duration",
+        }
         
         control_choices = [("No Video Process", "")]
         control_choices += [ ("Transfer Human Motion", "PVG") , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("Use LTX-2 raw format Control Video", "VG")] if distilled else []
@@ -221,7 +232,8 @@ class family_handler:
             extra_model_def.update(
                 {
                     "lock_inference_steps": True,
-                    "no_negative_prompt": True,
+                    "NAG": True,
+                    "no_negative_prompt": False,
                 }
             )
         else:

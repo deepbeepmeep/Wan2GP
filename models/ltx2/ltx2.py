@@ -835,6 +835,9 @@ class LTX2:
         audio_cfg_scale: float | None = None,
         alt_scale: float = 0.0,
         sample_solver: str = "",
+        NAG_scale: float = 1.0,
+        NAG_tau: float = 3.5,
+        NAG_alpha: float = 0.5,
         self_refiner_setting: int = 0,
         self_refiner_plan: str = "",
         self_refiner_f_uncertainty: float = 0.1,
@@ -1231,6 +1234,15 @@ class LTX2:
                 self_refiner_max_plans=self_refiner_max_plans,
             )
         else:
+            distilled_kwargs = {}
+            if distill:
+                distilled_kwargs.update(
+                    {
+                        "NAG_scale": float(NAG_scale),
+                        "NAG_tau": float(NAG_tau),
+                        "NAG_alpha": float(NAG_alpha),
+                    }
+                )
             pipeline_output = self.pipeline(
                 prompt=input_prompt,
                 negative_prompt=negative_prompt,
@@ -1264,6 +1276,7 @@ class LTX2:
                 self_refiner_f_uncertainty=self_refiner_f_uncertainty,
                 self_refiner_certain_percentage=self_refiner_certain_percentage,
                 self_refiner_max_plans=self_refiner_max_plans,
+                **distilled_kwargs,
             )
 
         latent_slice = None

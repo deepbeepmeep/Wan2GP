@@ -117,7 +117,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.21"
+WanGP_version = "11.22"
 settings_version = 2.56
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -602,7 +602,9 @@ def injected_frames_positions_visible(video_prompt_type):
 
 
 def input_video_strength_visible(model_def, image_prompt_type, video_prompt_type=""):
-    return len((model_def or {}).get("input_video_strength", "")) > 0 and (
+    input_video_strength = model_def.get("input_video_strength", {})
+    input_video_strength_label = input_video_strength.get("label", "").strip()
+    return len(input_video_strength_label) > 0 and (
         any_letters(image_prompt_type or "", "SVLE") or injected_frames_positions_visible(video_prompt_type)
     )
 
@@ -4296,14 +4298,14 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels += ["Outpainting"]
             if input_video_strength_visible(model_def, video_image_prompt_type, video_video_prompt_type):
                 values += [configs.get("input_video_strength",1)]
-                labels += ["Input Image Strength"]
+                labels += [extra_settings.get_summary_label("input_video_strength", model_def, fallback="Input Image Strength")]
 
             if "G" in video_video_prompt_type and "V" in video_video_prompt_type:
                 values += [configs.get("denoising_strength",1)]
-                labels += ["Denoising Strength"]
+                labels += [extra_settings.get_summary_label("denoising_strength", model_def, fallback="Denoising Strength")]
             if ("G" in video_video_prompt_type or model_def.get("mask_strength_always_enabled", False)) and "A" in video_video_prompt_type and "U" not in video_video_prompt_type:
                 values += [configs.get("masking_strength",1)]
-                labels += ["Masking Strength"]
+                labels += [extra_settings.get_summary_label("masking_strength", model_def, fallback="Masking Strength")]
 
             video_sample_solver = configs.get("sample_solver", "")
             if model_def.get("sample_solvers", None) is not None and len(video_sample_solver) > 0 :
@@ -4355,8 +4357,10 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 labels += ["Negative Prompt"]        
             video_NAG_scale = configs.get("NAG_scale", None)
             if video_NAG_scale is not None and video_NAG_scale > 1: 
-                values += [video_NAG_scale]
-                labels += ["NAG Scale"]      
+                video_NAG_tau = configs.get("NAG_tau", None)
+                video_NAG_alpha = configs.get("NAG_alpha", None)
+                values += [f"scale={video_NAG_scale}, tau={video_NAG_tau}, alpha={video_NAG_alpha}"]
+                labels += ["NAG"]      
             video_self_refiner_setting = configs.get("self_refiner_setting", 0)
             if video_self_refiner_setting > 0:  
                 video_self_refiner_plan = configs.get('self_refiner_plan','')
@@ -10330,7 +10334,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             control_net_weight_alt = setting_slider("control_net_weight_alt")
                             audio_scale = setting_slider("audio_scale", value=ui_get("audio_scale", 1))
                         with gr.Row(visible = not (hunyuan_t2v or hunyuan_i2v or no_negative_prompt)) as negative_prompt_row:
-                            negative_prompt = gr.Textbox(label="Negative Prompt (ignored if no Guidance that is if CFG = 1)", value=ui_get("negative_prompt")  )
+
+                            negative_prompt = gr.Textbox(label="Negative Prompt " + ("(ignored if NAG is disabled and no Guidance that is if CFG = 1)"  if get_container_def("NAG_col").visible else "(ignored if no Guidance that is if CFG = 1)") , value=ui_get("negative_prompt")  )
                         with gr.Column(visible = get_container_def("NAG_col").visible) as NAG_col:
                             gr.Markdown("<B>NAG enforces Negative Prompt even if no Guidance is set (CFG = 1), set NAG Scale to > 1 to enable it</B>")
                             with gr.Row():

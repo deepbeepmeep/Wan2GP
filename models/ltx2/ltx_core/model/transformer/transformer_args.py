@@ -21,7 +21,7 @@ from .timestep_embedding import get_timestep_embedding
 class TransformerArgs:
     x: torch.Tensor
     context: torch.Tensor
-    context_mask: torch.Tensor
+    context_mask: torch.Tensor | None
     timesteps: torch.Tensor
     embedded_timestep: torch.Tensor
     positional_embeddings: RopeCache
@@ -29,6 +29,7 @@ class TransformerArgs:
     cross_scale_shift_timestep: torch.Tensor | None
     cross_gate_timestep: torch.Tensor | None
     enabled: bool
+    nag: dict | None = None
     prompt_timestep: torch.Tensor | None = None
     self_attention_mask: torch.Tensor | None = None
 
@@ -482,6 +483,7 @@ class TransformerArgsPreprocessor:
             cross_scale_shift_timestep=None,
             cross_gate_timestep=None,
             enabled=modality.enabled,
+            nag=modality.nag,
             prompt_timestep=prompt_timestep,
         )
 
@@ -590,6 +592,7 @@ class MultiModalTransformerArgsPreprocessor:
             cross_scale_shift_timestep=cross_scale_shift_timestep,
             cross_gate_timestep=cross_gate_timestep,
             enabled=transformer_args.enabled,
+            nag=transformer_args.nag,
             prompt_timestep=transformer_args.prompt_timestep,
             self_attention_mask=transformer_args.self_attention_mask,
         )

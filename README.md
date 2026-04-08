@@ -186,22 +186,22 @@ This script automatically detects your system specs (GPU type, RAM, VRAM) and se
 
 #### **Installation Process**
 
-##### **Choose Installation Type**
-
-* **Auto Install**
-* **Manual Install**
+**Step 1 — Choose Installation Type**
+- **Auto Install**
+- **Manual Install**
 
 ---
 
-**🛠️ Manual Install Path**
+**Step 2 — Configuration**
 
-You will be guided through:
+**Manual Install**
+If you selected Manual Install, you will be guided through:
 
-1. **Choose your package manager**
-2. **Name your environment**
+1. **Choose your package manager**  
+2. **Name your environment**  
 3. **Select your Install Mode**
 
-💡 **Recommendation:**
+💡 **Recommendation:**  
 For many users, trying **Option 3 (Use Latest)** is highly recommended.
 The latest PyTorch and Sage Attention combinations often provide **significant speed improvements** and **better memory management** across a wide range of modern GPUs.
 

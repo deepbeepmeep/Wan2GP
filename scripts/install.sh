@@ -5,21 +5,70 @@ check_python() {
     command -v python3 >/dev/null 2>&1 && python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >/dev/null 2>&1
 }
 
-if ! check_python; then
-    if [ -f "$(dirname "$0")/scripts/autoinstaller.sh" ]; then
-        echo "[*] Python 3.10+ not found. Running automated installer..."
-        bash "$(dirname "$0")/scripts/autoinstaller.sh" python
-        
-        if ! check_python; then
-            echo "[-] Automated installation failed or Python is still not recognized."
-            echo "[*] Please install Python 3.10+ manually."
-            read -p "Press Enter to exit..."
-            exit 1
-        fi
+install_python() {
+    echo "[*] Attempting to install Python 3.10+ via system package manager..."
+    
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "[*] Detected Debian/Ubuntu based system."
+        sudo apt-get update
+        sudo apt-get install -y python3 python3-venv python3-pip
+        return $?
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "[*] Detected Fedora/RHEL based system."
+        sudo dnf install -y python3 python3-pip
+        return $?
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "[*] Detected Arch based system."
+        sudo pacman -Sy --noconfirm python python-pip
+        return $?
     else
-        echo "[-] Python 3.10+ is required but was not found."
-        echo "[-] 'autoinstaller.sh' was not found (or was deleted)."
-        echo "[*] Please install Python 3.10+ manually and run this script again."
+        echo "[-] Unsupported package manager. Please install Python 3.10+ manually."
+        return 1
+    fi
+}
+
+install_conda() {
+    echo "[-] 'conda' not found."
+    echo "[*] Downloading Miniconda3..."
+    
+    local DL_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+    local DL_FILE="miniconda_installer.sh"
+    
+    if command -v curl >/dev/null 2>&1; then
+        curl -L -o "$DL_FILE" "$DL_URL"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -O "$DL_FILE" "$DL_URL"
+    else
+        echo "[-] curl or wget is required to download Miniconda."
+        return 1
+    fi
+    
+    if [ ! -f "$DL_FILE" ]; then
+        echo "[-] Download failed. Please install Miniconda manually."
+        return 1
+    fi
+    
+    echo "[*] Installing Miniconda silently (this may take a minute)..."
+    bash "$DL_FILE" -b -p "$HOME/miniconda3"
+    rm "$DL_FILE"
+    
+    echo "[*] Auto-accepting Conda Terms of Service and configuring..."
+    "$HOME/miniconda3/bin/conda" config --set auto_activate_base false
+    "$HOME/miniconda3/bin/conda" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main >/dev/null 2>&1
+    "$HOME/miniconda3/bin/conda" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r >/dev/null 2>&1
+    
+    echo "[*] Miniconda installation complete!"
+    echo "[*] Note: You may need to restart your terminal or run 'source $HOME/miniconda3/bin/activate' to use conda universally."
+    return 0
+}
+
+if ! check_python; then
+    echo "[*] Python 3.10+ not found. Running automated installer..."
+    install_python
+    
+    if ! check_python; then
+        echo "[-] Automated installation failed or Python is still not recognized."
+        echo "[*] Please install Python 3.10+ manually."
         read -p "Press Enter to exit..."
         exit 1
     fi
@@ -67,16 +116,9 @@ elif [ "$choice" == "3" ]; then
     if [ -f "$HOME/anaconda3/bin/conda" ]; then CONDA_FOUND=1; fi
 
     if [ "$CONDA_FOUND" == "0" ]; then
-        if [ -f "$(dirname "$0")/scripts/autoinstaller.sh" ]; then
-            bash "$(dirname "$0")/scripts/autoinstaller.sh" conda
-            if [ $? -ne 0 ]; then
-                echo "[-] Miniconda installation failed or was aborted."
-                read -p "Press Enter to exit..."
-                exit 1
-            fi
-        else
-            echo "[-] 'conda' not found and 'autoinstaller.sh' was deleted."
-            echo "[*] Please install Miniconda manually to use this option."
+        install_conda
+        if [ $? -ne 0 ]; then
+            echo "[-] Miniconda installation failed or was aborted."
             read -p "Press Enter to exit..."
             exit 1
         fi

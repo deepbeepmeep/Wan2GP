@@ -182,22 +182,11 @@ If manual installation is too complicated for you and Pinokio makes managing upd
 This script automatically detects your system specs (GPU type, RAM, VRAM) and sets up an optimized local Python environment. If you are missing system requirements (like Python 3.11, Conda, or `uv`), the Windows script will automatically attempt to download and configure them for you.
 
 **The Installation Process:**
-1. **Choose your package manager:**
-   * **`uv` (Recommended)** - Extremely fast package manager. Highly recommended for the smoothest installation and best handling of Python packages.
-   * **`venv`** - Uses standard Python. Easiest choice, comes prepackaged.
-   * **`Conda`** - Great if you already use Miniconda/Anaconda for other AI projects.
-2. **Name your environment:** You can press Enter to use the default name, or type a custom env name (e.g., `wan2gp-latest`).
-3. **Select your Install Mode:**
-   * **Option 1: Autoselect** - Automatically installs versions of PyTorch, Triton, and Attention backends based strictly on your detected GPU architecture.
-   * **Option 2: Manual Selection** - Gives you granular control over exactly which version of Python, PyTorch, Triton, and Sage/Flash Attention you want to install.
-   * **Option 3: Use Latest** - Forces the installation of the absolute newest software stacks. 
-   
-   💡 ***New Recommendation:** For many users, selecting **Option 3 (Use Latest)** is now highly recommended! The latest PyTorch and Sage Attention combos often provide massive speed improvements and better memory management across a wide variety of modern GPUs.*
+1. **Choose your package manager**
+2. **Name your environment**
+3. **Select your Install Mode**
 
-> [!IMPORTANT]
-> **Note:** If Python 3.11 or Conda are missing, the script auto-installs them. This behavior triggers false positives (2/62) on VirusTotal. If concerned, you may delete `scripts/autoinstaller.bat` to handle installations manually. 
-> 
-> *If you delete it:* run `git update-index --skip-worktree scripts/autoinstaller.bat` in your terminal to prevent Git errors. (Our `update.bat` handles this automatically during pulls).
+   💡 ***New Recommendation:** For many users, selecting **Option 3 (Use Latest)** install mode is now highly recommended! The latest PyTorch and Sage Attention combos often provide massive speed improvements and better memory management across a wide variety of modern GPUs.*
 
 ### 2️⃣ Starting the App (`scripts\run.bat` | `scripts/run.sh`)
 Once installed, use this script to launch the application. It runs WAN2GP using your active environment.
@@ -221,12 +210,6 @@ The `manage` script allows you to manage and switch between your sandboxed envir
 
 * **Example Scenario:** Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, you can run `install.bat`, create a *new* environment called `env_testing`, and select "Use Latest". 
 * If the testing environment breaks or gives you errors, you can simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
-
-**Manage Menu Features:**
-* **1. Set Active Environment:** Choose which sandbox `run.bat/.sh` will use when launching the app.
-* **2. Delete Environment:** Safely remove a broken or old environment to free up disk space.
-* **3. Add Existing Environment:** Link an existing `venv` or `conda` folder to this project if you moved it from somewhere else.
-* **4. List Environment Details:** Displays a clean status board showing the exact versions of Python, Torch, Triton, Sage, and Flash Attention installed in every environment.
 
 **One-click (Pinokio) installer:** 
 Get started instantly with [Pinokio App](https://pinokio.computer/)\

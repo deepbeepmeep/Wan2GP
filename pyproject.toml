@@ -7,12 +7,14 @@ addopts = "-v --tb=short"
 
 [project.scripts]
 worker = "source.runtime.entrypoints.worker:main"
+run_worker = "source.runtime.entrypoints.run_worker:main"
 heartbeat_guardian = "source.runtime.entrypoints.heartbeat_guardian:main"
 headless_model_management = "source.runtime.entrypoints.headless_model_management:main"
 headless_wgp = "source.runtime.entrypoints.headless_wgp:WanOrchestrator"
 
 [tool.headless_wan2gp.entrypoints]
 worker = "source.runtime.entrypoints.worker:main"
+run_worker = "source.runtime.entrypoints.run_worker:main"
 heartbeat_guardian = "source.runtime.entrypoints.heartbeat_guardian:main"
 headless_model_management = "source.runtime.entrypoints.headless_model_management:main"
 headless_wgp = "source.runtime.entrypoints.headless_wgp:WanOrchestrator"

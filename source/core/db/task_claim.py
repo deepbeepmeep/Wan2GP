@@ -1,6 +1,7 @@
 """
 Task claiming and assignment recovery functions.
 """
+from enum import Enum
 import os
 import sys
 import traceback
@@ -10,15 +11,23 @@ import httpx
 from source.core.log import headless_logger
 
 __all__ = [
+    "ClaimPollOutcome",
     "init_db",
     "init_db_supabase",
     "check_task_counts_supabase",
     "check_my_assigned_tasks",
     "get_oldest_queued_task",
     "get_oldest_queued_task_supabase",
+    "poll_next_task",
 ]
 
 from . import config as _cfg
+
+
+class ClaimPollOutcome(str, Enum):
+    CLAIMED = "claimed"
+    EMPTY = "empty"
+    ERROR = "error"
 
 
 def _resolve_runtime_config(runtime_config=None):
@@ -157,25 +166,21 @@ def get_oldest_queued_task():
     """Gets the oldest queued task from Supabase."""
     return get_oldest_queued_task_supabase()
 
-def get_oldest_queued_task_supabase(
-    worker_id: str = None,
-    same_model_only: bool = False,
-    max_task_wait_minutes: int | None = None,
-):
-    """Fetch the oldest task via Supabase Edge Function.
 
-    First checks task counts to avoid unnecessary claim attempts.
-    same_model_only: prefer tasks matching worker's current_model
-    max_task_wait_minutes: starvation protection — bypass model affinity after this many minutes
-    """
+def _poll_next_task_impl(
+    *,
+    worker_id: str | None,
+    same_model_only: bool,
+    max_task_wait_minutes: int | None,
+) -> tuple[ClaimPollOutcome, dict | None]:
     if not _cfg.SUPABASE_URL or not _cfg.SUPABASE_ACCESS_TOKEN:
         headless_logger.error("Supabase URL or access token not configured. Cannot get task.")
-        return None
+        return ClaimPollOutcome.ERROR, None
 
     # Worker ID is required
     if not worker_id:
         headless_logger.error("No worker_id provided to get_oldest_queued_task_supabase")
-        return None
+        return ClaimPollOutcome.ERROR, None
 
     headless_logger.debug(f"DEBUG: Using worker_id: {worker_id}")
 
@@ -244,19 +249,49 @@ def get_oldest_queued_task_supabase(
 
                 headless_logger.essential(f"[CLAIM] Claimed task {task_id} (type={task_type}, segment_index={segment_index})", task_id=task_id)
                 headless_logger.debug(f"[CLAIM_DEBUG] Full task data: {task_data}")
-                return task_data  # Already in the expected format
-            elif resp.status_code == 204:
+                return ClaimPollOutcome.CLAIMED, task_data
+            if resp.status_code == 204:
                 headless_logger.debug("Edge Function: No queued tasks available")
-                return None
-            else:
-                headless_logger.error(f"[CLAIM] Edge Function returned {resp.status_code}: {resp.text[:500]}")
-                return None
+                return ClaimPollOutcome.EMPTY, None
+
+            headless_logger.error(f"[CLAIM] Edge Function returned {resp.status_code}: {resp.text[:500]}")
+            return ClaimPollOutcome.ERROR, None
         except (httpx.HTTPError, OSError, ValueError) as e_edge:
             # Log visibly - this is a critical failure that can cause orphaned tasks
             headless_logger.error(f"[CLAIM] Edge Function call failed: {e_edge}")
             headless_logger.debug(f"[CLAIM_DEBUG] Exception type: {type(e_edge).__name__}")
             headless_logger.debug(f"[CLAIM_DEBUG] Full traceback: {traceback.format_exc()}")
-            return None
-    else:
-        headless_logger.error("[CLAIM] No edge function URL or auth configuration available for task claiming")
-        return None
+            return ClaimPollOutcome.ERROR, None
+
+    headless_logger.error("[CLAIM] No edge function URL or auth configuration available for task claiming")
+    return ClaimPollOutcome.ERROR, None
+
+
+def poll_next_task(
+    worker_id: str,
+    same_model_only: bool,
+    max_task_wait_minutes: int | None,
+) -> tuple[ClaimPollOutcome, dict | None]:
+    return _poll_next_task_impl(
+        worker_id=worker_id,
+        same_model_only=same_model_only,
+        max_task_wait_minutes=max_task_wait_minutes,
+    )
+
+def get_oldest_queued_task_supabase(
+    worker_id: str = None,
+    same_model_only: bool = False,
+    max_task_wait_minutes: int | None = None,
+):
+    """Fetch the oldest task via Supabase Edge Function.
+
+    First checks task counts to avoid unnecessary claim attempts.
+    same_model_only: prefer tasks matching worker's current_model
+    max_task_wait_minutes: starvation protection — bypass model affinity after this many minutes
+    """
+    _, task_data = _poll_next_task_impl(
+        worker_id=worker_id,
+        same_model_only=same_model_only,
+        max_task_wait_minutes=max_task_wait_minutes,
+    )
+    return task_data

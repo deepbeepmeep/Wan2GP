@@ -181,12 +181,32 @@ If manual installation is too complicated for you and Pinokio makes managing upd
 ### 1️⃣ Installation (`scripts\install.bat` | `scripts/install.sh`)
 This script automatically detects your system specs (GPU type, RAM, VRAM) and sets up an optimized local Python environment. If you are missing system requirements (like Python 3.11, Conda, or `uv`), the Windows script will automatically attempt to download and configure them for you.
 
-**The Installation Process:**
+**Installation Process**
+
+**Step 1: Choose Installation Type**
+
+* **Auto Install** *(recommended for most users)*
+* **Manual Install**
+
+---
+
+**Step 2A: Auto Install Path**
+
+If you selected **Auto Install**, the installer will handle everything automatically with recommended defaults.
+
+---
+
+**Step 2B: Manual Install Path**
+
+If you selected **Manual Install**, you will be guided through the following options:
+
 1. **Choose your package manager**
 2. **Name your environment**
 3. **Select your Install Mode**
 
-   💡 ***New Recommendation:** For many users, selecting **Option 3 (Use Latest)** install mode is now highly recommended! The latest PyTorch and Sage Attention combos often provide massive speed improvements and better memory management across a wide variety of modern GPUs.*
+   💡 **Recommendation:**
+   For many users, selecting **Option 3 (Use Latest)** is highly recommended.
+   The latest PyTorch and Sage Attention combinations often provide **significant speed improvements** and **better memory management** across a wide range of modern GPUs.
 
 ### 2️⃣ Starting the App (`scripts\run.bat` | `scripts/run.sh`)
 Once installed, use this script to launch the application. It runs WAN2GP using your active environment.

@@ -423,6 +423,29 @@ def do_install_interactive(env_type, config, detected_key):
         print(f"\n[*] '{name}' is the only environment, setting as active.")
         manager.set_active(name)
 
+def do_install_auto(env_type, config, detected_key):
+    manager = EnvsManager()
+    create_wgp_config(detected_key, config)
+
+    name = f"env_{env_type}" if env_type != "none" else "system"
+    cwd = os.getcwd()
+    path = os.path.join(cwd, name) if env_type != "none" else ""
+
+    if name in manager.list_envs():
+        manager.remove_env(name)
+    elif os.path.exists(path) and env_type != "none":
+        try: shutil.rmtree(path)
+        except: pass
+
+    print(f"\n[*] Starting Automatic Install (Hardware Profile: {detected_key})...")
+    p = config['gpu_profiles'][detected_key]
+    
+    install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('flash'), p['kernels'], config)
+
+    manager.add_env(name, env_type, path)
+    manager.set_active(name)
+    print(f"\n[*] Automatic Install Complete! '{name}' is now active.")
+
 def do_manage():
     manager = EnvsManager()
     while True:
@@ -669,6 +692,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["install", "run", "update", "migrate", "upgrade", "status", "manage"])
     parser.add_argument("--env", default="venv", help="Type of env for install (venv, uv, conda, none)")
+    parser.add_argument("--auto", action="store_true", help="Run 1-click automatic install")
     args = parser.parse_args()
     cfg = load_config()
     
@@ -686,7 +710,10 @@ if __name__ == "__main__":
 
     if args.mode == "install":
         print(f"Hardware Detected: {gpu_name} ({vendor})")
-        do_install_interactive(args.env, cfg, profile_key)
+        if args.auto:
+            do_install_auto(args.env, cfg, profile_key)
+        else:
+            do_install_interactive(args.env, cfg, profile_key)
     
     elif args.mode == "run":
         manager = EnvsManager()

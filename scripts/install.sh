@@ -78,61 +78,83 @@ clear
 echo "======================================================"
 echo "               WAN2GP INSTALLER MENU"
 echo "======================================================"
-echo "1. Use 'venv' (Easiest - Comes prepackaged with python)"
-echo "2. Use 'uv' (Recommended - Handles Python 3.11 better)"
-echo "3. Use 'Conda'"
-echo "4. No Environment (Not Recommended)"
-echo "5. Exit"
+echo "1. Automatic Install (1-Click, Venv, Auto-Detect GPU)"
+echo "2. Custom/Manual Install"
+echo "3. Exit"
 echo "------------------------------------------------------"
-read -p "Select an option (1-5): " choice
+read -p "Select an option (1-3): " main_choice
 
-choice=$(echo "$choice" | tr -d ' "')
+main_choice=$(echo "$main_choice" | tr -d ' "')
 
-if [ "$choice" == "1" ]; then
+if [ "$main_choice" == "1" ]; then
     ENV_TYPE="venv"
-    
-elif [ "$choice" == "2" ]; then
-    ENV_TYPE="uv"
-    if ! command -v uv &> /dev/null; then
-        echo "[-] 'uv' not found."
-        echo "1. Install 'uv' via curl (Recommended)"
-        echo "2. Install 'uv' via Pip"
-        read -p "Select method: " uv_choice
+    AUTO_FLAG="--auto"
+elif [ "$main_choice" == "2" ]; then
+    AUTO_FLAG=""
+    clear
+    echo "======================================================"
+    echo "               SELECT ENVIRONMENT TYPE"
+    echo "======================================================"
+    echo "1. Use 'venv' (Easiest - Comes prepackaged with python)"
+    echo "2. Use 'uv' (Recommended - Handles Python 3.11 better)"
+    echo "3. Use 'Conda'"
+    echo "4. No Environment (Not Recommended)"
+    echo "5. Exit"
+    echo "------------------------------------------------------"
+    read -p "Select an option (1-5): " choice
+
+    choice=$(echo "$choice" | tr -d ' "')
+
+    if [ "$choice" == "1" ]; then
+        ENV_TYPE="venv"
         
-        if [ "$uv_choice" == "1" ]; then
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-            source "$HOME/.cargo/env" 2>/dev/null || true
-        elif [ "$uv_choice" == "2" ]; then
-            python3 -m pip install uv
+    elif [ "$choice" == "2" ]; then
+        ENV_TYPE="uv"
+        if ! command -v uv &> /dev/null; then
+            echo "[-] 'uv' not found."
+            echo "1. Install 'uv' via curl (Recommended)"
+            echo "2. Install 'uv' via Pip"
+            read -p "Select method: " uv_choice
+            
+            if [ "$uv_choice" == "1" ]; then
+                curl -LsSf https://astral.sh/uv/install.sh | sh
+                source "$HOME/.cargo/env" 2>/dev/null || true
+            elif [ "$uv_choice" == "2" ]; then
+                python3 -m pip install uv
+            fi
         fi
-    fi
 
-elif [ "$choice" == "3" ]; then
-    ENV_TYPE="conda"
-    CONDA_FOUND=0
-    
-    if command -v conda &> /dev/null; then CONDA_FOUND=1; fi
-    if [ -f "$HOME/miniconda3/bin/conda" ]; then CONDA_FOUND=1; fi
-    if [ -f "$HOME/anaconda3/bin/conda" ]; then CONDA_FOUND=1; fi
+    elif [ "$choice" == "3" ]; then
+        ENV_TYPE="conda"
+        CONDA_FOUND=0
+        
+        if command -v conda &> /dev/null; then CONDA_FOUND=1; fi
+        if [ -f "$HOME/miniconda3/bin/conda" ]; then CONDA_FOUND=1; fi
+        if [ -f "$HOME/anaconda3/bin/conda" ]; then CONDA_FOUND=1; fi
 
-    if [ "$CONDA_FOUND" == "0" ]; then
-        install_conda
-        if [ $? -ne 0 ]; then
-            echo "[-] Miniconda installation failed or was aborted."
-            read -p "Press Enter to exit..."
-            exit 1
+        if [ "$CONDA_FOUND" == "0" ]; then
+            install_conda
+            if [ $? -ne 0 ]; then
+                echo "[-] Miniconda installation failed or was aborted."
+                read -p "Press Enter to exit..."
+                exit 1
+            fi
         fi
-    fi
 
-elif [ "$choice" == "4" ]; then
-    ENV_TYPE="none"
-    
-elif [ "$choice" == "5" ]; then
+    elif [ "$choice" == "4" ]; then
+        ENV_TYPE="none"
+        
+    elif [ "$choice" == "5" ]; then
+        exit 0
+    else
+        exit 0
+    fi
+elif [ "$main_choice" == "3" ]; then
     exit 0
 else
     exit 0
 fi
 
-python3 setup.py install --env "$ENV_TYPE"
+python3 setup.py install --env "$ENV_TYPE" $AUTO_FLAG
 echo "Installation complete. Run ./run.sh to start."
 read -p "Press Enter to exit..."

@@ -21,9 +21,29 @@ goto :MENU
 
 :MENU
 set "choice="
+set "AUTO_FLAG="
 cls
 echo ======================================================
 echo                WAN2GP INSTALLER MENU
+echo ======================================================
+echo 1. Automatic Install (1-Click)
+echo 2. Manual Install (Select env type, python/torch/kernel versions)
+echo 3. Exit
+echo ------------------------------------------------------
+set /p main_choice="Select an option (1-3): "
+
+if "!main_choice!"=="1" (
+    set "ENV_TYPE=venv"
+    set "AUTO_FLAG=--auto"
+    goto START_INSTALL
+)
+if "!main_choice!"=="3" exit
+if not "!main_choice!"=="2" goto MENU
+
+:ENV_MENU
+cls
+echo ======================================================
+echo                SELECT ENVIRONMENT TYPE
 echo ======================================================
 echo 1. Use 'venv' (Easiest - Comes prepackaged with python)
 echo 2. Use 'uv' (Recommended - Handles Python 3.11 better)
@@ -33,7 +53,7 @@ echo 5. Exit
 echo ------------------------------------------------------
 set /p choice="Select an option (1-5): "
 
-if "!choice!"=="" goto MENU
+if "!choice!"=="" goto ENV_MENU
 set "choice=!choice:"=!"
 set "choice=!choice: =!"
 
@@ -83,11 +103,11 @@ if "!choice!"=="4" (
 )
 
 if "!choice!"=="5" exit
-goto MENU
+goto ENV_MENU
 
 :START_INSTALL
 if "!ENV_TYPE!"=="" set "ENV_TYPE=venv"
-python setup.py install --env !ENV_TYPE!
+python setup.py install --env !ENV_TYPE! !AUTO_FLAG!
 
 pause
 goto MENU

@@ -186,7 +186,7 @@ This script automatically detects your system specs (GPU type, RAM, VRAM) and se
 
 #### **Installation Process**
 
-##### **Step 1 — Choose Installation Type**
+##### **Choose Installation Type**
 
 * **Auto Install**
 * **Manual Install**
@@ -194,6 +194,7 @@ This script automatically detects your system specs (GPU type, RAM, VRAM) and se
 ---
 
 **🛠️ Manual Install Path**
+
 You will be guided through:
 
 1. **Choose your package manager**

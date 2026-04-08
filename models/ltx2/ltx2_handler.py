@@ -204,7 +204,7 @@ class family_handler:
         }
         
         control_choices = [("No Video Process", "")]
-        control_choices += [ ("Transfer Human Motion", "PVG") , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("Use LTX-2 raw format Control Video", "VG")] if distilled else []
+        control_choices += [ ("Transfer Human Motion", "PVG") , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("Control Video for Ic Lora", "VG")] if distilled else []
         control_choices +=   [("Inject Frames", "KFI")]
         extra_model_def["guide_custom_choices"] = {
             "choices": control_choices,

@@ -178,7 +178,7 @@ If manual installation is too complicated for you and Pinokio makes managing upd
 
 *👉 **Windows Users:** Double-click the `.bat` files. **Linux Users:** Run the `.sh` files in your terminal.*
 
-### 1️⃣ Installation (`install.bat` / `install.sh`)
+### 1️⃣ Installation (`scripts\install.bat` | `scripts/install.sh`)
 This script automatically detects your system specs (GPU type, RAM, VRAM) and sets up an optimized local Python environment. If you are missing system requirements (like Python 3.11, Conda, or `uv`), the Windows script will automatically attempt to download and configure them for you.
 
 **The Installation Process:**
@@ -195,11 +195,14 @@ This script automatically detects your system specs (GPU type, RAM, VRAM) and se
    💡 ***New Recommendation:** For many users, selecting **Option 3 (Use Latest)** is now highly recommended! The latest PyTorch and Sage Attention combos often provide massive speed improvements and better memory management across a wide variety of modern GPUs.*
 
 *Note: If you don't have python installed on launch, it will silently download and install it. If you try to create a conda environment and you don't have conda, it will silently install conda.*
+
 *This triggers false flags with 2/62 vendors on virustotal. If this scares you, you can delete autoinstaller.bat and the installer will just ask you to install these yourself instead*
+
 *If you're going to delete the autoinstaller.bat, it is recommended to run `git update-index --skip-worktree scripts/autoinstaller.bat` from a terminal window in your WAN2GP folder so that git ignores this while updating.*
+
 *The update scripts do this for you automatically when performing a `git pull`, but this will prevent git errors if you decide to manually git pull yourself*
 
-### 2️⃣ Starting the App (`run.bat` / `run.sh`)
+### 2️⃣ Starting the App (`scripts\run.bat` | `scripts/run.sh`)
 Once installed, use this script to launch the application. It runs WAN2GP using your active environment.
 
 #### ⚙️ Customizing Launch Arguments (`args.txt`)
@@ -210,13 +213,13 @@ If you want to pass extra command-line flags to the WAN2GP launcher (like enabli
 --advanced  --open-browser
 ```
 
-### 3️⃣ Updating & Upgrading (`update.bat` / `update.sh`)
+### 3️⃣ Updating & Upgrading (`scripts\update.bat` | `scripts/update.sh`)
 Use this script to keep your software and dependencies up to date without having to reinstall everything from scratch. 
 * **1. Update:** Fetches the latest code from GitHub (`git pull`) and updates basic requirements.
 * **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention) based on your hardware profile.
 * **3. Platform Migration:** Safely wipes your current environment and rebuilds it targeting the latest supported standards (Python 3.11 / Torch 2.10, etc).
 
-### 4️⃣ Managing Environments (`manage.bat` / `manage.sh`)
+### 4️⃣ Managing Environments (`scripts\manage.bat` / `/manage.sh`)
 An "environment" is basically an isolated sandbox folder that holds a specific set of python libraries.
 The `manage` script allows you to manage and switch between your sandboxed environments safely.
 

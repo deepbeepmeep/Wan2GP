@@ -714,7 +714,20 @@ if __name__ == "__main__":
         run_cmd(cmd, env_vars=env_vars)
 
     elif args.mode == "update":
+        auto_bat = os.path.join("scripts", "autoinstaller.bat")
+        was_missing = not os.path.exists(auto_bat)
+
+        if was_missing:
+            print("[*] Detected deleted autoinstaller. Flagging for Git...")
+            subprocess.run(["git", "update-index", "--skip-worktree", auto_bat], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         run_cmd("git pull")
+        if was_missing and os.path.exists(auto_bat):
+            try:
+                os.remove(auto_bat)
+                print("[*] Re-cleaned autoinstaller.bat deletion after update.")
+            except:
+                pass
+
         manager = EnvsManager()
         env_name = manager.resolve_target_env()
         env_data = manager.list_envs()[env_name]

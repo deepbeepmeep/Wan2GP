@@ -33,7 +33,34 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### March 28th 2026: WanGP v11.11, The Machine Within The Machine
+### 7rd of April 2026: WanGP v11.21, Self Destructing Model
+- **Magi Human**: this is a newly *Talking Head* model that accepts either a *custom soundrack* or can generate the *audio speech* that comes with the video. 
+   - *The bad news* :it is VRAM hungry (targets RTX 5090+) and very res picky, that is the ouput res must be either 256p or 1080p (using a 2 stage pipeline with upsampling). There is also a 540p version (using also an upsampler) but it is not included as I found it unpractical (ghosting guaranteed if your output is not exactly the right height/width ratio), 
+   - *The good news* : now that it is WanGP optimized, 101 frames at 1080p requires "only" 16 GB of VRAM. If you dont have that much VRAM I recommend to still go for 1080p but set a 45 frames *Sliding Window* (not too low to avoid artifacts) as *Sliding Windows* sometime works well with this model.  
+
+**I have spent a lot of time optimizing Magi Human, but I am not yet sure it is worth keeping it given all the constraints to run this model. So this is where I need YOU. Please share your experience using Magi Human on the Discord server and you shall decide its fate. Should we keep it or send it to the model graveyard ?**
+
+- **Ace 1.5 Turbo XL**: the best open source song generator has now a big brother *XL* that delivers better audio quality and sticks closer to the requested lyrics. 
+
+- **LTX 2 Id Lora**: due to a huge popular demand I have added this one (it is a new *Generate Video* option). You can provide a voice audio sample, a start image and text script and it will turn LTX 2/2.3 into talking heads. Cost is high to get this feature as **Id Lora works only with LTX2/2.3 DEV**. By chance it seems it can produce decent results in only 10 inference steps. To get the best results it is recommended to use prefix tags [VISUAL], [SPEECH] & [SOUND]. Alternatively you can use WanGP *Prompt Enhancer* that has been to tuned to generate a prompt following this syntax. 
+
+- **LTX 2 DEV HQ Mode**: this High Quality mode should produce better output at higher res. You can turn it on using the new *HQ (res2s)* Sampler and set 15 steps and guidance rescaler to 0.45. It is compatible with *Id Loras*. Note that a HQ steps is twice as slow as a vanilla Dev step, so it is going to be as slow as Dev if not slower.
+
+- **LTX2 DEV Presets**: Vanilla Dev mode & HQ Mode have lots of tunable settings. To make your life easier I have added selectionable presets in the *Settings Drop Downbox*
+
+- **More Deepy** : 
+   - *UI Improvements*: you can *queue* requests by inserting empty lines between two requests, get the last turn by clicking the *Down Arrow*
+   - *More Responsive*: Deepy should execute much more quickly consecutive actions
+   - *More Reliable*: fast full context compaction (when deepy ran out of tokens), Deepy will remember what you stopped / aborted
+   - *More Capabilities*: you can ask Deepy to specifiy a *guidance*, *denoising strength*, ... value (the value defined in the *tool template* will be overridden)
+
+As a reminder beside writting huge essays about how great you are, Deepy can generate Video, Image & Audio, extract / transcribe / trim / resize (when applicable) video or audio clip, inspect the content of an image or a video frame, generate black frames, ... Deepy used Tool templates but you can specify for one task the loras, number of frames, dimensions, ... There is also a CLI version of Deepy quite useful for remote use. Please check the fulldoc *docs/DEEPY.md*. 
+
+- **Multi Multilines Prompts**: check new options in *"How to Process each Line of the Text Prompt"*, you can now have multiple multi lines prompts. They just need to be separated by an empty line.
+   
+ *update 11.21*: added Ace Step 1.5 Turbo XL
+
+### March 30th 2026: WanGP v11.13, The Machine Within The Machine
 
 Meet **Deepy** your friendly *WanGP Agent*.
 
@@ -62,13 +89,17 @@ Deepy can also transcribe the audio content of a video (*new to WanGP 11.11*)
 extract the video from the moment it says "Deepy changed my life"
 ```
 
-*Deepy* reuses the *Qwen3VL Abliterated* checkpoints and it is highly recommended to install the *GGUF kernels* (check docs/INSTALLATION.md) for low VRAM / fast inference. You can customize Deepy to use the settings of your choice when generating a video, image, ... (please check docs/DEEPY.Md)
+*Deepy* reuses the *Qwen3VL Abliterated* checkpoints and it is highly recommended to install the *GGUF kernels* (check docs/INSTALLATION.md) for low VRAM / fast inference. **now available with Linux!**
+
+Please install also *flash attention 2* and *triton* to enable *vllm* and get x2/x3 speed gain and lower VRAM usage.
+
+You can customize Deepy to use the settings of your choice when generating a video, image, ... (please check docs/DEEPY.Md). 
 
 *Go the Config > Prompt Enhancer / Deep tab to enable Deepy (you must first choose a Qwen3.5VL Prompt Enhancer)*
 
 **Important**: in order to save Deepy from learning all the specificities of each model to generate image, videos or audio, Deepy uses *Predefined Settings Templates* for its six main tools (*Generate Video*, *Generate Image*, ...). You can change the templates used in a session or even add your own settings. Just have a look at the doc.
 
-With WanGP 11.11 you can *ask Deepy to generate a Video or an Image in specific dimensions and also a number of frames for a video*. You can also specify an optional *number of inference of steps* or *loras* to use with *multipliers*. If you don't mention any of these to Deepy, Deepy Default settings or the current Template settings will be used instead.
+With WanGP 11.11 you can *ask Deepy to generate a Video or an Image in specific dimensions and also a number of frames for a video*. You can also specify an optional *number of inference of steps* or *loras* to use with *multipliers*. If you don't mention any of these to Deepy, Deepy Default settings or the current Templated Settings will be used instead.
 
 WanGP 11 addresses a long standing Gradio issue: *Queues keep being processed even if your Web Browser is in the background*. Beware this feature may drain more battery, so you can disable it in the *Config / General tab*.
 
@@ -141,7 +172,64 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 
 ## 🚀 Quick Start
 
-**One-click installation:** 
+**One-click Bat/SH Script Auto-installer:** 
+
+If manual installation is too complicated for you and Pinokio makes managing updates too difficult, there are a suite of 1-click automated scripts for both **Windows (`.bat`)** and **Linux/macOS (`.sh`)** to make installation, environment management, and updates as seamless as possible.
+
+*👉 **Windows Users:** Double-click the `.bat` files. **Linux Users:** Run the `.sh` files in your terminal.*
+
+### 1️⃣ Installation (`install.bat` / `install.sh`)
+This script automatically detects your system specs (GPU type, RAM, VRAM) and sets up an optimized local Python environment. If you are missing system requirements (like Python 3.11, Conda, or `uv`), the Windows script will automatically attempt to download and configure them for you.
+
+**The Installation Process:**
+1. **Choose your package manager:**
+   * **`uv` (Recommended)** - Extremely fast package manager. Highly recommended for the smoothest installation and best handling of Python packages.
+   * **`venv`** - Uses standard Python. Easiest choice, comes prepackaged.
+   * **`Conda`** - Great if you already use Miniconda/Anaconda for other AI projects.
+2. **Name your environment:** You can press Enter to use the default name, or type a custom name (e.g., `wan2gp-latest`).
+3. **Select your Install Mode:**
+   * **Option 1: Autoselect** - Automatically installs versions of PyTorch, Triton, and Attention backends based strictly on your detected GPU architecture.
+   * **Option 2: Manual Selection** - Gives you granular control over exactly which version of Python, PyTorch, Triton, and Sage/Flash Attention you want to install.
+   * **Option 3: Use Latest** - Forces the installation of the absolute newest software stacks. 
+   
+   💡 ***New Recommendation:** For many users, selecting **Option 3 (Use Latest)** is now highly recommended! The latest PyTorch and Sage Attention combos often provide massive speed improvements and better memory management across a wide variety of modern GPUs.*
+
+*Note: If you don't have python installed on launch, it will silently download and install it. If you try to create a conda environment and you don't have conda, it will silently install conda.*
+*This triggers false flags with 2/62 vendors on virustotal. If this scares you, you can delete autoinstaller.bat and the installer will just ask you to install these yourself instead*
+*If you're going to delete the autoinstaller.bat, it is recommended to run `git update-index --skip-worktree scripts/autoinstaller.bat` from a terminal window in your WAN2GP folder so that git ignores this while updating.*
+*The update scripts do this for you automatically when performing a `git pull`, but this will prevent git errors if you decide to manually git pull yourself*
+
+### 2️⃣ Starting the App (`run.bat` / `run.sh`)
+Once installed, use this script to launch the application. It runs WAN2GP using your active environment.
+
+#### ⚙️ Customizing Launch Arguments (`args.txt`)
+If you want to pass extra command-line flags to the WAN2GP launcher (like enabling advanced UI features or automatically opening your browser), create an `args.txt` file in your `scripts` folder.
+
+**Example `args.txt`:**
+```text
+--advanced  --open-browser
+```
+
+### 3️⃣ Updating & Upgrading (`update.bat` / `update.sh`)
+Use this script to keep your software and dependencies up to date without having to reinstall everything from scratch. 
+* **1. Update:** Fetches the latest code from GitHub (`git pull`) and updates basic requirements.
+* **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention) based on your hardware profile.
+* **3. Platform Migration:** Safely wipes your current environment and rebuilds it targeting the latest supported standards (Python 3.11 / Torch 2.10, etc).
+
+### 4️⃣ Managing Environments (`manage.bat` / `manage.sh`)
+An "environment" is basically an isolated sandbox folder that holds a specific set of python libraries.
+The `manage` script allows you to manage and switch between your sandboxed environments safely.
+
+* **Example Scenario:** Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, you can run `install.bat`, create a *new* environment called `env_testing`, and select "Use Latest". 
+* If the testing environment breaks or gives you errors, you can simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
+
+**Manage Menu Features:**
+* **Set Active Environment:** Choose which sandbox `run.bat/.sh` will use when launching the app.
+* **Delete Environment:** Safely remove a broken or old environment to free up disk space.
+* **Add Existing Environment:** Link an existing `venv` or `conda` folder to this project if you moved it from somewhere else.
+* **List Environment Details:** Displays a clean status board showing the exact versions of Python, Torch, Triton, Sage, and Flash Attention installed in *every* environment you own, so you never lose track of what you are running.
+
+**One-click (Pinokio) installer:** 
 Get started instantly with [Pinokio App](https://pinokio.computer/)\
 It is recommended to use in Pinokio the Community Scripts *wan2gp* or *wan2gp-amd* by **Morpheus** rather than the official Pinokio install.
 

@@ -186,7 +186,7 @@ This script automatically detects your system specs (GPU type, RAM, VRAM) and se
    * **`uv` (Recommended)** - Extremely fast package manager. Highly recommended for the smoothest installation and best handling of Python packages.
    * **`venv`** - Uses standard Python. Easiest choice, comes prepackaged.
    * **`Conda`** - Great if you already use Miniconda/Anaconda for other AI projects.
-2. **Name your environment:** You can press Enter to use the default name, or type a custom name (e.g., `wan2gp-latest`).
+2. **Name your environment:** You can press Enter to use the default name, or type a custom env name (e.g., `wan2gp-latest`).
 3. **Select your Install Mode:**
    * **Option 1: Autoselect** - Automatically installs versions of PyTorch, Triton, and Attention backends based strictly on your detected GPU architecture.
    * **Option 2: Manual Selection** - Gives you granular control over exactly which version of Python, PyTorch, Triton, and Sage/Flash Attention you want to install.
@@ -194,13 +194,10 @@ This script automatically detects your system specs (GPU type, RAM, VRAM) and se
    
    💡 ***New Recommendation:** For many users, selecting **Option 3 (Use Latest)** is now highly recommended! The latest PyTorch and Sage Attention combos often provide massive speed improvements and better memory management across a wide variety of modern GPUs.*
 
-*Note: If you don't have python installed on launch, it will silently download and install it. If you try to create a conda environment and you don't have conda, it will silently install conda.*
-
-*This triggers false flags with 2/62 vendors on virustotal. If this scares you, you can delete autoinstaller.bat and the installer will just ask you to install these yourself instead*
-
-*If you're going to delete the autoinstaller.bat, it is recommended to run `git update-index --skip-worktree scripts/autoinstaller.bat` from a terminal window in your WAN2GP folder so that git ignores this while updating.*
-
-*The update scripts do this for you automatically when performing a `git pull`, but this will prevent git errors if you decide to manually git pull yourself*
+> [!IMPORTANT]
+> **Note:** If Python 3.11 or Conda are missing, the script auto-installs them. This behavior triggers false positives (2/62) on VirusTotal. If concerned, you may delete `scripts/autoinstaller.bat` to handle installations manually. 
+> 
+> *If you delete it:* run `git update-index --skip-worktree scripts/autoinstaller.bat` in your terminal to prevent Git errors. (Our `update.bat` handles this automatically during pulls).
 
 ### 2️⃣ Starting the App (`scripts\run.bat` | `scripts/run.sh`)
 Once installed, use this script to launch the application. It runs WAN2GP using your active environment.
@@ -219,18 +216,17 @@ Use this script to keep your software and dependencies up to date without having
 * **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention) based on your hardware profile.
 * **3. Platform Migration:** Safely wipes your current environment and rebuilds it targeting the latest supported standards (Python 3.11 / Torch 2.10, etc).
 
-### 4️⃣ Managing Environments (`scripts\manage.bat` / `/manage.sh`)
-An "environment" is basically an isolated sandbox folder that holds a specific set of python libraries.
+### 4️⃣ Managing Environments (`scripts\manage.bat` | `/manage.sh`)
 The `manage` script allows you to manage and switch between your sandboxed environments safely.
 
 * **Example Scenario:** Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, you can run `install.bat`, create a *new* environment called `env_testing`, and select "Use Latest". 
 * If the testing environment breaks or gives you errors, you can simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
 
 **Manage Menu Features:**
-* **Set Active Environment:** Choose which sandbox `run.bat/.sh` will use when launching the app.
-* **Delete Environment:** Safely remove a broken or old environment to free up disk space.
-* **Add Existing Environment:** Link an existing `venv` or `conda` folder to this project if you moved it from somewhere else.
-* **List Environment Details:** Displays a clean status board showing the exact versions of Python, Torch, Triton, Sage, and Flash Attention installed in *every* environment you own, so you never lose track of what you are running.
+* **1. Set Active Environment:** Choose which sandbox `run.bat/.sh` will use when launching the app.
+* **2. Delete Environment:** Safely remove a broken or old environment to free up disk space.
+* **3. Add Existing Environment:** Link an existing `venv` or `conda` folder to this project if you moved it from somewhere else.
+* **4. List Environment Details:** Displays a clean status board showing the exact versions of Python, Torch, Triton, Sage, and Flash Attention installed in every environment.
 
 **One-click (Pinokio) installer:** 
 Get started instantly with [Pinokio App](https://pinokio.computer/)\

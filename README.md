@@ -180,12 +180,6 @@ If manual installation is too complicated for you and Pinokio makes managing upd
 
 ### **1️⃣ Installation (`scripts\install.bat` | `scripts/install.sh`)**
 
-This script automatically detects your system specs (GPU type, RAM, VRAM) and sets up an optimized local Python environment. If you are missing system requirements (like Python 3.11, Conda, or `uv`), the Windows script will automatically attempt to download and configure them for you.
-
----
-
-#### **Installation Process**
-
 **Choose Installation Type**
 - **Auto Install**
 - **Manual Install**

@@ -54,7 +54,7 @@
 	"NAG_alpha": 0.5,
 	"repeat_generation": 1,
 	"multi_images_gen_type": 0,
-	"multi_prompts_gen_type": 0,
+	"multi_prompts_gen_type": "G",
 	"skip_steps_cache_type": "",
 	"skip_steps_multiplier":1.75,
 	"skip_steps_start_step_perc": 0,

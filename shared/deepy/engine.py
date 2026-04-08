@@ -33,6 +33,8 @@ from shared.deepy.config import (
     normalize_deepy_vram_mode,
 )
 from shared.deepy import DEFAULT_SYSTEM_PROMPT as ASSISTANT_SYSTEM_PROMPT
+from shared.deepy.debug_bootstrap import capture_external_logs
+from shared import extra_settings
 from shared.deepy import media_registry, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
 from shared.gradio import assistant_chat
 from shared.prompt_enhancer import qwen35_text
@@ -49,6 +51,7 @@ from shared.prompt_enhancer.qwen35_assistant_runtime import (
 
 
 ASSISTANT_DEBUG = False
+_ENABLE_INCOMPLETE_STOP_ANSWER_HEURISTICS = False
 
 _TOOL_TYPE_MAP = {
     "str": "string",
@@ -73,6 +76,12 @@ _DOC_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _SELECTED_REFERENCE_RE = re.compile(r"\b(selected|current(?:ly)?\s+selected|current\s+(?:item|media))\b", flags=re.IGNORECASE)
 _RUNTIME_UPDATE_BLOCK_RE = re.compile(r"\s*<wangp_runtime_update>.*?</wangp_runtime_update>\s*", flags=re.DOTALL | re.IGNORECASE)
 _POST_TRIM_WINDOW_FRACTION = 0.25
+_GENERATION_RESERVE_TOKENS = 128
+_THINKING_HEADROOM_TOKENS = 512
+_VIDEO_TOOL_RUNTIME_REINJECT_TOKENS = 2000
+_CONTEXT_LIMIT_MAX_RETRIES = 2
+_ASSISTANT_STREAM_INTERVAL_SECONDS = 0.25
+_INJECT_LAST_SELECTED_MEDIA_RUNTIME_REFERENCES = False
 _INJECT_SELECTED_MEDIA_RUNTIME_UPDATES = False
 _RUNTIME_STATUS_VISUAL_KEYS = (
     "selected_visual_media_id",
@@ -87,6 +96,11 @@ _RUNTIME_STATUS_AUDIO_KEYS = (
     "selected_audio_media_label",
 )
 _RUNTIME_STATUS_ALL_KEYS = _RUNTIME_STATUS_VISUAL_KEYS + _RUNTIME_STATUS_AUDIO_KEYS
+_EXTRA_SETTINGS_PARAMETER = {
+    "type": "object",
+    "description": "Optional dict of additional exposed UI settings. Call Get Default Settings first and copy one of its extra_settings keys exactly, for example {\"Guidance\": 7.5}.",
+    "required": False,
+}
 
 
 def set_assistant_debug(enabled: bool) -> None:
@@ -120,6 +134,20 @@ def _get_main_callable(name: str) -> Any:
     return None if main_module is None else getattr(main_module, str(name or "").strip(), None)
 
 
+def _get_main_attribute(name: str) -> Any:
+    lookup_name = str(name or "").strip()
+    if len(lookup_name) == 0:
+        return None
+    for module_name in ("__main__", "wgp"):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        value = getattr(module, lookup_name, None)
+        if value is not None:
+            return value
+    return None
+
+
 def assistant_tool(
     name: str | None = None,
     description: str = "",
@@ -144,6 +172,10 @@ def assistant_tool(
 
 def _doc_relative_path(doc_path: Path) -> str:
     return str(doc_path.relative_to(_DOCS_DIR.parent)).replace("\\", "/")
+
+
+def _normalize_extra_setting_lookup_label(label: Any) -> str:
+    return re.sub(r"\s+", " ", str(label or "").strip()).casefold()
 
 
 def _normalize_doc_text(value: str) -> str:
@@ -336,11 +368,13 @@ class AssistantSessionState:
     worker_active: bool = False
     control_queue: Any | None = None
     queued_job_count: int = 0
+    queued_cancel_count: int = 0
     chat_epoch: int = 0
     release_vram_callback: Callable[[], None] | None = None
     force_loading_status_once: bool = False
     current_turn: dict[str, Any] | None = None
     interruption_notice: str = ""
+    interruption_history: list[dict[str, Any]] = field(default_factory=list)
     runtime_status_note: str = ""
     runtime_status_signature: str = ""
     rendered_system_prompt_signature: str = ""
@@ -358,6 +392,14 @@ class AssistantSessionState:
     generated_client_ids: list[str] = field(default_factory=list)
     selected_visual_runtime_signature: str = ""
     selected_audio_runtime_signature: str = ""
+    video_tool_runtime_variants: dict[str, str] = field(default_factory=dict)
+    video_tool_runtime_signature: str = ""
+    video_tool_runtime_last_injected_tokens: int = 0
+    reset_base_token_ids: list[int] = field(default_factory=list)
+    reset_base_snapshot: dict[str, Any] | None = None
+    reset_base_signature: str = ""
+    reset_base_context_window_tokens: int = 0
+    reset_to_base_callback: Callable[[], bool] | None = None
 
 
 @dataclass(slots=True)
@@ -391,10 +433,12 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.media_registry_counter = 0
     session.chat_html = ""
     session.queued_job_count = 0
+    session.queued_cancel_count = 0
     session.release_vram_callback = None
     session.force_loading_status_once = False
     session.current_turn = None
     session.interruption_notice = ""
+    session.interruption_history.clear()
     session.runtime_status_note = ""
     session.runtime_status_signature = ""
     session.rendered_system_prompt_signature = ""
@@ -412,7 +456,51 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.generated_client_ids = []
     session.selected_visual_runtime_signature = ""
     session.selected_audio_runtime_signature = ""
+    session.video_tool_runtime_variants = {}
+    session.video_tool_runtime_signature = ""
+    session.video_tool_runtime_last_injected_tokens = 0
+    session.reset_base_token_ids = []
+    session.reset_base_snapshot = None
+    session.reset_base_signature = ""
+    session.reset_base_context_window_tokens = 0
+    session.reset_to_base_callback = None
     assistant_chat.reset_session_chat(session)
+
+
+def invalidate_assistant_reset_base(session: AssistantSessionState) -> None:
+    session.reset_base_token_ids = []
+    session.reset_base_snapshot = None
+    session.reset_base_signature = ""
+    session.reset_base_context_window_tokens = 0
+    session.reset_to_base_callback = None
+
+
+def reset_assistant_session_to_base(session: AssistantSessionState, rendered_system_prompt_signature: str) -> bool:
+    base_token_ids = [int(token_id) for token_id in list(session.reset_base_token_ids or [])]
+    base_snapshot = None if session.reset_base_snapshot is None else copy.deepcopy(session.reset_base_snapshot)
+    base_signature = str(session.reset_base_signature or "")
+    try:
+        base_context_window_tokens = int(session.reset_base_context_window_tokens or 0)
+    except Exception:
+        base_context_window_tokens = 0
+    if len(base_token_ids) == 0 or base_snapshot is None or len(base_signature) == 0 or base_context_window_tokens <= 0:
+        return False
+    release_vram_callback = session.release_vram_callback
+    reset_to_base_callback = session.reset_to_base_callback
+    clear_assistant_session(session)
+    session.reset_base_token_ids = base_token_ids
+    session.reset_base_snapshot = base_snapshot
+    session.reset_base_signature = base_signature
+    session.reset_base_context_window_tokens = base_context_window_tokens
+    session.rendered_token_ids = list(base_token_ids)
+    session.runtime_snapshot = copy.deepcopy(base_snapshot)
+    session.rendered_messages_len = 0
+    session.rendered_system_prompt_signature = str(rendered_system_prompt_signature or "")
+    session.rendered_context_window_tokens = base_context_window_tokens
+    session.pending_replay_reason = ""
+    session.release_vram_callback = release_vram_callback
+    session.reset_to_base_callback = reset_to_base_callback
+    return True
 
 
 def begin_assistant_turn(session: AssistantSessionState, user_message_id: str, user_text: str) -> None:
@@ -420,6 +508,7 @@ def begin_assistant_turn(session: AssistantSessionState, user_message_id: str, u
         "user_message_id": str(user_message_id or "").strip(),
         "user_text": str(user_text or "").strip(),
         "messages_len": len(session.messages),
+        "committed_messages_len": len(session.messages),
         "rendered_token_ids": list(session.rendered_token_ids),
         "rendered_messages_len": int(session.rendered_messages_len or 0),
         "runtime_snapshot": session.runtime_snapshot,
@@ -443,24 +532,199 @@ def checkpoint_assistant_turn(session: AssistantSessionState) -> bool:
     checkpoint = session.current_turn
     if not isinstance(checkpoint, dict):
         return False
-    checkpoint["messages_len"] = len(session.messages)
-    checkpoint["rendered_token_ids"] = [int(token_id) for token_id in session.rendered_token_ids]
-    checkpoint["rendered_messages_len"] = int(session.rendered_messages_len or 0)
-    checkpoint["runtime_snapshot"] = None if session.runtime_snapshot is None else copy.deepcopy(session.runtime_snapshot)
-    checkpoint["rendered_system_prompt_signature"] = str(session.rendered_system_prompt_signature or "")
-    checkpoint["rendered_context_window_tokens"] = int(session.rendered_context_window_tokens or 0)
-    checkpoint["chat_transcript"] = copy.deepcopy(session.chat_transcript)
-    checkpoint["chat_transcript_counter"] = int(session.chat_transcript_counter or 0)
+    checkpoint["committed_messages_len"] = len(session.messages)
     return True
 
 
-def _build_interruption_notice(user_text: str) -> str:
+def _transcript_record_has_visible_content(record: dict[str, Any] | None) -> bool:
+    if not isinstance(record, dict):
+        return False
+    for block in list(record.get("blocks", []) or []):
+        if not isinstance(block, dict):
+            continue
+        block_type = str(block.get("type", "")).strip().lower()
+        if block_type == "tool":
+            return True
+        if len(str(block.get("text", "")).strip()) > 0:
+            return True
+    return any(isinstance(attachment, dict) for attachment in list(record.get("attachments", []) or []))
+
+
+def build_interruption_notice(user_text: str) -> str:
     collapsed = re.sub(r"\s+", " ", str(user_text or "").strip())
     if len(collapsed) > 280:
         collapsed = collapsed[:277].rstrip() + "..."
     if len(collapsed) == 0:
         return "The previous user request was interrupted by the user before completion. Do not continue that cancelled turn unless the user explicitly asks to resume it."
     return f"The previous user request was interrupted by the user before completion. Do not continue that cancelled turn unless the user explicitly asks to resume it. Cancelled request: {collapsed}"
+
+
+_INTERRUPTION_NOTICE_PREFIX = "The previous user request was interrupted by the user before completion."
+
+
+def _is_interruption_notice_text(text: str) -> bool:
+    return str(text or "").strip().startswith(_INTERRUPTION_NOTICE_PREFIX)
+
+
+def _extract_preserved_interruption_tail(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    preserved: list[dict[str, Any]] = []
+    tail = list(messages or [])
+    idx = 0
+    while idx < len(tail):
+        message = tail[idx] if isinstance(tail[idx], dict) else None
+        if not isinstance(message, dict):
+            idx += 1
+            continue
+        role = str(message.get("role", "")).strip().lower()
+        content = str(message.get("content", "") or "").strip()
+        if role == "user" and idx + 1 < len(tail):
+            next_message = tail[idx + 1] if isinstance(tail[idx + 1], dict) else None
+            next_role = "" if not isinstance(next_message, dict) else str(next_message.get("role", "")).strip().lower()
+            next_content = "" if not isinstance(next_message, dict) else str(next_message.get("content", "") or "").strip()
+            if next_role == "assistant" and _is_interruption_notice_text(next_content):
+                if len(content) > 0:
+                    preserved.append({"role": "user", "content": content})
+                preserved.append({"role": "assistant", "content": next_content})
+                idx += 2
+                continue
+        if role == "assistant" and _is_interruption_notice_text(content):
+            preserved.append({"role": "assistant", "content": content})
+        idx += 1
+    return preserved
+
+
+def _summarize_interrupted_committed_messages(messages: list[dict[str, Any]]) -> str:
+    summary_parts: list[str] = []
+    for message in list(messages or []):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "")).strip().lower()
+        if role == "assistant":
+            tool_calls = list(message.get("tool_calls", []) or [])
+            if len(tool_calls) > 0:
+                tool_names = []
+                for tool_call in tool_calls:
+                    function_payload = dict(tool_call.get("function", {}) or {}) if isinstance(tool_call, dict) else {}
+                    tool_name = str(function_payload.get("name", "") or "").strip()
+                    if len(tool_name) > 0:
+                        tool_names.append(tool_name)
+                if len(tool_names) > 0:
+                    summary_parts.append("assistant called " + ", ".join(tool_names))
+                    continue
+            model_content = str(message.get("model_content", "") or message.get("content", "") or "").strip()
+            if len(model_content) > 0:
+                cleaned = qwen35_text._clean_generated_text(model_content)
+                cleaned = re.sub(r"\s+", " ", cleaned).strip()
+                if len(cleaned) > 0:
+                    summary_parts.append(f"assistant said: {cleaned[:140]}{'...' if len(cleaned) > 140 else ''}")
+        elif role == "tool":
+            content = str(message.get("content", "") or "").strip()
+            tool_name = ""
+            status = ""
+            if len(content) > 0:
+                try:
+                    payload = dict(json.loads(content) or {})
+                except Exception:
+                    payload = {}
+                tool_name = str(payload.get("tool", "") or payload.get("tool_id", "") or "").strip()
+                status = str(payload.get("status", "") or "").strip()
+            if len(tool_name) > 0 or len(status) > 0:
+                summary_parts.append(f"tool result: {tool_name or 'tool'} ({status or 'ok'})")
+    return "; ".join(summary_parts[:4]).strip()
+
+
+def _normalize_interrupted_committed_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized_messages: list[dict[str, Any]] = []
+    for message in list(messages or []):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "")).strip().lower()
+        if len(role) == 0:
+            continue
+        normalized_message: dict[str, Any] = {"role": role}
+        if role == "user":
+            content = str(message.get("content", "") or "").strip()
+            if len(content) > 0:
+                normalized_message["content"] = content
+        else:
+            content = str(message.get("content", "") or "").strip()
+            if len(content) > 0:
+                normalized_message["content"] = content
+            model_content = str(message.get("model_content", "") or "").strip()
+            if len(model_content) > 0:
+                normalized_message["model_content"] = model_content
+        if role == "assistant" and isinstance(message.get("tool_calls"), list) and len(message.get("tool_calls") or []) > 0:
+            normalized_message["tool_calls"] = copy.deepcopy(list(message.get("tool_calls") or []))
+        if role == "tool":
+            tool_call_id = str(message.get("tool_call_id", "") or "").strip()
+            if len(tool_call_id) > 0:
+                normalized_message["tool_call_id"] = tool_call_id
+        normalized_messages.append(normalized_message)
+    return normalized_messages
+
+
+def _merge_visible_fragment_text(existing_text: str, visible_text: str) -> str:
+    existing = str(existing_text or "").strip()
+    visible = str(visible_text or "").strip()
+    if len(visible) == 0:
+        return existing
+    if len(existing) == 0 or visible.startswith(existing):
+        return visible
+    if existing.startswith(visible):
+        return existing
+    return visible
+
+
+def _build_interrupted_assistant_content(reasoning_text: str, answer_text: str) -> str:
+    reasoning = str(reasoning_text or "").strip()
+    answer = str(answer_text or "").strip()
+    if len(reasoning) > 0:
+        return f"<think>\n{reasoning}\n</think>\n\n{answer}".strip() if len(answer) > 0 else f"<think>\n{reasoning}\n</think>"
+    return answer
+
+
+def _merge_interrupted_visible_assistant_fragments(session: AssistantSessionState, assistant_message_id: str, committed_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    message_id = str(assistant_message_id or "").strip()
+    if len(message_id) == 0:
+        return committed_messages
+    visible_reasoning = str(assistant_chat.get_message_reasoning_content(session, message_id) or "").strip()
+    visible_answer = str(assistant_chat.get_message_content(session, message_id) or "").strip()
+    if len(visible_reasoning) == 0 and len(visible_answer) == 0:
+        return committed_messages
+    if len(committed_messages) > 0:
+        last_message = committed_messages[-1]
+        if str(last_message.get("role", "")).strip().lower() == "assistant" and not last_message.get("tool_calls"):
+            existing_content = str(last_message.get("content", "") or last_message.get("model_content", "") or "").strip()
+            existing_reasoning, existing_answer = qwen35_text._split_generated_text(existing_content)
+            merged_reasoning = _merge_visible_fragment_text(existing_reasoning, visible_reasoning)
+            merged_answer = _merge_visible_fragment_text(existing_answer, visible_answer)
+            merged_content = _build_interrupted_assistant_content(merged_reasoning, merged_answer)
+            if len(merged_content) == 0:
+                return committed_messages
+            if merged_content == existing_content:
+                return committed_messages
+            last_message["content"] = merged_content
+            last_message["model_content"] = merged_content
+            return committed_messages
+    merged_content = _build_interrupted_assistant_content(visible_reasoning, visible_answer)
+    if len(merged_content) == 0:
+        return committed_messages
+    committed_messages.append({"role": "assistant", "content": merged_content, "model_content": merged_content})
+    return committed_messages
+
+
+def record_interruption_history(session: AssistantSessionState, user_text: str, interruption_notice: str, committed_messages: list[dict[str, Any]] | None = None) -> None:
+    collapsed = re.sub(r"\s+", " ", str(user_text or "").strip())
+    if len(collapsed) == 0:
+        return
+    entry = {
+        "user_text": collapsed,
+        "notice": str(interruption_notice or "").strip(),
+        "committed_summary": _summarize_interrupted_committed_messages(list(committed_messages or [])),
+    }
+    session.interruption_history.append(entry)
+    if len(session.interruption_history) > 24:
+        session.interruption_history = session.interruption_history[-24:]
 
 
 def _describe_prefix_mismatch(current_token_ids: list[int], target_tokens: list[int]) -> str:
@@ -477,13 +741,26 @@ def _describe_prefix_mismatch(current_token_ids: list[int], target_tokens: list[
     return f"live sequence diverged from canonicalized prompt at token {mismatch_index} (live={current_len}, canonical={target_len})"
 
 
-def rollback_assistant_turn(session: AssistantSessionState, interrupted_badge: str = "Interrupted") -> bool:
+def rollback_assistant_turn(session: AssistantSessionState, interrupted_badge: str = "Interrupted", rendered_system_prompt_signature: str | None = None) -> bool:
     checkpoint = session.current_turn
     if not isinstance(checkpoint, dict):
         return False
-    target_len = int(checkpoint.get("messages_len", len(session.messages)))
-    if len(session.messages) > target_len:
-        del session.messages[target_len:]
+    interruption_notice = build_interruption_notice(checkpoint.get("user_text", ""))
+    base_len = int(checkpoint.get("messages_len", len(session.messages)))
+    target_len = max(base_len, int(checkpoint.get("committed_messages_len", base_len)))
+    committed_messages = _normalize_interrupted_committed_messages(copy.deepcopy(session.messages[base_len:target_len]))
+    committed_messages = _merge_interrupted_visible_assistant_fragments(session, checkpoint.get("assistant_message_id", ""), committed_messages)
+    preserved_tail_interruptions = _extract_preserved_interruption_tail(session.messages[target_len:])
+    if len(session.messages) > base_len:
+        del session.messages[base_len:]
+    if len(committed_messages) > 0:
+        session.messages.extend(copy.deepcopy(committed_messages))
+    interrupted_user_text = str(checkpoint.get("user_text", "") or "").strip()
+    if target_len <= base_len and len(interrupted_user_text) > 0:
+        session.messages.append({"role": "user", "content": interrupted_user_text})
+    session.messages.append({"role": "assistant", "content": interruption_notice})
+    if len(preserved_tail_interruptions) > 0:
+        session.messages.extend(preserved_tail_interruptions)
     session.rendered_token_ids = [int(token_id) for token_id in checkpoint.get("rendered_token_ids", []) or []]
     try:
         session.rendered_messages_len = int(checkpoint.get("rendered_messages_len", 0) or 0)
@@ -495,26 +772,51 @@ def rollback_assistant_turn(session: AssistantSessionState, interrupted_badge: s
         session.rendered_context_window_tokens = int(checkpoint.get("rendered_context_window_tokens", 0) or 0)
     except Exception:
         session.rendered_context_window_tokens = 0
-    transcript_snapshot = checkpoint.get("chat_transcript", None)
-    if isinstance(transcript_snapshot, list):
-        session.chat_transcript = copy.deepcopy(transcript_snapshot)
+    remembered_message_count = len(session.messages)
+    if (
+        remembered_message_count != int(session.rendered_messages_len or 0)
+        and session.reset_base_snapshot is not None
+        and len(session.reset_base_token_ids or []) > 0
+    ):
+        session.rendered_token_ids = [int(token_id) for token_id in list(session.reset_base_token_ids or [])]
+        session.runtime_snapshot = copy.deepcopy(session.reset_base_snapshot)
+        session.rendered_messages_len = 0
+        session.rendered_system_prompt_signature = str(rendered_system_prompt_signature or session.rendered_system_prompt_signature or "")
         try:
-            session.chat_transcript_counter = int(checkpoint.get("chat_transcript_counter", session.chat_transcript_counter) or 0)
+            session.rendered_context_window_tokens = int(session.reset_base_context_window_tokens or session.rendered_context_window_tokens or 0)
         except Exception:
-            pass
-    else:
-        assistant_message_id = str(checkpoint.get("assistant_message_id", "") or "").strip()
-        if len(assistant_message_id) > 0:
+            session.rendered_context_window_tokens = int(session.rendered_context_window_tokens or 0)
+    if (
+        len(session.rendered_token_ids) == 0
+        and session.runtime_snapshot is None
+        and session.reset_base_snapshot is not None
+        and len(session.reset_base_token_ids or []) > 0
+    ):
+        session.rendered_token_ids = [int(token_id) for token_id in list(session.reset_base_token_ids or [])]
+        session.runtime_snapshot = copy.deepcopy(session.reset_base_snapshot)
+        session.rendered_messages_len = 0
+        session.rendered_system_prompt_signature = str(rendered_system_prompt_signature or session.rendered_system_prompt_signature or "")
+        try:
+            session.rendered_context_window_tokens = int(session.reset_base_context_window_tokens or session.rendered_context_window_tokens or 0)
+        except Exception:
+            session.rendered_context_window_tokens = int(session.rendered_context_window_tokens or 0)
+    assistant_message_id = str(checkpoint.get("assistant_message_id", "") or "").strip()
+    has_visible_assistant_trace = False
+    if len(assistant_message_id) > 0:
+        assistant_record = assistant_chat._find_message(session, assistant_message_id)
+        if _transcript_record_has_visible_content(assistant_record):
+            has_visible_assistant_trace = True
+            assistant_chat.set_message_badge(session, assistant_message_id, interrupted_badge)
+        else:
             assistant_chat.remove_message(session, assistant_message_id)
     user_message_id = str(checkpoint.get("user_message_id", "") or "").strip()
     if len(user_message_id) > 0:
         assistant_chat.set_message_badge(session, user_message_id, interrupted_badge)
-    if not bool(checkpoint.get("interrupt_recorded", False)):
-        session.interruption_notice = _build_interruption_notice(str(checkpoint.get("user_text", "") or ""))
-        if ASSISTANT_DEBUG:
-            print("[Assistant] Interruption notice computed:")
-            print(session.interruption_notice)
-        checkpoint["interrupt_recorded"] = True
+    if not has_visible_assistant_trace and len(user_message_id) == 0:
+        assistant_chat.add_assistant_note(session, interruption_notice, badge=interrupted_badge, author="System")
+    session.interruption_notice = interruption_notice
+    record_interruption_history(session, checkpoint.get("user_text", ""), interruption_notice, committed_messages=committed_messages)
+    checkpoint["interrupt_recorded"] = True
     return True
 
 
@@ -531,6 +833,7 @@ def request_assistant_reset(session: AssistantSessionState) -> None:
     session.drop_state_requested = True
     session.chat_epoch += 1
     session.queued_job_count = 0
+    session.queued_cancel_count = 0
 
 
 def set_assistant_tool_ui_settings(session: AssistantSessionState, **kwargs) -> dict[str, Any]:
@@ -560,6 +863,51 @@ def _strip_partial_tool_markup(text: str) -> str:
     if cut_points:
         stripped = stripped[: min(cut_points)]
     return stripped.rstrip()
+
+
+def _has_unbalanced_trailing_delimiter(text: str) -> bool:
+    sample = str(text or "")
+    pairs = (('"', '"'), ("'", "'"), ("(", ")"), ("[", "]"), ("{", "}"))
+    for opening, closing in pairs:
+        if opening == closing:
+            if sample.count(opening) % 2 == 1:
+                return True
+            continue
+        if sample.count(opening) > sample.count(closing):
+            return True
+    return False
+
+
+def _trim_incomplete_answer_tail(answer_text: str) -> str:
+    answer = str(answer_text or "").strip()
+    if len(answer) == 0:
+        return answer
+    paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", answer) if len(paragraph.strip()) > 0]
+    if len(paragraphs) == 0:
+        return answer
+    last_paragraph = paragraphs[-1]
+    ends_with_ellipsis = re.search(r"(?:\.{3}|\u2026)(?:[\"')\]])?\s*$", last_paragraph) is not None
+    if not ends_with_ellipsis and re.search(r"[.!?](?:[\"')\]])?\s*$", last_paragraph):
+        return answer
+    dangling_word = re.search(r"(?i)\b(?:a|an|and|because|but|for|from|if|in|into|of|on|or|that|the|to|when|where|which|with)\s*$", last_paragraph) is not None
+    trailing_soft_break = re.search(r"[,;:\-–—/](?:[\"')\]])?\s*$", last_paragraph) is not None
+    short_tail = len(last_paragraph.split()) <= 8
+    suspicious_tail = _has_unbalanced_trailing_delimiter(last_paragraph) or dangling_word or ends_with_ellipsis or trailing_soft_break
+    if len(paragraphs) > 1:
+        if not suspicious_tail:
+            return answer
+        sentence_matches = list(re.finditer(r"[.!?](?:[\"')\]])?(?=\s|$)", last_paragraph))
+        trimmed_last_paragraph = last_paragraph[: sentence_matches[-1].end()].strip() if sentence_matches else ""
+        kept_paragraphs = paragraphs[:-1]
+        if len(trimmed_last_paragraph) > 0:
+            kept_paragraphs.append(trimmed_last_paragraph)
+        return "\n\n".join(kept_paragraphs).strip()
+    if not (suspicious_tail or short_tail):
+        return answer
+    sentence_matches = list(re.finditer(r"[.!?](?:[\"')\]])?(?=\s|$)", answer))
+    if sentence_matches:
+        return answer[: sentence_matches[-1].end()].strip()
+    return ""
 
 
 class tools:
@@ -750,6 +1098,189 @@ class tools:
                 return None
         return None
 
+    def _get_effective_video_latent_size(self, task: dict[str, Any]) -> int | None:
+        model_type = str(task.get("model_type", "") or task.get("base_model_type", "") or "").strip()
+        get_base_model_type = _get_main_callable("get_base_model_type")
+        base_model_type = model_type
+        if callable(get_base_model_type) and len(model_type) > 0:
+            try:
+                base_model_type = str(get_base_model_type(model_type) or model_type).strip() or model_type
+            except Exception:
+                base_model_type = model_type
+        get_model_min_frames_and_step = _get_main_callable("get_model_min_frames_and_step")
+        if callable(get_model_min_frames_and_step) and len(base_model_type) > 0:
+            try:
+                _frames_minimum, _frames_steps, latent_size = get_model_min_frames_and_step(base_model_type)
+                latent_size = int(latent_size)
+                if latent_size > 0:
+                    return latent_size
+            except Exception:
+                pass
+        get_model_def = _get_main_callable("get_model_def")
+        if callable(get_model_def) and len(base_model_type) > 0:
+            try:
+                model_def = get_model_def(base_model_type)
+            except Exception:
+                model_def = None
+            if isinstance(model_def, dict):
+                try:
+                    latent_size = int(model_def.get("latent_size", model_def.get("frames_steps", 0)) or 0)
+                except Exception:
+                    latent_size = 0
+                if latent_size > 0:
+                    return latent_size
+        return None
+
+    @staticmethod
+    def _snap_video_frame_count_to_latent_grid(frame_count: int, latent_size: int | None) -> int:
+        raw_frames = int(frame_count)
+        if raw_frames <= 0:
+            return raw_frames
+        if latent_size is None or int(latent_size) <= 0:
+            return raw_frames
+        step = int(latent_size)
+        return max(1, int(round((raw_frames - 1) / float(step))) * step + 1)
+
+    def _get_generation_extra_settings_info(self, task: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        try:
+            raw_info = extra_settings.get_info(copy.deepcopy(task))
+        except Exception:
+            raw_info = {}
+        if not isinstance(raw_info, dict):
+            return {}
+        info: dict[str, dict[str, Any]] = {}
+        for raw_label, raw_entry in raw_info.items():
+            label = str(raw_label or "").strip()
+            if len(label) == 0 or not isinstance(raw_entry, dict):
+                continue
+            key = str(raw_entry.get("key", "") or "").strip()
+            if len(key) == 0:
+                continue
+            entry_type = str(raw_entry.get("type", "number") or "number").strip().lower()
+            if entry_type in {"int", "integer"}:
+                entry_type = "integer"
+            elif entry_type in {"float", "number"}:
+                entry_type = "number"
+            else:
+                entry_type = "string"
+            info[label] = {
+                "key": key,
+                "value": raw_entry.get("value", None),
+                "type": entry_type,
+                "custom": bool(raw_entry.get("custom", False)),
+                "min": raw_entry.get("min", None),
+                "max": raw_entry.get("max", None),
+            }
+        return info
+
+    @staticmethod
+    def _parse_extra_setting_override_value(label: str, raw_value: Any, entry_type: str) -> tuple[Any, str | None]:
+        if entry_type == "integer":
+            if isinstance(raw_value, bool):
+                return None, f"extra_settings['{label}'] must be an integer."
+            if isinstance(raw_value, int):
+                return raw_value, None
+            if isinstance(raw_value, float):
+                if raw_value.is_integer():
+                    return int(raw_value), None
+                return None, f"extra_settings['{label}'] must be an integer."
+            try:
+                return int(str(raw_value).strip()), None
+            except Exception:
+                try:
+                    parsed_float = float(str(raw_value).strip())
+                except Exception:
+                    return None, f"extra_settings['{label}'] must be an integer."
+                return (int(parsed_float), None) if parsed_float.is_integer() else (None, f"extra_settings['{label}'] must be an integer.")
+        if entry_type == "number":
+            if isinstance(raw_value, bool):
+                return None, f"extra_settings['{label}'] must be a number."
+            try:
+                return float(raw_value), None
+            except Exception:
+                return None, f"extra_settings['{label}'] must be a number."
+        text = str(raw_value or "").strip()
+        return (text, None) if len(text) > 0 else (None, f"extra_settings['{label}'] must be a non-empty string.")
+
+    def _apply_extra_settings_overrides(self, tool_name: str, task: dict[str, Any], extra_settings: dict[str, Any] | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        if extra_settings is None:
+            return task, None
+        if not isinstance(extra_settings, dict):
+            return None, {
+                "status": "error",
+                "client_id": str(task.get("client_id", "") or "").strip(),
+                "output_file": "",
+                "prompt": str(task.get("prompt", "") or "").strip(),
+                "resolution": str(task.get("resolution", "") or "").strip(),
+                "error": "extra_settings must be an object.",
+            }
+        if len(extra_settings) == 0:
+            return task, None
+        settings_info = self._get_generation_extra_settings_info(task)
+        if len(settings_info) == 0:
+            return None, {
+                "status": "error",
+                "client_id": str(task.get("client_id", "") or "").strip(),
+                "output_file": "",
+                "prompt": str(task.get("prompt", "") or "").strip(),
+                "resolution": str(task.get("resolution", "") or "").strip(),
+                "error": f"Tool '{tool_name}' does not expose any extra_settings right now.",
+            }
+        normalized_info = {_normalize_extra_setting_lookup_label(label): (label, entry) for label, entry in settings_info.items()}
+        custom_settings = task.get("custom_settings", None)
+        if not isinstance(custom_settings, dict):
+            custom_settings = {}
+        for raw_label, raw_value in extra_settings.items():
+            label_key = _normalize_extra_setting_lookup_label(raw_label)
+            if len(label_key) == 0:
+                return None, {
+                    "status": "error",
+                    "client_id": str(task.get("client_id", "") or "").strip(),
+                    "output_file": "",
+                    "prompt": str(task.get("prompt", "") or "").strip(),
+                    "resolution": str(task.get("resolution", "") or "").strip(),
+                    "error": "extra_settings keys must be non-empty strings.",
+                }
+            matched = normalized_info.get(label_key, None)
+            if matched is None:
+                available = ", ".join(sorted(settings_info))
+                return None, {
+                    "status": "error",
+                    "client_id": str(task.get("client_id", "") or "").strip(),
+                    "output_file": "",
+                    "prompt": str(task.get("prompt", "") or "").strip(),
+                    "resolution": str(task.get("resolution", "") or "").strip(),
+                    "error": f"Unknown extra setting '{raw_label}' for tool '{tool_name}'. Call Get Default Settings first and use one of: {available}.",
+                }
+            label, entry = matched
+            parsed_value, parse_error = self._parse_extra_setting_override_value(label, raw_value, entry.get("type", "number"))
+            if parse_error is not None:
+                return None, {
+                    "status": "error",
+                    "client_id": str(task.get("client_id", "") or "").strip(),
+                    "output_file": "",
+                    "prompt": str(task.get("prompt", "") or "").strip(),
+                    "resolution": str(task.get("resolution", "") or "").strip(),
+                    "error": parse_error,
+                }
+            range_error = extra_settings.validate_setting_value(label, parsed_value, entry.get("type", "number"), entry.get("min", None), entry.get("max", None))
+            if range_error is not None:
+                return None, {
+                    "status": "error",
+                    "client_id": str(task.get("client_id", "") or "").strip(),
+                    "output_file": "",
+                    "prompt": str(task.get("prompt", "") or "").strip(),
+                    "resolution": str(task.get("resolution", "") or "").strip(),
+                    "error": range_error,
+                }
+            if entry.get("custom", False):
+                custom_settings[str(entry["key"])] = parsed_value
+            else:
+                task[str(entry["key"])] = parsed_value
+        if len(custom_settings) > 0:
+            task["custom_settings"] = custom_settings
+        return task, None
+
     def _get_effective_generation_defaults(self, tool_name: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         lookup_name = str(tool_name or "").strip()
         if lookup_name not in deepy_tool_settings.GENERATION_TOOL_IDS:
@@ -759,28 +1290,23 @@ class tools:
                 "error": f"tool_id must be one of: {', '.join(deepy_tool_settings.GENERATION_TOOL_IDS)}.",
             }
         generator_variant = self.get_tool_variant(lookup_name)
-        template_file = self.get_tool_template_filename(lookup_name)
         try:
             task = deepy_tool_settings.build_generation_task(lookup_name, generator_variant, prompt="", client_id="__deepy_defaults__")
         except Exception as exc:
             return None, {
                 "status": "error",
                 "tool_id": lookup_name,
-                "generator_variant": generator_variant,
-                "template_file": template_file,
+                "template": generator_variant,
                 "error": str(exc),
             }
         include_num_frames = self._is_video_generation_tool(lookup_name)
         task, error_result = self._apply_generation_overrides(lookup_name, task, include_num_frames=include_num_frames)
         if error_result is not None:
             error_result["tool_id"] = lookup_name
-            error_result["generator_variant"] = generator_variant
-            if len(template_file) > 0:
-                error_result["template_file"] = template_file
+            error_result["template"] = generator_variant
             return None, error_result
         model_def = self._get_effective_tool_model_def(lookup_name)
         audio_only = bool(model_def.get("audio_only", False))
-        ui_settings = self._get_tool_ui_settings()
         width = height = None
         if not audio_only:
             width, height = self._parse_generation_resolution(task.get("resolution", ""))
@@ -792,10 +1318,7 @@ class tools:
         result = {
             "status": "ok",
             "tool_id": lookup_name,
-            "generator_variant": generator_variant,
-            "template_file": template_file,
-            "uses_template_properties": bool(ui_settings["use_template_properties"]),
-            "effective_source": "template" if bool(ui_settings["use_template_properties"]) else "deepy_window_defaults",
+            "template": generator_variant,
             "width": width,
             "height": height,
             "seed": seed,
@@ -809,6 +1332,9 @@ class tools:
         if include_num_frames:
             result["num_frames"] = None if task.get("video_length", None) is None else int(task.get("video_length"))
             result["fps"] = self._compute_effective_video_fps(task)
+        if lookup_name == "gen_video":
+            result["multimedia_generation"] = bool(model_def.get("multimedia_generation", False))
+        result["extra_settings"] = {label: entry.get("value", None) for label, entry in self._get_generation_extra_settings_info(task).items()}
         return result, None
 
     def _apply_generation_overrides(
@@ -820,8 +1346,10 @@ class tools:
         width: int | None = None,
         height: int | None = None,
         num_frames: int | None = None,
+        duration_seconds: float | None = None,
         fps: int | None = None,
         num_inference_steps: int | None = None,
+        extra_settings: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         ui_settings = self._get_tool_ui_settings()
         if ui_settings["use_template_properties"]:
@@ -832,20 +1360,51 @@ class tools:
             task["seed"] = int(ui_settings["seed"])
             if include_num_frames:
                 base_num_frames = int(ui_settings["num_frames"])
-        default_width, default_height = self._parse_generation_resolution(base_resolution)
-        if default_width is None or default_height is None or default_width <= 0 or default_height <= 0:
-            return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": base_resolution, "error": "Template/default settings do not define a valid resolution."}
+        default_width = default_height = None
+        if len(base_resolution) > 0:
+            default_width, default_height = self._parse_generation_resolution(base_resolution)
         try:
-            width = default_width if width is None or str(width).strip() == "" else int(width)
-            height = default_height if height is None or str(height).strip() == "" else int(height)
+            width = None if width is None or str(width).strip() == "" else int(width)
+            height = None if height is None or str(height).strip() == "" else int(height)
         except Exception:
             return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": base_resolution, "error": "width and height must be integers."}
+        if width is None or height is None:
+            if default_width is None or default_height is None or default_width <= 0 or default_height <= 0:
+                if width is not None or height is not None:
+                    return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": base_resolution, "error": "width and height must both be provided because the template/default settings do not define a valid resolution."}
+                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": base_resolution, "error": "Template/default settings do not define a valid resolution."}
+            width = default_width if width is None else width
+            height = default_height if height is None else height
         min_dim = int(deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN)
         max_dim = int(deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX)
         if width < min_dim or width > max_dim or height < min_dim or height > max_dim:
             return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": f"{width}x{height}", "error": f"width and height must stay between {min_dim} and {max_dim}."}
-        task["resolution"] = f"{width}x{height}"
+        parsed_duration_seconds = None
         if include_num_frames:
+            parsed_duration_seconds, error_result = self._parse_time_value(duration_seconds, "duration_seconds", required=False)
+            if error_result is not None:
+                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": f"{width}x{height}", "error": str(error_result.get("error", "") or "duration_seconds is invalid.")}
+            if parsed_duration_seconds is not None:
+                if parsed_duration_seconds <= 0:
+                    return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": f"{width}x{height}", "error": "duration_seconds must be > 0."}
+                if num_frames is not None and str(num_frames).strip() != "":
+                    return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": f"{width}x{height}", "error": "Specify either num_frames or duration_seconds, not both."}
+        task["resolution"] = f"{width}x{height}"
+        if fps is not None:
+            try:
+                fps = int(fps)
+            except Exception:
+                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "fps must be an integer."}
+            if fps < 15 or fps > 60:
+                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "fps must stay between 15 and 60."}
+            task["force_fps"] = str(int(fps))
+        if include_num_frames:
+            if parsed_duration_seconds is not None:
+                effective_fps = int(fps) if fps is not None else self._compute_effective_video_fps(task)
+                if effective_fps is None or effective_fps <= 0:
+                    return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "Could not determine FPS to convert duration_seconds. Pass fps explicitly."}
+                num_frames = int(round(float(parsed_duration_seconds) * float(effective_fps)))
+                num_frames = self._snap_video_frame_count_to_latent_grid(num_frames, self._get_effective_video_latent_size(task))
             try:
                 num_frames = base_num_frames if num_frames is None or str(num_frames).strip() == "" else int(num_frames)
             except Exception:
@@ -855,14 +1414,6 @@ class tools:
             if num_frames is None or num_frames < min_frames or num_frames > max_frames:
                 return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": f"num_frames must stay between {min_frames} and {max_frames}."}
             task["video_length"] = int(num_frames)
-        if fps is not None:
-            try:
-                fps = int(fps)
-            except Exception:
-                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "fps must be an integer."}
-            if fps < 15 or fps > 60:
-                return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "fps must stay between 15 and 60."}
-            task["force_fps"] = str(int(fps))
         if num_inference_steps is not None:
             try:
                 num_inference_steps = int(num_inference_steps)
@@ -871,7 +1422,7 @@ class tools:
             if num_inference_steps <= 0:
                 return None, {"status": "error", "client_id": str(task.get("client_id", "") or "").strip(), "output_file": "", "prompt": str(task.get("prompt", "") or "").strip(), "resolution": task["resolution"], "error": "num_inference_steps must be a positive integer."}
             task["num_inference_steps"] = int(num_inference_steps)
-        return task, None
+        return self._apply_extra_settings_overrides(tool_name, task, extra_settings)
 
     def _build_generation_task(self, tool_name: str, variant: str, *, prompt: str, client_id: str, **kwargs) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         self._remember_generated_client_id(client_id)
@@ -950,41 +1501,39 @@ class tools:
                     media_updates[media_type] = media_record
         return media_updates
 
-    def _get_selected_gallery_media_updates(self) -> list[str]:
+    def _get_selected_gallery_media_updates(self) -> list[dict[str, Any]]:
         if self.session is None:
             return []
-        updates = []
+        updates: list[dict[str, Any]] = []
 
         visual_media_record, _error_result = self._get_selected_media_record_from_source("video", "all")
         visual_signature = "" if visual_media_record is None else f"{str(visual_media_record.get('media_type', '') or '').strip()}:{str(visual_media_record.get('media_id', '') or '').strip()}"
         if visual_signature != str(self.session.selected_visual_runtime_signature or "") and visual_media_record is not None:
             visual_media_type = str(visual_media_record.get("media_type", "") or "").strip()
             if visual_media_type in {"image", "video"}:
-                instruction = self._runtime_media_instruction(
+                media_entry = self._runtime_media_entry(
                     visual_media_record,
                     action="selected",
                     gallery_label="Image / Video Gallery",
                     reference_label="selected",
-                    why="matched selected media",
                     selected_payload=True,
                 )
-                if len(instruction) > 0:
-                    updates.append(instruction)
+                if media_entry is not None:
+                    updates.append(media_entry)
         self.session.selected_visual_runtime_signature = visual_signature
 
         audio_media_record, _error_result = self._get_selected_media_record_from_source("audio", "audio")
         audio_signature = "" if audio_media_record is None else f"audio:{str(audio_media_record.get('media_id', '') or '').strip()}"
         if audio_signature != str(self.session.selected_audio_runtime_signature or "") and audio_media_record is not None:
-            instruction = self._runtime_media_instruction(
+            media_entry = self._runtime_media_entry(
                 audio_media_record,
                 action="selected",
                 gallery_label="Audio Gallery",
                 reference_label="selected",
-                why="matched selected media",
                 selected_payload=True,
             )
-            if len(instruction) > 0:
-                updates.append(instruction)
+            if media_entry is not None:
+                updates.append(media_entry)
         self.session.selected_audio_runtime_signature = audio_signature
 
         return updates
@@ -995,19 +1544,25 @@ class tools:
             return False
         return any(isinstance(item, dict) and isinstance(item.get("params"), dict) and str(item["params"].get("client_id", "") or "").strip() == lookup_client_id for item in list(queue or []))
 
-    def _compact_media_payload(self, record: dict[str, Any], why: str = "") -> dict[str, Any]:
+    @staticmethod
+    def _get_media_description(record: dict[str, Any]) -> str:
+        return str(record.get("prompt_summary", "") or "").strip() or str(record.get("label", "") or "").strip()
+
+    @staticmethod
+    def _get_runtime_media_source_label(record: dict[str, Any]) -> str:
+        return "Deepy" if str(record.get("source", "") or "").strip().lower() == "deepy" else "WanGP"
+
+    def _compact_runtime_media_payload(self, record: dict[str, Any]) -> dict[str, Any]:
         payload = {
-            "media_id": record.get("media_id", ""),
-            "media_type": record.get("media_type", ""),
-            "label": record.get("label", ""),
-            "source": record.get("source", ""),
-            "filename": record.get("filename", ""),
+            "type": str(record.get("media_type", "") or "").strip(),
+            "source": self._get_runtime_media_source_label(record),
         }
-        prompt_summary = str(record.get("prompt_summary", "") or "").strip()
-        if len(prompt_summary) > 0:
-            payload["prompt_summary"] = prompt_summary
-        if len(str(why or "").strip()) > 0:
-            payload["why"] = str(why).strip()
+        filename = str(record.get("filename", "") or "").strip()
+        if len(filename) > 0:
+            payload["filename"] = filename
+        description = self._get_media_description(record)
+        if len(description) > 0:
+            payload["description"] = description
         return payload
 
     def _normalize_selected_media_type(self, media_type: str | None, reference: str | None = None) -> str:
@@ -1019,19 +1574,81 @@ class tools:
             return "all" if inferred == "any" else inferred
         return "all"
 
-    def _selected_media_payload(self, media_record: dict[str, Any], why: str = "") -> dict[str, Any]:
-        payload = self._compact_media_payload(media_record, why=why)
-        payload["path"] = str(media_record.get("path", "")).strip()
-        payload.update(self._get_selected_video_position(media_record))
+    def _selected_runtime_media_payload(self, media_record: dict[str, Any]) -> dict[str, Any]:
+        payload = self._compact_runtime_media_payload(media_record)
+        video_position = self._get_selected_video_position(media_record)
+        current_time = video_position.get("current_time_seconds", None)
+        current_frame = video_position.get("current_frame_no", None)
+        if isinstance(current_time, (int, float)) and float(current_time) > 0:
+            payload["current_time_seconds"] = video_position["current_time_seconds"]
+        if isinstance(current_frame, int) and int(current_frame) > 0:
+            payload["current_frame_no"] = video_position["current_frame_no"]
         return payload
 
-    def _runtime_media_instruction(self, media_record: dict[str, Any], *, action: str, gallery_label: str, reference_label: str, why: str = "", selected_payload: bool = False) -> str:
+    def _selected_media_payload(self, media_record: dict[str, Any], why: str = "") -> dict[str, Any]:
+        payload = {
+            "media_id": media_record.get("media_id", ""),
+            "media_type": media_record.get("media_type", ""),
+            "filename": media_record.get("filename", ""),
+        }
+        description = self._get_media_description(media_record)
+        if len(description) > 0:
+            payload["description"] = description
+        if len(str(why or "").strip()) > 0:
+            payload["why"] = str(why).strip()
+        video_position = self._get_selected_video_position(media_record)
+        if "current_time_seconds" in video_position:
+            payload["current_time_seconds"] = video_position["current_time_seconds"]
+        if "current_frame_no" in video_position:
+            payload["current_frame_no"] = video_position["current_frame_no"]
+        return payload
+
+    @staticmethod
+    def _merge_runtime_media_payload(current_payload: dict[str, Any] | None, extra_payload: dict[str, Any] | None) -> dict[str, Any]:
+        merged = dict(current_payload or {})
+        for key, value in dict(extra_payload or {}).items():
+            if value in (None, "", [], {}):
+                continue
+            merged[key] = value
+        return merged
+
+    @staticmethod
+    def _join_runtime_words(words: list[str], conjunction: str) -> str:
+        normalized_words = [str(word or "").strip() for word in list(words or []) if len(str(word or "").strip()) > 0]
+        if len(normalized_words) == 0:
+            return ""
+        if len(normalized_words) == 1:
+            return normalized_words[0]
+        if len(normalized_words) == 2:
+            return f"{normalized_words[0]} {conjunction} {normalized_words[1]}"
+        return f"{', '.join(normalized_words[:-1])}, {conjunction} {normalized_words[-1]}"
+
+    def _format_runtime_media_reference_line(self, media_id: str, media_type: str, gallery_label: str, references: list[tuple[str, str]]) -> str:
+        action_order = {"added": 0, "selected": 1}
+        reference_order = {"last": 0, "selected": 1}
+        actions = sorted({str(action or "").strip() for action, _reference_label in list(references or []) if len(str(action or "").strip()) > 0}, key=lambda value: (action_order.get(value, 99), value))
+        reference_labels = sorted({str(reference_label or "").strip() for _action, reference_label in list(references or []) if len(str(reference_label or "").strip()) > 0}, key=lambda value: (reference_order.get(value, 99), value))
+        action_text = self._join_runtime_words(actions, "and")
+        reference_text = self._join_runtime_words(reference_labels, "or")
+        return (
+            f"The user has {action_text} {media_type} id {media_id} in the {gallery_label}. "
+            f"Use this media id if the user asks you to work on the {reference_text} {media_type}."
+        ).strip()
+
+    def _runtime_media_entry(self, media_record: dict[str, Any], *, action: str, gallery_label: str, reference_label: str, selected_payload: bool = False) -> dict[str, Any] | None:
         media_type = str(media_record.get("media_type", "") or "").strip()
         media_id = str(media_record.get("media_id", "") or "").strip()
         if len(media_type) == 0 or len(media_id) == 0:
-            return ""
-        payload = self._selected_media_payload(media_record, why=why) if selected_payload else self._compact_media_payload(media_record, why=why)
-        return f"The user has {action} {media_type} id {media_id} in the {gallery_label}, use this media id if the user asks you to work on the {reference_label} {media_type}. Media details: {_json_dumps(payload)}"
+            return None
+        payload = self._selected_runtime_media_payload(media_record) if selected_payload else self._compact_runtime_media_payload(media_record)
+        return {
+            "media_id": media_id,
+            "media_type": media_type,
+            "action": str(action or "").strip(),
+            "reference_label": str(reference_label or "").strip(),
+            "gallery_label": str(gallery_label or "").strip(),
+            "detail_payload": payload,
+        }
 
     def _get_selected_runtime_snapshot(self) -> dict[str, Any] | None:
         snapshot = {}
@@ -1063,6 +1680,13 @@ class tools:
     def _is_selected_reference(self, reference: str) -> bool:
         return _SELECTED_REFERENCE_RE.search(str(reference or "").strip()) is not None
 
+    def _get_current_turn_selected_media_snapshot(self, source: str) -> dict[str, Any] | None:
+        if self.session is None or not isinstance(self.session.current_turn, dict):
+            return None
+        snapshot_key = "selected_audio_media_snapshot" if str(source or "").strip().lower() == "audio" else "selected_visual_media_snapshot"
+        snapshot = self.session.current_turn.get(snapshot_key, None)
+        return copy.deepcopy(snapshot) if isinstance(snapshot, dict) else None
+
     def _get_selected_media_record_from_source(self, source: str, requested_media_type: str = "all") -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         requested_label = self._normalize_selected_media_type(requested_media_type)
         if self.session is None:
@@ -1079,7 +1703,12 @@ class tools:
             choice = int(raw_choice if raw_choice is not None else -1)
         except Exception:
             choice = -1
+        if len(file_list) > 0 and choice == len(file_list):
+            choice = len(file_list) - 1
         if choice < 0 or choice >= len(file_list):
+            snapshot = self._get_current_turn_selected_media_snapshot(source)
+            if snapshot is not None:
+                return snapshot, None
             gallery_label = "audio gallery" if source == "audio" else "image/video gallery"
             return None, {"status": "error", "media_type": requested_label, "error": f"No media is currently selected in the WanGP {gallery_label}."}
         selected_path = str(file_list[choice] or "").strip()
@@ -1099,6 +1728,9 @@ class tools:
             client_id=str((selected_settings or {}).get("client_id", "") or "").strip(),
         )
         if media_record is None:
+            snapshot = self._get_current_turn_selected_media_snapshot(source)
+            if snapshot is not None:
+                return snapshot, None
             return None, {"status": "error", "media_type": requested_label, "error": "The currently selected gallery item is not a supported media file."}
         actual_media_type = str(media_record.get("media_type", "") or "").strip() or "unknown media type"
         resolved_media_type = media_registry.normalize_media_type(requested_media_type)
@@ -1307,6 +1939,18 @@ class tools:
             return None, {"status": "error", "error": f"{parameter_name} must be >= 0."}
         return resolved, None
 
+    def _parse_bool_value(self, value: Any, parameter_name: str, *, required: bool = False) -> tuple[bool | None, dict[str, Any] | None]:
+        if value is None or str(value).strip() == "":
+            return (None, {"status": "error", "error": f"{parameter_name} is required."}) if required else (None, None)
+        if isinstance(value, bool):
+            return value, None
+        normalized = str(value).strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True, None
+        if normalized in {"false", "0", "no", "off"}:
+            return False, None
+        return None, {"status": "error", "error": f"{parameter_name} must be true or false."}
+
     def _resolve_segment_args(
         self,
         source_media: dict[str, Any],
@@ -1400,8 +2044,28 @@ class tools:
             start_time = 0.0
         return {"mode": "time", "start_time": start_time, "end_time": end_time, "duration": duration, "start_frame": None, "end_frame": None, "num_frames": None}, None
 
-    def _build_direct_media_settings(self, source_media: dict[str, Any], comments: str, **updates: Any) -> dict[str, Any]:
+    def _build_deepy_settings(self, prompt: str, comments: str = "", **updates: Any) -> dict[str, Any]:
+        wangp_version = str(_get_main_attribute("WanGP_version") or "").strip()
+        settings = {
+            "type": f"WanGP v{wangp_version} DeepBeepMeep - Deepy" if len(wangp_version) > 0 else "WanGP DeepBeepMeep - Deepy",
+            "model_type": "Deepy",
+            "prompt": str(prompt or "").strip(),
+            "client_id": _next_ai_client_id(),
+        }
+        self._remember_generated_client_id(settings["client_id"])
+        settings["comments"] = str(comments or "").strip()
+        end_time = time.time()
+        settings["creation_date"] = datetime.fromtimestamp(end_time).isoformat(timespec="seconds")
+        settings["creation_timestamp"] = int(end_time)
+        for key, value in updates.items():
+            if value is not None:
+                settings[key] = value
+        return settings
+
+    def _build_direct_media_settings(self, source_media: dict[str, Any], comments: str, fallback_prompt: str | None = None, **updates: Any) -> dict[str, Any]:
         settings = dict(source_media.get("settings", {}) or {})
+        if fallback_prompt is not None and (len(settings) == 0 or str(settings.get("model_type", "") or "").strip() == "Deepy"):
+            return self._build_deepy_settings(fallback_prompt, comments, **updates)
         settings["client_id"] = _next_ai_client_id()
         self._remember_generated_client_id(settings["client_id"])
         settings["comments"] = str(comments or "").strip()
@@ -1414,20 +2078,7 @@ class tools:
         return settings
 
     def _build_direct_image_settings(self, comments: str, width: int, height: int, **updates: Any) -> dict[str, Any]:
-        end_time = time.time()
-        settings = {
-            "client_id": _next_ai_client_id(),
-            "comments": str(comments or "").strip(),
-            "creation_date": datetime.fromtimestamp(end_time).isoformat(timespec="seconds"),
-            "creation_timestamp": int(end_time),
-            "image_mode": 1,
-            "resolution": f"{int(width)}x{int(height)}",
-        }
-        self._remember_generated_client_id(settings["client_id"])
-        for key, value in updates.items():
-            if value is not None:
-                settings[key] = value
-        return settings
+        return self._build_deepy_settings(updates.pop("prompt", f"An image at {int(width)}x{int(height)}."), comments, image_mode=1, resolution=f"{int(width)}x{int(height)}", **updates)
 
     def _update_video_metadata_fields(self, output_path: str, settings: dict[str, Any]) -> None:
         try:
@@ -1463,60 +2114,99 @@ class tools:
         self.send_cmd("load_queue_trigger", {"client_id": client_id})
         self._log(f"Queued {activity_label} for {client_id}")
 
-        queue_admitted = False
-        queue_wait_started_at = time.time()
-        queue_wait_suspended = False
-        queue_wait_suspend_logged = False
-        activity_console_label = activity_label.capitalize()
-        while True:
-            if self._is_interrupted():
-                return self._interrupted_result(client_id, task, force_cancel_queue=True)
-            queue_errors = gen.get("queue_errors", None) or {}
-            if client_id in queue_errors:
-                error_text = str(queue_errors[client_id][0])
-                self._log(f"Queue error detected for {client_id}: {error_text}")
-                self._set_status(f"{activity_label.capitalize()} failed: {error_text}", kind="error")
-                result = {
-                    "status": "error",
-                    "client_id": client_id,
-                    "output_file": "",
-                    "prompt": prompt,
-                    "resolution": resolution,
-                    "error": error_text,
-                }
-                self._update_tool_progress("error", "Error", result)
-                return result
-            file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
-            media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
-            media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
-            file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
-            if file_path is not None and isinstance(file_settings, dict):
-                self._log(f"{activity_label.capitalize()} already completed before queue admission wait observed for {client_id}; skipping browser-style queue admission wait.")
-                self._set_status(f"{activity_label.capitalize()} started...", kind="tool")
-                self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
-                break
-            queue = list(gen.get("queue", []) or [])
-            if self._queue_contains_client_id(queue, client_id):
-                queue_admitted = True
-                if queue_wait_suspended:
-                    print(f"WanGP back in focus tool {activity_console_label} resumed")
-                self._set_status(f"{activity_label.capitalize()} started...", kind="tool")
-                self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
-                break
-            if not queue_wait_suspend_logged and time.time() - queue_wait_started_at >= 10:
-                print(f"Tool {activity_console_label} suspended while waiting than WanGP Video Generator gets in focus")
-                queue_wait_suspend_logged = True
-                queue_wait_suspended = True
-            time.sleep(0.25)
+        with capture_external_logs():
+            queue_wait_started_at = time.time()
+            queue_wait_suspended = False
+            queue_wait_suspend_logged = False
+            activity_console_label = activity_label.capitalize()
+            while True:
+                if self._is_interrupted():
+                    return self._interrupted_result(client_id, task, force_cancel_queue=True)
+                queue_errors = gen.get("queue_errors", None) or {}
+                if client_id in queue_errors:
+                    error_text = str(queue_errors[client_id][0])
+                    self._log(f"Queue error detected for {client_id}: {error_text}")
+                    self._set_status(f"{activity_label.capitalize()} failed: {error_text}", kind="error")
+                    result = {
+                        "status": "error",
+                        "client_id": client_id,
+                        "output_file": "",
+                        "prompt": prompt,
+                        "resolution": resolution,
+                        "error": error_text,
+                    }
+                    self._update_tool_progress("error", "Error", result)
+                    return result
+                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
+                media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
+                media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
+                file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
+                if file_path is not None and isinstance(file_settings, dict):
+                    self._log(f"{activity_label.capitalize()} already completed before queue admission wait observed for {client_id}; skipping browser-style queue admission wait.")
+                    self._set_status(f"{activity_label.capitalize()} started...", kind="tool")
+                    self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
+                    break
+                queue = list(gen.get("queue", []) or [])
+                if self._queue_contains_client_id(queue, client_id):
+                    if queue_wait_suspended:
+                        print(f"WanGP back in focus tool {activity_console_label} resumed")
+                    self._set_status(f"{activity_label.capitalize()} started...", kind="tool")
+                    self._update_tool_progress("running", "Running", {"status": "running", "client_id": client_id, "prompt": prompt, "resolution": resolution})
+                    break
+                if not queue_wait_suspend_logged and time.time() - queue_wait_started_at >= 10:
+                    print(f"Tool {activity_console_label} suspended while waiting than WanGP Video Generator gets in focus")
+                    queue_wait_suspend_logged = True
+                    queue_wait_suspended = True
+                time.sleep(0.25)
 
-        while True:
-            if self._is_interrupted():
-                return self._interrupted_result(client_id, task, force_cancel_queue=True)
-            queue_errors = gen.get("queue_errors", None) or {}
-            if client_id in queue_errors:
-                error_text = str(queue_errors[client_id][0])
-                self._log(f"Generation error detected for {client_id}: {error_text}")
-                self._set_status(f"{activity_label.capitalize()} failed: {error_text}", kind="error")
+            while True:
+                if self._is_interrupted():
+                    return self._interrupted_result(client_id, task, force_cancel_queue=True)
+                queue_errors = gen.get("queue_errors", None) or {}
+                if client_id in queue_errors:
+                    error_text = str(queue_errors[client_id][0])
+                    self._log(f"Generation error detected for {client_id}: {error_text}")
+                    self._set_status(f"{activity_label.capitalize()} failed: {error_text}", kind="error")
+                    result = {
+                        "status": "error",
+                        "client_id": client_id,
+                        "output_file": "",
+                        "prompt": prompt,
+                        "resolution": resolution,
+                        "error": error_text,
+                    }
+                    self._update_tool_progress("error", "Error", result)
+                    return result
+                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
+                media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
+                media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
+                queue = list(gen.get("queue", []) or [])
+                client_id_still_in_queue = self._queue_contains_client_id(queue, client_id)
+                if client_id_still_in_queue:
+                    time.sleep(0.5)
+                    continue
+                file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
+                if file_path is not None and isinstance(file_settings, dict):
+                    media_record = self._register_tool_media(str(file_path), file_settings, label=output_label)
+                    result = {
+                        "status": "done",
+                        "client_id": client_id,
+                        "output_file": str(file_path),
+                        "media_id": "" if media_record is None else media_record.get("media_id", ""),
+                        "prompt": prompt,
+                        "resolution": resolution,
+                        "error": "",
+                    }
+                    if gallery_media_type in {"video", "audio"}:
+                        result["output_duration"] = self._get_output_duration_seconds(str(file_path), file_settings)
+                    self._log(f"{activity_label.capitalize()} completed for {client_id}: {file_path}")
+                    self._set_status(f"{activity_label.capitalize()} finished.", kind="tool")
+                    self.send_cmd("refresh_gallery", {"path": str(file_path)})
+                    self._update_tool_progress("done", "Done", result)
+                    return result
+                error_text = f"{activity_label.capitalize()} finished queue processing but no {gallery_media_type} output with client_id '{client_id}' was found in the gallery."
+                self._log(error_text)
+                self._set_status(error_text, kind="error")
                 result = {
                     "status": "error",
                     "client_id": client_id,
@@ -1527,46 +2217,6 @@ class tools:
                 }
                 self._update_tool_progress("error", "Error", result)
                 return result
-            file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
-            media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
-            media_settings_list = list(audio_file_settings_list or []) if gallery_media_type == "audio" else list(file_settings_list or [])
-            queue = list(gen.get("queue", []) or [])
-            client_id_still_in_queue = self._queue_contains_client_id(queue, client_id)
-            if client_id_still_in_queue:
-                time.sleep(0.5)
-                continue
-            file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
-            if file_path is not None and isinstance(file_settings, dict):
-                media_record = self._register_tool_media(str(file_path), file_settings, label=output_label)
-                result = {
-                    "status": "done",
-                    "client_id": client_id,
-                    "output_file": str(file_path),
-                    "media_id": "" if media_record is None else media_record.get("media_id", ""),
-                    "prompt": prompt,
-                    "resolution": resolution,
-                    "error": "",
-                }
-                if gallery_media_type in {"video", "audio"}:
-                    result["output_duration"] = self._get_output_duration_seconds(str(file_path), file_settings)
-                self._log(f"{activity_label.capitalize()} completed for {client_id}: {file_path}")
-                self._set_status(f"{activity_label.capitalize()} finished.", kind="tool")
-                self.send_cmd("refresh_gallery", {"path": str(file_path)})
-                self._update_tool_progress("done", "Done", result)
-                return result
-            error_text = f"{activity_label.capitalize()} finished queue processing but no {gallery_media_type} output with client_id '{client_id}' was found in the gallery."
-            self._log(error_text)
-            self._set_status(error_text, kind="error")
-            result = {
-                "status": "error",
-                "client_id": client_id,
-                "output_file": "",
-                "prompt": prompt,
-                "resolution": resolution,
-                "error": error_text,
-            }
-            self._update_tool_progress("error", "Error", result)
-            return result
 
     @assistant_tool(
         display_name="Get Loras",
@@ -1615,7 +2265,7 @@ class tools:
 
     @assistant_tool(
         display_name="Get Default Settings",
-        description="Return the effective default generation settings for one of Deepy's 6 generation tools: the values that WanGP will use if those settings are omitted during generation.",
+        description="Return the effective default generation settings for one of Deepy's 6 generation tools: the values that WanGP will use if those settings are omitted during generation, including any currently exposed extra_settings keys.",
         parameters={
             "tool_id": {
                 "type": "string",
@@ -1639,12 +2289,12 @@ class tools:
             },
             "width": {
                 "type": "integer",
-                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output width in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "height": {
                 "type": "integer",
-                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output height in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "num_inference_steps": {
@@ -1652,9 +2302,10 @@ class tools:
                 "description": "Optional number of inference steps. If omitted, keep the template step count.",
                 "required": False,
             },
+            "extra_settings": copy.deepcopy(_EXTRA_SETTINGS_PARAMETER),
         },
     )
-    def gen_image(self, prompt: str, width: int | None = None, height: int | None = None, num_inference_steps: int | None = None) -> dict[str, Any]:
+    def gen_image(self, prompt: str, width: int | None = None, height: int | None = None, num_inference_steps: int | None = None, extra_settings: dict[str, Any] | None = None) -> dict[str, Any]:
         client_id = _next_ai_client_id()
         generator_variant = self._get_tool_ui_settings()["image_generator_variant"]
         template_file = self.get_tool_template_filename("gen_image")
@@ -1664,7 +2315,7 @@ class tools:
             if len(template_file) > 0:
                 error_result["template_file"] = template_file
             return error_result
-        task, error_result = self._apply_generation_overrides("gen_image", task, include_num_frames=False, width=width, height=height, num_inference_steps=num_inference_steps)
+        task, error_result = self._apply_generation_overrides("gen_image", task, include_num_frames=False, width=width, height=height, num_inference_steps=num_inference_steps, extra_settings=extra_settings)
         if error_result is not None:
             error_result["generator_variant"] = generator_variant
             if len(template_file) > 0:
@@ -1706,17 +2357,22 @@ class tools:
             },
             "width": {
                 "type": "integer",
-                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output width in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "height": {
                 "type": "integer",
-                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output height in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "num_frames": {
                 "type": "integer",
                 "description": "Optional output frame count. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
+            "duration_seconds": {
+                "type": "number",
+                "description": "Optional output duration in seconds. Deepy converts it to num_frames using the effective FPS. Do not pass this together with num_frames.",
                 "required": False,
             },
             "fps": {
@@ -1729,6 +2385,7 @@ class tools:
                 "description": "Optional number of inference steps. If omitted, keep the template step count.",
                 "required": False,
             },
+            "extra_settings": copy.deepcopy(_EXTRA_SETTINGS_PARAMETER),
             "loras": {
                 "type": "array",
                 "description": "Optional list of LoRA filenames to apply. Each item must include `name` and may include `multiplier` as a number like 0.8 or a WanGP multiplier string like `0;1`. Omitted multipliers default to 1.",
@@ -1752,8 +2409,10 @@ class tools:
         width: int | None = None,
         height: int | None = None,
         num_frames: int | None = None,
+        duration_seconds: float | None = None,
         fps: int | None = None,
         num_inference_steps: int | None = None,
+        extra_settings: dict[str, Any] | None = None,
         loras: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self._sync_recent_media()
@@ -1804,7 +2463,7 @@ class tools:
             if end_media is not None:
                 error_result["source_end_media_id"] = end_media.get("media_id", "")
             return error_result
-        task, error_result = self._apply_generation_overrides("gen_video", task, include_num_frames=True, width=width, height=height, num_frames=num_frames, fps=fps, num_inference_steps=num_inference_steps)
+        task, error_result = self._apply_generation_overrides("gen_video", task, include_num_frames=True, width=width, height=height, num_frames=num_frames, duration_seconds=duration_seconds, fps=fps, num_inference_steps=num_inference_steps, extra_settings=extra_settings)
         if error_result is not None:
             error_result["generator_variant"] = generator_variant
             if len(template_file) > 0:
@@ -1852,17 +2511,22 @@ class tools:
             },
             "width": {
                 "type": "integer",
-                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output width in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "height": {
                 "type": "integer",
-                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output height in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "num_frames": {
                 "type": "integer",
                 "description": "Optional output frame count. If omitted, use the current Deepy/template setting.",
+                "required": False,
+            },
+            "duration_seconds": {
+                "type": "number",
+                "description": "Optional output duration in seconds. Deepy converts it to num_frames using the effective FPS. Do not pass this together with num_frames.",
                 "required": False,
             },
             "fps": {
@@ -1875,6 +2539,7 @@ class tools:
                 "description": "Optional number of inference steps. If omitted, keep the template step count.",
                 "required": False,
             },
+            "extra_settings": copy.deepcopy(_EXTRA_SETTINGS_PARAMETER),
             "loras": {
                 "type": "array",
                 "description": "Optional list of LoRA filenames to apply. Each item must include `name` and may include `multiplier` as a number like 0.8 or a WanGP multiplier string like `0;1`. Omitted multipliers default to 1.",
@@ -1898,8 +2563,10 @@ class tools:
         width: int | None = None,
         height: int | None = None,
         num_frames: int | None = None,
+        duration_seconds: float | None = None,
         fps: int | None = None,
         num_inference_steps: int | None = None,
+        extra_settings: dict[str, Any] | None = None,
         loras: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self._sync_recent_media()
@@ -1949,7 +2616,7 @@ class tools:
             error_result["source_audio_media_id"] = audio_media.get("media_id", "")
             error_result["image_start_target"] = self._get_image_start_target("gen_video_with_speech")
             return error_result
-        task, error_result = self._apply_generation_overrides("gen_video_with_speech", task, include_num_frames=True, width=width, height=height, num_frames=num_frames, fps=fps, num_inference_steps=num_inference_steps)
+        task, error_result = self._apply_generation_overrides("gen_video_with_speech", task, include_num_frames=True, width=width, height=height, num_frames=num_frames, duration_seconds=duration_seconds, fps=fps, num_inference_steps=num_inference_steps, extra_settings=extra_settings)
         if error_result is not None:
             error_result["generator_variant"] = generator_variant
             if len(template_file) > 0:
@@ -1998,13 +2665,20 @@ class tools:
                 "type": "string",
                 "description": "A short description of the desired voice, tone, or speaking style.",
             },
+            "extra_settings": copy.deepcopy(_EXTRA_SETTINGS_PARAMETER),
         },
     )
-    def gen_speech_from_description(self, prompt: str, voice_description: str) -> dict[str, Any]:
+    def gen_speech_from_description(self, prompt: str, voice_description: str, extra_settings: dict[str, Any] | None = None) -> dict[str, Any]:
         client_id = _next_ai_client_id()
         generator_variant = self.get_tool_variant("gen_speech_from_description")
         template_file = self.get_tool_template_filename("gen_speech_from_description")
         task, error_result = self._build_generation_task("gen_speech_from_description", generator_variant, prompt=prompt, client_id=client_id, alt_prompt=voice_description)
+        if error_result is not None:
+            error_result["generator_variant"] = generator_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            return error_result
+        task, error_result = self._apply_extra_settings_overrides("gen_speech_from_description", task, extra_settings)
         if error_result is not None:
             error_result["generator_variant"] = generator_variant
             if len(template_file) > 0:
@@ -2047,9 +2721,10 @@ class tools:
                 "type": "string",
                 "description": "The media id of the audio sample returned by Resolve Media.",
             },
+            "extra_settings": copy.deepcopy(_EXTRA_SETTINGS_PARAMETER),
         },
     )
-    def gen_speech_from_sample(self, prompt: str, media_id: str) -> dict[str, Any]:
+    def gen_speech_from_sample(self, prompt: str, media_id: str, extra_settings: dict[str, Any] | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         sample_media, error_result = self._resolve_audio_media(media_id, "media_id")
         if error_result is not None:
@@ -2065,6 +2740,13 @@ class tools:
             client_id=client_id,
             audio_guide=str(sample_media.get("path", "")).strip(),
         )
+        if error_result is not None:
+            error_result["generator_variant"] = generator_variant
+            if len(template_file) > 0:
+                error_result["template_file"] = template_file
+            error_result["source_media_id"] = sample_media.get("media_id", "")
+            return error_result
+        task, error_result = self._apply_extra_settings_overrides("gen_speech_from_sample", task, extra_settings)
         if error_result is not None:
             error_result["generator_variant"] = generator_variant
             if len(template_file) > 0:
@@ -2110,12 +2792,12 @@ class tools:
             },
             "width": {
                 "type": "integer",
-                "description": "Optional output width in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output width in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "height": {
                 "type": "integer",
-                "description": "Optional output height in pixels. If omitted, use the current Deepy/template setting.",
+                "description": "Optional output height in pixels. Only pass this when the user explicitly asks for output size; otherwise omit it and use the current Deepy/template setting.",
                 "required": False,
             },
             "num_inference_steps": {
@@ -2123,6 +2805,7 @@ class tools:
                 "description": "Optional number of inference steps. If omitted, keep the template step count.",
                 "required": False,
             },
+            "extra_settings": copy.deepcopy(_EXTRA_SETTINGS_PARAMETER),
         },
     )
     def edit_image(
@@ -2132,6 +2815,7 @@ class tools:
         width: int | None = None,
         height: int | None = None,
         num_inference_steps: int | None = None,
+        extra_settings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._sync_recent_media()
         if self.session is None:
@@ -2164,7 +2848,7 @@ class tools:
                 error_result["template_file"] = template_file
             error_result["media_id"] = media_record.get("media_id", "")
             return error_result
-        task, error_result = self._apply_generation_overrides("edit_image", task, include_num_frames=False, width=width, height=height, num_inference_steps=num_inference_steps)
+        task, error_result = self._apply_generation_overrides("edit_image", task, include_num_frames=False, width=width, height=height, num_inference_steps=num_inference_steps, extra_settings=extra_settings)
         if error_result is not None:
             error_result["editor_variant"] = editor_variant
             if len(template_file) > 0:
@@ -2236,8 +2920,8 @@ class tools:
             self._update_tool_progress("error", "Error", result)
             self._set_status(f"Color frame creation failed: {exc}", kind="error")
             return result
-        settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}', width, height, prompt=f"Solid {resolved_color} image", seed=-1)
-        media_record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label="Color frame", persist_metadata=False)
+        settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}', width, height, prompt=f"A solid {resolved_color} image at {width}x{height}.")
+        media_record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label="Color frame")
         result = {
             "status": "done",
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
@@ -2313,7 +2997,8 @@ class tools:
             self._set_status(f"Image extraction failed: {exc}", kind="error")
             return result
         comments = f'Extracted frame {resolved_frame_no} from "{os.path.basename(source_path)}"' if time_seconds is None else f'Extracted frame {resolved_frame_no} at {time_seconds:.3f}s from "{os.path.basename(source_path)}"'
-        extracted_settings = self._build_direct_media_settings(source_media, comments)
+        prompt_summary = f"An image extracted from a video at {time_seconds:.3f} seconds." if time_seconds is not None else f"An image extracted from frame {resolved_frame_no} of a video."
+        extracted_settings = self._build_direct_media_settings(source_media, comments, fallback_prompt=prompt_summary)
         media_record = self._record_direct_media(output_path, extracted_settings, is_image=True, audio_only=False, label="Extracted image")
         result = {
             "status": "done",
@@ -2447,7 +3132,15 @@ class tools:
                 comments += f" ending at {segment_args['end_time']:.3f}s"
             elif segment_args["duration"] is not None:
                 comments += f" with duration {segment_args['duration']:.3f}s"
-        extracted_settings = self._build_direct_media_settings(source_media, comments)
+        prompt_summary = "Video extracted from a source media item."
+        if segment_args["mode"] == "frame" and (start_frame is not None or end_frame is not None or num_frames is not None):
+            prompt_summary += f" Keep frames starting at {segment_args['start_frame']}."
+        elif segment_args["start_time"] is not None or segment_args["end_time"] is not None or segment_args["duration"] is not None:
+            if segment_args["end_time"] is not None:
+                prompt_summary += f" From {segment_args['start_time']:.3f} to {segment_args['end_time']:.3f} seconds."
+            elif segment_args["duration"] is not None:
+                prompt_summary += f" Starting at {segment_args['start_time']:.3f} seconds for {segment_args['duration']:.3f} seconds."
+        extracted_settings = self._build_direct_media_settings(source_media, comments, fallback_prompt=prompt_summary)
         self._update_video_metadata_fields(output_path, extracted_settings)
         media_record = self._record_direct_media(output_path, extracted_settings, is_image=False, audio_only=False, label="Extracted video")
         result = {
@@ -2824,7 +3517,7 @@ class tools:
 
     @assistant_tool(
         display_name="Resize Crop",
-        description="Resize and crop a previously resolved image or video in one step. Crop values can be expressed in pixels or percent.",
+        description="Resize and crop a previously resolved image or video in one step. Crop values can be expressed in pixels or percent. When both width and height are provided, aspect ratio is preserved by default by cropping extra area instead of stretching.",
         parameters={
             "media_id": {
                 "type": "string",
@@ -2865,10 +3558,21 @@ class tools:
                 "description": "Crop unit: pixels or percent.",
                 "required": False,
             },
+            "crop_anchor": {
+                "type": "string",
+                "description": "Optional. Defaults to center. Controls which area stays in frame when aspect-ratio-preserving auto-crop trims extra area.",
+                "enum": ["center", "left", "right", "top", "bottom", "top_left", "top_right", "bottom_left", "bottom_right"],
+                "required": False,
+            },
+            "stretch_to_fit": {
+                "type": "boolean",
+                "description": "Optional. Defaults to false. When width and height are both provided, set this to true only if the user explicitly wants stretching or distortion instead of cropping extra area.",
+                "required": False,
+            },
         },
         pause_runtime=False,
     )
-    def resize_crop(self, media_id: str, width: int | None = None, height: int | None = None, crop_left: float | None = None, crop_top: float | None = None, crop_right: float | None = None, crop_bottom: float | None = None, crop_unit: str | None = None) -> dict[str, Any]:
+    def resize_crop(self, media_id: str, width: int | None = None, height: int | None = None, crop_left: float | None = None, crop_top: float | None = None, crop_right: float | None = None, crop_bottom: float | None = None, crop_unit: str | None = None, crop_anchor: str | None = None, stretch_to_fit: bool | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         if self.session is None:
             return {"status": "error", "media_id": str(media_id or "").strip(), "output_file": "", "error": "Assistant session is not available."}
@@ -2887,39 +3591,66 @@ class tools:
             crop_bottom = 0 if crop_bottom is None or str(crop_bottom).strip() == "" else float(crop_bottom)
         except Exception:
             return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": "width and height must be integers, crop values must be numbers."}
+        stretch_to_fit, error_result = self._parse_bool_value(stretch_to_fit, "stretch_to_fit")
+        if error_result is not None:
+            error_result["media_id"] = source_media.get("media_id", "")
+            error_result["output_file"] = ""
+            return error_result
+        if stretch_to_fit is None:
+            stretch_to_fit = False
+        preserve_aspect_ratio = not bool(stretch_to_fit)
         crop_unit = str(crop_unit or "pixels").strip().lower() or "pixels"
         if crop_unit not in {"pixels", "percent"}:
             return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": "crop_unit must be 'pixels' or 'percent'."}
+        crop_anchor = str(crop_anchor or "center").strip().lower().replace("-", "_").replace(" ", "_") or "center"
+        if crop_anchor not in {"center", "left", "right", "top", "bottom", "top_left", "top_right", "bottom_left", "bottom_right"}:
+            return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": "crop_anchor must be center, left, right, top, bottom, top_left, top_right, bottom_left, or bottom_right."}
         source_media_type = str(source_media.get("media_type", "") or "").strip() or "media"
         self._set_status(f"Resizing and cropping {source_media_type}...", kind="tool")
-        self._update_tool_progress("running", "Processing", {"status": "running", "media_id": source_media.get("media_id", ""), "width": width, "height": height, "crop_left": crop_left, "crop_top": crop_top, "crop_right": crop_right, "crop_bottom": crop_bottom, "crop_unit": crop_unit})
+        self._update_tool_progress("running", "Processing", {"status": "running", "media_id": source_media.get("media_id", ""), "width": width, "height": height, "crop_left": crop_left, "crop_top": crop_top, "crop_right": crop_right, "crop_bottom": crop_bottom, "crop_unit": crop_unit, "crop_anchor": crop_anchor, "stretch_to_fit": stretch_to_fit, "preserve_aspect_ratio": preserve_aspect_ratio})
         source_path = str(source_media.get("path", "")).strip()
         base_name = os.path.splitext(os.path.basename(source_path))[0]
         try:
             if source_media_type == "video":
                 video_codec, video_container = self._get_video_output_settings()
                 output_path = self._resolve_direct_output_path(f"{base_name}_resized{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
-                output_path = deepy_video_tools.resize_crop_video(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
+                output_path = deepy_video_tools.resize_crop_video(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit, preserve_aspect_ratio=preserve_aspect_ratio, crop_anchor=crop_anchor, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
             else:
                 image_ext = os.path.splitext(source_path)[1].lower()
                 if image_ext not in {".png", ".jpg", ".jpeg", ".webp"}:
                     image_ext = ".png"
                 output_path = self._resolve_direct_output_path(f"{base_name}_resized{image_ext}", True, False)
-                output_path = deepy_video_tools.resize_crop_image(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit)
+                output_path = deepy_video_tools.resize_crop_image(source_path, output_path, width=width, height=height, crop_left=crop_left, crop_top=crop_top, crop_right=crop_right, crop_bottom=crop_bottom, crop_unit=crop_unit, preserve_aspect_ratio=preserve_aspect_ratio, crop_anchor=crop_anchor)
         except Exception as exc:
             result = {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": str(exc)}
             self._update_tool_progress("error", "Error", result)
             self._set_status(f"Resize/crop failed: {exc}", kind="error")
             return result
-        comments = f'Resized/cropped "{os.path.basename(source_path)}"'
+        has_manual_crop = any(value > 0 for value in (crop_left, crop_top, crop_right, crop_bottom))
+        uses_aspect_crop = width is not None and height is not None and not stretch_to_fit
+        action_text = "cropped" if has_manual_crop or uses_aspect_crop else "resized" if width is not None or height is not None else "processed"
+        action_label = action_text.capitalize()
+        comments = f'{action_label} "{os.path.basename(source_path)}"'
         if width is not None or height is not None:
             comments += f" to {width if width is not None else 'auto'}x{height if height is not None else 'auto'}"
-        if any(value > 0 for value in (crop_left, crop_top, crop_right, crop_bottom)):
+        if width is not None and height is not None:
+            comments += " with stretching" if stretch_to_fit else " with preserved aspect ratio"
+            if action_text == "cropped" and not stretch_to_fit and crop_anchor != "center":
+                comments += f" anchored {crop_anchor}"
+        if has_manual_crop:
             comments += f" with crop {crop_left}/{crop_top}/{crop_right}/{crop_bottom} {crop_unit}"
-        resized_settings = self._build_direct_media_settings(source_media, comments)
+        prompt_summary = None
+        if source_media_type == "image":
+            if action_text == "cropped":
+                prompt_summary = f"An image cropped to {width if width is not None else 'auto'}x{height if height is not None else 'auto'}."
+                if width is not None and height is not None and crop_anchor != "center":
+                    prompt_summary = f"An image cropped to {width}x{height}, keeping the {crop_anchor.replace('_', ' ')} area."
+            elif action_text == "resized":
+                prompt_summary = f"An image resized to {width if width is not None else 'auto'}x{height if height is not None else 'auto'}."
+        resized_settings = self._build_direct_media_settings(source_media, comments, fallback_prompt=prompt_summary)
         if source_media_type == "video":
             self._update_video_metadata_fields(output_path, resized_settings)
-        media_record = self._record_direct_media(output_path, resized_settings, is_image=source_media_type == "image", audio_only=False, label=f"Resized/cropped {source_media_type}")
+        media_record = self._record_direct_media(output_path, resized_settings, is_image=source_media_type == "image", audio_only=False, label=f"{action_label} {source_media_type}")
         result = {
             "status": "done",
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
@@ -3193,7 +3924,6 @@ class tools:
                     "media_id": media_record.get("media_id", ""),
                     "label": media_record.get("label", ""),
                     "media_type": "image",
-                    "path": media_path,
                     "filename": os.path.basename(media_path),
                     "width": int(width),
                     "height": int(height),
@@ -3215,7 +3945,6 @@ class tools:
                     "media_id": media_record.get("media_id", ""),
                     "label": media_record.get("label", ""),
                     "media_type": "video",
-                    "path": media_path,
                     "filename": os.path.basename(media_path),
                     "width": int(width),
                     "height": int(height),
@@ -3253,7 +3982,6 @@ class tools:
                     "media_id": media_record.get("media_id", ""),
                     "label": media_record.get("label", ""),
                     "media_type": "audio",
-                    "path": media_path,
                     "filename": os.path.basename(media_path),
                     "width": None,
                     "height": None,
@@ -3272,7 +4000,7 @@ class tools:
                 "status": "error",
                 "media_id": media_record.get("media_id", ""),
                 "media_type": media_type,
-                "path": media_path,
+                "filename": os.path.basename(media_path),
                 "error": str(exc),
             }
             self._update_tool_progress("error", "Error", result)
@@ -3547,6 +4275,13 @@ class AssistantEngine:
         self._live_prefill_tokens = 0
         self._segment_started_at: float | None = None
         self._segment_generated_tokens = 0
+        self._current_requested_max_new_tokens = 1024
+        self._current_status_payload: dict[str, Any] | None = None
+        self._resume_stream_after_context_trim = False
+        self._suppress_intermediate_stream_after_context_trim = False
+        self._skip_generation_context_sync_once = False
+        self._continued_segment_raw_text = ""
+        self._continued_segment_token_ids: list[int] = []
         bind_runtime_tools = getattr(self.tool_box, "bind_runtime_tools", None)
         if callable(bind_runtime_tools):
             bind_runtime_tools(vision_query_callback=self._run_visual_query, tool_progress_callback=self._handle_tool_progress)
@@ -3561,10 +4296,12 @@ class AssistantEngine:
         self.send_cmd("chat_output", payload)
 
     def _set_status(self, text: str | None, kind: str = "thinking") -> None:
+        self._current_status_payload = None if text is None or len(str(text).strip()) == 0 else {"visible": True, "kind": str(kind or "status"), "text": str(text or "").strip()}
         self._emit_chat_event(assistant_chat.build_status_event(text, kind=kind, visible=text is not None and len(str(text).strip()) > 0))
         self._emit_stats()
 
     def _hide_status(self) -> None:
+        self._current_status_payload = None
         self._emit_chat_event(assistant_chat.build_status_event(None, visible=False))
         self._emit_stats(force=True)
 
@@ -3584,6 +4321,12 @@ class AssistantEngine:
             return len(current_seq.token_ids or [])
         except Exception:
             return None
+
+    def _segment_generation_reserve_tokens(self) -> int:
+        if not bool(self.thinking_enabled):
+            return _GENERATION_RESERVE_TOKENS
+        requested_max_new_tokens = max(1, int(self._current_requested_max_new_tokens or 1024))
+        return max(_GENERATION_RESERVE_TOKENS, requested_max_new_tokens + _THINKING_HEADROOM_TOKENS)
 
     def _resolved_chat_max_tokens(self) -> int:
         max_tokens = 0
@@ -3666,22 +4409,120 @@ class AssistantEngine:
         self._segment_generated_tokens = 0
         self._emit_stats(force=True)
 
+    def _max_tokens_hit_context_ceiling(self, result: Any) -> bool:
+        if str(getattr(result, "stop_reason", "") or "").strip().lower() != "max_tokens":
+            return False
+        try:
+            produced_tokens = int(getattr(result, "token_count", 0) or 0)
+        except Exception:
+            produced_tokens = 0
+        if produced_tokens >= max(1, int(self._current_requested_max_new_tokens or 1024)):
+            return False
+        if self.runtime is None:
+            return False
+        current_seq = self.runtime._get_active_sequence()
+        if current_seq is None:
+            return False
+        try:
+            current_tokens = int(current_seq.num_tokens or 0)
+        except Exception:
+            current_tokens = len(list(current_seq.token_ids or []))
+        return current_tokens >= max(1, self._get_context_window_tokens())
+
     def _get_custom_system_prompt(self) -> str:
         return normalize_deepy_custom_system_prompt(get_deepy_config_value(DEEPY_CUSTOM_SYSTEM_PROMPT_KEY, ""))
 
-    def _build_system_prompt(self, *, log_injections: bool = False) -> str:
+    def _build_reset_base_system_prompt(self) -> str:
         system_prompt = ASSISTANT_SYSTEM_PROMPT.rstrip()
         custom_system_prompt = self._get_custom_system_prompt()
-        if len(custom_system_prompt) > 0:
-            system_prompt = f"{system_prompt}\n\n{custom_system_prompt}"
-        if len(self.session.interruption_notice.strip()) > 0:
-            if log_injections:
-                self._log(f"Injecting interruption notice into system prompt: {self.session.interruption_notice.strip()}")
-            system_prompt = f"{system_prompt.rstrip()}\n\n{self.session.interruption_notice.strip()}"
-        return system_prompt
+        return f"{system_prompt}\n\n{custom_system_prompt}".strip() if len(custom_system_prompt) > 0 else system_prompt
+
+    def _build_system_prompt(self, *, log_injections: bool = False) -> str:
+        return self._build_reset_base_system_prompt()
 
     def _current_system_prompt_signature(self) -> str:
         return self._build_system_prompt()
+
+    def _current_reset_base_signature(self) -> str:
+        return _json_dumps({"system_prompt": self._build_reset_base_system_prompt(), "tools": self.tool_box.get_tool_schemas(), "thinking_enabled": bool(self.thinking_enabled)})
+
+    def _can_preserve_reset_base(self) -> bool:
+        return self.vram_mode in (DEEPY_VRAM_MODE_ALWAYS_LOADED, DEEPY_VRAM_MODE_UNLOAD_ON_REQUEST, DEEPY_VRAM_MODE_UNLOAD)
+
+    def _render_reset_base_tokens(self) -> list[int]:
+        if self.runtime is None:
+            raise RuntimeError("Assistant runtime is not available for reset-base rendering.")
+        thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
+        user_content = self._pending_user_render_content()
+        if len(user_content) == 0:
+            raise RuntimeError("Assistant reset-base capture requires a pending user message.")
+        messages = [
+            {"role": "system", "content": self._build_reset_base_system_prompt()},
+            {"role": "user", "content": user_content},
+        ]
+        suffix_tokens = render_text_user_turn_suffix(self.runtime.tokenizer, user_content, thinking_enabled=thinking_enabled)
+        for add_generation_prompt in (False, True):
+            full_tokens = render_assistant_messages(
+                self.runtime.tokenizer,
+                messages,
+                self.tool_box.get_tool_schemas(),
+                add_generation_prompt=add_generation_prompt,
+                thinking_enabled=thinking_enabled,
+            )
+            if len(suffix_tokens) > 0 and len(full_tokens) > len(suffix_tokens) and full_tokens[-len(suffix_tokens):] == suffix_tokens:
+                return full_tokens[:-len(suffix_tokens)]
+        raise RuntimeError("Assistant reset-base capture could not isolate the pending user suffix.")
+
+    def _remember_reset_base_render_state(self, base_token_ids: list[int], render_signature: str, base_context_window_tokens: int) -> None:
+        normalized_base_tokens = [int(token_id) for token_id in list(base_token_ids or [])]
+        self.session.rendered_token_ids = list(normalized_base_tokens)
+        self.session.rendered_messages_len = 0
+        self.session.runtime_snapshot = None
+        self.session.pending_replay_reason = ""
+        self.session.rendered_system_prompt_signature = str(render_signature or "")
+        self.session.rendered_context_window_tokens = max(0, int(base_context_window_tokens or 0))
+
+    def _ensure_reset_base_context(self) -> str:
+        render_signature = self._current_system_prompt_signature()
+        reset_base_signature = self._current_reset_base_signature()
+        base_context_window_tokens = self._get_context_window_tokens()
+        if (
+            self.session.reset_base_snapshot is not None
+            and str(self.session.reset_base_signature or "") == reset_base_signature
+            and int(self.session.reset_base_context_window_tokens or 0) == base_context_window_tokens
+            and len(self.session.reset_base_token_ids) > 0
+        ):
+            self._remember_reset_base_render_state(self.session.reset_base_token_ids, render_signature, base_context_window_tokens)
+            self.session.runtime_snapshot = copy.deepcopy(self.session.reset_base_snapshot)
+            return "cached"
+        if self.runtime is None:
+            raise RuntimeError("Assistant runtime is not available for reset-base capture.")
+        base_token_ids = self._render_reset_base_tokens()
+        self.runtime.prime_context(base_token_ids)
+        self.session.reset_base_token_ids = [int(token_id) for token_id in list(base_token_ids or [])]
+        self.session.reset_base_snapshot = self.runtime.snapshot_context()
+        self.session.reset_base_signature = str(reset_base_signature or "")
+        self.session.reset_base_context_window_tokens = int(base_context_window_tokens)
+        self._remember_reset_base_render_state(base_token_ids, render_signature, base_context_window_tokens)
+        return "primed"
+
+    def _reset_to_preserved_base(self) -> bool:
+        if not self._can_preserve_reset_base():
+            invalidate_assistant_reset_base(self.session)
+            return False
+        if self.session.reset_base_snapshot is None or len(self.session.reset_base_token_ids) == 0:
+            return False
+        if str(self.session.reset_base_signature or "") != self._current_reset_base_signature():
+            invalidate_assistant_reset_base(self.session)
+            return False
+        if int(self.session.reset_base_context_window_tokens or 0) != self._get_context_window_tokens():
+            invalidate_assistant_reset_base(self.session)
+            return False
+        if not reset_assistant_session_to_base(self.session, self._current_system_prompt_signature()):
+            invalidate_assistant_reset_base(self.session)
+            return False
+        self._log("Assistant chat reset to the preserved header context. [no prefill redone]")
+        return True
 
     def _remember_render_state(self) -> None:
         self.session.rendered_system_prompt_signature = self._current_system_prompt_signature()
@@ -3733,58 +4574,181 @@ class AssistantEngine:
     def _pending_tool_render_contents(self) -> list[str]:
         return [self._message_render_content(message).strip() for message in self._get_pending_render_messages() if str(message.get("role", "")).strip().lower() == "tool" and len(self._message_render_content(message).strip()) > 0]
 
-    def _refresh_runtime_status_note(self) -> None:
-        note_blocks = []
+    def _get_runtime_tool_template_label(self, tool_name: str) -> str:
+        try:
+            variant = str(self.tool_box.get_tool_variant(tool_name) or "").strip()
+        except Exception:
+            variant = ""
+        if len(variant) == 0:
+            return ""
+        template_label = Path(variant).name.strip()
+        return template_label if len(template_label) > 0 else variant
+
+    def _build_video_tool_runtime_instruction(self, tool_name: str, *, changed: bool) -> str:
+        template_label = self._get_runtime_tool_template_label(tool_name)
+        if len(template_label) == 0:
+            return ""
+        model_def = self.tool_box._get_effective_tool_model_def(tool_name)
+        image_prompt_types_allowed = str(model_def.get("image_prompt_types_allowed", "") or "").strip()
+        sentences = [
+            f"The {tool_name} tool {'has changed and now uses' if changed else 'uses'} Settings '{template_label}'."
+        ]
+        if tool_name == "gen_video" and bool(model_def.get("multimedia_generation", False)):
+            sentences.append(
+                "The gen_video tool can generate a video with an audio output from a text prompt. So if the user provides only a text prompt and wants a talking or voiced video, you must use gen_video directly, keep the spoken words in the prompt, and do not call gen_speech_from_description, gen_speech_from_sample, or gen_video_with_speech first."
+            )
+        if "T" in image_prompt_types_allowed:
+            sentences.append(
+                f"The {tool_name} tool can generate a video even if a start image is not provided. So if the user does not provide a start image or asks you explicitly to generate the start image, do not create a start image; just describe the starting situation in the prompt."
+            )
+        elif "S" in image_prompt_types_allowed:
+            sentences.append(
+                f"The {tool_name} tool needs a start image. So if the user does not provide a start image, you will need to create a start image first to use this tool."
+            )
+        return " ".join(sentences).strip()
+
+    def _get_video_tool_runtime_updates(self) -> list[str]:
+        if self.session is None:
+            return []
+        current_variants: dict[str, str] = {}
+        current_lines: list[str] = []
+        for tool_name in ("gen_video", "gen_video_with_speech"):
+            variant = str(self.tool_box.get_tool_variant(tool_name) or "").strip()
+            if len(variant) == 0:
+                continue
+            current_variants[tool_name] = variant
+            instruction = self._build_video_tool_runtime_instruction(tool_name, changed=False)
+            if len(instruction) > 0:
+                current_lines.append(instruction)
+        self.session.video_tool_runtime_variants = current_variants
+        if len(current_lines) == 0:
+            self.session.video_tool_runtime_signature = ""
+            self.session.video_tool_runtime_last_injected_tokens = 0
+            return []
+        current_signature = _json_dumps(current_lines)
+        current_token_count = len(self.session.rendered_token_ids or [])
+        force_emit = len(self.session.messages) == 0 and int(self.session.rendered_messages_len or 0) == 0
+        last_signature = str(self.session.video_tool_runtime_signature or "").strip()
+        last_injected_tokens = int(self.session.video_tool_runtime_last_injected_tokens or 0)
+        should_emit = force_emit or current_signature != last_signature or current_token_count - last_injected_tokens >= _VIDEO_TOOL_RUNTIME_REINJECT_TOKENS
+        if not should_emit:
+            return []
+        self.session.video_tool_runtime_signature = current_signature
+        self.session.video_tool_runtime_last_injected_tokens = current_token_count
+        return current_lines
+
+    def _ensure_current_turn_video_runtime_update_for_compaction(self) -> bool:
+        instruction = self._build_video_tool_runtime_instruction("gen_video", changed=False)
+        if len(instruction) == 0:
+            return False
+        user_indexes = [idx for idx, message in enumerate(self.session.messages) if str(message.get("role", "")).strip().lower() == "user"]
+        if len(user_indexes) == 0:
+            return False
+        user_message = self.session.messages[user_indexes[-1]]
+        model_content = str(user_message.get("model_content", "") or "").strip()
+        if instruction in model_content:
+            return False
+        visible_content = str(user_message.get("content", "") or "").strip()
+        if len(model_content) == 0:
+            model_content = visible_content
+        runtime_match = re.match(r"(?is)\s*<wangp_runtime_update>\s*(.*?)\s*</wangp_runtime_update>\s*(.*)\Z", model_content)
+        if runtime_match is not None:
+            body = str(runtime_match.group(1) or "").strip()
+            remainder = str(runtime_match.group(2) or "").strip()
+            body_lines = [line.rstrip() for line in body.splitlines()]
+            if instruction not in body:
+                body_lines.append(instruction)
+            merged_block = "\n".join(["<wangp_runtime_update>", *body_lines, "</wangp_runtime_update>"]).strip()
+            user_message["model_content"] = f"{merged_block}\n\n{remainder}".strip() if len(remainder) > 0 else merged_block
+            return True
+        runtime_block = "\n".join(
+            [
+                "<wangp_runtime_update>",
+                "Hidden WanGP runtime state. This is environment metadata, not a user message.",
+                instruction,
+                "</wangp_runtime_update>",
+            ]
+        )
+        tail_content = model_content if len(model_content) > 0 else visible_content
+        user_message["model_content"] = f"{runtime_block}\n\n{tail_content}".strip() if len(tail_content) > 0 else runtime_block
+        return True
+
+    def _build_runtime_media_lines(self, media_entries: list[dict[str, Any]]) -> list[str]:
+        merged_entries: dict[str, dict[str, Any]] = {}
+        ordered_media_ids: list[str] = []
+        for entry in list(media_entries or []):
+            if not isinstance(entry, dict):
+                continue
+            media_id = str(entry.get("media_id", "") or "").strip()
+            media_type = str(entry.get("media_type", "") or "").strip()
+            action = str(entry.get("action", "") or "").strip()
+            reference_label = str(entry.get("reference_label", "") or "").strip()
+            gallery_label = str(entry.get("gallery_label", "") or "").strip()
+            if len(media_id) == 0 or len(media_type) == 0 or len(action) == 0 or len(reference_label) == 0 or len(gallery_label) == 0:
+                continue
+            merged_entry = merged_entries.setdefault(media_id, {"payload": {}, "media_type": media_type, "gallery_label": gallery_label, "references": []})
+            merged_entry["payload"] = self.tool_box._merge_runtime_media_payload(merged_entry.get("payload"), entry.get("detail_payload"))
+            merged_entry["media_type"] = media_type or str(merged_entry.get("media_type", "") or "").strip()
+            merged_entry["gallery_label"] = gallery_label or str(merged_entry.get("gallery_label", "") or "").strip()
+            reference_tuple = (action, reference_label)
+            if reference_tuple not in merged_entry["references"]:
+                merged_entry["references"].append(reference_tuple)
+            if media_id not in ordered_media_ids:
+                ordered_media_ids.append(media_id)
 
         runtime_lines = []
-
-        new_user_gallery_media = self.tool_box._get_new_user_gallery_media()
-        if "image" in new_user_gallery_media:
-            instruction = self.tool_box._runtime_media_instruction(
-                new_user_gallery_media["image"],
-                action="added",
-                gallery_label="Image / Video Gallery",
-                reference_label="last",
-                why="matched last user-added image",
-            )
-            if len(instruction) > 0:
-                runtime_lines.append(instruction)
-        if "video" in new_user_gallery_media:
-            instruction = self.tool_box._runtime_media_instruction(
-                new_user_gallery_media["video"],
-                action="added",
-                gallery_label="Image / Video Gallery",
-                reference_label="last",
-                why="matched last user-added video",
-            )
-            if len(instruction) > 0:
-                runtime_lines.append(instruction)
-        if "audio" in new_user_gallery_media:
-            instruction = self.tool_box._runtime_media_instruction(
-                new_user_gallery_media["audio"],
-                action="added",
-                gallery_label="Audio Gallery",
-                reference_label="last",
-                why="matched last user-added audio",
-            )
-            if len(instruction) > 0:
-                runtime_lines.append(instruction)
-
-        runtime_lines.extend(self.tool_box._get_selected_gallery_media_updates())
-
-        if len(runtime_lines) > 0:
-            note_blocks.append(
-                "\n".join(
-                    [
-                        "<wangp_runtime_update>",
-                        "Hidden WanGP runtime state. This is environment metadata, not a user message.",
-                        *runtime_lines,
-                        "</wangp_runtime_update>",
-                    ]
+        for media_id in ordered_media_ids:
+            merged_entry = merged_entries.get(media_id, {})
+            payload = dict(merged_entry.get("payload") or {})
+            if len(payload) > 0:
+                runtime_lines.append(f"Media {media_id} details: {_json_dumps(payload)}")
+            runtime_lines.append(
+                self.tool_box._format_runtime_media_reference_line(
+                    media_id,
+                    str(merged_entry.get("media_type", "") or "").strip(),
+                    str(merged_entry.get("gallery_label", "") or "").strip(),
+                    list(merged_entry.get("references") or []),
                 )
             )
-            if self.debug_enabled:
-                self._log(f"Prepared gallery media runtime update with {len(runtime_lines)} instruction(s).")
+        return runtime_lines
+
+    def _refresh_runtime_status_note(self) -> None:
+        runtime_lines = []
+        media_entries = []
+
+        runtime_lines.extend(self._get_video_tool_runtime_updates())
+
+        if _INJECT_LAST_SELECTED_MEDIA_RUNTIME_REFERENCES:
+            new_user_gallery_media = self.tool_box._get_new_user_gallery_media()
+            if "image" in new_user_gallery_media:
+                media_entry = self.tool_box._runtime_media_entry(
+                    new_user_gallery_media["image"],
+                    action="added",
+                    gallery_label="Image / Video Gallery",
+                    reference_label="last",
+                )
+                if media_entry is not None:
+                    media_entries.append(media_entry)
+            if "video" in new_user_gallery_media:
+                media_entry = self.tool_box._runtime_media_entry(
+                    new_user_gallery_media["video"],
+                    action="added",
+                    gallery_label="Image / Video Gallery",
+                    reference_label="last",
+                )
+                if media_entry is not None:
+                    media_entries.append(media_entry)
+            if "audio" in new_user_gallery_media:
+                media_entry = self.tool_box._runtime_media_entry(
+                    new_user_gallery_media["audio"],
+                    action="added",
+                    gallery_label="Audio Gallery",
+                    reference_label="last",
+                )
+                if media_entry is not None:
+                    media_entries.append(media_entry)
+            media_entries.extend(self.tool_box._get_selected_gallery_media_updates())
+        runtime_lines.extend(self._build_runtime_media_lines(media_entries))
 
         if _INJECT_SELECTED_MEDIA_RUNTIME_UPDATES:
             snapshot = self.tool_box._get_selected_runtime_snapshot()
@@ -3819,37 +4783,68 @@ class AssistantEngine:
                         if any(key in changed_keys for key in _RUNTIME_STATUS_AUDIO_KEYS):
                             emitted_keys.extend(_RUNTIME_STATUS_AUDIO_KEYS)
                     if len(emitted_keys) > 0:
-                        lines = [
-                            "<wangp_runtime_update>",
-                            "Hidden WanGP runtime state. This is environment metadata, not a user message.",
-                            "Use it as factual UI context only. Omitted keys keep their previous runtime-update values.",
-                        ]
+                        runtime_lines.append("Use it as factual UI context only. Omitted keys keep their previous runtime-update values.")
                         for key in emitted_keys:
                             value = normalized_snapshot.get(key, None)
                             if isinstance(value, str):
                                 rendered_value = value if len(value) > 0 else "none"
                             else:
                                 rendered_value = "none" if value is None else value
-                            lines.append(f"{key}: {rendered_value}")
-                        lines.append("</wangp_runtime_update>")
-                        note_blocks.append("\n".join(lines))
+                            runtime_lines.append(f"{key}: {rendered_value}")
                         if self.debug_enabled:
                             self._log(f"Prepared runtime status update: {signature}")
                 self.session.runtime_status_signature = signature
         else:
             self.session.runtime_status_signature = ""
 
-        self.session.runtime_status_note = "\n\n".join(note_blocks)
+        self.session.runtime_status_note = (
+            "\n".join(
+                [
+                    "<wangp_runtime_update>",
+                    "Hidden WanGP runtime state. This is environment metadata, not a user message.",
+                    *runtime_lines,
+                    "</wangp_runtime_update>",
+                ]
+            )
+            if len(runtime_lines) > 0
+            else ""
+        )
+        if len(runtime_lines) > 0 and self.debug_enabled:
+            self._log(f"Prepared runtime update with {len(runtime_lines)} instruction(s).")
 
     def _build_pending_user_message(self, user_text: str) -> dict[str, Any]:
         message = {"role": "user", "content": str(user_text or "").strip()}
-        runtime_status_note = str(self.session.runtime_status_note or "").strip()
+        runtime_note_blocks = [str(self.session.runtime_status_note or "").strip()] if len(str(self.session.runtime_status_note or "").strip()) > 0 else []
+        user_text_normalized = re.sub(r"\s+", " ", str(user_text or "").strip().lower())
+        interruption_query = (
+            "interrupt" in user_text_normalized
+            or "resume" in user_text_normalized
+            or "keep on" in user_text_normalized
+            or "keep going" in user_text_normalized
+            or "what were you doing" in user_text_normalized
+        )
+        if interruption_query and len(self.session.interruption_history) > 0:
+            lines = [
+                "<wangp_runtime_update>",
+                "Hidden WanGP runtime state. This is environment metadata, not a user message.",
+                "Interrupted requests recorded in this chat:",
+            ]
+            for index, entry in enumerate(self.session.interruption_history[-12:], start=1):
+                user_entry = str(entry.get("user_text", "") or "").strip()
+                summary_entry = str(entry.get("committed_summary", "") or "").strip()
+                if len(user_entry) > 0:
+                    lines.append(f"{index}. request: {user_entry}")
+                if len(summary_entry) > 0:
+                    lines.append(f"   committed trace: {summary_entry}")
+            lines.append("</wangp_runtime_update>")
+            runtime_note_blocks.append("\n".join(lines))
+        runtime_status_note = "\n\n".join([block for block in runtime_note_blocks if len(block) > 0]).strip()
         if len(runtime_status_note) == 0:
             return message
         message["model_content"] = f"{runtime_status_note}\n\n{message['content']}".strip()
         self.session.runtime_status_note = ""
         if self.debug_enabled:
-            self._log(f"Queued runtime status update inside hidden user content: {runtime_status_note}")
+            self._log(f"Queued runtime status update inside hidden user content:\n{runtime_status_note}")
         return message
 
     def _record_live_context(self, log_message: str) -> str:
@@ -3875,8 +4870,13 @@ class AssistantEngine:
 
     def _ensure_active_turn(self) -> str:
         if len(self._active_turn_id) == 0:
-            self._active_turn_id = assistant_chat.create_assistant_turn(self.session)
-            mark_assistant_turn_message(self.session, self._active_turn_id)
+            checkpoint = self.session.current_turn
+            existing_turn_id = "" if not isinstance(checkpoint, dict) else str(checkpoint.get("assistant_message_id", "") or "").strip()
+            if len(existing_turn_id) > 0 and assistant_chat._find_message(self.session, existing_turn_id) is not None:
+                self._active_turn_id = existing_turn_id
+            else:
+                self._active_turn_id = assistant_chat.create_assistant_turn(self.session)
+                mark_assistant_turn_message(self.session, self._active_turn_id)
         return self._active_turn_id
 
     def _split_for_display(self, raw_text: str) -> tuple[str, str]:
@@ -3892,13 +4892,41 @@ class AssistantEngine:
                 sys.stdout.flush()
         return thinking_text, answer_text
 
+    @staticmethod
+    def _should_print_raw_debug_text(raw_text: str, thinking_text: str, answer_text: str) -> bool:
+        stripped_raw = strip_trailing_stop_markup(str(raw_text or "")).strip()
+        if len(stripped_raw) == 0:
+            return False
+        if len(str(answer_text or "").strip()) > 0:
+            return True
+        raw_without_tools = strip_inline_tool_call_text(strip_tool_blocks(stripped_raw)).strip()
+        normalized_raw = re.sub(r"^\s*<think>\s*", "", raw_without_tools or stripped_raw, flags=re.IGNORECASE)
+        normalized_raw = re.sub(r"\s*</think>\s*$", "", normalized_raw, flags=re.IGNORECASE)
+        normalized_raw = re.sub(r"\s+", " ", normalized_raw).strip()
+        normalized_thinking = re.sub(r"\s+", " ", str(thinking_text or "").strip()).strip()
+        return normalized_raw != normalized_thinking
+
     def _start_stream_pass(self) -> None:
-        self._ensure_active_turn()
-        self._stream_answer_text = ""
-        self._stream_reasoning_text = ""
-        self._stream_reasoning_block_id = ""
-        self._stream_thinking_unknown = self.runtime is not None and qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
-        self._stream_thinking_open = False
+        turn_id = self._ensure_active_turn()
+        preserve_existing = bool(self._resume_stream_after_context_trim)
+        self._resume_stream_after_context_trim = False
+        thinking_stream_enabled = self.runtime is not None and qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
+        if preserve_existing:
+            self._stream_answer_text = assistant_chat.get_message_content(self.session, turn_id)
+            self._stream_reasoning_text = assistant_chat.get_message_reasoning_content(self.session, turn_id)
+            self._stream_reasoning_block_id = ""
+            transcript_record = assistant_chat._find_message(self.session, turn_id)
+            if isinstance(transcript_record, dict):
+                for block in list(transcript_record.get("blocks", []) or []):
+                    if isinstance(block, dict) and str(block.get("type", "")).strip() == "reasoning":
+                        self._stream_reasoning_block_id = str(block.get("id", "") or "").strip()
+                        break
+        else:
+            self._stream_answer_text = ""
+            self._stream_reasoning_text = ""
+            self._stream_reasoning_block_id = ""
+        self._stream_thinking_unknown = False
+        self._stream_thinking_open = bool(thinking_stream_enabled and len(self._stream_answer_text.strip()) == 0)
         self._segment_started_at = time.perf_counter()
         self._segment_generated_tokens = 0
 
@@ -3931,14 +4959,40 @@ class AssistantEngine:
         thinking_text, answer_text = qwen35_text._split_generated_text(text)
         return thinking_text, qwen35_text._clean_answer_text(_strip_partial_tool_markup(answer_text))
 
+    @staticmethod
+    def _has_malformed_double_close_tool_pattern(raw_text: str) -> bool:
+        text = strip_trailing_stop_markup(str(raw_text or "")).replace("\r\n", "\n").replace("\r", "\n")
+        close_matches = list(re.finditer(r"</think>", text, flags=re.IGNORECASE))
+        if len(close_matches) < 2:
+            return False
+        trailing_text = text[close_matches[-1].end() :].lstrip()
+        return len(trailing_text) == 0 or trailing_text.lower().startswith("<tool_call>")
+
     def _stream_generation_update(self, *, raw_text: str, token_count: int, stop_reason: str | None, is_final: bool) -> None:
         turn_id = self._ensure_active_turn()
         self._segment_generated_tokens = max(int(self._segment_generated_tokens or 0), max(0, int(token_count or 0)))
+        if self._suppress_intermediate_stream_after_context_trim and not is_final:
+            self._emit_stats()
+            return
+        if is_final:
+            self._suppress_intermediate_stream_after_context_trim = False
         thinking_text, answer_text = self._split_streaming_text(raw_text, is_final=is_final)
+        reclaimed_answer_as_reasoning = False
+        if is_final and self._has_malformed_double_close_tool_pattern(raw_text) and len(self._stream_answer_text.strip()) > 0:
+            recovered_reasoning = self._merge_text_continuation(self._stream_answer_text, thinking_text)
+            if len(recovered_reasoning.strip()) > 0 and len(answer_text.strip()) == 0:
+                thinking_text = recovered_reasoning
+                answer_text = ""
+                reclaimed_answer_as_reasoning = True
+        thinking_text = self._merge_text_continuation(self._stream_reasoning_text, thinking_text)
+        answer_text = "" if reclaimed_answer_as_reasoning else self._merge_text_continuation(self._stream_answer_text, answer_text)
         if not is_final and len(thinking_text) < len(self._stream_reasoning_text):
             thinking_text = self._stream_reasoning_text
         if not is_final and len(answer_text) < len(self._stream_answer_text):
             answer_text = self._stream_answer_text
+        if reclaimed_answer_as_reasoning and len(self._stream_answer_text) > 0:
+            self._stream_answer_text = ""
+            self._emit_chat_event(assistant_chat.clear_assistant_content(self.session, turn_id))
         if thinking_text != self._stream_reasoning_text and len(thinking_text) > 0:
             self._stream_reasoning_block_id, reasoning_event = assistant_chat.upsert_reasoning_block(self.session, turn_id, self._stream_reasoning_block_id, thinking_text)
             self._stream_reasoning_text = thinking_text
@@ -4074,12 +5128,14 @@ class AssistantEngine:
             self.session.release_vram_callback = release_callback
         else:
             self.session.release_vram_callback = None
+        self.session.reset_to_base_callback = self._reset_to_preserved_base if self._can_preserve_reset_base() and self.session.reset_base_snapshot is not None else None
 
         if not self._gpu_acquired:
             if self.session.drop_state_requested:
                 if callable(self.session.release_vram_callback):
                     self.session.release_vram_callback()
-                clear_assistant_session(self.session)
+                if not self._reset_to_preserved_base():
+                    clear_assistant_session(self.session)
                 self.session.drop_state_requested = False
             return
         try:
@@ -4107,7 +5163,8 @@ class AssistantEngine:
                     if self.session.drop_state_requested:
                         if keep_loaded and callable(self.session.release_vram_callback):
                             self.session.release_vram_callback()
-                        clear_assistant_session(self.session)
+                        if not self._reset_to_preserved_base():
+                            clear_assistant_session(self.session)
                         self.session.drop_state_requested = False
 
     def _render_messages(self, add_generation_prompt: bool) -> list[int]:
@@ -4139,10 +5196,74 @@ class AssistantEngine:
             thinking_enabled=thinking_enabled,
         )
 
-    def _restore_or_replay_session(self) -> str:
+    def _render_system_prompt_tokens(self, add_generation_prompt: bool) -> list[int]:
+        if self.runtime is None:
+            raise RuntimeError("Assistant runtime is not available for prompt rendering.")
+        if (
+            self._can_preserve_reset_base()
+            and self.session.reset_base_snapshot is not None
+            and len(self.session.reset_base_token_ids or []) > 0
+            and str(self.session.reset_base_signature or "") == self._current_reset_base_signature()
+            and int(self.session.reset_base_context_window_tokens or 0) == self._get_context_window_tokens()
+        ):
+            return [int(token_id) for token_id in list(self.session.reset_base_token_ids or [])]
+        thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
+        probe_user_content = next(
+            (self._message_render_content(message).strip() for message in self.session.messages if str(message.get("role", "")).strip().lower() == "user" and len(self._message_render_content(message).strip()) > 0),
+            "user",
+        )
+        suffix_tokens = render_text_user_turn_suffix(self.runtime.tokenizer, probe_user_content, thinking_enabled=thinking_enabled)
+        probe_messages = [
+            {"role": "system", "content": self._build_system_prompt(log_injections=True)},
+            {"role": "user", "content": probe_user_content},
+        ]
+        for generation_prompt in (add_generation_prompt, not add_generation_prompt):
+            full_tokens = render_assistant_messages(
+                self.runtime.tokenizer,
+                probe_messages,
+                self.tool_box.get_tool_schemas(),
+                add_generation_prompt=generation_prompt,
+                thinking_enabled=thinking_enabled,
+            )
+            if len(suffix_tokens) > 0 and len(full_tokens) > len(suffix_tokens) and full_tokens[-len(suffix_tokens):] == suffix_tokens:
+                return full_tokens[:-len(suffix_tokens)]
+        raise RuntimeError("Assistant base prompt rendering could not isolate the system/tools prefix.")
+
+    def _can_extend_from_preserved_base(self, target_tokens: list[int]) -> bool:
+        base_tokens = [int(token_id) for token_id in list(self.session.reset_base_token_ids or [])]
+        return (
+            self.runtime is not None
+            and self._can_preserve_reset_base()
+            and len(base_tokens) > 0
+            and len(target_tokens) >= len(base_tokens)
+            and target_tokens[: len(base_tokens)] == base_tokens
+            and str(self.session.reset_base_signature or "") == self._current_reset_base_signature()
+            and int(self.session.reset_base_context_window_tokens or 0) == self._get_context_window_tokens()
+        )
+
+    def _extend_context_from_preserved_base(self, target_tokens: list[int]) -> str | None:
+        if not self._can_extend_from_preserved_base(target_tokens):
+            return None
+        base_tokens = [int(token_id) for token_id in list(self.session.reset_base_token_ids or [])]
+        if self.session.reset_base_snapshot is not None:
+            self._run_prefill_call(
+                len(base_tokens),
+                lambda: self.runtime.restore_or_replay(self.session.reset_base_snapshot, base_tokens),
+                record_if=lambda result: isinstance(result, tuple) and len(result) > 0 and result[0] == "prefilled",
+            )
+        else:
+            self._run_prefill_call(len(base_tokens), lambda: self.runtime.prime_context(base_tokens))
+        return self._run_prefill_call(
+            len(target_tokens),
+            lambda: self.runtime.extend_context(target_tokens),
+            record_if=lambda result: result in ("prefilled", "chunk_prefilled"),
+        )
+
+    def _restore_or_replay_session(self, context_label: str = "Session context") -> str:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for restore.")
         runtime = self.runtime
+        context_label = str(context_label or "Session context").strip() or "Session context"
         fallback_tokens = self.session.rendered_token_ids
         if len(fallback_tokens) == 0:
             return "empty"
@@ -4155,19 +5276,19 @@ class AssistantEngine:
             snapshot_seq = None if self.session.runtime_snapshot is None else self.session.runtime_snapshot.get("sequence", {})
             snapshot_token_ids = [] if not isinstance(snapshot_seq, dict) else [int(token_id) for token_id in snapshot_seq.get("token_ids", []) or []]
             if len(snapshot_token_ids) > 0 and snapshot_token_ids == live_token_ids:
-                self._log("Session context reused live runtime. [no prefill redone]")
+                self._log(f"{context_label} reused live runtime. [no prefill redone]")
                 self.session.runtime_snapshot = None
                 self.session.pending_replay_reason = ""
                 return "reused"
             if fallback_tokens[: len(live_token_ids)] == live_token_ids:
-                self._log("Session context reused live runtime. [no prefill redone]")
+                self._log(f"{context_label} reused live runtime. [no prefill redone]")
                 self.session.runtime_snapshot = None
                 self.session.pending_replay_reason = ""
                 return "reused"
         mode, runtime_replay_reason = self._run_prefill_call(
             len(fallback_tokens),
             lambda: runtime.restore_or_replay(self.session.runtime_snapshot, fallback_tokens),
-            record_if=lambda result: isinstance(result, tuple) and len(result) > 0 and result[0] == "replayed",
+            record_if=lambda result: isinstance(result, tuple) and len(result) > 0 and result[0] == "prefilled",
         )
         pending_replay_reason = str(self.session.pending_replay_reason or "").strip()
         runtime_replay_reason = str(runtime_replay_reason or "").strip()
@@ -4177,18 +5298,18 @@ class AssistantEngine:
             replay_reason = f"{pending_replay_reason}; {runtime_replay_reason}"
         else:
             replay_reason = pending_replay_reason or runtime_replay_reason
-        if mode == "replayed":
+        if mode == "prefilled":
             if len(replay_reason) > 0:
-                self._log(f"Session context replayed. Reason: {replay_reason} [prefill redone]")
+                self._log(f"{context_label} prefilled. Reason: {replay_reason} [prefill redone]")
             else:
-                self._log("Session context replayed. [prefill redone]")
+                self._log(f"{context_label} prefilled. [prefill redone]")
         elif mode == "restored":
             if len(replay_reason) > 0:
-                self._log(f"Session context restored. Reason: {replay_reason} [no prefill redone]")
+                self._log(f"{context_label} restored. Reason: {replay_reason} [no prefill redone]")
             else:
-                self._log("Session context restored. [no prefill redone]")
+                self._log(f"{context_label} restored. [no prefill redone]")
         else:
-            self._log(f"Session context {mode}.")
+            self._log(f"{context_label} {mode}.")
         self.session.runtime_snapshot = None
         self.session.pending_replay_reason = ""
         return mode
@@ -4202,30 +5323,78 @@ class AssistantEngine:
             return f"dropped oldest turn ({cut} messages)"
         return ""
 
-    def _fit_rendered_messages_to_window(self, *, add_generation_prompt: bool, reserve_tokens: int = 0) -> list[int]:
+    def _discard_oldest_current_turn_message(self) -> str:
+        messages = self.session.messages
+        user_indexes = [idx for idx, message in enumerate(messages) if str(message.get("role", "")).strip().lower() == "user"]
+        if len(user_indexes) == 0:
+            return ""
+        current_turn_start = user_indexes[-1]
+        if current_turn_start + 1 >= len(messages):
+            return ""
+        dropped_message = messages.pop(current_turn_start + 1)
+        dropped_role = str(dropped_message.get("role", "") or "message").strip().lower() or "message"
+        return f"dropped earlier current-turn {dropped_role} message"
+
+    def _fit_rendered_messages_to_window(self, *, add_generation_prompt: bool, reserve_tokens: int = 0) -> tuple[list[int], bool]:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for context fitting.")
         max_model_len = self._get_context_window_tokens()
         hard_budget = max(1, max_model_len - max(0, int(reserve_tokens)))
-        post_trim_budget = min(hard_budget, max(1, int(max_model_len * _POST_TRIM_WINDOW_FRACTION)))
+        base_token_count = len(self._render_system_prompt_tokens(add_generation_prompt))
         target_tokens = self._render_messages(add_generation_prompt=add_generation_prompt)
+        trimmed_any = False
         if len(target_tokens) <= hard_budget:
-            return target_tokens
-        while len(target_tokens) > post_trim_budget:
+            return target_tokens, False
+        if self._ensure_current_turn_video_runtime_update_for_compaction():
+            target_tokens = self._render_messages(add_generation_prompt=add_generation_prompt)
+        history_token_cap = max(0, int(math.ceil(max(0, len(target_tokens) - base_token_count) * _POST_TRIM_WINDOW_FRACTION)))
+        while max(0, len(target_tokens) - base_token_count) > history_token_cap:
             trim_reason = self._discard_oldest_completed_turn()
             if len(trim_reason) == 0:
-                if len(target_tokens) > hard_budget:
-                    raise RuntimeError(f"Current assistant turn alone exceeds the model window ({len(target_tokens)} > {hard_budget}) and will not be cut mid-turn.")
                 break
+            trimmed_any = True
+            self._log(f"Trimming assistant context: {trim_reason}.")
+            target_tokens = self._render_messages(add_generation_prompt=add_generation_prompt)
+        while len(target_tokens) > hard_budget:
+            trim_reason = self._discard_oldest_current_turn_message()
+            if len(trim_reason) == 0:
+                raise RuntimeError(f"Current assistant turn alone exceeds the model window ({len(target_tokens)} > {hard_budget}) and will not be cut further.")
+            trimmed_any = True
             self._log(f"Trimming assistant context: {trim_reason}.")
             target_tokens = self._render_messages(add_generation_prompt=add_generation_prompt)
         if len(target_tokens) > hard_budget:
             raise RuntimeError(f"Assistant context exceeds the model window ({len(target_tokens)} > {hard_budget}) and cannot be trimmed further without cutting the current turn.")
-        return target_tokens
+        if trimmed_any:
+            self._mark_history_trimmed_trace()
+        return target_tokens, trimmed_any
 
     def _sync_generation_context(self) -> None:
         runtime = self._acquire_runtime()
+        generation_reserve_tokens = self._segment_generation_reserve_tokens()
+        had_prior_rendered_context = len(self.session.rendered_token_ids) > 0 or self.session.runtime_snapshot is not None
+        if len(self.session.rendered_token_ids) == 0 and self._can_preserve_reset_base() and len(self.session.messages) > 0:
+            pending_messages = self._get_pending_render_messages()
+            if len(pending_messages) == 1 and str(pending_messages[0].get("role", "")).strip().lower() == "user":
+                mode = self._run_prefill_call(
+                    len(self.session.reset_base_token_ids or []) if self.session.reset_base_snapshot is not None else len(self._render_reset_base_tokens()),
+                    self._ensure_reset_base_context,
+                    record_if=lambda result: result == "primed",
+                )
+                if mode == "primed":
+                    self._log("Generation header context primed for Reset reuse. [prefill redone]" if had_prior_rendered_context else "Generation header context primed for Reset reuse. [prefill done]")
+                elif mode == "cached":
+                    self._log("Generation header context prepared from the preserved header snapshot. [no prefill redone]")
         if len(self.session.rendered_token_ids) > 0:
+            live_seq = None
+            try:
+                live_seq = runtime._get_active_sequence()
+            except Exception:
+                live_seq = None
+            live_token_ids = [] if live_seq is None else [int(token_id) for token_id in list(live_seq.token_ids or [])]
+            rendered_token_ids = [int(token_id) for token_id in list(self.session.rendered_token_ids or [])]
+            live_runtime_can_be_reused = len(live_token_ids) > 0 and rendered_token_ids[: len(live_token_ids)] == live_token_ids
+            if self.session.runtime_snapshot is None and not live_runtime_can_be_reused and self._sync_current_turn_context_from_turn_start_snapshot():
+                return
             restore_mode = self._restore_or_replay_session()
             if restore_mode in ("reused", "restored") and self._can_append_pending_tool_suffix():
                 thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
@@ -4233,39 +5402,67 @@ class AssistantEngine:
                 if len(suffix_tokens) > 0:
                     prefix_tokens = self._active_sequence_token_count()
                     prefix_tokens = len(self.session.rendered_token_ids) if prefix_tokens is None else prefix_tokens
-                    mode = self._run_prefill_call(prefix_tokens + len(suffix_tokens), lambda: runtime.append_suffix(suffix_tokens), record_if=lambda result: result == "prefilled")
-                    self._record_live_context("Generation context extended from live runtime. [suffix append only]" if mode == "extended" else "Generation context prefilled from live runtime. [prefill redone]" if mode == "prefilled" else f"Generation context {mode} from live runtime.")
-                    return
+                    if prefix_tokens + len(suffix_tokens) > max(1, self._get_context_window_tokens()):
+                        self._log("Live tool suffix append skipped because history must be trimmed before continuing.")
+                    else:
+                        mode = self._run_prefill_call(len(suffix_tokens), lambda: runtime.append_suffix(suffix_tokens), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
+                        self._record_live_context(
+                            "Generation context extended from live runtime. [suffix append only]"
+                            if mode == "extended"
+                            else "Generation context chunk-prefilled from live runtime. [chunk prefill]"
+                            if mode == "chunk_prefilled"
+                            else "Generation context prefilled from live runtime. [prefill redone]"
+                            if mode == "prefilled"
+                            else f"Generation context {mode} from live runtime."
+                        )
+                        return
             if restore_mode in ("reused", "restored") and self._can_append_pending_user_suffix():
                 thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
                 suffix_tokens = render_text_user_turn_suffix(runtime.tokenizer, self._pending_user_render_content(), thinking_enabled=thinking_enabled)
                 if len(suffix_tokens) > 0:
                     prefix_tokens = self._active_sequence_token_count()
                     prefix_tokens = len(self.session.rendered_token_ids) if prefix_tokens is None else prefix_tokens
-                    mode = self._run_prefill_call(prefix_tokens + len(suffix_tokens), lambda: runtime.append_suffix(suffix_tokens), record_if=lambda result: result == "prefilled")
-                    self._record_live_context("Generation context extended from live runtime. [suffix append only]" if mode == "extended" else "Generation context prefilled from live runtime. [prefill redone]" if mode == "prefilled" else f"Generation context {mode} from live runtime.")
-                    return
-        target_tokens = self._fit_rendered_messages_to_window(add_generation_prompt=True, reserve_tokens=128)
+                    if prefix_tokens + len(suffix_tokens) > max(1, self._get_context_window_tokens() - generation_reserve_tokens):
+                        self._log("Live user suffix append skipped because history must be trimmed before continuing.")
+                    else:
+                        mode = self._run_prefill_call(len(suffix_tokens), lambda: runtime.append_suffix(suffix_tokens), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
+                        self._record_live_context(
+                            "Generation context extended from live runtime. [suffix append only]"
+                            if mode == "extended"
+                            else "Generation context chunk-prefilled from live runtime. [chunk prefill]"
+                            if mode == "chunk_prefilled"
+                            else "Generation context prefilled from live runtime. [prefill redone]"
+                            if mode == "prefilled"
+                            else f"Generation context {mode} from live runtime."
+                        )
+                        return
+        target_tokens, trimmed_any = self._fit_rendered_messages_to_window(add_generation_prompt=True, reserve_tokens=generation_reserve_tokens)
         if len(self.session.rendered_token_ids) > 0:
-            mode = self._run_prefill_call(len(target_tokens), lambda: runtime.extend_context(target_tokens), record_if=lambda result: result in ("prefilled", "replayed"))
+            if not trimmed_any and self._sync_current_turn_context_from_turn_start_snapshot(target_tokens=target_tokens):
+                return
+            mode = self._extend_context_from_preserved_base(target_tokens) if trimmed_any else None
+            if mode is None:
+                mode = self._append_target_suffix_from_live_runtime(target_tokens)
+            if mode is None:
+                raise RuntimeError("Generation context could not be synchronized from the current-turn start snapshot.")
             self._remember_render_state()
             if mode == "prefilled":
                 self._log("Generation context prefilled. [prefill redone]")
+            elif mode == "chunk_prefilled":
+                self._log("Generation context compacted with preserved header reuse. [chunk prefill]" if trimmed_any else "Generation context chunk-prefilled. [chunk prefill]")
             elif mode == "extended":
                 self._log("Generation context extended. [suffix append only]")
-            elif mode == "replayed":
-                self._log("Generation context replayed. [prefill redone]")
             else:
                 self._log(f"Generation context {mode}.")
             return
         self._run_prefill_call(len(target_tokens), lambda: runtime.prime_context(target_tokens))
         self._remember_render_state()
-        self._log("Generation context primed. [prefill redone]")
+        self._log("Generation context primed. [prefill redone]" if had_prior_rendered_context else "Generation context primed. [prefill done]")
 
     def _canonicalize_context(self, sync_runtime: bool | str = True) -> str:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for canonicalization.")
-        target_tokens = self._fit_rendered_messages_to_window(add_generation_prompt=False)
+        target_tokens, trimmed_any = self._fit_rendered_messages_to_window(add_generation_prompt=False)
         if not sync_runtime or sync_runtime == "record_only":
             self.session.rendered_token_ids = list(target_tokens)
             self.session.runtime_snapshot = None
@@ -4299,16 +5496,34 @@ class AssistantEngine:
                 self.session.pending_replay_reason = _describe_prefix_mismatch(current_token_ids, target_tokens)
                 self._remember_render_state()
                 self._skip_pause_snapshot = True
-                self._log("Canonical context recorded without runtime sync because it would require replay.")
+                self._log("Canonical context recorded without runtime sync because the live runtime prefix did not match.")
                 return "recorded"
         self._skip_pause_snapshot = False
         self.session.pending_replay_reason = ""
         if current_seq is None or len(current_seq.token_ids) == 0:
-            self.runtime.prime_context(target_tokens)
-            self._log("Canonical context rebuilt from scratch.")
-            mode = "replayed"
+            mode = self._extend_context_from_preserved_base(target_tokens) if trimmed_any else None
+            if mode is None:
+                self.session.rendered_token_ids = list(target_tokens)
+                self.session.runtime_snapshot = None
+                self.session.pending_replay_reason = "no active runtime sequence was available during canonicalization"
+                self._remember_render_state()
+                self._skip_pause_snapshot = True
+                self._log("Canonical context recorded without runtime sync because no active sequence was available.")
+                return "recorded"
+            else:
+                self._log(f"Canonical context {mode}.")
         else:
-            mode = self.runtime.extend_context(target_tokens)
+            mode = self._extend_context_from_preserved_base(target_tokens) if trimmed_any else None
+            if mode is None:
+                mode = self._append_target_suffix_from_live_runtime(target_tokens)
+            if mode is None:
+                self.session.rendered_token_ids = list(target_tokens)
+                self.session.runtime_snapshot = None
+                self.session.pending_replay_reason = _describe_prefix_mismatch(current_token_ids, target_tokens)
+                self._remember_render_state()
+                self._skip_pause_snapshot = True
+                self._log("Canonical context recorded without runtime sync because the live runtime prefix did not match.")
+                return "recorded"
             self._log(f"Canonical context {mode}.")
         self.session.rendered_token_ids = list(target_tokens)
         self._remember_render_state()
@@ -4321,6 +5536,10 @@ class AssistantEngine:
             "arguments": dict(arguments or {}),
             "error": str(error_text),
         }
+
+    def _clear_segment_continuation_state(self) -> None:
+        self._continued_segment_raw_text = ""
+        self._continued_segment_token_ids.clear()
 
     def _execute_tool(self, tool_call: dict[str, Any]) -> dict[str, Any]:
         tool_name = str(tool_call.get("name", "")).strip()
@@ -4339,7 +5558,7 @@ class AssistantEngine:
             self._log(f"Tool validation error: {validation_error}")
             self._set_status(f"{tool_label} failed: {validation_error}", kind="error")
             self._emit_chat_event(assistant_chat.complete_tool_call(self.session, message_id, tool_id, result))
-            self._emit_chat_event(assistant_chat.build_sync_event(self.session, stats=self._chat_stats_payload()))
+            self._emit_chat_event(assistant_chat.build_sync_event(self.session, status=self._current_status_payload, stats=self._chat_stats_payload()))
             return result
         if len(tool_template) > 0:
             self._set_status(f"Using {tool_label} ({Path(tool_template).stem})...", kind="tool")
@@ -4359,10 +5578,385 @@ class AssistantEngine:
         self._emit_chat_event(assistant_chat.complete_tool_call(self.session, message_id, tool_id, result))
         # Queue-backed tools can finish and immediately trigger another model pass; emit a full
         # transcript sync here so the UI materializes the final tool state and attachment first.
-        self._emit_chat_event(assistant_chat.build_sync_event(self.session, stats=self._chat_stats_payload()))
+        self._emit_chat_event(assistant_chat.build_sync_event(self.session, status=self._current_status_payload, stats=self._chat_stats_payload()))
         return result
 
-    def _append_assistant_message(self, raw_text: str, tool_calls: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    @staticmethod
+    def _merge_text_continuation(previous: str, current: str) -> str:
+        previous_text = str(previous or "")
+        current_text = str(current or "")
+        if len(previous_text) == 0:
+            return current_text
+        if len(current_text) == 0 or previous_text == current_text or previous_text.endswith(current_text):
+            return previous_text
+        if current_text.startswith(previous_text):
+            return current_text
+        max_overlap = min(len(previous_text), len(current_text))
+        for overlap in range(max_overlap, 0, -1):
+            if previous_text[-overlap:] == current_text[:overlap]:
+                return previous_text + current_text[overlap:]
+        return previous_text + current_text
+
+    @staticmethod
+    def _merge_token_continuation(previous: list[int] | tuple[int, ...], current: list[int] | tuple[int, ...]) -> list[int]:
+        previous_tokens = [int(token_id) for token_id in list(previous or [])]
+        current_tokens = [int(token_id) for token_id in list(current or [])]
+        if len(previous_tokens) == 0:
+            return current_tokens
+        if len(current_tokens) == 0 or previous_tokens == current_tokens or previous_tokens[-len(current_tokens) :] == current_tokens:
+            return previous_tokens
+        if len(current_tokens) >= len(previous_tokens) and current_tokens[: len(previous_tokens)] == previous_tokens:
+            return current_tokens
+        max_overlap = min(len(previous_tokens), len(current_tokens))
+        for overlap in range(max_overlap, 0, -1):
+            if previous_tokens[-overlap:] == current_tokens[:overlap]:
+                return previous_tokens + current_tokens[overlap:]
+        return previous_tokens + current_tokens
+
+    def _mark_history_trimmed_trace(self) -> None:
+        checkpoint = self.session.current_turn
+        if not isinstance(checkpoint, dict) or bool(checkpoint.get("history_trimmed", False)):
+            return
+        checkpoint["history_trimmed"] = True
+        self._log("Earlier chat history was trimmed to fit Deepy's context window.")
+        note_event = assistant_chat.add_assistant_note(self.session, "Earlier chat history was trimmed to fit Deepy's context window.", badge="History trimmed", author="System")[1]
+        self._emit_chat_event(note_event)
+        message_id = str(checkpoint.get("user_message_id", "") or "").strip()
+        if len(message_id) > 0:
+            self._emit_chat_event(assistant_chat.set_message_badge(self.session, message_id, "History trimmed"))
+        self._emit_chat_event(assistant_chat.build_sync_event(self.session, status=self._current_status_payload, stats=self._chat_stats_payload()))
+
+    def _restore_turn_start_snapshot(self, *, preserve_current_turn_messages: bool = False) -> bool:
+        checkpoint = self.session.current_turn
+        if not isinstance(checkpoint, dict):
+            return False
+        try:
+            target_messages_len = int(checkpoint.get("messages_len", len(self.session.messages)) or 0)
+        except Exception:
+            target_messages_len = len(self.session.messages)
+        target_messages_len = max(0, min(target_messages_len, len(self.session.messages)))
+        if not preserve_current_turn_messages:
+            keep_len = target_messages_len
+            if len(self.session.messages) > target_messages_len and str(self.session.messages[target_messages_len].get("role", "")).strip().lower() == "user":
+                keep_len = target_messages_len + 1
+            if len(self.session.messages) > keep_len:
+                del self.session.messages[keep_len:]
+        restored_rendered_token_ids = [int(token_id) for token_id in checkpoint.get("rendered_token_ids", []) or []]
+        restored_runtime_snapshot = copy.deepcopy(checkpoint.get("runtime_snapshot", None))
+        try:
+            restored_rendered_messages_len = int(checkpoint.get("rendered_messages_len", 0) or 0)
+        except Exception:
+            restored_rendered_messages_len = 0
+        restored_system_prompt_signature = str(checkpoint.get("rendered_system_prompt_signature", "") or "")
+        try:
+            restored_context_window_tokens = int(checkpoint.get("rendered_context_window_tokens", 0) or 0)
+        except Exception:
+            restored_context_window_tokens = 0
+        used_preserved_base = False
+        if len(restored_rendered_token_ids) == 0 and restored_runtime_snapshot is None:
+            base_context_window_tokens = self._get_context_window_tokens()
+            if (
+                self._can_preserve_reset_base()
+                and self.session.reset_base_snapshot is not None
+                and len(self.session.reset_base_token_ids or []) > 0
+                and str(self.session.reset_base_signature or "") == self._current_reset_base_signature()
+                and int(self.session.reset_base_context_window_tokens or 0) == base_context_window_tokens
+            ):
+                restored_rendered_token_ids = [int(token_id) for token_id in list(self.session.reset_base_token_ids or [])]
+                restored_runtime_snapshot = copy.deepcopy(self.session.reset_base_snapshot)
+                restored_rendered_messages_len = 0
+                restored_system_prompt_signature = self._current_system_prompt_signature()
+                restored_context_window_tokens = base_context_window_tokens
+                used_preserved_base = True
+        self.session.rendered_token_ids = restored_rendered_token_ids
+        self.session.runtime_snapshot = restored_runtime_snapshot
+        self.session.rendered_messages_len = restored_rendered_messages_len
+        self.session.rendered_system_prompt_signature = restored_system_prompt_signature
+        self.session.rendered_context_window_tokens = restored_context_window_tokens
+        self.session.pending_replay_reason = ""
+        self._skip_pause_snapshot = False
+        self._log("Restored the clean turn-start snapshot from the preserved header snapshot." if used_preserved_base else "Restored the clean turn-start snapshot.")
+        return len(self.session.rendered_token_ids) > 0
+
+    def _restore_turn_start_snapshot_for_retry(self) -> bool:
+        return self._restore_turn_start_snapshot(preserve_current_turn_messages=False)
+
+    def _sync_trimmed_answer_from_turn_start_snapshot(self) -> bool:
+        if not self._restore_turn_start_snapshot(preserve_current_turn_messages=True):
+            return False
+        if self.runtime is None:
+            return False
+        restore_mode = self._restore_or_replay_session("Interrupted-turn start context")
+        target_tokens, trimmed_any = self._fit_rendered_messages_to_window(add_generation_prompt=False)
+        mode = self._extend_context_from_preserved_base(target_tokens) if trimmed_any else None
+        if mode is None:
+            mode = self._append_target_suffix_from_live_runtime(target_tokens)
+        if mode is None:
+            raise RuntimeError("Interrupted-turn trimmed answer context could not be synchronized from the turn-start snapshot.")
+        self.session.rendered_token_ids = list(target_tokens)
+        self._remember_render_state()
+        self.session.runtime_snapshot = None
+        self.session.pending_replay_reason = ""
+        self._skip_pause_snapshot = False
+        self._log(
+            "Assistant context synchronized after trimming an incomplete trailing answer fragment. "
+            f"(restore={restore_mode}, sync={mode})"
+        )
+        self._emit_stats(force=True)
+        return True
+
+    def _render_simple_interrupted_turn_suffix(self, base_messages_len: int) -> list[int] | None:
+        if self.runtime is None:
+            return None
+        current_turn_messages = list(self.session.messages[base_messages_len:] or [])
+        if len(current_turn_messages) != 2:
+            return None
+        user_message, assistant_message = current_turn_messages
+        if str(user_message.get("role", "")).strip().lower() != "user":
+            return None
+        if str(assistant_message.get("role", "")).strip().lower() != "assistant":
+            return None
+        if assistant_message.get("tool_calls"):
+            return None
+        if str(assistant_message.get("model_content", "") or "").strip():
+            return None
+        user_content = self._message_render_content(user_message).strip()
+        assistant_content = self._message_render_content(assistant_message).strip()
+        if len(user_content) == 0 or len(assistant_content) == 0:
+            return None
+        suffix = f"<|im_start|>user\n{user_content}<|im_end|>\n<|im_start|>assistant\n{assistant_content}<|im_end|>\n"
+        token_ids = self.runtime.tokenizer.encode(suffix, add_special_tokens=False)
+        return [int(token_id) for token_id in list(token_ids or [])]
+
+    def _append_target_suffix_from_live_runtime(self, target_tokens: list[int]) -> str | None:
+        if self.runtime is None:
+            return None
+        current_seq = self.runtime._get_active_sequence()
+        current_token_ids = [] if current_seq is None else [int(token_id) for token_id in list(current_seq.token_ids or [])]
+        if len(current_token_ids) == 0 or target_tokens[: len(current_token_ids)] != current_token_ids:
+            return None
+        suffix_tokens = [int(token_id) for token_id in list(target_tokens[len(current_token_ids) :] or [])]
+        if len(suffix_tokens) == 0:
+            return "extended"
+        return self._run_prefill_call(
+            len(suffix_tokens),
+            lambda: self.runtime.append_suffix(suffix_tokens),
+            record_if=lambda result: result in ("prefilled", "chunk_prefilled"),
+        )
+
+    @staticmethod
+    def _find_token_subsequence(haystack: list[int], needle: list[int]) -> int:
+        if len(needle) == 0:
+            return 0
+        limit = len(haystack) - len(needle)
+        for start_idx in range(max(0, limit) + 1):
+            if haystack[start_idx : start_idx + len(needle)] == needle:
+                return start_idx
+        return -1
+
+    def _render_messages_for_delta(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {"role": "system", "content": self._build_system_prompt(log_injections=True)},
+            *[
+                {"role": str(message.get("role", "")).strip().lower(), "content": self._message_render_content(message)}
+                if str(message.get("role", "")).strip().lower() != "assistant"
+                else {
+                    **({"tool_calls": message["tool_calls"]} if "tool_calls" in message else {}),
+                    "role": "assistant",
+                    "content": str(message.get("model_content", "") or message.get("content", "") or ""),
+                }
+                for message in list(messages or [])
+            ],
+        ]
+
+    def _render_turn_delta_suffix(self, base_messages_len: int, *, add_generation_prompt: bool) -> list[int] | None:
+        if self.runtime is None:
+            return None
+        target_messages = list(self.session.messages or [])
+        if base_messages_len < 0 or base_messages_len > len(target_messages):
+            return None
+        thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
+        tools = self.tool_box.get_tool_schemas()
+        if base_messages_len == 0:
+            base_tokens = [int(token_id) for token_id in list(self.session.rendered_token_ids or self.session.reset_base_token_ids or [])]
+        else:
+            base_tokens = render_assistant_messages(
+                self.runtime.tokenizer,
+                self._render_messages_for_delta(target_messages[:base_messages_len]),
+                tools,
+                add_generation_prompt=False,
+                thinking_enabled=thinking_enabled,
+            )
+        target_tokens = render_assistant_messages(
+            self.runtime.tokenizer,
+            self._render_messages_for_delta(target_messages),
+            tools,
+            add_generation_prompt=bool(add_generation_prompt),
+            thinking_enabled=thinking_enabled,
+        )
+        if target_tokens[: len(base_tokens)] != base_tokens:
+            return None
+        return [int(token_id) for token_id in target_tokens[len(base_tokens) :]]
+
+    def _render_current_turn_slice_suffix(self, messages: list[dict[str, Any]], *, add_generation_prompt: bool) -> list[int] | None:
+        if self.runtime is None:
+            return None
+        current_turn_messages = list(messages or [])
+        if len(current_turn_messages) == 0:
+            return None
+        if str(current_turn_messages[0].get("role", "")).strip().lower() != "user":
+            return None
+        thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
+        rendered_tokens = render_assistant_messages(
+            self.runtime.tokenizer,
+            self._render_messages_for_delta(current_turn_messages),
+            self.tool_box.get_tool_schemas(),
+            add_generation_prompt=bool(add_generation_prompt),
+            thinking_enabled=thinking_enabled,
+        )
+        user_prefix_tokens = self.runtime.tokenizer.encode("<|im_start|>user\n", add_special_tokens=False)
+        user_prefix_tokens = [int(token_id) for token_id in list(user_prefix_tokens or [])]
+        start_idx = self._find_token_subsequence(rendered_tokens, user_prefix_tokens)
+        if start_idx < 0:
+            return None
+        return [int(token_id) for token_id in rendered_tokens[start_idx:]]
+
+    def _sync_context_from_turn_start_snapshot(self, *, context_label: str, log_label: str, add_generation_prompt: bool, target_tokens: list[int] | None = None) -> bool:
+        checkpoint = self.session.current_turn
+        if not isinstance(checkpoint, dict):
+            return False
+        base_messages_len = int(checkpoint.get("messages_len", 0) or 0)
+        if len(self.session.messages) <= base_messages_len:
+            return False
+        if not self._restore_turn_start_snapshot(preserve_current_turn_messages=True):
+            return False
+        if self.runtime is None:
+            self._acquire_runtime()
+        if self.runtime is None:
+            return False
+        restore_mode = self._restore_or_replay_session(context_label)
+        suffix_tokens = None
+        if self._can_append_pending_tool_suffix():
+            thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
+            suffix_tokens = render_tool_turn_suffix(self.runtime.tokenizer, self._pending_tool_render_contents(), thinking_enabled=thinking_enabled)
+        elif self._can_append_pending_user_suffix():
+            thinking_enabled = qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
+            suffix_tokens = render_text_user_turn_suffix(self.runtime.tokenizer, self._pending_user_render_content(), thinking_enabled=thinking_enabled)
+        if suffix_tokens is None:
+            suffix_tokens = self._render_turn_delta_suffix(base_messages_len, add_generation_prompt=add_generation_prompt)
+        if suffix_tokens is None:
+            suffix_tokens = self._render_simple_interrupted_turn_suffix(base_messages_len)
+        if suffix_tokens is None:
+            target_tokens = self._render_messages(add_generation_prompt=add_generation_prompt) if target_tokens is None else [int(token_id) for token_id in list(target_tokens or [])]
+            mode = self._append_target_suffix_from_live_runtime(target_tokens)
+            if mode is None:
+                return False
+        else:
+            mode = "extended"
+            if len(suffix_tokens) > 0:
+                mode = self._run_prefill_call(len(suffix_tokens), lambda: self.runtime.append_suffix(suffix_tokens), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
+        self._record_live_context(f"{log_label} (restore={restore_mode}, sync={mode})")
+        return True
+
+    def _sync_current_turn_context_from_turn_start_snapshot(self, target_tokens: list[int] | None = None) -> bool:
+        return self._sync_context_from_turn_start_snapshot(
+            context_label="Current-turn start context",
+            log_label="Generation context synchronized from current-turn start snapshot.",
+            add_generation_prompt=True,
+            target_tokens=target_tokens,
+        )
+
+    def _sync_interrupted_rollback_context_from_turn_start_snapshot(self) -> bool:
+        checkpoint = self.session.current_turn
+        if not isinstance(checkpoint, dict):
+            return False
+        base_messages_len = int(checkpoint.get("messages_len", 0) or 0)
+        current_turn_messages = list(self.session.messages[base_messages_len:] or [])
+        if len(current_turn_messages) == 0:
+            return False
+        if not self._restore_turn_start_snapshot(preserve_current_turn_messages=True):
+            return False
+        if self.runtime is None:
+            self._acquire_runtime()
+        if self.runtime is None:
+            return False
+        restore_mode = self._restore_or_replay_session("Interrupted-turn start context")
+        suffix_tokens = self._render_current_turn_slice_suffix(current_turn_messages, add_generation_prompt=False)
+        if suffix_tokens is None:
+            raise RuntimeError("Interrupted-turn slice suffix could not be rendered.")
+        mode = "extended"
+        if len(suffix_tokens) > 0:
+            mode = self._run_prefill_call(len(suffix_tokens), lambda: self.runtime.append_suffix(suffix_tokens), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
+        self._record_live_context(f"Interrupted-turn context synchronized before pause. (restore={restore_mode}, sync={mode})")
+        return True
+
+    def _recover_from_context_limit(self, raw_text: str, retry_no: int) -> bool:
+        if retry_no >= _CONTEXT_LIMIT_MAX_RETRIES:
+            return False
+        if self.runtime is None:
+            return False
+        current_seq = self.runtime._get_active_sequence()
+        if current_seq is None or len(current_seq.token_ids or []) == 0:
+            return False
+        current_segment_token_ids = [int(token_id) for token_id in list(current_seq.completion_token_ids or [])]
+        accumulated_completion_token_ids = self._merge_token_continuation(self._continued_segment_token_ids, current_segment_token_ids)
+        if len(accumulated_completion_token_ids) == 0:
+            return False
+        self._set_status("Compacting context...", kind="loading")
+        generation_reserve_tokens = self._segment_generation_reserve_tokens()
+        trimmed_generated_token_count = 0
+        try:
+            prompt_tokens, trimmed_any = self._fit_rendered_messages_to_window(
+                add_generation_prompt=True,
+                reserve_tokens=len(accumulated_completion_token_ids) + generation_reserve_tokens,
+            )
+            kept_completion_token_ids = list(accumulated_completion_token_ids)
+        except RuntimeError as exc:
+            prompt_tokens, trimmed_any = self._fit_rendered_messages_to_window(add_generation_prompt=True, reserve_tokens=0)
+            available_completion_tokens = max(0, self._get_context_window_tokens() - len(prompt_tokens) - generation_reserve_tokens)
+            if available_completion_tokens <= 0:
+                raise exc
+            if len(accumulated_completion_token_ids) <= available_completion_tokens:
+                kept_completion_token_ids = list(accumulated_completion_token_ids)
+            else:
+                trimmed_generated_token_count = len(accumulated_completion_token_ids) - available_completion_tokens
+                kept_completion_token_ids = accumulated_completion_token_ids[trimmed_generated_token_count:]
+                self._log(
+                    "Trimming assistant continuation context: "
+                    f"dropped {trimmed_generated_token_count} generated tokens from the current turn."
+                )
+        target_tokens = [*prompt_tokens, *kept_completion_token_ids]
+        mode = self._extend_context_from_preserved_base(target_tokens)
+        if mode is None:
+            mode = self._run_prefill_call(
+                len(target_tokens),
+                lambda: self.runtime.prime_context(target_tokens),
+                record_if=True,
+            )
+        self.session.rendered_token_ids = [int(token_id) for token_id in target_tokens]
+        self.session.runtime_snapshot = None
+        self.session.pending_replay_reason = ""
+        self._skip_pause_snapshot = False
+        self._remember_render_state()
+        self._continued_segment_raw_text = str(raw_text or "")
+        self._continued_segment_token_ids = list(kept_completion_token_ids)
+        self._resume_stream_after_context_trim = True
+        self._suppress_intermediate_stream_after_context_trim = True
+        self._skip_generation_context_sync_once = True
+        self._emit_stats(force=True)
+        if trimmed_any:
+            self._log(
+                "Context limit reached; compacted live continuation and continuing the current turn. "
+                f"[{mode}{', trimmed_generated=' + str(trimmed_generated_token_count) if trimmed_generated_token_count > 0 else ''}]"
+            )
+        else:
+            self._log(
+                "Context limit reached; preserved the live continuation and continuing the current turn. "
+                f"[{mode}{', trimmed_generated=' + str(trimmed_generated_token_count) if trimmed_generated_token_count > 0 else ''}]"
+            )
+        return True
+
+    def _append_assistant_message(self, raw_text: str, tool_calls: list[dict[str, Any]] | None = None, merge_with_last: bool = False) -> list[dict[str, Any]]:
         cleaned_text = strip_tool_blocks(raw_text)
         if tool_calls:
             cleaned_text = strip_inline_tool_call_text(cleaned_text)
@@ -4384,6 +5978,13 @@ class AssistantEngine:
             message["content"] = content
         if len(stripped_raw_text) > 0 and not tool_calls:
             message["model_content"] = stripped_raw_text
+        if merge_with_last and not tool_calls and len(self.session.messages) > 0 and str(self.session.messages[-1].get("role", "")).strip().lower() == "assistant":
+            last_message = self.session.messages[-1]
+            if "content" in message:
+                last_message["content"] = self._merge_text_continuation(str(last_message.get("content", "") or ""), str(message.get("content", "") or ""))
+            if "model_content" in message:
+                last_message["model_content"] = self._merge_text_continuation(str(last_message.get("model_content", "") or ""), str(message.get("model_content", "") or ""))
+            return last_message.get("tool_calls", []) or []
         if tool_calls:
             message["tool_calls"] = [
                 {
@@ -4410,19 +6011,30 @@ class AssistantEngine:
         if len(user_text) == 0:
             self._send_chat("Please enter a request.")
             return
+        self._current_requested_max_new_tokens = max(1, int(max_new_tokens or 1024))
 
         if self.debug_enabled:
             print("[User]")
             print(user_text)
 
         self._active_turn_id = ""
+        if isinstance(self.session.current_turn, dict):
+            visual_media_record, _visual_error = self.tool_box._get_selected_media_record_from_source("video", "all")
+            audio_media_record, _audio_error = self.tool_box._get_selected_media_record_from_source("audio", "audio")
+            self.session.current_turn["selected_visual_media_snapshot"] = None if visual_media_record is None else copy.deepcopy(visual_media_record)
+            self.session.current_turn["selected_audio_media_snapshot"] = None if audio_media_record is None else copy.deepcopy(audio_media_record)
         self._refresh_runtime_status_note()
         self.session.messages.append(self._build_pending_user_message(user_text))
         checkpoint_assistant_turn(self.session)
         recent_thoughts: list[str] = []
         model_passes = 0
+        context_limit_retries = 0
+        incomplete_stop_retries = 0
+        current_seed = seed
         final_user_text = ""
         turn_completed = False
+        self._skip_generation_context_sync_once = False
+        self._clear_segment_continuation_state()
         try:
             while True:
                 if self.session.interrupt_requested:
@@ -4432,7 +6044,10 @@ class AssistantEngine:
                     or (len(self.session.rendered_token_ids) == 0 and self.session.runtime_snapshot is None)
                 )
                 self._set_status("Loading Deepy..." if show_loading_status else "Thinking...", kind="loading" if show_loading_status else "thinking")
-                self._sync_generation_context()
+                if self._skip_generation_context_sync_once:
+                    self._skip_generation_context_sync_once = False
+                else:
+                    self._sync_generation_context()
                 self._emit_stats(force=True)
                 if self.session.interrupt_requested:
                     break
@@ -4444,7 +6059,7 @@ class AssistantEngine:
                 try:
                     result = self.runtime.generate_segment(
                         max_new_tokens=max_new_tokens,
-                        seed=seed,
+                        seed=current_seed,
                         do_sample=do_sample,
                         temperature=temperature,
                         top_p=top_p,
@@ -4452,16 +6067,69 @@ class AssistantEngine:
                         thinking_enabled=self.thinking_enabled,
                         stop_requested=lambda: bool(self.session.interrupt_requested),
                         stream_callback=self._stream_generation_update,
-                        stream_interval_seconds=1.0,
+                        stream_interval_seconds=_ASSISTANT_STREAM_INTERVAL_SECONDS,
                     )
                 finally:
                     self._finish_stream_pass(None if result is None else result.token_count)
                 model_passes += 1
                 if self.session.interrupt_requested or result.stop_reason == "interrupted":
                     break
-                raw_text = result.raw_text
+                segment_raw_text = result.raw_text
+                segment_thinking_text, _segment_answer_text = qwen35_text._split_generated_text(segment_raw_text)
+                raw_text = segment_raw_text
+                if len(self._continued_segment_raw_text) > 0:
+                    raw_text = self._merge_text_continuation(self._continued_segment_raw_text, raw_text)
+                tool_calls = extract_tool_calls(raw_text)
+                if len(tool_calls) == 0:
+                    tool_calls = self.tool_box.infer_tool_calls(raw_text)
+                trimmed_incomplete_stop_answer = False
+                retry_incomplete_stop_answer = False
+                if _ENABLE_INCOMPLETE_STOP_ANSWER_HEURISTICS and len(tool_calls) == 0 and result.stop_reason == "stop_token":
+                    raw_text_without_stop = strip_trailing_stop_markup(raw_text)
+                    thinking_preview, answer_preview = qwen35_text._split_generated_text(raw_text_without_stop)
+                    trimmed_answer_preview = _trim_incomplete_answer_tail(answer_preview)
+                    if trimmed_answer_preview != answer_preview:
+                        if len(trimmed_answer_preview) == 0 and incomplete_stop_retries < 1:
+                            retry_incomplete_stop_answer = True
+                        elif len(trimmed_answer_preview) > 0:
+                            trimmed_incomplete_stop_answer = True
+                            raw_text = (
+                                f"<think>\n{thinking_preview}\n</think>\n\n{trimmed_answer_preview}"
+                                if len(str(thinking_preview or "").strip()) > 0
+                                else trimmed_answer_preview
+                            )
+                            dropped_tail = ""
+                            if answer_preview.startswith(trimmed_answer_preview):
+                                dropped_tail = answer_preview[len(trimmed_answer_preview):].strip()
+                            if len(dropped_tail) > 0:
+                                preview = dropped_tail[:120] + ("..." if len(dropped_tail) > 120 else "")
+                                self._log(f"Trimmed an incomplete trailing answer fragment after stop_token. Dropped tail preview: {preview!r}")
+                            else:
+                                self._log("Trimmed an incomplete trailing answer fragment after stop_token.")
+                if retry_incomplete_stop_answer:
+                    self._clear_segment_continuation_state()
+                    if self._restore_turn_start_snapshot_for_retry():
+                        self._emit_chat_event(assistant_chat.clear_message_blocks(self.session, self._ensure_active_turn()))
+                        incomplete_stop_retries += 1
+                        current_seed = None if current_seed is None else int(current_seed) + incomplete_stop_retries
+                        recent_thoughts.clear()
+                        self._log("Detected an incomplete stop-token answer with no safe trimmed fallback; retrying the current turn once from the clean turn-start snapshot.")
+                        continue
+                    if self._canonicalize_context(sync_runtime="record_only") == "recorded":
+                        self._emit_chat_event(assistant_chat.clear_message_blocks(self.session, self._ensure_active_turn()))
+                        incomplete_stop_retries += 1
+                        current_seed = None if current_seed is None else int(current_seed) + incomplete_stop_retries
+                        recent_thoughts.clear()
+                        self._log("Detected an incomplete stop-token answer with no safe trimmed fallback; retrying the current turn once after canonicalized replay fallback.")
+                        continue
+                    incomplete_stop_retries += 1
                 thinking_text, answer_text = self._split_for_display(raw_text)
-                normalized_thinking = re.sub(r"\s+", " ", str(thinking_text or "")).strip()
+                if self.debug_enabled:
+                    self._log(f"Model stop reason: {result.stop_reason}")
+                    if self._should_print_raw_debug_text(raw_text, thinking_text, answer_text):
+                        print("[Assistant][Raw]")
+                        print(raw_text)
+                normalized_thinking = re.sub(r"\s+", " ", str(segment_thinking_text or "")).strip()
                 if len(normalized_thinking) == 0:
                     recent_thoughts.clear()
                 else:
@@ -4481,15 +6149,10 @@ class AssistantEngine:
                         self._send_chat("Assistant stopped because the same two thoughts started alternating in a loop.")
                         turn_completed = True
                         break
-                tool_calls = extract_tool_calls(raw_text)
-                if len(tool_calls) == 0:
-                    tool_calls = self.tool_box.infer_tool_calls(raw_text)
-                if self.debug_enabled:
-                    self._log(f"Model stop reason: {result.stop_reason}")
-                    print("[Assistant][Raw]")
-                    print(raw_text)
                 if tool_calls:
                     stored_tool_calls = self._append_assistant_message(raw_text, tool_calls=tool_calls)
+                    checkpoint_assistant_turn(self.session)
+                    self._clear_segment_continuation_state()
                     self._record_live_context("Assistant tool-call context recorded from live runtime.")
                     for tool_call, stored_tool_call in zip(tool_calls, stored_tool_calls):
                         if self.session.interrupt_requested:
@@ -4500,26 +6163,53 @@ class AssistantEngine:
                     if self.session.interrupt_requested:
                         break
                     continue
+                if result.stop_reason == "context_limit" or self._max_tokens_hit_context_ceiling(result):
+                    if result.stop_reason == "max_tokens":
+                        self._log("Model hit max_tokens at the context ceiling; compacting the current turn and continuing.")
+                    if self._recover_from_context_limit(raw_text, context_limit_retries):
+                        context_limit_retries += 1
+                        continue
 
                 self._append_assistant_message(raw_text)
-                self._record_live_context("Assistant context recorded from live runtime.")
+                checkpoint_assistant_turn(self.session)
+                self._clear_segment_continuation_state()
+                if trimmed_incomplete_stop_answer:
+                    if not self._sync_trimmed_answer_from_turn_start_snapshot():
+                        self._canonicalize_context(sync_runtime="record_only")
+                        self._log("Assistant context canonicalized after trimming an incomplete trailing answer fragment.")
+                        self._emit_stats(force=True)
+                else:
+                    self._record_live_context("Assistant context recorded from live runtime.")
                 final_user_text = "" if len(self._stream_answer_text.strip()) > 0 else (answer_text or qwen35_text._clean_generated_text(raw_text))
                 turn_completed = True
                 break
         finally:
             self._hide_status()
+            if self.session.interrupt_requested:
+                rollback_assistant_turn(self.session, rendered_system_prompt_signature=self._current_system_prompt_signature())
+                try:
+                    if not self._sync_interrupted_rollback_context_from_turn_start_snapshot():
+                        self._skip_pause_snapshot = False
+                        self._log("Interrupted-turn context stayed on the clean turn-start snapshot for the next turn.")
+                except Exception as exc:
+                    self._skip_pause_snapshot = False
+                    self._log(f"Interrupted-turn context sync failed: {exc}")
+                    self._log("Interrupted-turn context stayed on the clean turn-start snapshot for the next turn.")
+                if self.debug_enabled and len(str(self.session.interruption_notice or "").strip()) > 0:
+                    self._log(f"Interruption recorded: {self.session.interruption_notice}")
             try:
                 self._pause_runtime(pause_reason="idle")
             except Exception as exc:
                 self._log(f"Pause-after-turn failed: {exc}")
-            if self.session.interrupt_requested:
-                rollback_assistant_turn(self.session)
             finish_assistant_turn(self.session)
             self.session.runtime_status_note = ""
             self._prefill_started_at = None
             self._live_prefill_tokens = 0
             self._segment_started_at = None
             self._segment_generated_tokens = 0
+            self._skip_generation_context_sync_once = False
+            self._clear_segment_continuation_state()
+            self._current_requested_max_new_tokens = 1024
             self._emit_stats(force=True)
         if not self.session.interrupt_requested and len(final_user_text.strip()) > 0:
             self._send_chat(final_user_text)

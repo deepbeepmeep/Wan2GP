@@ -8,6 +8,8 @@ The main goal is to let third-party code call WanGP directly, keep the last load
 
 ## Quick Start
 
+The WanGP API consumes mostly *WanGP Settings*. In order to get the format of the settings, just launch the Web interface of WanGP, pick the model you want to use and fill the UI with settings you want to use, then click the *Export Settings* button at the bottom.
+
 ```python
 from pathlib import Path
 

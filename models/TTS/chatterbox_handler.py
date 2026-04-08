@@ -230,7 +230,7 @@ class family_handler:
                 "custom_settings": dict(CHATTERBOX_DEFAULT_CUSTOM_SETTINGS),
                 "temperature": 0.8,
                 "guidance_scale": 1.0,
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
             }
         )
 

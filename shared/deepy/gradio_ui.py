@@ -75,14 +75,18 @@ class DeepyChatUI:
     launcher_host: Any
     panel: Any
     settings_launcher_host: Any
+    settings_save_btn: Any
     html_output: Any
     chat_event: Any
+    busy_queue_request: Any
+    busy_queue_btn: Any
     stats_output: Any
     stop_btn: Any
     request: Any
     ask_btn: Any
     reset_btn: Any
     auto_cancel_queue_tasks: Any
+    separate_requests_with_empty_line: Any
     use_template_properties: Any
     override_height: Any
     override_width: Any
@@ -111,9 +115,9 @@ class DeepyChatUI:
 class DeepyChatHandlers:
     prepare_request_context: Callable[[Any, Any, Any, Any, Any], Any]
     update_tool_ui_settings: Callable[..., Any]
-    persist_auto_cancel_queue_tasks: Callable[[Any, Any], Any]
     store_selected_video_time: Callable[[Any, Any], Any]
     ask_ai: Callable[[Any, str], Any]
+    enqueue_ai: Callable[[Any, str], Any]
     stop_ai: Callable[[Any], Any]
     reset_ai: Callable[[Any], Any]
 
@@ -173,6 +177,14 @@ def _modal_title_html(tool_name: str) -> str:
     return (
         "<div class='wangp-assistant-chat__template-modal-titlebar'>"
         f"<div class='wangp-assistant-chat__template-modal-heading'>{html.escape(display_name)} Tool</div>"
+        "</div>"
+    )
+
+
+def _settings_title_html() -> str:
+    return (
+        "<div class='wangp-assistant-chat__template-modal-titlebar'>"
+        "<div class='wangp-assistant-chat__template-modal-heading'>Deepy Settings</div>"
         "</div>"
     )
 
@@ -262,6 +274,8 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
             settings_launcher_host = gr.HTML(assistant_chat.render_settings_launcher_html(), elem_id=assistant_chat.SETTINGS_LAUNCHER_HOST_ID)
             html_output = gr.HTML(assistant_chat.render_shell_html(), elem_id=assistant_chat.CHAT_BLOCK_ID)
             chat_event = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.CHAT_EVENT_ID)
+            busy_queue_request = gr.Text(value="", interactive=False, visible=False, elem_id=assistant_chat.BUSY_QUEUE_INPUT_ID)
+            busy_queue_btn = gr.Button("Queue Busy Request", visible=False, elem_id=assistant_chat.BUSY_QUEUE_BUTTON_ID)
             stop_btn = gr.Button("Stop", elem_id=assistant_chat.STOP_BRIDGE_ID)
             with gr.Row(elem_id=assistant_chat.CONTROLS_ID):
                 request = gr.Text(value="", label="Request", scale=3, show_label=False, elem_id=assistant_chat.REQUEST_ID)
@@ -269,65 +283,75 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
                 reset_btn = gr.Button("Reset", scale=1, min_width=10, elem_id=assistant_chat.RESET_BUTTON_ID)
             stats_output = gr.HTML(assistant_chat.render_stats_html(), elem_id=assistant_chat.STATS_BLOCK_ID)
             with gr.Column(elem_id=assistant_chat.SETTINGS_PANEL_ID):
-                with gr.Column(elem_classes=["wangp-assistant-chat__settings-scroll"]):
-                    with gr.Accordion("Generation Properties", open=True):
-                        auto_cancel_queue_tasks = gr.Checkbox(
-                            value=tool_ui_state["auto_cancel_queue_tasks"],
-                            label="Auto-abort or remove Deepy-started generation on Stop/Reset.",
-                        )
-                        use_template_properties = gr.Checkbox(value=tool_ui_state["use_template_properties"], label="Use Properties defined in Settings Templates files.")
-                        with gr.Row():
-                            override_width = gr.Slider(
-                                deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
-                                deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
-                                value=tool_ui_state["width"],
-                                step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
-                                label="Default Width",
-                                interactive=not tool_ui_state["use_template_properties"],
-                            )
-                            override_height = gr.Slider(
-                                deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
-                                deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
-                                value=tool_ui_state["height"],
-                                step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
-                                label="Default Height",
-                                interactive=not tool_ui_state["use_template_properties"],
-                            )
-                        override_num_frames = gr.Slider(
-                            deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MIN,
-                            deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MAX,
-                            value=tool_ui_state["num_frames"],
-                            step=1,
-                            label="Default Number of Frames",
-                            interactive=not tool_ui_state["use_template_properties"],
-                        )
-                        override_seed = gr.Slider(
-                            -1,
-                            999999999,
-                            value=tool_ui_state["seed"],
-                            step=1,
-                            label="Seed (-1 for random)",
-                            interactive=not tool_ui_state["use_template_properties"],
-                        )
-                    with gr.Accordion("Template Settings used by Tools", open=False):
-                        with gr.Column(elem_classes=["wangp-assistant-chat__template-tool-grid"]):
-                            for tool_pair in _TEMPLATE_TOOL_LAYOUT:
-                                with gr.Row(elem_classes=["wangp-assistant-chat__template-tool-grid-row"]):
-                                    for tool_name in tool_pair:
-                                        with gr.Column(elem_classes=["wangp-assistant-chat__template-tool-card"]):
-                                            with gr.Row(elem_classes=["wangp-assistant-chat__template-tool-row"]):
-                                                dropdown = gr.Dropdown(
-                                                    choices=template_selector_state[_TEMPLATE_TOOL_SELECTOR_CHOICE_KEY[tool_name]],
-                                                    value=tool_ui_state[_TEMPLATE_TOOL_UI_KEY[tool_name]],
-                                                    label=deepy_tool_settings.TOOL_DISPLAY_NAMES[tool_name],
-                                                    elem_classes=["wangp-assistant-chat__template-tool-dropdown"],
-                                                )
-                                                with gr.Column(scale=0, min_width=34, elem_classes=["wangp-assistant-chat__template-tool-actions"]):
-                                                    add_btn = gr.Button("\u2795", size="sm", min_width=1, elem_classes=["wangp-assistant-chat__template-tool-icon-btn"])
-                                                    delete_btn = gr.Button("\U0001F5D1\uFE0F", size="sm", min_width=1, elem_classes=["wangp-assistant-chat__template-tool-icon-btn", "wangp-assistant-chat__template-tool-icon-btn--danger"])
-                                        control = DeepyTemplateToolControl(tool_name=tool_name, dropdown=dropdown, add_btn=add_btn, delete_btn=delete_btn)
-                                        controls_by_tool[tool_name] = control
-                                        template_controls.append(control)
+                with gr.Column(elem_classes=["wangp-assistant-chat__template-modal-card", "wangp-assistant-chat__settings-card"]):
+                    gr.HTML(_settings_title_html())
+                    with gr.Column(elem_classes=["wangp-assistant-chat__settings-scroll"]):
+                        with gr.Tabs():
+                            with gr.Tab("Generation Properties"):
+                                separate_requests_with_empty_line = gr.Checkbox(
+                                    value=tool_ui_state["separate_requests_with_empty_line"],
+                                    label="Separate Different Requests with an Empty Line",
+                                )
+                                auto_cancel_queue_tasks = gr.Checkbox(
+                                    value=tool_ui_state["auto_cancel_queue_tasks"],
+                                    label="Auto-abort or remove Deepy-started generation on Stop/Reset.",
+                                )
+                                use_template_properties = gr.Checkbox(value=tool_ui_state["use_template_properties"], label="Use Properties defined in Templates Settings files.")
+                                with gr.Row():
+                                    override_width = gr.Slider(
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
+                                        value=tool_ui_state["width"],
+                                        step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
+                                        label="Default Width",
+                                        interactive=not tool_ui_state["use_template_properties"],
+                                    )
+                                    override_height = gr.Slider(
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MIN,
+                                        deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_MAX,
+                                        value=tool_ui_state["height"],
+                                        step=deepy_ui_settings.ASSISTANT_OVERRIDE_DIMENSION_STEP,
+                                        label="Default Height",
+                                        interactive=not tool_ui_state["use_template_properties"],
+                                    )
+                                override_num_frames = gr.Slider(
+                                    deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MIN,
+                                    deepy_ui_settings.ASSISTANT_OVERRIDE_FRAMES_MAX,
+                                    value=tool_ui_state["num_frames"],
+                                    step=1,
+                                    label="Default Number of Frames",
+                                    interactive=not tool_ui_state["use_template_properties"],
+                                )
+                                override_seed = gr.Slider(
+                                    -1,
+                                    999999999,
+                                    value=tool_ui_state["seed"],
+                                    step=1,
+                                    label="Seed (-1 for random)",
+                                    interactive=not tool_ui_state["use_template_properties"],
+                                )
+                            with gr.Tab("Templates Settings used by Tools"):
+                                with gr.Column(elem_classes=["wangp-assistant-chat__template-tool-grid"]):
+                                    gr.Markdown("Please Match here Prerecorded Models Settings to each Generation Tool used by Deepy.")
+                                    for tool_pair in _TEMPLATE_TOOL_LAYOUT:
+                                        with gr.Row(elem_classes=["wangp-assistant-chat__template-tool-grid-row"]):
+                                            for tool_name in tool_pair:
+                                                with gr.Column(elem_classes=["wangp-assistant-chat__template-tool-card"]):
+                                                    with gr.Row(elem_classes=["wangp-assistant-chat__template-tool-row"]):
+                                                        dropdown = gr.Dropdown(
+                                                            choices=template_selector_state[_TEMPLATE_TOOL_SELECTOR_CHOICE_KEY[tool_name]],
+                                                            value=tool_ui_state[_TEMPLATE_TOOL_UI_KEY[tool_name]],
+                                                            label=deepy_tool_settings.TOOL_DISPLAY_NAMES[tool_name],
+                                                            elem_classes=["wangp-assistant-chat__template-tool-dropdown"],
+                                                        )
+                                                        with gr.Column(scale=0, min_width=34, elem_classes=["wangp-assistant-chat__template-tool-actions"]):
+                                                            add_btn = gr.Button("\u2795", size="sm", min_width=1, elem_classes=["wangp-assistant-chat__template-tool-icon-btn"])
+                                                            delete_btn = gr.Button("\U0001F5D1\uFE0F", size="sm", min_width=1, elem_classes=["wangp-assistant-chat__template-tool-icon-btn", "wangp-assistant-chat__template-tool-icon-btn--danger"])
+                                                control = DeepyTemplateToolControl(tool_name=tool_name, dropdown=dropdown, add_btn=add_btn, delete_btn=delete_btn)
+                                                controls_by_tool[tool_name] = control
+                                                template_controls.append(control)
+                        with gr.Row(elem_classes=["wangp-assistant-chat__settings-actions"]):
+                            settings_save_btn = gr.Button("Save Deepy Settings", variant="primary", elem_id=assistant_chat.SAVE_SETTINGS_BUTTON_ID)
                 template_selection_history = gr.State(_build_template_selection_history(initial_tool_values))
                 template_modal_state = gr.State({})
                 captured_lset_value = gr.Text(value="", interactive=False, visible=False)
@@ -345,14 +369,18 @@ def build_deepy_chat_ui(*, deepy_visible: bool) -> DeepyChatUI:
         launcher_host=launcher_host,
         panel=panel,
         settings_launcher_host=settings_launcher_host,
+        settings_save_btn=settings_save_btn,
         html_output=html_output,
         chat_event=chat_event,
+        busy_queue_request=busy_queue_request,
+        busy_queue_btn=busy_queue_btn,
         stats_output=stats_output,
         stop_btn=stop_btn,
         request=request,
         ask_btn=ask_btn,
         reset_btn=reset_btn,
         auto_cancel_queue_tasks=auto_cancel_queue_tasks,
+        separate_requests_with_empty_line=separate_requests_with_empty_line,
         use_template_properties=use_template_properties,
         override_height=override_height,
         override_width=override_width,
@@ -439,6 +467,7 @@ def bind_deepy_chat_ui(
         audio_file_selected_value,
         ask_request,
         auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
         use_template_properties,
         override_height,
         override_width,
@@ -452,9 +481,86 @@ def bind_deepy_chat_ui(
         default_speech_from_sample,
     ):
         handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
-        handlers.update_tool_ui_settings(
+        update_session_ui_settings(
+            state_value,
+            auto_cancel_queue_tasks,
+            separate_requests_with_empty_line,
+            use_template_properties,
+            override_height,
+            override_width,
+            override_num_frames,
+            override_seed,
+            default_video_generator,
+            default_video_with_speech,
+            default_image_generator,
+            default_image_editor,
+            default_speech_from_description,
+            default_speech_from_sample,
+        )
+        yield from handlers.ask_ai(state_value, ask_request)
+
+    def enqueue_ai_with_ui_settings(
+        state_value,
+        output_value,
+        last_choice_value,
+        audio_files_paths_value,
+        audio_file_selected_value,
+        ask_request,
+        auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
+        use_template_properties,
+        override_height,
+        override_width,
+        override_num_frames,
+        override_seed,
+        default_video_generator,
+        default_video_with_speech,
+        default_image_generator,
+        default_image_editor,
+        default_speech_from_description,
+        default_speech_from_sample,
+    ):
+        handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
+        update_session_ui_settings(
+            state_value,
+            auto_cancel_queue_tasks,
+            separate_requests_with_empty_line,
+            use_template_properties,
+            override_height,
+            override_width,
+            override_num_frames,
+            override_seed,
+            default_video_generator,
+            default_video_with_speech,
+            default_image_generator,
+            default_image_editor,
+            default_speech_from_description,
+            default_speech_from_sample,
+        )
+        return handlers.enqueue_ai(state_value, ask_request)
+
+    def _apply_ui_settings(
+        state_value,
+        auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
+        use_template_properties,
+        override_height,
+        override_width,
+        override_num_frames,
+        override_seed,
+        default_video_generator,
+        default_video_with_speech,
+        default_image_generator,
+        default_image_editor,
+        default_speech_from_description,
+        default_speech_from_sample,
+        *,
+        persist,
+    ):
+        return handlers.update_tool_ui_settings(
             state_value,
             auto_cancel_queue_tasks=auto_cancel_queue_tasks,
+            separate_requests_with_empty_line=separate_requests_with_empty_line,
             use_template_properties=use_template_properties,
             width=override_width,
             height=override_height,
@@ -466,18 +572,82 @@ def bind_deepy_chat_ui(
             video_generator_variant=default_video_generator,
             speech_from_description_variant=default_speech_from_description,
             speech_from_sample_variant=default_speech_from_sample,
+            persist=persist,
+        )
+
+    def update_session_ui_settings(
+        state_value,
+        auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
+        use_template_properties,
+        override_height,
+        override_width,
+        override_num_frames,
+        override_seed,
+        default_video_generator,
+        default_video_with_speech,
+        default_image_generator,
+        default_image_editor,
+        default_speech_from_description,
+        default_speech_from_sample,
+    ):
+        return _apply_ui_settings(
+            state_value,
+            auto_cancel_queue_tasks,
+            separate_requests_with_empty_line,
+            use_template_properties,
+            override_height,
+            override_width,
+            override_num_frames,
+            override_seed,
+            default_video_generator,
+            default_video_with_speech,
+            default_image_generator,
+            default_image_editor,
+            default_speech_from_description,
+            default_speech_from_sample,
+            persist=False,
+        )
+
+    def persist_ui_settings(
+        state_value,
+        auto_cancel_queue_tasks,
+        separate_requests_with_empty_line,
+        use_template_properties,
+        override_height,
+        override_width,
+        override_num_frames,
+        override_seed,
+        default_video_generator,
+        default_video_with_speech,
+        default_image_generator,
+        default_image_editor,
+        default_speech_from_description,
+        default_speech_from_sample,
+    ):
+        _apply_ui_settings(
+            state_value,
+            auto_cancel_queue_tasks,
+            separate_requests_with_empty_line,
+            use_template_properties,
+            override_height,
+            override_width,
+            override_num_frames,
+            override_seed,
+            default_video_generator,
+            default_video_with_speech,
+            default_image_generator,
+            default_image_editor,
+            default_speech_from_description,
+            default_speech_from_sample,
             persist=True,
         )
-        yield from handlers.ask_ai(state_value, ask_request)
 
     def stop_ai_with_ui(state_value):
         return handlers.stop_ai(state_value)
 
     def reset_ai_with_ui(state_value):
         return handlers.reset_ai(state_value)
-
-    def persist_auto_cancel_queue_tasks(state_value, auto_cancel_queue_tasks):
-        handlers.persist_auto_cancel_queue_tasks(state_value, auto_cancel_queue_tasks)
 
     def open_add_template_modal(tool_name, state_value, lset_value, lset_label, current_variant):
         selected_label = str(Path(str(lset_value or "").strip()).name or str(lset_label or "").strip() or "Nothing selected").strip()
@@ -560,13 +730,6 @@ def bind_deepy_chat_ui(
             modal_updates = _open_template_modal({}, _modal_title_html(tool_name), body_html, close_visible=True)
             return (*dropdown_noops, normalized_history, *modal_updates)
 
-    ui.auto_cancel_queue_tasks.change(
-        fn=persist_auto_cancel_queue_tasks,
-        inputs=[state, ui.auto_cancel_queue_tasks],
-        outputs=None,
-        show_progress="hidden",
-        queue=False,
-    )
     ui.use_template_properties.change(
         fn=toggle_override_controls,
         inputs=[ui.use_template_properties],
@@ -618,6 +781,27 @@ def bind_deepy_chat_ui(
         show_progress="hidden",
         queue=False,
     )
+    ui.settings_save_btn.click(
+        fn=persist_ui_settings,
+        inputs=[
+            state,
+            ui.auto_cancel_queue_tasks,
+            ui.separate_requests_with_empty_line,
+            ui.use_template_properties,
+            ui.override_height,
+            ui.override_width,
+            ui.override_num_frames,
+            ui.override_seed,
+            ui.default_video_generator,
+            ui.default_video_with_speech,
+            ui.default_image_generator,
+            ui.default_image_editor,
+            ui.default_speech_from_description,
+            ui.default_speech_from_sample,
+        ],
+        outputs=None,
+        show_progress="hidden",
+    )
     ui.ask_btn.click(
         fn=ask_ai_with_ui_settings,
         inputs=[
@@ -628,6 +812,7 @@ def bind_deepy_chat_ui(
             audio_file_selected,
             ui.request,
             ui.auto_cancel_queue_tasks,
+            ui.separate_requests_with_empty_line,
             ui.use_template_properties,
             ui.override_height,
             ui.override_width,
@@ -642,6 +827,34 @@ def bind_deepy_chat_ui(
         ],
         outputs=[ui.chat_event, load_queue_trigger, ui.request, output_trigger, abort_client_id],
         show_progress="hidden",
+        trigger_mode="multiple",
+    )
+    ui.busy_queue_btn.click(
+        fn=enqueue_ai_with_ui_settings,
+        inputs=[
+            state,
+            output,
+            last_choice,
+            audio_files_paths,
+            audio_file_selected,
+            ui.busy_queue_request,
+            ui.auto_cancel_queue_tasks,
+            ui.separate_requests_with_empty_line,
+            ui.use_template_properties,
+            ui.override_height,
+            ui.override_width,
+            ui.override_num_frames,
+            ui.override_seed,
+            ui.default_video_generator,
+            ui.default_video_with_speech,
+            ui.default_image_generator,
+            ui.default_image_editor,
+            ui.default_speech_from_description,
+            ui.default_speech_from_sample,
+        ],
+        outputs=[ui.chat_event, ui.request],
+        show_progress="hidden",
+        queue=False,
     )
     ui.stop_btn.click(fn=stop_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden", queue=False)
     ui.reset_btn.click(fn=reset_ai_with_ui, inputs=[state], outputs=[ui.chat_event, load_queue_trigger, ui.request, abort_client_id], show_progress="hidden")

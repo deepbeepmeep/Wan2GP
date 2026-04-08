@@ -98,12 +98,16 @@ class BlockManager:
         seq.block_table.clear()
 
     def can_append(self, seq: Sequence) -> bool:
-        return len(self.free_block_ids) >= (len(seq) % self.block_size == 1)
+        needs_new_block = len(seq) % self.block_size == 1 and len(seq.block_table) < seq.num_blocks
+        return len(self.free_block_ids) >= needs_new_block
 
     def may_append(self, seq: Sequence):
         block_table = seq.block_table
         last_block = self.blocks[block_table[-1]]
         if len(seq) % self.block_size == 1:
+            if len(block_table) >= seq.num_blocks:
+                assert last_block.hash == -1
+                return
             assert last_block.hash != -1
             block_id = self.free_block_ids[0]
             self._allocate_block(block_id)
@@ -117,3 +121,71 @@ class BlockManager:
             self.hash_to_block_id[h] = last_block.block_id
         else:
             assert last_block.hash == -1
+
+    def prompt_append_blocks_needed(self, seq: Sequence, old_num_tokens: int) -> int:
+        old_num_tokens = max(0, int(old_num_tokens or 0))
+        return max(0, int(seq.num_blocks) - int(self._prompt_append_existing_blocks(seq, old_num_tokens)))
+
+    def can_prompt_append(self, seq: Sequence, old_num_tokens: int) -> bool:
+        return len(self.free_block_ids) >= self.prompt_append_blocks_needed(seq, old_num_tokens)
+
+    def _prompt_append_existing_blocks(self, seq: Sequence, old_num_tokens: int) -> int:
+        old_num_tokens = max(0, int(old_num_tokens or 0))
+        if old_num_tokens == 0:
+            return 0
+        old_num_blocks = (old_num_tokens + self.block_size - 1) // self.block_size
+        existing_blocks = len(seq.block_table)
+        if existing_blocks >= old_num_blocks:
+            return old_num_blocks
+        if old_num_tokens % self.block_size == 1 and existing_blocks == old_num_blocks - 1:
+            return existing_blocks
+        raise AssertionError(f"Prompt-append block table mismatch: tokens={old_num_tokens} blocks={existing_blocks} expected>={old_num_blocks - 1}")
+
+    def begin_prompt_append(self, seq: Sequence, old_num_tokens: int) -> None:
+        old_num_tokens = max(0, int(old_num_tokens or 0))
+        self._prompt_append_existing_blocks(seq, old_num_tokens)
+        while len(seq.block_table) < seq.num_blocks:
+            block_id = self.free_block_ids[0]
+            self._allocate_block(block_id)
+            seq.block_table.append(block_id)
+
+    def finalize_prompt_append(self, seq: Sequence, old_num_tokens: int) -> None:
+        old_num_tokens = max(0, int(old_num_tokens or 0))
+        start_block = 0 if old_num_tokens == 0 else old_num_tokens // self.block_size
+        prefix_hash = -1
+        if start_block > 0 and start_block <= len(seq.block_table):
+            prefix_hash = int(self.blocks[seq.block_table[start_block - 1]].hash)
+        for block_index in range(start_block, int(seq.num_blocks)):
+            block_id = int(seq.block_table[block_index])
+            block = self.blocks[block_id]
+            token_ids = seq.block(block_index)
+            previous_hash = int(block.hash)
+            if len(token_ids) == self.block_size:
+                new_hash = self.compute_hash(token_ids, prefix_hash)
+                if previous_hash != -1:
+                    cached_id = self.hash_to_block_id.get(previous_hash)
+                    if cached_id == block_id and previous_hash != new_hash:
+                        del self.hash_to_block_id[previous_hash]
+                block.update(new_hash, token_ids)
+                self.hash_to_block_id[new_hash] = block_id
+                prefix_hash = new_hash
+            else:
+                if previous_hash != -1:
+                    cached_id = self.hash_to_block_id.get(previous_hash)
+                    if cached_id == block_id:
+                        del self.hash_to_block_id[previous_hash]
+                block.hash = -1
+                block.token_ids = []
+                break
+
+    def normalize_tail_after_prefill(self, seq: Sequence) -> None:
+        if not seq.block_table or len(seq) == 0 or len(seq) % self.block_size != 0:
+            return
+        last_block = self.blocks[int(seq.block_table[-1])]
+        if last_block.hash == -1:
+            return
+        cached_id = self.hash_to_block_id.get(int(last_block.hash))
+        if cached_id == last_block.block_id:
+            del self.hash_to_block_id[last_block.hash]
+        last_block.hash = -1
+        last_block.token_ids = []

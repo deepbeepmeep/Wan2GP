@@ -4,6 +4,7 @@ import json
 from shared.deepy.engine import get_or_create_assistant_session
 from shared.gradio import assistant_chat, gradio_queue_focus_patch
 from shared.deepy.config import (
+    DEEPY_CONTEXT_TOKENS_MIN,
     DEEPY_CONTEXT_TOKENS_DEFAULT,
     DEEPY_CONTEXT_TOKENS_KEY,
     DEEPY_CUSTOM_SYSTEM_PROMPT_KEY,
@@ -316,7 +317,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     deepy_context_tokens_default = normalize_deepy_context_tokens(self.server_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
                     self.deepy_context_tokens_choice = gr.Slider(
-                        minimum=4096,
+                        minimum=DEEPY_CONTEXT_TOKENS_MIN,
                         maximum=256000,
                         value=deepy_context_tokens_default,
                         step=512,

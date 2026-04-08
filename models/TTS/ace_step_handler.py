@@ -43,7 +43,10 @@ ACE_STEP15_TRANSFORMER_VARIANTS = {
     "turbo_shift1": "ace_step_v1_5_transformer_config_turbo_shift1.json",
     "turbo_shift3": "ace_step_v1_5_transformer_config_turbo_shift3.json",
     "turbo_continuous": "ace_step_v1_5_transformer_config_turbo_continuous.json",
+    "xl_turbo": "ace_step_v1_5_xl_transformer_config_turbo.json",
 }
+ACE_STEP15_XL_TRANSFORMER_VARIANT = "xl_turbo"
+ACE_STEP15_FAMILY_TYPES = {"ace_step_v1_5", "ace_step_v1_5_xl"}
 
 def _ace_step15_lm_weights_name(lm_folder):
     folder_name = os.path.basename(os.path.normpath(str(lm_folder)))
@@ -227,7 +230,36 @@ def _ace_step15_config_path(filename):
 
 
 def _is_ace_step15(base_model_type):
-    return base_model_type == "ace_step_v1_5"
+    return base_model_type in ACE_STEP15_FAMILY_TYPES
+
+
+def _is_ace_step15_xl(base_model_type):
+    return base_model_type == "ace_step_v1_5_xl"
+
+
+def _ace_step15_profiles_dir(base_model_type):
+    return "ace_step_v1_5_xl" if _is_ace_step15_xl(base_model_type) else "ace_step_v1_5"
+
+
+def _ace_step15_lora_dir_name(base_model_type):
+    return "ace_step_v1_5_xl" if _is_ace_step15_xl(base_model_type) else "ace_step_v1_5"
+
+
+def _ace_step15_resolve_transformer_config(base_model_type, model_def):
+    transformer_variant = _get_model_path(model_def, "ace_step15_transformer_variant", "")
+    if not transformer_variant and _is_ace_step15_xl(base_model_type):
+        transformer_variant = ACE_STEP15_XL_TRANSFORMER_VARIANT
+    transformer_variant = str(transformer_variant or "turbo").lower()
+
+    transformer_config = _get_model_path(model_def, "ace_step15_transformer_config", None)
+    if transformer_config:
+        transformer_config = fl.locate_file(transformer_config, error_if_none=False) or transformer_config
+        if os.path.isfile(transformer_config):
+            return transformer_config, transformer_variant
+
+    config_name = ACE_STEP15_TRANSFORMER_VARIANTS.get(transformer_variant, ACE_STEP15_TRANSFORMER_CONFIG_NAME)
+    default_config_path = _ace_step15_config_path(config_name)
+    return default_config_path, transformer_variant
 
 
 def _ace_step15_has_lm_definition(model_def):
@@ -242,7 +274,7 @@ def _ace_step15_has_lm_definition(model_def):
 class family_handler:
     @staticmethod
     def query_supported_types():
-        return ["ace_step_v1", "ace_step_v1_5"]
+        return ["ace_step_v1", "ace_step_v1_5", "ace_step_v1_5_xl"]
 
     @staticmethod
     def query_family_maps():
@@ -271,11 +303,19 @@ class family_handler:
             default=None,
             help=f"Path to a directory that contains Ace Step 1.5 settings (default: {os.path.join(lora_root, 'ace_step_v1_5')})",
         )
+        parser.add_argument(
+            "--lora-dir-ace-step15-xl",
+            dest="lora_ace_step15_xl",
+            type=str,
+            default=None,
+            help=f"Path to a directory that contains Ace Step 1.5 XL settings (default: {os.path.join(lora_root, 'ace_step_v1_5_xl')})",
+        )
 
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
         if _is_ace_step15(base_model_type):
-            return getattr(args, "lora_ace_step15", None) or os.path.join(lora_root, "ace_step_v1_5")
+            attr_name = "lora_ace_step15_xl" if _is_ace_step15_xl(base_model_type) else "lora_ace_step15"
+            return getattr(args, attr_name, None) or os.path.join(lora_root, _ace_step15_lora_dir_name(base_model_type))
         return getattr(args, "lora_ace_step", None) or os.path.join(lora_root, "ace_step")
 
     @staticmethod
@@ -289,7 +329,7 @@ class family_handler:
                 "lock_inference_steps": True,
                 "no_negative_prompt": True,
                 "image_prompt_types_allowed": "",
-                "profiles_dir": ["ace_step_v1_5"],
+                "profiles_dir": [_ace_step15_profiles_dir(base_model_type)],
                 "text_encoder_folder": _get_model_path(model_def, "text_encoder_folder", ACE_STEP15_LM_FOLDER),
                 "inference_steps": True,
                 "temperature": True,
@@ -466,15 +506,10 @@ class family_handler:
 
         if _is_ace_step15(base_model_type):
             from .ace_step15.pipeline_ace_step15 import ACEStep15Pipeline
+            from .ace_step15.models.ace_step15_hf import AceStepConditionGenerationModel as AceStep15Transformer
+            from .ace_step15.models.ace_step15_xl_hf import AceStepConditionGenerationModel as AceStep15XLTransformer
 
-            transformer_variant = _get_model_path(model_def, "ace_step15_transformer_variant", "")
-            transformer_config_name = ACE_STEP15_TRANSFORMER_CONFIG_NAME
-            if transformer_variant:
-                transformer_config_name = ACE_STEP15_TRANSFORMER_VARIANTS.get(
-                    str(transformer_variant).lower(),
-                    transformer_config_name,
-                )
-            transformer_config = _get_model_path(model_def, "ace_step15_transformer_config", _ace_step15_config_path(transformer_config_name))
+            transformer_config, _ = _ace_step15_resolve_transformer_config(base_model_type, model_def)
             vae_weights = _get_model_path(model_def, "ace_step15_vae_weights", _ace_step15_ckpt_file(ACE_STEP15_VAE_WEIGHTS_NAME))
             vae_config = _get_model_path(model_def, "ace_step15_vae_config", _ace_step15_config_path(ACE_STEP15_VAE_CONFIG_NAME))
 
@@ -500,6 +535,7 @@ class family_handler:
             pipeline = ACEStep15Pipeline(
                 transformer_weights_path=transformer_weights,
                 transformer_config_path=transformer_config,
+                transformer_model_class=AceStep15XLTransformer if _is_ace_step15_xl(base_model_type) else AceStep15Transformer,
                 vae_weights_path=vae_weights,
                 vae_config_path=vae_config,
                 text_encoder_2_weights_path=text_encoder_2_weights,
@@ -597,7 +633,7 @@ class family_handler:
                     "top_k": 0,
                     "guidance_scale": 1.0,
                     "alt_guidance_scale": 2.5,
-                    "multi_prompts_gen_type": 2,
+                    "multi_prompts_gen_type": "FG",
                     "audio_scale": 0.5,
                 }
             )
@@ -627,7 +663,7 @@ class family_handler:
                 "negative_prompt": "",
                 "temperature": 1.0,
                 "guidance_scale": 7.0,
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
                 "audio_scale": 0.5,
             }
         )

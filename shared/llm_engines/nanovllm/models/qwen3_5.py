@@ -295,9 +295,9 @@ def torch_chunk_gated_delta_rule(
     initial_dtype = query.dtype
     query = l2norm(query, dim=-1)
     key = l2norm(key, dim=-1)
-    query, key, value, beta, g = [
-        x.transpose(1, 2).contiguous().to(torch.float32) for x in (query, key, value, beta, g)
-    ]
+    query, key = [x.transpose(1, 2).contiguous().to(torch.float32) for x in (query, key)]
+    value, beta = [x.transpose(1, 2).contiguous() for x in (value, beta)]
+    g = g.transpose(1, 2).contiguous().to(torch.float32)
 
     batch_size, num_heads, sequence_length, k_head_dim = key.shape
     v_head_dim = value.shape[-1]
@@ -308,53 +308,53 @@ def torch_chunk_gated_delta_rule(
     beta = F.pad(beta, (0, pad_size))
     g = F.pad(g, (0, pad_size))
     total_sequence_length = sequence_length + pad_size
-    query = query * (query.shape[-1] ** -0.5)
-
-    v_beta = value * beta.unsqueeze(-1)
-    k_beta = key * beta.unsqueeze(-1)
-    query, key, value, k_beta, v_beta = [
-        x.reshape(x.shape[0], x.shape[1], -1, chunk_size, x.shape[-1]) for x in (query, key, value, k_beta, v_beta)
-    ]
-    g = g.reshape(g.shape[0], g.shape[1], -1, chunk_size)
+    num_chunks = total_sequence_length // chunk_size
+    query = (query * (query.shape[-1] ** -0.5)).reshape(query.shape[0], query.shape[1], -1, chunk_size, query.shape[-1])
+    key = key.reshape(key.shape[0], key.shape[1], -1, chunk_size, key.shape[-1])
+    value = value.reshape(value.shape[0], value.shape[1], -1, chunk_size, value.shape[-1])
+    beta = beta.reshape(beta.shape[0], beta.shape[1], -1, chunk_size)
+    g = g.reshape(g.shape[0], g.shape[1], -1, chunk_size).cumsum(dim=-1)
     lower_mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=0)
-
-    g = g.cumsum(dim=-1)
-    decay_mask = ((g.unsqueeze(-1) - g.unsqueeze(-2)).tril().exp().float()).tril()
-    attn = -((k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(lower_mask, 0)
-    for idx in range(1, chunk_size):
-        row = attn[..., idx, :idx].clone()
-        sub = attn[..., :idx, :idx].clone()
-        attn[..., idx, :idx] = row + (row.unsqueeze(-1) * sub).sum(-2)
-    attn = attn + torch.eye(chunk_size, dtype=attn.dtype, device=attn.device)
-    value = attn @ v_beta
-    k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
-    recurrent_state = (
-        torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim, device=value.device, dtype=value.dtype)
-        if initial_state is None
-        else initial_state.to(value)
-    )
-    outputs = torch.zeros_like(value)
     upper_mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=1)
+    recurrent_state = (
+        torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim, device=value.device, dtype=torch.float32)
+        if initial_state is None
+        else initial_state.to(torch.float32)
+    )
+    outputs = torch.empty(batch_size, num_heads, num_chunks, chunk_size, v_head_dim, device=value.device, dtype=initial_dtype)
+    eye = torch.eye(chunk_size, dtype=torch.float32, device=query.device)
 
-    for idx in range(0, total_sequence_length // chunk_size):
+    for idx in range(num_chunks):
         q_i = query[:, :, idx]
         k_i = key[:, :, idx]
-        v_i = value[:, :, idx]
-        attn = (q_i @ k_i.transpose(-1, -2) * decay_mask[:, :, idx]).masked_fill_(upper_mask, 0)
-        v_prime = k_cumdecay[:, :, idx] @ recurrent_state
-        v_new = v_i - v_prime
-        attn_inter = (q_i * g[:, :, idx, :, None].exp()) @ recurrent_state
-        outputs[:, :, idx] = attn_inter + attn @ v_new
-        recurrent_state = (
-            recurrent_state * g[:, :, idx, -1, None, None].exp()
-            + (k_i * (g[:, :, idx, -1, None] - g[:, :, idx]).exp()[..., None]).transpose(-1, -2) @ v_new
-        )
+        value_i = value[:, :, idx].to(torch.float32)
+        beta_i = beta[:, :, idx].to(torch.float32)
+        g_i = g[:, :, idx]
+        beta_i_unsqueezed = beta_i.unsqueeze(-1)
+        g_exp_i = g_i.exp().unsqueeze(-1)
+        k_beta_i = k_i * beta_i_unsqueezed
+        decay_mask_i = ((g_i.unsqueeze(-1) - g_i.unsqueeze(-2)).tril().exp()).tril()
+        lower = k_beta_i @ k_i.transpose(-1, -2)
+        lower.mul_(decay_mask_i)
+        lower.masked_fill_(lower_mask, 0)
+        lower.add_(eye)
+        value_i.mul_(beta_i_unsqueezed)
+        value_i = torch.linalg.solve_triangular(lower, value_i, upper=False, left=True)
+        k_beta_i.mul_(g_exp_i)
+        k_cumdecay_i = torch.linalg.solve_triangular(lower, k_beta_i, upper=False, left=True)
+        attn_i = q_i @ k_i.transpose(-1, -2)
+        attn_i.mul_(decay_mask_i)
+        attn_i.masked_fill_(upper_mask, 0)
+        value_i.sub_(k_cumdecay_i @ recurrent_state)
+        outputs[:, :, idx] = (((q_i * g_exp_i) @ recurrent_state) + attn_i @ value_i).to(initial_dtype)
+        recurrent_state.mul_(g_i[:, :, -1, None, None].exp())
+        recurrent_state.add_((k_i * (g_i[:, :, -1, None] - g_i).exp().unsqueeze(-1)).transpose(-1, -2) @ value_i)
 
     outputs = outputs.reshape(outputs.shape[0], outputs.shape[1], -1, outputs.shape[-1])
     outputs = outputs[:, :, :sequence_length]
     if not output_final_state:
         recurrent_state = None
-    return outputs.transpose(1, 2).contiguous().to(initial_dtype), recurrent_state
+    return outputs.transpose(1, 2).contiguous(), recurrent_state
 
 
 def torch_recurrent_gated_delta_rule(
@@ -369,35 +369,37 @@ def torch_recurrent_gated_delta_rule(
     initial_dtype = query.dtype
     query = l2norm(query, dim=-1)
     key = l2norm(key, dim=-1)
-    query, key, value, beta, g = [
-        x.transpose(1, 2).contiguous().to(torch.float32) for x in (query, key, value, beta, g)
-    ]
+    query, key, value, beta = [x.transpose(1, 2).contiguous() for x in (query, key, value, beta)]
+    g = g.transpose(1, 2).contiguous().to(torch.float32)
 
     batch_size, num_heads, sequence_length, k_head_dim = key.shape
     v_head_dim = value.shape[-1]
-    query = query * (query.shape[-1] ** -0.5)
-    outputs = torch.zeros(batch_size, num_heads, sequence_length, v_head_dim, device=value.device, dtype=value.dtype)
+    scale = query.shape[-1] ** -0.5
+    outputs = torch.empty(batch_size, num_heads, sequence_length, v_head_dim, device=value.device, dtype=initial_dtype)
     recurrent_state = (
-        torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim, device=value.device, dtype=value.dtype)
+        torch.zeros(batch_size, num_heads, k_head_dim, v_head_dim, device=value.device, dtype=torch.float32)
         if initial_state is None
-        else initial_state.to(value)
+        else initial_state.to(torch.float32)
     )
 
     for idx in range(sequence_length):
-        q_t = query[:, :, idx]
-        k_t = key[:, :, idx]
-        v_t = value[:, :, idx]
-        g_t = g[:, :, idx].exp().unsqueeze(-1).unsqueeze(-1)
-        beta_t = beta[:, :, idx].unsqueeze(-1)
+        q_t = query[:, :, idx].to(torch.float32)
+        k_t = key[:, :, idx].to(torch.float32)
+        v_t = value[:, :, idx].to(torch.float32)
+        g_t = g[:, :, idx]
+        beta_t = beta[:, :, idx].to(torch.float32)
+        q_t = q_t * scale
+        g_t = g_t.exp().unsqueeze(-1).unsqueeze(-1)
+        beta_t = beta_t.unsqueeze(-1)
         recurrent_state = recurrent_state * g_t
         kv_mem = (recurrent_state * k_t.unsqueeze(-1)).sum(dim=-2)
         delta = (v_t - kv_mem) * beta_t
         recurrent_state = recurrent_state + k_t.unsqueeze(-1) * delta.unsqueeze(-2)
-        outputs[:, :, idx] = (recurrent_state * q_t.unsqueeze(-1)).sum(dim=-2)
+        outputs[:, :, idx] = (recurrent_state * q_t.unsqueeze(-1)).sum(dim=-2).to(initial_dtype)
 
     if not output_final_state:
         recurrent_state = None
-    return outputs.transpose(1, 2).contiguous().to(initial_dtype), recurrent_state
+    return outputs.transpose(1, 2).contiguous(), recurrent_state
 
 
 class Qwen3_5DynamicCache:
@@ -802,7 +804,7 @@ class Qwen3_5Block(nn.Module):
         else:
             conv_state = self._get_runtime_conv_state(batch_size, hidden_states)
             recurrent_state = self._get_runtime_recurrent_state(batch_size, hidden_states)
-            has_previous_state = not context.is_prefill
+            has_previous_state = bool(getattr(context, "has_previous_state", False)) if context.is_prefill else True
         use_precomputed_states = has_previous_state and seq_len == 1
 
         mixed_qkv_input = self.attn_qkv(hidden_states)
@@ -877,6 +879,9 @@ class Qwen3_5Block(nn.Module):
                         conv_kernel,
                         self.ssm_conv1d.bias,
                     )
+            elif has_previous_state:
+                conv_kernel = self.ssm_conv1d.weight.reshape(self.ssm_conv1d.weight.shape[0], self.ssm_conv1d.weight.shape[-1])
+                mixed_qkv = torch_causal_conv1d_update(mixed_qkv, conv_state, conv_kernel, self.ssm_conv1d.bias)
             else:
                 if cache_params is not None:
                     if mixed_qkv.shape[-1] >= self.conv_kernel_size:
@@ -972,6 +977,7 @@ class Qwen3_5Block(nn.Module):
                     output_final_state=True,
                 )
         else:
+            recurrent_initial_state = recurrent_state if has_previous_state else None
             if self._fast_chunk_gated_delta_rule is not None and hidden_states.is_cuda:
                 core_attn_out, last_recurrent_state = self._fast_chunk_gated_delta_rule(
                     query,
@@ -979,7 +985,7 @@ class Qwen3_5Block(nn.Module):
                     value,
                     g=g,
                     beta=beta,
-                    initial_state=None,
+                    initial_state=recurrent_initial_state,
                     output_final_state=True,
                     use_qk_l2norm_in_kernel=True,
                 )
@@ -990,7 +996,7 @@ class Qwen3_5Block(nn.Module):
                     value,
                     g=g,
                     beta=beta,
-                    initial_state=None,
+                    initial_state=recurrent_initial_state,
                     output_final_state=True,
                 )
 

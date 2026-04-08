@@ -20,6 +20,7 @@ from .utils import ModelLedger
 from .utils.args import default_2_stage_distilled_arg_parser
 from .utils.constants import (
     AUDIO_SAMPLE_RATE,
+    DEFAULT_NEGATIVE_PROMPT,
     DISTILLED_SIGMA_VALUES,
     STAGE_2_DISTILLED_SIGMA_VALUES,
 )
@@ -107,8 +108,8 @@ class _TransformerBenchWrapper:
 class DistilledPipeline:
     """
     Two-stage distilled video generation pipeline.
-    Stage 1 generates video at the target resolution, then Stage 2 upsamples
-    by 2x and refines with additional denoising steps for higher quality output.
+    Stage 1 generates video at half resolution, then Stage 2 performs the
+    distilled x2 upscale/refine pass to reach the requested output resolution.
     """
 
     def __init__(
@@ -163,15 +164,19 @@ class DistilledPipeline:
         num_frames: int,
         frame_rate: float,
         images: list[tuple[str, int, float]],
+        negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
         guiding_images: list[tuple] | None = None,
         guiding_images_stage2: list[tuple] | None = None,
         alt_guidance_scale: float = 1.0,
+        audio_cfg_guidance_scale: float = 1.0,
         video_conditioning: list[tuple[str, float]] | None = None,
         video_conditioning_downscale_factor: int = 1,
         latent_conditioning_stage2: torch.Tensor | None = None,
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
         audio_conditionings: list | None = None,
+        audio_conditionings_stage2: list | None = None,
+        audio_identity_guidance_scale: float = 0.0,
         callback: Callable[..., None] | None = None,
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
@@ -187,6 +192,7 @@ class DistilledPipeline:
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         assert_resolution(height=height, width=width, is_two_stage=True)
         alt_guidance_scale = 1.0
+        negative_prompt = negative_prompt or DEFAULT_NEGATIVE_PROMPT
 
         generator = torch.Generator(device=self.device).manual_seed(seed)
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
@@ -243,12 +249,12 @@ class DistilledPipeline:
             video_connector,
             audio_connector,
         )
-        contexts = self.text_encoder_cache.encode(encode_fn, [prompt], device=self.device, parallel=True)
+        contexts = self.text_encoder_cache.encode(encode_fn, [prompt, negative_prompt], device=self.device, parallel=True)
 
         torch.cuda.synchronize()
         del text_encoder
         cleanup_memory()
-        video_context, audio_context = contexts[0]
+        (video_context, audio_context), (_, audio_context_n) = contexts
 
         # Stage 1: Initial low resolution video generation.
         bench_transformer = _env_flag(_BENCH_TRANSFORMER_ENV, "0")
@@ -289,6 +295,9 @@ class DistilledPipeline:
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
                     alt_guidance_scale=alt_guidance_scale,
+                    audio_context_n=audio_context_n,
+                    audio_guidance_scale=audio_cfg_guidance_scale,
+                    audio_identity_guidance_scale=audio_identity_guidance_scale,
                 ),
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
@@ -382,7 +391,7 @@ class DistilledPipeline:
         if bench_transformer:
             stage1_transformer_ms, stage1_transformer_calls = transformer.consume()
             print(
-                "[WAN2GP][LTX2][bench] transformer stage1: "
+                "[WAN2GP][LTX2][bench] transformer pass1: "
                 f"{stage1_transformer_ms / 1000.0:.3f}s ({stage1_transformer_calls} calls)"
             )
         if video_state is None or audio_state is None:
@@ -390,7 +399,7 @@ class DistilledPipeline:
         if interrupt_check is not None and interrupt_check():
             return None, None
 
-        # Stage 2: Upsample and refine the video at higher resolution with distilled LORA.
+        stage_2_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
         upscaled_video_latent = upsample_video(
             latent=video_state.latent[:1],
             video_encoder=video_encoder,
@@ -400,7 +409,6 @@ class DistilledPipeline:
         torch.cuda.synchronize()
         cleanup_memory()
 
-        stage_2_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
         pass_no = 2
         if loras_slists is not None:
             stage_2_steps = len(stage_2_sigmas) - 1
@@ -443,7 +451,14 @@ class DistilledPipeline:
                 self_refiner_handler_audio=self_refiner_handler_audio_stage2,
                 self_refiner_generator=generator,
             )
-        stage_2_output_shape = VideoPixelShape(batch=1, frames=num_frames, width=width, height=height, fps=frame_rate)
+
+        stage_2_output_shape = VideoPixelShape(
+            batch=1,
+            frames=num_frames,
+            width=width,
+            height=height,
+            fps=frame_rate,
+        )
         stage_2_conditionings = image_conditionings_by_replacing_latent(
             images=images,
             height=stage_2_output_shape.height,
@@ -481,10 +496,12 @@ class DistilledPipeline:
             generator=mask_generator,
             num_steps=len(stage_2_sigmas) - 1,
         )
+        freeze_audio_stage2 = audio_identity_guidance_scale > 0.0
+        stage_2_audio_conditionings = audio_conditionings if audio_conditionings_stage2 is None else audio_conditionings_stage2
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_2_output_shape,
             conditionings=stage_2_conditionings,
-            audio_conditionings=audio_conditionings,
+            audio_conditionings=stage_2_audio_conditionings,
             noiser=noiser,
             sigmas=stage_2_sigmas,
             stepper=stepper,
@@ -493,16 +510,18 @@ class DistilledPipeline:
             dtype=dtype,
             device=self.device,
             noise_scale=stage_2_sigmas[0],
+            audio_noise_scale=0.0 if freeze_audio_stage2 else stage_2_sigmas[0],
             initial_video_latent=upscaled_video_latent,
             initial_audio_latent=audio_state.latent,
             mask_context=mask_context,
+            freeze_audio=freeze_audio_stage2,
         )
         if bench_transformer:
             stage2_transformer_ms, stage2_transformer_calls = transformer.consume()
             total_transformer_ms = stage1_transformer_ms + stage2_transformer_ms
             total_transformer_calls = stage1_transformer_calls + stage2_transformer_calls
             print(
-                "[WAN2GP][LTX2][bench] transformer stage2: "
+                "[WAN2GP][LTX2][bench] transformer pass2: "
                 f"{stage2_transformer_ms / 1000.0:.3f}s ({stage2_transformer_calls} calls)"
             )
             print(

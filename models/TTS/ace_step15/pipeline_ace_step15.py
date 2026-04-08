@@ -110,6 +110,7 @@ class ACEStep15Pipeline:
         lm_weights_path: str,
         lm_tokenizer_dir: str,
         silence_latent_path: str | None = None,
+        transformer_model_class=AceStepConditionGenerationModel,
         enable_lm: bool = True,
         ignore_lm_cache_seed: bool = False,
         lm_decoder_engine: str = "legacy",
@@ -136,6 +137,7 @@ class ACEStep15Pipeline:
         self.lm_weights_path = lm_weights_path
         self.lm_tokenizer_dir = lm_tokenizer_dir
         self.silence_latent_path = silence_latent_path
+        self.transformer_model_class = transformer_model_class
         self.ignore_lm_cache_seed = bool(ignore_lm_cache_seed)
         self.lm_engine = str(lm_decoder_engine or "legacy").strip().lower()
         if self.lm_engine not in {"legacy", "vllm"}:
@@ -168,12 +170,13 @@ class ACEStep15Pipeline:
     def _load_models(self, transformer_weights_path, transformer_config_path, vae_weights_path, vae_config_path):
         self.ace_step_transformer = offload.fast_load_transformers_model(
             transformer_weights_path,
-            modelClass=AceStepConditionGenerationModel,
+            modelClass=self.transformer_model_class,
             defaultConfigPath=transformer_config_path,
             default_dtype=self.dtype,
             writable_tensors=False,
             ignore_unused_weights=True,
         )
+        self._promote_xl_quantizer_to_fp32_before_mmgp()
         self.ace_step_transformer.eval()
         self.model = self.ace_step_transformer
 
@@ -210,6 +213,21 @@ class ACEStep15Pipeline:
                 folded += 1
         # if folded > 0:
         #     print(f"[ace_step15] Folded Oobleck decoder weight_norm once for {folded} layers.")
+
+    def _promote_xl_quantizer_to_fp32_before_mmgp(self):
+        class_module = str(getattr(self.transformer_model_class, "__module__", ""))
+        if "_xl_" not in class_module:
+            return
+        transformer = getattr(self, "ace_step_transformer", None)
+        tokenizer = getattr(transformer, "tokenizer", None)
+        quantizer = getattr(tokenizer, "quantizer", None)
+        if quantizer is None:
+            return
+        first_param = next(iter(quantizer.parameters()), None)
+        if first_param is None or first_param.dtype == torch.float32:
+            return
+        quantizer.float()
+        print("[ace_step15] keeping XL tokenizer quantizer in float32 before MMGP.")
 
     def _init_lm_hint_modules(self):
         self._lm_hint_quantizer = None
@@ -799,7 +817,8 @@ class ACEStep15Pipeline:
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
-            cfg_scale=cfg_scale,
+            # Upstream ACE-Step 1.5 disables CFG during CoT metadata generation.
+            cfg_scale=1.0,
             seed=metadata_seed,
             callback=callback,
             logits_processor=processor,
@@ -1884,7 +1903,7 @@ class ACEStep15Pipeline:
                         refine_caption=refine_caption,
                         infer_language=infer_language,
                         seed=phase1_seed,
-                        cfg_scale=1.0 if lm_cfg_scale is None else float(lm_cfg_scale),
+                        cfg_scale=1.0,
                         negative_prompt=lm_negative_prompt,
                         temperature=temperature,
                         top_p=top_p,
@@ -1901,10 +1920,22 @@ class ACEStep15Pipeline:
                 if infer_duration:
                     duration_value = self._parse_optional_int_custom_setting(phase1_metadata.get("duration", None))
                     if duration_value is None:
-                        raise RuntimeError("LM phase1 failed to resolve required metadata 'duration'.")
-                    duration_value = max(_ACE_STEP15_DURATION_MIN_SECONDS, min(_ACE_STEP15_DURATION_MAX_SECONDS, int(duration_value)))
-                    duration_seconds = float(duration_value)
-                    computed_phase1_metadata["duration"] = int(duration_value)
+                        fallback_duration = self._parse_optional_int_custom_setting(duration_seconds)
+                        if fallback_duration is None:
+                            fallback_duration = int(math.ceil(float(duration_seconds)))
+                        fallback_duration = max(
+                            _ACE_STEP15_DURATION_MIN_SECONDS,
+                            min(_ACE_STEP15_DURATION_MAX_SECONDS, int(fallback_duration)),
+                        )
+                        print(
+                            f"[ace_step15][phase1] duration metadata missing; "
+                            f"falling back to requested duration {fallback_duration}s."
+                        )
+                        duration_seconds = float(fallback_duration)
+                    else:
+                        duration_value = max(_ACE_STEP15_DURATION_MIN_SECONDS, min(_ACE_STEP15_DURATION_MAX_SECONDS, int(duration_value)))
+                        duration_seconds = float(duration_value)
+                        computed_phase1_metadata["duration"] = int(duration_value)
                 if len(computed_phase1_metadata) > 0:
                     print(f"[ace_step15][phase1] computed metadata: {computed_phase1_metadata}")
                 if refined_caption is not None:

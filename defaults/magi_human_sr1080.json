@@ -1,0 +1,20 @@
+{
+    "model": {
+        "name": "Magi Human Base 15B SR 1080p",
+        "architecture": "magi_human",
+        "description": "A two-stage Magi Human pipeline that generates a low-resolution talking-head video first, then applies the official 1080p super-resolution model. Please stick to 1080p as other resolutions may generate artifacts.",
+        "URLs": "magi_human",
+        "URLs2": [
+            "https://huggingface.co/DeepBeepMeep/MagiHuman/resolve/main/magi_human_sr1080_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/MagiHuman/resolve/main/magi_human_sr1080_quanto_bf16_int8.safetensors"
+        ]
+    },
+    "num_inference_steps": 32,
+    "guidance_scale": 5.0,
+    "audio_guidance_scale": 5.0,
+    "guidance_phases": 2,
+    "video_length": 101,
+    "resolution": "1920x1088",
+    "image_prompt_type": "S",
+    "prompt": "A calm woman with short dark hair looks into the camera and speaks clearly in English about how small daily habits can improve confidence. Her expression stays warm and natural, with subtle head movement, realistic blinking, and clean lip sync. Background Sound: <No prominent background sound>"
+}

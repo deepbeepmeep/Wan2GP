@@ -245,7 +245,7 @@ class family_handler:
                 "negative_prompt": "",
                 "temperature": 1.0,
                 "guidance_scale": 3.0,
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
             }
         )
 
@@ -266,13 +266,13 @@ class family_handler:
                 return (
                     "Two-voice cloning requires prompt lines with Speaker 1: and Speaker 2: "
                     "(or any two numeric speaker IDs). For headless settings, keep "
-                    "'multi_prompts_gen_type' = 2 so dialogue lines stay in one prompt."
+                    "'multi_prompts_gen_type' = 'FG' so dialogue lines stay in one prompt."
                 )
             speaker_ids = sorted({int(m.group(1)) for m in speaker_matches})
             if len(speaker_ids) != 2:
                 return (
                     "Two-voice cloning requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:. "
-                    "For headless settings, keep 'multi_prompts_gen_type' = 2."
+                    "For headless settings, keep 'multi_prompts_gen_type' = 'FG'."
                 )
         return None
 

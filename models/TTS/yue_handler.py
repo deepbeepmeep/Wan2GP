@@ -227,7 +227,7 @@ class family_handler:
                 "num_inference_steps": 0,
                 "negative_prompt": "",
                 "temperature": 1.0,
-                "multi_prompts_gen_type": 2,
+                "multi_prompts_gen_type": "FG",
             }
         )
 

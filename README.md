@@ -192,8 +192,6 @@ This script automatically detects your system specs (GPU type, RAM, VRAM) and se
 
 ---
 
-**Configuration**
-
 **Manual Install**
 
 If you selected Manual Install, you will be guided through:

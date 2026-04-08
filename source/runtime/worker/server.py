@@ -27,13 +27,14 @@ from source.task_handlers.travel.chaining import handle_travel_chaining_after_wg
 from source.task_handlers.tasks import task_types
 from source.core.runtime_paths import get_repo_root
 from source.runtime import wgp_bridge
+from source.runtime.worker_protocol import IDLE_RELEASE_EXIT_CODE
+from source.runtime.worker import idle_release
 from source.utils.output_paths import prepare_output_path
 
 repo_root = str(get_repo_root())
 wan2gp_path = str((Path(repo_root) / "Wan2GP").resolve())
 WORKER_BOOTSTRAP_CONTROLLER = get_bootstrap_controller("worker.server")
 STATUS_FAILED = "Failed"
-IDLE_RELEASE_EXIT_CODE = 75
 _ensure_runtime_bridge_path = wgp_bridge.ensure_wan2gp_on_path
 ensure_wan2gp_on_path = wgp_bridge.ensure_wan2gp_on_path
 
@@ -61,41 +62,6 @@ def _resolve_worker_db_client_key(cli_args, *, access_token: str | None) -> str:
     if not resolved:
         raise ValueError("No Supabase key found. Provide --reigh-access-token, SUPABASE_SERVICE_ROLE_KEY, or SUPABASE_ANON_KEY")
     return resolved
-
-
-def _is_service_mode(client_key) -> bool:
-    auth_mode = os.environ.get("WORKER_DB_CLIENT_AUTH_MODE", "").strip().lower()
-    if auth_mode == "service":
-        return True
-    service_keys = {
-        os.environ.get("SUPABASE_SERVICE_ROLE_KEY"),
-        os.environ.get("SUPABASE_SERVICE_KEY"),
-    }
-    service_keys.discard(None)
-    service_keys.discard("")
-    return client_key in service_keys
-
-
-def _should_idle_release(
-    *,
-    now,
-    last_successful_empty_poll_at,
-    onboarded_at,
-    idle_release_minutes,
-    onboarding_grace_seconds,
-    is_service_mode,
-) -> bool:
-    if idle_release_minutes <= 0:
-        return False
-    if is_service_mode:
-        return False
-    if onboarded_at is None:
-        return False
-    if (now - onboarded_at) < onboarding_grace_seconds:
-        return False
-    if last_successful_empty_poll_at is None:
-        return False
-    return (now - last_successful_empty_poll_at) >= (idle_release_minutes * 60)
 
 
 def _initialize_db_runtime(cli_args, *, access_token: str | None, debug_mode_enabled: bool):
@@ -260,8 +226,7 @@ def parse_args():
     parser.add_argument("--reigh-access-token", type=str, default=None, help="Access token for Reigh API (preferred)")
     parser.add_argument("--supabase-access-token", type=str, default=None, help="Legacy alias for --reigh-access-token")
     parser.add_argument("--supabase-anon-key", type=str, default=None, help="Supabase anon key (set via env SUPABASE_ANON_KEY)")
-    parser.add_argument("--idle-release-minutes", type=float, default=15.0)
-    parser.add_argument("--idle-onboarding-grace-seconds", type=float, default=60.0)
+    idle_release.add_cli_args(parser)
 
     # WGP Globals
     parser.add_argument("--wgp-attention-mode", type=str, default=None)
@@ -447,13 +412,12 @@ def main():
     STATUS_COMPLETE = "Complete"
     STATUS_IN_PROGRESS = "In Progress"
     max_task_wait_minutes = int(os.getenv("MAX_TASK_WAIT_MINUTES", "5"))
-    is_service_mode = _is_service_mode(client_key)
+    idle_tracker = idle_release.IdleReleaseTracker(
+        idle_release.config_from_cli(cli_args, client_key=client_key)
+    )
+    idle_tracker.mark_onboarded()
 
     try:
-        onboarded_at = time.monotonic()
-        last_successful_empty_poll_at = None
-        _idle_release_requested = False
-
         while True:
             poll_outcome, task_info = poll_next_task(
                 worker_id=cli_args.worker,
@@ -462,28 +426,19 @@ def main():
             )
 
             if poll_outcome == ClaimPollOutcome.EMPTY:
-                if last_successful_empty_poll_at is None:
-                    last_successful_empty_poll_at = time.monotonic()
-                if _should_idle_release(
-                    now=time.monotonic(),
-                    last_successful_empty_poll_at=last_successful_empty_poll_at,
-                    onboarded_at=onboarded_at,
-                    idle_release_minutes=cli_args.idle_release_minutes,
-                    onboarding_grace_seconds=cli_args.idle_onboarding_grace_seconds,
-                    is_service_mode=is_service_mode,
-                ):
+                idle_tracker.record_empty_poll()
+                if idle_tracker.should_release():
                     headless_logger.essential(
                         f"[WORKER] Idle for >={cli_args.idle_release_minutes:.1f} min — releasing resources (exit {IDLE_RELEASE_EXIT_CODE})"
                     )
-                    _idle_release_requested = True
-                    break
+                    sys.exit(IDLE_RELEASE_EXIT_CODE)
                 time.sleep(cli_args.poll_interval)
                 continue
             if poll_outcome == ClaimPollOutcome.ERROR:
                 time.sleep(cli_args.poll_interval)
                 continue
 
-            last_successful_empty_poll_at = None
+            idle_tracker.record_claim()
 
             current_task_params = task_info["params"]
             current_task_type = task_info["task_type"]
@@ -602,9 +557,6 @@ def main():
                     _log_interceptor_instance.set_current_task(None)
 
             time.sleep(1)
-
-        if _idle_release_requested:
-            sys.exit(IDLE_RELEASE_EXIT_CODE)
 
     except FatalWorkerError as e:
         headless_logger.critical(f"Fatal Error: {e}")

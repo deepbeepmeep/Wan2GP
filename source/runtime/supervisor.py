@@ -9,7 +9,8 @@ import sys
 import time
 from collections import deque
 
-IDLE_RELEASE_EXIT_CODE = 75
+from source.runtime.worker_protocol import IDLE_RELEASE_EXIT_CODE
+
 WORKER_SHIM = str(Path(__file__).resolve().parents[2] / "worker.py")
 if not Path(WORKER_SHIM).is_file():
     raise FileNotFoundError(f"worker shim not found: {WORKER_SHIM}")
@@ -75,4 +76,3 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("[SUPERVISOR] circuit open after 5 crashes in 5 min — giving up")
             return returncode
         time.sleep(min(2 ** (len(crashes) - 1), 30))
-

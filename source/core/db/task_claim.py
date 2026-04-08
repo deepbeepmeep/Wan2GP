@@ -16,8 +16,6 @@ __all__ = [
     "init_db_supabase",
     "check_task_counts_supabase",
     "check_my_assigned_tasks",
-    "get_oldest_queued_task",
-    "get_oldest_queued_task_supabase",
     "poll_next_task",
 ]
 
@@ -162,13 +160,7 @@ def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
     headless_logger.debug(f"[RECOVERY_CHECK] Edge function unavailable for orchestrator {orchestrator_task_id}, assuming incomplete children")
     return True
 
-def get_oldest_queued_task():
-    """Gets the oldest queued task from Supabase."""
-    return get_oldest_queued_task_supabase()
-
-
-def _poll_next_task_impl(
-    *,
+def poll_next_task(
     worker_id: str | None,
     same_model_only: bool,
     max_task_wait_minutes: int | None,
@@ -265,33 +257,3 @@ def _poll_next_task_impl(
 
     headless_logger.error("[CLAIM] No edge function URL or auth configuration available for task claiming")
     return ClaimPollOutcome.ERROR, None
-
-
-def poll_next_task(
-    worker_id: str,
-    same_model_only: bool,
-    max_task_wait_minutes: int | None,
-) -> tuple[ClaimPollOutcome, dict | None]:
-    return _poll_next_task_impl(
-        worker_id=worker_id,
-        same_model_only=same_model_only,
-        max_task_wait_minutes=max_task_wait_minutes,
-    )
-
-def get_oldest_queued_task_supabase(
-    worker_id: str = None,
-    same_model_only: bool = False,
-    max_task_wait_minutes: int | None = None,
-):
-    """Fetch the oldest task via Supabase Edge Function.
-
-    First checks task counts to avoid unnecessary claim attempts.
-    same_model_only: prefer tasks matching worker's current_model
-    max_task_wait_minutes: starvation protection — bypass model affinity after this many minutes
-    """
-    _, task_data = _poll_next_task_impl(
-        worker_id=worker_id,
-        same_model_only=same_model_only,
-        max_task_wait_minutes=max_task_wait_minutes,
-    )
-    return task_data

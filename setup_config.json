@@ -5,10 +5,6 @@
             "3.11": { "ver": "3.11.14", "label": "Python 3.11.14 (Recommended)" }
         },
         "torch": {
-            "cu126": { 
-                "label": "Torch 2.6.0 + CUDA 12.6", 
-                "cmd": "torch==2.6.0+cu126 torchvision==0.21.0+cu126 torchaudio==2.6.0+cu126 --index-url https://download.pytorch.org/whl/cu126" 
-            },
             "cu128": { 
                 "label": "Torch 2.7.1 + CUDA 12.8", 
                 "cmd": "torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128" 
@@ -73,13 +69,6 @@
             }
         },
         "flash": {
-            "v27": { 
-                "label": "Flash Attention 2.7.x", 
-                "cmd": {
-                    "win": "https://github.com/Redtash1/Flash_Attention_2_Windows/releases/download/v2.7.0-v2.7.4/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp310-cp310-win_amd64.whl",
-                    "linux": "flash-attn==2.7.2.post1"
-                }
-            },
             "v210": { 
                 "label": "Flash Attention 2.8.x", 
                 "cmd": {
@@ -109,15 +98,22 @@
                     "win": "https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.2+torch2.10.0-cp311-abi3-win_amd64.whl",
                     "linux": "https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.2+torch2.10.0-cp311-abi3-linux_x86_64.whl"
                 }
+            },
+            "gguf": { 
+                "label": "GGUF llama.cpp CUDA Kernels", 
+                "cmd": {
+                    "win": "https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch210cu13py311-cp311-cp311-win_amd64.whl",
+                    "linux": "https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.2+torch210cu13py311-cp311-cp311-linux_x86_64.whl"
+                }
             }
         }
     },
     "gpu_profiles": {
         "GTX_10":      { "python": "3.10", "torch": "cu128", "triton": null,     "sage": null,       "flash": null, "kernels": [] },
-        "RTX_20":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["nunchaku_cu13"] },
-        "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["nunchaku_cu13"] },
-        "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["nunchaku_cu13"] },
-        "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["light2xv"] },
+        "RTX_20":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
+        "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
+        "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
+        "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["light2xv", "gguf"] },
         "AMD_GFX110X": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"} },
         "AMD_GFX1151": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.5.1"} },
         "AMD_GFX1201": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "12.0.1"} }

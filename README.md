@@ -211,7 +211,6 @@ If you want to pass extra command-line flags to the WAN2GP launcher (like enabli
 Use this script to keep your software and dependencies up to date without having to reinstall everything from scratch. 
 * **1. Update:** Fetches the latest code from GitHub (`git pull`) and updates basic requirements.
 * **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention) based on your hardware profile.
-* **3. Platform Migration:** Safely wipes your current environment and rebuilds it targeting the latest supported standards (Python 3.11 / Torch 2.10, etc).
 
 #### 4️⃣ Managing Environments (`scripts\manage.bat` | `/manage.sh`)
 The `manage` script allows you to manage and switch between your sandboxed environments safely.

@@ -506,29 +506,6 @@ def do_manage():
         elif choice == "5":
             break
 
-def do_migrate(config):
-    manager = EnvsManager()
-    print("\n" + "="*60)
-    print("      WAN2GP AUTOMATED PLATFORM MIGRATION (TO 3.11)")
-    print("="*60)
-    
-    env_name = manager.resolve_target_env()
-    env_data = manager.list_envs()[env_name]
-    
-    print(f"\nTarget Environment: {env_name} ({env_data['type']})")
-    confirm = input(f"This will wipe '{env_name}' and rebuild it. Proceed? (y/n): ")
-    if confirm.lower() != 'y': return
-
-    target = config['gpu_profiles']['RTX_50']
-
-    manager.remove_env(env_name)
-
-    install_logic(env_name, env_data['type'], env_data['path'], 
-                  target['python'], target['torch'], target['triton'], 
-                  target['sage'], target.get('flash'), target['kernels'], config)
-    
-    manager.add_env(env_name, env_data['type'], env_data['path'])
-
 def do_upgrade(config):
     manager = EnvsManager()
     print("\n" + "="*60)
@@ -690,7 +667,7 @@ def inject_system_paths():
 if __name__ == "__main__":
     inject_system_paths()
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["install", "run", "update", "migrate", "upgrade", "status", "manage"])
+    parser.add_argument("mode", choices=["install", "run", "update", "upgrade", "status", "manage"])
     parser.add_argument("--env", default="venv", help="Type of env for install (venv, uv, conda, none)")
     parser.add_argument("--auto", action="store_true", help="Run 1-click automatic install")
     args = parser.parse_args()
@@ -749,9 +726,6 @@ if __name__ == "__main__":
         install_fmt = ENV_TEMPLATES[env_data['type']]['install']
         cmd = f"{install_fmt.format(dir=env_data['path'])} -r requirements.txt"
         run_cmd(cmd)
-
-    elif args.mode == "migrate":
-        do_migrate(cfg)
 
     elif args.mode == "upgrade":
         do_upgrade(cfg)

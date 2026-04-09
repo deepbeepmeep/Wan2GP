@@ -55,6 +55,23 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _align_seq_len(tensor: torch.Tensor | None, target_len: int) -> torch.Tensor | None:
+    if tensor is None:
+        return tensor
+    seq_dim = 0 if tensor.dim() == 2 else 1
+    cur_len = tensor.shape[seq_dim]
+    if cur_len == target_len:
+        return tensor
+    if cur_len < target_len:
+        pad_len = target_len - cur_len
+        if seq_dim == 0:
+            pad = tensor[-1:].repeat(pad_len, 1)
+            return torch.cat([tensor, pad], dim=0)
+        pad = tensor[:, -1:, :].repeat(1, pad_len, 1)
+        return torch.cat([tensor, pad], dim=1)
+    return tensor.narrow(seq_dim, 0, target_len)
+
+
 class _TransformerBenchWrapper:
     def __init__(self, module, enabled: bool = False) -> None:
         self._module = module
@@ -169,6 +186,9 @@ class DistilledPipeline:
         guiding_images_stage2: list[tuple] | None = None,
         alt_guidance_scale: float = 1.0,
         audio_cfg_guidance_scale: float = 1.0,
+        NAG_scale: float = 1.0,
+        NAG_tau: float = 3.5,
+        NAG_alpha: float = 0.5,
         video_conditioning: list[tuple[str, float]] | None = None,
         video_conditioning_downscale_factor: int = 1,
         latent_conditioning_stage2: torch.Tensor | None = None,
@@ -249,12 +269,50 @@ class DistilledPipeline:
             video_connector,
             audio_connector,
         )
-        contexts = self.text_encoder_cache.encode(encode_fn, [prompt, negative_prompt], device=self.device, parallel=True)
+        enable_audio_text_nag = False
+        video_NAG = None
+        audio_NAG = None
+        if float(NAG_scale) > 1.0:
+            contexts = self.text_encoder_cache.encode(
+                encode_fn,
+                [prompt, negative_prompt],
+                device=self.device,
+                parallel=True,
+            )
+        else:
+            contexts = self.text_encoder_cache.encode(encode_fn, [prompt], device=self.device, parallel=True)
 
         torch.cuda.synchronize()
         del text_encoder
         cleanup_memory()
-        (video_context, audio_context), (_, audio_context_n) = contexts
+        audio_context_n = None
+        if float(NAG_scale) > 1.0:
+            (video_context, audio_context), (video_context_n, audio_context_nag) = contexts
+            video_pos_len = video_context.shape[0] if video_context.dim() == 2 else video_context.shape[1]
+            video_context_n = _align_seq_len(video_context_n, video_pos_len)
+            video_cat_dim = 0 if video_context.dim() == 2 else 1
+            video_context = torch.cat([video_context, video_context_n], dim=video_cat_dim)
+            video_NAG = {
+                "scale": float(NAG_scale),
+                "tau": float(NAG_tau),
+                "alpha": float(NAG_alpha),
+                "cap_embed_len": int(video_pos_len),
+                "enable_audio_text_nag": enable_audio_text_nag,
+            }
+            if enable_audio_text_nag:
+                audio_pos_len = audio_context.shape[0] if audio_context.dim() == 2 else audio_context.shape[1]
+                audio_context_nag = _align_seq_len(audio_context_nag, audio_pos_len)
+                audio_cat_dim = 0 if audio_context.dim() == 2 else 1
+                audio_context = torch.cat([audio_context, audio_context_nag], dim=audio_cat_dim)
+                audio_NAG = {
+                    "scale": float(NAG_scale),
+                    "tau": float(NAG_tau),
+                    "alpha": float(NAG_alpha),
+                    "cap_embed_len": int(audio_pos_len),
+                    "enable_audio_text_nag": enable_audio_text_nag,
+                }
+        else:
+            video_context, audio_context = contexts[0]
 
         # Stage 1: Initial low resolution video generation.
         bench_transformer = _env_flag(_BENCH_TRANSFORMER_ENV, "0")
@@ -294,6 +352,8 @@ class DistilledPipeline:
                     video_context=video_context,
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
+                    video_nag=video_NAG,
+                    audio_nag=audio_NAG,
                     alt_guidance_scale=alt_guidance_scale,
                     audio_context_n=audio_context_n,
                     audio_guidance_scale=audio_cfg_guidance_scale,
@@ -439,6 +499,8 @@ class DistilledPipeline:
                     video_context=video_context,
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
+                    video_nag=video_NAG,
+                    audio_nag=audio_NAG,
                     alt_guidance_scale=alt_guidance_scale,
                 ),
                 mask_context=mask_context,

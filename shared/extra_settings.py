@@ -220,6 +220,21 @@ def _model_label(key: str, fallback: str) -> _Resolver:
     return resolver
 
 
+def _model_setting_config(model_def: dict[str, Any] | None, key: str) -> dict[str, Any]:
+    return model_def.get(key, {})
+
+
+def _model_setting_label(key: str, fallback: str) -> _Resolver:
+    def resolver(model_def: dict[str, Any] | None, _context: dict[str, Any]) -> str:
+        text = _model_setting_config(model_def, key).get("label", "").strip()
+        return text or fallback
+    return resolver
+
+
+def _show_if_model_setting_label(key: str) -> _Resolver:
+    return _show_if(lambda model_def: len(_model_setting_config(model_def, key).get("label", "").strip()) > 0)
+
+
 def _control_net_label(index: int) -> _Resolver:
     def resolver(model_def: dict[str, Any] | None, _context: dict[str, Any]) -> str:
         name = str((model_def or {}).get("control_net_weight_name", "") or "").strip() or "Control Net"
@@ -460,6 +475,12 @@ def get_info(configs: dict[str, Any] | None, model_def: dict[str, Any] | None = 
     return info
 
 
+def get_summary_label(key: str, model_def: dict[str, Any] | None = None, fallback: str | None = None, **context: Any) -> str:
+    setting_def = get_def(key, model_def, **context)
+    name = _model_setting_config(model_def, key).get("name", "").strip()
+    return name or _trim_label(setting_def.label, fallback or setting_def.key)
+
+
 _add_container("guidance_row", visible=_show_if(_guidance_row_visible))
 _add_container("guidance_phases_row", visible=_show_if(_guidance_phases_row_visible))
 _add_container("embedded_guidance_row", visible=_show_if(_embedded_guidance_row_visible))
@@ -482,14 +503,14 @@ _add_setting("audio_guidance_scale", "Audio Guidance", "number", min=1.0, max=20
 _add_setting("audio_scale", _audio_scale_label, "number", min=0.0, max=1.0, step=0.01, visible=_show_if_text("audio_scale_name"), containers=("control_net_weights_row",))
 _add_setting("flow_shift", "Shift Scale", "number", min=1.0, max=25.0, step=0.1, visible=_show_if_flag("flow_shift"), containers=("sample_solver_row",))
 _add_setting("embedded_guidance_scale", "Embedded Guidance Scale", "number", min=1.0, max=20.0, step=0.5, visible=_show_if_flag("embedded_guidance"), containers=("embedded_guidance_row",))
-_add_setting("denoising_strength", "Denoising Strength (the Lower the Closer to the Control Image/Video)", "number", min=0.0, max=1.0, step=0.01, visible=_show_if(_guide_setting_visible))
-_add_setting("masking_strength", "Masking Strength (the Lower the More Freedom for Unmasked Area)", "number", min=0.0, max=1.0, step=0.01, visible=_show_if(_masking_visible))
+_add_setting("denoising_strength", _model_setting_label("denoising_strength", "Denoising Strength (the Lower the Closer to the Control Image/Video)"), "number", min=0.0, max=1.0, step=0.01, visible=_show_if(_guide_setting_visible))
+_add_setting("masking_strength", _model_setting_label("masking_strength", "Masking Strength (the Lower the More Freedom for Unmasked Area)"), "number", min=0.0, max=1.0, step=0.01, visible=_show_if(_masking_visible))
 _add_setting("control_net_weight", _control_net_label(1), "number", min=0.0, max=2.0, step=0.01, visible=_control_net_visible(1), containers=("control_net_weights_row",))
 _add_setting("control_net_weight2", _control_net_label(2), "number", min=0.0, max=2.0, step=0.01, visible=_control_net_visible(2), containers=("control_net_weights_row",))
 _add_setting("control_net_weight_alt", _control_net_alt_label, "number", min=0.0, max=2.0, step=0.01, visible=_show_if_text("control_net_weight_alt_name"), containers=("control_net_weights_row",))
 _add_setting("motion_amplitude", "Motion Amplitude", "number", min=1.0, max=1.4, step=0.01, visible=_show_if_flag("motion_amplitude"), containers=("motion_amplitude_col",))
 _add_setting("mask_expand", "Expand / Shrink Mask Area", "integer", min=-10, max=50, step=1, visible=_show_if(_guide_setting_visible))
-_add_setting("input_video_strength", _model_label("input_video_strength", "Input Video Strength"), "number", min=0.0, max=1.0, step=0.01, visible=_show_if_text("input_video_strength"))
+_add_setting("input_video_strength", _model_setting_label("input_video_strength", "Input Video Strength"), "number", min=0.0, max=1.0, step=0.01, visible=_show_if_model_setting_label("input_video_strength"))
 _add_setting("image_refs_relative_size", "Rescale Internaly Image Ref (% in relation to Output Video) to change Output Composition", "integer", min=20, max=100, step=1, visible=_show_if_flag("any_image_refs_relative_size"))
 _add_setting("sliding_window_size", "Sliding Window Size", "integer", min=_sliding_window_size_min, max=_sliding_window_size_max, step=_sliding_window_size_step, visible=_show_if(_sliding_window_visible))
 _add_setting("sliding_window_overlap", "Windows Frames Overlap (needed to maintain continuity between windows, a higher value will require more windows)", "integer", min=_sliding_window_overlap_bound("overlap_min", 1), max=_sliding_window_overlap_bound("overlap_max", 97), step=_sliding_window_overlap_bound("overlap_step", 4), visible=_show_if(_sliding_window_visible))
@@ -513,6 +534,7 @@ __all__ = [
     "get_container_def",
     "get_def",
     "get_info",
+    "get_summary_label",
     "iter_defs",
     "validate_inputs",
     "validate_resolved_value",

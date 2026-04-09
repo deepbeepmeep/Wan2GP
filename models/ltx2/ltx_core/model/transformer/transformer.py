@@ -205,10 +205,11 @@ class BasicAVTransformerBlock(torch.nn.Module):
         timestep: torch.Tensor,
         prompt_timestep: torch.Tensor | None,
         context_mask: torch.Tensor | None,
+        nag: dict | None = None,
         cross_attention_adaln: bool = False,
     ) -> torch.Tensor:
         if not cross_attention_adaln:
-            return attn([rms_norm(x, eps=self.norm_eps)], context_list=[context], mask=context_mask)
+            return attn([rms_norm(x, eps=self.norm_eps)], context_list=[context], mask=context_mask, NAG=nag)
         q_shift, q_scale, q_gate = self.get_ada_values(scale_shift_table, x.shape[0], timestep, slice(6, 9))
         return apply_cross_attention_adaln(
             x,
@@ -220,7 +221,8 @@ class BasicAVTransformerBlock(torch.nn.Module):
             prompt_scale_shift_table,
             prompt_timestep,
             context_mask,
-            self.norm_eps,
+            nag=nag,
+            norm_eps=self.norm_eps,
         )
 
     def forward(  # noqa: PLR0915
@@ -269,6 +271,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 video.timesteps,
                 video.prompt_timestep,
                 video.context_mask,
+                nag=video.nag,
                 cross_attention_adaln=self.cross_attention_adaln,
             )
             vx.add_(attn_out)
@@ -303,6 +306,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 audio.timesteps,
                 audio.prompt_timestep,
                 audio.context_mask,
+                nag=audio.nag if audio.nag is not None and audio.nag.get("enable_audio_text_nag", False) else None,
                 cross_attention_adaln=self.cross_attention_adaln,
             )
             ax.add_(attn_out)
@@ -457,6 +461,7 @@ def apply_cross_attention_adaln(
     prompt_scale_shift_table: torch.Tensor | None,
     prompt_timestep: torch.Tensor | None,
     context_mask: torch.Tensor | None = None,
+    nag: dict | None = None,
     norm_eps: float = 1e-6,
 ) -> torch.Tensor:
     if prompt_scale_shift_table is not None and prompt_timestep is not None:
@@ -468,5 +473,5 @@ def apply_cross_attention_adaln(
         # Context is reused across blocks in LTX 2.3 prompt AdaLN, so this call must stay out-of-place.
         context = _apply_scale_shift(context, scale_kv, shift_kv, in_place=False)
     attn_input = _apply_scale_shift(rms_norm(x, eps=norm_eps), q_scale.squeeze(2), q_shift.squeeze(2))
-    out = attn([attn_input], context_list=[context], mask=context_mask)
+    out = attn([attn_input], context_list=[context], mask=context_mask, NAG=nag)
     return _apply_gate(out, q_gate.squeeze(2))

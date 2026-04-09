@@ -1,0 +1,76 @@
+name: Test Windows Install Path
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+
+jobs:
+  windows-install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync with cuda124 extra
+        run: uv sync --locked --python 3.10 --extra cuda124
+
+      - name: Verify torch is CUDA-enabled
+        run: |
+          uv run --python 3.10 python -c "import torch; print(f'torch={torch.__version__}, cuda={torch.cuda.is_available()}'); assert '+cu124' in torch.__version__, f'Expected CUDA torch, got {torch.__version__}'"
+
+      - name: Verify key imports
+        run: |
+          uv run --python 3.10 python -c "
+          from transformers.modeling_utils import PreTrainedModel
+          print('PreTrainedModel OK')
+          from transformers import Qwen2_5_VLForConditionalGeneration, Qwen3ForCausalLM
+          print('Qwen models OK')
+          import supabase, realtime, fastapi, pydantic
+          print(f'pydantic={pydantic.__version__}, supabase={supabase.__version__}, realtime={realtime.__version__}')
+          from transformers import Mistral3ForConditionalGeneration
+          print('Mistral3 OK')
+          print('ALL IMPORTS PASSED')
+          "
+
+      - name: Verify worker entrypoint
+        run: |
+          uv run --python 3.10 python -c "from source.runtime.entrypoints.worker import main; print('worker entrypoint OK')"
+
+  linux-install:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y python3.10-venv python3.10-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync with cuda124 extra
+        run: uv sync --locked --python 3.10 --extra cuda124
+
+      - name: Verify torch is CUDA-enabled
+        run: |
+          uv run --python 3.10 python -c "import torch; print(f'torch={torch.__version__}, cuda_built={torch.version.cuda is not None}'); assert '+cu124' in torch.__version__, f'Expected CUDA torch, got {torch.__version__}'"
+
+      - name: Verify key imports
+        run: |
+          uv run --python 3.10 python -c "
+          from transformers.modeling_utils import PreTrainedModel
+          print('PreTrainedModel OK')
+          from transformers import Qwen2_5_VLForConditionalGeneration, Qwen3ForCausalLM
+          print('Qwen models OK')
+          import supabase, realtime, fastapi, pydantic
+          print(f'pydantic={pydantic.__version__}, supabase={supabase.__version__}, realtime={realtime.__version__}')
+          print('ALL IMPORTS PASSED')
+          "
+
+      - name: Verify worker entrypoint
+        run: |
+          uv run --python 3.10 python -c "from source.runtime.entrypoints.worker import main; print('worker entrypoint OK')"

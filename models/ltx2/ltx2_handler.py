@@ -185,6 +185,11 @@ class family_handler:
             "no_background_removal": True,
             "vae_block_size": 64,
         }
+
+        # extra_model_def["video_guide_outpainting"] = [0,1]
+
+        # extra_model_def["guide_inpaint_color"] = 0
+
         preset_profiles_dir = spec.get("preset_profiles_dir")
         if preset_profiles_dir and not distilled:
             extra_model_def["preset_profiles_dir"] = [preset_profiles_dir]

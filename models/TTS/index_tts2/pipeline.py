@@ -523,6 +523,24 @@ class IndexTTS2Pipeline:
         callback=None,
         **kwargs,
     ):
+        if not torch.is_inference_mode_enabled():
+            with torch.inference_mode():
+                return self.generate(
+                    input_prompt,
+                    model_mode,
+                    audio_guide,
+                    alt_prompt=alt_prompt,
+                    audio_guide2=audio_guide2,
+                    audio_prompt_type=audio_prompt_type,
+                    duration_seconds=duration_seconds,
+                    pause_seconds=pause_seconds,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    set_progress_status=set_progress_status,
+                    callback=callback,
+                    **kwargs,
+                )
         self._interrupt = False
         self._early_stop = False
         self.model.abort_checker = lambda: self._abort_requested() or self._early_stop_requested()

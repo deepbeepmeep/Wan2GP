@@ -424,15 +424,9 @@ class AccelInferenceEngine:
         positions = torch.ones(max_bs, dtype=torch.int64, device="cuda")
         slot_mapping = torch.zeros(max_bs, dtype=torch.int32, device="cuda")
         context_lens = torch.zeros(max_bs, dtype=torch.int32, device="cuda")
-        block_tables = torch.zeros(
-            max_bs, max_num_blocks, dtype=torch.int32, device="cuda"
-        )
-        outputs = torch.zeros(
-            max_bs, self.hidden_size, dtype=model_dtype, device="cuda"
-        )
-        inputs_embeds_buffer = torch.zeros(
-            max_bs, self.hidden_size, dtype=model_dtype, device="cuda"
-        )
+        block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32, device="cuda")
+        outputs = torch.zeros(max_bs, self.hidden_size, dtype=model_dtype, device="cuda")
+        inputs_embeds_buffer = torch.zeros(max_bs, self.hidden_size, dtype=model_dtype, device="cuda")
 
         self.graph_bs = [1, 2, 4, 8]
 
@@ -441,9 +435,9 @@ class AccelInferenceEngine:
         for bs in reversed(self.graph_bs):
             graph = torch.cuda.CUDAGraph()
 
-            slot_mapping[:bs] = torch.arange(bs, dtype=torch.int32, device="cuda")
-            context_lens[:bs] = bs + 1
-            block_tables[:bs, :] = 0
+            slot_mapping[:bs].copy_(torch.arange(bs, dtype=torch.int32, device="cuda"))
+            context_lens[:bs].fill_(bs + 1)
+            block_tables[:bs, :].zero_()
 
             set_forward_context(
                 False,
@@ -454,11 +448,13 @@ class AccelInferenceEngine:
 
             # warmup
             if use_tts:
-                inputs_embeds_buffer[:bs] = self._compute_tts_embeds(
-                    input_ids[:bs],
-                    positions[:bs],
-                    tts_mel_embedding=tts_mel_embedding,
-                    tts_text_pos_embedding=tts_text_pos_embedding,
+                inputs_embeds_buffer[:bs].copy_(
+                    self._compute_tts_embeds(
+                        input_ids[:bs],
+                        positions[:bs],
+                        tts_mel_embedding=tts_mel_embedding,
+                        tts_text_pos_embedding=tts_text_pos_embedding,
+                    )
                 )
                 out = self.model(
                     inputs_embeds=inputs_embeds_buffer[:bs].unsqueeze(1),
@@ -468,15 +464,17 @@ class AccelInferenceEngine:
                 out = self.model(
                     input_ids=input_ids[:bs].unsqueeze(1), return_dict=True
                 ).last_hidden_state
-            outputs[:bs] = out.squeeze(1) if out.dim() == 3 else out
+            outputs[:bs].copy_(out.squeeze(1) if out.dim() == 3 else out)
 
-            with torch.cuda.graph(graph, self.graph_pool):
+            with torch.cuda.graph(graph, self.graph_pool, capture_error_mode="thread_local"):
                 if use_tts:
-                    inputs_embeds_buffer[:bs] = self._compute_tts_embeds(
-                        input_ids[:bs],
-                        positions[:bs],
-                        tts_mel_embedding=tts_mel_embedding,
-                        tts_text_pos_embedding=tts_text_pos_embedding,
+                    inputs_embeds_buffer[:bs].copy_(
+                        self._compute_tts_embeds(
+                            input_ids[:bs],
+                            positions[:bs],
+                            tts_mel_embedding=tts_mel_embedding,
+                            tts_text_pos_embedding=tts_text_pos_embedding,
+                        )
                     )
                     out = self.model(
                         inputs_embeds=inputs_embeds_buffer[:bs].unsqueeze(1),
@@ -486,7 +484,7 @@ class AccelInferenceEngine:
                     out = self.model(
                         input_ids=input_ids[:bs].unsqueeze(1), return_dict=True
                     ).last_hidden_state
-                outputs[:bs] = out.squeeze(1) if out.dim() == 3 else out
+                outputs[:bs].copy_(out.squeeze(1) if out.dim() == 3 else out)
 
             if self.graph_pool is None:
                 self.graph_pool = graph.pool()
@@ -558,16 +556,14 @@ class AccelInferenceEngine:
         if graph_vars is None:
             raise RuntimeError("Graph variables not initialized")
 
-        graph_vars["input_ids"][:bs] = input_ids
-        graph_vars["positions"][:bs] = positions
+        graph_vars["input_ids"][:bs].copy_(input_ids)
+        graph_vars["positions"][:bs].copy_(positions)
         graph_vars["slot_mapping"].fill_(-1)
-        graph_vars["slot_mapping"][:bs] = context.slot_mapping
+        graph_vars["slot_mapping"][:bs].copy_(context.slot_mapping)
         graph_vars["context_lens"].zero_()
-        graph_vars["context_lens"][:bs] = context.context_lens
+        graph_vars["context_lens"][:bs].copy_(context.context_lens)
         graph_vars["block_tables"][:bs, :].fill_(-1)
-        graph_vars["block_tables"][:bs, : context.block_tables.size(1)] = (
-            context.block_tables
-        )
+        graph_vars["block_tables"][:bs, : context.block_tables.size(1)].copy_(context.block_tables)
         graph.replay()
 
         return graph_vars["outputs"][:bs]

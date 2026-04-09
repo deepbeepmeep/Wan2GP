@@ -6,26 +6,26 @@ One unified tool to investigate tasks, workers, and system health.
 
 ```bash
 # Task investigation
-debug.py task <task_id>              # Complete task analysis with logs
-debug.py task <task_id> --logs-only  # Just the log timeline
+uv run --python 3.10 python -m debug task <task_id>              # Complete task analysis with logs
+uv run --python 3.10 python -m debug task <task_id> --logs-only  # Just the log timeline
 
 # Worker investigation
-debug.py worker <worker_id>                  # Full worker analysis
-debug.py worker <worker_id> --check-logging  # Is worker.py running?
-debug.py worker <worker_id> --startup        # View initialization logs
-debug.py worker <worker_id> --logs-only      # Just the log timeline
+uv run --python 3.10 python -m debug worker <worker_id>                  # Full worker analysis
+uv run --python 3.10 python -m debug worker <worker_id> --check-logging  # Is worker.py running?
+uv run --python 3.10 python -m debug worker <worker_id> --startup        # View initialization logs
+uv run --python 3.10 python -m debug worker <worker_id> --logs-only      # Just the log timeline
 
 # System overview
-debug.py tasks                 # Recent task statistics
-debug.py workers               # Recent worker status
-debug.py health                # Overall system health
-debug.py orchestrator          # Is orchestrator running?
+uv run --python 3.10 python -m debug tasks                 # Recent task statistics
+uv run --python 3.10 python -m debug workers               # Recent worker status
+uv run --python 3.10 python -m debug health                # Overall system health
+uv run --python 3.10 python -m debug orchestrator          # Is orchestrator running?
 
 # Configuration & Infrastructure
-debug.py config                # View timing/scaling settings
-debug.py config --explain      # With detailed explanations
-debug.py runpod                # Find orphaned pods ($$$ leak!)
-debug.py runpod --terminate    # Terminate orphaned pods
+uv run --python 3.10 python -m debug config                # View timing/scaling settings
+uv run --python 3.10 python -m debug config --explain      # With detailed explanations
+uv run --python 3.10 python -m debug runpod                # Find orphaned pods ($$$ leak!)
+uv run --python 3.10 python -m debug runpod --terminate    # Terminate orphaned pods
 
 # Output formats
 --json                         # JSON output for any command
@@ -98,6 +98,13 @@ debug/
 
 All commands use **system_logs** as the primary data source, augmented with current state from `tasks` and `workers` tables. This "logs-first" approach gives you a complete timeline of what actually happened.
 
+## uv Workflow Notes
+
+- Run debug commands from the worker repo root after `uv sync --locked --python 3.10`.
+- The first launch after migration backs up `venv/` or `.venv/` into timestamped `*.pre-uv-*` directories and writes `.uv-migrated`.
+- Startup investigations should expect `uv sync` and `uv run` in the initialization log instead of `pip install` or `source venv/bin/activate`.
+- Rollback debugging rule: there is no runtime pip fallback on the migrated branch. For first-migration failures, inspect and restore the latest `*.pre-uv-*` backup; for release rollback, verify the checkout was reverted to the pre-uv commit range before following the old `requirements.txt` bootstrap.
+
 ## Tips
 
 - Use `--json` for scripting/automation
@@ -105,8 +112,6 @@ All commands use **system_logs** as the primary data source, augmented with curr
 - Worker diagnostics show pre-termination VRAM, running tasks, pod status
 - RunPod sync can save serious money by finding orphaned pods
 - Config command is invaluable for debugging timing issues
-
-
 
 
 

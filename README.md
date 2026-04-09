@@ -5,20 +5,44 @@ GPU worker for [Reigh](https://github.com/banodoco/Reigh), for running locally o
 ## Quick Start
 
 ```bash
-# 1. Create venv
-python3 -m venv venv && source venv/bin/activate
+# 1. Linux baseline: Ubuntu 22.04/24.04 with NVIDIA drivers, ffmpeg, git, curl
+#    Ubuntu 24.04+ needs Python 3.10 from deadsnakes before the command below works:
+#    sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt-get update
 
-# 2. Install dependencies
-pip install -r Wan2GP/requirements.txt
-pip install -r requirements.txt
+# 2. Bootstrap uv once
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 
-# 3. Run worker
-SUPABASE_SERVICE_ROLE_KEY="your-key" python worker.py \
-    --supabase-url "https://your-project.supabase.co" \
-    --worker "my-worker-001"
+# 3. Sync the locked environment from the repo root
+uv sync --locked --python 3.10 --extra cuda124
+
+# 4. Run the worker
+uv run --python 3.10 python run_worker.py \
+  --reigh-access-token "your-worker-token" \
+  --wgp-profile 4 \
+  --idle-release-minutes 15
 ```
 
 Get credentials from [reigh.art](https://reigh.art/).
+
+The Reigh app now generates two command tabs:
+- `Install`: bootstrap or force-resync at the configured `Worker repo location`
+- `Run`: the normal day-to-day launch path, which still runs `uv sync` before starting
+
+Both commands always `cd` into the configured repo path first so copy-pasting from a fresh terminal in your home directory still works.
+
+## Packaging Notes
+
+- `pyproject.toml` is the canonical dependency definition for the worker runtime.
+- `requirements.txt` remains committed as rollback ballast during the rollout.
+- `uv.lock` is expected to be refreshed from the worker repo root with Python 3.10.
+- `Wan2GP/requirements.txt` is still vendored upstream input. Short-term drift between the subtree and the root lock is acceptable only until the next planned lock refresh; if upstream requirements change, update the mirrored root dependency set and regenerate the lock.
+
+## Rollback
+
+- There is no runtime pip fallback on the migrated branch. Failed `uv sync` runs should fail loudly.
+- If the very first uv-based launch fails after migrating an existing machine, restore the newest `venv.pre-uv-*` or `.venv.pre-uv-*` backup back to `venv/` or `.venv/`, remove `.uv-migrated`, and investigate from there.
+- If the release itself must be rolled back, revert the uv rollout commits and return to the pre-uv revision that still bootstraps from the committed `requirements.txt`.
 
 ## Standalone Usage
 
@@ -62,8 +86,8 @@ queue.stop()
 ## Debugging
 
 ```bash
-python -m debug task <task_id>          # Investigate a task
-python -m debug tasks --status Failed   # List recent failures
+uv run --python 3.10 python -m debug task <task_id>          # Investigate a task
+uv run --python 3.10 python -m debug tasks --status Failed   # List recent failures
 ```
 
 ## Code Health

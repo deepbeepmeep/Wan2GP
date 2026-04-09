@@ -1,9 +1,106 @@
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = "-v --tb=short"
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reigh-worker"
+version = "0.0.0"
+description = "Headless Wan2GP worker for Reigh"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+  # Wan2GP base dependencies
+  "mmgp==3.7.6",
+  "diffusers==0.36.0",
+  "transformers==4.54.0",
+  "tokenizers>=0.20.3",
+  "accelerate>=1.1.1",
+  "tqdm",
+  "imageio",
+  "imageio-ffmpeg",
+  "einops",
+  "sentencepiece",
+  "open-clip-torch>=2.29.0",
+  "numpy==2.1.2",
+  "num2words==0.5.14",
+  "moviepy==1.0.3",
+  "av",
+  "ffmpeg-python",
+  "pygame>=2.1.0",
+  "sounddevice>=0.4.0",
+  "soundfile",
+  "mutagen",
+  "pyloudnorm",
+  "librosa==0.11.0",
+  "speechbrain==1.0.3",
+  "audio-separator==0.36.1",
+  "pyannote.audio==3.3.2",
+  "torchcodec",
+  "gradio==5.29.0",
+  "dashscope",
+  "loguru",
+  "s3tokenizer",
+  "conformer==0.3.2",
+  "spacy-pkuseg",
+  "spacy",
+  "gradio-rangeslider",
+  "opencv-python>=4.12.0.88",
+  "segment-anything",
+  "rembg[gpu]==2.0.65",
+  "onnxruntime-gpu==1.22.0",
+  "decord",
+  "timm",
+  "insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insightface/insightface-0.7.3-cp310-cp310-win_amd64.whl ; sys_platform == 'win32'",
+  "insightface==0.7.3 ; sys_platform == 'linux'",
+  "facexlib==0.3.0",
+  "taichi",
+  "vector-quantize-pytorch==1.27.19",
+  "chumpy @ https://github.com/deepbeepmeep/chumpy/releases/download/v0.71/chumpy-0.71-py3-none-any.whl",
+  "smplfitter @ https://github.com/deepbeepmeep/smplfitter/releases/download/v0.2.10/smplfitter-0.2.10-py3-none-any.whl",
+  "omegaconf",
+  "hydra-core",
+  "easydict",
+  "pydantic==2.10.6",
+  "torchdiffeq>=0.2.5",
+  "tensordict>=0.6.1",
+  "peft==0.17.0",
+  "matplotlib",
+  "gguf==0.17.1",
+  "flash-linear-attention==0.4.1",
+  "ftfy",
+  "piexif",
+  "nvidia-ml-py",
+  "misaki",
+  "gitdb==4.0.12",
+  "gitpython==3.1.45",
+  "stringzilla==4.0.14",
+  "xxhash",
+  "munch",
+  "wetext==0.1.2",
+
+  # Headless worker additions
+  "safetensors>=0.4.0",
+  "mediapipe>=0.10.0",
+  "fastapi>=0.120.0",
+  "python-multipart>=0.0.20",
+  "supabase==2.23.0",
+  "supabase-auth==2.9.3",
+  "realtime==2.19.0",
+  "python-dotenv>=1.0.0",
+  "replicate>=1.0.0",
+]
+
+[project.optional-dependencies]
+cuda124 = [
+  "torch==2.6.0",
+  "torchvision==0.21.0",
+  "torchaudio==2.6.0",
+]
+cuda128 = [
+  "torch==2.7.1",
+  "torchvision==0.22.1",
+  "torchaudio==2.7.1",
+]
 
 [project.scripts]
 worker = "source.runtime.entrypoints.worker:main"
@@ -11,6 +108,44 @@ run_worker = "source.runtime.entrypoints.run_worker:main"
 heartbeat_guardian = "source.runtime.entrypoints.heartbeat_guardian:main"
 headless_model_management = "source.runtime.entrypoints.headless_model_management:main"
 headless_wgp = "source.runtime.entrypoints.headless_wgp:WanOrchestrator"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["worker", "run_worker"]
+
+[tool.setuptools.packages.find]
+include = ["source*"]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu124", extra = "cuda124" },
+  { index = "pytorch-cu128", extra = "cuda128" },
+]
+torchvision = [
+  { index = "pytorch-cu124", extra = "cuda124" },
+  { index = "pytorch-cu128", extra = "cuda128" },
+]
+torchaudio = [
+  { index = "pytorch-cu124", extra = "cuda124" },
+  { index = "pytorch-cu128", extra = "cuda128" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
 
 [tool.headless_wan2gp.entrypoints]
 worker = "source.runtime.entrypoints.worker:main"

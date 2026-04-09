@@ -192,10 +192,16 @@ msk = torch.cat([start_mask_repeated, msk[:, 1:-1], end_mask_repeated], dim=1)
 Enable SVI debug logs with `--debug` flag:
 
 ```bash
-python worker.py --debug --supabase-url ... --supabase-access-token ...
+uv run --python 3.10 python worker.py --debug --supabase-url ... --supabase-access-token ...
 ```
 
 Look for `[SVI_DEBUG]` prefix in logs.
+
+## Dependency Drift Note
+
+`Wan2GP/` is still a vendored upstream subtree. If kijai-side dependency requirements change, do not edit the worker runtime ad hoc inside the pod. Mirror the requirement change back into the root worker project metadata, regenerate `uv.lock`, and then let the normal `uv sync --locked --python 3.10` launch path pick it up. Temporary subtree drift is acceptable only until that lock refresh lands.
+
+If a migration rollback is needed while debugging dependency changes, keep the same repo-level rule: do not add a runtime pip fallback on the uv branch. Restore the timestamped `*.pre-uv-*` environment backup for a first-migration failure, or revert the rollout commits to return to the older `requirements.txt` bootstrap.
 
 ## Common Issues
 
@@ -227,4 +233,3 @@ When a task includes `svi2pro=True`, `headless_model_management.py` will:
 **Cause:** `offload.default_verboseLevel` not set to 2+
 
 **Solution:** Ensure `--debug` flag is passed to worker.py
-

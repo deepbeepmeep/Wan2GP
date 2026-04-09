@@ -113,9 +113,9 @@
         }
     },
     "gpu_profiles": {
-        "GTX_10":      { "python": "3.10", "torch": "cu126", "triton": null,     "sage": null,       "flash": null, "kernels": [] },
-        "RTX_20":      { "python": "3.10", "torch": "cu126", "triton": "v33",    "sage": "v1",       "flash": null, "kernels": [] },
-        "RTX_30":      { "python": "3.10", "torch": "cu126", "triton": "v33",    "sage": "v211",     "flash": null, "kernels": [] },
+        "GTX_10":      { "python": "3.10", "torch": "cu128", "triton": null,     "sage": null,       "flash": null, "kernels": [] },
+        "RTX_20":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["light2xv"] },
+        "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["light2xv"] },
         "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["light2xv"] },
         "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "flash": "v210", "kernels": ["light2xv"] },
         "AMD_GFX110X": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"} },

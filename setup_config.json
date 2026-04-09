@@ -88,8 +88,8 @@
             "nunchaku_cu13": { 
                 "label": "Nunchaku INT4/FP4 (CUDA 13)", 
                 "cmd": {
-                    "win": "https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp310-cp310-win_amd64.whl",
-                    "linux": "https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp310-cp310-linux_x86_64.whl"
+                    "win": "https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp311-cp311-win_amd64.whl",
+                    "linux": "https://github.com/nunchaku-ai/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu13.0torch2.10-cp311-cp311-linux_x86_64.whl"
                 }
             },
             "light2xv": { 

@@ -12,7 +12,7 @@ dependencies = [
   # Wan2GP base dependencies
   "mmgp==3.7.6",
   "diffusers==0.36.0",
-  "transformers==4.54.0",
+  "transformers==4.46.3",  # 4.54.0 breaks Wan2GP: PreTrainedModel moved from transformers.modeling_utils
   "tokenizers>=0.20.3",
   "accelerate>=1.1.1",
   "tqdm",

@@ -21,11 +21,11 @@ jobs:
 
       - name: Verify torch is CUDA-enabled
         run: |
-          uv run --python 3.10 python -c "import torch; print(f'torch={torch.__version__}, cuda={torch.cuda.is_available()}'); assert '+cu124' in torch.__version__, f'Expected CUDA torch, got {torch.__version__}'"
+          uv run --python 3.10 --extra cuda124 python -c "import torch; print(f'torch={torch.__version__}, cuda={torch.cuda.is_available()}'); assert '+cu124' in torch.__version__, f'Expected CUDA torch, got {torch.__version__}'"
 
       - name: Verify key imports
         run: |
-          uv run --python 3.10 python -c "
+          uv run --python 3.10 --extra cuda124 python -c "
           from transformers.modeling_utils import PreTrainedModel
           print('PreTrainedModel OK')
           from transformers import Qwen2_5_VLForConditionalGeneration, Qwen3ForCausalLM
@@ -39,7 +39,7 @@ jobs:
 
       - name: Verify worker entrypoint
         run: |
-          uv run --python 3.10 python -c "from source.runtime.entrypoints.worker import main; print('worker entrypoint OK')"
+          uv run --python 3.10 --extra cuda124 python -c "from source.runtime.entrypoints.worker import main; print('worker entrypoint OK')"
 
   linux-install:
     runs-on: ubuntu-22.04
@@ -57,11 +57,11 @@ jobs:
 
       - name: Verify torch is CUDA-enabled
         run: |
-          uv run --python 3.10 python -c "import torch; print(f'torch={torch.__version__}, cuda_built={torch.version.cuda is not None}'); assert '+cu124' in torch.__version__, f'Expected CUDA torch, got {torch.__version__}'"
+          uv run --python 3.10 --extra cuda124 python -c "import torch; print(f'torch={torch.__version__}, cuda_built={torch.version.cuda is not None}'); assert '+cu124' in torch.__version__, f'Expected CUDA torch, got {torch.__version__}'"
 
       - name: Verify key imports
         run: |
-          uv run --python 3.10 python -c "
+          uv run --python 3.10 --extra cuda124 python -c "
           from transformers.modeling_utils import PreTrainedModel
           print('PreTrainedModel OK')
           from transformers import Qwen2_5_VLForConditionalGeneration, Qwen3ForCausalLM
@@ -73,4 +73,4 @@ jobs:
 
       - name: Verify worker entrypoint
         run: |
-          uv run --python 3.10 python -c "from source.runtime.entrypoints.worker import main; print('worker entrypoint OK')"
+          uv run --python 3.10 --extra cuda124 python -c "from source.runtime.entrypoints.worker import main; print('worker entrypoint OK')"

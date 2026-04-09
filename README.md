@@ -208,12 +208,12 @@ If you want to pass extra command-line flags to the WAN2GP launcher (like enabli
 ```
 
 #### 3️⃣ Updating & Upgrading (`scripts\update.bat` | `scripts/update.sh`)
-Use this script to keep your software and dependencies up to date without having to reinstall everything from scratch. 
-* **1. Update:** Fetches the latest code from GitHub (`git pull`) and updates basic requirements.
+Use this script to get the latest updates for WAN2GP and upgrade dependencies.
+* **1. Update:** Fetches the latest code from GitHub (`git pull`) and updates requirements (`pip install -r requirements.txt`).
 * **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention) based on your hardware profile.
 
 #### 4️⃣ Managing Environments (`scripts\manage.bat` | `/manage.sh`)
-The `manage` script allows you to manage and switch between your sandboxed environments safely.
+Use this script to manage and switch between your sandboxed environments safely.
 
 * **Example Scenario:** Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, you can run `install.bat`, create a *new* environment called `env_testing`, and select "Use Latest". 
 * If the testing environment breaks or gives you errors, you can simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.

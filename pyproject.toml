@@ -116,6 +116,14 @@ py-modules = ["worker", "run_worker"]
 [tool.setuptools.packages.find]
 include = ["source*"]
 
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cuda124" },
+    { extra = "cuda128" },
+  ],
+]
+
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cu124", extra = "cuda124" },

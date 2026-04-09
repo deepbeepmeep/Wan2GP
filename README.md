@@ -198,10 +198,6 @@ If you selected Manual Install, you will be guided through:
 2. **Name your environment**  
 3. **Select your Install Mode**
 
-💡 **Recommendation:**  
-For many users, trying **Option 3 (Use Latest)** is highly recommended.
-The latest PyTorch and Sage Attention combinations often provide **significant speed improvements** and **better memory management** across a wide range of modern GPUs.
-
 ### 2️⃣ Starting the App (`scripts\run.bat` | `scripts/run.sh`)
 Once installed, use this script to launch the application. It runs WAN2GP using your active environment.
 

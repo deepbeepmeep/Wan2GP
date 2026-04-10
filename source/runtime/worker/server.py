@@ -337,12 +337,18 @@ def main():
             "db_url": cli_args.supabase_url,
             "api_key": guardian_key,
         }
-        guardian_process, log_queue = start_heartbeat_guardian_process(
-            cli_args.worker, cli_args.supabase_url, guardian_key
-        )
-        _global_log_buffer = LogBuffer(max_size=100, shared_queue=log_queue)
-        _log_interceptor_instance = CustomLogInterceptor(_global_log_buffer)
-        set_log_interceptor(_log_interceptor_instance)
+        # On Windows, the guardian child process crashes due to Ctrl+C
+        # propagation through Fortran runtimes (MKL/numpy) that Python's
+        # signal.signal(SIGINT, SIG_IGN) can't reach. Skip the guardian
+        # on Windows — heartbeats are sent inline instead via the
+        # guardian_config fallback path.
+        if os.name != "nt":
+            guardian_process, log_queue = start_heartbeat_guardian_process(
+                cli_args.worker, cli_args.supabase_url, guardian_key
+            )
+            _global_log_buffer = LogBuffer(max_size=100, shared_queue=log_queue)
+            _log_interceptor_instance = CustomLogInterceptor(_global_log_buffer)
+            set_log_interceptor(_log_interceptor_instance)
 
     # Apply WGP overrides
     original_cwd = os.getcwd()

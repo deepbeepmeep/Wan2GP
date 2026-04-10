@@ -403,7 +403,7 @@ def main():
         print(f"[WORKER] Queue init failed: {e}", flush=True)
         sys.exit(1)
 
-    # Gather system info for status display
+    # Status display with plant animation
     _gpu_name = "unknown GPU"
     try:
         import torch
@@ -416,33 +416,10 @@ def main():
         "4": "Conservative", "5": "Minimum",
     }
     _profile_label = _profile_names.get(str(cli_args.wgp_profile), f"Profile {cli_args.wgp_profile}")
-    _tasks_completed = 0
-    _worker_start = time.time()
 
-    def _print_status(state: str = "waiting"):
-        elapsed = time.time() - _worker_start
-        h, m = int(elapsed // 3600), int((elapsed % 3600) // 60)
-        uptime = f"{h}h {m}m" if h > 0 else f"{m}m"
-        parts = [
-            f"\r  ◆ {_gpu_name}",
-            f"  ◇ {_profile_label}",
-            f"  ◇ {uptime} up",
-            f"  ◇ {_tasks_completed} tasks done",
-        ]
-        if state == "waiting":
-            parts.append("  ◇ waiting for tasks...")
-        line = "".join(parts)
-        print(f"\r{line:<100}", end="", flush=True)
-
-    print(f"""
-  ┌─────────────────────────────────────────┐
-  │          ◆ Reigh Worker Ready ◆         │
-  │                                         │
-  │  GPU:     {_gpu_name:<30s}│
-  │  Profile: {_profile_label:<30s}│
-  └─────────────────────────────────────────┘
-""", flush=True)
-    _print_status()
+    from source.runtime.worker.status_display import WorkerStatusDisplay
+    _display = WorkerStatusDisplay(_gpu_name, _profile_label)
+    _display.show_banner()
 
     # Import task processing dependencies
     from source.core.db.task_claim import ClaimPollOutcome, poll_next_task
@@ -473,19 +450,19 @@ def main():
             if poll_outcome == ClaimPollOutcome.EMPTY:
                 idle_tracker.record_empty_poll()
                 if idle_tracker.should_release():
-                    print("", flush=True)  # clear status line
+                    _display.on_task_start()  # clear display
                     headless_logger.essential(
                         f"[WORKER] Idle for >={cli_args.idle_release_minutes:.1f} min — releasing resources (exit {IDLE_RELEASE_EXIT_CODE})"
                     )
                     sys.exit(IDLE_RELEASE_EXIT_CODE)
-                _print_status("waiting")
+                _display.show_idle()
                 time.sleep(cli_args.poll_interval)
                 continue
             if poll_outcome == ClaimPollOutcome.ERROR:
                 time.sleep(cli_args.poll_interval)
                 continue
 
-            print("", flush=True)  # clear status line before task logs
+            _display.on_task_start()
             idle_tracker.record_claim()
 
             current_task_params = task_info["params"]
@@ -603,8 +580,7 @@ def main():
             finally:
                 if _log_interceptor_instance:
                     _log_interceptor_instance.set_current_task(None)
-                _tasks_completed += 1
-                _print_status("waiting")
+                _display.on_task_done()
 
             time.sleep(1)
 

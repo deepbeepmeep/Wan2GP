@@ -81,6 +81,7 @@ tests/*
 !tests/test_travel_guidance_config.py
 !tests/test_pose_preprocessor.py
 !tests/test_travel_ltx_vpt.py
+!tests/test_idle_release.py
 
 # Task database files
 tasks.db-shm

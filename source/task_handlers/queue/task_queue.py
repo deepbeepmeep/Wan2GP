@@ -300,6 +300,24 @@ class HeadlessTaskQueue:
             "error": f"Task {task_id} did not complete within {timeout} seconds"
         }
 
+    def has_active_work(self) -> bool:
+        """Return True if a worker thread is processing a task or tasks are queued.
+
+        Also checks that at least one worker thread is still alive — if all
+        threads have died (e.g. native segfault), ``current_task`` may be stale.
+        """
+        with self.queue_lock:
+            if self.current_task is None and self.task_queue.empty():
+                return False
+            # Guard against stale current_task from a dead worker thread.
+            if self.current_task is not None and not any(t.is_alive() for t in self.worker_threads):
+                self.logger.warning(
+                    f"[QUEUE] current_task {self.current_task.id} set but all worker threads dead — clearing stale state"
+                )
+                self.current_task = None
+                return False
+            return True
+
     def get_queue_status(self) -> QueueStatus:
         """Get current queue status."""
         with self.queue_lock:

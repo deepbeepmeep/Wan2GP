@@ -450,11 +450,17 @@ def main():
             if poll_outcome == ClaimPollOutcome.EMPTY:
                 idle_tracker.record_empty_poll()
                 if idle_tracker.should_release():
-                    _display.on_task_start()  # clear display
-                    headless_logger.essential(
-                        f"[WORKER] Idle for >={cli_args.idle_release_minutes:.1f} min — releasing resources (exit {IDLE_RELEASE_EXIT_CODE})"
-                    )
-                    sys.exit(IDLE_RELEASE_EXIT_CODE)
+                    # Don't release while the queue is still processing a task
+                    # or downloading models — reset the timer and keep waiting.
+                    if task_queue and task_queue.has_active_work():
+                        headless_logger.info("[WORKER] Idle release suppressed — queue has active work")
+                        idle_tracker.record_claim()  # reset idle timer
+                    else:
+                        _display.on_task_start()  # clear display
+                        headless_logger.essential(
+                            f"[WORKER] Idle for >={cli_args.idle_release_minutes:.1f} min — releasing resources (exit {IDLE_RELEASE_EXIT_CODE})"
+                        )
+                        sys.exit(IDLE_RELEASE_EXIT_CODE)
                 _display.show_idle()
                 time.sleep(cli_args.poll_interval)
                 continue

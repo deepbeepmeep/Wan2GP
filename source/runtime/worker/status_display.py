@@ -1,4 +1,4 @@
-"""Terminal status display with growing plant animation."""
+"""Terminal status display with dandelion lifecycle animation."""
 
 from __future__ import annotations
 
@@ -10,66 +10,61 @@ import time
 if os.name == "nt":
     os.system("")
 
+# Each entry is (frame, delay_seconds). 12 rows, 7 chars wide.
+# Ground ▔▔▔ locked at row 11. Plant grows up from there.
 _PLANT_STAGES = [
-    # Dormant seed
-    ["     ", "     ", "     ", "     ", "     ", "     ", "     ", "     ", "  .  ", " ▔▔▔ "],
-    # Seed cracks
-    ["     ", "     ", "     ", "     ", "     ", "     ", "     ", "     ", "  ,  ", " ▔▔▔ "],
-    # Tiny sprout
-    ["     ", "     ", "     ", "     ", "     ", "     ", "     ", "     ", "  |  ", " ▔▔▔ "],
-    # Sprout grows
-    ["     ", "     ", "     ", "     ", "     ", "     ", "     ", "  |  ", "  |  ", " ▔▔▔ "],
-    # First leaf right
-    ["     ", "     ", "     ", "     ", "     ", "     ", "     ", "  |  ", "  |/ ", " ▔▔▔ "],
-    # First leaf left
-    ["     ", "     ", "     ", "     ", "     ", "     ", "     ", " \\|  ", "  |/ ", " ▔▔▔ "],
-    # Growing taller
-    ["     ", "     ", "     ", "     ", "     ", "     ", " \\|  ", "  |  ", "  |/ ", " ▔▔▔ "],
-    # Second leaf right
-    ["     ", "     ", "     ", "     ", "     ", "     ", " \\|/ ", "  |  ", "  |/ ", " ▔▔▔ "],
-    # Growing more
-    ["     ", "     ", "     ", "     ", "     ", " \\|/ ", "  |  ", " \\|  ", "  |/ ", " ▔▔▔ "],
-    # Third branch
-    ["     ", "     ", "     ", "     ", "     ", " \\|/ ", "  |  ", " \\|/ ", "  |  ", " ▔▔▔ "],
-    # Taller still
-    ["     ", "     ", "     ", "     ", " \\|/ ", "  |  ", " \\|/ ", "  |  ", "  |/ ", " ▔▔▔ "],
-    # Bud appears
-    ["     ", "     ", "     ", "  .  ", " \\|/ ", "  |  ", " \\|/ ", "  |  ", "  |/ ", " ▔▔▔ "],
-    # Bud opens
-    ["     ", "     ", "     ", "  *  ", " \\|/ ", "  |  ", " \\|/ ", "  |  ", "  |/ ", " ▔▔▔ "],
-    # Full bloom
-    ["     ", "     ", "  ~  ", "  *  ", " \\|/ ", "  |  ", " \\|/ ", "  |  ", "  |/ ", " ▔▔▔ "],
-    # Bloom fades
-    ["     ", "     ", "  .  ", "  |  ", " \\|/ ", "  |  ", " \\|/ ", "  |  ", "  |/ ", " ▔▔▔ "],
-    # Top leaves fall
-    ["     ", "     ", "     ", "  |  ", "  |/ ", "  |  ", " \\|/ ", "  |  ", "  |/ ", " ▔▔▔ "],
-    # More leaves fall
-    ["     ", "     ", "     ", "  |  ", "  |  ", "  |  ", "  |/ ", "  |  ", "  |/ ", " ▔▔▔ "],
-    # Sparse
-    ["     ", "     ", "     ", "  |  ", "  |  ", "  |  ", "  |  ", "  |  ", "  |  ", " ▔▔▔ "],
-    # Shrinking
-    ["     ", "     ", "     ", "     ", "  |  ", "  |  ", "  |  ", "  |  ", "  |  ", " ▔▔▔ "],
-    # Smaller
-    ["     ", "     ", "     ", "     ", "     ", "  |  ", "  |  ", "  |  ", "  |  ", " ▔▔▔ "],
-    # Retreating
-    ["     ", "     ", "     ", "     ", "     ", "     ", "  |  ", "  |  ", "  |  ", " ▔▔▔ "],
-    # Almost gone
-    ["     ", "     ", "     ", "     ", "     ", "     ", "     ", "  |  ", "  |  ", " ▔▔▔ "],
-    # Stub
-    ["     ", "     ", "     ", "     ", "     ", "     ", "     ", "     ", "  |  ", " ▔▔▔ "],
-    # Back to seed
-    ["     ", "     ", "     ", "     ", "     ", "     ", "     ", "     ", "  .  ", " ▔▔▔ "],
+    # --- Spring (slow, quiet) ---
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "  ▔▔▔  "], 30),
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "   .   ", "  ▔▔▔  "], 25),
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "   |   ", "  ▔▔▔  "], 20),
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "  ,|,  ", "   |   ", "  ▔▔▔  "], 20),
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "   |   ", "  ,|,  ", "   |   ", "  ▔▔▔  "], 15),
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 15),
+    # --- Growing (picking up pace) ---
+    (["       ", "       ", "       ", "       ", "       ", "       ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 12),
+    (["       ", "       ", "       ", "       ", "       ", "   |   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 10),
+    # --- Bud (slows for anticipation) ---
+    (["       ", "       ", "       ", "       ", "   .   ", "   |   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 20),
+    (["       ", "       ", "       ", "       ", "  (.)  ", "   |   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 20),
+    # --- Bloom (medium pace) ---
+    (["       ", "       ", "       ", "       ", "  {o}  ", "   |   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 15),
+    (["       ", "       ", "       ", "       ", " -{O}- ", "   |   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 15),
+    (["       ", "       ", "       ", "  \\=/  ", " -{O}- ", "  /=\\  ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 25),
+    (["       ", "       ", "       ", "  \\=/  ", " -{O}- ", "  /=\\  ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 25),
+    # --- Fading (slow, wistful) ---
+    (["       ", "       ", "       ", "       ", " -{o}- ", "  /=\\  ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 20),
+    (["       ", "       ", "       ", "       ", "  {o}  ", "   |   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 15),
+    (["       ", "       ", "       ", "       ", "  :o:  ", "   |   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 15),
+    # --- Seed head (slow build) ---
+    (["       ", "       ", "       ", "   :   ", "  :O:  ", "   :   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 20),
+    (["       ", "       ", "       ", "  .:.  ", "  :O:  ", "  ':'  ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 25),
+    (["       ", "       ", "       ", "  .:.  ", "  :O:  ", "  ':'  ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 30),
+    # --- Wind! (fast burst) ---
+    (["       ", "       ", "    .  ", "  .: . ", "  :O:  ", "  ':'  ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 6),
+    (["       ", "    . .", "      .", "   :   ", "  :o:  ", "   :   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 5),
+    (["    . .", "      .", "       ", "       ", "   o   ", "   :   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 5),
+    (["      .", "       ", "       ", "       ", "   .   ", "   |   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 8),
+    # --- Autumn (slowing down) ---
+    (["       ", "       ", "       ", "       ", "       ", "   |   ", "   |   ", "   |   ", "   |   ", " ,,|,, ", "   |   ", "  ▔▔▔  "], 15),
+    (["       ", "       ", "       ", "       ", "       ", "       ", "   |   ", "   |   ", "   |   ", " ,.|., ", "   |   ", "  ▔▔▔  "], 20),
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "   |   ", "   |   ", "  .|.  ", "   |   ", "  ▔▔▔  "], 25),
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "   |   ", "   |   ", "   |   ", "  ▔▔▔  "], 20),
+    # --- Winter (very slow, still) ---
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "   |   ", "  ▔▔▔  "], 30),
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "   .   ", "  ▔▔▔  "], 30),
+    (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "  ▔▔▔  "], 40),
 ]
 
-_PULSE = ["·    ", "· ·  ", "· · ·", "  · ·", "    ·", "     "]
+_DOTS = ["Waiting for tasks   ", "Waiting for tasks.  ", "Waiting for tasks.. ", "Waiting for tasks..."]
 
-_HEIGHT = 12  # 10 plant rows + 1 blank + 1 pulse line
+_ROWS = 12
+_HEIGHT = _ROWS + 3  # plant rows + 3 blank below
 _UP = f"\033[{_HEIGHT}A"
 _CLEAR = "\033[K"
 
 
 class WorkerStatusDisplay:
-    """Animated terminal status with a growing plant."""
+    """Animated terminal status with a dandelion lifecycle."""
 
     def __init__(self, gpu_name: str, profile_label: str):
         self._gpu = gpu_name
@@ -80,9 +75,8 @@ class WorkerStatusDisplay:
         self._active = False
 
     def show_banner(self) -> None:
-        """Print the startup banner once."""
-        print(f"\n  ✅ Worker ready — {self._gpu}, {self._profile}\n", flush=True)
-        # Print blank lines to reserve space for the display
+        """Reserve space for the display."""
+        print(flush=True)
         print("\n" * _HEIGHT, end="", flush=True)
         self._active = True
 
@@ -90,8 +84,8 @@ class WorkerStatusDisplay:
         """Redraw the status block. Called each poll cycle while idle."""
         if not self._active:
             return
-        stage = _PLANT_STAGES[self._tick % len(_PLANT_STAGES)]
-        pulse = _PULSE[self._tick % len(_PULSE)]
+        stage, _delay = _PLANT_STAGES[self._tick % len(_PLANT_STAGES)]
+        dots = _DOTS[self._tick % len(_DOTS)]
         self._tick += 1
 
         elapsed = time.time() - self._start
@@ -100,18 +94,19 @@ class WorkerStatusDisplay:
         tasks = f"{self._tasks_done} task{'s' if self._tasks_done != 1 else ''}"
 
         info_lines = {
-            4: self._gpu,
+            2: self._gpu,
             6: f"{self._profile}  ·  {uptime} up  ·  {tasks}",
-            8: "waiting for tasks...",
+            10: dots,
         }
 
         sys.stdout.write(_UP)
-        for row in range(10):
+        for row in range(_ROWS):
             plant = stage[row]
             info = info_lines.get(row, "")
-            sys.stdout.write(f"  {info:<45s}{plant}{_CLEAR}\n")
-        sys.stdout.write(f"{_CLEAR}\n")  # blank separator
-        sys.stdout.write(f"  {pulse}{_CLEAR}\n")
+            sys.stdout.write(f"  {info:<43s}{plant}{_CLEAR}\n")
+        sys.stdout.write(f"{_CLEAR}\n")
+        sys.stdout.write(f"{_CLEAR}\n")
+        sys.stdout.write(f"{_CLEAR}\n")
         sys.stdout.flush()
 
     def on_task_start(self) -> None:
@@ -128,6 +123,5 @@ class WorkerStatusDisplay:
         """Increment counter and restart plant from seed."""
         self._tasks_done += 1
         self._tick = 0
-        # Re-reserve space
         print("\n" * _HEIGHT, end="", flush=True)
         self.show_idle()

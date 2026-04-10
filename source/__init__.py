@@ -8,6 +8,11 @@ except (ImportError, AttributeError):
     pass
 
 try:
+    from source.models.wgp import transformers_patches  # noqa: F401
+except (ImportError, AttributeError):
+    pass
+
+try:
     from source.media.video import vace_frame_utils  # noqa: F401
 except (ImportError, AttributeError):
     pass

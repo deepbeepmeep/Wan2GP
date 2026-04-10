@@ -55,8 +55,8 @@ _PLANT_STAGES = [
     (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "  ▔▔▔  "], 40),
 ]
 
-_DOTS_FREE = ["GPU idle · waiting for tasks   ", "GPU idle · waiting for tasks.  ", "GPU idle · waiting for tasks.. ", "GPU idle · waiting for tasks..."]
-_DOTS_ACTIVE = ["GPU ready · waiting for tasks   ", "GPU ready · waiting for tasks.  ", "GPU ready · waiting for tasks.. ", "GPU ready · waiting for tasks..."]
+_DOTS_FREE = ["GPU free · waiting for tasks   ", "GPU free · waiting for tasks.  ", "GPU free · waiting for tasks.. ", "GPU free · waiting for tasks..."]
+_DOTS_ACTIVE = ["Models loaded · waiting for tasks   ", "Models loaded · waiting for tasks.  ", "Models loaded · waiting for tasks.. ", "Models loaded · waiting for tasks..."]
 
 _ROWS = 12
 _HEIGHT = _ROWS + 3  # plant rows + 3 blank below

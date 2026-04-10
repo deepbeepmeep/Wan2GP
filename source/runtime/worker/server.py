@@ -397,7 +397,46 @@ def main():
         print(f"[WORKER] Queue init failed: {e}", flush=True)
         sys.exit(1)
 
-    print(f"[WORKER] ✅ Ready — waiting for tasks (polling every {cli_args.poll_interval}s)", flush=True)
+    # Gather system info for status display
+    _gpu_name = "unknown GPU"
+    try:
+        import torch
+        if torch.cuda.is_available():
+            _gpu_name = torch.cuda.get_device_name(0)
+    except Exception:
+        pass
+    _profile_names = {
+        "1": "Max Performance", "2": "High RAM", "3": "Balanced",
+        "4": "Conservative", "5": "Minimum",
+    }
+    _profile_label = _profile_names.get(str(cli_args.wgp_profile), f"Profile {cli_args.wgp_profile}")
+    _tasks_completed = 0
+    _worker_start = time.time()
+
+    def _print_status(state: str = "waiting"):
+        elapsed = time.time() - _worker_start
+        h, m = int(elapsed // 3600), int((elapsed % 3600) // 60)
+        uptime = f"{h}h {m}m" if h > 0 else f"{m}m"
+        parts = [
+            f"\r  ◆ {_gpu_name}",
+            f"  ◇ {_profile_label}",
+            f"  ◇ {uptime} up",
+            f"  ◇ {_tasks_completed} tasks done",
+        ]
+        if state == "waiting":
+            parts.append("  ◇ waiting for tasks...")
+        line = "".join(parts)
+        print(f"\r{line:<100}", end="", flush=True)
+
+    print(f"""
+  ┌─────────────────────────────────────────┐
+  │          ◆ Reigh Worker Ready ◆         │
+  │                                         │
+  │  GPU:     {_gpu_name:<30s}│
+  │  Profile: {_profile_label:<30s}│
+  └─────────────────────────────────────────┘
+""", flush=True)
+    _print_status()
 
     # Import task processing dependencies
     from source.core.db.task_claim import ClaimPollOutcome, poll_next_task
@@ -428,16 +467,19 @@ def main():
             if poll_outcome == ClaimPollOutcome.EMPTY:
                 idle_tracker.record_empty_poll()
                 if idle_tracker.should_release():
+                    print("", flush=True)  # clear status line
                     headless_logger.essential(
                         f"[WORKER] Idle for >={cli_args.idle_release_minutes:.1f} min — releasing resources (exit {IDLE_RELEASE_EXIT_CODE})"
                     )
                     sys.exit(IDLE_RELEASE_EXIT_CODE)
+                _print_status("waiting")
                 time.sleep(cli_args.poll_interval)
                 continue
             if poll_outcome == ClaimPollOutcome.ERROR:
                 time.sleep(cli_args.poll_interval)
                 continue
 
+            print("", flush=True)  # clear status line before task logs
             idle_tracker.record_claim()
 
             current_task_params = task_info["params"]
@@ -555,6 +597,8 @@ def main():
             finally:
                 if _log_interceptor_instance:
                     _log_interceptor_instance.set_current_task(None)
+                _tasks_completed += 1
+                _print_status("waiting")
 
             time.sleep(1)
 

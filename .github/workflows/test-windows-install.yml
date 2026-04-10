@@ -41,6 +41,18 @@ jobs:
         run: |
           uv run --python 3.10 --extra cuda124 python -c "from source.runtime.entrypoints.worker import main; print('worker entrypoint OK')"
 
+      - name: Verify guardian subprocess doesn't crash
+        run: |
+          uv run --python 3.10 --extra cuda124 python -c "
+          from multiprocessing import Process
+          from source.runtime.worker.guardian import get_vram_info
+          p = Process(target=get_vram_info)
+          p.start()
+          p.join(timeout=10)
+          assert p.exitcode == 0, f'Guardian crashed with exit code {p.exitcode}'
+          print('Guardian subprocess OK')
+          "
+
   linux-install:
     runs-on: ubuntu-22.04
     steps:

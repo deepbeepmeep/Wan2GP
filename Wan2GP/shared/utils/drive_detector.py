@@ -65,7 +65,7 @@ def suggest_checkpoint_path(mount_point: str, cwd: str) -> str:
             return "ckpts"
     except OSError:
         pass
-    return os.path.join(mount_point, "WanGP", "ckpts")
+    return os.path.join(mount_point, "Reigh", "ckpts")
 
 
 def _detect_macos_drives() -> list[DriveInfo]:

@@ -100,8 +100,8 @@ class WorkerStatusDisplay:
         tasks = f"{self._tasks_done} task{'s' if self._tasks_done != 1 else ''}"
 
         info_lines = {
-            6: self._gpu,
-            7: f"{self._profile}  ·  {uptime} up  ·  {tasks}",
+            4: self._gpu,
+            6: f"{self._profile}  ·  {uptime} up  ·  {tasks}",
             8: "waiting for tasks...",
         }
 

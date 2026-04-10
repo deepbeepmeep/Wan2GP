@@ -49,6 +49,13 @@ def check_process_alive(pid: int, start_time: float | None = None) -> bool:
         return False
 
 
+def _windows_subprocess_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+
+
 def get_vram_info() -> tuple[int, int]:
     try:
         result = subprocess.run(
@@ -56,6 +63,7 @@ def get_vram_info() -> tuple[int, int]:
             capture_output=True,
             text=True,
             timeout=5,
+            **_windows_subprocess_kwargs(),
         )
         if result.returncode == 0:
             total, used = result.stdout.strip().split(",")
@@ -104,6 +112,7 @@ def send_heartbeat_with_logs(
             args,
             capture_output=True,
             timeout=15,
+            **_windows_subprocess_kwargs(),
         )
         if result.returncode != 0:
             return False

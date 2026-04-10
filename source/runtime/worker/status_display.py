@@ -100,9 +100,9 @@ class WorkerStatusDisplay:
         tasks = f"{self._tasks_done} task{'s' if self._tasks_done != 1 else ''}"
 
         info_lines = {
-            3: self._gpu,
-            4: f"{self._profile}  ·  {uptime} up  ·  {tasks}",
-            5: "waiting for tasks...",
+            6: self._gpu,
+            7: f"{self._profile}  ·  {uptime} up  ·  {tasks}",
+            8: "waiting for tasks...",
         }
 
         sys.stdout.write(_UP)

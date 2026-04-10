@@ -204,6 +204,7 @@ class DistilledPipeline:
         masking_source: dict | None = None,
         masking_strength: float | None = None,
         return_latent_slice: slice | None = None,
+        skip_stage_2: bool = False,
         self_refiner_setting: int = 0,
         self_refiner_plan: str = "",
         self_refiner_f_uncertainty: float = 0.1,
@@ -316,12 +317,14 @@ class DistilledPipeline:
 
         # Stage 1: Initial low resolution video generation.
         bench_transformer = _env_flag(_BENCH_TRANSFORMER_ENV, "0")
+        skip_stage_2 = bool(skip_stage_2)
+        stage_1_pass_no = 0 if skip_stage_2 else 1
         video_encoder = self._get_model("video_encoder")
         transformer = _TransformerBenchWrapper(self._get_model("transformer"), enabled=bench_transformer)
         bind_interrupt_check(transformer, interrupt_check)
         # DISTILLED_SIGMA_VALUES = [0.421875, 0]
         stage_1_sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
-        pass_no = 1
+        pass_no = stage_1_pass_no
         if loras_slists is not None:
             stage_1_steps = len(stage_1_sigmas) - 1
             update_loras_slists(
@@ -363,7 +366,7 @@ class DistilledPipeline:
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
-                pass_no=1,
+                pass_no=stage_1_pass_no,
                 transformer=transformer,
                 self_refiner_handler=self_refiner_handler,
                 self_refiner_handler_audio=self_refiner_handler_audio,
@@ -373,8 +376,8 @@ class DistilledPipeline:
         stage_1_output_shape = VideoPixelShape(
             batch=1,
             frames=num_frames,
-            width=width // 2,
-            height=height // 2,
+            width=width if skip_stage_2 else width // 2,
+            height=height if skip_stage_2 else height // 2,
             fps=frame_rate,
         )
         stage_1_conditionings = image_conditionings_by_replacing_latent(
@@ -458,6 +461,34 @@ class DistilledPipeline:
             return None, None
         if interrupt_check is not None and interrupt_check():
             return None, None
+        if skip_stage_2:
+            if bench_transformer:
+                print(
+                    "[WAN2GP][LTX2][bench] transformer total: "
+                    f"{stage1_transformer_ms / 1000.0:.3f}s ({stage1_transformer_calls} calls)"
+                )
+            torch.cuda.synchronize()
+            del transformer
+            del video_encoder
+            cleanup_memory()
+            latent_slice = None
+            if return_latent_slice is not None:
+                latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
+            decoded_video = vae_decode_video_to_tensor(
+                video_state.latent,
+                self._get_model("video_decoder"),
+                tiling_config,
+                expected_frames=int(stage_1_output_shape.frames),
+                expected_height=int(stage_1_output_shape.height),
+                expected_width=int(stage_1_output_shape.width),
+                interrupt_check=interrupt_check,
+            )
+            decoded_audio = vae_decode_audio(
+                audio_state.latent, self._get_model("audio_decoder"), self._get_model("vocoder")
+            )
+            if latent_slice is not None:
+                return decoded_video, decoded_audio, latent_slice
+            return decoded_video, decoded_audio
 
         stage_2_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
         upscaled_video_latent = upsample_video(

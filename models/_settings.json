@@ -11,6 +11,7 @@
 	"input_video_strength": 1.0,
 	"keep_frames_video_guide": "",
 	"video_guide_outpainting": "#",
+	"video_guide_outpainting_ratio": "",
 	"masking_strength": 1,
 	"mask_expand": 0,
 	"frames_positions": "",

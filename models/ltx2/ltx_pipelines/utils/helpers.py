@@ -162,7 +162,11 @@ def video_conditionings_by_keyframe(
         #     encoded_video = vae_encode_video(video, video_encoder, tiling_config)
 
         encoded_video = vae_encode_video(video, video_encoder, tiling_config)
-        cond =VideoConditionByKeyframeIndex(keyframes=encoded_video, frame_idx=frame_idx, strength=strength)
+        cond = VideoConditionByKeyframeIndex(
+            keyframes=encoded_video,
+            frame_idx=frame_idx,
+            strength=strength,
+        )
         conditionings.append(cond)
 
     return conditionings

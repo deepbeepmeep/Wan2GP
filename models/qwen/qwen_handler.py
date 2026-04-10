@@ -40,6 +40,7 @@ class family_handler():
             extra_model_def["inpaint_video_prompt_type"] = "VA"
             extra_model_def["image_video_prompt_type"] = ""            
             extra_model_def["video_guide_outpainting"] = [2]
+            extra_model_def["video_guide_outpainting_ratio"] = [2]
             extra_model_def["model_modes"] = {
                         "choices": [
                             ("LanPaint (2 steps): ~2x slower, easy task", 2),
@@ -67,6 +68,7 @@ class family_handler():
             }
             extra_model_def["background_removal_label"]= "Remove Backgrounds only behind People / Objects except main Subject / Landscape" 
             extra_model_def["video_guide_outpainting"] = [2]
+            extra_model_def["video_guide_outpainting_ratio"] = [2]
             extra_model_def["model_modes"] = {
                         "choices": [
                             ("Lora Inpainting: Inpainted area completely unrelated to masked content", 1),
@@ -233,7 +235,8 @@ class family_handler():
     def custom_prompt_preprocess(prompt, video_guide_outpainting, model_mode, **kwargs):
         if model_mode == 0:
             # from wgp import get_outpainting_dims
-            if len(video_guide_outpainting) and not video_guide_outpainting.startswith("#") and video_guide_outpainting != "0 0 0 0":
+            outpainting_ratio = (kwargs.get("video_guide_outpainting_ratio") or "").strip()
+            if ((len(video_guide_outpainting) and not video_guide_outpainting.startswith("#") and video_guide_outpainting != "0 0 0 0") or (len(outpainting_ratio) > 0 and not video_guide_outpainting.startswith("#"))):
                 if not prompt.endswith("."): prompt += "."
                 prompt += "Remove the red paddings on the sides and show what's behind them."
         return prompt  

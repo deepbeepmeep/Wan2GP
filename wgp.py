@@ -40,7 +40,7 @@ import importlib
 from shared.utils import notification_sound
 from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_loras_multipliers
 from shared.utils.utils import convert_tensor_to_image, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, to_rgb_tensor
-from shared.utils.utils import calculate_new_dimensions, get_outpainting_frame_location, get_outpainting_full_area_dimensions
+from shared.utils.utils import calculate_new_dimensions, get_outpainting_frame_location, get_outpainting_full_area_dimensions, resolve_outpainting_dims
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_image
 from shared.utils.audio_video import read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension
@@ -770,6 +770,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     switch_threshold = inputs["switch_threshold"]
     switch_threshold2 = inputs["switch_threshold2"]
     video_guide_outpainting = inputs["video_guide_outpainting"]
+    video_guide_outpainting_ratio = inputs.get("video_guide_outpainting_ratio", "")
     spatial_upsampling = inputs["spatial_upsampling"]
     motion_amplitude = inputs["motion_amplitude"]
     self_refiner_setting = inputs["self_refiner_setting"]
@@ -781,8 +782,9 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     outpainting_modes = model_def.get("video_guide_outpainting", [])
     if image_mode not in outpainting_modes: 
         video_guide_outpainting = ""
+        video_guide_outpainting_ratio = ""
 
-    outpainting_dims = get_outpainting_dims(video_guide_outpainting)
+    outpainting_dims = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio)
 
     model_modes_visibility = [0,1,2]
     model_mode_choices = model_def.get("model_modes", None)
@@ -1073,6 +1075,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         "motion_amplitude": motion_amplitude,
         "model_mode": model_mode,
         "video_guide_outpainting": video_guide_outpainting,
+        "video_guide_outpainting_ratio": inputs.get("video_guide_outpainting_ratio", ""),
         "custom_settings": inputs.get("custom_settings", None),
         "self_refiner_plan": self_refiner_plan,
     } 
@@ -4219,11 +4222,16 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                 video_flow_shift = None 
 
             video_video_guide_outpainting = configs.get("video_guide_outpainting", "")
+            video_video_guide_outpainting_ratio = configs.get("video_guide_outpainting_ratio", "")
             video_outpainting = ""
             if len(video_video_guide_outpainting) > 0  and not video_video_guide_outpainting.startswith("#") \
                     and (any_letters(video_video_prompt_type, "VFK") ) :
                 video_video_guide_outpainting = video_video_guide_outpainting.split(" ")
                 video_outpainting = f"Top={video_video_guide_outpainting[0]}%, Bottom={video_video_guide_outpainting[1]}%, Left={video_video_guide_outpainting[2]}%, Right={video_video_guide_outpainting[3]}%" 
+            elif len(video_video_guide_outpainting_ratio) > 0 and not video_video_guide_outpainting.startswith("#") and any_letters(video_video_prompt_type, "VFK"):
+                video_outpainting = "Top=0%, Bottom=0%, Left=0%, Right=0%"
+            if len(video_outpainting) > 0 and len(video_video_guide_outpainting_ratio) > 0:
+                video_outpainting += f", Fit {video_video_guide_outpainting_ratio}"
             video_creation_date = resolve_media_creation_date(file_name, configs)
             video_generation_time = format_generation_time(float(configs.get("generation_time", "0")))
             video_activated_loras = configs.get("activated_loras", [])
@@ -4627,7 +4635,7 @@ def extract_faces_from_video_with_mask(input_video_path, input_mask_path, max_fr
     return face_tensor
 
 
-def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,  max_frames, start_frame=0, fit_canvas = None, fit_crop = False, target_fps = 16, block_size= 16, expand_scale = 2, process_type = "inpaint", process_type2 = None, to_bbox = False, RGB_Mask = False, negate_mask = False, process_outside_mask = None, inpaint_color = 127, outpainting_dims = None, proc_no = 1):
+def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,  max_frames, start_frame=0, fit_canvas = None, fit_crop = False, target_fps = 16, block_size= 16, expand_scale = 2, process_type = "inpaint", process_type2 = None, to_bbox = False, RGB_Mask = False, negate_mask = False, process_outside_mask = None, inpaint_color = 127, outpainting_dims = None, outpainting_ratio = "", proc_no = 1):
 
     def mask_to_xyxy_box(mask):
         rows, cols = np.where(mask == 255)
@@ -4682,9 +4690,10 @@ def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,
 
     frame_height, frame_width, _ = video[0].shape
 
+    source_frame_height, source_frame_width = frame_height, frame_width
     if outpainting_dims != None:
         if fit_canvas != None:
-            frame_height, frame_width = get_outpainting_full_area_dimensions(frame_height,frame_width, outpainting_dims)
+            frame_height, frame_width = get_outpainting_full_area_dimensions(frame_height, frame_width, outpainting_dims, outpainting_ratio)
         else:
             frame_height, frame_width = height, width
 
@@ -4693,7 +4702,7 @@ def preprocess_video_with_mask(input_video_path, input_mask_path, height, width,
 
     if outpainting_dims != None:
         final_height, final_width = height, width
-        height, width, margin_top, margin_left =  get_outpainting_frame_location(final_height, final_width,  outpainting_dims, 1)        
+        height, width, margin_top, margin_left = get_outpainting_frame_location(final_height, final_width, outpainting_dims, 1, outpainting_ratio, source_frame_height, source_frame_width)
 
     if any_mask:
         num_frames = min(len(video), len(mask_video))
@@ -5424,8 +5433,16 @@ def enhance_prompt(state, prompt, prompt_enhancer, multi_images_gen_type, multi_
         gr.Info(f'Prompt "{original_prompts[0][:100]}" has been enhanced')
     return prompt, prompt
 
-def get_outpainting_dims(video_guide_outpainting):
-    return None if video_guide_outpainting== None or len(video_guide_outpainting) == 0 or video_guide_outpainting == "0 0 0 0" or video_guide_outpainting.startswith("#") else [int(v) for v in video_guide_outpainting.split(" ")] 
+def get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio = ""):
+    if video_guide_outpainting is None:
+        return None
+    video_guide_outpainting = str(video_guide_outpainting).strip()
+    if video_guide_outpainting.startswith("#"):
+        return None
+    if len(video_guide_outpainting) == 0 or video_guide_outpainting == "0 0 0 0":
+        return [0, 0, 0, 0] if len((video_guide_outpainting_ratio or "").strip()) > 0 else None
+    outpainting_dims = video_guide_outpainting.split(" ")
+    return None if len(outpainting_dims) != 4 else [int(v) for v in outpainting_dims]
 
 def parse_guide_inpaint_color(value):
     if isinstance(value, str):
@@ -5638,6 +5655,7 @@ def generate_video(
     denoising_strength,
     masking_strength,     
     video_guide_outpainting,
+    video_guide_outpainting_ratio,
     video_mask,
     image_mask,
     control_net_weight,
@@ -5953,7 +5971,7 @@ def generate_video(
     custom_frames_injection = model_def.get("custom_frames_injection", False) and image_refs is not None and len(image_refs)
     if "K" in video_prompt_type: 
         any_background_ref = 2 if model_def.get("all_image_refs_are_background_ref", False) or custom_frames_injection else 1
-    outpainting_dims = get_outpainting_dims(video_guide_outpainting)
+    outpainting_dims = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio)
     fit_canvas = server_config.get("fit_canvas", 0)
     fit_crop = fit_canvas == 2
     if fit_crop and outpainting_dims is not None:
@@ -6305,9 +6323,9 @@ def generate_video(
 
                         if not (preprocess_type == "identity" and preprocess_type2 is None and video_mask is None):send_cmd("progress", [0, get_latest_status(state, status_info)])
                         inpaint_color = 0 if preprocess_type=="pose" and process_outside_mask == "inpaint" else guide_inpaint_color
-                        video_guide_processed, video_mask_processed = preprocess_video_with_mask(video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type )
+                        video_guide_processed, video_mask_processed = preprocess_video_with_mask(video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type )
                         if preprocess_type2 != None:
-                            video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type  )
+                            video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type  )
 
                     if video_guide_processed is not None  and sample_fit_canvas is not None:
                         image_size = video_guide_processed.shape[-2:]
@@ -6329,7 +6347,7 @@ def generate_video(
                     from shared.utils.utils import get_outpainting_full_area_dimensions
                     w, h = image_refs[0].size
                     if outpainting_dims != None:
-                        h, w = get_outpainting_full_area_dimensions(h,w, outpainting_dims)
+                        h, w = get_outpainting_full_area_dimensions(h, w, outpainting_dims, video_guide_outpainting_ratio)
                     image_size = calculate_new_dimensions(height, width, h, w, fit_canvas)
                 sample_fit_canvas = None
                 if repeat_no == 1:
@@ -6365,6 +6383,7 @@ def generate_video(
                                                                                         fit_into_canvas= model_def.get("fit_into_canvas_image_refs", 1),
                                                                                         block_size=block_size,
                                                                                         outpainting_dims =outpainting_dims,
+                                                                                        outpainting_ratio = video_guide_outpainting_ratio,
                                                                                         background_ref_outpainted = model_def.get("background_ref_outpainted", True),
                                                                                         return_tensor= model_def.get("return_image_refs_tensor", False),
                                                                                         ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0),
@@ -6381,7 +6400,7 @@ def generate_video(
                                                                         None if dont_cat_preguide else pre_video_guide, 
                                                                         image_size, current_video_length, latent_size,
                                                                         any_mask, any_guide_padding, guide_inpaint_color, 
-                                                                        keep_frames_parsed, frames_to_inject_parsed , outpainting_dims)
+                                                                        keep_frames_parsed, frames_to_inject_parsed , outpainting_dims, video_guide_outpainting_ratio)
                 video_guide_processed = video_guide_processed2 = video_mask_processed = video_mask_processed2 = None
                 if len(src_videos) == 1:
                     src_video, src_video2, src_mask, src_mask2 = src_videos[0], None, src_masks[0], None 
@@ -6470,6 +6489,16 @@ def generate_video(
                 if prefix_video is not None and prefix_video.dtype == torch.uint8:
                     prefix_video_for_model = prefix_video.float().div_(127.5).sub_(1.0)
                 custom_settings_for_model = custom_settings if isinstance(custom_settings, dict) else {}
+                model_outpainting_dims = outpainting_dims
+                if outpainting_dims is not None and len((video_guide_outpainting_ratio or "").strip()) > 0:
+                    if isinstance(video_guide, Image.Image):
+                        control_source_width, control_source_height = video_guide.size
+                    elif video_guide is not None:
+                        _, control_source_width, control_source_height, _ = get_video_info(video_guide)
+                    else:
+                        control_source_width = control_source_height = None
+                    if control_source_height is not None and control_source_width is not None:
+                        model_outpainting_dims = resolve_outpainting_dims(control_source_height, control_source_width, outpainting_dims, video_guide_outpainting_ratio)
                 overridden_inputs = None
                 samples = wan_model.generate(
                     input_prompt = prompt,
@@ -6558,7 +6587,7 @@ def generate_video(
                     prefix_video = prefix_video_for_model,
                     original_input_ref_images = original_image_refs[nb_frames_positions:] if original_image_refs is not None else [],
                     image_refs_relative_size = image_refs_relative_size,
-                    outpainting_dims = outpainting_dims,
+                    outpainting_dims = model_outpainting_dims,
                     face_arc_embeds = face_arc_embeds,
                     custom_settings=custom_settings_for_model,
                     temperature=temperature,
@@ -7950,6 +7979,8 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
 
     if model_def.get("video_guide_outpainting", None) is None:
         pop += ["video_guide_outpainting"] 
+    if model_def.get("video_guide_outpainting_ratio", None) is None:
+        pop += ["video_guide_outpainting_ratio"] 
 
     if not (vace or t2v):
         pop += ["min_frames_if_references"]
@@ -8623,9 +8654,10 @@ def save_inputs(
             model_mode,
             video_source,
             keep_frames_video_source,
-            input_video_strength,
-            video_guide_outpainting,
-            video_prompt_type,
+              input_video_strength,
+              video_guide_outpainting,
+              video_guide_outpainting_ratio,
+              video_prompt_type,
             image_refs,
             frames_positions,
             video_guide,
@@ -9191,7 +9223,11 @@ def update_video_guide_outpainting(video_guide_outpainting_value, value, pos):
 def refresh_video_guide_outpainting_row(video_guide_outpainting_checkbox, video_guide_outpainting):
     video_guide_outpainting = video_guide_outpainting[1:] if video_guide_outpainting_checkbox else "#" + video_guide_outpainting 
         
-    return gr.update(visible=video_guide_outpainting_checkbox), video_guide_outpainting
+    return gr.update(visible=video_guide_outpainting_checkbox), gr.update(visible=video_guide_outpainting_checkbox), video_guide_outpainting
+
+def refresh_video_guide_outpainting_labels(video_guide_outpainting_ratio):
+    suffix = "%" if len((video_guide_outpainting_ratio or "").strip()) == 0 else "x"
+    return gr.update(label=f"Top {suffix}"), gr.update(label=f"Bottom {suffix}"), gr.update(label=f"Left {suffix}"), gr.update(label=f"Right {suffix}")
 
 custom_resolutions = None
 def get_resolution_choices(current_resolution_choice, model_resolutions= None):
@@ -9922,16 +9958,21 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                 video_guide_outpainting_modes = model_def.get("video_guide_outpainting", [])
                 with gr.Column(visible= ("V" in video_prompt_type_value  or "K" in video_prompt_type_value  or "F" in video_prompt_type_value) and image_mode_value in video_guide_outpainting_modes) as video_guide_outpainting_col:
                     video_guide_outpainting_value = ui_get("video_guide_outpainting")
+                    video_guide_outpainting_ratio_value = ui_get("video_guide_outpainting_ratio", "")
                     video_guide_outpainting = gr.Text(value=video_guide_outpainting_value , visible= False)
                     with gr.Group():
-                        video_guide_outpainting_checkbox = gr.Checkbox(label="Enable Spatial Outpainting on Control Video, Landscape or Positioned Reference Frames" if image_mode_value == 0 else "Enable Spatial Outpainting on Control Image", value=len(video_guide_outpainting_value)>0 and not video_guide_outpainting_value.startswith("#") )
+                        video_guide_outpainting_enabled = not video_guide_outpainting_value.startswith("#") and (len(video_guide_outpainting_value) > 0 or len(video_guide_outpainting_ratio_value) > 0)
+                        outpainting_label_suffix = "%" if len(video_guide_outpainting_ratio_value) == 0 else "x"
+                        with gr.Row():
+                            video_guide_outpainting_checkbox = gr.Checkbox(label=model_def.get("video_guide_outpainting_label", "Enable Spatial Outpainting on Control Video, Landscape or Positioned Reference Frames") if image_mode_value == 0 else "Enable Spatial Outpainting on Control Image", value=video_guide_outpainting_enabled, scale=3)
+                            video_guide_outpainting_ratio = gr.Dropdown([("Manual Expansion", ""), ("Fit into 1:1", "1:1"), ("Fit into 4:3", "4:3"), ("Fit into 3:4", "3:4"), ("Fit into 16:9", "16:9"), ("Fit into 9:16", "9:16"), ("Fit into 2:1", "2:1"), ("Fit into 1:2", "1:2")], value=video_guide_outpainting_ratio_value, visible=video_guide_outpainting_enabled, show_label=False, allow_custom_value=False, scale=1)
                         with gr.Row(visible = not video_guide_outpainting_value.startswith("#")) as video_guide_outpainting_row:
                             video_guide_outpainting_value = video_guide_outpainting_value[1:] if video_guide_outpainting_value.startswith("#") else video_guide_outpainting_value
                             video_guide_outpainting_list = [0] * 4 if len(video_guide_outpainting_value) == 0 else [int(v) for v in video_guide_outpainting_value.split(" ")]
-                            video_guide_outpainting_top= gr.Slider(0, 100, value= video_guide_outpainting_list[0], step=5, label="Top %", show_reset_button= False)
-                            video_guide_outpainting_bottom = gr.Slider(0, 100, value= video_guide_outpainting_list[1], step=5, label="Bottom %", show_reset_button= False)
-                            video_guide_outpainting_left = gr.Slider(0, 100, value= video_guide_outpainting_list[2], step=5, label="Left %", show_reset_button= False)
-                            video_guide_outpainting_right = gr.Slider(0, 100, value= video_guide_outpainting_list[3], step=5, label="Right %", show_reset_button= False)
+                            video_guide_outpainting_top= gr.Slider(0, 100, value= video_guide_outpainting_list[0], step=5, label=f"Top {outpainting_label_suffix}", show_reset_button= False)
+                            video_guide_outpainting_bottom = gr.Slider(0, 100, value= video_guide_outpainting_list[1], step=5, label=f"Bottom {outpainting_label_suffix}", show_reset_button= False)
+                            video_guide_outpainting_left = gr.Slider(0, 100, value= video_guide_outpainting_list[2], step=5, label=f"Left {outpainting_label_suffix}", show_reset_button= False)
+                            video_guide_outpainting_right = gr.Slider(0, 100, value= video_guide_outpainting_list[3], step=5, label=f"Right {outpainting_label_suffix}", show_reset_button= False)
                 # image_mask = gr.Image(label= "Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)", type ="pil", visible= image_mode_value==1 and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , height = gallery_height, value= ui_defaults.get("image_mask", None)) 
                 image_mask = gr.Image(label= "Image Mask Area (for Inpainting, white = Control Area, black = Unchanged)", type ="pil", visible= False, height = gallery_height, value= ui_defaults.get("image_mask", None)) 
                 video_mask = gr.Video(label= "Video Mask Area (for Inpainting, white = Control Area, black = Unchanged)", visible= (not image_outputs) and "V" in video_prompt_type_value and "A" in video_prompt_type_value and not "U" in video_prompt_type_value , height = gallery_height, value= ui_defaults.get("video_mask", None)) 
@@ -10874,7 +10915,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       video_prompt_type_video_guide, video_prompt_type_video_guide_alt, video_prompt_type_video_mask, video_prompt_type_image_refs, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox,
                                       apg_col, audio_prompt_type_sources,  audio_prompt_type_remux, audio_prompt_type_remux_row, force_fps_col,
                                       video_guide_outpainting_col,video_guide_outpainting_top, video_guide_outpainting_bottom, video_guide_outpainting_left, video_guide_outpainting_right,
-                                      video_guide_outpainting_checkbox, video_guide_outpainting_row, show_advanced, video_info_to_control_video_btn, video_info_to_video_source_btn, sample_solver_row,
+                                      video_guide_outpainting_checkbox, video_guide_outpainting_ratio, video_guide_outpainting_row, show_advanced, video_info_to_control_video_btn, video_info_to_video_source_btn, sample_solver_row,
                                       video_buttons_row, deleted_video_buttons_row, image_buttons_row, video_postprocessing_tab, audio_remuxing_tab, PP_MMAudio_col, PP_MMAudio_setting, PP_MMAudio_row, PP_custom_audio_row, 
                                       audio_buttons_row, deleted_audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_eject_audio_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
@@ -10924,7 +10965,8 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
             video_guide_outpainting_bottom.input(fn=update_video_guide_outpainting, inputs=[video_guide_outpainting, video_guide_outpainting_bottom,gr.State(1)], outputs = [video_guide_outpainting], trigger_mode="multiple" )
             video_guide_outpainting_left.input(fn=update_video_guide_outpainting, inputs=[video_guide_outpainting, video_guide_outpainting_left,gr.State(2)], outputs = [video_guide_outpainting], trigger_mode="multiple" )
             video_guide_outpainting_right.input(fn=update_video_guide_outpainting, inputs=[video_guide_outpainting, video_guide_outpainting_right,gr.State(3)], outputs = [video_guide_outpainting], trigger_mode="multiple" )
-            video_guide_outpainting_checkbox.input(fn=refresh_video_guide_outpainting_row, inputs=[video_guide_outpainting_checkbox, video_guide_outpainting], outputs= [video_guide_outpainting_row,video_guide_outpainting])
+            video_guide_outpainting_ratio.input(fn=refresh_video_guide_outpainting_labels, inputs=[video_guide_outpainting_ratio], outputs=[video_guide_outpainting_top, video_guide_outpainting_bottom, video_guide_outpainting_left, video_guide_outpainting_right], show_progress="hidden")
+            video_guide_outpainting_checkbox.input(fn=refresh_video_guide_outpainting_row, inputs=[video_guide_outpainting_checkbox, video_guide_outpainting], outputs= [video_guide_outpainting_row, video_guide_outpainting_ratio, video_guide_outpainting])
             show_advanced.change(fn=switch_advanced, inputs=[state, show_advanced, lset_name], outputs=[advanced_row, preset_buttons_rows, refresh_lora_btn, refresh2_row ,lset_name]).then(
                 fn=switch_prompt_type, inputs = [state, wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, *prompt_vars], outputs = [wizard_prompt_activated_var, wizard_variables_var, prompt, wizard_prompt, prompt_column_advanced, prompt_column_wizard, prompt_column_wizard_vars, *prompt_vars])
             gr.on( triggers=[output.change, output.select],fn=select_video, inputs=[state, current_gallery_tab, output, last_choice, audio_files_paths, audio_file_selected, gr.State("video")], outputs=[last_choice, video_info, video_buttons_row, image_buttons_row, audio_buttons_row, deleted_video_buttons_row, deleted_audio_buttons_row, video_postprocessing_tab, audio_remuxing_tab], show_progress="hidden")

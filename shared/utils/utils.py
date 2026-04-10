@@ -273,8 +273,60 @@ def convert_tensor_to_image(t, frame_no = 0, mask_levels = False):
 def save_image(tensor_image, name, frame_no = -1):
     convert_tensor_to_image(tensor_image, frame_no).save(name)
 
-def get_outpainting_full_area_dimensions(frame_height,frame_width, outpainting_dims):
-    outpainting_top, outpainting_bottom, outpainting_left, outpainting_right= outpainting_dims
+def parse_outpainting_ratio(outpainting_ratio):
+    ratio = "" if outpainting_ratio is None else str(outpainting_ratio).strip()
+    if len(ratio) == 0:
+        return None
+    ratio = ratio.split(":")
+    if len(ratio) != 2:
+        return None
+    try:
+        width_ratio, height_ratio = float(ratio[0]), float(ratio[1])
+    except (TypeError, ValueError):
+        return None
+    return None if width_ratio <= 0 or height_ratio <= 0 else width_ratio / height_ratio
+
+
+def _split_outpainting_padding(total_padding, before_weight, after_weight):
+    total_padding = max(0, int(total_padding))
+    if total_padding == 0:
+        return 0, 0
+    before_weight = max(0.0, float(before_weight))
+    after_weight = max(0.0, float(after_weight))
+    if before_weight == after_weight:
+        before_padding = total_padding // 2
+    elif before_weight == 0:
+        before_padding = 0
+    elif after_weight == 0:
+        before_padding = total_padding
+    else:
+        before_padding = round(total_padding * before_weight / (before_weight + after_weight))
+    before_padding = max(0, min(total_padding, int(before_padding)))
+    return before_padding, total_padding - before_padding
+
+
+def resolve_outpainting_dims(frame_height, frame_width, outpainting_dims, outpainting_ratio = ""):
+    target_ratio = parse_outpainting_ratio(outpainting_ratio)
+    if outpainting_dims is None:
+        return None if target_ratio is None else [0.0, 0.0, 0.0, 0.0]
+    outpainting_top, outpainting_bottom, outpainting_left, outpainting_right = [max(0.0, float(v)) for v in outpainting_dims]
+    if target_ratio is None or frame_height <= 0 or frame_width <= 0:
+        return [outpainting_top, outpainting_bottom, outpainting_left, outpainting_right]
+
+    source_ratio = frame_width / frame_height
+    if source_ratio < target_ratio:
+        total_padding = max(0, round(frame_height * target_ratio - frame_width))
+        left_padding, right_padding = _split_outpainting_padding(total_padding, outpainting_left, outpainting_right)
+        return [0.0, 0.0, 100.0 * left_padding / frame_width, 100.0 * right_padding / frame_width]
+    if source_ratio > target_ratio:
+        total_padding = max(0, round(frame_width / target_ratio - frame_height))
+        top_padding, bottom_padding = _split_outpainting_padding(total_padding, outpainting_top, outpainting_bottom)
+        return [100.0 * top_padding / frame_height, 100.0 * bottom_padding / frame_height, 0.0, 0.0]
+    return [0.0, 0.0, 0.0, 0.0]
+
+
+def get_outpainting_full_area_dimensions(frame_height,frame_width, outpainting_dims, outpainting_ratio = ""):
+    outpainting_top, outpainting_bottom, outpainting_left, outpainting_right = resolve_outpainting_dims(frame_height, frame_width, outpainting_dims, outpainting_ratio)
     frame_height = int(frame_height * (100 + outpainting_top + outpainting_bottom) / 100)
     frame_width =  int(frame_width * (100 + outpainting_left + outpainting_right) / 100)
     return frame_height, frame_width  
@@ -286,7 +338,9 @@ def rgb_bw_to_rgba_mask(img, thresh=127):
     return Image.fromarray(rgba, 'RGBA')
 
 
-def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims, block_size = 8):
+def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims, block_size = 8, outpainting_ratio = "", source_height = None, source_width = None):
+    if source_height is not None and source_width is not None:
+        outpainting_dims = resolve_outpainting_dims(source_height, source_width, outpainting_dims, outpainting_ratio)
     outpainting_top, outpainting_bottom, outpainting_left, outpainting_right= outpainting_dims
     raw_height = int(final_height / ((100 + outpainting_top + outpainting_bottom) / 100))
     height = int(raw_height / block_size) * block_size
@@ -301,7 +355,7 @@ def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims
     if (margin_top + height) > final_height or outpainting_bottom == 0: margin_top = final_height - height
     margin_left = int(outpainting_left/(100 + outpainting_left + outpainting_right) * final_width)
     if extra_width != 0 and (outpainting_left + outpainting_right) != 0:
-        margin_left += int(outpainting_left / (outpainting_left + outpainting_right) * extra_height)
+        margin_left += int(outpainting_left / (outpainting_left + outpainting_right) * extra_width)
     if (margin_left + width) > final_width or outpainting_right == 0: margin_left = final_width - width
     return height, width, margin_top, margin_left
 
@@ -346,7 +400,7 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
         image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
     return image, new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255] ):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255] ):
     if rm_background:
         session = new_session() 
 
@@ -357,7 +411,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
         resized_mask = None
         if any_background_ref == 1 and i==0 or any_background_ref == 2:
             if outpainting_dims is not None and background_ref_outpainted:
-                resized_image, resized_mask = fit_image_into_canvas(img, (budget_height, budget_width), inpaint_color, full_frame = True, outpainting_dims = outpainting_dims, return_mask= True, return_image= True)
+                resized_image, resized_mask = fit_image_into_canvas(img, (budget_height, budget_width), inpaint_color, full_frame = True, outpainting_dims = outpainting_dims, outpainting_ratio = outpainting_ratio, return_mask= True, return_image= True)
             elif img.size != (budget_width, budget_height):
                 resized_image= img.resize((budget_width, budget_height), resample=Image.Resampling.LANCZOS) 
             else:
@@ -392,7 +446,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
 
     return output_list, output_mask_list
 
-def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, return_mask = False, return_image = False):
+def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, outpainting_ratio = "", return_mask = False, return_image = False):
     inpaint_color = to_rgb_tensor(canvas_tf_bg, device=device, dtype=torch.float) / 127.5 - 1
     inpaint_color = inpaint_color.unsqueeze(1)
 
@@ -403,7 +457,7 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
     else:
         if outpainting_dims != None:
             final_height, final_width = image_size
-            canvas_height, canvas_width, margin_top, margin_left =   get_outpainting_frame_location(final_height, final_width,  outpainting_dims, 1)        
+            canvas_height, canvas_width, margin_top, margin_left = get_outpainting_frame_location(final_height, final_width, outpainting_dims, 1, outpainting_ratio, ref_height, ref_width)
         else:
             canvas_height, canvas_width = image_size
         if full_frame:
@@ -443,7 +497,7 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
 
     return ref_img.to(device), canvas
 
-def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, device ="cpu"):
+def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, outpainting_ratio = "", device ="cpu"):
     src_videos, src_masks = [], []
     inpaint_color_compressed = to_rgb_tensor(guide_inpaint_color, device=device, dtype=torch.float) / 127.5 - 1
     inpaint_color_compressed = inpaint_color_compressed.unsqueeze(1)
@@ -485,7 +539,7 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
             for k, frame in enumerate(inject_frames):
                 if frame != None:
                     pos = prepend_count + k
-                    src_video[:, pos:pos+1], msk = fit_image_into_canvas(frame, image_size, guide_inpaint_color, device, True, outpainting_dims, return_mask= any_mask)
+                    src_video[:, pos:pos+1], msk = fit_image_into_canvas(frame, image_size, guide_inpaint_color, device, True, outpainting_dims, outpainting_ratio, return_mask= any_mask)
                     if any_mask: src_mask[:, pos:pos+1] = msk
         src_videos.append(src_video)
         src_masks.append(src_mask)

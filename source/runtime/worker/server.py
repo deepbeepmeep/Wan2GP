@@ -397,7 +397,7 @@ def main():
         print(f"[WORKER] Queue init failed: {e}", flush=True)
         sys.exit(1)
 
-    print(f"[WORKER] started. Polling every {cli_args.poll_interval}s.", flush=True)
+    print(f"[WORKER] ✅ Ready — waiting for tasks (polling every {cli_args.poll_interval}s)", flush=True)
 
     # Import task processing dependencies
     from source.core.db.task_claim import ClaimPollOutcome, poll_next_task

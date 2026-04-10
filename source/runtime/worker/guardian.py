@@ -128,6 +128,13 @@ def send_heartbeat_with_logs(
 
 
 def guardian_main(worker_id: str, worker_pid: int, log_queue, config: dict[str, str]):
+    # On Windows, the guardian child process inherits the console's Ctrl+C
+    # handler. Ignore it — the parent process handles shutdown; the guardian
+    # should just quietly die when the parent exits.
+    if os.name == "nt":
+        import signal
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
     worker_start_time = None
     try:
         import psutil

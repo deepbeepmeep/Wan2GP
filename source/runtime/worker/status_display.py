@@ -55,7 +55,8 @@ _PLANT_STAGES = [
     (["       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "       ", "  ▔▔▔  "], 40),
 ]
 
-_DOTS = ["Waiting for tasks   ", "Waiting for tasks.  ", "Waiting for tasks.. ", "Waiting for tasks..."]
+_DOTS_FREE = ["GPU idle · waiting for tasks   ", "GPU idle · waiting for tasks.  ", "GPU idle · waiting for tasks.. ", "GPU idle · waiting for tasks..."]
+_DOTS_ACTIVE = ["GPU ready · waiting for tasks   ", "GPU ready · waiting for tasks.  ", "GPU ready · waiting for tasks.. ", "GPU ready · waiting for tasks..."]
 
 _ROWS = 12
 _HEIGHT = _ROWS + 3  # plant rows + 3 blank below
@@ -85,7 +86,8 @@ class WorkerStatusDisplay:
         if not self._active:
             return
         stage, _delay = _PLANT_STAGES[self._tick % len(_PLANT_STAGES)]
-        dots = _DOTS[self._tick % len(_DOTS)]
+        dot_set = _DOTS_ACTIVE if self._tasks_done > 0 else _DOTS_FREE
+        dots = dot_set[self._tick % len(dot_set)]
         self._tick += 1
 
         elapsed = time.time() - self._start

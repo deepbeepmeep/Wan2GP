@@ -2356,6 +2356,35 @@ for src,tgt in zip(src_move,tgt_move):
             pass
     
 
+def _select_checkpoints_paths_first_run():
+    from shared.utils import drive_detector, storage_selector
+
+    if not sys.stdin.isatty():
+        return fl.default_checkpoints_paths
+
+    drives = drive_detector.detect_drives()
+    if drive_detector.is_single_drive(drives):
+        return fl.default_checkpoints_paths
+
+    selected_mount = storage_selector.select_storage_drive(drives)
+    if selected_mount is None:
+        return fl.default_checkpoints_paths
+
+    path = drive_detector.suggest_checkpoint_path(selected_mount, os.getcwd())
+    os.makedirs(path, exist_ok=True)
+    return [path, "ckpts", "."]
+
+
+def _ensure_checkpoints_paths(server_config, server_config_filename):
+    checkpoints_paths = server_config.get("checkpoints_paths", None)
+    if checkpoints_paths is None:
+        checkpoints_paths = _select_checkpoints_paths_first_run()
+        server_config["checkpoints_paths"] = checkpoints_paths
+        with open(server_config_filename, "w", encoding="utf-8") as writer:
+            writer.write(json.dumps(server_config))
+    return checkpoints_paths
+
+
 if not Path(config_load_filename).is_file():
     server_config = {
         "attention_mode" : "auto",  
@@ -2379,7 +2408,7 @@ if not Path(config_load_filename).is_file():
         "audio_profile": 3.5,
         "preload_model_policy": [],
         "UI_theme": "default",
-        "checkpoints_paths": fl.default_checkpoints_paths,
+        "checkpoints_paths": _select_checkpoints_paths_first_run(),
         "loras_root": DEFAULT_LORA_ROOT,
         "save_queue_if_crash": 1,
 		"queue_color_scheme": "pastel",
@@ -2403,8 +2432,7 @@ else:
 
 server_config.setdefault("prompt_enhancer_quantization", "quanto_int8")
 
-checkpoints_paths = server_config.get("checkpoints_paths", None)
-if checkpoints_paths is None: checkpoints_paths = server_config["checkpoints_paths"] = fl.default_checkpoints_paths
+checkpoints_paths = _ensure_checkpoints_paths(server_config, server_config_filename)
 fl.set_checkpoints_paths(checkpoints_paths)
 three_levels_hierarchy = server_config.get("model_hierarchy_type", 1) == 1
 

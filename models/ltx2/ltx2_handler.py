@@ -386,6 +386,8 @@ class family_handler:
                     return "LTX2 outpainting on Control Video is not compatible with the ID-LoRA option."
                 if "F" in video_prompt_type :
                     return "LTX2 outpainting is not yet compatible with Inject Frames."
+                if "A" in video_prompt_type :
+                    return "LTX2 outpainting doesnt support Video Mask."
 
         if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
             audio_source = inputs.get("audio_source")

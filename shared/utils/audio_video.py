@@ -160,7 +160,14 @@ def extract_audio_track_to_wav(video_path, output_path):
         return None
     video_path = os.fspath(video_path)
     import ffmpeg
-    ffmpeg.input(video_path).output(output_path, **{"map": "0:a:0", "acodec": "pcm_s16le"}).overwrite_output().run(quiet=True)
+    try:
+        ffmpeg.input(video_path).output(output_path, **{"map": "0:a:0", "acodec": "pcm_s16le"}).overwrite_output().run(quiet=True)
+    except ffmpeg.Error as err:
+        stderr = getattr(err, "stderr", b"")
+        if isinstance(stderr, (bytes, bytearray)):
+            stderr = stderr.decode("utf-8", errors="ignore")
+        stderr = (stderr or str(err)).strip()
+        raise RuntimeError(f"ffmpeg audio extract failed for {video_path} -> {output_path}: {stderr}") from err
     return output_path
 
 

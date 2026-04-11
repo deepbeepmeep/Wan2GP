@@ -39,7 +39,7 @@ import numpy as np
 import importlib
 from shared.utils import notification_sound
 from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_loras_multipliers
-from shared.utils.utils import convert_tensor_to_image, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, to_rgb_tensor
+from shared.utils.utils import convert_tensor_to_image, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, to_rgb_tensor, get_resampled_video_transparent, get_video_summary_extras
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_dims, get_outpainting_frame_location, get_outpainting_full_area_dimensions, resolve_outpainting_dims
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_image
@@ -4119,6 +4119,9 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             elif is_video:
                 values += [f"{width}x{height}",  f"{frames_count} frames (duration={frames_count/fps:.1f} s, fps={round(fps)})"]
                 labels += ["Resolution", "Frames"]
+                extra_values, extra_labels = get_video_summary_extras(file_name)
+                values += extra_values
+                labels += extra_labels
             if nb_audio_tracks  > 0:
                 values +=[nb_audio_tracks]
                 labels +=["Nb Audio Tracks"]
@@ -4457,25 +4460,7 @@ def convert_image(image):
     return cast(Image, ImageOps.exif_transpose(image))
 
 def get_resampled_video(video_in, start_frame, max_frames, target_fps, bridge='torch'):
-    if isinstance(video_in, str) and has_image_file_extension(video_in):
-        video_in = Image.open(video_in)
-    if isinstance(video_in, Image.Image):
-        return torch.from_numpy(np.array(video_in).astype(np.uint8)).unsqueeze(0)
-    
-    from shared.utils.utils import resample
-
-    import decord
-    decord.bridge.set_bridge(bridge)
-    reader = decord.VideoReader(video_in)
-    fps = round(reader.get_avg_fps())
-    if max_frames < 0:
-        max_frames = int(max(len(reader)/ fps * target_fps + max_frames, 0))
-
-
-    frame_nos = resample(fps, len(reader), max_target_frames_count= max_frames, target_fps=target_fps, start_target_frame= start_frame)
-    frames_list = reader.get_batch(frame_nos)
-    # print(f"frame nos: {frame_nos}")
-    return frames_list
+    return get_resampled_video_transparent(video_in, start_frame, max_frames, target_fps, bridge)
 
 # def get_resampled_video(video_in, start_frame, max_frames, target_fps):
 #     from torchvision.io import VideoReader
@@ -5924,8 +5909,12 @@ def generate_video(
         control_audio_tracks, _  = extract_audio_tracks(video_guide, temp_format="wav")
     if "K" in audio_prompt_type and video_guide is not None:
         try:
-            audio_guide = extract_audio_track_to_wav(video_guide, get_available_filename(save_path, video_guide, suffix="_control_audio", force_extension=".wav"))
-            temp_filenames_list.append(audio_guide)
+            if extract_audio_tracks(video_guide, query_only=True) == 0:
+                print(f"No audio track found in Control Video: {video_guide}")
+                audio_guide = None
+            else:
+                audio_guide = extract_audio_track_to_wav(video_guide, get_available_filename(save_path, video_guide, suffix="_control_audio", force_extension=".wav"))
+                temp_filenames_list.append(audio_guide)
         except Exception as e:
             print(f"Unable to extract Audio track from Control Video:{e}")
             audio_guide = None

@@ -907,6 +907,7 @@ class LTX2:
         fps: float = 24.0,
         seed: int = 0,
         callback=None,
+        set_progress_status=None,
         VAE_tile_size=None,
         **kwargs,
     ):
@@ -1288,6 +1289,7 @@ class LTX2:
                 audio_conditionings_stage2=audio_conditionings_stage2,
                 audio_identity_guidance_scale=audio_identity_guidance_scale,
                 callback=callback,
+                set_progress_status=set_progress_status,
                 interrupt_check=interrupt_check,
                 loras_slists=loras_slists,
                 text_connectors=text_connectors,
@@ -1332,6 +1334,7 @@ class LTX2:
                 audio_conditionings_stage2=audio_conditionings_stage2,
                 audio_identity_guidance_scale=audio_identity_guidance_scale,
                 callback=callback,
+                set_progress_status=set_progress_status,
                 interrupt_check=interrupt_check,
                 loras_slists=loras_slists,
                 text_connectors=text_connectors,

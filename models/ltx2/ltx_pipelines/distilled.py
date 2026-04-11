@@ -198,6 +198,7 @@ class DistilledPipeline:
         audio_conditionings_stage2: list | None = None,
         audio_identity_guidance_scale: float = 0.0,
         callback: Callable[..., None] | None = None,
+        set_progress_status: Callable[[str], None] | None = None,
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
         text_connectors: dict | None = None,
@@ -335,8 +336,8 @@ class DistilledPipeline:
                 phase_switch_step2=stage_1_steps,
             )
 
-        if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=len(stage_1_sigmas) - 1, pass_no=pass_no)
+        if set_progress_status is not None:
+            set_progress_status("VAE Encoding")
 
         def denoising_loop_stage1(
             sigmas: torch.Tensor,
@@ -436,6 +437,8 @@ class DistilledPipeline:
             generator=mask_generator,
             num_steps=len(stage_1_sigmas) - 1,
         )
+        if callback is not None:
+            callback(-1, None, True, override_num_inference_steps=len(stage_1_sigmas) - 1, pass_no=pass_no)
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_1_output_shape,
             conditionings=stage_1_conditionings,
@@ -510,8 +513,8 @@ class DistilledPipeline:
                 phase_switch_step=0,
                 phase_switch_step2=stage_2_steps,
             )
-        if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=pass_no)
+        if set_progress_status is not None:
+            set_progress_status("VAE Encoding")
 
         def denoising_loop_stage2(
             sigmas: torch.Tensor,
@@ -589,6 +592,8 @@ class DistilledPipeline:
             generator=mask_generator,
             num_steps=len(stage_2_sigmas) - 1,
         )
+        if callback is not None:
+            callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=pass_no)
         freeze_audio_stage2 = audio_identity_guidance_scale > 0.0
         stage_2_audio_conditionings = audio_conditionings if audio_conditionings_stage2 is None else audio_conditionings_stage2
         video_state, audio_state = denoise_audio_video(

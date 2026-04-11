@@ -15,10 +15,9 @@ import random
 import ffmpeg
 import os
 import tempfile
-import subprocess
-import json
 import time
 from functools import lru_cache
+from .video_decode import probe_video_stream_metadata, video_needs_corrected_decode, decode_video_frames_ffmpeg, get_video_summary_extras
 os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
 
 
@@ -48,8 +47,8 @@ def has_audio_file_extension(filename):
 def resample(video_fps, video_frames_count, max_target_frames_count, target_fps, start_target_frame ):
     import math
 
-    video_frame_duration = 1 /video_fps
-    target_frame_duration = 1 / target_fps 
+    video_frame_duration = 1 /round(video_fps, 0)
+    target_frame_duration = 1 / round(target_fps, 0) 
     
     target_time = start_target_frame * target_frame_duration
     frame_no = math.ceil(target_time / video_frame_duration)  
@@ -157,25 +156,63 @@ def process_images_multithread(image_processor, items, process_type, wrap_in_lis
     # print(f"duration:{end_time-start_time:.1f}")
 
     return results
+
+def get_resampled_video_transparent(video_in, start_frame, max_frames, target_fps, bridge='torch'):
+    if isinstance(video_in, str) and has_image_file_extension(video_in):
+        video_in = Image.open(video_in)
+    if isinstance(video_in, Image.Image):
+        frame = torch.from_numpy(np.array(video_in).astype(np.uint8)).unsqueeze(0)
+        return frame if bridge == "torch" else frame.numpy()
+    if not isinstance(video_in, str) or not video_needs_corrected_decode(video_in):
+        decord.bridge.set_bridge(bridge)
+        reader = decord.VideoReader(video_in)
+        fps = round(reader.get_avg_fps())
+        if max_frames < 0:
+            max_frames = int(max(len(reader) / fps * target_fps + max_frames, 0))
+        frame_nos = resample(fps, len(reader), max_target_frames_count=max_frames, target_fps=target_fps, start_target_frame=start_frame)
+        return reader.get_batch(frame_nos)
+    metadata = probe_video_stream_metadata(video_in)
+    fps_float = metadata["fps_float"] if metadata is not None else 0.0
+    if max_frames < 0:
+        max_frames = int(max((metadata["frame_count"] / fps_float) * target_fps + max_frames, 0)) if metadata is not None and fps_float > 0 else 0
+    return decode_video_frames_ffmpeg(video_in, start_frame, max_frames, target_fps=target_fps, bridge=bridge)
+
+
 @lru_cache(maxsize=100)
 def get_video_info(video_path):
+    metadata = probe_video_stream_metadata(video_path)
+    if metadata is not None:
+        return metadata["fps"], metadata["display_width"], metadata["display_height"], metadata["frame_count"]
     global video_info_cache
     import cv2
     cap = cv2.VideoCapture(video_path)
-    
-    # Get FPS
     fps = round(cap.get(cv2.CAP_PROP_FPS))
-    
-    # Get resolution
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) 
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
-    
     return fps, width, height, frame_count
 
 def get_video_frame(file_name: str, frame_no: int, return_last_if_missing: bool = False, target_fps = None,  return_PIL = True) -> torch.Tensor:
     """Extract nth frame from video as PyTorch tensor normalized to [-1, 1]."""
+    metadata = probe_video_stream_metadata(file_name)
+    if metadata is not None and (metadata["needs_sar_fix"] or metadata["needs_tonemap"]):
+        fps_float = metadata["fps_float"] if metadata["fps_float"] > 0 else float(metadata["fps"] or 1)
+        if target_fps is not None and float(target_fps) > 0:
+            max_target_frames = int(round(metadata["frame_count"] / fps_float * float(target_fps))) if metadata["frame_count"] > 0 else 0
+            if return_last_if_missing and max_target_frames > 0:
+                frame_no = min(max(0, int(frame_no)), max_target_frames - 1)
+            frames = decode_video_frames_ffmpeg(file_name, int(frame_no), 1, target_fps=float(target_fps), bridge="torch")
+        else:
+            if return_last_if_missing and metadata["frame_count"] > 0:
+                frame_no = min(max(0, int(frame_no)), metadata["frame_count"] - 1)
+            frames = decode_video_frames_ffmpeg(file_name, int(frame_no), 1, target_fps=None, bridge="torch")
+        if frames.shape[0] == 0:
+            raise ValueError(f"Failed to read frame {frame_no}")
+        frame = frames[0]
+        if return_PIL:
+            return Image.fromarray(frame.numpy())
+        return frame.permute(2, 0, 1).float().div_(127.5).sub_(1.0)
     cap = cv2.VideoCapture(file_name)
     
     if not cap.isOpened():

@@ -190,12 +190,59 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 
 ## 🚀 Quick Start
 
-**One-click installation:** 
+### One-click Bat/SH Script Auto-installer:
+
+The 1-click automated scripts for both **Windows (`.bat`)** and **Linux/macOS (`.sh`)** make installation, environment management, and updates as seamless as possible. These scripts will not only install WanGP but also best acceleration kernels (Triton, Sage, Flash, GGuf, Lightx2v, Nunchaku) available for your config.
+
+*👉 **Windows Users:** Double-click the `.bat` files. **Linux Users:** Run the `.sh` files in your terminal.*
+
+#### **1️⃣ Installation (`scripts\install.bat` | `scripts/install.sh`)**
+
+**Choose Installation Type**
+- **Auto Install**
+- **Manual Install**
+
+**Manual Install**
+
+If you selected Manual Install, you will be guided through:
+
+1. **Choose your package manager**
+2. **Name your environment**
+3. **Select your Install Mode**
+
+#### 2️⃣ Starting the App (`scripts\run.bat` | `scripts/run.sh`)
+Once installed, use this script to launch the application. It runs WAN2GP using your active environment.
+
+##### ⚙️ Customizing Launch Arguments (`args.txt`)
+If you want to pass extra command-line flags to the WAN2GP launcher (like enabling advanced UI features or automatically opening your browser), create an `args.txt` file in your `scripts` folder.
+
+**Example `args.txt`:**
+```text
+--advanced  --open-browser
+```
+
+#### 3️⃣ Updating & Upgrading (`scripts\update.bat` | `scripts/update.sh`)
+Use this script to get the latest updates for WAN2GP and upgrade dependencies.
+* **1. Update:** Fetches the latest code from GitHub (`git pull`) and updates requirements (`pip install -r requirements.txt`).
+* **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention) based on your hardware profile.
+
+#### 4️⃣ Managing Environments (`scripts\manage.bat` | `/manage.sh`)
+Use this script to manage and switch between your sandboxed environments safely.
+
+* **Example Scenario:** Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, you can run `install.bat`, create a *new* environment called `env_testing`, and select "Use Latest".
+* If the testing environment breaks or gives you errors, you can simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
+
+---
+
+### One-click (Pinokio) installer:
+
 Get started instantly with [Pinokio App](https://pinokio.computer/)\
 It is recommended to use in Pinokio the Community Scripts *wan2gp* or *wan2gp-amd* by **Morpheus** rather than the official Pinokio install.
 
+---
 
-**Manual installation: (old python 3.10, to be deprecated)**
+### Manual installation: (old python 3.10, to be deprecated)
+
 ```bash
 git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
@@ -205,7 +252,8 @@ pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pyt
 pip install -r requirements.txt
 ```
 
-**Manual installation: (new python 3.11 setup)**
+### Manual installation: (new python 3.11 setup)
+
 ```bash
 git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
@@ -215,14 +263,14 @@ pip install torch==2.10.0 torchvision torchaudio --index-url https://download.py
 pip install -r requirements.txt
 ```
 
-**Run the application:**
+#### Run the application:
 ```bash
 python wgp.py
 ```
 
 First time using WanGP ? Just check the *Guides* tab, and you will find a selection of recommended models to use.
 
-**Update the application (stay in the old pyton / pytorch version):**
+#### Update the application (stay in the old python / pytorch version):
 If using Pinokio use Pinokio to update otherwise:
 Get in the directory where WanGP is installed and:
 ```bash
@@ -231,7 +279,7 @@ conda activate wan2gp
 pip install -r requirements.txt
 ```
 
-**Upgrade to 3.11, Pytorch 2.10, Cuda 13/13.1** (for non GTX10xx users)
+#### Upgrade to 3.11, Pytorch 2.10, Cuda 13/13.1 (for non GTX10xx users)
 I recommend creating a new conda env for the Python 3.11 to avoid bad surprises. Let's call the new conda env *wangp* (instead of *wan2gp* the old name of this project)
 Get in the directory where WanGP is installed and:
 ```bash
@@ -242,7 +290,7 @@ pip install torch==2.10.0 torchvision torchaudio --index-url https://download.py
 pip install -r requirements.txt
 ```
 
-**Git Errors**
+#### Git Errors
 Once you are done you will have to reinstall *Sage Attention*, *Triton*, *Flash Attention*. Check the **[Installation Guide](docs/INSTALLATION.md)** -
 
 if you get some error messages related to git, you may try the following (beware this will overwrite local changes made to the source code of WanGP):
@@ -255,7 +303,8 @@ When you have the confirmation it works well you can then delete the old conda e
 ```bash
 conda uninstall -n wan2gp --all  
 ```
-**Run headless (batch processing):**
+
+#### Run headless (batch processing):
 
 Process saved queues without launching the web UI:
 ```bash

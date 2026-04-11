@@ -1,42 +1,49 @@
+@set @x=0 /*
 @echo off
 cd /d "%~dp0.."
 setlocal enabledelayedexpansion
 title WanGP Installer
 
 python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
-if %errorlevel% equ 0 goto :MENU
+if !errorlevel! equ 0 goto :MENU
 
-if exist "C:\Program Files\PyManager\pymanager.exe" goto :INSTALL_PY311
+echo [*] Python 3.10+ not found. Running automated installer...
+call :INSTALL_PYTHON
 
-echo [*] Downloading PyManager installer...
-call :DOWNLOAD "https://www.python.org/ftp/python/pymanager/python-manager-26.0.msi" "pymanager_installer.msi"
-
-echo [*] Installing PyManager...
-start /wait msiexec /i "pymanager_installer.msi" /passive /norestart
-del "pymanager_installer.msi"
-
-if not exist "C:\Program Files\PyManager\pymanager.exe" (
-    echo [-] Installation failed.
+python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
+if !errorlevel! neq 0 (
+    echo [-] Automated installation failed or Python is still not recognized.
+    echo [*] Please install Python 3.10+ manually.
     pause
     exit /b 1
 )
-echo [*] PyManager installed successfully.
-
-:INSTALL_PY311
-echo [*] Configuring Python 3.11...
-set "PATH=C:\Program Files\PyManager;!PATH!"
-
-call pymanager install --configure >nul 2>&1
-call pymanager install 3.11 >nul 2>&1
-call pymanager install --aliases >nul 2>&1
-
-set "PATH=%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts;!PATH!"
+goto :MENU
 
 :MENU
 set "choice="
+set "AUTO_FLAG="
 cls
 echo ======================================================
 echo                WAN2GP INSTALLER MENU
+echo ======================================================
+echo 1. Automatic Install (1-Click)
+echo 2. Manual Install (Select env type, python/torch/kernel versions)
+echo 3. Exit
+echo ------------------------------------------------------
+set /p main_choice="Select an option (1-3): "
+
+if "!main_choice!"=="1" (
+    set "ENV_TYPE=venv"
+    set "AUTO_FLAG=--auto"
+    goto START_INSTALL
+)
+if "!main_choice!"=="3" exit
+if not "!main_choice!"=="2" goto MENU
+
+:ENV_MENU
+cls
+echo ======================================================
+echo                SELECT ENVIRONMENT TYPE
 echo ======================================================
 echo 1. Use 'venv' (Easiest - Comes prepackaged with python)
 echo 2. Use 'uv' (Recommended - Handles Python 3.11 better)
@@ -46,7 +53,7 @@ echo 5. Exit
 echo ------------------------------------------------------
 set /p choice="Select an option (1-5): "
 
-if "!choice!"=="" goto MENU
+if "!choice!"=="" goto ENV_MENU
 set "choice=!choice:"=!"
 set "choice=!choice: =!"
 
@@ -80,22 +87,12 @@ if "!choice!"=="3" (
     if exist "C:\ProgramData\Miniconda3\condabin\conda.bat" set "CONDA_FOUND=1"
 
     if "!CONDA_FOUND!"=="0" (
-        echo [-] 'conda' not found.
-        echo [*] Downloading Miniconda3...
-        call :DOWNLOAD "https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe" "miniconda_installer.exe"
-        if not exist miniconda_installer.exe (
-            echo [-] Download failed. Please install Miniconda manually.
+        call :INSTALL_CONDA
+        if !errorlevel! neq 0 (
+            echo [-] Miniconda installation failed or was aborted.
             pause
-            exit /b 1
+            goto MENU
         )
-        echo [*] Installing Miniconda silently ^(this may take a minute^)...
-        start /wait "" miniconda_installer.exe /InstallationType=JustMe /RegisterPython=0 /S /D="!USERPROFILE!\Miniconda3"
-        del miniconda_installer.exe
-
-        echo [*] Auto-accepting Conda Terms of Service...
-        call "!USERPROFILE!\Miniconda3\condabin\conda.bat" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main >nul 2>&1
-        call "!USERPROFILE!\Miniconda3\condabin\conda.bat" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r >nul 2>&1
-        call "!USERPROFILE!\Miniconda3\condabin\conda.bat" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 >nul 2>&1
     )
     goto START_INSTALL
 )
@@ -106,43 +103,115 @@ if "!choice!"=="4" (
 )
 
 if "!choice!"=="5" exit
-goto MENU
+goto ENV_MENU
 
 :START_INSTALL
 if "!ENV_TYPE!"=="" set "ENV_TYPE=venv"
-python setup.py install --env !ENV_TYPE!
+python setup.py install --env !ENV_TYPE! !AUTO_FLAG!
 
 pause
 goto MENU
 
+:INSTALL_PYTHON
+if exist "C:\Program Files\PyManager\pymanager.exe" goto :INSTALL_PY311
+
+set "PY_URL=https://www.python.org/ftp/python/pymanager/python-manager-26.0.msi"
+
+echo [*] Downloading PyManager installer...
+call :DOWNLOAD "%PY_URL%" || exit /b 1
+
+echo [*] Installing PyManager...
+for %%F in ("%PY_URL%") do set "PY_FILE=%%~nxF"
+start /wait msiexec /i "%PY_FILE%" /passive /norestart
+del "%PY_FILE%"
+
+if not exist "C:\Program Files\PyManager\pymanager.exe" (
+    echo [-] Installation failed.
+    exit /b 1
+)
+echo [*] PyManager installed successfully.
+
+:INSTALL_PY311
+echo [*] Configuring Python 3.11...
+set "PATH=C:\Program Files\PyManager;%PATH%"
+
+call pymanager install --configure >nul 2>&1
+call pymanager install 3.11 >nul 2>&1
+call pymanager install --aliases >nul 2>&1
+
+set "PATH=%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts;%PATH%"
+exit /b 0
+
+:INSTALL_CONDA
+echo [-] 'conda' not found.
+
+set "CONDA_URL=https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe"
+
+echo [*] Downloading Miniconda3...
+call :DOWNLOAD "%CONDA_URL%" || (
+    echo [-] Download failed. Please install Miniconda manually.
+    exit /b 1
+)
+
+for %%F in ("%CONDA_URL%") do set "CONDA_FILE=%%~nxF"
+
+echo [*] Installing Miniconda silently ^(this may take a minute^)...
+start /wait "" "%CONDA_FILE%" /InstallationType=JustMe /RegisterPython=0 /S /D="%USERPROFILE%\Miniconda3"
+del "%CONDA_FILE%"
+
+echo [*] Auto-accepting Conda Terms of Service...
+call "%USERPROFILE%\Miniconda3\condabin\conda.bat" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main >nul 2>&1
+call "%USERPROFILE%\Miniconda3\condabin\conda.bat" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r >nul 2>&1
+call "%USERPROFILE%\Miniconda3\condabin\conda.bat" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2 >nul 2>&1
+
+exit /b 0
+
 :DOWNLOAD
 set "DL_URL=%~1"
-set "DL_FILE=%~2"
+
 where curl >nul 2>nul
-if %ERRORLEVEL% EQU 0 ( curl -L -o "%DL_FILE%" "%DL_URL%" & if exist "%DL_FILE%" exit /b 0 )
+if %ERRORLEVEL% EQU 0 (
+    curl -L -O "%DL_URL%"
+    exit /b %ERRORLEVEL%
+)
+
+for %%F in ("%DL_URL%") do set "TMP_FILE=%%~nxF"
+
 where certutil >nul 2>nul
-if %ERRORLEVEL% EQU 0 ( certutil -urlcache -split -f "%DL_URL%" "%DL_FILE%" & if exist "%DL_FILE%" exit /b 0 )
+if %ERRORLEVEL% EQU 0 (
+    certutil -urlcache -split -f "%DL_URL%" "%TMP_FILE%"
+    if exist "%TMP_FILE%" exit /b 0
+)
+
 where bitsadmin >nul 2>nul
-if %ERRORLEVEL% EQU 0 ( bitsadmin /transfer "WanGPDownload" /download /priority normal "%DL_URL%" "%CD%\%DL_FILE%" & if exist "%DL_FILE%" exit /b 0 )
+if %ERRORLEVEL% EQU 0 (
+    bitsadmin /transfer "WanGPDownload" /download /priority normal "%DL_URL%" "%CD%\%TMP_FILE%"
+    if exist "%TMP_FILE%" exit /b 0
+)
 
-echo Set args = WScript.Arguments > dl.vbs
-echo Set http = CreateObject("WinHttp.WinHttpRequest.5.1") >> dl.vbs
-echo Const WinHttpRequestOption_SecureProtocols = 9 >> dl.vbs
-echo http.Option(WinHttpRequestOption_SecureProtocols) = 2048 >> dl.vbs
-echo http.Open "GET", args(0), False >> dl.vbs
-echo http.Send >> dl.vbs
-echo If http.Status = 200 Then >> dl.vbs
-echo   Set stream = CreateObject("ADODB.Stream") >> dl.vbs
-echo   stream.Open >> dl.vbs
-echo   stream.Type = 1 >> dl.vbs
-echo   stream.Write http.ResponseBody >> dl.vbs
-echo   stream.Position = 0 >> dl.vbs
-echo   stream.SaveToFile args(1), 2 >> dl.vbs
-echo   stream.Close >> dl.vbs
-echo End If >> dl.vbs
-cscript //nologo dl.vbs "%DL_URL%" "%DL_FILE%"
-del dl.vbs
-if exist "%DL_FILE%" exit /b 0
+cscript //nologo //E:JScript "%~f0" "%DL_URL%" "%TMP_FILE%"
+
+if exist "%TMP_FILE%" exit /b 0
+
 echo [-] All native download methods failed.
-
 exit /b 1
+
+*/
+var args = WScript.Arguments;
+if (args.Length >= 2) {
+    try {
+        var http = new ActiveXObject("WinHttp.WinHttpRequest.5.1");
+        http.Open("GET", args(0), false);
+        http.Send();
+        
+        if (http.Status == 200) {
+            var stream = new ActiveXObject("ADODB.Stream");
+            stream.Open();
+            stream.Type = 1;
+            stream.Write(http.ResponseBody);
+            stream.SaveToFile(args(1), 2);
+            stream.Close();
+        }
+    } catch (e) {
+    }
+}

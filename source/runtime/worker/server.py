@@ -257,13 +257,61 @@ def main():
     load_dotenv()
     bootstrap_runtime_environment()
 
-    def _request_shutdown(_signum, _frame):
+    def _request_shutdown(signum, frame):
+        # Log who raised us and the stack at the moment of the signal so that
+        # unexpected shutdowns (e.g. someone else sending SIGINT/SIGTERM to this
+        # console group) leave a forensic trail in the worker log.
+        import traceback as _tb
+        try:
+            sig_name = signal.Signals(signum).name
+        except (ValueError, AttributeError):
+            sig_name = f"signum={signum}"
+        headless_logger.essential(f"[SHUTDOWN] {sig_name} received; stack at signal delivery:")
+        for line in _tb.format_stack(frame):
+            for stack_line in line.rstrip().splitlines():
+                headless_logger.essential(f"  {stack_line}")
         raise KeyboardInterrupt
 
-    # Steady-state SIGTERM maps to the existing KeyboardInterrupt cleanup path.
+    # Steady-state SIGTERM/SIGINT map to the existing KeyboardInterrupt cleanup path.
     # SIGTERM during DB init, WGP import, or task_queue.start() still exits before
     # the later cleanup finally runs; that startup-window limitation is unchanged.
     signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+
+    # On Windows, console control events (Ctrl+C, Ctrl+Break, window close, logoff,
+    # shutdown) are delivered to the console group rather than as POSIX signals.
+    # Install a console-control handler so we can log the specific event that
+    # caused the shutdown — next time "it just crashed" happens we will know
+    # whether it was Ctrl+C, the window closing, the user logging off, etc.
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            _CTRL_EVENT_NAMES = {
+                0: "CTRL_C_EVENT",
+                1: "CTRL_BREAK_EVENT",
+                2: "CTRL_CLOSE_EVENT",
+                5: "CTRL_LOGOFF_EVENT",
+                6: "CTRL_SHUTDOWN_EVENT",
+            }
+            _HANDLER_ROUTINE = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+            def _win_ctrl_handler(event):
+                name = _CTRL_EVENT_NAMES.get(event, f"UNKNOWN_EVENT_{event}")
+                headless_logger.essential(f"[SHUTDOWN] Windows console control event: {name}")
+                # Return False so the default handler runs (which raises KI for
+                # CTRL_C_EVENT and terminates the process for CTRL_CLOSE_EVENT etc.)
+                return False
+
+            _ctrl_handler_ref = _HANDLER_ROUTINE(_win_ctrl_handler)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            if not kernel32.SetConsoleCtrlHandler(_ctrl_handler_ref, True):
+                print(f"[WORKER] SetConsoleCtrlHandler failed: {ctypes.get_last_error()}", flush=True)
+            # Keep a module-level reference to prevent GC collecting the callback
+            globals()["_win_ctrl_handler_keepalive"] = _ctrl_handler_ref
+        except (OSError, AttributeError, ImportError) as e:
+            print(f"[WORKER] Could not install console control handler: {e}", flush=True)
+
     print("[WORKER] bootstrap done", flush=True)
 
     cli_args = parse_args()
@@ -613,18 +661,34 @@ def main():
         run_summary.render_to(headless_logger)
         headless_logger.essential("Shutting down...")
     finally:
-        run_summary.render_to(headless_logger)
+        # The cleanup path must not explode on a second signal delivery — that
+        # just produces an ugly traceback and hides whatever the original crash
+        # was. Catch BaseException broadly here since we are already shutting
+        # down and best-effort is the right posture.
+        try:
+            run_summary.render_to(headless_logger)
+        except BaseException as _cleanup_err:
+            headless_logger.debug_anomaly("SHUTDOWN", f"render_to failed: {_cleanup_err}")
         if guardian_process:
-            guardian_process.terminate()
-            guardian_process.join(5)
+            try:
+                guardian_process.terminate()
+                guardian_process.join(5)
+            except BaseException as _cleanup_err:
+                headless_logger.debug_anomaly("SHUTDOWN", f"guardian termination failed: {_cleanup_err}")
         if cli_args.worker and guardian_config:
-            send_heartbeat_with_logs(
-                cli_args.worker,
-                0,
-                0,
-                [],
-                guardian_config,
-                status="terminated",
-            )
+            try:
+                send_heartbeat_with_logs(
+                    cli_args.worker,
+                    0,
+                    0,
+                    [],
+                    guardian_config,
+                    status="terminated",
+                )
+            except BaseException as _cleanup_err:
+                headless_logger.debug_anomaly("SHUTDOWN", f"final heartbeat failed: {_cleanup_err}")
         if task_queue:
-            task_queue.stop()
+            try:
+                task_queue.stop()
+            except BaseException as _cleanup_err:
+                headless_logger.debug_anomaly("SHUTDOWN", f"task_queue.stop failed: {_cleanup_err}")

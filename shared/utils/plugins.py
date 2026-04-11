@@ -249,6 +249,9 @@ class WAN2GPPlugin:
     def on_tab_deselect(self, state: Dict[str, Any]) -> None:
         pass
 
+    def on_model_change(self, state: Dict[str, Any], model_type: str) -> None:
+        pass
+
     def request_component(self, component_id: str) -> None:
         if component_id not in self._component_requests:
             self._component_requests.append(component_id)
@@ -1134,6 +1137,26 @@ class PluginManager:
 
     def get_all_plugins(self) -> Dict[str, WAN2GPPlugin]:
         return self.plugins.copy()
+
+    def _plugin_overrides_method(self, plugin: WAN2GPPlugin, method_name: str) -> bool:
+        plugin_method = getattr(type(plugin), method_name, None)
+        base_method = getattr(WAN2GPPlugin, method_name, None)
+        return callable(plugin_method) and plugin_method is not base_method
+
+    def _dispatch_plugin_event(self, method_name: str, *args, **kwargs) -> None:
+        for plugin_id, plugin in self.plugins.items():
+            if not self._plugin_overrides_method(plugin, method_name):
+                continue
+            try:
+                getattr(plugin, method_name)(*args, **kwargs)
+            except Exception as e:
+                print(f"[PluginManager] Error in {method_name} for plugin {plugin_id}: {e}")
+                traceback.print_exc()
+
+    def notify_model_change(self, state: Dict[str, Any], model_type: str) -> None:
+        if not model_type:
+            return
+        self._dispatch_plugin_event("on_model_change", state, model_type)
 
     def get_custom_js(self) -> str:
         if not self.custom_js_snippets:

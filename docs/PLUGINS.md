@@ -133,6 +133,9 @@ This method runs after the entire main UI has been built. Use it to wire up even
 #### `on_tab_select(self, state)` and `on_tab_deselect(self, state)`
 If you used `add_tab`, these methods will be called automatically when your tab is selected or deselected, respectively. This is useful for loading data or managing resources.
 
+#### `on_model_change(self, state, model_type)`
+This optional callback runs when the main model selection changes in the Gradio UI. `state["model_type"]` has already been updated, so plugins can use it to refresh per-model caches, reset plugin state, or synchronize custom UI logic.
+
 #### `set_global(self, variable_name, new_value)`
 Allows your plugin to safely modify a global variable in the main `wgp.py` application.
 

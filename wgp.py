@@ -8806,6 +8806,8 @@ def change_model(state, model_choice):
         writer.write(json.dumps(server_config, indent=4))
 
     state["model_type"] = model_choice
+    if hasattr(app, "plugin_manager"):
+        app.plugin_manager.notify_model_change(state, model_choice)
     description, header = generate_header(model_choice, compile=compile, attention_mode=attention_mode)
     
     return description, header

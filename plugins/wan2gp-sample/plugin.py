@@ -42,6 +42,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
     def on_tab_deselect(self, state: dict) -> None:
         pass
 
+    def on_model_change(self, state: dict, model_type) -> None:
+        # print(f"new model selected is {model_type}")
+        pass
+
     def create_config_ui(self):
         def update_prompt(state, text):
             settings = self.get_current_model_settings(state)

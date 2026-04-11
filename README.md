@@ -178,7 +178,7 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 
 ### One-click Bat/SH Script Auto-installer:
 
-If manual installation is too complicated for you and Pinokio makes managing updates too difficult, there are a suite of 1-click automated scripts for both **Windows (`.bat`)** and **Linux/macOS (`.sh`)** to make installation, environment management, and updates as seamless as possible.
+The 1-click automated scripts for both **Windows (`.bat`)** and **Linux/macOS (`.sh`)** make installation, environment management, and updates as seamless as possible. These scripts will not only install WanGP but also best acceleration kernels (Triton, Sage, Flash, GGuf, Lightx2v, Nunchaku) available for your config.
 
 *👉 **Windows Users:** Double-click the `.bat` files. **Linux Users:** Run the `.sh` files in your terminal.*
 
@@ -256,7 +256,7 @@ python wgp.py
 
 First time using WanGP ? Just check the *Guides* tab, and you will find a selection of recommended models to use.
 
-#### Update the application (stay in the old pyton / pytorch version):
+#### Update the application (stay in the old python / pytorch version):
 If using Pinokio use Pinokio to update otherwise:
 Get in the directory where WanGP is installed and:
 ```bash

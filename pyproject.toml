@@ -12,7 +12,7 @@ dependencies = [
   # Wan2GP base dependencies
   "mmgp==3.7.6",
   "diffusers==0.36.0",
-  "transformers==4.51.3",  # Wan2GP needs Qwen3 (4.51+), Mistral3 (4.50+), ALL_ATTENTION_FUNCTIONS (4.48+)
+  "transformers==4.54.0",  # Wan2GP needs Qwen3 (4.51+), Mistral3 (4.50+), ALL_ATTENTION_FUNCTIONS (4.48+); 4.54.0 fixes Qwen2.5-VL text_config dict wrapping (transformers#37268)
   "tokenizers>=0.20.3",
   "accelerate>=1.1.1",
   "tqdm",

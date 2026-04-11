@@ -518,7 +518,6 @@ class family_handler():
             }
 
             extra_model_def["video_guide_outpainting"] = [0,1]
-            extra_model_def["video_guide_outpainting_ratio"] = [0,1]
             extra_model_def["keep_frames_video_guide_not_supported"] = True
             extra_model_def["extract_guide_from_window_start"] = True
             extra_model_def["forced_guide_mask_inputs"] = True
@@ -552,7 +551,6 @@ class family_handler():
 
             extra_model_def["background_removal_label"]= "Remove Backgrounds behind People / Objects, keep it for Landscape or Positioned Frames"
             extra_model_def["video_guide_outpainting"] = [0,1]
-            extra_model_def["video_guide_outpainting_ratio"] = [0,1]
             extra_model_def["pad_guide_video"] = True
             extra_model_def["guide_inpaint_color"] = 127.5
             extra_model_def["forced_guide_mask_inputs"] = True
@@ -568,7 +566,7 @@ class family_handler():
                 extra_model_def["background_removal_label"]= "Remove Backgrounds behind People / Objects, keep it for Landscape, Lynx Face or Positioned Frames"
                 extra_model_def["no_processing_on_last_images_refs"] = 1
             if base_model_type in ["vace_ditto_14B"]:
-                del extra_model_def["guide_preprocessing"], extra_model_def["image_ref_choices"], extra_model_def["video_guide_outpainting"], extra_model_def["video_guide_outpainting_ratio"]
+                del extra_model_def["guide_preprocessing"], extra_model_def["image_ref_choices"], extra_model_def["video_guide_outpainting"]
                 extra_model_def["mask_preprocessing"] = { "selection": ["", "A"], }
                 extra_model_def["model_modes"] = {
                             "choices": [

@@ -7967,9 +7967,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
         pop += ["motion_amplitude"]
 
     if model_def.get("video_guide_outpainting", None) is None:
-        pop += ["video_guide_outpainting"] 
-    if model_def.get("video_guide_outpainting_ratio", None) is None:
-        pop += ["video_guide_outpainting_ratio"] 
+        pop += ["video_guide_outpainting", "video_guide_outpainting_ratio"] 
 
     if not (vace or t2v):
         pop += ["min_frames_if_references"]

@@ -116,7 +116,6 @@ class family_handler():
                 }
             extra_model_def["inpaint_color"] = "FF0000"
             extra_model_def["video_guide_outpainting"] = [1,2]
-            extra_model_def["video_guide_outpainting_ratio"] = [1,2]
 
         if flux2:
             if flux2_klein:

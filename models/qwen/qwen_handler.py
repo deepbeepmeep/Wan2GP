@@ -40,7 +40,6 @@ class family_handler():
             extra_model_def["inpaint_video_prompt_type"] = "VA"
             extra_model_def["image_video_prompt_type"] = ""            
             extra_model_def["video_guide_outpainting"] = [2]
-            extra_model_def["video_guide_outpainting_ratio"] = [2]
             extra_model_def["model_modes"] = {
                         "choices": [
                             ("LanPaint (2 steps): ~2x slower, easy task", 2),
@@ -68,7 +67,6 @@ class family_handler():
             }
             extra_model_def["background_removal_label"]= "Remove Backgrounds only behind People / Objects except main Subject / Landscape" 
             extra_model_def["video_guide_outpainting"] = [2]
-            extra_model_def["video_guide_outpainting_ratio"] = [2]
             extra_model_def["model_modes"] = {
                         "choices": [
                             ("Lora Inpainting: Inpainted area completely unrelated to masked content", 1),

@@ -189,7 +189,6 @@ class family_handler:
         
         if distilled and base_model_type in ["ltx2_22B"]:
             extra_model_def["video_guide_outpainting"] = [0,1]
-            extra_model_def["video_guide_outpainting_ratio"] = [0,1]
             extra_model_def["video_guide_outpainting_label"] = "Enable Spatial Outpainting on Control Video using Ic Lora Outpaint"
             extra_model_def["guide_inpaint_color"] = 0
 

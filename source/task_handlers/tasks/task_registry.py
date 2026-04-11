@@ -1,9 +1,19 @@
 """
-Task Registry Module
+Task Registry Module.
 
-This module defines the TaskRegistry class and the TASK_HANDLERS dictionary.
-It allows for a cleaner way to route tasks to their appropriate handlers
-instead of using a massive if/elif block.
+Travel segment parameter precedence is always:
+1. `individual_segment_params`: per-segment overrides from the frontend or orchestrator.
+2. Top-level `segment_params`: the child task payload itself.
+3. Nested `orchestrator_details`: inherited orchestrator defaults and shared arrays.
+
+Payload shapes by origin:
+- Orchestrator-created `travel_segment`: worker-authored top-level child payload plus
+  `orchestrator_details`, optionally with `individual_segment_params`.
+- Frontend-created `individual_travel_segment`: create-task synthesizes
+  `orchestrator_details` for standalone execution, but the handler still reads the same
+  3-tier cascade.
+- Worker-created passthrough segment: the create-task resolver preserves the worker
+  payload as-is, so the handler must keep legacy aliases and mixed old/new field names.
 """
 from __future__ import annotations
 
@@ -20,7 +30,7 @@ if TYPE_CHECKING:
     from source.core.params.contracts import TaskDispatchContext
     from source.task_handlers.queue.task_queue import HeadlessTaskQueue
 
-from source.core.log import headless_logger, task_logger
+from source.core.log import headless_logger, task_logger, safe_dict_repr
 from source.task_handlers.worker.worker_utils import log_ram_usage
 from source.task_handlers.tasks.task_conversion import db_task_to_generation_task
 from source.core.params.phase_config_parser import parse_phase_config
@@ -93,6 +103,11 @@ class GenerationInputs:
     debug_enabled: bool
     travel_mode: str
     generation_policy: GenerationPolicy
+    model_family: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.model_family not in {"ltx", "wan"}:
+            self.model_family = _infer_model_family(self.model_name)
 
 @dataclass
 class ImageRefs:
@@ -149,6 +164,7 @@ def _load_handler_callable(task_type: str):
     module = import_module(module_path)
     return getattr(module, attr_name)
 
+
 def _get_param(key, *sources, default=_MISSING, prefer_truthy: bool = False):
     """
     Get a parameter from multiple sources with precedence (first source wins).
@@ -158,19 +174,39 @@ def _get_param(key, *sources, default=_MISSING, prefer_truthy: bool = False):
     matching historical `a or b` fallback semantics while still preserving explicit booleans.
     """
     for source in sources:
+        # Missing sources or sources without the key simply fall through to the next tier.
         if not source or key not in source:
             continue
 
         value = source[key]
+        # Explicit null means "not set here", so keep cascading.
         if value is None:
             continue
 
+        # When matching historical `a or b or c` behavior, skip empty strings/containers/0
+        # but still preserve explicit booleans from higher-precedence tiers.
         if prefer_truthy and not isinstance(value, bool) and not value:
             continue
 
+        # First non-skipped value wins.
         return value
 
     return None if default is _MISSING else default
+
+
+def _infer_model_family(model_name: str | None) -> str:
+    """Resolve the travel model family from the canonical segment model name.
+
+    Model-specific conventions:
+    - LTX-only: direct `guidance_scale`, `prefix_video_source` continuation,
+      8-frame quantization, 24fps native output.
+    - Wan-only: `phase_config`, SVI continuation, 4-frame quantization,
+      16fps native output, `svi2pro`.
+    - Shared: `num_frames`, `seed`, `model_name`, `parsed_resolution_wh`,
+      prompts, LoRAs, and `travel_guidance`.
+    """
+    return "ltx" if "ltx" in (model_name or "").lower() else "wan"
+
 
 def _resolve_segment_context(task_params_dict: dict, is_standalone: bool, task_id: str) -> SegmentContext:
     """Resolve mode, orchestrator_details, individual_params, and segment identity.
@@ -185,7 +221,8 @@ def _resolve_segment_context(task_params_dict: dict, is_standalone: bool, task_i
     orchestrator_run_id = segment_params.get("orchestrator_run_id")
     segment_idx = segment_params.get("segment_index")
 
-    # Get orchestrator_details (canonical name) or full_orchestrator_payload (legacy alias)
+    # `full_orchestrator_payload` is the legacy name for `orchestrator_details`.
+    # Kept for backward compat with historical tasks.
     orchestrator_details: dict = segment_params.get("orchestrator_details") or segment_params.get("full_orchestrator_payload")
 
     if is_standalone:
@@ -194,7 +231,6 @@ def _resolve_segment_context(task_params_dict: dict, is_standalone: bool, task_i
             segment_idx = 0
         if not orchestrator_details:
             raise ValueError(f"Individual travel segment {task_id} missing orchestrator_details")
-        headless_logger.debug(f"Running in standalone mode (individual_travel_segment)", task_id=task_id)
     else:
         # Orchestrator mode: require segment_index and either inline orchestrator_details or ability to fetch
         if segment_idx is None:
@@ -237,19 +273,29 @@ def _resolve_generation_inputs(ctx: SegmentContext, task_id: str, main_output_di
 
     Returns a GenerationInputs dataclass with all resolved values.
     Raises ValueError if resolution format is invalid.
+
+    Canonical segment field names:
+    - `model_name`: canonical segment-level model identifier. Legacy extracted payloads may
+      still carry `model`, but travel segment tasks should write `model_name`.
+    - `num_frames`: canonical child frame count. `segment_frames_target` is a legacy fallback.
+    - `seed`: canonical child seed. `seed_to_use` remains as a legacy fallback.
+    - `parsed_resolution_wh`: canonical segment resolution string.
     """
     segment_params = ctx.segment_params
     orchestrator_details = ctx.orchestrator_details
     individual_params = ctx.individual_params
     segment_idx = ctx.segment_idx
 
-    # Model name: segment > orchestrator (required)
+    # Model name tiers: segment payload > orchestrator_details.
     model_name = segment_params.get("model_name") or orchestrator_details.get("model_name")
     if not model_name:
         raise ValueError(f"Travel segment {task_id}: model_name missing from both segment_params and orchestrator_details")
+    model_family = _get_param("model_family", segment_params, orchestrator_details, default=None)
+    if model_family not in {"ltx", "wan"}:
+        model_family = _infer_model_family(model_name)
 
-    # Prompts: enhanced_prompt preferred > base_prompt fallback
-    # Frontend may provide both: enhanced_prompt (AI-enhanced) and base_prompt (user's original)
+    # Prompt tiers: `individual_segment_params` > top-level segment payload.
+    # Frontend may provide both: enhanced_prompt (AI-enhanced) and base_prompt (user original).
     enhanced_prompt = _get_param("enhanced_prompt", individual_params, segment_params, default=None)
     base_prompt = _get_param("base_prompt", individual_params, segment_params, default=" ")
 
@@ -258,12 +304,13 @@ def _resolve_generation_inputs(ctx: SegmentContext, task_id: str, main_output_di
     prompt_for_wgp = ensure_valid_prompt(effective_prompt)
 
     if enhanced_prompt and enhanced_prompt.strip():
-        task_logger.debug(f"[PROMPT] Task {task_id}: Using enhanced_prompt")
+        task_logger.debug_anomaly("PROMPT", f"Task {task_id}: Using enhanced_prompt")
+    # Negative prompt tiers: `individual_segment_params` > top-level segment payload.
     negative_prompt_for_wgp = ensure_valid_negative_prompt(
         _get_param("negative_prompt", individual_params, segment_params, default=" ")
     )
 
-    # Resolution: segment > orchestrator
+    # Resolution tiers: top-level segment payload > orchestrator_details.
     parsed_res_wh_str = segment_params.get("parsed_resolution_wh") or orchestrator_details.get("parsed_resolution_wh")
     if not parsed_res_wh_str:
         raise ValueError(f"Travel segment {task_id}: parsed_resolution_wh missing from both segment_params and orchestrator_details")
@@ -274,7 +321,11 @@ def _resolve_generation_inputs(ctx: SegmentContext, task_id: str, main_output_di
     grid_size = get_model_grid_size(model_name)
     parsed_res_wh = snap_resolution_to_model_grid(parsed_res_raw, grid_size)
 
-    # Frame count: individual_segment_params.num_frames > top-level num_frames > segment_frames_target > segment_frames_expanded[idx]
+    # Frame count tiers:
+    # 1. `individual_segment_params.num_frames`
+    # 2. top-level `num_frames` (canonical child field)
+    # 3. top-level `segment_frames_target` (legacy fallback)
+    # 4. `orchestrator_details.segment_frames_expanded[segment_idx]`
     total_frames_for_segment = (
         individual_params.get("num_frames") or
         segment_params.get("num_frames") or
@@ -300,6 +351,7 @@ def _resolve_generation_inputs(ctx: SegmentContext, task_id: str, main_output_di
             f"Travel segment {task_id}: invalid frame count {total_frames_for_segment!r}"
         )
 
+    # Output dir tiers: top-level segment payload > orchestrator_details fallback.
     current_run_base_output_dir_str = _get_param(
         "current_run_base_output_dir",
         segment_params,
@@ -318,6 +370,7 @@ def _resolve_generation_inputs(ctx: SegmentContext, task_id: str, main_output_di
     segment_processing_dir = current_run_base_output_dir
     segment_processing_dir.mkdir(parents=True, exist_ok=True)
 
+    # Debug flag tiers: top-level segment payload > orchestrator_details.
     debug_enabled = _get_param("debug_mode_enabled", segment_params, orchestrator_details, default=False)
     generation_policy = GenerationPolicy.from_payload({
         **dict(orchestrator_details),
@@ -327,6 +380,7 @@ def _resolve_generation_inputs(ctx: SegmentContext, task_id: str, main_output_di
     travel_mode = generation_policy.travel_mode
 
     return GenerationInputs(
+        model_family=model_family,
         model_name=model_name,
         prompt_for_wgp=prompt_for_wgp,
         negative_prompt_for_wgp=negative_prompt_for_wgp,
@@ -440,6 +494,8 @@ class PredecessorResult:
     predecessor_video_path: Optional[str] = None
     prefix_video_path: Optional[str] = None
     precomputed_latents_path: Optional[str] = None
+    prefix_frames_needed: Optional[int] = None
+    prefix_strategy: Optional[str] = None
 
 
 def _resolve_predecessor_video_source(
@@ -467,7 +523,7 @@ def _resolve_predecessor_video_source(
     predecessor_output_url = None
 
     if explicit_predecessor_url:
-        task_logger.debug(f"[PREDECESSOR] Seg {segment_idx}: Using explicit predecessor URL")
+        task_logger.debug_anomaly("PREDECESSOR", f"Seg {segment_idx}: Using explicit predecessor URL")
         predecessor_output_url = explicit_predecessor_url
     elif segment_idx > 0:
         predecessor = resolve_segment_predecessor(
@@ -490,9 +546,9 @@ def _resolve_predecessor_video_source(
         task_dependency_id = predecessor.task_id
         predecessor_output_url = predecessor.output_url
         if predecessor.found:
-            task_logger.debug(f"[PREDECESSOR] Seg {segment_idx}: Found predecessor {task_dependency_id}")
+            task_logger.debug_anomaly("PREDECESSOR", f"Seg {segment_idx}: Found predecessor {task_dependency_id}")
         else:
-            task_logger.debug(f"[PREDECESSOR] Seg {segment_idx}: Could not resolve predecessor (dep_id={task_dependency_id})")
+            task_logger.debug_anomaly("PREDECESSOR", f"Seg {segment_idx}: Could not resolve predecessor (dep_id={task_dependency_id})")
 
     if not predecessor_output_url:
         return result
@@ -519,7 +575,7 @@ def _resolve_predecessor_video_source(
             raise ValueError(
                 f"Task {task_id}: continuation predecessor video unavailable for segment {segment_idx}"
             )
-        task_logger.debug(f"[PREDECESSOR] Seg {segment_idx}: Predecessor video not available at {predecessor_video_path}")
+        task_logger.debug_anomaly("PREDECESSOR", f"Seg {segment_idx}: Predecessor video not available at {predecessor_video_path}")
         return result
 
     result.predecessor_video_path = predecessor_video_path
@@ -535,15 +591,13 @@ def _resolve_predecessor_video_source(
             prefix=prefix_label_short,
         )
         result.prefix_video_path = str(trimmed_result)
-        task_logger.debug(
-            f"[PREDECESSOR] Seg {segment_idx}: Extracted {frames_needed}-frame prefix for "
-            f"{policy.continuation.strategy} continuation"
-        )
+        result.prefix_frames_needed = frames_needed
+        result.prefix_strategy = policy.continuation.strategy
     except (OSError, ValueError, RuntimeError) as exc:
         if is_svi:
             # Fallback: use full video if extraction failed
             result.prefix_video_path = predecessor_video_path
-            task_logger.debug(f"[PREDECESSOR] Seg {segment_idx}: Prefix extraction failed ({exc}), using full predecessor")
+            task_logger.debug_anomaly("PREDECESSOR", f"Seg {segment_idx}: Prefix extraction failed ({exc}), using full predecessor")
         else:
             raise ValueError(
                 f"Task {task_id}: failed to prepare continuation prefix for segment {segment_idx}: {exc}"
@@ -572,8 +626,6 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
     top_level_images = segment_params.get("input_image_paths_resolved", [])
     orchestrator_images = orchestrator_details.get("input_image_paths_resolved", [])
 
-    task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: segment_idx={segment_idx}, individual_images={len(individual_images)}, top_level_images={len(top_level_images)}, orchestrator_images={len(orchestrator_images)}")
-
     is_continuing = orchestrator_details.get("continue_from_video_resolved_path") is not None
     policy = gen.generation_policy
     svi_predecessor_video_url = _get_param(
@@ -588,7 +640,7 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
     )
 
     if active_svi_continuation:
-        task_logger.debug(f"[SVI_MODE] Task {task_id}: SVI continuation active for segment {segment_idx}")
+        task_logger.debug_anomaly("SVI_MODE", f"Task {task_id}: SVI continuation active for segment {segment_idx}")
 
     # =============================================================================
     # UNIFIED PREDECESSOR RESOLUTION (SVI + prefix_video_source)
@@ -626,7 +678,6 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
             start_ref_path = extract_last_frame_as_image(
                 predecessor.predecessor_video_path, segment_processing_dir, task_id
             )
-            task_logger.debug(f"[SVI_CHAINING] Seg {segment_idx}: Extracted last frame as anchor start_ref")
 
             # SVI end_ref is the target image from input array
             target_end_idx = segment_idx + 1 if segment_idx > 0 else 1
@@ -637,6 +688,29 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
                 end_ref_path = orchestrator_images[target_end_idx]
             elif len(orchestrator_images) > 0:
                 end_ref_path = orchestrator_images[-1]
+
+            if predecessor.prefix_frames_needed is not None and predecessor.prefix_strategy:
+                task_logger.debug_block(
+                    "PREDECESSOR",
+                    {
+                        "segment": segment_idx,
+                        "strategy": predecessor.prefix_strategy,
+                        "prefix_frames": predecessor.prefix_frames_needed,
+                        "anchor_start_ref": Path(start_ref_path).name if start_ref_path else "NONE",
+                    },
+                    task_id=task_id,
+                )
+            else:
+                task_logger.debug(
+                    f"[PREDECESSOR] Seg {segment_idx}: Extracted last frame as anchor start_ref",
+                    task_id=task_id,
+                )
+        elif predecessor.prefix_frames_needed is not None and predecessor.prefix_strategy:
+            task_logger.debug(
+                f"[PREDECESSOR] Seg {segment_idx}: Extracted {predecessor.prefix_frames_needed}-frame prefix for "
+                f"{predecessor.prefix_strategy} continuation",
+                task_id=task_id,
+            )
 
         task_logger.debug(
             f"[CONTINUATION] Seg {segment_idx}: strategy={policy.continuation.strategy}, "
@@ -650,15 +724,12 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
         if individual_params.get("start_image_url") or individual_params.get("end_image_url"):
             start_ref_path = individual_params.get("start_image_url")
             end_ref_path = individual_params.get("end_image_url")
-            task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using individual_segment_params URLs: start={start_ref_path}")
         elif len(individual_images) >= 2:
             start_ref_path = individual_images[0]
             end_ref_path = individual_images[1]
-            task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using individual_segment_params array: start={start_ref_path}")
         elif is_standalone and len(top_level_images) >= 2:
             start_ref_path = top_level_images[0]
             end_ref_path = top_level_images[1]
-            task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using top-level images directly: start={start_ref_path}")
         elif is_continuing:
             if segment_idx == 0:
                 continued_video_path = orchestrator_details.get("continue_from_video_resolved_path")
@@ -671,17 +742,13 @@ def _resolve_image_references(ctx: SegmentContext, gen: GenerationInputs, task_i
                     start_ref_path = orchestrator_images[segment_idx - 1]
                     end_ref_path = orchestrator_images[segment_idx]
         else:
-            task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: Using orchestrator images (from scratch)")
             if len(orchestrator_images) > segment_idx:
                 start_ref_path = orchestrator_images[segment_idx]
             if len(orchestrator_images) > segment_idx + 1:
                 end_ref_path = orchestrator_images[segment_idx + 1]
 
-    task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: start_ref_path after logic: {start_ref_path}")
-
     if start_ref_path:
         start_ref_path = download_image_if_url(start_ref_path, segment_processing_dir, task_id, debug_mode=debug_enabled)
-        task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: start_ref_path AFTER DOWNLOAD: {start_ref_path}")
     if end_ref_path:
         end_ref_path = download_image_if_url(end_ref_path, segment_processing_dir, task_id, debug_mode=debug_enabled)
 
@@ -743,11 +810,6 @@ def _process_structure_guidance(ctx: SegmentContext, gen: GenerationInputs, task
     # 1. VACE mode (always - requires masks and guides)
     # 2. Any mode with structure guidance configured (enables uni3c/flow guidance for i2v, etc.)
     if travel_mode == "vace" or has_structure_guidance or gen.generation_policy.continuation.enabled:
-        if has_structure_guidance and travel_mode != "vace":
-            task_logger.debug(
-                f"[STRUCTURE_GUIDANCE] Task {task_id}: Running TravelSegmentProcessor for "
-                f"{travel_mode} mode (guidance configured)"
-            )
         try:
             processor_context = TravelSegmentContext(
                 task_id=task_id,
@@ -776,14 +838,9 @@ def _process_structure_guidance(ctx: SegmentContext, gen: GenerationInputs, task
             denoising_strength = segment_outputs.get("denoising_strength")
             detected_structure_type = segment_outputs.get("structure_type")
 
-            # Debug: Log segment_outputs keys and structure_type
-            task_logger.debug(f"[UNI3C_DEBUG] Task {task_id}: segment_outputs keys: {list(segment_outputs.keys())}")
-            task_logger.debug(f"[UNI3C_DEBUG] Task {task_id}: detected_structure_type={repr(detected_structure_type)}, guide_video_path={bool(guide_video_path)}")
-
             # If config targets uni3c and we have a guide video, update the config's guidance URL
             # This is used later by the UNI3C MODE section
             if structure_config.is_uni3c and guide_video_path:
-                task_logger.debug(f"[UNI3C_AUTO] Task {task_id}: Uni3C mode with guide from processor: {guide_video_path}")
                 # Store the processor's guide video path in the config
                 structure_config._guidance_video_url = guide_video_path
 
@@ -825,10 +882,14 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
     video_prompt_type_str = structure.video_prompt_type_str
     structure_config = structure.structure_config
 
-    # Seed: individual_segment_params > top-level > default
-    seed_to_use = individual_params.get("seed_to_use") or segment_params.get("seed_to_use", 12345)
+    # Seed tiers: canonical `seed` first, then legacy `seed_to_use`, then default.
+    seed_to_use = _get_param("seed", individual_params, segment_params, orchestrator_details, default=None)
+    if seed_to_use is None:
+        seed_to_use = _get_param("seed_to_use", individual_params, segment_params, orchestrator_details, default=12345)
 
     generation_params = {
+        # `model_name` is the canonical segment-level field. Older extracted payloads may also
+        # include `model`, but the segment handler should continue to key off `model_name`.
         "model_name": model_name,
         "negative_prompt": gen.negative_prompt_for_wgp,
         "resolution": f"{gen.parsed_res_wh[0]}x{gen.parsed_res_wh[1]}",
@@ -841,9 +902,6 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
         generation_params["image_start"] = str(Path(start_ref_path).resolve())
     if end_ref_path:
         generation_params["image_end"] = str(Path(end_ref_path).resolve())
-
-    task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: generation_params image_start: {generation_params.get('image_start')}")
-    task_logger.debug(f"[IMG_RESOLVE] Task {task_id}: generation_params image_end: {generation_params.get('image_end')}")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Parameter extraction with precedence: individual > segment > orchestrator
@@ -868,14 +926,17 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
     # IMPORTANT: Do NOT treat orchestrator/UI `steps` as diffusion `num_inference_steps`.
     # In travel payloads, `steps` often means "timeline steps" (UI concept), whereas
     # diffusion steps must come from `num_inference_steps` (or `phase_config.steps_per_phase`).
+    # Diffusion steps tiers: top-level segment payload > orchestrator_details.
     explicit_steps = _get_param("num_inference_steps", segment_params, orchestrator_details, prefer_truthy=True)
     if explicit_steps:
         generation_params["num_inference_steps"] = explicit_steps
 
+    # Guidance tiers: top-level segment payload > orchestrator_details.
     explicit_guidance = _get_param("guidance_scale", segment_params, orchestrator_details, prefer_truthy=True)
     if explicit_guidance:
         generation_params["guidance_scale"] = explicit_guidance
 
+    # Flow-shift tiers: top-level segment payload > orchestrator_details.
     explicit_flow_shift = _get_param("flow_shift", segment_params, orchestrator_details, prefer_truthy=True)
     if explicit_flow_shift:
         generation_params["flow_shift"] = explicit_flow_shift
@@ -883,17 +944,14 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
     # =============================================================================
     # Per-Segment Parameter Overrides
     # =============================================================================
-    # Log what per-segment overrides were received
-    task_logger.debug(f"[PER_SEGMENT_HANDLER] Task {task_id}: ========== Per-Segment Override Check ==========")
-    task_logger.debug(f"[PER_SEGMENT_HANDLER] Task {task_id}: individual_params keys: {list(individual_params.keys()) if individual_params else 'None'}")
-
     # Check for segment-specific LoRAs first (highest priority)
     # This allows per-segment LoRA overrides to take precedence over phase_config LoRAs
     segment_loras = _get_param("segment_loras", individual_params, default=None)
     segment_lora_config = None
+    phase_config_source_name = "none"
+    preset_name = None
 
     if segment_loras:
-        task_logger.debug(f"[PER_SEGMENT_LORAS] Task {task_id}: Using segment-specific LoRAs ({len(segment_loras)} LoRAs)")
         # Pass through URLs/filenames without downloading - convert_to_wgp_task_impl() handles resolution
         segment_lora_config = True  # Flag to skip phase_config LoRAs below
         activated = []
@@ -907,9 +965,7 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
         if activated:
             generation_params["activated_loras"] = activated
             generation_params["loras_multipliers"] = " ".join(mults)
-            headless_logger.info(f"Set {len(activated)} segment-specific LoRAs (download deferred)", task_id=task_id)
-    else:
-        task_logger.debug(f"[PER_SEGMENT_LORAS] Task {task_id}: No segment-specific LoRAs - will use phase_config/shot-level LoRAs if present")
+            headless_logger.debug(f"Set {len(activated)} segment-specific LoRAs (download deferred)", task_id=task_id)
 
     # Determine phase_config source for logging
     phase_config_from_individual = individual_params.get("phase_config") if individual_params else None
@@ -923,21 +979,19 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
     # Log which source phase_config came from
     if phase_config_source:
         if phase_config_from_individual:
-            source_name = "PER-SEGMENT (individual_params)"
+            source_name = "individual_params"
         elif phase_config_from_segment:
             source_name = "segment_params"
         else:
-            source_name = "SHOT-LEVEL (orchestrator_details)"
+            source_name = "orchestrator_details"
 
+        phase_config_source_name = source_name
         preset_name = phase_config_source.get("preset_name", phase_config_source.get("name", "unknown"))
-        task_logger.debug(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: Using phase_config from {source_name}")
-        task_logger.debug(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: preset_name={preset_name}")
 
     if phase_config_source:
         try:
             steps_per_phase = phase_config_source.get("steps_per_phase", [2, 2, 2])
             phase_config_steps = sum(steps_per_phase)
-            task_logger.debug(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: steps_per_phase={steps_per_phase} (total={phase_config_steps})")
 
             parsed_phase_config = parse_phase_config(
                 phase_config=phase_config_source,
@@ -966,9 +1020,7 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
                     generation_params["loras_multipliers"] = " ".join(str(m) for m in parsed_phase_config["lora_multipliers"])
                 lora_count = len(parsed_phase_config.get("lora_names", []))
                 if lora_count:
-                    headless_logger.info(f"Set {lora_count} phase_config LoRAs (download deferred)", task_id=task_id)
-            else:
-                task_logger.debug(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: Skipping phase_config LoRAs (segment-specific LoRAs take precedence)")
+                    headless_logger.debug(f"Set {lora_count} phase_config LoRAs (download deferred)", task_id=task_id)
 
             # Pass phase_config patch data through to task_processor.py for proper apply+restore lifecycle
             # (instead of applying directly here where it would never be cleaned up)
@@ -978,30 +1030,39 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
 
         except (ValueError, KeyError, TypeError) as e:
             raise ValueError(f"Task {task_id}: Invalid phase_config: {e}") from e
-    else:
-        task_logger.debug(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: No phase_config found - using explicit params only")
-
-    # Summary log for per-segment overrides
-    task_logger.debug(f"[PER_SEGMENT_HANDLER] Task {task_id}: ========== Per-Segment Override Summary ==========")
-    task_logger.debug(f"[PER_SEGMENT_HANDLER] Task {task_id}: LoRAs applied: {generation_params.get('activated_loras', [])}")
-    task_logger.debug(f"[PER_SEGMENT_HANDLER] Task {task_id}: LoRA multipliers: {generation_params.get('loras_multipliers', '')}")
-    task_logger.debug(f"[PER_SEGMENT_HANDLER] Task {task_id}: num_inference_steps: {generation_params.get('num_inference_steps', 'not set')}")
-    task_logger.debug(f"[PER_SEGMENT_HANDLER] Task {task_id}: guidance_scale: {generation_params.get('guidance_scale', 'not set')}")
-    task_logger.debug(f"[PER_SEGMENT_HANDLER] Task {task_id}: ================================================")
+    per_segment_summary = {
+        "individual_keys": sorted(individual_params.keys()) if individual_params else [],
+        "segment_loras": len(segment_loras or []),
+        "phase_config_source": phase_config_source_name,
+        "phase_config_preset": preset_name,
+        "num_inference_steps": generation_params.get("num_inference_steps"),
+        "guidance_scale": generation_params.get("guidance_scale"),
+        "activated_loras": len(generation_params.get("activated_loras") or []),
+        "segment_loras_override": bool(segment_lora_config),
+        "phase_config_patch": "_parsed_phase_config" in generation_params,
+    }
 
     if guide_video_path: generation_params["video_guide"] = str(guide_video_path)
     if mask_video_path_for_wgp: generation_params["video_mask"] = str(mask_video_path_for_wgp.resolve())
     generation_params["video_prompt_type"] = video_prompt_type_str
 
-    # Log the complete guidance state being sent to WGP
-    task_logger.debug(
-        f"[LTX_WGP_HANDOFF] Task {task_id}: "
-        f"video_guide={'SET' if guide_video_path else 'NONE'}, "
-        f"video_mask={'SET' if mask_video_path_for_wgp else 'NONE'}, "
-        f"video_prompt_type='{video_prompt_type_str}', "
-        f"use_uni3c={generation_params.get('use_uni3c', False)}, "
-        f"uni3c_guide={'SET' if generation_params.get('uni3c_guide_video') else 'NONE'}, "
-        f"activated_loras={generation_params.get('activated_loras', [])}"
+    # One consolidated HANDOFF card summarizing what we're about to send to WGP.
+    task_logger.debug_block(
+        "HANDOFF",
+        {
+            "video_guide": "SET" if guide_video_path else "NONE",
+            "video_mask": "SET" if mask_video_path_for_wgp else "NONE",
+            "video_prompt_type": video_prompt_type_str,
+            "use_uni3c": generation_params.get("use_uni3c", False),
+            "uni3c_guide": "SET" if generation_params.get("uni3c_guide_video") else "NONE",
+            "segment_loras": per_segment_summary["segment_loras"],
+            "phase_config_source": per_segment_summary["phase_config_source"],
+            "phase_config_preset": per_segment_summary["phase_config_preset"],
+            "num_inference_steps": per_segment_summary["num_inference_steps"],
+            "guidance_scale": per_segment_summary["guidance_scale"],
+            "activated_loras": generation_params.get("activated_loras") or [],
+        },
+        task_id=task_id,
     )
     if structure.image_refs_paths:
         generation_params["image_refs_paths"] = structure.image_refs_paths
@@ -1017,20 +1078,6 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
         generation_params["audio_scale"] = structure.audio_scale
     if structure.denoising_strength is not None:
         generation_params["denoising_strength"] = structure.denoising_strength
-
-    # Diagnostic: Log guidance configuration when uni3c is enabled
-    if structure_config.is_uni3c and guide_video_path:
-        task_logger.debug(f"[UNI3C_GUIDANCE_CHECK] Task {task_id}: Checking guidance configuration...")
-        task_logger.debug(f"[UNI3C_GUIDANCE_CHECK]   video_guide path: {guide_video_path}")
-        task_logger.debug(f"[UNI3C_GUIDANCE_CHECK]   structure_config.guidance_video_url: {structure_config.guidance_video_url}")
-        task_logger.debug(f"[UNI3C_GUIDANCE_CHECK]   image_end (i2v): {generation_params.get('image_end', 'None')}")
-        task_logger.debug(f"[UNI3C_GUIDANCE_CHECK]   video_prompt_type: '{video_prompt_type_str}'")
-        if "V" in video_prompt_type_str:
-            task_logger.debug(f"[UNI3C_GUIDANCE_CHECK]   🔴 WARNING: video_prompt_type has 'V' - VACE will ALSO use video_guide!")
-            task_logger.debug(f"[UNI3C_GUIDANCE_CHECK]   This causes double-feeding: both VACE and Uni3C use same guide")
-        else:
-            task_logger.debug(f"[UNI3C_GUIDANCE_CHECK]   ✅ OK: video_prompt_type='{video_prompt_type_str}' (no 'V')")
-            task_logger.debug(f"[UNI3C_GUIDANCE_CHECK]   Uni3C handles motion guidance, VACE only uses mask for frame preservation")
 
     return generation_params
 
@@ -1055,12 +1102,12 @@ def _apply_video_source_continuation(
     if image_refs.active_svi_continuation:
         _apply_svi_specific_params(generation_params, ctx, gen, image_refs, task_id)
     else:
-        # LTX / prefix_video_source
+        # LTX continuation path: `prefix_video_source` uses the shared `video_source` field.
         generation_params["image_prompt_type"] = "VE" if generation_params.get("image_end") else "V"
         task_logger.debug(
             f"[CONTINUATION_PREFIX] Task {task_id}: Set video_source for {policy.continuation.strategy} "
             f"continuation ({policy.continuation.overlap_frames} frames), "
-            f"image_prompt_type={generation_params['image_prompt_type']}"
+            f"model_family={gen.model_family}, image_prompt_type={generation_params['image_prompt_type']}"
         )
 
 
@@ -1080,8 +1127,15 @@ def _apply_svi_specific_params(
     orchestrator_details = ctx.orchestrator_details
     start_ref_path = image_refs.start_ref_path
     total_frames_for_segment = gen.total_frames_for_segment
+    model_family = getattr(gen, "model_family", None)
+    if model_family not in {"ltx", "wan"}:
+        model_family = "ltx" if "ltx" in str(getattr(gen, "model_name", "")).lower() else "wan"
 
-    task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Configuring WGP payload for SVI mode")
+    if model_family != "wan":
+        task_logger.debug(
+            f"[SVI_PAYLOAD] Task {task_id}: Skipping Wan-only SVI params for model_family={model_family}"
+        )
+        return
 
     # Enable SVI encoding mode
     generation_params["svi2pro"] = True
@@ -1092,11 +1146,9 @@ def _apply_svi_specific_params(
     # Set image_refs to start image (anchor for SVI encoding)
     if start_ref_path:
         generation_params["image_refs_paths"] = [str(Path(start_ref_path).resolve())]
-        task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Set image_refs_paths to start image: {start_ref_path}")
 
     # Set image_prompt_type to "SV" for start+video continuation
     generation_params["image_prompt_type"] = "SV"
-    task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Set image_prompt_type='SV' for video continuation")
 
     # SVI Pro sliding window overlap = 4 frames
     generation_params["sliding_window_overlap"] = 4
@@ -1110,20 +1162,16 @@ def _apply_svi_specific_params(
         if desired_new_frames > 0 and overlap_size > 0:
             if current_video_length == desired_new_frames:
                 generation_params["video_length"] = desired_new_frames + overlap_size
-                task_logger.debug(
-                    f"[SVI_PAYLOAD] Task {task_id}: SVI continuation => bump video_length "
-                    f"{current_video_length} -> {generation_params['video_length']} "
-                    f"(desired_new_frames={desired_new_frames}, overlap_size={overlap_size})"
-                )
     except (ValueError, TypeError) as e_len_bump:
-        task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: WARNING: Could not adjust video_length for SVI continuation: {e_len_bump}")
+        task_logger.debug_anomaly("SVI_PAYLOAD", f"Task {task_id}: WARNING: Could not adjust video_length for SVI continuation: {e_len_bump}")
 
     # Add SVI generation parameters from segment_params (set by orchestrator)
+    svi_param_keys_applied = []
     for key in ["guidance_phases", "num_inference_steps", "guidance_scale", "guidance2_scale",
                "flow_shift", "switch_threshold", "model_switch_phase", "sample_solver"]:
         if key in segment_params and segment_params[key] is not None:
             generation_params[key] = segment_params[key]
-            task_logger.debug(f"[SVI_PAYLOAD] Task {task_id}: Set {key}={segment_params[key]}")
+            svi_param_keys_applied.append(key)
 
     # Merge SVI LoRAs with existing LoRAs
     from source.task_handlers.travel.svi_config import merge_svi_into_generation_params
@@ -1138,9 +1186,17 @@ def _apply_svi_specific_params(
         svi_strength_1=svi_strength_1,
         svi_strength_2=svi_strength_2)
 
+    svi_payload_summary = {
+        "video_length": generation_params.get("video_length"),
+        "image_prompt_type": generation_params.get("image_prompt_type"),
+        "video_prompt_type": generation_params.get("video_prompt_type"),
+        "sliding_window_overlap": generation_params.get("sliding_window_overlap"),
+        "applied_keys": svi_param_keys_applied,
+        "svi_strengths": [svi_strength, svi_strength_1, svi_strength_2],
+    }
+    render_summary = globals().get("safe_dict_repr", repr)
     task_logger.debug(
-        f"[SVI_PAYLOAD] Task {task_id}: Merged SVI LoRAs "
-        f"(svi_strength={svi_strength}, svi_strength_1={svi_strength_1}, svi_strength_2={svi_strength_2})"
+        f"[SVI_PAYLOAD] Task {task_id}: {render_summary(svi_payload_summary)}"
     )
 
     if image_refs.precomputed_overlapped_latents_path:
@@ -1170,8 +1226,6 @@ def _apply_uni3c_config(generation_params: dict, ctx: SegmentContext, gen: Gener
     # Use unified structure_config exclusively
     use_uni3c = structure_config.is_uni3c
 
-    task_logger.debug(f"[UNI3C_DEBUG] Task {task_id}: structure_config.is_uni3c={structure_config.is_uni3c}, use_uni3c={use_uni3c}")
-
     if not use_uni3c:
         return
 
@@ -1180,7 +1234,7 @@ def _apply_uni3c_config(generation_params: dict, ctx: SegmentContext, gen: Gener
 
     # If Uni3C is enabled but there's no guide video, skip to avoid downstream crashes.
     if not uni3c_guide:
-        task_logger.debug(f"[UNI3C] Task {task_id}: Uni3C requested but no guide video provided; skipping Uni3C injection")
+        task_logger.debug_anomaly("UNI3C", f"Task {task_id}: Uni3C requested but no guide video provided; skipping Uni3C injection")
         return
 
     # Use config values (already handles legacy param fallback)
@@ -1197,20 +1251,10 @@ def _apply_uni3c_config(generation_params: dict, ctx: SegmentContext, gen: Gener
         local_download_path = segment_processing_dir / f"uni3c_{local_filename}"
         if not local_download_path.exists():
             download_file(uni3c_guide, segment_processing_dir, local_download_path.name)
-            task_logger.debug(f"[UNI3C] Task {task_id}: Downloaded guide video to {local_download_path}")
+            task_logger.debug_anomaly("UNI3C", f"Task {task_id}: Downloaded guide video to {local_download_path}")
         else:
-            task_logger.debug(f"[UNI3C] Task {task_id}: Guide video already exists at {local_download_path}")
+            task_logger.debug_anomaly("UNI3C", f"Task {task_id}: Guide video already exists at {local_download_path}")
         uni3c_guide = str(local_download_path)
-
-    # Layer 2 logging
-    task_logger.debug(f"[UNI3C] Task {task_id}: Uni3C ENABLED (via structure_guidance config)")
-    task_logger.debug(f"[UNI3C] Task {task_id}:   guide_video={uni3c_guide}")
-    task_logger.debug(f"[UNI3C] Task {task_id}:   strength={uni3c_strength}")
-    task_logger.debug(f"[UNI3C] Task {task_id}:   start_percent={uni3c_start}")
-    task_logger.debug(f"[UNI3C] Task {task_id}:   end_percent={uni3c_end}")
-    task_logger.debug(f"[UNI3C] Task {task_id}:   frame_policy={uni3c_frame_policy}")
-    task_logger.debug(f"[UNI3C] Task {task_id}:   keep_on_gpu={uni3c_keep_gpu}")
-    task_logger.debug(f"[UNI3C] Task {task_id}:   zero_empty_frames={uni3c_zero_empty}")
 
     # Inject into generation_params
     generation_params["use_uni3c"] = True
@@ -1228,7 +1272,6 @@ def _apply_uni3c_config(generation_params: dict, ctx: SegmentContext, gen: Gener
     has_end_anchor = generation_params.get("image_end") is not None
     if is_last_segment and has_end_anchor:
         generation_params["uni3c_blackout_last_frame"] = True
-        task_logger.debug(f"[UNI3C] Task {task_id}: Will blackout last frame (is_last_segment + has end anchor)")
 
 
 def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_dir_base: Path, task_id: str, colour_match_videos: bool, mask_active_frames: bool, task_queue: HeadlessTaskQueue, is_standalone: bool = False):
@@ -1238,7 +1281,6 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
     Standalone mode (is_standalone=True) uses orchestrator_details provided directly in params.
     Parameter precedence: individual_segment_params > segment_params > orchestrator_details.
     """
-    headless_logger.debug(f"Starting travel segment queue processing (standalone={is_standalone})", task_id=task_id)
     log_ram_usage("Segment via queue - start", task_id=task_id)
 
     try:
@@ -1264,16 +1306,6 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
         # 7. Apply UNI3C-specific configuration
         _apply_uni3c_config(generation_params, ctx, gen, structure, task_id)
 
-        # Log diagnostic summary before WGP submission
-        task_logger.debug(f"[WGP_SUBMIT] Task {task_id}: ========== WGP GENERATION REQUEST ==========")
-        task_logger.debug(f"[WGP_SUBMIT] Task {task_id}: video_length (target frames): {generation_params.get('video_length')}")
-        is_valid_4n1 = (generation_params.get('video_length', 0) - 1) % 4 == 0
-        task_logger.debug(f"[WGP_SUBMIT] Task {task_id}: Valid 4N+1: {is_valid_4n1} {'✓' if is_valid_4n1 else '✗ WARNING'}")
-        task_logger.debug(f"[WGP_SUBMIT] Task {task_id}: video_guide: {generation_params.get('video_guide', 'None')}")
-        task_logger.debug(f"[WGP_SUBMIT] Task {task_id}: video_mask: {generation_params.get('video_mask', 'None')}")
-        task_logger.debug(f"[WGP_SUBMIT] Task {task_id}: model: {gen.model_name}")
-        task_logger.debug(f"[WGP_SUBMIT] Task {task_id}: resolution: {generation_params.get('resolution')}")
-        task_logger.debug(f"[WGP_SUBMIT] Task {task_id}: =============================================")
 
         # IMPORTANT: Use the DB task_id as the queue task id.
         # This keeps logs, fatal error handling, and debug tooling consistent (no "travel_seg_" indirection).
@@ -1304,12 +1336,12 @@ def _handle_travel_segment_via_queue_impl(task_params_dict: dict, main_output_di
 
                 # In standalone mode, skip chaining (no orchestrator to coordinate with)
                 if is_standalone:
-                    headless_logger.debug(f"Standalone segment completed, skipping chaining", task_id=task_id)
                     return True, status.result_path
 
                 # Orchestrator mode: run chaining
                 chain_success, chain_message, final_chained_path = handle_travel_chaining_after_wgp(
                     wgp_task_params={
+                        "task_id": task_id,
                         # Provide minimal ground-truth frame params for downstream debug logging / trimming analysis.
                         # chaining.py reads use_svi from this payload for SVI output trimming.
                         "use_svi": image_refs.active_svi_continuation,

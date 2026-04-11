@@ -7,11 +7,14 @@ Also provides cached Uni3C ControlNet loading.
 
 import os
 import gc
+import time
 
+from source.core.log import is_debug_enabled
+from source.core.log.debug_card import DebugCard, render_card
+from source.core.log.display_names import model_label
 from source.core.log.model_runtime import generation_logger, model_logger
 from source.runtime.wgp_bridge import (
     clear_wgp_loaded_model_state,
-    get_model_name,
     get_model_recursive_prop,
     get_wgp_runtime_module,
     get_wgp_runtime_module_mutable,
@@ -79,7 +82,7 @@ def load_model_impl(orchestrator, model_key: str) -> bool:
         switched = model_key != orchestrator.current_model
         orchestrator.current_model = model_key
         orchestrator.state["model_type"] = model_key
-        model_logger.info(f"[SMOKE] Pretending to load model: {model_key}")
+        model_logger.debug_anomaly("SMOKE", f"Pretending to load model: {model_key}")
         return switched
 
     if orchestrator._get_base_model_type(model_key) is None:
@@ -119,11 +122,15 @@ def load_model_impl(orchestrator, model_key: str) -> bool:
 
     # Use WGP's EXACT model loading pattern from generate_video (lines 4249-4258)
     # This is the SINGLE SOURCE OF TRUTH for whether a switch is needed
-    current_model_info = f"(current: {wgp.transformer_type})" if wgp.transformer_type else "(no model loaded)"
     switched = False
 
     if model_key != wgp.transformer_type or wgp.reload_needed:
-        model_logger.info(f"🔄 MODEL SWITCH: Using WGP's generate_video pattern - switching from {current_model_info} to {model_key}")
+        model_logger.essential(
+            f"Switching model: {model_label(wgp.transformer_type)} \u2192 {model_label(model_key)}"
+        )
+        switch_started_at = time.perf_counter()
+        previous_model_label = model_label(wgp.transformer_type)
+        next_model_label = model_label(model_key)
 
         # Notify edge function BEFORE switch starts (worker will be busy loading)
         notify_worker_model_switch(old_model=wgp.transformer_type, new_model=model_key)
@@ -139,6 +146,7 @@ def load_model_impl(orchestrator, model_key: str) -> bool:
 
         # Replicate WGP's exact unloading pattern (lines 4250-4254)
         current_offloadobj = getattr(wgp, "offloadobj", None)
+        offload_reused = current_offloadobj is not None
         if current_offloadobj is not None:
             current_offloadobj.release()
         clear_wgp_loaded_model_state()
@@ -152,27 +160,35 @@ def load_model_impl(orchestrator, model_key: str) -> bool:
             model_logger.debug("Cleared CUDA cache after model unload")
 
         # Replicate WGP's exact loading pattern (lines 4255-4258)
-        model_logger.debug(f"Loading model {get_model_name(model_key)}...")
+        model_logger.debug(f"Loading model {next_model_label}...")
         wan_model, offloadobj = wgp.load_models(model_key)
         set_wgp_loaded_model_state(wan_model, offloadobj)
         model_logger.debug("Model loaded")
         set_wgp_reload_needed(False)
         switched = True
 
-        # Note: transformer_type is set automatically by load_models() at line 2929
+        if is_debug_enabled():
+            render_card(
+                model_logger,
+                DebugCard("Model Switch")
+                .row("from", previous_model_label)
+                .row("to", next_model_label)
+                .row("offload_reuse", offload_reused)
+                .row("duration_s", round(time.perf_counter() - switch_started_at, 2)),
+                task_id=None,
+            )
 
-        model_logger.info(f"✅ MODEL: Loaded using WGP's exact generate_video pattern")
+        # Note: transformer_type is set automatically by load_models() at line 2929
     else:
-        model_logger.debug(f"📋 MODEL: Model {model_key} already loaded, no switch needed")
+        model_logger.debug("Model already loaded, no switch needed")
 
     # Update our tracking to match WGP's state
     orchestrator.current_model = model_key
     orchestrator.state["model_type"] = model_key
     orchestrator.offloadobj = get_wgp_runtime_module().offloadobj  # Keep reference to WGP's offload object
 
-    family = orchestrator._get_model_family(model_key, for_ui=True)
     if switched:
-        model_logger.success(f"✅ MODEL Loaded model: {model_key} ({family}) using WGP's exact generate_video pattern")
+        model_logger.essential(f"Model loaded: {model_label(model_key)}")
 
     return switched
 
@@ -184,7 +200,7 @@ def unload_model_impl(orchestrator):
         orchestrator: WanOrchestrator instance
     """
     if orchestrator.smoke_mode:
-        model_logger.info(f"[SMOKE] Unload model: {orchestrator.current_model}")
+        model_logger.debug_anomaly("SMOKE", f"Unload model: {orchestrator.current_model}")
         orchestrator.current_model = None
         orchestrator.offloadobj = None
         orchestrator.state["model_type"] = None
@@ -193,7 +209,7 @@ def unload_model_impl(orchestrator):
     wgp = get_wgp_runtime_module_mutable()
 
     if orchestrator.current_model and wgp.wan_model is not None:
-        model_logger.info(f"🔄 MODEL UNLOAD: Unloading {orchestrator.current_model} using WGP's unload_model_if_needed")
+        model_logger.essential(f"Unloading model: {model_label(orchestrator.current_model)}")
 
         # Create a state object that WGP functions expect
         temp_state = {"model_type": orchestrator.current_model}
@@ -201,7 +217,6 @@ def unload_model_impl(orchestrator):
         # Use WGP's native unload function
         try:
             wgp.unload_model_if_needed(temp_state)
-            model_logger.info(f"✅ MODEL: WGP unload_model_if_needed completed")
 
             # Clear our tracking
             orchestrator.current_model = None
@@ -229,14 +244,14 @@ def get_or_load_uni3c_controlnet(orchestrator):
         WanControlNet instance or None if loading fails
     """
     if orchestrator._cached_uni3c_controlnet is not None:
-        generation_logger.info("[UNI3C_CACHE] Using cached Uni3C controlnet (skipping disk load)")
+        generation_logger.debug_anomaly("UNI3C_CACHE", "Using cached Uni3C controlnet (skipping disk load)")
         return orchestrator._cached_uni3c_controlnet
 
     try:
         import torch
 
         ckpts_dir = os.path.join(orchestrator.wan_root, "ckpts")
-        generation_logger.info(f"[UNI3C_CACHE] Loading Uni3C controlnet from disk (first use)...")
+        generation_logger.debug_anomaly("UNI3C_CACHE", f"Loading Uni3C controlnet from disk (first use)...")
 
         # load_uni3c_controlnet handles:
         # - base_dtype attribute setting
@@ -252,11 +267,11 @@ def get_or_load_uni3c_controlnet(orchestrator):
 
         # Cache for future generations
         orchestrator._cached_uni3c_controlnet = controlnet
-        generation_logger.info(f"[UNI3C_CACHE] Uni3C controlnet loaded and cached for future generations")
+        generation_logger.debug_anomaly("UNI3C_CACHE", f"Uni3C controlnet loaded and cached for future generations")
 
         return controlnet
 
     except (RuntimeError, OSError, ValueError) as e:
-        generation_logger.warning(f"[UNI3C_CACHE] Failed to pre-load Uni3C controlnet: {e}")
-        generation_logger.warning("[UNI3C_CACHE] Falling back to on-demand loading in any2video")
+        generation_logger.debug_anomaly("UNI3C_CACHE", f"Failed to pre-load Uni3C controlnet: {e}")
+        generation_logger.debug_anomaly("UNI3C_CACHE", "Falling back to on-demand loading in any2video")
         return None

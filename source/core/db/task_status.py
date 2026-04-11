@@ -117,7 +117,7 @@ def _mark_task_failed_via_edge_function(task_id_str: str, error_message: str):
         max_retries=3)
 
     if resp and resp.status_code == 200:
-        headless_logger.debug(f"[DEBUG] Successfully marked task {task_id_str} as Failed via Edge Function")
+        headless_logger.debug(f"Successfully marked task {task_id_str} as Failed via Edge Function")
     elif edge_error:
         headless_logger.error(f"Failed to mark task {task_id_str} as Failed: {edge_error}", task_id=task_id_str)
     elif resp:
@@ -148,7 +148,7 @@ def requeue_task_for_retry(task_id_str: str, error_message: str, current_attempt
     error_details += f": {error_message[:500]}" if error_message else ""
 
     headless_logger.essential(f"Requeuing task {task_id_str} for retry (attempt {new_attempts})", task_id=task_id_str)
-    headless_logger.debug(f"[RETRY_DEBUG] Error category: {error_category}, Error: {error_message[:200] if error_message else 'N/A'}...")
+    headless_logger.debug(f"Retry details: category={error_category}, error={error_message[:200] if error_message else 'N/A'}...")
 
     # Use edge function to update status back to Queued
     edge_url = (
@@ -195,19 +195,16 @@ def requeue_task_for_retry(task_id_str: str, error_message: str, current_attempt
 
 def update_task_status(task_id: str, status: str, output_location: str | None = None):
     """Updates a task's status in Supabase."""
-    headless_logger.debug(f"[UPDATE_TASK_STATUS_DEBUG] Called with:")
-    headless_logger.debug(f"[UPDATE_TASK_STATUS_DEBUG]   task_id: '{task_id}'")
-    headless_logger.debug(f"[UPDATE_TASK_STATUS_DEBUG]   status: '{status}'")
-    headless_logger.debug(f"[UPDATE_TASK_STATUS_DEBUG]   output_location: '{output_location}'")
+    headless_logger.debug(
+        f"update_task_status: task_id={task_id}, status={status}, output={output_location}"
+    )
 
     try:
-        headless_logger.debug(f"[UPDATE_TASK_STATUS_DEBUG] Dispatching to update_task_status_supabase")
         result = update_task_status_supabase(task_id, status, output_location)
-        headless_logger.debug(f"[UPDATE_TASK_STATUS_DEBUG] update_task_status_supabase completed successfully")
+        headless_logger.debug(f"update_task_status completed for task_id={task_id}, status={status}")
         return result
     except (RuntimeError, ValueError, OSError) as e:
-        headless_logger.debug(f"[UPDATE_TASK_STATUS_DEBUG] \u274c Exception in update_task_status: {e}", exc_info=True)
-        headless_logger.debug(f"[UPDATE_TASK_STATUS_DEBUG] Exception type: {type(e).__name__}")
+        headless_logger.debug(f"update_task_status exception: {type(e).__name__}: {e}", exc_info=True)
         raise
 
 def update_task_status_supabase(task_id_str, status_str, output_location_val=None, thumbnail_url_val=None):
@@ -258,7 +255,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
         thumbnail_url_val: Optional thumbnail URL to pass to edge function
     """
     try:
-        headless_logger.debug(f"[DEBUG] update_task_status_supabase called: task_id={task_id_str}, status={status_str}, output_location={output_location_val}, thumbnail={thumbnail_url_val}")
+        headless_logger.debug(f"update_task_status_supabase called: task_id={task_id_str}, status={status_str}, output_location={output_location_val}, thumbnail={thumbnail_url_val}")
     except Exception:
         pass  # Logging must never prevent status updates
 
@@ -291,7 +288,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                 # Get file size for logging
                 file_size = output_path.stat().st_size
                 file_size_mb = file_size / BYTES_PER_MB
-                headless_logger.debug(f"[DEBUG] File size: {file_size_mb:.2f} MB")
+                headless_logger.debug(f"File size: {file_size_mb:.2f} MB")
 
                 headers = {"Content-Type": "application/json"}
                 if _cfg.SUPABASE_ACCESS_TOKEN:
@@ -307,7 +304,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                 use_base64 = file_size_mb < FILE_SIZE_THRESHOLD_MB
 
                 if use_base64:
-                    headless_logger.debug(f"[DEBUG] Using base64 upload for {output_path.name} ({file_size_mb:.2f} MB < {FILE_SIZE_THRESHOLD_MB} MB)")
+                    headless_logger.debug(f"Using base64 upload for {output_path.name} ({file_size_mb:.2f} MB < {FILE_SIZE_THRESHOLD_MB} MB)")
 
                     # MODE 1: Base64 upload (for files under 2MB)
                     # Read and encode file
@@ -337,7 +334,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                             _log_thumbnail(f"Exception during thumbnail extraction: {e}", level="warning", task_id=task_id_str)
                             # Continue without thumbnail
 
-                    headless_logger.debug(f"[DEBUG] Calling complete_task Edge Function with base64 data for task {task_id_str}")
+                    headless_logger.debug(f"Calling complete_task Edge Function with base64 data for task {task_id_str}")
                     resp, edge_error = _call_edge_function_with_retry(
                         edge_url=edge_url,
                         payload=payload,
@@ -350,20 +347,20 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                         retry_on_404_patterns=["Task not found", "not found"])
 
                     if resp is not None and resp.status_code == 200:
-                        headless_logger.debug(f"[DEBUG] Edge function SUCCESS for task {task_id_str} \u2192 status COMPLETE with base64 upload")
+                        headless_logger.debug(f"Edge function SUCCESS for task {task_id_str} \u2192 status COMPLETE with base64 upload")
                         # Parse response to get storage URL and thumbnail URL
                         try:
                             resp_data = resp.json()
                             storage_url = resp_data.get('public_url')
                             thumbnail_url = resp_data.get('thumbnail_url')  # Also get thumbnail
                             if storage_url:
-                                headless_logger.debug(f"[DEBUG] File uploaded to: {storage_url}")
+                                headless_logger.debug(f"File uploaded to: {storage_url}")
                                 if thumbnail_url:
-                                    headless_logger.debug(f"[DEBUG] Thumbnail available at: {thumbnail_url}")
+                                    headless_logger.debug(f"Thumbnail available at: {thumbnail_url}")
                                 # Return both URLs as a dict
                                 return {'public_url': storage_url, 'thumbnail_url': thumbnail_url}
                         except (ValueError, KeyError) as e:
-                            headless_logger.debug(f"[DEBUG] Failed to parse complete_task response JSON for task {task_id_str}: {e}")
+                            headless_logger.debug(f"Failed to parse complete_task response JSON for task {task_id_str}: {e}")
                         return None
                     else:
                         error_msg = edge_error or f"{EDGE_FAIL_PREFIX}:complete_task:HTTP_{resp.status_code if resp else 'N/A'}] {resp.text[:200] if resp else 'No response'}"
@@ -372,7 +369,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                         return None
 
                 else:
-                    headless_logger.debug(f"[DEBUG] Using presigned upload for {output_path.name} ({file_size_mb:.2f} MB >= {FILE_SIZE_THRESHOLD_MB} MB)")
+                    headless_logger.debug(f"Using presigned upload for {output_path.name} ({file_size_mb:.2f} MB >= {FILE_SIZE_THRESHOLD_MB} MB)")
 
                     # MODE 3: Presigned URL upload (for files 2MB or larger)
                     # Step 1: Get signed upload URLs (request thumbnail URL for videos) - WITH RETRY
@@ -433,7 +430,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                             # Continue without thumbnail
 
                     # Step 3: Upload main file directly to storage using presigned URL - WITH RETRY
-                    headless_logger.debug(f"[DEBUG] Uploading main file via signed URL")
+                    headless_logger.debug(f"Uploading main file via signed URL")
                     put_resp, put_error = _call_edge_function_with_retry(
                         edge_url=upload_data["upload_url"],
                         payload=output_path,
@@ -450,7 +447,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                         _mark_task_failed_via_edge_function(task_id_str, f"Upload failed: {error_msg}")
                         return
 
-                    headless_logger.debug(f"[DEBUG] File uploaded successfully via presigned URL")
+                    headless_logger.debug(f"File uploaded successfully via presigned URL")
 
                     # Step 4: Complete task with storage paths
                     payload = {
@@ -462,7 +459,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                     if thumbnail_storage_path:
                         payload["thumbnail_storage_path"] = thumbnail_storage_path
 
-                    headless_logger.debug(f"[DEBUG] Calling complete_task Edge Function with storage_path for task {task_id_str}")
+                    headless_logger.debug(f"Calling complete_task Edge Function with storage_path for task {task_id_str}")
                     resp, edge_error = _call_edge_function_with_retry(
                         edge_url=edge_url,
                         payload=payload,
@@ -475,20 +472,20 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                         retry_on_404_patterns=["Task not found", "not found"])
 
                     if resp is not None and resp.status_code == 200:
-                        headless_logger.debug(f"[DEBUG] Edge function SUCCESS for task {task_id_str} \u2192 status COMPLETE with file upload")
+                        headless_logger.debug(f"Edge function SUCCESS for task {task_id_str} \u2192 status COMPLETE with file upload")
                         # Parse response to get storage URL and thumbnail URL
                         try:
                             resp_data = resp.json()
                             storage_url = resp_data.get('public_url')
                             thumbnail_url = resp_data.get('thumbnail_url')  # Also get thumbnail
                             if storage_url:
-                                headless_logger.debug(f"[DEBUG] File uploaded to: {storage_url}")
+                                headless_logger.debug(f"File uploaded to: {storage_url}")
                                 if thumbnail_url:
-                                    headless_logger.debug(f"[DEBUG] Thumbnail available at: {thumbnail_url}")
+                                    headless_logger.debug(f"Thumbnail available at: {thumbnail_url}")
                                 # Return both URLs as a dict
                                 return {'public_url': storage_url, 'thumbnail_url': thumbnail_url}
                         except (ValueError, KeyError) as e:
-                            headless_logger.debug(f"[DEBUG] Failed to parse complete_task response JSON for task {task_id_str}: {e}")
+                            headless_logger.debug(f"Failed to parse complete_task response JSON for task {task_id_str}: {e}")
                         return None
                     else:
                         error_msg = edge_error or f"{EDGE_FAIL_PREFIX}:complete_task:HTTP_{resp.status_code if resp else 'N/A'}] {resp.text[:200] if resp else 'No response'}"
@@ -521,7 +518,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                             path_parts = url_in_json.split("/storage/v1/object/public/image_uploads/", 1)
                             if len(path_parts) == 2:
                                 storage_path = path_parts[1]
-                                headless_logger.debug(f"[DEBUG] JSON output detected - extracted storage_path: {storage_path}")
+                                headless_logger.debug(f"JSON output detected - extracted storage_path: {storage_path}")
 
                                 # Complete task with storage_path and include JSON output_location
                                 # in a single call (avoids broken two-step Complete→Complete transition)
@@ -530,7 +527,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                                     "storage_path": storage_path,
                                     "output_location": output_location_val,  # Full JSON metadata
                                 }
-                                headless_logger.debug(f"[DEBUG] Completing task {task_id_str} with storage_path + JSON output_location")
+                                headless_logger.debug(f"Completing task {task_id_str} with storage_path + JSON output_location")
 
                                 headers = {"Content-Type": "application/json"}
                                 if _cfg.SUPABASE_ACCESS_TOKEN:
@@ -548,7 +545,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                                     retry_on_404_patterns=["Task not found", "not found"])
 
                                 if resp is not None and resp.status_code == 200:
-                                    headless_logger.debug(f"[DEBUG] Task {task_id_str} completed with JSON output_location")
+                                    headless_logger.debug(f"Task {task_id_str} completed with JSON output_location")
                                     return None
                                 else:
                                     error_msg = edge_error or f"{EDGE_FAIL_PREFIX}:complete_task:HTTP_{resp.status_code if resp else 'N/A'}] {resp.text[:200] if resp else 'No response'}"
@@ -556,7 +553,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                                     _mark_task_failed_via_edge_function(task_id_str, f"Completion failed: {error_msg}")
                                     return None
                     except json.JSONDecodeError:
-                        headless_logger.debug(f"[DEBUG] Output looks like JSON but failed to parse, treating as regular output")
+                        headless_logger.debug(f"Output looks like JSON but failed to parse, treating as regular output")
 
                 if "/storage/v1/object/public/image_uploads/" in output_location_val:
                     # Extract storage path from URL
@@ -567,21 +564,21 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                         path_parts = output_location_val.split("/storage/v1/object/public/image_uploads/", 1)
                         if len(path_parts) == 2:
                             storage_path = path_parts[1]  # e.g., "userId/filename.mp4" or "userId/tasks/{task_id}/filename.mp4"
-                            headless_logger.debug(f"[DEBUG] Extracted storage_path from URL: {storage_path}")
+                            headless_logger.debug(f"Extracted storage_path from URL: {storage_path}")
 
                             # Determine if this is MODE 3 or MODE 4 based on path structure
                             path_components = storage_path.split('/')
                             if len(path_components) >= 4 and path_components[1] == 'tasks':
-                                headless_logger.debug(f"[DEBUG] MODE 3 path detected (pre-signed URL): {storage_path}")
+                                headless_logger.debug(f"MODE 3 path detected (pre-signed URL): {storage_path}")
                             else:
-                                headless_logger.debug(f"[DEBUG] MODE 4 path detected (orchestrator reference): {storage_path}")
+                                headless_logger.debug(f"MODE 4 path detected (orchestrator reference): {storage_path}")
                     except (ValueError, IndexError) as e_extract:
-                        headless_logger.debug(f"[DEBUG] Failed to extract storage_path: {e_extract}")
+                        headless_logger.debug(f"Failed to extract storage_path: {e_extract}")
 
                 # Use MODE 3/4 if we have a storage path, otherwise use output_location (legacy)
                 if storage_path:
                     payload = {"task_id": task_id_str, "storage_path": storage_path}
-                    headless_logger.debug(f"[DEBUG] Using storage_path for task {task_id_str}")
+                    headless_logger.debug(f"Using storage_path for task {task_id_str}")
 
                     # Extract thumbnail storage path if thumbnail URL provided
                     if thumbnail_url_val and "/storage/v1/object/public/image_uploads/" in thumbnail_url_val:
@@ -590,12 +587,12 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                             if len(thumb_parts) == 2:
                                 thumbnail_storage_path = thumb_parts[1]
                                 payload["thumbnail_storage_path"] = thumbnail_storage_path
-                                headless_logger.debug(f"[DEBUG] Including thumbnail_storage_path: {thumbnail_storage_path}")
+                                headless_logger.debug(f"Including thumbnail_storage_path: {thumbnail_storage_path}")
                         except (ValueError, IndexError) as e:
-                            headless_logger.debug(f"[DEBUG] Failed to extract thumbnail path: {e}")
+                            headless_logger.debug(f"Failed to extract thumbnail path: {e}")
                 else:
                     payload = {"task_id": task_id_str, "output_location": output_location_val}
-                    headless_logger.debug(f"[DEBUG] Using output_location (legacy) for task {task_id_str}")
+                    headless_logger.debug(f"Using output_location (legacy) for task {task_id_str}")
 
                 headers = {"Content-Type": "application/json"}
                 if _cfg.SUPABASE_ACCESS_TOKEN:
@@ -613,16 +610,16 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
                     retry_on_404_patterns=["Task not found", "not found"])
 
                 if resp is not None and resp.status_code == 200:
-                    headless_logger.debug(f"[DEBUG] Edge function SUCCESS for task {task_id_str} \u2192 status COMPLETE")
+                    headless_logger.debug(f"Edge function SUCCESS for task {task_id_str} \u2192 status COMPLETE")
                     # Parse response to get storage URL and thumbnail URL
                     try:
                         resp_data = resp.json()
                         storage_url = resp_data.get('public_url')
                         thumbnail_url = resp_data.get('thumbnail_url')  # Also get thumbnail
                         if storage_url:
-                            headless_logger.debug(f"[DEBUG] Storage URL: {storage_url}")
+                            headless_logger.debug(f"Storage URL: {storage_url}")
                             if thumbnail_url:
-                                headless_logger.debug(f"[DEBUG] Thumbnail available at: {thumbnail_url}")
+                                headless_logger.debug(f"Thumbnail available at: {thumbnail_url}")
                             # Return both URLs as a dict
                             return {'public_url': storage_url, 'thumbnail_url': thumbnail_url}
                         # If no URL in response, return the original output_location_val as string (legacy)
@@ -664,7 +661,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
         if thumbnail_url_val:
             payload["thumbnail_url"] = thumbnail_url_val
 
-        headless_logger.debug(f"[DEBUG] Calling update-task-status Edge Function for task {task_id_str} \u2192 {status_str}")
+        headless_logger.debug(f"Calling update-task-status Edge Function for task {task_id_str} \u2192 {status_str}")
         resp, edge_error = _call_edge_function_with_retry(
             edge_url=edge_url,
             payload=payload,
@@ -675,7 +672,7 @@ def _update_task_status_supabase_legacy(task_id_str, status_str, output_location
             max_retries=3)
 
         if resp and resp.status_code == 200:
-            headless_logger.debug(f"[DEBUG] Edge function SUCCESS for task {task_id_str} \u2192 status {status_str}")
+            headless_logger.debug(f"Edge function SUCCESS for task {task_id_str} \u2192 status {status_str}")
             return
         elif edge_error:
             headless_logger.error(f"update-task-status edge function failed: {edge_error}", task_id=task_id_str)
@@ -725,7 +722,7 @@ def reset_generation_started_at(task_id_str: str) -> bool:
         "reset_generation_started_at": True
     }
 
-    headless_logger.essential(f"[BILLING] Resetting generation_started_at for task {task_id_str} (model loading complete)", task_id=task_id_str)
+    headless_logger.debug_anomaly("BILLING", f"Resetting generation_started_at for task {task_id_str} (model loading complete)", task_id=task_id_str)
 
     resp, edge_error = _call_edge_function_with_retry(
         edge_url=edge_url,
@@ -737,7 +734,7 @@ def reset_generation_started_at(task_id_str: str) -> bool:
         max_retries=3)
 
     if resp and resp.status_code == 200:
-        headless_logger.essential(f"[BILLING] Successfully reset generation_started_at for task {task_id_str}", task_id=task_id_str)
+        headless_logger.debug(f"Successfully reset generation_started_at for task {task_id_str}", task_id=task_id_str)
         return True
     elif edge_error:
         headless_logger.error(f"Failed to reset generation_started_at for task {task_id_str}: {edge_error}", task_id=task_id_str)

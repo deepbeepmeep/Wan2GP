@@ -75,11 +75,15 @@ def generate_vace(
         generation_logger.warning(f"Current model {self.current_model} may not be a VACE model")
 
     # Log LoRA parameters at VACE level
-    generation_logger.debug(f"generate_vace received kwargs: {list(kwargs.keys())}")
-    if "lora_names" in kwargs:
-        generation_logger.debug(f"generate_vace lora_names: {kwargs['lora_names']}")
-    if "lora_multipliers" in kwargs:
-        generation_logger.debug(f"generate_vace lora_multipliers: {kwargs['lora_multipliers']}")
+    generation_logger.debug_block(
+        "GENERATE",
+        {
+            "path": "vace",
+            "kwargs_keys": sorted(kwargs.keys()),
+            "lora_names": kwargs.get("lora_names"),
+            "lora_multipliers": kwargs.get("lora_multipliers"),
+        },
+    )
 
     return self.generate(
         prompt=prompt,
@@ -167,11 +171,16 @@ def generate_with_config(self, config: 'TaskConfig') -> str:
         raise RuntimeError("No model loaded. Call load_model() first.")
 
     # Log what we're generating
-    generation_logger.info(f"[GENERATE_CONFIG] Task {config.task_id}: Starting generation with typed config")
-    if not config.lora.is_empty():
-        generation_logger.info(f"[GENERATE_CONFIG] Task {config.task_id}: LoRAs: {config.lora.filenames}")
-    if not config.phase.is_empty():
-        generation_logger.info(f"[GENERATE_CONFIG] Task {config.task_id}: Phases: {config.phase.num_phases}")
+    generation_logger.debug_block(
+        "GENERATE",
+        {
+            "task_id": config.task_id,
+            "path": "typed_config",
+            "model": config.model or self.current_model,
+            "lora_files": [] if config.lora.is_empty() else config.lora.filenames,
+            "phase_count": 0 if config.phase.is_empty() else config.phase.num_phases,
+        },
+    )
 
     # Convert to WGP format
     wgp_params = config.to_wgp_format()

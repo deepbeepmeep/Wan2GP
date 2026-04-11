@@ -46,10 +46,10 @@ def generate_transition_prompt(
         model_logger.error(f"[VLM_TRANSITION] ERROR: Failed to generate transition prompt: {e}", exc_info=True)
 
     if base_prompt and base_prompt.strip():
-        model_logger.debug(f"[VLM_TRANSITION] Falling back to base prompt: {base_prompt}")
+        model_logger.debug_anomaly("VLM_TRANSITION", f"Falling back to base prompt: {base_prompt}")
         return base_prompt
 
-    model_logger.debug(f"[VLM_TRANSITION] Falling back to generic prompt")
+    model_logger.debug_anomaly("VLM_TRANSITION", f"Falling back to generic prompt")
     return "cinematic transition"
 
 
@@ -87,37 +87,33 @@ def generate_transition_prompts_batch(
 
         if torch.cuda.is_available():
             gpu_mem_before = torch.cuda.memory_allocated() / BYTES_PER_GB
-            model_logger.debug(f"[VLM_BATCH] GPU memory BEFORE: {gpu_mem_before:.2f} GB")
+            model_logger.debug_anomaly("VLM_BATCH", f"GPU memory BEFORE: {gpu_mem_before:.2f} GB")
 
-        model_logger.debug(f"[VLM_BATCH] Initializing Qwen2.5-VL-7B-Instruct for {len(image_pairs)} transitions...")
+        model_logger.debug_anomaly("VLM_BATCH", f"Initializing Qwen2.5-VL-7B-Instruct for {len(image_pairs)} transitions...")
 
         local_model_path = wan_dir / "ckpts" / "Qwen2.5-VL-7B-Instruct"
 
-        model_logger.debug(f"[VLM_BATCH] Checking for model at {local_model_path}...")
+        model_logger.debug_anomaly("VLM_BATCH", f"Checking for model at {local_model_path}...")
         download_qwen_vlm_if_needed(local_model_path)
 
-        model_logger.debug(f"[VLM_BATCH] Using local model from: {local_model_path}")
+        model_logger.debug_anomaly("VLM_BATCH", f"Using local model from: {local_model_path}")
         extender = create_qwen_prompt_expander(
             model_name=str(local_model_path),
             device=device,
             is_vl=True
         )
 
-        model_logger.debug(f"[VLM_BATCH] Model loaded (initially on CPU)")
-
         system_prompt = "You are a video direction assistant. You MUST respond with EXACTLY THREE SENTENCES following this structure: 1) PRIMARY MOTION, 2) MOVING ELEMENTS, 3) MOTION DETAILS. Focus exclusively on what moves and changes, not static descriptions."
 
         results = []
         prev_end_hash = None
+        pair_summaries = []
         for i, ((start_path, end_path), base_prompt) in enumerate(zip(image_pairs, base_prompts)):
             try:
-                model_logger.debug(f"[VLM_BATCH] Processing pair {i+1}/{len(image_pairs)}: {Path(start_path).name} -> {Path(end_path).name}")
+                model_logger.debug_anomaly("VLM_BATCH", f"Processing pair {i+1}/{len(image_pairs)}: {Path(start_path).name} -> {Path(end_path).name}")
 
-                # File debug logging
                 start_exists = Path(start_path).exists() if start_path else False
                 end_exists = Path(end_path).exists() if end_path else False
-                model_logger.debug(f"[VLM_FILE_DEBUG] Pair {i}: start={start_path} (exists={start_exists})")
-                model_logger.debug(f"[VLM_FILE_DEBUG] Pair {i}: end={end_path} (exists={end_exists})")
 
                 # Compute file hashes for identity verification
                 import hashlib
@@ -131,19 +127,27 @@ def generate_transition_prompts_batch(
 
                 start_hash = None
                 end_hash = None
+                start_size = None
+                end_size = None
                 if start_exists:
                     start_size = Path(start_path).stat().st_size
                     start_hash = get_file_hash(start_path)
-                    model_logger.debug(f"[VLM_FILE_DEBUG] Pair {i}: start file size={start_size} bytes, hash={start_hash}")
                 if end_exists:
                     end_size = Path(end_path).stat().st_size
                     end_hash = get_file_hash(end_path)
-                    model_logger.debug(f"[VLM_FILE_DEBUG] Pair {i}: end file size={end_size} bytes, hash={end_hash}")
+                pair_summaries.append(
+                    {
+                        "pair": i,
+                        "valid": start_exists and end_exists,
+                        "sizes": (start_size, end_size),
+                        "hashes": (start_hash, end_hash),
+                    }
+                )
 
                 # Boundary check
                 if i > 0 and prev_end_hash and start_hash:
                     if prev_end_hash == start_hash:
-                        model_logger.debug(f"[VLM_BOUNDARY_CHECK] Pair {i} start matches Pair {i-1} end (hash={start_hash}) - boundary correct")
+                        model_logger.debug_anomaly("VLM_BOUNDARY_CHECK", f"Pair {i} start matches Pair {i-1} end (hash={start_hash}) - boundary correct")
                     else:
                         model_logger.warning(f"[VLM_BOUNDARY_CHECK] MISMATCH! Pair {i} start (hash={start_hash}) != Pair {i-1} end (hash={prev_end_hash})")
                         model_logger.warning(f"[VLM_BOUNDARY_CHECK] This indicates images may be out of order or corrupted!")
@@ -154,7 +158,7 @@ def generate_transition_prompts_batch(
                 start_img = Image.open(start_path).convert("RGB")
                 end_img = Image.open(end_path).convert("RGB")
 
-                model_logger.debug(f"[VLM_IMAGE_VERIFY] Pair {i}: start_img dimensions={start_img.size}, end_img dimensions={end_img.size}")
+                model_logger.debug_anomaly("VLM_IMAGE_VERIFY", f"Pair {i}: start_img dimensions={start_img.size}, end_img dimensions={end_img.size}")
 
                 import numpy as np
                 def get_image_stats(img):
@@ -165,8 +169,8 @@ def generate_transition_prompts_batch(
                     brightness = (avg_r + avg_g + avg_b) / 3
                     return f"RGB=({avg_r:.0f},{avg_g:.0f},{avg_b:.0f}) brightness={brightness:.0f} warmth={warmth:+.1f}%"
 
-                model_logger.debug(f"[VLM_IMAGE_CONTENT] Pair {i} START: {get_image_stats(start_img)}")
-                model_logger.debug(f"[VLM_IMAGE_CONTENT] Pair {i} END: {get_image_stats(end_img)}")
+                model_logger.debug_anomaly("VLM_IMAGE_CONTENT", f"Pair {i} START: {get_image_stats(start_img)}")
+                model_logger.debug_anomaly("VLM_IMAGE_CONTENT", f"Pair {i} END: {get_image_stats(end_img)}")
 
                 combined_img = create_framed_vlm_image(start_img, end_img)
 
@@ -181,15 +185,15 @@ def generate_transition_prompts_batch(
                     labeled_debug_img = create_labeled_debug_image(start_img, end_img, pair_index=i)
                     debug_path = debug_dir / f"vlm_combined_pair{i}.jpg"
                     labeled_debug_img.save(str(debug_path), quality=95)
-                    model_logger.debug(f"[VLM_DEBUG_SAVE] Saved labeled debug image for pair {i} to: {debug_path}")
+                    model_logger.debug_anomaly("VLM_DEBUG_SAVE", f"Saved labeled debug image for pair {i} to: {debug_path}")
 
                     start_debug_path = debug_dir / f"vlm_pair{i}_LEFT_start.jpg"
                     end_debug_path = debug_dir / f"vlm_pair{i}_RIGHT_end.jpg"
                     start_img.save(str(start_debug_path), quality=95)
                     end_img.save(str(end_debug_path), quality=95)
-                    model_logger.debug(f"[VLM_DEBUG_SAVE] Saved individual images: {start_debug_path.name}, {end_debug_path.name}")
+                    model_logger.debug_anomaly("VLM_DEBUG_SAVE", f"Saved individual images: {start_debug_path.name}, {end_debug_path.name}")
                 except OSError as e_save:
-                    model_logger.debug(f"[VLM_DEBUG_SAVE] Could not save debug image: {e_save}")
+                    model_logger.debug_anomaly("VLM_DEBUG_SAVE", f"Could not save debug image: {e_save}")
 
                 # Upload debug images
                 if upload_debug_images and task_id and debug_path and debug_path.exists():
@@ -203,7 +207,7 @@ def generate_transition_prompts_batch(
                             upload_filename,
                         )
                         if upload_url:
-                            model_logger.debug(f"[VLM_DEBUG_UPLOAD] Pair {i} COMBINED (what VLM sees): {upload_url}")
+                            model_logger.debug_anomaly("VLM_DEBUG_UPLOAD", f"Pair {i} COMBINED (what VLM sees): {upload_url}")
                         else:
                             model_logger.warning(f"[VLM_DEBUG_UPLOAD] Failed to upload combined image for pair {i}")
 
@@ -212,14 +216,14 @@ def generate_transition_prompts_batch(
                                 start_debug_path, task_id, f"vlm_debug_pair{i}_LEFT.jpg"
                             )
                             if start_url:
-                                model_logger.debug(f"[VLM_DEBUG_UPLOAD] Pair {i} LEFT (start image): {start_url}")
+                                model_logger.debug_anomaly("VLM_DEBUG_UPLOAD", f"Pair {i} LEFT (start image): {start_url}")
 
                         if end_debug_path and end_debug_path.exists():
                             end_url = upload_intermediate_file_to_storage(
                                 end_debug_path, task_id, f"vlm_debug_pair{i}_RIGHT.jpg"
                             )
                             if end_url:
-                                model_logger.debug(f"[VLM_DEBUG_UPLOAD] Pair {i} RIGHT (end image): {end_url}")
+                                model_logger.debug_anomaly("VLM_DEBUG_UPLOAD", f"Pair {i} RIGHT (end image): {end_url}")
 
                     except (OSError, RuntimeError, ValueError) as e_upload:
                         model_logger.warning(f"[VLM_DEBUG_UPLOAD] Failed to upload debug images for pair {i}: {e_upload}")
@@ -250,7 +254,7 @@ Examples of MOTION-FOCUSED descriptions:
 
 Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_prompt_text}'"""
 
-                model_logger.debug(f"[VLM_QUERY_DEBUG] Pair {i}: base_prompt_text='{base_prompt_text[:100]}...'")
+                model_logger.debug_anomaly("VLM_QUERY_DEBUG", f"Pair {i}: base_prompt_text='{base_prompt_text[:100]}...'")
 
                 result = extender.extend_with_img(
                     prompt=query,
@@ -259,7 +263,7 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
                 )
 
                 vlm_prompt = result.prompt.strip()
-                model_logger.debug(f"[VLM_BATCH] Generated: {vlm_prompt}")
+                model_logger.debug_anomaly("VLM_BATCH", f"Generated: {vlm_prompt}")
 
                 results.append(vlm_prompt)
 
@@ -270,33 +274,51 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
                 else:
                     results.append("cinematic transition")
 
-        model_logger.debug(f"[VLM_BATCH] Completed {len(results)}/{len(image_pairs)} prompts")
+        model_logger.debug_block(
+            "VLM_INPUT",
+            {
+                "pairs": len(image_pairs),
+                "valid": sum(1 for item in pair_summaries if item["valid"]),
+                "sizes": [item["sizes"] for item in pair_summaries],
+            },
+            task_id=task_id,
+        )
+        model_logger.debug_anomaly("VLM_BATCH", f"Completed {len(results)}/{len(image_pairs)} prompts")
+        avg_length = sum(len(prompt) for prompt in results) / len(results) if results else 0
+        model_logger.debug_block(
+            "VLM_RESULT",
+            {
+                "prompts": len(results),
+                "avg_length": round(avg_length, 1),
+            },
+            task_id=task_id,
+        )
 
         if torch.cuda.is_available():
             gpu_mem_before_cleanup = torch.cuda.memory_allocated() / BYTES_PER_GB
-            headless_logger.debug(f"[VLM_CLEANUP] GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
+            headless_logger.debug_anomaly("VLM_CLEANUP", f"GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
 
-        headless_logger.debug(f"[VLM_CLEANUP] Cleaning up VLM model and processor...")
+        headless_logger.debug_anomaly("VLM_CLEANUP", f"Cleaning up VLM model and processor...")
         try:
             del extender.model
             del extender.processor
             del extender
-            headless_logger.essential(f"[VLM_CLEANUP] Successfully deleted VLM objects")
+            headless_logger.debug_anomaly("VLM_CLEANUP", "Successfully deleted VLM objects")
         except AttributeError as e:
             headless_logger.warning(f"[VLM_CLEANUP] Error during deletion: {e}")
 
         import gc
         collected = gc.collect()
-        headless_logger.debug(f"[VLM_CLEANUP] Garbage collected {collected} objects")
+        headless_logger.debug_anomaly("VLM_CLEANUP", f"Garbage collected {collected} objects")
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             gpu_mem_after = torch.cuda.memory_allocated() / BYTES_PER_GB
             gpu_freed = gpu_mem_before_cleanup - gpu_mem_after
-            headless_logger.debug(f"[VLM_CLEANUP] GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
-            headless_logger.debug(f"[VLM_CLEANUP] GPU memory freed: {gpu_freed:.2f} GB")
+            headless_logger.debug_anomaly("VLM_CLEANUP", f"GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
+            headless_logger.debug_anomaly("VLM_CLEANUP", f"GPU memory freed: {gpu_freed:.2f} GB")
 
-        headless_logger.essential(f"[VLM_CLEANUP] VLM cleanup complete")
+        headless_logger.debug_anomaly("VLM_CLEANUP", "VLM cleanup complete")
 
         return results
 

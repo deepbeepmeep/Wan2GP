@@ -64,8 +64,6 @@ def validate_clip_frames_for_join(
         Tuple of (is_valid, error_message, frame_counts_per_clip)
     """
     min_frames = calculate_min_clip_frames(gap_frame_count, context_frame_count, replace_mode)
-    task_logger.debug(f"[VALIDATE_CLIPS] Minimum required frames per clip: {min_frames}")
-    task_logger.debug(f"[VALIDATE_CLIPS]   (gap={gap_frame_count} + 2\u00d7context={context_frame_count}, replace_mode={replace_mode})")
 
     frame_counts = []
     violations = []
@@ -92,7 +90,6 @@ def validate_clip_frames_for_join(
             return False, f"Could not determine frame count for clip {idx}", []
 
         frame_counts.append(frames)
-        task_logger.debug(f"[VALIDATE_CLIPS] Clip {idx}: {frames} frames (min required: {min_frames})")
 
         # First and last clips only need half the minimum (only one boundary)
         is_first = (idx == 0)
@@ -133,9 +130,8 @@ def validate_clip_frames_for_join(
             + f"\n  Will reduce to approximately: gap\u2248{reduced_gap}, context\u2248{reduced_context} ({ratio:.0%} of original)"
             + f"\n  Transitions will be shorter but still generated successfully."
         )
-        task_logger.debug(f"[VALIDATE_CLIPS] {warning_msg}")
+        task_logger.debug_anomaly("VALIDATE_CLIPS", f"{warning_msg}")
 
         return True, warning_msg, frame_counts
 
-    task_logger.debug(f"[VALIDATE_CLIPS] All {len(clip_list)} clips have sufficient frames")
     return True, "", frame_counts

@@ -79,12 +79,12 @@ def ensure_video_fps(
 
     # Check if resampling is needed
     if abs(actual_fps - target_fps) <= fps_tolerance:
-        generation_logger.debug(f"[ENSURE_FPS] Video already at target FPS: {actual_fps} fps (target: {target_fps}, tolerance: \u00b1{fps_tolerance})")
+        generation_logger.debug_anomaly("ENSURE_FPS", f"Video already at target FPS: {actual_fps} fps (target: {target_fps}, tolerance: \u00b1{fps_tolerance})")
         return input_video_path
 
     # Need to resample
-    generation_logger.debug(f"[ENSURE_FPS] FPS mismatch: actual={actual_fps}, target={target_fps}")
-    generation_logger.debug(f"[ENSURE_FPS] Resampling {input_video_path.name} to {target_fps} fps...")
+    generation_logger.debug_anomaly("ENSURE_FPS", f"FPS mismatch: actual={actual_fps}, target={target_fps}")
+    generation_logger.debug_anomaly("ENSURE_FPS", f"Resampling {input_video_path.name} to {target_fps} fps...")
 
     # Determine output path
     if output_dir is None:
@@ -120,7 +120,7 @@ def ensure_video_fps(
 
     # Verify result
     new_frames, new_fps = get_video_frame_count_and_fps(str(resampled_path))
-    generation_logger.debug(f"[ENSURE_FPS] Resampled: {new_frames} frames @ {new_fps} fps")
+    generation_logger.debug_anomaly("ENSURE_FPS", f"Resampled: {new_frames} frames @ {new_fps} fps")
 
     return resampled_path
 
@@ -200,8 +200,8 @@ def extract_frame_range_to_video(
         expected_frames = source_frames - start_frame
         range_desc = f"frames {start_frame}-{source_frames-1} ({expected_frames} frames)"
 
-    generation_logger.debug(f"[EXTRACT_RANGE] Source: {input_video_path.name} ({source_frames} frames @ {source_fps} fps)")
-    generation_logger.debug(f"[EXTRACT_RANGE] Extracting: {range_desc}")
+    generation_logger.debug_anomaly("EXTRACT_RANGE", f"Source: {input_video_path.name} ({source_frames} frames @ {source_fps} fps)")
+    generation_logger.debug_anomaly("EXTRACT_RANGE", f"Extracting: {range_desc}")
 
     cmd = [
         'ffmpeg', '-y',
@@ -242,7 +242,7 @@ def extract_frame_range_to_video(
     elif frame_diff > 0:
         generation_logger.warning(f"[EXTRACT_RANGE] Minor frame count difference: expected {expected_frames}, got {actual_frames} (diff: {frame_diff}, within tolerance)")
 
-    generation_logger.debug(f"[EXTRACT_RANGE] Extracted {actual_frames} frames to {output_video_path.name}")
+    generation_logger.debug_anomaly("EXTRACT_RANGE", f"Extracted {actual_frames} frames to {output_video_path.name}")
     return output_video_path
 
 
@@ -279,9 +279,6 @@ def create_video_from_frames_list(
     output_path_obj = Path(output_path)
     output_path_mp4 = output_path_obj.with_suffix('.mp4')
     output_path_mp4.parent.mkdir(parents=True, exist_ok=True)
-
-    generation_logger.debug(f"[CREATE_VIDEO] Creating video: {output_path_mp4}")
-    generation_logger.debug(f"[CREATE_VIDEO] Input: {len(frames_list)} frames, resolution={resolution}, fps={fps}")
 
     ffmpeg_cmd = [
         "ffmpeg", "-y",
@@ -328,8 +325,6 @@ def create_video_from_frames_list(
 
     if valid_count == 0:
         raise ValueError(f"No valid frames to process! Input had {len(frames_list)} frames, all invalid")
-
-    generation_logger.debug(f"[CREATE_VIDEO] Streaming {valid_count} frames to FFmpeg (memory-efficient mode)")
 
     try:
         # Use Popen to stream frames incrementally instead of loading all into memory
@@ -382,15 +377,13 @@ def create_video_from_frames_list(
     # Close stdin to signal end of input
     proc.stdin.close()
 
-    generation_logger.debug(f"[CREATE_VIDEO] Wrote {frames_written} frames to FFmpeg, waiting for encoding...")
-
     # Read stderr in background thread to avoid blocking
     stderr_output = []
     def read_stderr():
         try:
             stderr_output.append(proc.stderr.read())
         except OSError as e:
-            generation_logger.debug(f"[CREATE_VIDEO] Failed to read FFmpeg stderr: {e}")
+            generation_logger.debug_anomaly("CREATE_VIDEO", f"Failed to read FFmpeg stderr: {e}")
 
     stderr_thread = threading.Thread(target=read_stderr)
     stderr_thread.start()
@@ -407,7 +400,6 @@ def create_video_from_frames_list(
 
     if proc.returncode == 0:
         if output_path_mp4.exists() and output_path_mp4.stat().st_size > 0:
-            generation_logger.debug(f"[CREATE_VIDEO] SUCCESS: Created {output_path_mp4} ({output_path_mp4.stat().st_size} bytes)")
             return output_path_mp4
         raise RuntimeError(f"FFmpeg succeeded but output file missing or empty: {output_path_mp4}")
     else:
@@ -416,7 +408,7 @@ def create_video_from_frames_list(
             try:
                 output_path_mp4.unlink()
             except OSError as e:
-                generation_logger.debug(f"[CREATE_VIDEO] Failed to clean up partial output file {output_path_mp4}: {e}")
+                generation_logger.debug_anomaly("CREATE_VIDEO", f"Failed to clean up partial output file {output_path_mp4}: {e}")
         raise RuntimeError(f"FFmpeg failed (rc={proc.returncode}): {stderr_str[:500]}")
 
 
@@ -496,7 +488,7 @@ def mux_audio_from_segments(
     # Quick check: do any segments have audio?
     segments_with_audio = [p for p in segment_videos if video_has_audio(p)]
     if not segments_with_audio:
-        generation_logger.debug("[AUDIO_MUX] No segment videos contain audio — skipping audio mux")
+        generation_logger.debug_anomaly("AUDIO_MUX", "No segment videos contain audio — skipping audio mux")
         return None
 
     generation_logger.debug(
@@ -559,7 +551,7 @@ def mux_audio_from_segments(
                 audio_parts.append(part_path)
 
         if not audio_parts:
-            generation_logger.debug("[AUDIO_MUX] No audio parts extracted — skipping")
+            generation_logger.debug_anomaly("AUDIO_MUX", "No audio parts extracted — skipping")
             return None
 
         # --- Step 2: Concatenate audio parts ---
@@ -592,7 +584,7 @@ def mux_audio_from_segments(
         )
 
         if output_path.exists() and output_path.stat().st_size > 0:
-            generation_logger.debug(f"[AUDIO_MUX] Successfully muxed audio → {output_path}")
+            generation_logger.debug_anomaly("AUDIO_MUX", f"Successfully muxed audio → {output_path}")
             # Clean up temp dir
             import shutil
             shutil.rmtree(work_dir, ignore_errors=True)

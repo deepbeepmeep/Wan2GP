@@ -16,8 +16,6 @@ from source.utils.resolution_utils import parse_resolution
 
 def handle_rife_interpolate_task(task_params_dict: dict, main_output_dir_base: Path, task_id: str, task_queue=None):
     """Handles the 'rife_interpolate_images' task."""
-    task_logger.essential("Starting RIFE interpolation task", task_id=task_id)
-
     input_image_path1_str = task_params_dict.get("input_image_path1")
     input_image_path2_str = task_params_dict.get("input_image_path2")
     output_video_path_str = task_params_dict.get("output_path")
@@ -56,24 +54,30 @@ def handle_rife_interpolate_task(task_params_dict: dict, main_output_dir_base: P
     output_video_path = final_save_path_for_video
     output_video_path.parent.mkdir(parents=True, exist_ok=True)
 
-    task_logger.debug(f"[Task ID: {task_id}] Checking input image paths.")
     if not input_image1_path.is_file():
         task_logger.error(f"Input image 1 not found: {input_image1_path}", task_id=task_id)
         return False, f"Input image 1 not found: {input_image1_path}"
     if not input_image2_path.is_file():
         task_logger.error(f"Input image 2 not found: {input_image2_path}", task_id=task_id)
         return False, f"Input image 2 not found: {input_image2_path}"
-    task_logger.debug(f"[Task ID: {task_id}] Input images found.")
+
+    task_logger.debug_block(
+        "SETUP",
+        {
+            "task": task_id,
+            "images": [input_image1_path, input_image2_path],
+            "output": output_video_path,
+            "frames": num_rife_frames,
+            "resolution": resolution_str,
+        },
+        task_id=task_id,
+    )
 
     temp_output_dir = tempfile.mkdtemp(prefix=f"wgp_rife_{task_id}_")
 
     try:
         pil_image_start = Image.open(input_image1_path).convert("RGB")
         pil_image_end = Image.open(input_image2_path).convert("RGB")
-
-        task_logger.essential("Starting RIFE interpolation via source.media.video.", task_id=task_id)
-        task_logger.debug(f"  Input 1: {input_image1_path}")
-        task_logger.debug(f"  Input 2: {input_image2_path}")
 
         rife_success = rife_interpolate_images_to_video(
             image1=pil_image_start,
@@ -88,7 +92,6 @@ def handle_rife_interpolate_task(task_params_dict: dict, main_output_dir_base: P
                 generation_success = True
                 output_location_to_db = upload_and_get_final_output_location(
                     final_save_path_for_video, initial_db_location_for_rife)
-                task_logger.essential(f"RIFE video saved to: {final_save_path_for_video.resolve()} (DB: {output_location_to_db})", task_id=task_id)
             else:
                 task_logger.error(f"RIFE utility reported success, but output file is missing or empty: {final_save_path_for_video}", task_id=task_id)
                 generation_success = False
@@ -103,7 +106,7 @@ def handle_rife_interpolate_task(task_params_dict: dict, main_output_dir_base: P
 
     try:
         shutil.rmtree(temp_output_dir)
-        task_logger.debug(f"[Task ID: {task_id}] Cleaned up temporary directory: {temp_output_dir}")
+        task_logger.debug_anomaly("Task ID: {task_id}", f"Cleaned up temporary directory: {temp_output_dir}")
     except OSError as e_clean:
         task_logger.warning(f"Failed to clean up temporary directory {temp_output_dir}: {e_clean}", task_id=task_id)
 

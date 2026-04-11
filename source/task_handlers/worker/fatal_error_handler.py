@@ -247,12 +247,21 @@ def _mark_worker_for_termination(
         from datetime import datetime, timezone
         
         from source.core.db import config as _db_config
+        from source.core.db.edge import request as edge_request
 
-        supabase_url = os.getenv("SUPABASE_URL") or _db_config.SUPABASE_URL
+        runtime = _db_config.get_db_runtime_config()
+        supabase_url = (
+            os.getenv("SUPABASE_URL")
+            or getattr(runtime, "supabase_url", None)
+            or _db_config.SUPABASE_URL
+        )
         supabase_key = (
             os.getenv("SUPABASE_SERVICE_ROLE_KEY")
             or os.getenv("SUPABASE_SERVICE_KEY")
-            or _db_config.SUPABASE_ACCESS_TOKEN
+            or edge_request.resolve_edge_auth_token(
+                scope="service",
+                runtime_config=runtime,
+            )
         )
 
         if not supabase_url or not supabase_key:

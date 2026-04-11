@@ -104,15 +104,12 @@ def handle_join_final_stitch(
     Returns:
         Tuple of (success: bool, output_path_or_message: str)
     """
-    orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Starting final stitch handler")
-
     try:
         # --- Chain Mode Passthrough ---
         # When created by the chain pattern, the last join in the chain already produced
         # the fully concatenated video. We just pass through its output (+ optional audio).
         chain_mode = task_params_from_db.get("chain_mode", False)
         if chain_mode:
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Chain mode \u2014 passthrough from last chain join")
             transition_task_ids = task_params_from_db.get("transition_task_ids", [])
             if not transition_task_ids:
                 return False, "chain_mode=True but no transition_task_ids (last chain join ID) provided"
@@ -123,14 +120,10 @@ def handle_join_final_stitch(
             if not chain_output:
                 return False, f"Failed to get output from chain join task {last_join_id}"
 
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Chain output from {last_join_id}: {chain_output[:100]}...")
-
             # The chain join's output_location is the final video URL/path — use it directly.
             # In chain mode, the last join_clips_child already muxes audio when is_last_join=True,
             # so no additional audio processing is needed here.
             audio_url = task_params_from_db.get("audio_url")
-            if audio_url:
-                orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Audio requested \u2014 already muxed by last chain join, passthrough")
 
             task_scoped_output = _materialize_chain_passthrough_output(
                 chain_output=chain_output,
@@ -158,8 +151,21 @@ def handle_join_final_stitch(
         num_transitions = len(transition_task_ids)
         expected_transitions = num_clips - 1
 
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: {num_clips} clips, {num_transitions} transitions")
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: blend_frames={blend_frames} (gap values from per-transition output, fallback={gap_from_clip1}/{gap_from_clip2})")
+        orchestrator_logger.debug_block(
+            "STITCH",
+            {
+                "task": task_id,
+                "chain_mode": chain_mode,
+                "clip_count": num_clips,
+                "transition_count": num_transitions,
+                "expected_transitions": expected_transitions,
+                "blend_frames": blend_frames,
+                "fallback_gap": (gap_from_clip1, gap_from_clip2),
+                "target_fps": target_fps,
+                "audio": bool(audio_url),
+            },
+            task_id=task_id,
+        )
 
         if num_clips < 2:
             return False, "clip_list must contain at least 2 clips"
@@ -172,7 +178,6 @@ def handle_join_final_stitch(
         stitch_dir.mkdir(parents=True, exist_ok=True)
 
         # --- 3. Fetch Transition Outputs ---
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Fetching transition outputs...")
         transitions = []
 
         for i, trans_task_id in enumerate(transition_task_ids):
@@ -202,18 +207,26 @@ def handle_join_final_stitch(
                 if trans_frames and gap_frames:
                     expected_total = ctx_clip1 + gap_frames + ctx_clip2
                     if expected_total != trans_frames:
-                        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: \u26a0\ufe0f Transition {i} structure mismatch!")
-                        orchestrator_logger.debug(f"[FINAL_STITCH]   frames={trans_frames}, but ctx1({ctx_clip1}) + gap({gap_frames}) + ctx2({ctx_clip2}) = {expected_total}")
+                        orchestrator_logger.debug_anomaly(
+                            "FINAL_STITCH",
+                            (
+                                f"transition {i} structure mismatch frames={trans_frames}, "
+                                f"ctx1={ctx_clip1}, gap={gap_frames}, ctx2={ctx_clip2}, expected={expected_total}"
+                            ),
+                            task_id=task_id,
+                        )
 
                 # Extract gap values from transition output (ground truth from VACE)
                 trans_gap1 = trans_data.get("gap_from_clip1")
                 trans_gap2 = trans_data.get("gap_from_clip2")
 
                 # Log whether we're using ground truth or fallback values
-                if trans_gap1 is not None and trans_gap2 is not None:
-                    orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Transition {i}: Using ground truth gap values from VACE: gap1={trans_gap1}, gap2={trans_gap2}")
-                else:
-                    orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: \u26a0\ufe0f Transition {i}: Missing gap values in output, using fallback: gap1={gap_from_clip1}, gap2={gap_from_clip2}")
+                if trans_gap1 is None or trans_gap2 is None:
+                    orchestrator_logger.debug_anomaly(
+                        "FINAL_STITCH",
+                        f"transition {i} missing gap values, using fallback {gap_from_clip1}/{gap_from_clip2}",
+                        task_id=task_id,
+                    )
                     trans_gap1 = gap_from_clip1
                     trans_gap2 = gap_from_clip2
 
@@ -236,7 +249,6 @@ def handle_join_final_stitch(
                     "clip1_total_frames": trans_data.get("clip1_total_frames"),
                     "clip2_total_frames": trans_data.get("clip2_total_frames"),
                 })
-                orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Transition {i}: frames={trans_frames}, structure=[{ctx_clip1}+{gap_frames}+{ctx_clip2}], blend={trans_blend}")
             except json.JSONDecodeError:
                 # Fallback: treat as direct URL (legacy mode)
                 transitions.append({
@@ -246,44 +258,39 @@ def handle_join_final_stitch(
                     "context_from_clip1": blend_frames,
                     "context_from_clip2": blend_frames,
                 })
-                orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Transition {i} (raw URL, using defaults): {trans_output}")
+                orchestrator_logger.debug_anomaly(
+                    "FINAL_STITCH",
+                    f"transition {i} output was raw URL; using default blend/context values",
+                    task_id=task_id,
+                )
 
         # Sort transitions by index
         transitions.sort(key=lambda t: t["index"])
 
-        # --- ALIGNMENT VERIFICATION TABLE ---
-        # This is the key diagnostic: shows exactly what each transition expects
-        # and makes mismatches immediately obvious
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: ")
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557")
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u2551                      TRANSITION ALIGNMENT TABLE                              \u2551")
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u2560\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2563")
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u2551 Trans \u2502 Clip1 Frames \u2502 Clip1 Ctx Idx  \u2502 Clip2 Frames \u2502 Clip2 Ctx Idx  \u2502 Gap  \u2551")
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u2560\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2563")
-
-        for i, trans in enumerate(transitions):
-            clip1_total = trans.get("clip1_total_frames", "?")
-            clip2_total = trans.get("clip2_total_frames", "?")
-            ctx1_start = trans.get("clip1_context_start_idx", "?")
-            ctx1_end = trans.get("clip1_context_end_idx", "?")
-            ctx2_start = trans.get("clip2_context_start_idx", "?")
-            ctx2_end = trans.get("clip2_context_end_idx", "?")
-            gap1 = trans.get("gap_from_clip1", "?")
-            gap2 = trans.get("gap_from_clip2", "?")
-
-            # Format context indices
-            ctx1_str = f"[{ctx1_start}:{ctx1_end})" if ctx1_start != "?" else "N/A"
-            ctx2_str = f"[{ctx2_start}:{ctx2_end})" if ctx2_start != "?" else "N/A"
-
-            orchestrator_logger.debug(f"[FINAL_STITCH] \u2551  {i:2d}   \u2502     {str(clip1_total):4s}     \u2502 {ctx1_str:14s} \u2502     {str(clip2_total):4s}     \u2502 {ctx2_str:14s} \u2502{gap1}/{gap2:2}\u2551")
-
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d")
-        orchestrator_logger.debug(f"[FINAL_STITCH] ")
-        orchestrator_logger.debug(f"[FINAL_STITCH] Legend: Ctx Idx = context frame indices extracted for VACE")
-        orchestrator_logger.debug(f"[FINAL_STITCH]         Gap = gap_from_clip1/gap_from_clip2 (frames trimmed from each clip)")
-        orchestrator_logger.debug(f"[FINAL_STITCH] ")
+        transition_context_ranges = [
+            (
+                trans.get("index", idx),
+                trans.get("clip1_context_start_idx"),
+                trans.get("clip1_context_end_idx"),
+                trans.get("clip2_context_start_idx"),
+                trans.get("clip2_context_end_idx"),
+                trans.get("gap_from_clip1", gap_from_clip1),
+                trans.get("gap_from_clip2", gap_from_clip2),
+            )
+            for idx, trans in enumerate(transitions)
+        ]
+        orchestrator_logger.debug_block(
+            "STITCH",
+            {
+                "stage": "transition_alignment",
+                "transitions": len(transitions),
+                "context_ranges": transition_context_ranges,
+            },
+            task_id=task_id,
+        )
 
         # Validate gap values are consistent across transitions (current architecture assumes this)
+        gap_inconsistencies = []
         if len(transitions) > 1:
             first_gap1 = transitions[0].get("gap_from_clip1", gap_from_clip1)
             first_gap2 = transitions[0].get("gap_from_clip2", gap_from_clip2)
@@ -291,12 +298,15 @@ def handle_join_final_stitch(
                 t_gap1 = t.get("gap_from_clip1", gap_from_clip1)
                 t_gap2 = t.get("gap_from_clip2", gap_from_clip2)
                 if t_gap1 != first_gap1 or t_gap2 != first_gap2:
-                    orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: \u26a0\ufe0f WARNING - Inconsistent gap values across transitions!")
-                    orchestrator_logger.debug(f"[FINAL_STITCH]   Transition 0: gap1={first_gap1}, gap2={first_gap2}")
-                    orchestrator_logger.debug(f"[FINAL_STITCH]   Transition {t['index']}: gap1={t_gap1}, gap2={t_gap2}")
+                    gap_inconsistencies.append(f"{t['index']}:{t_gap1}/{t_gap2}")
+        if gap_inconsistencies:
+            orchestrator_logger.debug_anomaly(
+                "FINAL_STITCH",
+                f"gap inconsistencies across transitions: {gap_inconsistencies}",
+                task_id=task_id,
+            )
 
         # --- 4. Download All Videos ---
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Downloading clips and transitions...")
 
         clip_paths = []
         for i, clip in enumerate(clip_list):
@@ -313,7 +323,6 @@ def handle_join_final_stitch(
             if not local_path:
                 return False, f"Failed to download clip {i}: {clip_url}"
             clip_paths.append(Path(local_path))
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Downloaded clip {i}: {local_path}")
 
         transition_paths = []
         for i, trans in enumerate(transitions):
@@ -327,30 +336,40 @@ def handle_join_final_stitch(
             if not local_path:
                 return False, f"Failed to download transition {i}: {trans_url}"
             transition_paths.append(Path(local_path))
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Downloaded transition {i}: {local_path}")
+        orchestrator_logger.debug_block(
+            "STITCH",
+            {
+                "stage": "downloads",
+                "clips": len(clip_paths),
+                "transitions": len(transition_paths),
+                "first_clip": clip_paths[0] if clip_paths else None,
+                "first_transition": transition_paths[0] if transition_paths else None,
+            },
+            task_id=task_id,
+        )
 
         # --- 4a. Resample clips to match transition FPS ---
         # Transitions are generated at a fixed FPS (default 16). Downloaded clips
         # may be at a higher native FPS, so resample to match the transition.
         transition_fps = transitions[0].get("fps") if transitions else None
+        resampled_clips = []
         if transition_fps:
             target_fps = transition_fps  # Use the FPS from generation for final output too
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Resampling clips to transition FPS: {transition_fps}")
             for i, clip_path in enumerate(clip_paths):
                 try:
                     resampled = ensure_video_fps(clip_path, transition_fps, output_dir=stitch_dir)
                     if resampled != clip_path:
-                        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Resampled clip {i} to {transition_fps}fps")
+                        resampled_clips.append(i)
                         clip_paths[i] = resampled
                 except (OSError, ValueError, RuntimeError) as e:
                     return False, f"Failed to resample clip {i} to {transition_fps}fps: {e}"
-        else:
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: No FPS in transition metadata, using clips at native FPS (target_fps={target_fps})")
 
         # --- 4b. Standardize clip aspect ratios to match transition ---
         # The segment handler standardized clips to a common aspect ratio before
         # generation. Use the transition's resolution (ground truth) to match,
         # falling back to clip 1's dimensions if not available in metadata.
+        aspect_reference = None
+        standardized_clips = []
         try:
             import subprocess
 
@@ -370,10 +389,10 @@ def handle_join_final_stitch(
             trans_resolution = transitions[0].get("resolution") if transitions else None
             if trans_resolution and len(trans_resolution) == 2:
                 ref_w, ref_h = int(trans_resolution[0]), int(trans_resolution[1])
-                orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Using transition resolution as reference: {ref_w}x{ref_h}")
+                aspect_reference = "transition"
             else:
                 ref_w, ref_h = _get_video_dimensions(clip_paths[0])
-                orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: No resolution in transition metadata, using clip 0: {ref_w}x{ref_h}")
+                aspect_reference = "clip_0"
 
             if ref_w and ref_h:
                 ref_aspect = ref_w / ref_h
@@ -387,16 +406,35 @@ def handle_join_final_stitch(
                             target_aspect_ratio=f"{ref_w}:{ref_h}",
                             task_id_for_logging=task_id)
                         if result is not None:
-                            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Standardized clip {i} aspect ratio to {ref_w}:{ref_h}")
+                            standardized_clips.append(i)
                             clip_paths[i] = standardized_path
                         else:
-                            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Failed to standardize clip {i}, proceeding with original")
+                            orchestrator_logger.debug_anomaly(
+                                "FINAL_STITCH",
+                                f"failed to standardize clip {i}, proceeding with original",
+                                task_id=task_id,
+                            )
         except (OSError, ValueError, RuntimeError) as e:
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Aspect ratio check failed: {e}, proceeding with originals")
+            orchestrator_logger.debug_anomaly(
+                "FINAL_STITCH",
+                f"aspect ratio check failed: {e}",
+                task_id=task_id,
+            )
+        orchestrator_logger.debug_block(
+            "STITCH",
+            {
+                "stage": "media_prep",
+                "target_fps": target_fps,
+                "transition_fps": transition_fps,
+                "resampled_clips": resampled_clips or None,
+                "aspect_reference": aspect_reference,
+                "standardized_clips": standardized_clips or None,
+            },
+            task_id=task_id,
+        )
 
         # --- 4c. FRAME COUNT VERIFICATION ---
         # Verify actual clip frame counts match what transitions expected
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Verifying clip frame counts...")
         frame_count_mismatches = []
 
         for i, clip_path in enumerate(clip_paths):
@@ -410,7 +448,6 @@ def handle_join_final_stitch(
                     frame_count_mismatches.append(
                         f"Clip {i}: actual={actual_frames}, trans[{i}] expected clip1={expected_clip1}"
                     )
-                    orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: \u26a0\ufe0f FRAME COUNT MISMATCH: Clip {i} has {actual_frames} frames, but transition {i} expected {expected_clip1}")
 
             # Transition i-1 uses clip i as clip2 (if i > 0)
             if i > 0:
@@ -419,17 +456,22 @@ def handle_join_final_stitch(
                     frame_count_mismatches.append(
                         f"Clip {i}: actual={actual_frames}, trans[{i-1}] expected clip2={expected_clip2}"
                     )
-                    orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: \u26a0\ufe0f FRAME COUNT MISMATCH: Clip {i} has {actual_frames} frames, but transition {i-1} expected {expected_clip2}")
 
         if frame_count_mismatches:
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: \u274c FOUND {len(frame_count_mismatches)} FRAME COUNT MISMATCHES!")
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: This may indicate clips were re-encoded or transitions used different source files.")
-        else:
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: \u2713 All clip frame counts match transition expectations")
-
-        # --- 4b. PIXEL VERIFICATION: Compare transition context frames with original clips ---
-        # This verifies that VACE preserved context frames pixel-identically
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Verifying pixel alignment between clips and transitions...")
+            orchestrator_logger.debug_anomaly(
+                "FINAL_STITCH",
+                f"frame count mismatches detected: {frame_count_mismatches}",
+                task_id=task_id,
+            )
+        orchestrator_logger.debug_block(
+            "STITCH",
+            {
+                "stage": "clip_frames",
+                "mismatch_count": len(frame_count_mismatches),
+                "mismatches": frame_count_mismatches or None,
+            },
+            task_id=task_id,
+        )
 
         for i, trans in enumerate(transitions):
             ctx1 = trans.get("context_from_clip1", 0)
@@ -452,72 +494,22 @@ def handle_join_final_stitch(
                         trans_context = trans_frames_list[:ctx1]
 
                         if len(clip_context) == len(trans_context) == ctx1:
-                            # Compare first and last frame of context region
                             import numpy as np
 
-                            # First frame comparison
                             diff_first = np.abs(clip_context[0].astype(float) - trans_context[0].astype(float)).mean()
-                            # Last frame comparison
                             diff_last = np.abs(clip_context[-1].astype(float) - trans_context[-1].astype(float)).mean()
-
-                            if diff_first < 1.0 and diff_last < 1.0:
-                                orchestrator_logger.debug(f"[PIXEL_CHECK] \u2713 Transition {i} START context: PIXEL IDENTICAL (diff={diff_first:.2f}, {diff_last:.2f})")
-                            else:
-                                orchestrator_logger.debug(f"[PIXEL_CHECK] \u26a0\ufe0f Transition {i} START context: MISMATCH DETECTED!")
-                                orchestrator_logger.debug(f"[PIXEL_CHECK]   First frame diff: {diff_first:.2f}, Last frame diff: {diff_last:.2f}")
-                                orchestrator_logger.debug(f"[PIXEL_CHECK]   Clip frames [{clip_ctx_start}:{clip_ctx_end}] vs Transition frames [0:{ctx1}]")
-
-                            # === OFFSET DETECTION: Compare trans[0] against clip frames at different offsets ===
-                            # This helps identify if there's a systematic frame shift
-                            orchestrator_logger.debug(f"[OFFSET_DETECT] Transition {i} START: Comparing trans[0] against clip frames at offsets -2 to +2")
-                            orchestrator_logger.debug(f"[OFFSET_DETECT]   Expected alignment: trans[0] should match clip[{clip_ctx_start}]")
-
-                            trans_first_frame = trans_context[0].astype(float)
-                            offset_diffs = {}
-                            for offset in range(-2, 3):  # -2, -1, 0, +1, +2
-                                test_idx = clip_ctx_start + offset
-                                if 0 <= test_idx < len(clip_frames_list):
-                                    test_frame = clip_frames_list[test_idx].astype(float)
-                                    diff = np.abs(trans_first_frame - test_frame).mean()
-                                    offset_diffs[offset] = diff
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   offset={offset:+d} (clip[{test_idx}]): diff={diff:.2f}")
-
-                            # Find best matching offset
-                            if offset_diffs:
-                                best_offset = min(offset_diffs, key=offset_diffs.get)
-                                best_diff = offset_diffs[best_offset]
-                                if best_offset != 0:
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   >>> BEST MATCH at offset={best_offset:+d} (diff={best_diff:.2f}) - ALIGNMENT BUG DETECTED!")
-                                else:
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   >>> Best match at offset=0 (diff={best_diff:.2f}) - alignment appears correct")
-
-                            # Also check the LAST frame of context for offset
-                            orchestrator_logger.debug(f"[OFFSET_DETECT] Transition {i} START: Comparing trans[{ctx1-1}] against clip frames at offsets -2 to +2")
-                            trans_last_ctx_frame = trans_context[-1].astype(float)
-                            expected_last_idx = clip_ctx_end - 1  # Last frame of context
-                            orchestrator_logger.debug(f"[OFFSET_DETECT]   Expected alignment: trans[{ctx1-1}] should match clip[{expected_last_idx}]")
-
-                            offset_diffs_last = {}
-                            for offset in range(-2, 3):
-                                test_idx = expected_last_idx + offset
-                                if 0 <= test_idx < len(clip_frames_list):
-                                    test_frame = clip_frames_list[test_idx].astype(float)
-                                    diff = np.abs(trans_last_ctx_frame - test_frame).mean()
-                                    offset_diffs_last[offset] = diff
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   offset={offset:+d} (clip[{test_idx}]): diff={diff:.2f}")
-
-                            if offset_diffs_last:
-                                best_offset_last = min(offset_diffs_last, key=offset_diffs_last.get)
-                                best_diff_last = offset_diffs_last[best_offset_last]
-                                if best_offset_last != 0:
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   >>> BEST MATCH at offset={best_offset_last:+d} (diff={best_diff_last:.2f}) - ALIGNMENT BUG DETECTED!")
-                                else:
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   >>> Best match at offset=0 (diff={best_diff_last:.2f}) - alignment appears correct")
+                            orchestrator_logger.debug(
+                                f"[PIXEL_CHECK] Transition {i} START alignment verdict: "
+                                f"mean_diff_first={diff_first:.2f}, mean_diff_last={diff_last:.2f}, "
+                                f"aligned={diff_first < 1.0 and diff_last < 1.0}"
+                            )
                         else:
-                            orchestrator_logger.debug(f"[PIXEL_CHECK] \u26a0\ufe0f Transition {i}: Frame count mismatch for START context")
-                            orchestrator_logger.debug(f"[PIXEL_CHECK]   Expected {ctx1}, got clip={len(clip_context)}, trans={len(trans_context)}")
+                            orchestrator_logger.debug(
+                                f"[PIXEL_CHECK] Transition {i} START alignment verdict: "
+                                f"frame_count_mismatch expected={ctx1}, clip={len(clip_context)}, trans={len(trans_context)}"
+                            )
                 except (OSError, ValueError, RuntimeError) as e:
-                    orchestrator_logger.debug(f"[PIXEL_CHECK] \u26a0\ufe0f Transition {i}: Error comparing START context: {e}")
+                    orchestrator_logger.debug_anomaly("PIXEL_CHECK", f"\u26a0\ufe0f Transition {i}: Error comparing START context: {e}")
 
             if ctx2 > 0 and i + 1 < len(clip_paths):
                 # Compare: transition's last ctx2 frames vs clip[i+1]'s first ctx2 frames (after gap)
@@ -536,66 +528,20 @@ def handle_join_final_stitch(
 
                             diff_first = np.abs(next_clip_context[0].astype(float) - trans_end_context[0].astype(float)).mean()
                             diff_last = np.abs(next_clip_context[-1].astype(float) - trans_end_context[-1].astype(float)).mean()
-
-                            if diff_first < 1.0 and diff_last < 1.0:
-                                orchestrator_logger.debug(f"[PIXEL_CHECK] \u2713 Transition {i} END context: PIXEL IDENTICAL (diff={diff_first:.2f}, {diff_last:.2f})")
-                            else:
-                                orchestrator_logger.debug(f"[PIXEL_CHECK] \u26a0\ufe0f Transition {i} END context: MISMATCH DETECTED!")
-                                orchestrator_logger.debug(f"[PIXEL_CHECK]   First frame diff: {diff_first:.2f}, Last frame diff: {diff_last:.2f}")
-                                orchestrator_logger.debug(f"[PIXEL_CHECK]   Next clip frames [{gap2}:{gap2 + ctx2}] vs Transition frames [-{ctx2}:]")
-
-                            # === OFFSET DETECTION for END context ===
-                            orchestrator_logger.debug(f"[OFFSET_DETECT] Transition {i} END: Comparing trans[-{ctx2}] against next_clip frames at offsets -2 to +2")
-                            expected_clip2_start = gap2
-                            orchestrator_logger.debug(f"[OFFSET_DETECT]   Expected alignment: trans[-{ctx2}] should match next_clip[{expected_clip2_start}]")
-
-                            trans_end_first_frame = trans_end_context[0].astype(float)
-                            offset_diffs_end = {}
-                            for offset in range(-2, 3):
-                                test_idx = expected_clip2_start + offset
-                                if 0 <= test_idx < len(next_clip_frames):
-                                    test_frame = next_clip_frames[test_idx].astype(float)
-                                    diff = np.abs(trans_end_first_frame - test_frame).mean()
-                                    offset_diffs_end[offset] = diff
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   offset={offset:+d} (next_clip[{test_idx}]): diff={diff:.2f}")
-
-                            if offset_diffs_end:
-                                best_offset_end = min(offset_diffs_end, key=offset_diffs_end.get)
-                                best_diff_end = offset_diffs_end[best_offset_end]
-                                if best_offset_end != 0:
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   >>> BEST MATCH at offset={best_offset_end:+d} (diff={best_diff_end:.2f}) - ALIGNMENT BUG DETECTED!")
-                                else:
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   >>> Best match at offset=0 (diff={best_diff_end:.2f}) - alignment appears correct")
-
-                            # Also check last frame of END context
-                            orchestrator_logger.debug(f"[OFFSET_DETECT] Transition {i} END: Comparing trans[-1] against next_clip frames at offsets -2 to +2")
-                            expected_clip2_end = gap2 + ctx2 - 1
-                            orchestrator_logger.debug(f"[OFFSET_DETECT]   Expected alignment: trans[-1] should match next_clip[{expected_clip2_end}]")
-
-                            trans_very_last_frame = trans_end_context[-1].astype(float)
-                            offset_diffs_end_last = {}
-                            for offset in range(-2, 3):
-                                test_idx = expected_clip2_end + offset
-                                if 0 <= test_idx < len(next_clip_frames):
-                                    test_frame = next_clip_frames[test_idx].astype(float)
-                                    diff = np.abs(trans_very_last_frame - test_frame).mean()
-                                    offset_diffs_end_last[offset] = diff
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   offset={offset:+d} (next_clip[{test_idx}]): diff={diff:.2f}")
-
-                            if offset_diffs_end_last:
-                                best_offset_end_last = min(offset_diffs_end_last, key=offset_diffs_end_last.get)
-                                best_diff_end_last = offset_diffs_end_last[best_offset_end_last]
-                                if best_offset_end_last != 0:
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   >>> BEST MATCH at offset={best_offset_end_last:+d} (diff={best_diff_end_last:.2f}) - ALIGNMENT BUG DETECTED!")
-                                else:
-                                    orchestrator_logger.debug(f"[OFFSET_DETECT]   >>> Best match at offset=0 (diff={best_diff_end_last:.2f}) - alignment appears correct")
+                            orchestrator_logger.debug(
+                                f"[PIXEL_CHECK] Transition {i} END alignment verdict: "
+                                f"mean_diff_first={diff_first:.2f}, mean_diff_last={diff_last:.2f}, "
+                                f"aligned={diff_first < 1.0 and diff_last < 1.0}"
+                            )
                         else:
-                            orchestrator_logger.debug(f"[PIXEL_CHECK] \u26a0\ufe0f Transition {i}: Frame count mismatch for END context")
+                            orchestrator_logger.debug(
+                                f"[PIXEL_CHECK] Transition {i} END alignment verdict: "
+                                f"frame_count_mismatch expected={ctx2}, clip={len(next_clip_context)}, trans={len(trans_end_context)}"
+                            )
                 except (OSError, ValueError, RuntimeError) as e:
-                    orchestrator_logger.debug(f"[PIXEL_CHECK] \u26a0\ufe0f Transition {i}: Error comparing END context: {e}")
+                    orchestrator_logger.debug_anomaly("PIXEL_CHECK", f"\u26a0\ufe0f Transition {i}: Error comparing END context: {e}")
 
         # --- 5. Trim Clips and Build Stitch List ---
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Preparing clips for stitching...")
 
         import tempfile
         stitch_videos = []
@@ -636,11 +582,6 @@ def handle_join_final_stitch(
             if frames_to_keep <= 0:
                 return False, f"Clip {i} has {clip_frames} frames but needs {trim_start + trim_end} trimmed"
 
-            # Log trim details with source of values
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Clip {i}: {clip_frames} frames total")
-            orchestrator_logger.debug(f"[FINAL_STITCH]   trim_start={trim_start} (from {trim_start_source}), trim_end={trim_end} (from {trim_end_source})")
-            orchestrator_logger.debug(f"[FINAL_STITCH]   keeping frames [{trim_start}:{clip_frames - trim_end}] = {frames_to_keep} frames")
-
             # Extract trimmed clip
             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=stitch_dir) as tf:
                 trimmed_path = Path(tf.name)
@@ -674,69 +615,28 @@ def handle_join_final_stitch(
                 stitch_videos.append(transition_paths[i])
                 stitch_blends.append(blend_trans_to_clip)  # Blend between transition and next clip
 
-                orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Crossfades for transition {i}: clip\u2192trans={blend_clip_to_trans}, trans\u2192clip={blend_trans_to_clip}")
-
-        # --- 5b. FINAL FRAME ACCOUNTING ---
-        # Show exactly how the final video will be composed
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: ")
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557")
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u2551                        FINAL VIDEO FRAME ACCOUNTING                         \u2551")
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u2560\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2563")
-
+        crossfade_pairs = []
         final_frame_position = 0
         for idx, video_path in enumerate(stitch_videos):
             video_frames, _ = get_video_frame_count_and_fps(str(video_path))
             if video_frames is None:
                 video_frames = 0
-
-            # Determine if this is a clip or transition
-            # Pattern: clip0, trans0, clip1, trans1, clip2, ... (clips at even indices, transitions at odd)
-            is_clip = (idx % 2 == 0)
-            source_idx = idx // 2
-
-            if is_clip:
-                # Get the original clip info
-                orig_frames, _ = get_video_frame_count_and_fps(str(clip_paths[source_idx])) if source_idx < len(clip_paths) else (0, 0)
-
-                # Reconstruct trim info
-                if source_idx > 0:
-                    t_start = transitions[source_idx - 1].get("gap_from_clip2", gap_from_clip2)
-                else:
-                    t_start = 0
-                if source_idx < len(transitions):
-                    t_end = transitions[source_idx].get("gap_from_clip1", gap_from_clip1)
-                else:
-                    t_end = 0
-
-                source_desc = f"Clip {source_idx}: frames [{t_start}:{orig_frames - t_end}]"
-            else:
-                trans_idx = source_idx
-                trans_info = transitions[trans_idx] if trans_idx < len(transitions) else {}
-                ctx1 = trans_info.get("context_from_clip1", "?")
-                gap = trans_info.get("gap_frames", "?")
-                ctx2 = trans_info.get("context_from_clip2", "?")
-                source_desc = f"Trans {trans_idx}: [{ctx1} ctx1 + {gap} gap + {ctx2} ctx2]"
-
-            # Get blend info
-            _blend_before = stitch_blends[idx - 1] if idx > 0 and idx - 1 < len(stitch_blends) else 0
             blend_after = stitch_blends[idx] if idx < len(stitch_blends) else 0
-
-            end_frame = final_frame_position + video_frames - 1
-            orchestrator_logger.debug(f"[FINAL_STITCH] \u2551 [{final_frame_position:5d}-{end_frame:5d}] {source_desc:<45s} ({video_frames:3d}f) \u2551")
-
             if blend_after > 0 and idx < len(stitch_videos) - 1:
-                orchestrator_logger.debug(f"[FINAL_STITCH] \u2551              \u2195 crossfade {blend_after} frames                                     \u2551")
-
+                crossfade_pairs.append((idx, blend_after))
             final_frame_position += video_frames - blend_after  # Subtract overlap
-
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u2560\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2563")
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u2551 Expected total frames (approximate): {final_frame_position:<38d} \u2551")
-        orchestrator_logger.debug(f"[FINAL_STITCH] \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d")
-        orchestrator_logger.debug(f"[FINAL_STITCH] ")
+        orchestrator_logger.debug_block(
+            "STITCH",
+            {
+                "stage": "frame_accounting",
+                "videos": len(stitch_videos),
+                "crossfades": crossfade_pairs,
+                "approx_total_frames": final_frame_position,
+            },
+            task_id=task_id,
+        )
 
         # --- 6. Stitch Everything Together ---
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Stitching {len(stitch_videos)} videos with {len(stitch_blends)} blend points...")
-
         final_output_path, initial_db_location = prepare_output_path_with_upload(
             task_id=task_id,
             filename=f"{task_id}_joined.mp4",
@@ -752,14 +652,11 @@ def handle_join_final_stitch(
                 crossfade_mode="linear_sharp",
                 crossfade_sharp_amt=0.3)
 
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Successfully stitched all videos")
-
         except (OSError, ValueError, RuntimeError) as e:
             return False, f"Failed to stitch videos: {e}"
 
         # --- 7. Add Audio (if provided) ---
         if audio_url:
-            orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Adding audio from {audio_url}")
             try:
                 audio_local = download_video_if_url(
                     audio_url,
@@ -775,9 +672,12 @@ def handle_join_final_stitch(
                         output_video_path=str(with_audio_path))
                     if success and with_audio_path.exists():
                         final_output_path = with_audio_path
-                        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Audio added successfully")
             except (OSError, ValueError, RuntimeError) as audio_err:
-                orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Failed to add audio (continuing without): {audio_err}")
+                orchestrator_logger.debug_anomaly(
+                    "FINAL_STITCH",
+                    f"failed to add audio, continuing without it: {audio_err}",
+                    task_id=task_id,
+                )
 
         # --- 8. Verify and Upload ---
         if not final_output_path.exists():
@@ -788,17 +688,26 @@ def handle_join_final_stitch(
             return False, "Final output file is empty"
 
         final_frames, final_fps = get_video_frame_count_and_fps(str(final_output_path))
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Final video: {final_frames} frames @ {final_fps} fps, {file_size} bytes")
 
         # Upload
         final_db_location = upload_and_get_final_output_location(
             local_file_path=final_output_path,
             initial_db_location=initial_db_location)
 
-        orchestrator_logger.debug(f"[FINAL_STITCH] Task {task_id}: Complete - {final_db_location}")
+        orchestrator_logger.debug_block(
+            "STITCH",
+            {
+                "stage": "output",
+                "output": final_db_location,
+                "frames": final_frames,
+                "fps": final_fps,
+                "file_size": file_size,
+            },
+            task_id=task_id,
+        )
         return True, final_db_location
 
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as e:
         error_msg = f"Unexpected error in final stitch handler: {e}"
-        orchestrator_logger.debug(f"[FINAL_STITCH_ERROR] Task {task_id}: {error_msg}", exc_info=True)
+        orchestrator_logger.error(error_msg, task_id=task_id, exc_info=True)
         return False, error_msg

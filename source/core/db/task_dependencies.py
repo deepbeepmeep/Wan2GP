@@ -198,9 +198,9 @@ def get_task_current_status(task_id: str) -> str | None:
                 data = resp.json()
                 return data.get("status")
             elif edge_error:
-                headless_logger.debug(f"[GET_TASK_STATUS] Edge function failed for {task_id}: {edge_error}")
+                headless_logger.debug_anomaly("GET_TASK_STATUS", f"Edge function failed for {task_id}: {edge_error}")
         except (httpx.HTTPError, OSError, ValueError) as e:
-            headless_logger.debug(f"[GET_TASK_STATUS] Error calling get-task-status for {task_id}: {e}")
+            headless_logger.debug_anomaly("GET_TASK_STATUS", f"Error calling get-task-status for {task_id}: {e}")
 
     # No fallback — edge function is the only path
     return None
@@ -230,7 +230,7 @@ def cancel_orchestrator_children(orchestrator_task_id: str, reason: str = "Orche
             all_children.extend(category)
 
     if not all_children:
-        headless_logger.debug(f"[CANCEL_CHILDREN] No child tasks found for orchestrator {orchestrator_task_id}")
+        headless_logger.debug_anomaly("CANCEL_CHILDREN", f"No child tasks found for orchestrator {orchestrator_task_id}")
         return 0
 
     cancelled_count = 0
@@ -239,10 +239,10 @@ def cancel_orchestrator_children(orchestrator_task_id: str, reason: str = "Orche
         child_status = (child.get('status') or '').lower()
 
         if child_status in TERMINAL_STATUSES:
-            headless_logger.debug(f"[CANCEL_CHILDREN] Skipping child {child_id} (already {child_status})")
+            headless_logger.debug_anomaly("CANCEL_CHILDREN", f"Skipping child {child_id} (already {child_status})")
             continue
 
-        headless_logger.debug(f"[CANCEL_CHILDREN] Cancelling child task {child_id} (was {child_status})")
+        headless_logger.debug_anomaly("CANCEL_CHILDREN", f"Cancelling child task {child_id} (was {child_status})")
         try:
             update_task_status(child_id, "Cancelled", output_location=reason)
             cancelled_count += 1
@@ -250,9 +250,12 @@ def cancel_orchestrator_children(orchestrator_task_id: str, reason: str = "Orche
             headless_logger.error(f"[CANCEL_CHILDREN] Failed to cancel child {child_id}: {e}", task_id=child_id)
 
     if cancelled_count > 0:
-        headless_logger.essential(f"[CANCEL_CHILDREN] Cancelled {cancelled_count}/{len(all_children)} child tasks for orchestrator {orchestrator_task_id}", task_id=orchestrator_task_id)
+        headless_logger.essential(
+            f"Cancelled {cancelled_count}/{len(all_children)} child tasks",
+            task_id=orchestrator_task_id,
+        )
     else:
-        headless_logger.debug(f"[CANCEL_CHILDREN] All {len(all_children)} children already in terminal state for orchestrator {orchestrator_task_id}")
+        headless_logger.debug_anomaly("CANCEL_CHILDREN", f"All {len(all_children)} children already in terminal state for orchestrator {orchestrator_task_id}")
 
     return cancelled_count
 
@@ -281,7 +284,7 @@ def cleanup_duplicate_child_tasks(orchestrator_task_id: str, expected_segments: 
                 existing = segment_by_index[segment_idx]
                 duplicate_id = segment['id']
 
-                headless_logger.debug(f"[IDEMPOTENCY] Found duplicate segment {segment_idx}: keeping {existing['id']}, removing {duplicate_id}")
+                headless_logger.debug_anomaly("IDEMPOTENCY", f"Found duplicate segment {segment_idx}: keeping {existing['id']}, removing {duplicate_id}")
 
                 # Remove the duplicate
                 if _delete_task_by_id(duplicate_id):
@@ -297,7 +300,7 @@ def cleanup_duplicate_child_tasks(orchestrator_task_id: str, expected_segments: 
             stitch_sorted = sorted(stitch_tasks, key=lambda x: x.get('created_at', ''))
             for stitch in stitch_sorted[1:]:  # Remove all but first
                 duplicate_id = stitch['id']
-                headless_logger.debug(f"[IDEMPOTENCY] Found duplicate stitch task: removing {duplicate_id}")
+                headless_logger.debug_anomaly("IDEMPOTENCY", f"Found duplicate stitch task: removing {duplicate_id}")
 
                 if _delete_task_by_id(duplicate_id):
                     cleanup_summary['duplicate_stitch_removed'] += 1

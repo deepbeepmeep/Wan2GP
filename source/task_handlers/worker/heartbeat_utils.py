@@ -46,7 +46,7 @@ def start_heartbeat_guardian_process(worker_id: str, supabase_url: str, supabase
     )
     guardian.start()
 
-    headless_logger.essential(f"✅ Heartbeat guardian started: PID {guardian.pid} monitoring worker PID {os.getpid()}")
+    headless_logger.essential(f"Heartbeat guardian started: PID {guardian.pid} monitoring worker PID {os.getpid()}")
 
     return guardian, log_queue
 

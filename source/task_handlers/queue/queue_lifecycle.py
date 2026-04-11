@@ -12,6 +12,7 @@ import time
 import traceback
 from typing import Any
 
+from source.core.log.tasks import get_display_name
 from source.task_handlers.queue.task_processor import worker_loop, _monitor_loop
 
 
@@ -62,7 +63,7 @@ def start_queue(queue: Any, preload_model=None):
 
     # Pre-load model if specified
     if preload_model:
-        queue.logger.info(f"Pre-loading model: {preload_model}")
+        queue.logger.info(f"Pre-loading model: {get_display_name(preload_model)}")
         try:
             # Initialize orchestrator and load model in background
             queue._ensure_orchestrator()
@@ -70,7 +71,7 @@ def start_queue(queue: Any, preload_model=None):
                 raise RuntimeError("Orchestrator initialization failed during preload")
             queue.orchestrator.load_model(preload_model)
             queue.current_model = preload_model
-            queue.logger.info(f"Model {preload_model} pre-loaded successfully")
+            queue.logger.info(f"Model {get_display_name(preload_model)} pre-loaded successfully")
         except (RuntimeError, ValueError, OSError) as e:
             # Log the full error with traceback
             queue.logger.error(f"FATAL: Failed to pre-load model {preload_model}: {e}\n{traceback.format_exc()}")
@@ -135,5 +136,5 @@ def submit_task_impl(queue: Any, task: Any) -> str:
         queue.task_history[task.id] = task
         queue.stats["tasks_submitted"] += 1
 
-        queue.logger.info(f"Task submitted: {task.id} (model: {task.model}, priority: {task.priority})")
+        queue.logger.debug(f"Task submitted: {task.id} (model: {task.model}, priority: {task.priority})")
         return task.id

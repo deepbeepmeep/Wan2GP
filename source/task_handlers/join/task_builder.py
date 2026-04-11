@@ -55,8 +55,6 @@ def _create_join_chain_tasks(
     if num_joins < 1:
         return False, "clip_list must contain at least 2 clips"
 
-    orchestrator_logger.debug(f"[JOIN_CORE] Creating {num_joins} join tasks in dependency chain")
-
     previous_join_task_id = None
     joins_created = 0
 
@@ -64,18 +62,14 @@ def _create_join_chain_tasks(
         clip_start = clip_list[idx]
         clip_end = clip_list[idx + 1]
 
-        orchestrator_logger.debug(f"[JOIN_CORE] Creating join {idx}: {clip_start.get('name', 'clip')} + {clip_end.get('name', 'clip')}")
-
         # Merge global settings with per-join overrides
         task_join_settings = join_settings.copy()
         if idx < len(per_join_settings):
             task_join_settings.update(per_join_settings[idx])
-            orchestrator_logger.debug(f"[JOIN_CORE] Applied per-join overrides for join {idx}")
 
         # Apply VLM-enhanced prompt if available (overrides base prompt)
         if idx < len(vlm_enhanced_prompts) and vlm_enhanced_prompts[idx] is not None:
             task_join_settings["prompt"] = vlm_enhanced_prompts[idx]
-            orchestrator_logger.debug(f"[JOIN_CORE] Join {idx}: Using VLM-enhanced prompt")
 
         # Build join payload
         join_payload = {
@@ -102,15 +96,11 @@ def _create_join_chain_tasks(
         if cancel_msg:
             return False, cancel_msg
 
-        orchestrator_logger.debug(f"[JOIN_CORE] Submitting join {idx} to database, depends_on={previous_join_task_id}")
-
         actual_db_row_id = add_task_to_db(
             task_payload=join_payload,
             task_type_str="join_clips_segment",
             dependant_on=previous_join_task_id
         )
-
-        orchestrator_logger.debug(f"[JOIN_CORE] Join {idx} created with DB ID: {actual_db_row_id}")
 
         previous_join_task_id = actual_db_row_id
         joins_created += 1
@@ -143,9 +133,6 @@ def _create_join_chain_tasks(
         task_type_str="join_final_stitch",
         dependant_on=previous_join_task_id
     )
-
-    orchestrator_logger.debug(f"[JOIN_CORE] Final stitch task created with DB ID: {final_stitch_task_id}")
-    orchestrator_logger.debug(f"[JOIN_CORE] Complete: {joins_created} chain joins + 1 final stitch = {joins_created + 1} total tasks")
 
     return True, f"Successfully enqueued {joins_created} chain joins + 1 final stitch for run {run_id}"
 
@@ -187,8 +174,6 @@ def _create_parallel_join_tasks(
     if num_joins < 1:
         return False, "clip_list must contain at least 2 clips"
 
-    orchestrator_logger.debug(f"[JOIN_PARALLEL] Creating {num_joins} parallel transition tasks + 1 final stitch")
-
     transition_task_ids = []
 
     # === Phase 1: Create transition tasks in parallel (no dependencies) ===
@@ -196,16 +181,12 @@ def _create_parallel_join_tasks(
         clip_start = clip_list[idx]
         clip_end = clip_list[idx + 1]
 
-        orchestrator_logger.debug(f"[JOIN_PARALLEL] Creating transition {idx}: {clip_start.get('name', 'clip')} \u2192 {clip_end.get('name', 'clip')}")
-
         task_join_settings = join_settings.copy()
         if idx < len(per_join_settings):
             task_join_settings.update(per_join_settings[idx])
-            orchestrator_logger.debug(f"[JOIN_PARALLEL] Applied per-join overrides for transition {idx}")
 
         if idx < len(vlm_enhanced_prompts) and vlm_enhanced_prompts[idx] is not None:
             task_join_settings["prompt"] = vlm_enhanced_prompts[idx]
-            orchestrator_logger.debug(f"[JOIN_PARALLEL] Transition {idx}: Using VLM-enhanced prompt")
 
         transition_payload = {
             "orchestrator_task_id_ref": orchestrator_task_id_str,
@@ -232,20 +213,15 @@ def _create_parallel_join_tasks(
         if cancel_msg:
             return False, cancel_msg
 
-        orchestrator_logger.debug(f"[JOIN_PARALLEL] Submitting transition {idx} to database (no dependency)")
-
         trans_task_id = add_task_to_db(
             task_payload=transition_payload,
             task_type_str="join_clips_segment",
             dependant_on=None
         )
 
-        orchestrator_logger.debug(f"[JOIN_PARALLEL] Transition {idx} created with DB ID: {trans_task_id}")
         transition_task_ids.append(trans_task_id)
 
     # === Phase 2: Create final stitch task that depends on ALL transitions ===
-    orchestrator_logger.debug(f"[JOIN_PARALLEL] Creating final stitch task, depends on {len(transition_task_ids)} transitions")
-
     context_frame_count = join_settings.get("context_frame_count", 8)
 
     final_stitch_payload = {
@@ -272,9 +248,6 @@ def _create_parallel_join_tasks(
         task_type_str="join_final_stitch",
         dependant_on=transition_task_ids
     )
-
-    orchestrator_logger.debug(f"[JOIN_PARALLEL] Final stitch task created with DB ID: {final_stitch_task_id}")
-    orchestrator_logger.debug(f"[JOIN_PARALLEL] Complete: {num_joins} transitions + 1 final stitch = {num_joins + 1} total tasks")
 
     return True, f"Successfully enqueued {num_joins} parallel transitions + 1 final stitch for run {run_id}"
 

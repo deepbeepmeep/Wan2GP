@@ -1,6 +1,7 @@
 """Debug and monitoring utilities for travel between images tasks."""
 
 import os
+import threading
 from pathlib import Path
 
 # Import structured logging
@@ -22,6 +23,37 @@ except ImportError:
 
 from ...utils import get_video_frame_count_and_fps
 from source.core.constants import BYTES_PER_MB, MB_PER_GB, BYTES_PER_GB
+
+
+class RamSnapshotCollector:
+    """Thread-safe task-scoped RAM snapshot buffer."""
+
+    def __init__(self) -> None:
+        self._snapshots: dict[str, list[tuple[str, float, float, float, float]]] = {}
+        self._lock = threading.Lock()
+
+    def push(
+        self,
+        task_id: str,
+        label: str,
+        rss_mb: float,
+        sys_available_gb: float,
+        sys_total_gb: float,
+        sys_used_percent: float,
+    ) -> None:
+        task_key = task_id or "unknown"
+        with self._lock:
+            self._snapshots.setdefault(task_key, []).append(
+                (label, rss_mb, sys_available_gb, sys_total_gb, sys_used_percent)
+            )
+
+    def pop(self, task_id: str) -> list[tuple[str, float, float, float, float]]:
+        task_key = task_id or "unknown"
+        with self._lock:
+            return self._snapshots.pop(task_key, [])
+
+
+_RAM_SNAPSHOT_COLLECTOR = RamSnapshotCollector()
 
 
 # Add debugging helper function
@@ -47,10 +79,10 @@ def debug_video_analysis(video_path: str | Path, label: str, task_id: str = "unk
             "file_size_mb": round(file_size / BYTES_PER_MB, 2)
         }
 
-        travel_logger.debug(f"{label}: {debug_info['frame_count']} frames, {debug_info['fps']} fps, {debug_info['duration_seconds']:.2f}s, {debug_info['file_size_mb']} MB", task_id=task_id)
-
-        # Lightweight color diagnostic: sample a few frames and compute mean BGR.
-        # Helps detect "brown tint" / channel or range issues without decoding entire video.
+        # Silent: debug_video_analysis is called from chain post-processing. The CHAIN
+        # card already summarizes segment/run/path info. Color sampling still runs for
+        # the return dict; only the log output is suppressed to reduce noise. If a caller
+        # needs the color samples, they can read them from the returned debug_info dict.
         try:
             if frame_count and frame_count > 0:
                 cap = cv2.VideoCapture(str(path_obj))
@@ -71,10 +103,9 @@ def debug_video_analysis(video_path: str | Path, label: str, task_id: str = "unk
                         }
                     cap.release()
                     debug_info["frame_color_samples"] = samples
-                    travel_logger.debug(f"[FrameBrowningIssue] {label}: frame_color_samples={samples}", task_id=task_id)
-        except (OSError, ValueError, RuntimeError) as e_color:
+        except (OSError, ValueError, RuntimeError):
             # Never fail the pipeline due to debug sampling.
-            travel_logger.debug(f"[FrameBrowningIssue] {label}: color sample failed: {e_color}", task_id=task_id)
+            pass
 
         return debug_info
 
@@ -106,10 +137,13 @@ def log_ram_usage(label: str, task_id: str = "unknown", logger=None) -> dict:
         sys_available_gb = sys_mem.available / BYTES_PER_GB
         sys_used_percent = sys_mem.percent
 
-        logger.info(
-            f"[RAM] {label}: Process={rss_mb:.0f}MB ({rss_gb:.2f}GB) | "
-            f"System={sys_used_percent:.1f}% used, {sys_available_gb:.1f}GB/{sys_total_gb:.1f}GB available",
-            task_id=task_id
+        _RAM_SNAPSHOT_COLLECTOR.push(
+            task_id,
+            label,
+            rss_mb,
+            sys_available_gb,
+            sys_total_gb,
+            sys_used_percent,
         )
 
         return {
@@ -124,3 +158,44 @@ def log_ram_usage(label: str, task_id: str = "unknown", logger=None) -> dict:
     except (ProcessLookupError, OSError) as e:
         logger.warning(f"[RAM] Failed to get RAM usage: {e}", task_id=task_id)
         return {"available": False, "error": str(e)}
+
+
+def flush_ram_snapshots(task_id: str = "unknown", logger=None) -> None:
+    """Emit one structured RAM summary for the task and drop buffered snapshots.
+
+    If every snapshot has the same rss_mb value (i.e. the task didn't meaningfully
+    move memory) we collapse to a single 'stable' row instead of printing the same
+    value four times.
+    """
+    if logger is None:
+        logger = travel_logger
+
+    if not _PSUTIL_AVAILABLE:
+        return
+
+    snapshots = _RAM_SNAPSHOT_COLLECTOR.pop(task_id)
+    if not snapshots:
+        return
+
+    # If the RSS never moved, don't waste rows — emit one summary anomaly line instead of a card.
+    unique_rss = {round(s[1]) for s in snapshots}
+    if len(unique_rss) == 1:
+        first = snapshots[0]
+        value = (
+            f"{first[1]:.0f}MB (sys {first[4]:.1f}%, "
+            f"{first[2]:.1f}/{first[3]:.1f}GB) — stable across {len(snapshots)} checkpoint(s)"
+        )
+        logger.debug_anomaly("RAM", value, task_id=task_id)
+        return
+
+    rows: dict[str, str] = {}
+    label_counts: dict[str, int] = {}
+    for label, rss_mb, sys_available_gb, sys_total_gb, sys_used_percent in snapshots:
+        label_counts[label] = label_counts.get(label, 0) + 1
+        row_label = label if label_counts[label] == 1 else f"{label} [{label_counts[label]}]"
+        rows[row_label] = (
+            f"{rss_mb:.0f}MB (sys {sys_used_percent:.1f}%, "
+            f"{sys_available_gb:.1f}/{sys_total_gb:.1f}GB)"
+        )
+
+    logger.debug_block("RAM", rows, task_id=task_id)

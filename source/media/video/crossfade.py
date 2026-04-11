@@ -149,7 +149,7 @@ def stitch_videos_with_crossfade(
     if len(blend_frame_counts) != len(video_paths) - 1:
         raise ValueError(f"blend_frame_counts must have length {len(video_paths) - 1}, got {len(blend_frame_counts)}")
 
-    generation_logger.debug(f"[STITCH_VIDEOS] Stitching {len(video_paths)} videos with crossfade blending")
+    generation_logger.debug_anomaly("STITCH_VIDEOS", f"Stitching {len(video_paths)} videos with crossfade blending")
 
     # Extract frames from all videos
     all_video_frames = []
@@ -157,7 +157,7 @@ def stitch_videos_with_crossfade(
         frames = extract_frames_from_video(str(video_path))
         if not frames:
             raise ValueError(f"Failed to extract frames from video {i}: {video_path}")
-        generation_logger.debug(f"[STITCH_VIDEOS] Video {i}: {len(frames)} frames extracted")
+        generation_logger.debug_anomaly("STITCH_VIDEOS", f"Video {i}: {len(frames)} frames extracted")
         all_video_frames.append(frames)
 
     # Stitch videos together with crossfading
@@ -173,10 +173,10 @@ def stitch_videos_with_crossfade(
                 frames_to_add = frames_curr_segment[:-blend_with_next]
                 overlap_frames_for_next_blend = frames_curr_segment[-blend_with_next:]
                 final_stitched_frames.extend(frames_to_add)
-                generation_logger.debug(f"[STITCH_VIDEOS] Video 0: Added {len(frames_to_add)} frames (keeping {blend_with_next} for blend)")
+                generation_logger.debug_anomaly("STITCH_VIDEOS", f"Video 0: Added {len(frames_to_add)} frames (keeping {blend_with_next} for blend)")
             else:
                 final_stitched_frames.extend(frames_curr_segment)
-                generation_logger.debug(f"[STITCH_VIDEOS] Video 0: Added {len(frames_curr_segment)} frames (no blend)")
+                generation_logger.debug_anomaly("STITCH_VIDEOS", f"Video 0: Added {len(frames_curr_segment)} frames (no blend)")
         else:
             # Subsequent videos: crossfade with previous, then add remaining
             blend_count = blend_frame_counts[i - 1]
@@ -184,7 +184,7 @@ def stitch_videos_with_crossfade(
             if blend_count > 0 and overlap_frames_for_next_blend:
                 # Use the overlap frames we saved from previous video
                 frames_prev_for_fade = overlap_frames_for_next_blend
-                generation_logger.debug(f"[STITCH_VIDEOS] Using {len(frames_prev_for_fade)} overlap frames from previous video for blend")
+                generation_logger.debug_anomaly("STITCH_VIDEOS", f"Using {len(frames_prev_for_fade)} overlap frames from previous video for blend")
 
                 # Get frames for crossfade from current segment
                 frames_curr_for_fade = frames_curr_segment[:blend_count]
@@ -198,7 +198,7 @@ def stitch_videos_with_crossfade(
                     crossfade_sharp_amt
                 )
                 final_stitched_frames.extend(faded_frames)
-                generation_logger.debug(f"[STITCH_VIDEOS] Added {len(faded_frames)} crossfaded frames at boundary {i-1}->{i}")
+                generation_logger.debug_anomaly("STITCH_VIDEOS", f"Added {len(faded_frames)} crossfaded frames at boundary {i-1}->{i}")
 
                 # Calculate remaining frames to add from current segment
                 # Skip the blended frames and also frames that will be blended with next video (if any)
@@ -215,7 +215,7 @@ def stitch_videos_with_crossfade(
                 if end_idx > start_idx:
                     frames_to_add = frames_curr_segment[start_idx:end_idx]
                     final_stitched_frames.extend(frames_to_add)
-                    generation_logger.debug(f"[STITCH_VIDEOS] Video {i}: Added {len(frames_to_add)} non-overlapping frames (keeping {blend_with_next} for next blend)")
+                    generation_logger.debug_anomaly("STITCH_VIDEOS", f"Video {i}: Added {len(frames_to_add)} non-overlapping frames (keeping {blend_with_next} for next blend)")
             else:
                 # No blend: just add all frames (minus those for next blend if any)
                 blend_with_next = blend_frame_counts[i] if i < len(blend_frame_counts) else 0
@@ -224,15 +224,15 @@ def stitch_videos_with_crossfade(
                     frames_to_add = frames_curr_segment[:-blend_with_next]
                     overlap_frames_for_next_blend = frames_curr_segment[-blend_with_next:]
                     final_stitched_frames.extend(frames_to_add)
-                    generation_logger.debug(f"[STITCH_VIDEOS] Video {i}: Added {len(frames_to_add)} frames (no blend, keeping {blend_with_next} for next)")
+                    generation_logger.debug_anomaly("STITCH_VIDEOS", f"Video {i}: Added {len(frames_to_add)} frames (no blend, keeping {blend_with_next} for next)")
                 else:
                     final_stitched_frames.extend(frames_curr_segment)
-                    generation_logger.debug(f"[STITCH_VIDEOS] Video {i}: Added {len(frames_curr_segment)} frames (no blend)")
+                    generation_logger.debug_anomaly("STITCH_VIDEOS", f"Video {i}: Added {len(frames_curr_segment)} frames (no blend)")
 
     if not final_stitched_frames:
         raise ValueError("No frames produced after stitching")
 
-    generation_logger.debug(f"[STITCH_VIDEOS] Total stitched frames: {len(final_stitched_frames)}")
+    generation_logger.debug_anomaly("STITCH_VIDEOS", f"Total stitched frames: {len(final_stitched_frames)}")
 
     # Create output video
     output_video_path = Path(output_video_path)
@@ -253,6 +253,6 @@ def stitch_videos_with_crossfade(
     if created_video.stat().st_size == 0:
         raise ValueError(f"Stitched video file is empty: {created_video}")
 
-    generation_logger.debug(f"[STITCH_VIDEOS] Created stitched video: {created_video} ({created_video.stat().st_size} bytes)")
+    generation_logger.debug_anomaly("STITCH_VIDEOS", f"Created stitched video: {created_video} ({created_video.stat().st_size} bytes)")
 
     return created_video

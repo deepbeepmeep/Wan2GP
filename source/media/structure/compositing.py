@@ -124,7 +124,7 @@ def validate_structure_video_configs(
 
         prev_end = end
 
-    generation_logger.debug(f"[COMPOSITE] Validated {len(valid_configs)} structure video configs (from {len(sorted_configs)} input)")
+    generation_logger.debug_anomaly("COMPOSITE", f"Validated {len(valid_configs)} structure video configs (from {len(sorted_configs)} input)")
     for i, cfg in enumerate(valid_configs):
         generation_logger.debug(f"  Config {i}: frames [{cfg['start_frame']}, {cfg['end_frame']}) from {Path(cfg['path']).name}")
 
@@ -172,7 +172,7 @@ def create_composite_guidance_video(
     Returns:
         Path to the created composite guidance video
     """
-    generation_logger.debug(f"[COMPOSITE] Creating composite guidance video...")
+    generation_logger.debug_anomaly("COMPOSITE", f"Creating composite guidance video...")
     generation_logger.debug(f"  Total frames: {total_frames}")
     generation_logger.debug(f"  Structure type: {structure_type}")
     generation_logger.debug(f"  Resolution: {target_resolution[0]}x{target_resolution[1]}")
@@ -185,7 +185,7 @@ def create_composite_guidance_video(
         raise ValueError("No valid structure video configs provided")
 
     # Initialize timeline with neutral frames
-    generation_logger.debug(f"[COMPOSITE] Initializing {total_frames} neutral frames...")
+    generation_logger.debug_anomaly("COMPOSITE", f"Initializing {total_frames} neutral frames...")
     neutral_frame = create_neutral_frame(structure_type, target_resolution)
     composite_frames = [neutral_frame.copy() for _ in range(total_frames)]
 
@@ -200,7 +200,7 @@ def create_composite_guidance_video(
         frames_needed = end_frame - start_frame
         treatment = config.get("treatment", "adjust")
 
-        generation_logger.debug(f"[COMPOSITE] Processing config {config_idx}: {Path(source_path).name}")
+        generation_logger.debug_anomaly("COMPOSITE", f"Processing config {config_idx}: {Path(source_path).name}")
         generation_logger.debug(f"  Timeline range: [{start_frame}, {end_frame}) = {frames_needed} frames")
 
         # Download if URL
@@ -257,12 +257,12 @@ def create_composite_guidance_video(
     # Log coverage summary
     total_filled = sum(end - start for start, end in filled_ranges)
     total_neutral = total_frames - total_filled
-    generation_logger.debug(f"[COMPOSITE] Coverage summary:")
+    generation_logger.debug_anomaly("COMPOSITE", f"Coverage summary:")
     generation_logger.debug(f"  Filled frames: {total_filled} ({100*total_filled/total_frames:.1f}%)")
     generation_logger.debug(f"  Neutral frames: {total_neutral} ({100*total_neutral/total_frames:.1f}%)")
 
     # Encode as video
-    generation_logger.debug(f"[COMPOSITE] Encoding composite video to {output_path}...")
+    generation_logger.debug_anomaly("COMPOSITE", f"Encoding composite video to {output_path}...")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -283,7 +283,7 @@ def create_composite_guidance_video(
     except ImportError:
         # cv2 fallback for encoding
         import cv2
-        generation_logger.debug("[COMPOSITE] Using cv2 fallback for video encoding")
+        generation_logger.debug_anomaly("COMPOSITE", "Using cv2 fallback for video encoding")
 
         w, h = target_resolution
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -300,7 +300,7 @@ def create_composite_guidance_video(
         raise ValueError(f"Failed to create composite video at {output_path}")
 
     file_size_mb = output_path.stat().st_size / BYTES_PER_MB
-    generation_logger.debug(f"[COMPOSITE] Created composite video: {output_path.name} ({file_size_mb:.2f} MB)")
+    generation_logger.debug_anomaly("COMPOSITE", f"Created composite video: {output_path.name} ({file_size_mb:.2f} MB)")
 
     # Clean up GPU memory
     if torch.cuda.is_available():

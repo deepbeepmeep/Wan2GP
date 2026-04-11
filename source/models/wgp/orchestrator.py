@@ -14,7 +14,7 @@ from typing import Optional, List, TYPE_CHECKING
 
 # Import structured logging
 from source.core.log import (
-    orchestrator_logger, model_logger, generation_logger,
+    orchestrator_logger, model_logger, generation_logger, safe_dict_repr,
 )
 
 # Type hints for TaskConfig (avoid circular import)
@@ -123,10 +123,6 @@ class WanOrchestrator:
         self.wan_root = os.path.abspath(wan_root)
         current_dir = os.getcwd()
 
-        if is_debug_enabled():
-            _init_logger.info(f"[INIT_DEBUG] WanOrchestrator.__init__ called with wan_root: {self.wan_root}")
-            _init_logger.info(f"[INIT_DEBUG] Current working directory: {current_dir}")
-
         # CRITICAL CHECK: Verify caller already changed to the correct directory
         # wgp.py will import and execute module-level code that uses relative paths like "defaults/*.json"
         # If we're in the wrong directory, wgp will load 0 models and fail mysteriously
@@ -155,12 +151,17 @@ class WanOrchestrator:
         if self.wan_root in sys.path:
             sys.path.remove(self.wan_root)
         sys.path.insert(0, self.wan_root)
-        if is_debug_enabled():
-            _init_logger.info(f"[INIT_DEBUG] Added {self.wan_root} to sys.path[0]")
-
         # Optional smoke/CPU-only modes
         self.smoke_mode = bool(os.environ.get("HEADLESS_WAN2GP_SMOKE", ""))
         force_cpu = os.environ.get("HEADLESS_WAN2GP_FORCE_CPU", "0") == "1"
+        init_summary = {
+            "wan_root": self.wan_root,
+            "cwd": current_dir,
+            "smoke_mode": self.smoke_mode,
+            "force_cpu": force_cpu,
+        }
+        if is_debug_enabled():
+            _init_logger.debug("INIT_DEBUG %s", safe_dict_repr(init_summary))
 
         # Force CPU if requested and guard CUDA capability queries before importing WGP
         if force_cpu and not os.environ.get("CUDA_VISIBLE_DEVICES"):
@@ -223,14 +224,11 @@ class WanOrchestrator:
         # Import WGP components after path setup (skip entirely in smoke mode)
         if not self.smoke_mode:
             try:
-                if is_debug_enabled():
-                    _init_logger.info(f"[INIT_DEBUG] About to import wgp module")
                 current_dir = os.getcwd()
                 if is_debug_enabled():
-                    _init_logger.info(f"[INIT_DEBUG] Current directory: {current_dir}")
-                    _init_logger.info(f"[INIT_DEBUG] sys.path[0]: {sys.path[0] if sys.path else 'empty'}")
-                    _init_logger.info(f"[INIT_DEBUG] wgp already in sys.modules: {'wgp' in sys.modules}")
-
+                    _init_logger.debug(
+                        f"[INIT_DEBUG] {safe_dict_repr({'phase': 'import_wgp', 'cwd': current_dir, 'sys_path_0': sys.path[0] if sys.path else 'empty', 'wgp_in_modules': 'wgp' in sys.modules})}"
+                    )
                 # Double-check we're in the right directory before importing
                 if current_dir != self.wan_root:
                     if is_debug_enabled():
@@ -240,7 +238,7 @@ class WanOrchestrator:
                 # If wgp was previously imported from wrong directory, remove it so it reimports
                 if 'wgp' in sys.modules:
                     if is_debug_enabled():
-                        _init_logger.warning(f"[INIT_DEBUG] wgp already in sys.modules - removing to force reimport from correct directory")
+                        _init_logger.warning("[INIT_DEBUG] resetting existing wgp module before reimport")
                     reset_wgp_runtime_module()
 
                 with temporary_process_globals(
@@ -271,10 +269,10 @@ class WanOrchestrator:
                 # Use main_output_dir if provided, otherwise default to 'outputs' next to wan_root
                 if main_output_dir is not None:
                     absolute_outputs_path = os.path.abspath(main_output_dir)
-                    model_logger.debug(f"[OUTPUT_DIR] Using provided main_output_dir: {absolute_outputs_path}")
+                    output_dir_source = "provided"
                 else:
                     absolute_outputs_path = os.path.abspath(os.path.join(os.path.dirname(self.wan_root), 'outputs'))
-                    model_logger.debug(f"[OUTPUT_DIR] Using default output directory: {absolute_outputs_path}")
+                    output_dir_source = "default"
 
                 # Initialize attributes that don't exist yet
                 for attr, default in {
@@ -286,11 +284,12 @@ class WanOrchestrator:
 
                 # Set output paths on WGP (first call — before apply_changes)
                 _set_wgp_output_paths(wgp, absolute_outputs_path)
-                model_logger.info(f"[OUTPUT_DIR] Set output paths to {absolute_outputs_path}")
+                model_logger.debug_anomaly("OUTPUT_DIR", f"Initialized output paths to {absolute_outputs_path} (source={output_dir_source})")
 
                 # Debug: Check if model definitions are loaded
                 if is_debug_enabled():
-                    model_logger.info(f"[INIT_DEBUG] Available models after WGP import: {list(wgp.models_def.keys())}")
+                    init_summary["available_models"] = len(wgp.models_def)
+                    _init_logger.debug_anomaly("INIT_DEBUG", f"{safe_dict_repr(init_summary)}")
                 _verify_wgp_directory(model_logger, "after wgp setup and monkeypatching")
 
                 if not wgp.models_def:
@@ -351,7 +350,6 @@ class WanOrchestrator:
             # (apply_changes was removed upstream; we set the same values it used to.)
             outputs_dir = "outputs/"
             try:
-                orchestrator_logger.debug("Applying headless WGP defaults to server_config...")
                 _wgp_cfg = get_wgp_runtime_module_mutable()
                 _cfg = _wgp_cfg.server_config
                 _cfg["transformer_types"] = ["t2v"]
@@ -385,7 +383,7 @@ class WanOrchestrator:
                 ]:
                     if hasattr(_wgp_cfg, attr):
                         setattr(_wgp_cfg, attr, val)
-                orchestrator_logger.debug("Headless WGP defaults applied successfully")
+                orchestrator_logger.debug("Headless WGP defaults applied to server_config")
             except (RuntimeError, ValueError, TypeError, KeyError) as e:
                 orchestrator_logger.error(f"FATAL: Failed to apply WGP defaults: {e}\n{traceback.format_exc()}")
                 raise RuntimeError(f"Failed to apply WGP defaults during orchestrator init: {e}") from e
@@ -395,7 +393,7 @@ class WanOrchestrator:
 
             # Set output paths again (second call — after config update)
             _set_wgp_output_paths(wgp, absolute_outputs_path)
-            orchestrator_logger.info(f"[OUTPUT_DIR] Re-applied output paths after config update: {absolute_outputs_path}")
+            orchestrator_logger.debug_anomaly("OUTPUT_DIR", f"Re-applied output paths after config update: {absolute_outputs_path}")
 
         else:
             # Provide stubbed helpers for smoke mode
@@ -574,13 +572,6 @@ class WanOrchestrator:
         if not self.current_model:
             raise RuntimeError("No model loaded. Call load_model() first.")
 
-        # [DEBUG_KWARGS] Trace image_start presence
-        generation_logger.info(f"[DEBUG_KWARGS] generate received kwargs keys: {list(kwargs.keys())}")
-        if "image_start" in kwargs:
-            generation_logger.info(f"[DEBUG_KWARGS] image_start type: {type(kwargs['image_start'])}, value: {kwargs['image_start']}")
-        else:
-            generation_logger.info(f"[DEBUG_KWARGS] image_start NOT in kwargs")
-
         # SVI / Image-Refs Path Bridging
         prepare_svi_image_refs(kwargs)
 
@@ -602,6 +593,19 @@ class WanOrchestrator:
             lora_names=lora_names, lora_multipliers=lora_multipliers,
             negative_prompt=negative_prompt, batch_size=batch_size, **kwargs,
         )
+        generation_logger.debug_block(
+            "SETUP",
+            {
+                "model": self.current_model,
+                "effective_model": effective_model_type,
+                "prompt_len": len(prompt or ""),
+                "resolution": resolution,
+                "video_length": video_length,
+                "video_guide": bool(video_guide),
+                "video_mask": bool(video_mask),
+                "kwargs_keys": sorted(kwargs.keys()),
+            },
+        )
 
         # Initialize LoRA variables (needed for both modes)
         activated_loras = []
@@ -610,25 +614,26 @@ class WanOrchestrator:
         # Resolve final parameters with proper precedence (skip in passthrough mode)
         if self.passthrough_mode:
             resolved_params = task_explicit_params.copy()
-            generation_logger.info(f"[PASSTHROUGH] Using task parameters directly without resolution: {len(resolved_params)} params")
+            generation_logger.debug_anomaly("PASSTHROUGH", f"Using task parameters directly without resolution: {len(resolved_params)} params")
         else:
-            generation_logger.info(f"[PARAM_RESOLUTION] Starting parameter resolution for model '{effective_model_type}'")
             try:
                 resolved_params = self._resolve_parameters(effective_model_type, task_explicit_params)
-                generation_logger.info(f"[PARAM_RESOLUTION] RETURNED successfully: type={type(resolved_params).__name__}, len={len(resolved_params) if isinstance(resolved_params, dict) else 'N/A'}")
             except Exception as e:
                 generation_logger.critical(f"[PARAM_RESOLUTION] FAILED with {type(e).__name__}: {e}")
                 import traceback
                 generation_logger.critical(f"[PARAM_RESOLUTION] Traceback:\n{traceback.format_exc()}")
                 raise
-
-            # AGGRESSIVE: Dump all guidance-related params
-            generation_logger.info(f"[AGGRESSIVE] Resolved parameters for guidance:")
-            guidance_params = {k: v for k, v in resolved_params.items() if 'guidance' in k or 'phase' in k or 'switch' in k}
-            for k, v in guidance_params.items():
-                generation_logger.info(f"  {k}: {type(v).__name__} = {repr(v)[:100]}")
-
-            generation_logger.info(f"[PARAM_RESOLUTION] Final parameters for '{effective_model_type}': num_inference_steps={resolved_params.get('num_inference_steps')}, guidance_scale={resolved_params.get('guidance_scale')}")
+        generation_logger.debug_block(
+            "PARAMS",
+            {
+                "passthrough": self.passthrough_mode,
+                "explicit_keys": sorted(task_explicit_params.keys()),
+                "resolved_keys": sorted(resolved_params.keys()),
+                "resolved_resolution": resolved_params.get("resolution"),
+                "resolved_video_length": resolved_params.get("video_length"),
+                "resolved_steps": resolved_params.get("num_inference_steps"),
+            },
+        )
 
         # Determine model types for generation
         _base_model_type = self._get_base_model_type(self.current_model)
@@ -639,8 +644,19 @@ class WanOrchestrator:
         is_qwen = self._is_qwen()
         is_t2v = self._is_t2v()
 
-        generation_logger.debug(f"Model detection - VACE: {is_vace}, Flux: {is_flux}, T2V: {is_t2v}")
-        generation_logger.debug(f"Generation parameters - prompt: '{prompt[:50]}...', resolution: {resolution}, length: {video_length}")
+        generation_logger.debug_block(
+            "MODEL_DETECT",
+            {
+                "model": self.current_model,
+                "effective_model": effective_model_type,
+                "is_vace": is_vace,
+                "is_flux": is_flux,
+                "is_qwen": is_qwen,
+                "is_t2v": is_t2v,
+                "resolution": resolution,
+                "video_length": video_length,
+            },
+        )
 
         if is_vace:
             if not video_prompt_type:
@@ -649,7 +665,6 @@ class WanOrchestrator:
                 control_net_weight = 1.0
             if control_net_weight2 is None:
                 control_net_weight2 = 1.0
-            generation_logger.debug(f"VACE parameters - guide: {video_guide}, type: {video_prompt_type}, weights: {control_net_weight}/{control_net_weight2}")
         elif video_guide or video_mask:
             # Non-VACE model with guide/mask: default control weights to avoid NoneType crash in wgp.py
             if control_net_weight is None:
@@ -696,9 +711,7 @@ class WanOrchestrator:
 
         is_passthrough_mode = self.passthrough_mode
 
-        if is_passthrough_mode:
-            generation_logger.info("Using JSON passthrough mode - ALL parameters pass through directly from JSON")
-        else:
+        if not is_passthrough_mode:
             # Normal mode: format LoRAs for WGP
             activated_loras = lora_names or kwargs.get('activated_loras') or []
             eff_multipliers = lora_multipliers or kwargs.get('lora_multipliers') or kwargs.get('loras_multipliers')
@@ -709,12 +722,6 @@ class WanOrchestrator:
                     loras_multipliers_str = " ".join(str(m) for m in eff_multipliers)
             else:
                 loras_multipliers_str = ""
-
-            if activated_loras:
-                generation_logger.info(f"Using {len(activated_loras)} LoRAs from {'lora_names' if lora_names else 'kwargs.activated_loras'}")
-                generation_logger.debug(f"LoRA paths: {[os.path.basename(p) if isinstance(p, str) else str(p) for p in activated_loras]}")
-            else:
-                generation_logger.debug("No LoRAs to apply")
 
         # Build WGP parameter dictionary (delegated to wgp_params module)
         if is_passthrough_mode:
@@ -752,44 +759,36 @@ class WanOrchestrator:
         )
         count_desc = f"{video_length} {'images' if is_flux else 'frames'}"
 
-        generation_logger.essential(f"Generating {model_type_desc} {content_type}: {resolution}, {count_desc}")
-        if is_vace:
-            encodings = [c for c in video_prompt_type if c in "VPDSLCMUA"]
-            generation_logger.debug(f"VACE encodings: {encodings}")
-        if activated_loras:
-            generation_logger.debug(f"LoRAs: {activated_loras}")
-
+        generation_logger.debug(f"Generating {model_type_desc} {content_type}: {resolution}, {count_desc}")
         # Initialize capture variables at outer scope for exception handling
         captured_stdout = None
         captured_stderr = None
         captured_logs = []
 
         try:
-            generation_logger.debug("Calling WGP generate_video with VACE module support")
-
-            if is_vace:
-                generation_logger.debug(f"VACE parameters to WGP - model: {self.current_model}, guide: {video_guide}, type: {video_prompt_type}")
-            else:
-                generation_logger.debug(f"Standard parameters to WGP - model: {self.current_model}")
-
-            # Log parameters being passed to generate_video
-            generation_logger.debug(f"WanOrchestrator.generate calling _generate_video with:")
-            generation_logger.debug(f"  model_type: {self.current_model}")
-            generation_logger.debug(f"  num_inference_steps: {num_inference_steps}")
-            generation_logger.debug(f"  guidance_scale: {actual_guidance}")
-            if is_passthrough_mode:
-                generation_logger.debug(f"  guidance2_scale: {wgp_params.get('guidance2_scale', 'NOT_SET')} (passthrough)")
-            else:
-                generation_logger.debug(f"  guidance2_scale: {wgp_params.get('guidance2_scale', 'NOT_SET')} (normal)")
-            generation_logger.debug(f"  activated_loras: {activated_loras}")
-            generation_logger.debug(f"  loras_multipliers_str: {loras_multipliers_str}")
+            encodings = [c for c in video_prompt_type if c in "VPDSLCMUA"] if is_vace and video_prompt_type else []
+            generation_request_summary = {
+                "model": self.current_model,
+                "path": "vace" if is_vace else ("flux" if is_flux else "t2v"),
+                "passthrough": is_passthrough_mode,
+                "actual_video_length": actual_video_length,
+                "actual_batch_size": actual_batch_size,
+                "guidance_scale": actual_guidance,
+                "guidance2_scale": wgp_params.get("guidance2_scale", "NOT_SET"),
+                "video_prompt_type": video_prompt_type,
+                "vace_encodings": encodings,
+                "video_guide": bool(video_guide),
+                "video_mask": bool(video_mask),
+                "lora_count": len(activated_loras),
+                "lora_source": "lora_names" if lora_names else ("kwargs.activated_loras" if activated_loras else "none"),
+            }
+            generation_logger.debug_block("GENERATE", generation_request_summary)
 
             # Pre-populate WGP UI state for LoRA compatibility
             original_loras = self.state.get("loras", [])
             if activated_loras and len(activated_loras) > 0:
                 self._log_lora_application_trace(activated_loras, loras_multipliers_str, lora_names)
                 self.state["loras"] = activated_loras.copy()
-                generation_logger.debug(f"WanOrchestrator: state['loras'] = {self.state['loras']}")
 
             try:
                 # Pre-initialize WGP process status
@@ -836,12 +835,19 @@ class WanOrchestrator:
                 # Restore original UI state after generation
                 if activated_loras and len(activated_loras) > 0:
                     self.state["loras"] = original_loras
-                    generation_logger.debug(f"WanOrchestrator: Restored original state['loras'] = {self.state['loras']}")
 
             # Extract output path (delegated to output module)
             output_path = extract_output_path(
                 self.state, model_type_desc,
                 captured_stdout, captured_stderr, captured_logs,
+            )
+            generation_logger.debug_block(
+                "OUTPUT",
+                {
+                    "model": self.current_model,
+                    "content_type": content_type,
+                    "output_path": output_path,
+                },
             )
 
             # Memory monitoring (delegated to output module)
@@ -916,13 +922,16 @@ class WanOrchestrator:
         try:
             shutil.copyfile(str(sample_src), str(out_path))
         except OSError as e:
-            generation_logger.debug("[SMOKE] Failed to copy sample file %s, creating empty placeholder: %s", sample_src, e)
+            generation_logger.debug_anomaly(
+                "SMOKE",
+                f"Failed to copy sample file {sample_src}, creating empty placeholder: {e}",
+            )
             out_path.write_bytes(b"")
         try:
             self.state["gen"]["file_list"].append(str(out_path))
         except (KeyError, TypeError) as e:
-            generation_logger.debug("[SMOKE] Failed to update state gen file_list: %s", e)
-        generation_logger.info(f"[SMOKE] Generated placeholder output at: {out_path}")
+            generation_logger.debug_anomaly("SMOKE", f"Failed to update state gen file_list: {e}")
+        generation_logger.debug_anomaly("SMOKE", f"Generated placeholder output at: {out_path}")
         return str(out_path)
 
     def _filter_wgp_params(self, wgp_params: dict) -> dict:
@@ -935,63 +944,41 @@ class WanOrchestrator:
             _filtered = {k: v for k, v in wgp_params.items() if k in _allowed}
             _dropped = sorted(set(wgp_params.keys()) - _allowed)
             if _dropped:
-                generation_logger.debug(f"[PARAM_SANITIZE] Dropping unsupported params: {_dropped}")
+                generation_logger.debug_anomaly("PARAM_SANITIZE", f"Dropping unsupported params: {_dropped}")
             return _filtered
         except (ValueError, TypeError, RuntimeError) as _e:
             return wgp_params
 
     def _log_final_params(self, filtered_params: dict) -> None:
         """Log all final parameters being sent to WGP generate_video()."""
-        generation_logger.info("=" * 80)
-        generation_logger.info("FINAL PARAMETERS BEING SENT TO WGP generate_video():")
-        generation_logger.info("=" * 80)
-        for key, value in sorted(filtered_params.items()):
-            if key == 'state':
-                state_summary = {
-                    'model_type': value.get('model_type'),
-                    'gen_file_count': len((value.get('gen') or {}).get('file_list', [])),
-                    'loras_count': len(value.get('loras') or [])
-                }
-                generation_logger.info(f"[FINAL_PARAMS] {key}: {state_summary} (truncated)")
-            elif key in ('guidance_scale', 'guidance2_scale', 'guidance3_scale', 'num_inference_steps', 'switch_threshold', 'switch_threshold2'):
-                generation_logger.info(f"[FINAL_PARAMS] {key}: {value} *")
-            else:
-                generation_logger.info(f"[FINAL_PARAMS] {key}: {value}")
-        generation_logger.info("=" * 80)
+        state = filtered_params.get("state") if isinstance(filtered_params.get("state"), dict) else {}
+        final_param_summary = {
+            "keys": sorted(filtered_params.keys()),
+            "resolution": filtered_params.get("resolution"),
+            "video_length": filtered_params.get("video_length"),
+            "num_inference_steps": filtered_params.get("num_inference_steps"),
+            "guidance_scale": filtered_params.get("guidance_scale"),
+            "guidance2_scale": filtered_params.get("guidance2_scale"),
+            "video_prompt_type": filtered_params.get("video_prompt_type"),
+            "use_uni3c": filtered_params.get("use_uni3c"),
+            "state": {
+                "model_type": state.get("model_type"),
+                "gen_file_count": len((state.get("gen") or {}).get("file_list", [])) if isinstance(state.get("gen"), dict) else 0,
+                "loras_count": len(state.get("loras") or []),
+            },
+        }
+        generation_logger.debug_block("GENERATE", final_param_summary)
 
     def _log_lora_application_trace(self, activated_loras: list, loras_multipliers_str: str, lora_names) -> None:
         """Log detailed LoRA application breakdown."""
-        generation_logger.debug(f"WanOrchestrator: Pre-populating WGP state with {len(activated_loras)} LoRAs")
-        generation_logger.info("[LORA_APPLICATION_TRACE] " + "=" * 55)
-        generation_logger.info("[LORA_APPLICATION_TRACE] COMPLETE LoRA APPLICATION BREAKDOWN:")
-        generation_logger.info("[LORA_APPLICATION_TRACE] " + "=" * 55)
-
         multiplier_list = loras_multipliers_str.split() if loras_multipliers_str else []
-
-        for idx, lora_path in enumerate(activated_loras):
-            lora_filename = str(lora_path).split('/')[-1].split('\\')[-1]
-            mult_str = multiplier_list[idx] if idx < len(multiplier_list) else "1.0"
-            phases = mult_str.split(";")
-
-            generation_logger.info("[LORA_APPLICATION_TRACE]")
-            generation_logger.info(f"[LORA_APPLICATION_TRACE] LoRA #{idx+1}: {lora_filename}")
-            generation_logger.info(f"[LORA_APPLICATION_TRACE]   Full path: {lora_path}")
-            generation_logger.info(f"[LORA_APPLICATION_TRACE]   Multiplier string: {mult_str}")
-            generation_logger.info("[LORA_APPLICATION_TRACE]   Phase breakdown:")
-
-            if len(phases) == 1:
-                generation_logger.info(f"[LORA_APPLICATION_TRACE]     - All phases: {phases[0]} (constant strength)")
-            else:
-                generation_logger.info(f"[LORA_APPLICATION_TRACE]     - Phase 1 (steps 0-1): {phases[0] if len(phases) > 0 else '1.0'}")
-                generation_logger.info(f"[LORA_APPLICATION_TRACE]     - Phase 2 (steps 2-3): {phases[1] if len(phases) > 1 else '1.0'}")
-                generation_logger.info(f"[LORA_APPLICATION_TRACE]     - Phase 3 (steps 4-5): {phases[2] if len(phases) > 2 else '1.0'}")
-
-        generation_logger.info("[LORA_APPLICATION_TRACE]")
-        generation_logger.info(f"[LORA_APPLICATION_TRACE] SUMMARY:")
-        generation_logger.info(f"[LORA_APPLICATION_TRACE]   Total LoRAs: {len(activated_loras)}")
-        generation_logger.info(f"[LORA_APPLICATION_TRACE]   Model config LoRAs: {len(activated_loras) - 1 if lora_names and len(lora_names) > 0 else len(activated_loras)}")
-        generation_logger.info(f"[LORA_APPLICATION_TRACE]   amount_of_motion LoRA: {'Yes' if lora_names and len(lora_names) > 0 else 'No'}")
-        generation_logger.info("[LORA_APPLICATION_TRACE] " + "=" * 55)
+        lora_summary = {
+            "count": len(activated_loras),
+            "filenames": [os.path.basename(str(path)) for path in activated_loras],
+            "multipliers": multiplier_list,
+            "amount_of_motion_lora": bool(lora_names and len(lora_names) > 0),
+        }
+        generation_logger.debug_anomaly("LORA_APPLICATION_TRACE", f"{safe_dict_repr(lora_summary)}")
 
     # ------------------------------------------------------------------
     # Convenience methods for specific generation types

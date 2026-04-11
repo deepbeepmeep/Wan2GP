@@ -58,7 +58,7 @@ def get_video_frame_count_ffprobe(input_video_path: str) -> int | None:
                 return frame_count
 
         # Method 2: Fallback to counting frames (slower but reliable)
-        generation_logger.debug(f"[FFPROBE] Metadata count failed, counting frames manually...")
+        generation_logger.debug_anomaly("FFPROBE", f"Metadata count failed, counting frames manually...")
         cmd2 = [
             'ffprobe', '-v', 'error',
             '-select_streams', 'v:0',

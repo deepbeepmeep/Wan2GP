@@ -32,5 +32,5 @@ def move_wgp_output_to_task_type_dir(
     )
     new_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(output_file), str(new_path))
-    headless_logger.info(f"Moved WGP output to {new_path}", task_id=task_id)
+    headless_logger.debug(f"Moved WGP output to {new_path}", task_id=task_id)
     return str(new_path)

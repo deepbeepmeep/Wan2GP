@@ -14,8 +14,6 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
     """
     Convert a database task row to a GenerationTask object for the queue system.
     """
-    headless_logger.debug(f"Converting DB task to GenerationTask", task_id=task_id)
-
     prompt = db_task_params.get("prompt", "")
 
     # For img2img tasks, empty prompt is acceptable (will use minimal changes)
@@ -24,7 +22,6 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
     if not prompt:
         if task_type in img2img_task_types:
             prompt = " "  # Minimal prompt for img2img
-            headless_logger.debug(f"Task {task_id}: Using minimal prompt for img2img task", task_id=task_id)
         else:
             raise ValueError(f"Task {task_id}: prompt is required")
     
@@ -32,6 +29,16 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
     if not model:
         from source.task_handlers.tasks.task_types import get_default_model
         model = get_default_model(task_type)
+    headless_logger.debug_block(
+        "TASK_CONVERT",
+        {
+            "task_type": task_type,
+            "model": model,
+            "prompt_present": bool(prompt.strip()),
+            "debug_mode": debug_mode,
+        },
+        task_id=task_id,
+    )
     
     generation_params = {}
     
@@ -82,7 +89,7 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
     
     # Layer 1 Uni3C logging - detect whitelist failures early
     if "use_uni3c" in generation_params:
-        headless_logger.info(
+        headless_logger.debug(
             f"[UNI3C] Task {task_id}: use_uni3c={generation_params.get('use_uni3c')}, "
             f"guide_video={generation_params.get('uni3c_guide_video', 'NOT_SET')}, "
             f"strength={generation_params.get('uni3c_strength', 'NOT_SET')}"
@@ -162,7 +169,6 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
         try:
             import requests
             import os
-            headless_logger.debug(f"Downloading image for img2img: {image_url}", task_id=task_id)
             response = requests.get(image_url, timeout=30)
             response.raise_for_status()
 
@@ -170,8 +176,6 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
                 tmp_file.write(response.content)
                 local_image_path = tmp_file.name
-
-            headless_logger.info(f"[Z_IMAGE_I2I] Downloaded image to: {local_image_path}", task_id=task_id)
 
             # Handle resolution - auto-detect from image or use provided
             image_size = db_task_params.get("image_size", "auto")
@@ -201,10 +205,15 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
                         scaled_height = max(8, scaled_height)
 
                         generation_params["resolution"] = f"{scaled_width}x{scaled_height}"
-                        headless_logger.info(
-                            f"Scaled resolution: {width}x{height} ({current_pixels:,} px) → "
-                            f"{scaled_width}x{scaled_height} ({scaled_width*scaled_height:,} px, scale={scale:.3f})",
-                            task_id=task_id
+                        headless_logger.debug_block(
+                            "TASK_CONVERT",
+                            {
+                                "image_path": local_image_path,
+                                "original_resolution": (width, height),
+                                "scaled_resolution": (scaled_width, scaled_height),
+                                "scale": round(scale, 3),
+                            },
+                            task_id=task_id,
                         )
                     else:
                         generation_params["resolution"] = DEFAULT_IMAGE_RESOLUTION
@@ -236,10 +245,16 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
         actual_strength = db_task_params.get("denoising_strength") or db_task_params.get("denoise_strength") or db_task_params.get("strength", 0.7)
         generation_params["denoising_strength"] = actual_strength
 
-        headless_logger.info(
-            f"[Z_IMAGE_I2I] Setup complete - local_image={local_image_path}, resolution={generation_params['resolution']}, "
-            f"strength={actual_strength}, steps={generation_params['num_inference_steps']}",
-            task_id=task_id
+        headless_logger.debug_block(
+            "TASK_CONVERT",
+            {
+                "mode": "z_image_turbo_i2i",
+                "local_image": local_image_path,
+                "resolution": generation_params["resolution"],
+                "strength": actual_strength,
+                "steps": generation_params["num_inference_steps"],
+            },
+            task_id=task_id,
         )
 
         # Override model to use Z-Image img2img

@@ -33,16 +33,16 @@ def generate_single_image_prompt(
     try:
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
 
-        model_logger.debug(f"[VLM_SINGLE] Generating prompt for single image: {Path(image_path).name}")
+        model_logger.debug_anomaly("VLM_SINGLE", f"Generating prompt for single image: {Path(image_path).name}")
 
         img = Image.open(image_path).convert("RGB")
 
         local_model_path = wan_dir / "ckpts" / "Qwen2.5-VL-7B-Instruct"
 
-        model_logger.debug(f"[VLM_SINGLE] Checking for model at {local_model_path}...")
+        model_logger.debug_anomaly("VLM_SINGLE", f"Checking for model at {local_model_path}...")
         download_qwen_vlm_if_needed(local_model_path)
 
-        model_logger.debug(f"[VLM_SINGLE] Initializing Qwen2.5-VL-7B-Instruct from local path: {local_model_path}")
+        model_logger.debug_anomaly("VLM_SINGLE", f"Initializing Qwen2.5-VL-7B-Instruct from local path: {local_model_path}")
         extender = create_qwen_prompt_expander(
             model_name=str(local_model_path),
             device=device,
@@ -77,7 +77,7 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
 
         system_prompt = "You are a video direction assistant. You MUST respond with EXACTLY THREE SENTENCES following this structure: 1) SCENE & CAMERA, 2) SUBJECT MOTION, 3) ENVIRONMENTAL DYNAMICS. Focus on natural motion that could emerge from this single image."
 
-        model_logger.debug(f"[VLM_SINGLE] Running inference...")
+        model_logger.debug_anomaly("VLM_SINGLE", f"Running inference...")
         result = extender.extend_with_img(
             prompt=query,
             system_prompt=system_prompt,
@@ -85,7 +85,13 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
         )
 
         vlm_prompt = result.prompt.strip()
-        model_logger.debug(f"[VLM_SINGLE] Generated: {vlm_prompt}")
+        model_logger.debug_block(
+            "VLM_RESULT",
+            {
+                "prompts": 1,
+                "avg_length": len(vlm_prompt),
+            },
+        )
 
         # Cleanup
         try:
@@ -106,10 +112,10 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
         model_logger.error(f"[VLM_SINGLE] ERROR: Failed to generate single image prompt: {e}", exc_info=True)
 
         if base_prompt and base_prompt.strip():
-            model_logger.debug(f"[VLM_SINGLE] Falling back to base prompt: {base_prompt}")
+            model_logger.debug_anomaly("VLM_SINGLE", f"Falling back to base prompt: {base_prompt}")
             return base_prompt
         else:
-            model_logger.debug(f"[VLM_SINGLE] Falling back to generic prompt")
+            model_logger.debug_anomaly("VLM_SINGLE", f"Falling back to generic prompt")
             return "cinematic video"
 
 
@@ -143,33 +149,31 @@ def generate_single_image_prompts_batch(
 
         if torch.cuda.is_available():
             gpu_mem_before = torch.cuda.memory_allocated() / BYTES_PER_GB
-            model_logger.debug(f"[VLM_SINGLE_BATCH] GPU memory BEFORE: {gpu_mem_before:.2f} GB")
+            model_logger.debug_anomaly("VLM_SINGLE_BATCH", f"GPU memory BEFORE: {gpu_mem_before:.2f} GB")
 
-        model_logger.debug(f"[VLM_SINGLE_BATCH] Initializing Qwen2.5-VL-7B-Instruct for {len(image_paths)} single images...")
+        model_logger.debug_anomaly("VLM_SINGLE_BATCH", f"Initializing Qwen2.5-VL-7B-Instruct for {len(image_paths)} single images...")
 
         local_model_path = wan_dir / "ckpts" / "Qwen2.5-VL-7B-Instruct"
 
-        model_logger.debug(f"[VLM_SINGLE_BATCH] Checking for model at {local_model_path}...")
+        model_logger.debug_anomaly("VLM_SINGLE_BATCH", f"Checking for model at {local_model_path}...")
         download_qwen_vlm_if_needed(local_model_path)
 
-        model_logger.debug(f"[VLM_SINGLE_BATCH] Using local model from: {local_model_path}")
+        model_logger.debug_anomaly("VLM_SINGLE_BATCH", f"Using local model from: {local_model_path}")
         extender = create_qwen_prompt_expander(
             model_name=str(local_model_path),
             device=device,
             is_vl=True
         )
 
-        model_logger.debug(f"[VLM_SINGLE_BATCH] Model loaded")
-
         system_prompt = "You are a video direction assistant. You MUST respond with EXACTLY THREE SENTENCES following this structure: 1) SCENE & CAMERA, 2) SUBJECT MOTION, 3) ENVIRONMENTAL DYNAMICS. Focus on natural motion that could emerge from this single image."
 
         results = []
         for i, (image_path, base_prompt) in enumerate(zip(image_paths, base_prompts)):
             try:
-                model_logger.debug(f"[VLM_SINGLE_BATCH] Processing image {i+1}/{len(image_paths)}: {Path(image_path).name}")
+                model_logger.debug_anomaly("VLM_SINGLE_BATCH", f"Processing image {i+1}/{len(image_paths)}: {Path(image_path).name}")
 
                 img = Image.open(image_path).convert("RGB")
-                model_logger.debug(f"[VLM_SINGLE_BATCH] Image {i}: dimensions={img.size}")
+                model_logger.debug_anomaly("VLM_SINGLE_BATCH", f"Image {i}: dimensions={img.size}")
 
                 base_prompt_text = base_prompt if base_prompt and base_prompt.strip() else "the objects/people inside the scene move excitingly and things transform or shift with the camera"
 
@@ -204,7 +208,7 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
                 )
 
                 vlm_prompt = result.prompt.strip()
-                model_logger.debug(f"[VLM_SINGLE_BATCH] Generated: {vlm_prompt}")
+                model_logger.debug_anomaly("VLM_SINGLE_BATCH", f"Generated: {vlm_prompt}")
 
                 results.append(vlm_prompt)
 
@@ -215,33 +219,41 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
                 else:
                     results.append("cinematic video")
 
-        model_logger.debug(f"[VLM_SINGLE_BATCH] Completed {len(results)}/{len(image_paths)} prompts")
+        model_logger.debug_anomaly("VLM_SINGLE_BATCH", f"Completed {len(results)}/{len(image_paths)} prompts")
+        avg_length = sum(len(prompt) for prompt in results) / len(results) if results else 0
+        model_logger.debug_block(
+            "VLM_RESULT",
+            {
+                "prompts": len(results),
+                "avg_length": round(avg_length, 1),
+            },
+        )
 
         if torch.cuda.is_available():
             gpu_mem_before_cleanup = torch.cuda.memory_allocated() / BYTES_PER_GB
-            headless_logger.debug(f"[VLM_SINGLE_CLEANUP] GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
+            headless_logger.debug_anomaly("VLM_SINGLE_CLEANUP", f"GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
 
-        headless_logger.debug(f"[VLM_SINGLE_CLEANUP] Cleaning up VLM model and processor...")
+        headless_logger.debug_anomaly("VLM_SINGLE_CLEANUP", f"Cleaning up VLM model and processor...")
         try:
             del extender.model
             del extender.processor
             del extender
-            headless_logger.essential(f"[VLM_SINGLE_CLEANUP] Successfully deleted VLM objects")
+            headless_logger.debug_anomaly("VLM_SINGLE_CLEANUP", "Successfully deleted VLM objects")
         except AttributeError as e:
             headless_logger.warning(f"[VLM_SINGLE_CLEANUP] Error during deletion: {e}")
 
         import gc
         collected = gc.collect()
-        headless_logger.debug(f"[VLM_SINGLE_CLEANUP] Garbage collected {collected} objects")
+        headless_logger.debug_anomaly("VLM_SINGLE_CLEANUP", f"Garbage collected {collected} objects")
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             gpu_mem_after = torch.cuda.memory_allocated() / BYTES_PER_GB
             gpu_freed = gpu_mem_before_cleanup - gpu_mem_after
-            headless_logger.debug(f"[VLM_SINGLE_CLEANUP] GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
-            headless_logger.debug(f"[VLM_SINGLE_CLEANUP] GPU memory freed: {gpu_freed:.2f} GB")
+            headless_logger.debug_anomaly("VLM_SINGLE_CLEANUP", f"GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
+            headless_logger.debug_anomaly("VLM_SINGLE_CLEANUP", f"GPU memory freed: {gpu_freed:.2f} GB")
 
-        headless_logger.essential(f"[VLM_SINGLE_CLEANUP] VLM cleanup complete")
+        headless_logger.debug_anomaly("VLM_SINGLE_CLEANUP", "VLM cleanup complete")
 
         return results
 

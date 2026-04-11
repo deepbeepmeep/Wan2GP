@@ -81,7 +81,7 @@ def validate_lora_file(file_path: Path, filename: str) -> tuple[bool, str]:
                     headless_logger.warning(f"{filename} contains many tensors ({len(keys)}) - might be a full model")
 
         except ImportError:
-            headless_logger.debug(f"[WARNING] safetensors not available for detailed validation of {filename}")
+            headless_logger.debug_anomaly("WARNING", f"safetensors not available for detailed validation of {filename}")
         except (OSError, ValueError, RuntimeError) as e:
             return False, f"Safetensors file appears corrupted: {e}"
 
@@ -163,7 +163,7 @@ def _normalize_activated_loras_list(current_activated) -> list:
         try:
             return [str(item).strip() for item in str(current_activated).split(',') if item.strip()]
         except (ValueError, TypeError) as e:
-            headless_logger.debug(f"[WARNING] Failed to normalize activated_loras value '{current_activated}': {e}")
+            headless_logger.debug_anomaly("WARNING", f"Failed to normalize activated_loras value '{current_activated}': {e}")
             return []
     return current_activated
 
@@ -176,13 +176,13 @@ def _apply_special_lora_settings(task_id: str, lora_type: str, lora_basename: st
     headless_logger.essential(f"Applying {lora_type} LoRA settings.", task_id=task_id)
 
     # [STEPS DEBUG] Add detailed debug for steps logic
-    headless_logger.debug(f"[STEPS DEBUG] {lora_type}: task_params_dict keys: {list(task_params_dict.keys())}")
+    headless_logger.debug_anomaly("STEPS DEBUG", f"{lora_type}: task_params_dict keys: {list(task_params_dict.keys())}")
     if "steps" in task_params_dict:
-        headless_logger.debug(f"[STEPS DEBUG] {lora_type}: Found 'steps' = {task_params_dict['steps']}")
+        headless_logger.debug_anomaly("STEPS DEBUG", f"{lora_type}: Found 'steps' = {task_params_dict['steps']}")
     if "num_inference_steps" in task_params_dict:
-        headless_logger.debug(f"[STEPS DEBUG] {lora_type}: Found 'num_inference_steps' = {task_params_dict['num_inference_steps']}")
+        headless_logger.debug_anomaly("STEPS DEBUG", f"{lora_type}: Found 'num_inference_steps' = {task_params_dict['num_inference_steps']}")
     if "video_length" in task_params_dict:
-        headless_logger.debug(f"[STEPS DEBUG] {lora_type}: Found 'video_length' = {task_params_dict['video_length']}")
+        headless_logger.debug_anomaly("STEPS DEBUG", f"{lora_type}: Found 'video_length' = {task_params_dict['video_length']}")
 
     # Handle steps logic
     if "steps" in task_params_dict:

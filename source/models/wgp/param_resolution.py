@@ -9,7 +9,8 @@ Resolves generation parameters with explicit precedence:
 
 from source.core.log import (
     generation_logger,
-    safe_dict_repr, safe_log_params, safe_log_change
+    safe_dict_repr,
+    safe_log_change,
 )
 from source.runtime.wgp_bridge import get_default_settings
 
@@ -49,61 +50,19 @@ def resolve_parameters(orchestrator, model_type: str, task_params: dict) -> dict
     # 2. Apply model JSON configuration (medium priority)
     try:
         model_defaults = get_default_settings(model_type)
-        # Safe logging: Use safe_dict_repr to prevent hanging
-        generation_logger.debug(f"get_default_settings('{model_type}') returned: {safe_dict_repr(model_defaults) if model_defaults else 'None'}")
-        generation_logger.debug(f"Type: {type(model_defaults)}")
+        generation_logger.debug(
+            f"Model defaults for '{model_type}': "
+            f"{safe_dict_repr(model_defaults) if model_defaults else 'None'}"
+        )
 
         if model_defaults:
-            # DIAGNOSTIC: Log model_defaults structure before iteration
-            generation_logger.info(f"🔍 DIAGNOSTIC: model_defaults has {len(model_defaults)} parameters")
-            generation_logger.info(f"🔍 DIAGNOSTIC: model_defaults keys: {list(model_defaults.keys())}")
-            generation_logger.info(f"🔍 DIAGNOSTIC: model_defaults is type: {type(model_defaults)}")
-            generation_logger.info(f"🔍 DIAGNOSTIC: model_defaults id: {id(model_defaults)}")
-
-            # AGGRESSIVE: Dump full model_defaults values
-            generation_logger.info(f"🔍 AGGRESSIVE_DUMP: model_defaults full contents:")
-            for key in list(model_defaults.keys())[:10]:  # First 10 for safety
-                val = model_defaults.get(key)
-                generation_logger.info(f"  {key}: {type(val).__name__} = {repr(val)[:200]}")
-            generation_logger.info(f"  ... and {max(0, len(model_defaults) - 10)} more")
-
-            # Safe logging: Only show keys before applying model config
-            generation_logger.debug(f"Before applying model config - resolved_params keys: {list(resolved_params.keys())}")
-
-            # DEFENSIVE: Create a snapshot of items to prevent iterator invalidation
             model_items = list(model_defaults.items())
-            generation_logger.info(f"🔍 DIAGNOSTIC: Created snapshot of {len(model_items)} items for iteration")
+            applied_model_defaults = 0
+            skipped_model_defaults = 0
 
             for idx, (param, value) in enumerate(model_items):
-                # DIAGNOSTIC: Log progress every item to pinpoint exact freeze location
-                generation_logger.info(f"🔍 LOOP [{idx+1}/{len(model_items)}]: Processing param='{param}', value_type={type(value).__name__}")
-
                 # JSON passthrough mode: Allow activated_loras and loras_multipliers to pass directly
                 if param not in ["prompt"]:
-                    generation_logger.debug(f"🔍 LOOP [{idx+1}]: Getting old value for '{param}'")
-
-                    # DEEP DIAGNOSTIC: Log resolved_params state before .get() call
-                    try:
-                        generation_logger.debug(f"[DEEP_DIAG] resolved_params type: {type(resolved_params).__name__}")
-                        generation_logger.debug(f"[DEEP_DIAG] resolved_params is None: {resolved_params is None}")
-                        if resolved_params is not None:
-                            generation_logger.debug(f"[DEEP_DIAG] resolved_params keys count: {len(resolved_params)}")
-                            generation_logger.debug(f"[DEEP_DIAG] param '{param}' in resolved_params: {param in resolved_params}")
-                    except Exception as diag_e:
-                        generation_logger.error(f"[DEEP_DIAG] Failed to log resolved_params state: {diag_e}")
-
-                    # AGGRESSIVE: Dump current resolved_params dict around critical parameters
-                    if param in ['guidance_phases', 'guidance_scale', 'guidance2_scale', 'guidance3_scale']:
-                        generation_logger.info(f"[AGGRESSIVE] LOOP [{idx+1}] PRE-PROCESSING resolved_params snapshot:")
-                        generation_logger.info(f"  Type: {type(resolved_params).__name__}")
-                        if isinstance(resolved_params, dict):
-                            guidance_keys = [k for k in resolved_params.keys() if 'guidance' in k or 'switch' in k or 'phase' in k]
-                            for k in guidance_keys:
-                                v = resolved_params.get(k)
-                                generation_logger.info(f"  {k}: {type(v).__name__} = {repr(v)[:100]}")
-                        else:
-                            generation_logger.info(f"  WARNING: resolved_params is {type(resolved_params)}, not dict!")
-
                     try:
                         old_value = resolved_params.get(param, "NOT_SET")
                     except Exception as e:
@@ -118,20 +77,11 @@ def resolve_parameters(orchestrator, model_type: str, task_params: dict) -> dict
 
                     # DEFENSIVE: Skip None values from model defaults (they shouldn't override)
                     if value is None:
-                        generation_logger.debug(f"⏭️  LOOP [{idx+1}]: Skipped '{param}' - model default is None (invalid)")
+                        skipped_model_defaults += 1
                         continue
 
-                    generation_logger.debug(f"🔍 LOOP [{idx+1}]: Assigning new value for '{param}'")
                     resolved_params[param] = value
-
-                    # AGGRESSIVE: Log after assignment
-                    if param in ['guidance_phases', 'guidance_scale', 'guidance2_scale', 'guidance3_scale']:
-                        generation_logger.info(f"[AGGRESSIVE] LOOP [{idx+1}] POST-ASSIGNMENT:")
-                        generation_logger.info(f"  resolved_params['{param}'] = {repr(resolved_params.get(param))[:100]}")
-                        generation_logger.info(f"  old_value was: {repr(old_value)[:100]}")
-                        generation_logger.info(f"  value param was: {repr(value)[:100]}")
-
-                    generation_logger.debug(f"🔍 LOOP [{idx+1}]: Logging change for '{param}'")
+                    applied_model_defaults += 1
                     # Safe logging: Use safe_log_change to prevent hanging on large values
                     try:
                         change_log = safe_log_change(param, old_value, value)
@@ -145,54 +95,40 @@ def resolve_parameters(orchestrator, model_type: str, task_params: dict) -> dict
                         import traceback
                         generation_logger.critical(f"[CRASH_POINT] Full traceback:\n{traceback.format_exc()}")
                         raise
-
-                    generation_logger.debug(f"✅ LOOP [{idx+1}]: Completed '{param}'")
                 else:
-                    generation_logger.info(f"⏭️  LOOP [{idx+1}]: Skipped '{param}' (excluded)")
+                    skipped_model_defaults += 1
 
-            generation_logger.info(f"✅ DIAGNOSTIC: Loop completed successfully, processed {len(model_items)} items")
-
-            # Safe logging: Only show keys after applying model config
-            generation_logger.debug(f"After applying model config - resolved_params keys: {list(resolved_params.keys())}")
-            generation_logger.debug(f"Applied model config for '{model_type}': {len(model_defaults)} parameters")
+            generation_logger.debug_block(
+                "MODEL_DEFAULTS",
+                {
+                    "model": model_type,
+                    "applied": applied_model_defaults,
+                    "skipped": skipped_model_defaults,
+                    "total": len(model_items),
+                }
+            )
         else:
             generation_logger.warning(f"No model configuration found for '{model_type}'")
 
     except (ValueError, KeyError, TypeError) as e:
         generation_logger.warning(f"Could not load model configuration for '{model_type}': {e}")
-        generation_logger.debug(f"Exception details: {str(e)}")
-        import traceback
-        generation_logger.debug(f"Traceback: {traceback.format_exc()}")
 
     # 3. Apply task explicit parameters (highest priority)
-    # Safe logging: Use safe_dict_repr to prevent hanging on large nested structures
-    generation_logger.debug(safe_log_params(task_params, "Task explicit parameters"))
-    generation_logger.debug(f"Before applying task params - resolved_params keys: {list(resolved_params.keys())}")
+    generation_logger.debug(
+        f"Task explicit parameters for '{model_type}': {safe_dict_repr(task_params)}"
+    )
 
     for param, value in task_params.items():
         if value is not None:  # Don't override with None values
             old_value = resolved_params.get(param, "NOT_SET")
             resolved_params[param] = value
-            # Avoid logging large nested dicts that can hang
-            if param in ["orchestrator_payload", "orchestrator_details", "full_orchestrator_payload"]:
-                generation_logger.debug(f"Task override {param}: <large dict with {len(value) if isinstance(value, dict) else '?'} keys>")
-            else:
-                # Limit string representation to prevent hanging on large values
-                try:
-                    old_str = str(old_value)
-                    value_str = str(value)
-                    max_chars = 500
-                    if len(old_str) > max_chars:
-                        old_str = old_str[:max_chars] + "..."
-                    if len(value_str) > max_chars:
-                        value_str = value_str[:max_chars] + "..."
-                    generation_logger.debug(f"Task override {param}: {old_str} → {value_str}")
-                except (ValueError, KeyError, TypeError) as e:
-                    generation_logger.debug(f"Task override {param}: <repr failed: {e}>")
+            generation_logger.debug(safe_log_change(param, old_value, value))
 
-    # Log keys only to avoid hanging on large nested structures
-    generation_logger.debug(f"FINAL resolved_params keys: {list(resolved_params.keys())}")
-    generation_logger.debug(f"Parameter resolution for '{model_type}': {len(task_params)} task overrides applied")
+    generation_logger.debug(
+        f"Parameter resolution for '{model_type}': "
+        f"task_overrides={sum(1 for value in task_params.values() if value is not None)}, "
+        f"resolved_keys={list(resolved_params.keys())}"
+    )
     return resolved_params
 
 

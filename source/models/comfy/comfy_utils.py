@@ -40,7 +40,7 @@ class ComfyUIManager:
         if not comfy_main.exists():
             raise FileNotFoundError(f"ComfyUI not found at {self.comfy_path}")
 
-        headless_logger.info(f"Starting ComfyUI server at {self.comfy_path}")
+        headless_logger.debug(f"Starting ComfyUI server at {self.comfy_path}")
 
         self.process = subprocess.Popen(
             ["python", "main.py", "--listen", "0.0.0.0", "--port", str(self.port)],
@@ -50,7 +50,7 @@ class ComfyUIManager:
             preexec_fn=os.setsid
         )
 
-        headless_logger.info(f"ComfyUI started with PID: {self.process.pid}")
+        headless_logger.debug(f"ComfyUI started with PID: {self.process.pid}")
         return True
 
     async def wait_for_ready(self, client: httpx.AsyncClient, timeout: int = 120) -> bool:
@@ -62,7 +62,7 @@ class ComfyUIManager:
             try:
                 response = await client.get(url, timeout=5.0)
                 if response.status_code == 200:
-                    headless_logger.info("ComfyUI is ready!")
+                    headless_logger.debug("ComfyUI is ready!")
                     return True
             except (httpx.HTTPError, OSError) as e:
                 headless_logger.debug(f"ComfyUI not ready yet: {e}")
@@ -75,7 +75,7 @@ class ComfyUIManager:
     def stop(self):
         """Stop ComfyUI server."""
         if self.process:
-            headless_logger.info(f"Stopping ComfyUI (PID: {self.process.pid})")
+            headless_logger.debug(f"Stopping ComfyUI (PID: {self.process.pid})")
             try:
                 os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
                 self.process.wait(timeout=10)

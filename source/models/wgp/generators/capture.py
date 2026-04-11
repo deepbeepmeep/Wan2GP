@@ -198,26 +198,11 @@ def run_with_capture(
     capture_handler = CaptureHandler(captured_logs)
     capture_handler.setFormatter(py_logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
 
-    root_logger = py_logging.getLogger()
-    candidate_loggers = [
-        py_logging.getLogger("diffusers"),
-        py_logging.getLogger("transformers"),
-        py_logging.getLogger("torch"),
-        py_logging.getLogger("PIL"),
-    ]
+    loggers_to_capture = [py_logging.getLogger()]
 
-    loggers_to_capture = [root_logger]
-    for lg in candidate_loggers:
-        if getattr(lg, "propagate", True) is False:
-            loggers_to_capture.append(lg)
-
-    # Store original levels and add handler
-    original_levels = {}
+    # Preserve library logger thresholds set by suppress_library_logging().
     for logger in loggers_to_capture:
-        original_levels[logger.name] = logger.level
         logger.addHandler(capture_handler)
-        if logger.level > py_logging.DEBUG:
-            logger.setLevel(py_logging.DEBUG)
 
     original_stdout = sys.stdout
     original_stderr = sys.stderr
@@ -235,11 +220,9 @@ def run_with_capture(
         sys.stdout = original_stdout
         sys.stderr = original_stderr
 
-        # Remove capture handler and restore levels
+        # Remove capture handler without overriding configured logger levels.
         for logger in loggers_to_capture:
             logger.removeHandler(capture_handler)
-            if logger.name in original_levels:
-                logger.setLevel(original_levels[logger.name])
 
     if caught_exc is not None:
         # Attach captured output to the exception so callers can inspect it

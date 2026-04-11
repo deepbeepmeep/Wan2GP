@@ -125,5 +125,7 @@ class WorkerStatusDisplay:
         """Increment counter and restart plant from seed."""
         self._tasks_done += 1
         self._tick = 0
+        if self._active:
+            print("··· idle ···", flush=True)
         print("\n" * _HEIGHT, end="", flush=True)
         self.show_idle()

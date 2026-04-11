@@ -46,7 +46,7 @@ async def _ensure_comfy_running() -> bool:
             return False
 
         try:
-            headless_logger.info("First ComfyUI task detected - starting ComfyUI server...")
+            headless_logger.debug("First ComfyUI task detected - starting ComfyUI server...")
 
             # Check if ComfyUI exists
             comfy_main = Path(COMFY_PATH) / "main.py"
@@ -63,15 +63,15 @@ async def _ensure_comfy_running() -> bool:
                     raise Exception("ComfyUI failed to become ready")
 
             _comfy_manager = manager
-            headless_logger.info("✅ ComfyUI started successfully and is ready for tasks")
+            headless_logger.debug("ComfyUI started successfully and is ready for tasks")
             return True
 
         except FileNotFoundError as e:
-            headless_logger.error(f"❌ ComfyUI not available: {e}")
+            headless_logger.error(f"ComfyUI not available: {e}")
             _comfy_startup_failed = True
             return False
         except (httpx.HTTPError, OSError, RuntimeError) as e:
-            headless_logger.error(f"❌ ComfyUI startup failed: {e}")
+            headless_logger.error(f"ComfyUI startup failed: {e}")
             _comfy_startup_failed = True
             return False
 
@@ -91,7 +91,6 @@ def handle_comfy_task(
         (success, output_path) - Standard task handler signature
     """
     model_logger.debug(f"Processing ComfyUI task {task_id}")
-    headless_logger.info(f"Processing ComfyUI workflow task", task_id=task_id)
 
     try:
         # Parse params
@@ -125,7 +124,6 @@ def handle_comfy_task(
                 # Download and upload video if provided
                 if video_url:
                     model_logger.debug(f"Downloading video from {video_url}")
-                    headless_logger.info(f"Downloading input video", task_id=task_id)
 
                     response = await client.get(video_url)
                     response.raise_for_status()
@@ -136,7 +134,6 @@ def handle_comfy_task(
                         client, video_bytes, "input.mp4"
                     )
                     model_logger.debug(f"Uploaded video to ComfyUI: {uploaded_filename}")
-                    headless_logger.info(f"Uploaded video: {uploaded_filename}", task_id=task_id)
 
                     # Inject into workflow
                     if video_node_id and video_node_id in workflow:
@@ -146,13 +143,11 @@ def handle_comfy_task(
                 model_logger.debug(f"Submitting workflow to ComfyUI")
                 prompt_id = await comfy_client.queue_workflow(client, workflow)
                 model_logger.debug(f"Workflow queued with prompt_id: {prompt_id}")
-                headless_logger.info(f"Workflow queued: {prompt_id}", task_id=task_id)
 
                 # Wait for completion
                 model_logger.debug(f"Waiting for workflow to complete...")
                 history = await comfy_client.wait_for_completion(client, prompt_id)
                 model_logger.debug(f"Workflow completed successfully")
-                headless_logger.info(f"Workflow completed", task_id=task_id)
 
                 # Download outputs
                 outputs = await comfy_client.download_output(client, history)
@@ -175,7 +170,6 @@ def handle_comfy_task(
             f.write(output['content'])
 
         model_logger.debug(f"Saved output to: {output_path}")
-        headless_logger.info(f"Saved output: {output_path}", task_id=task_id)
 
         # Return in standard format (success, path)
         return True, str(output_path)
@@ -192,6 +186,6 @@ def shutdown_comfy():
     global _comfy_manager
 
     if _comfy_manager is not None:
-        headless_logger.info("Shutting down ComfyUI server")
+        headless_logger.debug("Shutting down ComfyUI server")
         _comfy_manager.stop()
         _comfy_manager = None

@@ -57,8 +57,6 @@ def _handle_inpaint_frames_task(
     Returns:
         Tuple of (success: bool, output_path_or_message: str)
     """
-    task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Starting inpaint_frames handler")
-
     try:
         # --- 1. Extract and Validate Parameters ---
         video_path = task_params_from_db.get("video_path")
@@ -70,17 +68,17 @@ def _handle_inpaint_frames_task(
         # Validate required parameters
         if not video_path:
             error_msg = "video_path is required"
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}")
+            task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: {error_msg}")
             return False, error_msg
 
         if inpaint_start_frame is None:
             error_msg = "inpaint_start_frame is required"
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}")
+            task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: {error_msg}")
             return False, error_msg
 
         if inpaint_end_frame is None:
             error_msg = "inpaint_end_frame is required"
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}")
+            task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: {error_msg}")
             return False, error_msg
 
         # Convert to Path object and validate existence
@@ -88,32 +86,39 @@ def _handle_inpaint_frames_task(
 
         if not video.exists():
             error_msg = f"Video not found: {video_path}"
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}")
+            task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: {error_msg}")
             return False, error_msg
 
         # Validate task queue
         if task_queue is None:
             error_msg = "task_queue is required for inpaint_frames"
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}")
+            task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: {error_msg}")
             return False, error_msg
-
-        task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Parameters validated")
-        task_logger.debug(f"[INPAINT_FRAMES]   Video: {video}")
-        task_logger.debug(f"[INPAINT_FRAMES]   Inpaint range: [{inpaint_start_frame}, {inpaint_end_frame})")
-        task_logger.debug(f"[INPAINT_FRAMES]   Context frames: {context_frame_count}")
 
         # --- 2. Extract Video Properties and All Frames ---
         try:
             total_frame_count, video_fps = get_video_frame_count_and_fps(str(video))
-            task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Video - {total_frame_count} frames @ {video_fps} fps")
 
         except (OSError, ValueError, RuntimeError) as e:
             error_msg = f"Failed to extract video properties: {e}"
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}")
+            task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: {error_msg}")
             return False, error_msg
 
         # Use FPS from task params, or default to video FPS
         target_fps = task_params_from_db.get("fps", video_fps)
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "task": task_id,
+                "video": video,
+                "video_frames": total_frame_count,
+                "video_fps": video_fps,
+                "target_fps": target_fps,
+                "inpaint_range": (inpaint_start_frame, inpaint_end_frame),
+                "context_frame_count": context_frame_count,
+            },
+            task_id=task_id,
+        )
 
         # Validate frame range has sufficient context
         is_valid, validation_error = validate_frame_range(
@@ -124,24 +129,20 @@ def _handle_inpaint_frames_task(
             task_id=task_id)
 
         if not is_valid:
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {validation_error}")
+            task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: {validation_error}")
             return False, validation_error
 
         # --- 3. Extract All Frames from Video ---
-        task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Extracting frames from video...")
-
         try:
             all_frames = extract_frames_from_video(str(video))
             if not all_frames or len(all_frames) != total_frame_count:
                 error_msg = f"Failed to extract frames: expected {total_frame_count}, got {len(all_frames) if all_frames else 0}"
-                task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}")
+                task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: {error_msg}")
                 return False, error_msg
-
-            task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Extracted {len(all_frames)} frames from video")
 
         except (OSError, ValueError, RuntimeError) as e:
             error_msg = f"Failed to extract frames from video: {e}"
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}", exc_info=True)
+            task_logger.error(error_msg, task_id=task_id, exc_info=True)
             return False, error_msg
 
         # --- 4. Extract Context Frames ---
@@ -154,11 +155,6 @@ def _handle_inpaint_frames_task(
         context_after = all_frames[inpaint_end_frame:context_end_idx]
         gap_count = inpaint_end_frame - inpaint_start_frame
 
-        task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Context frames extracted")
-        task_logger.debug(f"[INPAINT_FRAMES]   Before: frames [{context_start_idx}:{inpaint_start_frame}] = {len(context_before)} frames")
-        task_logger.debug(f"[INPAINT_FRAMES]   Gap: frames [{inpaint_start_frame}:{inpaint_end_frame}] = {gap_count} frames to generate")
-        task_logger.debug(f"[INPAINT_FRAMES]   After: frames [{inpaint_end_frame}:{context_end_idx}] = {len(context_after)} frames")
-
         # Get resolution from first frame or task params
         first_frame = all_frames[0]
         frame_height, frame_width = first_frame.shape[:2]
@@ -167,10 +163,18 @@ def _handle_inpaint_frames_task(
         if "resolution" in task_params_from_db:
             resolution_list = task_params_from_db["resolution"]
             parsed_res_wh = (resolution_list[0], resolution_list[1])
-            task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Using resolution override: {parsed_res_wh}")
         else:
             parsed_res_wh = (frame_width, frame_height)
-            task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Using detected resolution: {parsed_res_wh}")
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "context_before": len(context_before),
+                "gap_frames": gap_count,
+                "context_after": len(context_after),
+                "resolution": parsed_res_wh,
+            },
+            task_id=task_id,
+        )
 
         # --- 5. Build Guide and Mask Videos (using shared helper) ---
         # Create working directory
@@ -189,18 +193,19 @@ def _handle_inpaint_frames_task(
                 filename_prefix="inpaint")
         except (OSError, ValueError, RuntimeError) as e:
             error_msg = f"Failed to create guide/mask videos: {e}"
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}", exc_info=True)
+            task_logger.error(error_msg, task_id=task_id, exc_info=True)
             return False, error_msg
 
         expected_total_frames = context_frame_count * 2 + gap_count
         if guide_frame_count != expected_total_frames:
-            task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Guide/mask total frame count ({guide_frame_count}) "
-                   f"differs from expected ({expected_total_frames}). Using actual count.")
+            task_logger.debug_anomaly(
+                "INPAINT_FRAMES",
+                f"guide/mask total frame count {guide_frame_count} differs from expected {expected_total_frames}",
+                task_id=task_id,
+            )
         total_frames = guide_frame_count
 
         # --- 6. Prepare Generation Parameters (using shared helper) ---
-        task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Preparing generation parameters...")
-
         # Determine model (default to Lightning baseline for fast generation)
         model = task_params_from_db.get("model", "wan_2_2_vace_lightning_baseline_2_2_2")
 
@@ -223,15 +228,19 @@ def _handle_inpaint_frames_task(
             task_params=task_params_from_db  # Pass through for optional param merging
         )
 
-        task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Generation parameters prepared")
-        task_logger.debug(f"[INPAINT_FRAMES]   Model: {model}")
-        task_logger.debug(f"[INPAINT_FRAMES]   Video length: {total_frames} frames")
-        task_logger.debug(f"[INPAINT_FRAMES]   Resolution: {parsed_res_wh}")
-        task_logger.debug(f"[INPAINT_FRAMES]   Inpainting {gap_count} frames in range [{inpaint_start_frame}, {inpaint_end_frame})")
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "model": model,
+                "video_length": total_frames,
+                "resolution": parsed_res_wh,
+                "gap_frames": gap_count,
+                "seed": task_params_from_db.get("seed", -1),
+            },
+            task_id=task_id,
+        )
 
         # --- 7. Submit to Generation Queue ---
-        task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Submitting to generation queue...")
-
         try:
             # Import GenerationTask from correct location
             from source.task_handlers.queue.task_queue import GenerationTask
@@ -246,7 +255,6 @@ def _handle_inpaint_frames_task(
 
             # Submit task using correct method
             submitted_task_id = task_queue.submit_task(generation_task)
-            task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Submitted to generation queue as {submitted_task_id}")
 
             # Wait for completion using polling pattern (same as direct queue tasks)
             max_wait_time = 600  # 10 minute timeout
@@ -258,40 +266,47 @@ def _handle_inpaint_frames_task(
 
                 if status is None:
                     error_msg = "Task status became None during processing"
-                    task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}")
+                    task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: {error_msg}")
                     return False, error_msg
 
                 if status.status == "completed":
                     output_path = status.result_path
                     processing_time = status.processing_time or 0
-                    task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Generation completed successfully in {processing_time:.1f}s")
-                    task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Output: {output_path}")
+                    task_logger.debug_block(
+                        "OUTPUT",
+                        {
+                            "submitted_task_id": submitted_task_id,
+                            "processing_time_s": round(processing_time, 1),
+                            "output": output_path,
+                            "frames_processed": gap_count,
+                        },
+                        task_id=task_id,
+                    )
                     return True, output_path
 
                 elif status.status == "failed":
                     error_msg = status.error_message or "Generation failed without specific error message"
-                    task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: Generation failed - {error_msg}")
+                    task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: Generation failed - {error_msg}")
                     return False, error_msg
 
                 else:
                     # Still processing
-                    task_logger.debug(f"[INPAINT_FRAMES] Task {task_id}: Queue status: {status.status}, waiting...")
                     time.sleep(wait_interval)
                     elapsed_time += wait_interval
 
             # Timeout reached
             error_msg = f"Processing timeout after {max_wait_time} seconds"
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}")
+            task_logger.debug_anomaly("INPAINT_FRAMES_ERROR", f"Task {task_id}: {error_msg}")
             return False, error_msg
 
         except (RuntimeError, ValueError, OSError) as e:
             error_msg = f"Failed to submit/complete generation task: {e}"
-            task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}", exc_info=True)
+            task_logger.error(error_msg, task_id=task_id, exc_info=True)
             return False, error_msg
 
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as e:
         error_msg = f"Unexpected error in inpaint_frames handler: {e}"
-        task_logger.debug(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}", exc_info=True)
+        task_logger.error(error_msg, task_id=task_id, exc_info=True)
         return False, error_msg
 
 

@@ -152,6 +152,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+markers = [
+  "smoke: lightweight preview-harness smoke coverage that must stay CI-safe",
+]
 
 [tool.headless_wan2gp.entrypoints]
 worker = "source.runtime.entrypoints.worker:main"

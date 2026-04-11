@@ -54,7 +54,7 @@ def prepare_svi_image_refs(kwargs: dict) -> None:
             if refs:
                 kwargs["image_refs"] = refs
                 if is_debug_enabled():
-                    generation_logger.info(
+                    generation_logger.debug(
                         f"[SVI_GROUND_TRUTH] Converted image_refs_paths -> image_refs (count={len(refs)})"
                     )
             else:
@@ -173,9 +173,6 @@ def prepare_image_inputs(
         try:
             w_str, h_str = wgp_params['resolution'].split('x')
             target_width, target_height = int(w_str), int(h_str)
-            generation_logger.info(
-                f"[PREFLIGHT] Target resolution for image resizing: {target_width}x{target_height}"
-            )
         except (ValueError, TypeError, AttributeError) as e_res:
             generation_logger.warning(
                 f"[PREFLIGHT] Could not parse resolution '{wgp_params.get('resolution')}': {e_res}"
@@ -188,29 +185,27 @@ def prepare_image_inputs(
             continue
 
         if isinstance(val, str):
-            generation_logger.info(f"[PREFLIGHT] Loading {img_param} from path: {val}")
             img = load_image_fn(val, mask=False)
             if img and target_width and target_height:
                 from PIL import Image
                 if img.size != (target_width, target_height):
-                    generation_logger.info(
-                        f"[PREFLIGHT] Resizing {img_param} from "
-                        f"{img.size[0]}x{img.size[1]} to {target_width}x{target_height}"
+                    generation_logger.debug_anomaly(
+                        "PREFLIGHT",
+                        f"resized {img_param} from {img.size[0]}x{img.size[1]} to {target_width}x{target_height}"
                     )
                     img = img.resize((target_width, target_height), Image.LANCZOS)
             wgp_params[img_param] = img
 
         elif isinstance(val, list) and len(val) > 0 and isinstance(val[0], str):
-            generation_logger.info(f"[PREFLIGHT] Loading {img_param} from list of paths")
             loaded_imgs = []
             for p in val:
                 img = load_image_fn(p, mask=False)
                 if img and target_width and target_height:
                     from PIL import Image
                     if img.size != (target_width, target_height):
-                        generation_logger.info(
-                            f"[PREFLIGHT] Resizing {img_param} image from "
-                            f"{img.size[0]}x{img.size[1]} to {target_width}x{target_height}"
+                        generation_logger.debug_anomaly(
+                            "PREFLIGHT",
+                            f"resized {img_param} image from {img.size[0]}x{img.size[1]} to {target_width}x{target_height}"
                         )
                         img = img.resize((target_width, target_height), Image.LANCZOS)
                 loaded_imgs.append(img)
@@ -227,29 +222,10 @@ def prepare_image_inputs(
         if is_qwen:
             if not wgp_params.get('image_mask'):
                 wgp_params['image_mask'] = None
-                generation_logger.debug("[PREFLIGHT] Ensured image_mask=None for Qwen regular generation")
+                generation_logger.debug_anomaly("PREFLIGHT", "set image_mask=None for Qwen regular generation")
             else:
                 wgp_params['model_mode'] = 1
-                generation_logger.info("[PREFLIGHT] Set model_mode=1 for Qwen inpainting (image_mask present)")
-
-        # Preflight logs for image models
-        try:
-            ig = wgp_params.get('image_guide')
-            if ig is not None:
-                from PIL import Image as _PILImage
-                if isinstance(ig, _PILImage.Image):
-                    generation_logger.info(
-                        "[PREFLIGHT] image_guide resolved to PIL.Image with size %sx%s and mode %s"
-                        % (ig.size[0], ig.size[1], ig.mode)
-                    )
-                else:
-                    generation_logger.warning(
-                        f"[PREFLIGHT] image_guide is not a PIL image (type={type(ig)})"
-                    )
-            else:
-                generation_logger.warning("[PREFLIGHT] image_guide is None for image model")
-        except (AttributeError, TypeError) as _e:
-            generation_logger.warning(f"[PREFLIGHT] Could not inspect image_guide: {_e}")
+                generation_logger.debug_anomaly("PREFLIGHT", "set model_mode=1 for Qwen inpainting")
 
     # Sanitize image_refs: WGP expects None when there are no refs
     try:

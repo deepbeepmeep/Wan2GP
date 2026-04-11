@@ -65,7 +65,7 @@ def _check_orchestrator_cancelled(orchestrator_task_id: str, context_msg: str, *
     """
     status = get_task_current_status(orchestrator_task_id)
     if status and status.lower() in ('cancelled', 'canceled'):
-        task_logger.debug(f"[CANCELLATION] Join orchestrator {orchestrator_task_id} was cancelled - {context_msg}", task_id=orchestrator_task_id)
+        task_logger.debug_anomaly("CANCELLATION", f"Join orchestrator {orchestrator_task_id} was cancelled - {context_msg}", task_id=orchestrator_task_id)
         cancel_orchestrator_children(orchestrator_task_id, reason="Orchestrator cancelled by user")
         return f"Orchestrator cancelled: {context_msg}"
     return None
@@ -128,7 +128,6 @@ def _check_existing_join_tasks(
         None if no existing tasks or should proceed with creation.
         TaskResult if should return early (complete/failed/in-progress).
     """
-    task_logger.debug(f"[JOIN_CORE] Checking for existing child tasks", task_id=orchestrator_task_id_str)
     existing_child_tasks = get_orchestrator_child_tasks(orchestrator_task_id_str)
     existing_joins = existing_child_tasks.get('join_clips_segment', [])
     existing_final_stitch = existing_child_tasks.get('join_final_stitch', [])
@@ -138,8 +137,6 @@ def _check_existing_join_tasks(
 
     if not existing_joins and not existing_final_stitch:
         return None
-
-    task_logger.debug(f"[JOIN_CORE] Found {len(existing_joins)} join tasks, {len(existing_final_stitch)} final stitch tasks", task_id=orchestrator_task_id_str)
 
     # Check completion status helper
     def is_complete(task):
@@ -166,18 +163,16 @@ def _check_existing_join_tasks(
         if any_failed:
             failed_tasks = [t for t in all_tasks if is_terminal_failure(t)]
             error_msg = f"{len(failed_tasks)} task(s) failed/cancelled"
-            task_logger.debug(f"[JOIN_CORE] FAILED: {error_msg}", task_id=orchestrator_task_id_str)
+            task_logger.debug_anomaly("JOIN_CORE", f"FAILED: {error_msg}", task_id=orchestrator_task_id_str)
             return TaskResult.failed(error_msg)
 
         if existing_final_stitch and is_complete(existing_final_stitch[0]):
             final_stitch = existing_final_stitch[0]
             final_output = final_stitch.get('output_location', 'Completed via idempotency')
-            task_logger.debug(f"[JOIN_CORE] COMPLETE (parallel): Final stitch done, output: {final_output}", task_id=orchestrator_task_id_str)
             return TaskResult.orchestrator_complete(output_path=final_output, thumbnail_url="")
 
         trans_complete = sum(1 for j in existing_joins if is_complete(j))
         stitch_status = "complete" if existing_final_stitch and is_complete(existing_final_stitch[0]) else "pending"
-        task_logger.debug(f"[JOIN_CORE] IDEMPOTENT (parallel): {trans_complete}/{num_joins} transitions, stitch: {stitch_status}", task_id=orchestrator_task_id_str)
         return TaskResult.orchestrating(f"Parallel: {trans_complete}/{num_joins} transitions complete, stitch: {stitch_status}")
 
     else:
@@ -191,15 +186,13 @@ def _check_existing_join_tasks(
         if partial_result is not None:
             return partial_result
 
-        task_logger.debug(f"[JOIN_CORE] All {num_joins} join tasks already exist (chain pattern)", task_id=orchestrator_task_id_str)
-
         all_joins_complete = all(is_complete(join) for join in existing_joins)
         any_join_failed = any(is_terminal_failure(join) for join in existing_joins)
 
         if any_join_failed:
             failed_joins = [j for j in existing_joins if is_terminal_failure(j)]
             error_msg = f"{len(failed_joins)} join task(s) failed/cancelled"
-            task_logger.debug(f"[JOIN_CORE] FAILED: {error_msg}", task_id=orchestrator_task_id_str)
+            task_logger.debug_anomaly("JOIN_CORE", f"FAILED: {error_msg}", task_id=orchestrator_task_id_str)
             return TaskResult.failed(error_msg)
 
         if all_joins_complete:
@@ -225,11 +218,9 @@ def _check_existing_join_tasks(
 
             final_thumbnail = final_params.get('thumbnail_url', '')
 
-            task_logger.debug(f"[JOIN_CORE] COMPLETE: All joins finished, final output: {final_output}", task_id=orchestrator_task_id_str)
             return TaskResult.orchestrator_complete(output_path=final_output, thumbnail_url=final_thumbnail)
 
         complete_count = sum(1 for j in existing_joins if is_complete(j))
-        task_logger.debug(f"[JOIN_CORE] IDEMPOTENT: {complete_count}/{num_joins} joins complete", task_id=orchestrator_task_id_str)
         return TaskResult.orchestrating(f"Join tasks in progress: {complete_count}/{num_joins} complete")
 
 

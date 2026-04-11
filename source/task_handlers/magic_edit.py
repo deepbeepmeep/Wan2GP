@@ -53,8 +53,6 @@ def _handle_magic_edit_task(
     Returns:
         Tuple of (success_bool, output_location_or_error_message)
     """
-    task_logger.essential("Starting magic_edit task", task_id=task_id)
-    
     try:
         # Check if replicate is available
         replicate = _load_replicate()
@@ -89,11 +87,21 @@ def _handle_magic_edit_task(
             report_orchestrator_failure(task_params_from_db, msg)
             return False, msg
             
-        task_logger.debug(f"Task {task_id}: Magic edit parameters - Image: {image_url}, Prompt: {prompt}, Resolution: {resolution}, In-Scene LoRA: {in_scene}")
-        
         # Create temporary directory for processing
         temp_dir = Path(tempfile.mkdtemp(prefix=f"magic_edit_{task_id}_"))
-        task_logger.debug(f"Task {task_id}: Created temp directory: {temp_dir}")
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "task": task_id,
+                "image_url": image_url,
+                "prompt": prompt,
+                "resolution": resolution,
+                "seed": seed,
+                "in_scene": in_scene,
+                "temp_dir": temp_dir,
+            },
+            task_id=task_id,
+        )
         
         try:
             # Validate that we have a URL (Replicate expects URLs, not local files)
@@ -125,7 +133,7 @@ def _handle_magic_edit_task(
             if seed is not None:
                 replicate_input["seed"] = int(seed)
                 
-            task_logger.essential("Running Replicate black-forest-labs/flux-kontext-dev-lora model...", task_id=task_id)
+            task_logger.debug("Running Replicate black-forest-labs/flux-kontext-dev-lora model...", task_id=task_id)
             task_logger.debug(f"Task {task_id}: Replicate input: {replicate_input}")
             
             # Run the model
@@ -134,7 +142,7 @@ def _handle_magic_edit_task(
                 input=replicate_input
             )
             
-            task_logger.essential("Replicate processing completed", task_id=task_id)
+            task_logger.debug("Replicate processing completed", task_id=task_id)
             task_logger.debug(f"Task {task_id}: Replicate output type: {type(output)}")
             
             # Download the result
@@ -166,7 +174,7 @@ def _handle_magic_edit_task(
                 task_logger.error(msg, task_id=task_id)
                 return False, msg
                 
-            task_logger.essential(f"Downloaded result image: {output_image_path.name} ({output_image_path.stat().st_size} bytes)", task_id=task_id)
+            task_logger.debug(f"Downloaded result image: {output_image_path.name} ({output_image_path.stat().st_size} bytes)", task_id=task_id)
             
             # Prepare final output path
             final_output_path, initial_db_location = prepare_output_path_with_upload(
@@ -184,7 +192,6 @@ def _handle_magic_edit_task(
                 final_output_path,
                 initial_db_location)
             
-            task_logger.essential(f"Magic edit completed successfully: {final_output_path.resolve()}", task_id=task_id)
             return True, final_db_location
             
         finally:

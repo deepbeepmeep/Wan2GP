@@ -34,7 +34,6 @@ def switch_model_impl(queue: "HeadlessTaskQueue", model_key: str, worker_name: s
     # Ensure orchestrator is initialized before switching models
     queue._ensure_orchestrator()
 
-    queue.logger.debug(f"{worker_name} ensuring model {model_key} is loaded (current: {queue.current_model})")
     switch_start = time.time()
 
     try:
@@ -44,11 +43,11 @@ def switch_model_impl(queue: "HeadlessTaskQueue", model_key: str, worker_name: s
 
         if switched:
             # Only do switch-specific actions if a switch actually occurred
-            queue.logger.info(f"{worker_name} switched model: {queue.current_model} → {model_key}")
+            queue.logger.debug(f"{worker_name} switched model: {queue.current_model} → {model_key}")
 
             queue.stats["model_switches"] += 1
             switch_time = time.time() - switch_start
-            queue.logger.info(f"Model switch completed in {switch_time:.1f}s")
+            queue.logger.debug(f"Model switch completed in {switch_time:.1f}s")
 
         # Always sync our tracking with orchestrator's state
         queue.current_model = model_key
@@ -74,9 +73,14 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
     """
     from source.core.params import TaskConfig
 
-    queue.logger.debug(f"[CONVERT_DEBUG] Starting convert_to_wgp_task_impl for task {task.id}")
-    queue.logger.debug(f"[CONVERT_DEBUG] Task model: {task.model}")
-    queue.logger.debug(f"[CONVERT_DEBUG] Task parameters keys: {list(task.parameters.keys())}")
+    queue.logger.debug_block(
+        "CONVERT_TASK",
+        {
+            "task_id": task.id,
+            "model": task.model,
+            "param_keys": list(task.parameters.keys()),
+        },
+    )
 
     # Parse into typed config
     try:
@@ -87,7 +91,6 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
             model=task.model,
             debug_mode=is_debug_enabled()
         )
-        queue.logger.debug(f"[CONVERT_DEBUG] TaskConfig parsed successfully")
     except Exception as e:
         queue.logger.error(f"[CONVERT_DEBUG] Failed to parse TaskConfig: {type(e).__name__}: {e}")
         import traceback
@@ -98,15 +101,9 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
     config.generation.prompt = task.prompt
     config.model = task.model
 
-    # Log the parsed config
-    if is_debug_enabled():
-        config.log_summary(queue.logger.info)
-
-    queue.logger.debug(f"[CONVERT_DEBUG] Config after prompt/model assignment")
-
     # Handle LoRA downloads if any are pending
     if config.lora.has_pending_downloads():
-        queue.logger.info(f"[LORA_PROCESS] Task {task.id}: {len(config.lora.get_pending_downloads())} LoRAs need downloading")
+        queue.logger.debug_anomaly("LORA_PROCESS", f"Task {task.id}: {len(config.lora.get_pending_downloads())} LoRAs need downloading")
 
         with temporary_process_globals(cwd=queue.wan_dir):
             from source.models.lora.lora_utils import download_lora_from_url
@@ -116,7 +113,7 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
                     local_path = download_lora_from_url(url, task.id, model_type=task.model)
                     if local_path:
                         config.lora.mark_downloaded(url, local_path)
-                        queue.logger.info(f"[LORA_DOWNLOAD] Task {task.id}: Downloaded {os.path.basename(local_path)}")
+                        queue.logger.debug_anomaly("LORA_DOWNLOAD", f"Task {task.id}: Downloaded {os.path.basename(local_path)}")
                     else:
                         queue.logger.warning(f"[LORA_DOWNLOAD] Task {task.id}: Failed to download {url}")
                 except (OSError, ValueError, RuntimeError) as e:
@@ -137,9 +134,5 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
     # Filter out infrastructure params
     for param in ["supabase_url", "supabase_anon_key", "supabase_access_token"]:
         wgp_params.pop(param, None)
-
-    if is_debug_enabled():
-        queue.logger.info(f"[TASK_CONVERSION] Task {task.id}: Converted with {len(wgp_params)} params")
-        queue.logger.debug(f"[TASK_CONVERSION] Task {task.id}: LoRAs: {wgp_params.get('activated_loras', [])}")
 
     return wgp_params

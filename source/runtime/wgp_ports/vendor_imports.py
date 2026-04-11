@@ -56,11 +56,21 @@ def run_rife_temporal_interpolation(flownet_ckpt, sample_input, exp_val, *, devi
 
 
 def get_wan2gp_save_video_callable():
+    module_name = ".".join(("Wan2GP", "shared", "utils", "audio_video"))
+    primary_module = sys.modules.get(module_name)
+    if primary_module is not None and hasattr(primary_module, "save_video"):
+        return primary_module.save_video
+
     shared_audio_module = sys.modules.get("shared.utils.audio_video")
     if shared_audio_module is not None and hasattr(shared_audio_module, "save_video"):
         return shared_audio_module.save_video
-    module_name = ".".join(("Wan2GP", "shared", "utils", "audio_video"))
-    return _import_primary(module_name).save_video
+
+    try:
+        return _import_primary(module_name).save_video
+    except ModuleNotFoundError:
+        if shared_audio_module is not None and hasattr(shared_audio_module, "save_video"):
+            return shared_audio_module.save_video
+        raise
 
 
 def get_qwen_family_handler():

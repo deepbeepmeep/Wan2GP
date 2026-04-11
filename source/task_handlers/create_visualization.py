@@ -34,8 +34,6 @@ def _handle_create_visualization_task(
     Returns:
         Tuple of (success: bool, output_message: str)
     """
-    task_logger.debug(f"[VIZ] Starting visualization task {viz_task_id_str}")
-
     try:
         # Extract parameters
         params = task_params_from_db.get("params", {})
@@ -67,11 +65,19 @@ def _handle_create_visualization_task(
         if not segment_frames:
             raise ValueError("Missing required parameter: segment_frames")
 
-        task_logger.debug(f"[VIZ] Task {viz_task_id_str}: Creating {layout} visualization")
-        task_logger.debug(f"[VIZ]   Output video: {output_video_path}")
-        task_logger.debug(f"[VIZ]   Structure video: {structure_video_path}")
-        task_logger.debug(f"[VIZ]   Input images: {len(input_image_paths)}")
-        task_logger.debug(f"[VIZ]   Segments: {len(segment_frames)}")
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "task": viz_task_id_str,
+                "layout": layout,
+                "output_video": output_video_path,
+                "structure_video": structure_video_path,
+                "input_images": len(input_image_paths),
+                "segments": len(segment_frames),
+                "show_guidance": show_guidance,
+            },
+            task_id=viz_task_id_str,
+        )
 
         # Create temporary output path
         temp_dir = Path(tempfile.mkdtemp(prefix=f"viz_{viz_task_id_str}_"))
@@ -93,8 +99,6 @@ def _handle_create_visualization_task(
             frame_overlaps=frame_overlaps
         )
 
-        task_logger.debug(f"[VIZ] Task {viz_task_id_str}: Visualization created at {viz_path}")
-
         # Prepare final output path with upload
         final_path, initial_db_location = prepare_output_path_with_upload(
             filename=f"{viz_task_id_str}_visualization.mp4",
@@ -115,8 +119,14 @@ def _handle_create_visualization_task(
         # Cleanup temp directory
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-        success_msg = f"Visualization created successfully: {output_location}"
-        task_logger.debug(f"[VIZ] Task {viz_task_id_str}: {success_msg}")
+        task_logger.debug_block(
+            "OUTPUT",
+            {
+                "task": viz_task_id_str,
+                "path": output_location,
+            },
+            task_id=viz_task_id_str,
+        )
 
         return True, output_location
 

@@ -45,7 +45,7 @@ def apply_phase_config_patch(parsed_phase_config: dict, model_name: str, task_id
                 wgp.models_def[model_name] = temp_model_def
 
                 headless_logger.info(
-                    f"✅ Patched wgp.models_def['{model_name}'] in memory",
+                    f"Patched wgp.models_def['{model_name}'] in memory",
                     task_id=task_id
                 )
     except (RuntimeError, ValueError, OSError) as e:
@@ -68,7 +68,7 @@ def restore_model_patches(parsed_phase_config: dict, model_name: str, task_id: s
             if "_original_model_def" in parsed_phase_config and model_name in wgp.models_def:
                 wgp.models_def[model_name] = parsed_phase_config["_original_model_def"]
                 headless_logger.info(
-                    f"✅ Restored original wgp.models_def['{model_name}']",
+                    f"Restored original wgp.models_def['{model_name}']",
                     task_id=task_id
                 )
     except (RuntimeError, ValueError, OSError) as e:

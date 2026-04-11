@@ -89,15 +89,12 @@ def verify_wgp_directory(logger, context: str = ""):
     expected_substr = "Wan2GP"
 
     if expected_substr not in current_dir:
-        logger.warning(
+        logger.debug(
             f"[PATH_CHECK] {context}: Current directory may be wrong!\n"
             f"  Current: {current_dir}\n"
             f"  Expected: Path containing 'Wan2GP'\n"
             f"  This could cause issues with wgp.py's relative paths!"
         )
-    else:
-        logger.debug(f"[PATH_CHECK] {context}: Still in Wan2GP directory ✓ ({current_dir})")
-
     # Also verify critical dirs still accessible
     if not os.path.exists("defaults"):
         logger.error(

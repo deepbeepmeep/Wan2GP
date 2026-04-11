@@ -46,7 +46,7 @@ def cap_qwen_resolution(
         width = int(width * ratio)
         height = int(height * ratio)
         capped = f"{width}x{height}"
-        model_logger.info(
+        model_logger.debug(
             f"[QWEN_COMPOSITOR] Task {task_id}: Resolution capped from {resolution_str} to {capped}",
             task_id=task_id,
         )
@@ -72,7 +72,7 @@ def create_qwen_masked_composite(
     Raises ValueError if compositing fails.
     """
     try:
-        model_logger.debug(f"[QWEN_COMPOSITOR] Task {task_id}: Downloading image from {image_url}", task_id=task_id)
+        model_logger.debug_anomaly("QWEN_COMPOSITOR", f"Task {task_id}: Downloading image from {image_url}", task_id=task_id)
         img_response = requests.get(image_url, timeout=30)
         img_response.raise_for_status()
         image = Image.open(BytesIO(img_response.content)).convert("RGB")
@@ -84,17 +84,17 @@ def create_qwen_masked_composite(
             new_width = int(width * ratio)
             new_height = int(height * ratio)
             image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            model_logger.debug(f"[QWEN_COMPOSITOR] Task {task_id}: Resized image from {width}x{height} to {new_width}x{new_height}", task_id=task_id)
+            model_logger.debug_anomaly("QWEN_COMPOSITOR", f"Task {task_id}: Resized image from {width}x{height} to {new_width}x{new_height}", task_id=task_id)
             width, height = new_width, new_height
 
-        model_logger.debug(f"[QWEN_COMPOSITOR] Task {task_id}: Downloading mask from {mask_url}", task_id=task_id)
+        model_logger.debug_anomaly("QWEN_COMPOSITOR", f"Task {task_id}: Downloading mask from {mask_url}", task_id=task_id)
         mask_response = requests.get(mask_url, timeout=30)
         mask_response.raise_for_status()
         mask = Image.open(BytesIO(mask_response.content)).convert("L")
 
         if mask.size != (width, height):
             mask = mask.resize((width, height), Image.Resampling.LANCZOS)
-            model_logger.debug(f"[QWEN_COMPOSITOR] Task {task_id}: Resized mask to match image: {width}x{height}", task_id=task_id)
+            model_logger.debug_anomaly("QWEN_COMPOSITOR", f"Task {task_id}: Resized mask to match image: {width}x{height}", task_id=task_id)
 
         mask = mask.point(lambda x: 0 if x < 128 else 255)
         green_overlay = Image.new("RGB", (width, height), (0, 255, 0))
@@ -105,7 +105,7 @@ def create_qwen_masked_composite(
         composite_path = output_dir / composite_filename
         composite.save(composite_path, "JPEG", quality=95)
 
-        model_logger.info(
+        model_logger.debug(
             f"[QWEN_COMPOSITOR] Task {task_id}: Created green mask composite: {composite_path}",
             task_id=task_id,
         )

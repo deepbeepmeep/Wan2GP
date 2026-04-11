@@ -90,10 +90,10 @@ def check_task_counts_supabase(run_type: str = "gpu", runtime_config=None) -> di
             # Always log a concise summary so we can observe behavior without enabling debug
             try:
                 totals = counts_data.get('totals', {})
-                headless_logger.debug(f"[TASK_COUNTS] totals={totals} run_type={payload.get('run_type')}")
+                headless_logger.debug_anomaly("TASK_COUNTS", f"totals={totals} run_type={payload.get('run_type')}")
             except (ValueError, KeyError, TypeError):
                 # Fall back to raw text if JSON structure unexpected
-                headless_logger.debug(f"[TASK_COUNTS] raw_response={resp.text[:500]}")
+                headless_logger.debug_anomaly("TASK_COUNTS", f"raw_response={resp.text[:500]}")
             headless_logger.debug(f"Task-counts result: {counts_data.get('totals', {})}")
             return counts_data
         else:
@@ -115,7 +115,7 @@ def check_my_assigned_tasks(worker_id: str) -> dict | None:
     Tasks that lose their HTTP response are recovered by heartbeat timeout instead.
     """
     # Direct DB query not available with PAT auth — heartbeat timeout handles recovery
-    headless_logger.debug(f"[RECOVERY] Skipping assigned-task check (PAT auth, heartbeat handles recovery)")
+    headless_logger.debug_anomaly("RECOVERY", f"Skipping assigned-task check (PAT auth, heartbeat handles recovery)")
     return None
 
 def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
@@ -128,7 +128,7 @@ def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
         for child in children_data:
             status = (child.get("status") or "").lower()
             if status not in ("complete", "failed", "cancelled", "canceled", "error"):
-                headless_logger.debug(f"[RECOVERY_CHECK] Orchestrator {orchestrator_task_id} has incomplete child {child['id']} (status={status})")
+                headless_logger.debug_anomaly("RECOVERY_CHECK", f"Orchestrator {orchestrator_task_id} has incomplete child {child['id']} (status={status})")
                 return True
         return False
 
@@ -154,10 +154,10 @@ def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
                     return False  # No children found
                 return _check_children(tasks)
         except (httpx.HTTPError, OSError, ValueError) as e:
-            headless_logger.debug(f"[RECOVERY_CHECK] Edge function failed: {e}")
+            headless_logger.debug_anomaly("RECOVERY_CHECK", f"Edge function failed: {e}")
 
     # Edge function failed or unavailable — assume incomplete (safe default: don't re-run orchestrator)
-    headless_logger.debug(f"[RECOVERY_CHECK] Edge function unavailable for orchestrator {orchestrator_task_id}, assuming incomplete children")
+    headless_logger.debug_anomaly("RECOVERY_CHECK", f"Edge function unavailable for orchestrator {orchestrator_task_id}, assuming incomplete children")
     return True
 
 def poll_next_task(
@@ -189,14 +189,14 @@ def poll_next_task(
         eligible_queued = totals.get('eligible_queued', 0)
         active_only = totals.get('active_only', 0)
 
-        headless_logger.debug(f"[CLAIM_DEBUG] Task counts: queued_only={available_tasks}, eligible_queued={eligible_queued}, active_only={active_only}")
+        headless_logger.debug_anomaly("CLAIM_DEBUG", f"Task counts: queued_only={available_tasks}, eligible_queued={eligible_queued}, active_only={active_only}")
 
         # Log warning if counts are inconsistent
         if eligible_queued > 0 and available_tasks == 0:
             headless_logger.warning(f"Task count inconsistency detected: eligible_queued={eligible_queued} but queued_only={available_tasks}")
             headless_logger.warning(f"This suggests tasks exist but aren't visible as 'Queued' status - possible replication lag or status corruption")
             # Proceed with claim attempt despite queued_only=0 since eligible_queued>0
-            headless_logger.debug(f"[CLAIM_DEBUG] Proceeding with claim attempt despite queued_only=0 because eligible_queued={eligible_queued}")
+            headless_logger.debug_anomaly("CLAIM_DEBUG", f"Proceeding with claim attempt despite queued_only=0 because eligible_queued={eligible_queued}")
         elif available_tasks <= 0:
             headless_logger.debug("No non-orchestrator queued tasks according to task-counts, still attempting claim (orchestrators excluded from counts)")
             # Fall through to claim attempt — task-counts excludes orchestrators
@@ -236,11 +236,9 @@ def poll_next_task(
                 task_data = resp.json()
                 task_id = task_data.get('task_id', 'unknown')
                 task_type = task_data.get('task_type', 'unknown')
-                params = task_data.get('params', {})
-                segment_index = params.get('segment_index') if isinstance(params, dict) else None
 
-                headless_logger.essential(f"[CLAIM] Claimed task {task_id} (type={task_type}, segment_index={segment_index})", task_id=task_id)
-                headless_logger.debug(f"[CLAIM_DEBUG] Full task data: {task_data}")
+                headless_logger.debug(f"Claimed task {task_id} (type={task_type})", task_id=task_id)
+                headless_logger.debug_anomaly("CLAIM_DEBUG", f"Full task data: {task_data}")
                 return ClaimPollOutcome.CLAIMED, task_data
             if resp.status_code == 204:
                 headless_logger.debug("Edge Function: No queued tasks available")
@@ -251,8 +249,8 @@ def poll_next_task(
         except (httpx.HTTPError, OSError, ValueError) as e_edge:
             # Log visibly - this is a critical failure that can cause orphaned tasks
             headless_logger.error(f"[CLAIM] Edge Function call failed: {e_edge}")
-            headless_logger.debug(f"[CLAIM_DEBUG] Exception type: {type(e_edge).__name__}")
-            headless_logger.debug(f"[CLAIM_DEBUG] Full traceback: {traceback.format_exc()}")
+            headless_logger.debug_anomaly("CLAIM_DEBUG", f"Exception type: {type(e_edge).__name__}")
+            headless_logger.debug_anomaly("CLAIM_DEBUG", f"Full traceback: {traceback.format_exc()}")
             return ClaimPollOutcome.ERROR, None
 
     headless_logger.error("[CLAIM] No edge function URL or auth configuration available for task claiming")

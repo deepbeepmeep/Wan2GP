@@ -131,11 +131,16 @@ def _create_ltx_control_guide_video(
 def get_previous_segment_video(proc: Any) -> Optional[str]:
     """Get previous segment video output for guide creation."""
     ctx = proc.ctx
-    policy = proc.generation_policy
+    policy = getattr(proc, "generation_policy", None)
+    if policy is None:
+        policy = getattr(ctx, "generation_policy", None)
+    if policy is None:
+        from source.core.params.generation_policy import GenerationPolicy
+
+        policy = GenerationPolicy.from_payload({})
 
     chain_segments = ctx.orchestrator_details.get("chain_segments", True)
     if not chain_segments and not policy.continuation.enabled:
-         travel_logger.debug(f"[INDEPENDENT_SEGMENTS] chain_segments=False: Skipping previous segment video lookup for segment {ctx.segment_idx}", task_id=ctx.task_id)
          return None
 
     is_first_segment = ctx.segment_params.get("is_first_segment", ctx.segment_idx == 0)
@@ -213,14 +218,12 @@ def prepare_input_images_for_guide(proc: "TravelSegmentProcessor") -> List[str]:
     if individual_images:
         # Individual segment mode - use the 2-image list
         input_images_resolved_for_guide = individual_images.copy()
-        travel_logger.debug(f"[GUIDE_INPUT_DEBUG] Seg {ctx.segment_idx}: Using {len(input_images_resolved_for_guide)} images from individual_segment_params", task_id=ctx.task_id)
     else:
         # Full orchestrator mode - use all images
         input_images_resolved_original = ctx.orchestrator_details.get("input_image_paths_resolved", [])
         if not input_images_resolved_original:
             raise ValueError(f"Seg {ctx.segment_idx}: input_image_paths_resolved missing from orchestrator_details (task {ctx.task_id})")
         input_images_resolved_for_guide = input_images_resolved_original.copy()
-        travel_logger.debug(f"[GUIDE_INPUT_DEBUG] Seg {ctx.segment_idx}: Using {len(input_images_resolved_for_guide)} images from orchestrator payload", task_id=ctx.task_id)
 
     return input_images_resolved_for_guide
 
@@ -275,14 +278,7 @@ def create_guide_video(proc: Any) -> Optional[Path]:
     # Always create guide videos when the model or guidance mode requires them.
     # For everything else, only create in debug mode.
     if not ctx.debug_enabled and not guide_required:
-        travel_logger.debug(f"Task {ctx.task_id}: Debug mode disabled and non-VACE model, skipping guide video creation", task_id=ctx.task_id)
         return None
-
-    if guide_required and not ctx.debug_enabled:
-        travel_logger.debug(
-            f"Task {ctx.task_id}: guide video is required for this segment; creating it",
-            task_id=ctx.task_id,
-        )
 
     try:
         # Generate unique guide video filename
@@ -313,10 +309,6 @@ def create_guide_video(proc: Any) -> Optional[Path]:
                 guide_video_final_path,
             )
             if direct_control_video and Path(direct_control_video).exists():
-                travel_logger.debug(
-                    f"[GUIDE_DEBUG] Segment {ctx.segment_idx}: Using direct LTX control clip {direct_control_video}",
-                    task_id=ctx.task_id,
-                )
                 return Path(direct_control_video)
             raise ValueError(
                 f"LTX control guidance for segment {ctx.segment_idx} could not be materialized"
@@ -337,7 +329,6 @@ def create_guide_video(proc: Any) -> Optional[Path]:
 
         if not chain_segments:
              is_first_segment_from_scratch = True
-             travel_logger.debug(f"[INDEPENDENT_SEGMENTS] chain_segments=False: Forcing is_first_segment_from_scratch=True for segment {ctx.segment_idx}", task_id=ctx.task_id)
         else:
              is_first_segment_from_scratch = is_first_segment and not ctx.orchestrator_details.get("continue_from_video_resolved_path")
 
@@ -349,15 +340,11 @@ def create_guide_video(proc: Any) -> Optional[Path]:
 
         if consolidated_end_anchor is not None:
             end_anchor_img_path_str_idx = consolidated_end_anchor
-            travel_logger.debug(f"[CONSOLIDATED_SEGMENT] Using consolidated end anchor index {consolidated_end_anchor} for segment {ctx.segment_idx}", task_id=ctx.task_id)
         elif individual_images:
             # Individual segment mode: images are [start, end], so end anchor is always index 1
             end_anchor_img_path_str_idx = 1
-            travel_logger.debug(f"[INDIVIDUAL_SEGMENT] Using end anchor index 1 for individual segment {ctx.segment_idx} (has {len(individual_images)} images)", task_id=ctx.task_id)
         else:
             end_anchor_img_path_str_idx = ctx.segment_idx + 1
-
-        travel_logger.debug(f"[STRUCTURE_CONFIG] Segment {ctx.segment_idx}: {structure_config}", task_id=ctx.task_id)
 
         # Extract values from config for backward compatibility with existing code
         structure_video_path = structure_config.videos[0].path if structure_config.videos else None
@@ -380,7 +367,7 @@ def create_guide_video(proc: Any) -> Optional[Path]:
             if travel_guidance_config is not None:
                 local_guidance_path = _build_local_travel_guidance_video(proc, travel_guidance_config)
             else:
-                travel_logger.debug(f"[STRUCTURE_VIDEO] Segment {ctx.segment_idx}: Found structure_videos array, computing segment guidance locally", task_id=ctx.task_id)
+                travel_logger.debug_anomaly("STRUCTURE_VIDEO", f"Segment {ctx.segment_idx}: Found structure_videos array, computing segment guidance locally", task_id=ctx.task_id)
 
                 from source.media.structure import extract_segment_structure_guidance
 
@@ -407,14 +394,14 @@ def create_guide_video(proc: Any) -> Optional[Path]:
                     download_dir=ctx.segment_processing_dir)
 
             if local_guidance_path and Path(local_guidance_path).exists():
-                travel_logger.debug(f"[STRUCTURE_VIDEO] Created local segment guidance: {local_guidance_path}", task_id=ctx.task_id)
+                travel_logger.debug_anomaly("STRUCTURE_VIDEO", f"Created local segment guidance: {local_guidance_path}", task_id=ctx.task_id)
                 # Use as a local path string (NOT file://). The downstream extractor expects a filesystem path.
                 structure_guidance_video_url = str(local_guidance_path)
                 structure_guidance_frame_offset = 0  # Local guidance starts at frame 0
             else:
                 # No overlap with any structure_videos config = no guidance for this segment
                 # This is intentional, not a failure - segment proceeds without structure guidance
-                travel_logger.debug(f"[STRUCTURE_VIDEO] Segment {ctx.segment_idx}: No overlap with structure_videos, proceeding without structure guidance", task_id=ctx.task_id)
+                travel_logger.debug_anomaly("STRUCTURE_VIDEO", f"Segment {ctx.segment_idx}: No overlap with structure_videos, proceeding without structure guidance", task_id=ctx.task_id)
 
         # Download structure video if it's a URL (defensive fallback if orchestrator didn't download)
         # Note: If structure_guidance_video_url is provided, this is not strictly needed as segments will use the pre-warped video
@@ -425,10 +412,6 @@ def create_guide_video(proc: Any) -> Optional[Path]:
                 task_id_for_logging=ctx.task_id,
                 descriptive_name=f"structure_video_seg{ctx.segment_idx}"
             )
-
-        # Log which structure type is being used
-        if structure_video_path or structure_guidance_video_url:
-            travel_logger.debug(f"[STRUCTURE_VIDEO] Segment {ctx.segment_idx} using structure type: {structure_type}", task_id=ctx.task_id)
 
         # Detect if this is a single image journey (1 image, no continuation)
         is_single_image_journey = proc._detect_single_image_journey()
@@ -463,10 +446,13 @@ def create_guide_video(proc: Any) -> Optional[Path]:
             exclude_end_for_controlnet=(structure_type == "uni3c"))
 
         if guide_video_path and Path(guide_video_path).exists():
-            travel_logger.debug(f"[GUIDE_DEBUG] Successfully created guide video: {guide_video_path}", task_id=ctx.task_id)
             return Path(guide_video_path)
         else:
-            travel_logger.error(f"[GUIDE_ERROR] Guide video creation returned: {guide_video_path}", task_id=ctx.task_id)
+            travel_logger.debug_anomaly(
+                "GUIDE_ERROR",
+                f"guide creation returned {guide_video_path}",
+                task_id=ctx.task_id,
+            )
 
             if guide_required:
                 raise ValueError(f"Guide video is required for model '{ctx.model_name}' but creation failed")
@@ -474,7 +460,12 @@ def create_guide_video(proc: Any) -> Optional[Path]:
             return None
 
     except (OSError, ValueError, RuntimeError) as e_guide:
-        travel_logger.error(f"[GUIDE_ERROR] Guide video creation failed: {e_guide}", task_id=ctx.task_id, exc_info=True)
+        travel_logger.debug_anomaly(
+            "GUIDE_ERROR",
+            f"guide creation failed: {e_guide}",
+            task_id=ctx.task_id,
+        )
+        travel_logger.error(f"Guide video creation failed: {e_guide}", task_id=ctx.task_id, exc_info=True)
 
         if guide_required:
             raise ValueError(f"Guide video is required for model '{ctx.model_name}' but creation failed: {e_guide}") from e_guide

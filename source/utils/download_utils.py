@@ -155,7 +155,7 @@ def download_file(url, dest_folder, filename):
                         pass  # Just verify it can be opened
                     headless_logger.essential(f"Successfully downloaded and verified safetensors file {filename}.")
                 except ImportError:
-                    headless_logger.debug(f"[WARNING] safetensors not available for verification of {filename}")
+                    headless_logger.debug_anomaly("WARNING", f"safetensors not available for verification of {filename}")
                 except (OSError, ValueError, RuntimeError) as e:
                     headless_logger.error(f"Downloaded safetensors file {filename} appears corrupted: {e}")
                     dest_path.unlink(missing_ok=True)

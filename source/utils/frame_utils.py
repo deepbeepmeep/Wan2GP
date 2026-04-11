@@ -677,12 +677,12 @@ def load_pil_images(
     for p_str in paths_list:
         local_p_str = download_image_if_url(p_str, image_download_dir, task_id_for_log)
         if not local_p_str:
-            headless_logger.debug(f"[Task {task_id_for_log}] Skipping image as download_image_if_url returned nothing for: {p_str}")
+            headless_logger.debug_anomaly("Task {task_id_for_log}", f"Skipping image as download_image_if_url returned nothing for: {p_str}")
             continue
 
         p = Path(local_p_str.strip())
         if not p.is_file():
-            headless_logger.debug(f"[Task {task_id_for_log}] load_pil_images: Image file not found after potential download: {p} (original: {p_str})")
+            headless_logger.debug_anomaly("Task {task_id_for_log}", f"load_pil_images: Image file not found after potential download: {p} (original: {p_str})")
             continue
         try:
             img = Image.open(p)

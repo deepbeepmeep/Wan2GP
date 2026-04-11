@@ -33,26 +33,12 @@ def prepare_output_path(
     """Prepare a local output path plus the DB-facing location string."""
     if custom_output_dir:
         output_dir_for_task = Path(custom_output_dir)
-        headless_logger.debug(
-            f"Task {task_id}: Using custom output directory: {output_dir_for_task}",
-            task_id=task_id,
-        )
     else:
         if task_type:
             type_subdir = _get_task_type_directory(task_type)
             output_dir_for_task = main_output_dir_base / type_subdir
-            headless_logger.debug(
-                f"Task {task_id}: Using task-type subdirectory: {output_dir_for_task} "
-                f"(task_type='{task_type}' -> '{type_subdir}')",
-                task_id=task_id,
-            )
         else:
             output_dir_for_task = main_output_dir_base
-            headless_logger.debug(
-                f"Task {task_id}: No task_type provided, using root output directory: "
-                f"{output_dir_for_task} (backwards compatibility)",
-                task_id=task_id,
-            )
 
         import re
 
@@ -81,11 +67,6 @@ def prepare_output_path(
     except ValueError:
         db_output_location = str(final_save_path.resolve())
 
-    headless_logger.debug(
-        f"Task {task_id}: final_save_path='{final_save_path}', "
-        f"db_output_location='{db_output_location}'",
-        task_id=task_id,
-    )
     return final_save_path, db_output_location
 
 
@@ -293,7 +274,7 @@ def upload_intermediate_file_to_storage(
             return None
 
         public_url = f"{supabase_url}/storage/v1/object/public/image_uploads/{storage_path}"
-        headless_logger.debug(f"[UPLOAD_INTERMEDIATE] Uploaded to: {public_url}", task_id=task_id)
+        headless_logger.debug_anomaly("UPLOAD_INTERMEDIATE", f"Uploaded to: {public_url}", task_id=task_id)
         return public_url
     except (httpx.HTTPError, OSError, ValueError) as exc:
         headless_logger.error(f"[UPLOAD_INTERMEDIATE] Exception: {exc}", task_id=task_id, exc_info=True)

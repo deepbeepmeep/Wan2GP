@@ -9,6 +9,7 @@ import sys
 import time
 from collections import deque
 
+from source.core.log.core import _is_env_debug
 from source.runtime.worker_protocol import IDLE_RELEASE_EXIT_CODE
 
 WORKER_SHIM = str(Path(__file__).resolve().parents[2] / "worker.py")
@@ -29,6 +30,7 @@ def _normalize_exit_code(returncode: int) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv_tail = list(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger().setLevel(logging.DEBUG if _is_env_debug() else logging.INFO)
     logger = logging.getLogger(__name__)
     crashes = deque()
     shutdown_state = {"requested": False}
@@ -61,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         if shutdown_state["requested"]:
             return normalized_rc
         if returncode == IDLE_RELEASE_EXIT_CODE:
-            logger.info("[SUPERVISOR] idle-release restart")
+            logger.debug("SUPERVISOR idle-release restart")
             continue
         if returncode == 0:
             return 0

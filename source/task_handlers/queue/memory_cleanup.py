@@ -32,7 +32,7 @@ def cleanup_memory_after_task(queue: Any, task_id: str):
         if torch.cuda.is_available():
             vram_allocated_before = torch.cuda.memory_allocated() / BYTES_PER_GIB
             vram_reserved_before = torch.cuda.memory_reserved() / BYTES_PER_GIB
-            queue.logger.info(
+            queue.logger.debug(
                 f"[MEMORY_CLEANUP] Task {task_id}: "
                 f"BEFORE - VRAM allocated: {vram_allocated_before:.2f}GB, "
                 f"reserved: {vram_reserved_before:.2f}GB"
@@ -44,11 +44,11 @@ def cleanup_memory_after_task(queue: Any, task_id: str):
         # Clear PyTorch's CUDA cache (frees unused reserved memory, keeps models)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            queue.logger.info(f"[MEMORY_CLEANUP] Task {task_id}: Cleared CUDA cache")
+            queue.logger.debug_anomaly("MEMORY_CLEANUP", f"Task {task_id}: Cleared CUDA cache")
 
         # Run Python garbage collection to free CPU memory
         collected = gc.collect()
-        queue.logger.info(f"[MEMORY_CLEANUP] Task {task_id}: Garbage collected {collected} objects")
+        queue.logger.debug_anomaly("MEMORY_CLEANUP", f"Task {task_id}: Garbage collected {collected} objects")
 
         # Log memory AFTER cleanup
         if torch.cuda.is_available():
@@ -56,18 +56,18 @@ def cleanup_memory_after_task(queue: Any, task_id: str):
             vram_reserved_after = torch.cuda.memory_reserved() / BYTES_PER_GIB
             vram_freed = vram_reserved_before - vram_reserved_after
 
-            queue.logger.info(
+            queue.logger.debug(
                 f"[MEMORY_CLEANUP] Task {task_id}: "
                 f"AFTER - VRAM allocated: {vram_allocated_after:.2f}GB, "
                 f"reserved: {vram_reserved_after:.2f}GB"
             )
 
             if vram_freed > 0.01:  # Only log if freed >10MB
-                queue.logger.info(
+                queue.logger.debug(
                     f"[MEMORY_CLEANUP] Task {task_id}: Freed {vram_freed:.2f}GB of reserved VRAM"
                 )
             else:
-                queue.logger.info(
+                queue.logger.debug(
                     f"[MEMORY_CLEANUP] Task {task_id}: No significant VRAM freed (models still loaded)"
                 )
 

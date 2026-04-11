@@ -77,7 +77,7 @@ def create_structure_guidance_video(
     Raises:
         ValueError: If structure video cannot be loaded or processed
     """
-    generation_logger.debug(f"[STRUCTURE_GUIDANCE_VIDEO] Creating {structure_type} visualization video...")
+    generation_logger.debug_anomaly("STRUCTURE_GUIDANCE_VIDEO", f"Creating {structure_type} visualization video...")
     generation_logger.debug(f"  Source: {structure_video_path}")
     generation_logger.debug(f"  Type: {structure_type}")
     generation_logger.debug(f"  Frames: {max_frames_needed}")
@@ -98,7 +98,7 @@ def create_structure_guidance_video(
 
     try:
         # Step 1: Load structure video frames with treatment mode
-        generation_logger.debug(f"[STRUCTURE_GUIDANCE_VIDEO] Loading structure video frames...")
+        generation_logger.debug_anomaly("STRUCTURE_GUIDANCE_VIDEO", f"Loading structure video frames...")
         structure_frames = load_structure_video_frames(
             structure_video_path,
             target_frame_count=max_frames_needed,
@@ -109,7 +109,7 @@ def create_structure_guidance_video(
         )
 
         # Step 2: Process frames with chosen preprocessor
-        generation_logger.debug(f"[STRUCTURE_GUIDANCE_VIDEO] Processing with '{structure_type}' preprocessor...")
+        generation_logger.debug_anomaly("STRUCTURE_GUIDANCE_VIDEO", f"Processing with '{structure_type}' preprocessor...")
         processed_frames = process_structure_frames(
             structure_frames,
             structure_type,
@@ -121,10 +121,10 @@ def create_structure_guidance_video(
         if not processed_frames:
             raise ValueError(f"No {structure_type} visualizations extracted from structure video")
 
-        generation_logger.debug(f"[STRUCTURE_GUIDANCE_VIDEO] Processed {len(processed_frames)} frames")
+        generation_logger.debug_anomaly("STRUCTURE_GUIDANCE_VIDEO", f"Processed {len(processed_frames)} frames")
 
         # Step 3: Encode as video
-        generation_logger.debug(f"[STRUCTURE_GUIDANCE_VIDEO] Encoding video to {output_path}")
+        generation_logger.debug_anomaly("STRUCTURE_GUIDANCE_VIDEO", f"Encoding video to {output_path}")
 
         save_video = get_wan2gp_save_video_callable()
 
@@ -150,10 +150,10 @@ def create_structure_guidance_video(
             raise ValueError(f"Failed to create video at {output_path}")
 
         file_size_mb = output_path.stat().st_size / BYTES_PER_MB
-        generation_logger.debug(f"[STRUCTURE_GUIDANCE_VIDEO] Created video: {output_path.name} ({file_size_mb:.2f} MB)")
+        generation_logger.debug_anomaly("STRUCTURE_GUIDANCE_VIDEO", f"Created video: {output_path.name} ({file_size_mb:.2f} MB)")
 
         # Clean up GPU memory
-        generation_logger.debug(f"[STRUCTURE_GUIDANCE_VIDEO] Cleaning up GPU memory...")
+        generation_logger.debug_anomaly("STRUCTURE_GUIDANCE_VIDEO", f"Cleaning up GPU memory...")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -187,7 +187,7 @@ def create_trimmed_structure_video(
     Returns:
         Path to the created video file
     """
-    generation_logger.debug(f"[TRIMMED_STRUCTURE_VIDEO] Creating trimmed structure video...")
+    generation_logger.debug_anomaly("TRIMMED_STRUCTURE_VIDEO", f"Creating trimmed structure video...")
     generation_logger.debug(f"  Source: {structure_video_path}")
     generation_logger.debug(f"  Frames: {max_frames_needed}")
     generation_logger.debug(f"  Resolution: {target_resolution[0]}x{target_resolution[1]}")
@@ -206,7 +206,7 @@ def create_trimmed_structure_video(
         )
 
         # Step 2: Encode as video directly (no style transfer)
-        generation_logger.debug(f"[TRIMMED_STRUCTURE_VIDEO] Encoding video to {output_path}")
+        generation_logger.debug_anomaly("TRIMMED_STRUCTURE_VIDEO", f"Encoding video to {output_path}")
 
         save_video = get_wan2gp_save_video_callable()
 

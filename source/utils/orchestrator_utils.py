@@ -16,6 +16,16 @@ def extract_orchestrator_parameters(db_task_params: dict, task_id: str = "unknow
     This handles the common pattern where task parameters contain nested orchestrator_details
     that need to be extracted and flattened into the main parameter space.
 
+    Callers and field usage:
+    - source.task_handlers.magic_edit._handle_magic_edit_task:
+      image_url, prompt, resolution, seed, in_scene
+    - source.task_handlers.tasks.task_conversion.db_task_to_generation_task:
+      phase_config, additional_loras
+    - source.task_handlers.travel.orchestrator.handle_travel_orchestrator_task:
+      carries prompt/negative_prompt, resolution, seed/model aliases,
+      guidance + phase fields, LoRA metadata, amount_of_motion, and phase_config
+      onto child segment payloads for downstream compatibility
+
     Args:
         db_task_params: Raw task parameters from database
         task_id: Task ID for logging
@@ -27,8 +37,6 @@ def extract_orchestrator_parameters(db_task_params: dict, task_id: str = "unknow
 
     orchestrator_details = db_task_params.get("orchestrator_details", {})
     if orchestrator_details:
-        headless_logger.debug(f"Task {task_id}: Found orchestrator_details with {len(orchestrator_details)} parameters", task_id=task_id)
-
         # Extract specific parameters that should be available at top level
         extraction_map = {
             "additional_loras": "additional_loras",
@@ -55,14 +63,6 @@ def extract_orchestrator_parameters(db_task_params: dict, task_id: str = "unknow
             # Magic edit parameters
             "image_url": "image_url",
             "in_scene": "in_scene",
-            # Qwen image style parameters
-            "style_reference_image": "style_reference_image",
-            "style_reference_strength": "style_reference_strength",
-            # Additional common orchestrator parameters
-            "video_guide": "video_guide",
-            "video_mask": "video_mask",
-            "video_prompt_type": "video_prompt_type",
-            "control_net_weight": "control_net_weight",
             "amount_of_motion": "amount_of_motion",
             "phase_config": "phase_config",
         }
@@ -78,12 +78,11 @@ def extract_orchestrator_parameters(db_task_params: dict, task_id: str = "unknow
                         continue
                     extracted_params[param_key] = value
                     extracted_count += 1
-                    headless_logger.debug(f"Task {task_id}: Extracted {orchestrator_key} from orchestrator_details", task_id=task_id)
 
         # Note: orchestrator_details is already in db_task_params, no need to duplicate
 
         if extracted_count > 0:
-            headless_logger.debug(f"Task {task_id}: Extracted {extracted_count} parameters from orchestrator_details", task_id=task_id)
+            headless_logger.debug(f"Task {task_id}: extracted {extracted_count} params from orchestrator_details", task_id=task_id)
 
     return extracted_params
 

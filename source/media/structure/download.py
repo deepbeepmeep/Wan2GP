@@ -39,10 +39,6 @@ def download_and_extract_motion_frames(
     from urllib.parse import urlparse
     import requests
 
-    generation_logger.debug(f"[STRUCTURE_MOTION] Extracting frames from pre-warped video")
-    generation_logger.debug(f"  URL/Path: {structure_motion_video_url}")
-    generation_logger.debug(f"  Frame range: {frame_start} to {frame_start + frame_count - 1}")
-
     try:
         # Determine if this is a URL or local path
         parsed = urlparse(structure_motion_video_url)
@@ -50,8 +46,6 @@ def download_and_extract_motion_frames(
 
         if is_url:
             # Download the video
-            generation_logger.debug(f"[STRUCTURE_MOTION] Downloading video...")
-
             download_dir.mkdir(parents=True, exist_ok=True)
             local_video_path = download_dir / "structure_motion.mp4"
 
@@ -60,9 +54,6 @@ def download_and_extract_motion_frames(
 
             with open(local_video_path, 'wb') as f:
                 f.write(response.content)
-
-            file_size_mb = len(response.content) / BYTES_PER_MB
-            generation_logger.debug(f"[STRUCTURE_MOTION] Downloaded {file_size_mb:.2f} MB to {local_video_path.name}")
         else:
             # Use local path (support plain paths and file:// URLs)
             if parsed.scheme == "file":
@@ -71,10 +62,8 @@ def download_and_extract_motion_frames(
                 local_video_path = Path(structure_motion_video_url)
             if not local_video_path.exists():
                 raise ValueError(f"Structure motion video not found: {local_video_path}")
-            generation_logger.debug(f"[STRUCTURE_MOTION] Using local video: {local_video_path}")
 
         # Extract frames (prefer decord, fall back to cv2)
-        generation_logger.debug(f"[STRUCTURE_MOTION] Extracting frames...")
 
         try:
             # Add Wan2GP to path (decord often installed alongside this stack)
@@ -105,12 +94,18 @@ def download_and_extract_motion_frames(
                     frame_np = np.clip(frame_np, 0, 255).astype(np.uint8)
                 frames_list.append(frame_np)
 
-            generation_logger.debug(f"[STRUCTURE_MOTION] Extracted {len(frames_list)} frames (decord)")
+            generation_logger.debug_block(
+                "STRUCTURE_MOTION_EXTRACT",
+                {
+                    "frames": len(frames_list),
+                    "backend": "decord",
+                    "source": str(local_video_path),
+                },
+            )
             return frames_list
 
         except ModuleNotFoundError:
             import cv2
-            generation_logger.debug("[STRUCTURE_MOTION] decord not available, falling back to cv2")
 
             cap = cv2.VideoCapture(str(local_video_path))
             if not cap.isOpened():
@@ -139,7 +134,14 @@ def download_and_extract_motion_frames(
                 frames_list.append(frame_rgb)
 
             cap.release()
-            generation_logger.debug(f"[STRUCTURE_MOTION] Extracted {len(frames_list)} frames (cv2)")
+            generation_logger.debug_block(
+                "STRUCTURE_MOTION_EXTRACT",
+                {
+                    "frames": len(frames_list),
+                    "backend": "cv2",
+                    "source": str(local_video_path),
+                },
+            )
             return frames_list
 
     except (OSError, ValueError, RuntimeError) as e:

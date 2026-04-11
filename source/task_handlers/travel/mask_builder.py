@@ -44,13 +44,9 @@ def create_mask_video(proc: Any) -> Optional[Path]:
 
         if not chain_segments:
             overlap_count = 0
-            travel_logger.debug(f"[INDEPENDENT_SEGMENTS] Seg {ctx.segment_idx}: chain_segments=False: Forcing mask overlap_count=0 (independent mode)", task_id=ctx.task_id)
         elif overlap_count > 0:
             overlap_indices = set(range(overlap_count))
             inactive_indices.update(overlap_indices)
-            travel_logger.debug(f"Seg {ctx.segment_idx}: Adding {len(overlap_indices)} overlap frames to inactive set: {sorted(overlap_indices)}", task_id=ctx.task_id)
-        else:
-            travel_logger.debug(f"Seg {ctx.segment_idx}: No overlap frames to mark as inactive", task_id=ctx.task_id)
 
         # 2) First frame when this is the very first segment from scratch OR independent segments
         # In independent mode (chain_segments=False), every segment starts from a fixed keyframe image, so frame 0 must be anchored.
@@ -59,16 +55,12 @@ def create_mask_video(proc: Any) -> Optional[Path]:
 
         if (is_first_segment_val and not is_continue_scenario) or not chain_segments:
             inactive_indices.add(0)
-            travel_logger.debug(f"Seg {ctx.segment_idx}: Marking frame 0 as inactive (anchor start image)", task_id=ctx.task_id)
 
         # 3) Last frame for multi-image segments - each segment travels TO a target image
         # For single image journeys, we don't anchor the end, let the model generate freely
         is_single_image_journey = proc._detect_single_image_journey()
         if not is_single_image_journey:
             inactive_indices.add(ctx.total_frames_for_segment - 1)
-            travel_logger.debug(f"Seg {ctx.segment_idx}: Multi-image journey - marking last frame {ctx.total_frames_for_segment - 1} as inactive (target image)", task_id=ctx.task_id)
-        else:
-            travel_logger.debug(f"Seg {ctx.segment_idx}: Single image journey - NOT marking last frame as inactive, letting model generate freely", task_id=ctx.task_id)
 
         # 4) Consolidated keyframe positions (frame consolidation optimization)
         consolidated_keyframe_positions = ctx.segment_params.get("consolidated_keyframe_positions")
@@ -77,13 +69,20 @@ def create_mask_video(proc: Any) -> Optional[Path]:
             for frame_pos in consolidated_keyframe_positions:
                 if 0 <= frame_pos < ctx.total_frames_for_segment:
                     inactive_indices.add(frame_pos)
-            travel_logger.debug(f"Seg {ctx.segment_idx}: CONSOLIDATED SEGMENT - marking keyframe positions as inactive: {consolidated_keyframe_positions}", task_id=ctx.task_id)
 
-        # --- DEBUG LOGGING (restored from original) ---
-        travel_logger.debug(f"[MASK_DEBUG] Segment {ctx.segment_idx}: frame_overlap_from_previous={frame_overlap_from_previous}", task_id=ctx.task_id)
-        travel_logger.debug(f"[MASK_DEBUG] Segment {ctx.segment_idx}: inactive (masked) frame indices: {sorted(list(inactive_indices))}", task_id=ctx.task_id)
-        travel_logger.debug(f"[MASK_DEBUG] Segment {ctx.segment_idx}: active (unmasked) frame indices: {[i for i in range(ctx.total_frames_for_segment) if i not in inactive_indices]}", task_id=ctx.task_id)
-        # --- END DEBUG LOGGING ---
+        # One consolidated MASK card summarizing what's inactive vs active.
+        active_indices = [i for i in range(ctx.total_frames_for_segment) if i not in inactive_indices]
+        travel_logger.debug_block(
+            "MASK",
+            {
+                "segment": ctx.segment_idx,
+                "overlap_from_prev": frame_overlap_from_previous,
+                "inactive": sorted(list(inactive_indices)),
+                "active_count": len(active_indices),
+                "total": ctx.total_frames_for_segment,
+            },
+            task_id=ctx.task_id,
+        )
 
         # Create mask video output path
         timestamp_short = datetime.now().strftime("%H%M%S")
@@ -98,19 +97,10 @@ def create_mask_video(proc: Any) -> Optional[Path]:
             task_type="travel_segment"
         )
 
-        travel_logger.debug(f"Seg {ctx.segment_idx}: Creating mask video with {len(inactive_indices)} inactive frames: {sorted(inactive_indices)}", task_id=ctx.task_id)
-
         # Mask video is required for VACE frame anchoring and for overlap-masked continuation.
         if not ctx.debug_enabled and not (proc.is_vace_model or proc.generation_policy.continuation.uses_mask_video):
-            travel_logger.debug(f"Task {ctx.task_id}: Debug mode disabled and non-VACE model, skipping mask video creation", task_id=ctx.task_id)
             return None
         else:
-            if (proc.is_vace_model or proc.generation_policy.continuation.uses_mask_video) and not ctx.debug_enabled:
-                travel_logger.debug(
-                    f"Task {ctx.task_id}: Creating mask video for required travel frame anchoring",
-                    task_id=ctx.task_id,
-                )
-
             # Use the generalized mask creation function
             created_mask_vid = create_mask_video_from_inactive_indices(
                 total_frames=ctx.total_frames_for_segment,
@@ -124,7 +114,6 @@ def create_mask_video(proc: Any) -> Optional[Path]:
                 # Verify mask video properties match guide video
                 try:
                     mask_frames, mask_fps = get_video_frame_count_and_fps(str(created_mask_vid))
-                    travel_logger.debug(f"Seg {ctx.segment_idx}: Mask video generated - {mask_frames} frames @ {mask_fps}fps -> {created_mask_vid}", task_id=ctx.task_id)
 
                     # Warn if frame count mismatch
                     if mask_frames != ctx.total_frames_for_segment:

@@ -80,7 +80,6 @@ class TravelSegmentProcessor:
         # (e.g. wan_2_2_i2v_lightning_baseline_2_2_2 is I2V, not VACE).
         is_vace = "vace" in model_name
 
-        travel_logger.debug(f"[VACE_DEBUG] Seg {self.ctx.segment_idx}: Model '{self.ctx.model_name}' -> is_vace_model = {is_vace}", task_id=self.ctx.task_id)
         return is_vace
 
     def _is_ltx2_model(self) -> bool:
@@ -224,11 +223,10 @@ class TravelSegmentProcessor:
         """
         ctx = self.ctx
 
-        travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: Starting video_prompt_type construction", task_id=ctx.task_id)
-        travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: is_vace_model = {self.is_vace_model}", task_id=ctx.task_id)
-        travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: mask_video_path exists = {mask_video_path is not None}", task_id=ctx.task_id)
-
         travel_guidance_config = self._get_travel_guidance_config()
+        path_taken = "default"
+        video_prompt_type_str = ""
+        raw_guide_used = False
 
         if travel_guidance_config is not None:
             if travel_guidance_config.is_ltx_hybrid:
@@ -244,118 +242,94 @@ class TravelSegmentProcessor:
                 if travel_guidance_config.has_anchors:
                     parts.append("KFI")
                 video_prompt_type_str = "".join(parts)
-                travel_logger.debug(
-                    f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance ltx_hybrid -> video_prompt_type='{video_prompt_type_str}'",
-                    task_id=ctx.task_id,
-                )
+                path_taken = "travel_guidance:ltx_hybrid"
             elif travel_guidance_config.is_ltx_control:
                 video_prompt_type_str = "VG"
-                travel_logger.debug(
-                    f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance ltx_control -> video_prompt_type='VG'",
-                    task_id=ctx.task_id,
-                )
+                path_taken = "travel_guidance:ltx_control"
             elif travel_guidance_config.kind == "uni3c":
                 # Uni3C needs VG for LTX-2, but VACE must still suppress the
                 # raw video guide to avoid double-feeding motion guidance.
                 video_prompt_type_str = "VG" if self._is_ltx2_model() else ""
-                travel_logger.debug(
-                    f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance uni3c -> video_prompt_type='{video_prompt_type_str}'",
-                    task_id=ctx.task_id,
-                )
+                path_taken = "travel_guidance:uni3c"
             elif travel_guidance_config.kind == "none":
                 video_prompt_type_str = ""
             else:
                 video_prompt_type_str = ""
 
             if video_prompt_type_str:
-                travel_logger.debug(
-                    f"[VPT_DEBUG] Seg {ctx.segment_idx}: travel_guidance override result = '{video_prompt_type_str}'",
+                travel_logger.debug_block(
+                    "GUIDE",
+                    {
+                        "segment": ctx.segment_idx,
+                        "model": ctx.model_name,
+                        "path": path_taken,
+                        "is_vace": self.is_vace_model,
+                        "guide": bool(guide_video_path),
+                        "mask": bool(mask_video_path),
+                        "video_prompt_type": video_prompt_type_str,
+                    },
                     task_id=ctx.task_id,
                 )
                 return video_prompt_type_str
 
         if self.is_vace_model:
-            travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: ENTERING VACE MODEL PATH", task_id=ctx.task_id)
+            path_taken = "vace"
             vpt_components = []
 
             # Check if uni3c is handling motion guidance - if so, skip VACE video guide
             # Use config if available, fallback to legacy detection
             is_uni3c_mode = self._structure_config.is_uni3c
-            travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: structure_type={self._detected_structure_type}, is_uni3c_mode={is_uni3c_mode}", task_id=ctx.task_id)
-
-            if is_uni3c_mode:
-                # Uni3C provides motion guidance - don't double-feed with VACE video guide
-                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: SKIPPING 'V' - uni3c handles motion guidance", task_id=ctx.task_id)
-                travel_logger.debug(f"[UNI3C_VPT] Seg {ctx.segment_idx}: Uni3C mode - video_guide will NOT be used by VACE", task_id=ctx.task_id)
-            else:
+            if not is_uni3c_mode:
                 # Non-uni3c: use VACE video guide as normal
                 vpt_components.append("V")
-                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: Added video 'V', vpt_components = {vpt_components}", task_id=ctx.task_id)
-                travel_logger.debug(f"[VACEActivated] Seg {ctx.segment_idx}: Using VACE with raw video guide (no preprocessing)", task_id=ctx.task_id)
+                raw_guide_used = True
 
             # Add mask component if mask video exists
             if mask_video_path:
                 vpt_components.append("M")
-                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: Added mask 'M', vpt_components = {vpt_components}", task_id=ctx.task_id)
-                travel_logger.debug(f"[VACEActivated] Seg {ctx.segment_idx}: Adding mask control - mask video: {mask_video_path}", task_id=ctx.task_id)
-            else:
-                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: No mask video, vpt_components = {vpt_components}", task_id=ctx.task_id)
 
             video_prompt_type_str = "".join(vpt_components)
-            travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: VACE PATH RESULT: video_prompt_type = '{video_prompt_type_str}'", task_id=ctx.task_id)
-            travel_logger.debug(f"[VACEActivated] Seg {ctx.segment_idx}: Final video_prompt_type: '{video_prompt_type_str}'", task_id=ctx.task_id)
         elif self._is_ltx2_model():
-            travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: ENTERING LTX-2 MODEL PATH", task_id=ctx.task_id)
-            travel_logger.debug(
-                f"[LTX_GUIDANCE] Seg {ctx.segment_idx}: "
-                f"guide_video={'YES' if guide_video_path else 'NO'}, "
-                f"mask_video={'YES' if mask_video_path else 'NO'}, "
-                f"guidance_kind={getattr(travel_guidance_config, 'kind', None)}, "
-                f"guidance_mode={getattr(travel_guidance_config, 'mode', None)}, "
-                f"needs_ic_lora={getattr(travel_guidance_config, 'needs_ic_lora', lambda: False)() if travel_guidance_config else False}, "
-                f"is_uni3c={getattr(travel_guidance_config, 'is_uni3c', False) if travel_guidance_config else False}",
-                task_id=ctx.task_id,
-            )
+            path_taken = "ltx2"
             # LTX-2 supports TSEV: T=text, S=start image, E=end image, V=video guide
             # Use guide_preprocessing from orchestrator if a guide video is provided
             if mask_video_path:
                 # LTX-2 supports mask preprocessing (A, NA, XA, XNA)
                 video_prompt_type_str = "VG" + "M" if mask_video_path else "VG"
-                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: LTX-2 with guide+mask → '{video_prompt_type_str}'", task_id=ctx.task_id)
             elif guide_video_path:
                 # Guide video exists but no mask — use VG for video-guided generation
                 video_prompt_type_str = "VG"
-                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: LTX-2 with guide (no mask) → 'VG'", task_id=ctx.task_id)
             else:
                 # No guide video — use start image mode for keyframe-based generation
                 video_prompt_type_str = "S"
-                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: LTX-2 start-image mode → 'S'", task_id=ctx.task_id)
 
             # Allow orchestrator to override via explicit guide_preprocessing
             guide_preprocessing = ctx.orchestrator_details.get("guide_preprocessing")
             if guide_preprocessing and travel_guidance_config is None:
                 video_prompt_type_str = guide_preprocessing
-                travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: Using explicit guide_preprocessing: {guide_preprocessing}", task_id=ctx.task_id)
-
-            travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: LTX-2 PATH RESULT: video_prompt_type = '{video_prompt_type_str}'", task_id=ctx.task_id)
+                path_taken = "ltx2:explicit_guide_preprocessing"
         else:
-            travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: ENTERING NON-VACE MODEL PATH", task_id=ctx.task_id)
+            path_taken = "non_vace"
             # Fallback for non-VACE models: use 'U' for unprocessed RGB to provide direct pixel-level control.
             u_component = "U"
             m_component = "M" if mask_video_path else ""
 
-            travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: Non-VACE components: U='{u_component}', M='{m_component}'", task_id=ctx.task_id)
-
             video_prompt_type_str = u_component + m_component
-            travel_logger.debug(f"[VPT_DEBUG] Seg {ctx.segment_idx}: NON-VACE PATH RESULT: video_prompt_type = '{video_prompt_type_str}'", task_id=ctx.task_id)
-            travel_logger.debug(f"[VACESkipped] Seg {ctx.segment_idx}: Using non-VACE model -> video_prompt_type: '{video_prompt_type_str}'", task_id=ctx.task_id)
 
-        # Final debug logging
-        travel_logger.debug(f"[VPT_FINAL] Seg {ctx.segment_idx}: ===== FINAL VIDEO_PROMPT_TYPE SUMMARY =====", task_id=ctx.task_id)
-        travel_logger.debug(f"[VPT_FINAL] Seg {ctx.segment_idx}: Model: '{ctx.model_name}'", task_id=ctx.task_id)
-        travel_logger.debug(f"[VPT_FINAL] Seg {ctx.segment_idx}: Is VACE: {self.is_vace_model}", task_id=ctx.task_id)
-        travel_logger.debug(f"[VPT_FINAL] Seg {ctx.segment_idx}: Final video_prompt_type: '{video_prompt_type_str}'", task_id=ctx.task_id)
-        travel_logger.debug(f"[VPT_FINAL] Seg {ctx.segment_idx}: =========================================", task_id=ctx.task_id)
+        travel_logger.debug_block(
+            "GUIDE",
+            {
+                "segment": ctx.segment_idx,
+                "model": ctx.model_name,
+                "path": path_taken,
+                "is_vace": self.is_vace_model,
+                "guide": bool(guide_video_path),
+                "mask": bool(mask_video_path),
+                "raw_guide_used": raw_guide_used,
+                "video_prompt_type": video_prompt_type_str,
+            },
+            task_id=ctx.task_id,
+        )
 
         return video_prompt_type_str
 
@@ -375,43 +349,41 @@ class TravelSegmentProcessor:
         hybrid_audio_payload = self._build_hybrid_audio_payload()
         travel_guidance_config = self._get_travel_guidance_config()
 
-        # === FRAME COUNT DIAGNOSTIC SUMMARY ===
-        # This consolidated log helps quickly diagnose frame count mismatches
-        travel_logger.debug(f"[FRAME_COUNTS] Seg {ctx.segment_idx}: ========== FRAME COUNT SUMMARY ==========", task_id=ctx.task_id)
-        travel_logger.debug(f"[FRAME_COUNTS] Seg {ctx.segment_idx}: Target frames for segment: {ctx.total_frames_for_segment}", task_id=ctx.task_id)
-        travel_logger.debug(f"[FRAME_COUNTS] Seg {ctx.segment_idx}: Valid 4N+1 check: {(ctx.total_frames_for_segment - 1) % 4 == 0}", task_id=ctx.task_id)
-
-        # Verify guide video frame count
         guide_frames = None
+        guide_frame_status = "none"
         if guide_video_path:
             try:
                 guide_frames, _ = get_video_frame_count_and_fps(str(guide_video_path))
-                match_status = "\u2713" if guide_frames == ctx.total_frames_for_segment else "\u2717 MISMATCH"
-                travel_logger.debug(f"[FRAME_COUNTS] Seg {ctx.segment_idx}: Guide video frames: {guide_frames} {match_status}", task_id=ctx.task_id)
+                guide_frame_status = str(guide_frames)
             except (OSError, ValueError, RuntimeError) as e:
-                travel_logger.debug(f"[FRAME_COUNTS] Seg {ctx.segment_idx}: Guide video frames: ERROR ({e})", task_id=ctx.task_id)
-        else:
-            travel_logger.debug(f"[FRAME_COUNTS] Seg {ctx.segment_idx}: Guide video: None", task_id=ctx.task_id)
+                guide_frame_status = f"error:{type(e).__name__}"
 
-        # Verify mask video frame count
         mask_frames = None
+        mask_frame_status = "none"
         if mask_video_path:
             try:
                 mask_frames, _ = get_video_frame_count_and_fps(str(mask_video_path))
-                match_status = "\u2713" if mask_frames == ctx.total_frames_for_segment else "\u2717 MISMATCH"
-                travel_logger.debug(f"[FRAME_COUNTS] Seg {ctx.segment_idx}: Mask video frames: {mask_frames} {match_status}", task_id=ctx.task_id)
+                mask_frame_status = str(mask_frames)
             except (OSError, ValueError, RuntimeError) as e:
-                travel_logger.debug(f"[FRAME_COUNTS] Seg {ctx.segment_idx}: Mask video frames: ERROR ({e})", task_id=ctx.task_id)
-        else:
-            travel_logger.debug(f"[FRAME_COUNTS] Seg {ctx.segment_idx}: Mask video: None", task_id=ctx.task_id)
+                mask_frame_status = f"error:{type(e).__name__}"
+
+        travel_logger.debug_block(
+            "PARAMS",
+            {
+                "segment": ctx.segment_idx,
+                "target_frames": ctx.total_frames_for_segment,
+                "valid_4n1": (ctx.total_frames_for_segment - 1) % 4 == 0,
+                "guide_frames": guide_frame_status,
+                "mask_frames": mask_frame_status,
+            },
+            task_id=ctx.task_id,
+        )
 
         # Warn if any mismatch detected
         if guide_frames and guide_frames != ctx.total_frames_for_segment:
             travel_logger.warning(f"[FRAME_COUNTS] Guide frames ({guide_frames}) != target ({ctx.total_frames_for_segment})", task_id=ctx.task_id)
         if mask_frames and mask_frames != ctx.total_frames_for_segment:
             travel_logger.warning(f"[FRAME_COUNTS] Mask frames ({mask_frames}) != target ({ctx.total_frames_for_segment})", task_id=ctx.task_id)
-
-        travel_logger.debug(f"[FRAME_COUNTS] Seg {ctx.segment_idx}: ==========================================", task_id=ctx.task_id)
 
         return {
             "video_guide": str(guide_video_path) if guide_video_path else None,
@@ -466,12 +438,5 @@ class TravelSegmentProcessor:
                 or is_last_segment  # Trailing segment (no end target image)
             )
         )
-
-        travel_logger.debug(f"[SINGLE_IMAGE_DEBUG] Seg {ctx.segment_idx}: Single image journey detection:", task_id=ctx.task_id)
-        travel_logger.debug(f"[SINGLE_IMAGE_DEBUG]   Input images count: {len(input_images_for_check)}", task_id=ctx.task_id)
-        travel_logger.debug(f"[SINGLE_IMAGE_DEBUG]   Continue from video: {has_continue_video}", task_id=ctx.task_id)
-        travel_logger.debug(f"[SINGLE_IMAGE_DEBUG]   Is first segment: {is_first_segment}", task_id=ctx.task_id)
-        travel_logger.debug(f"[SINGLE_IMAGE_DEBUG]   Is last segment: {is_last_segment}", task_id=ctx.task_id)
-        travel_logger.debug(f"[SINGLE_IMAGE_DEBUG]   Result: {is_single_image_journey}", task_id=ctx.task_id)
 
         return is_single_image_journey

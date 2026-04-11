@@ -81,12 +81,12 @@ class QwenHandler:
     # ── Logging helpers ─────────────────────────────────────────────────
 
     def _log_debug(self, message: str):
-        """Log debug message."""
-        model_logger.debug(f"[QWEN_HANDLER] Task {self.task_id}: {message}", task_id=self.task_id)
+        """Log debug message — silent by default; these were one-time diagnostic aids."""
+        pass
 
     def _log_info(self, message: str):
-        """Log info message."""
-        model_logger.info(f"[QWEN_HANDLER] Task {self.task_id}: {message}", task_id=self.task_id)
+        """Log info message — silent by default; these were one-time diagnostic aids."""
+        pass
 
     def _log_warning(self, message: str):
         """Log warning message."""

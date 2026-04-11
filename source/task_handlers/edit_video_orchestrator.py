@@ -63,17 +63,22 @@ def _calculate_keeper_segments(
     sorted_portions = sorted(portions, key=lambda p: p["start_frame"])
     
     mode_desc = "REPLACE MODE (anchors preserved)" if replace_mode else "STANDARD MODE (full replacement)"
-    task_logger.debug(f"[EDIT_VIDEO] === Keeper Segment Calculation ({mode_desc}) ===")
-    task_logger.debug(f"[EDIT_VIDEO] Source video: {total_frames} total frames")
-    task_logger.debug(f"[EDIT_VIDEO] Portions to regenerate ({len(sorted_portions)}):")
-    for i, p in enumerate(sorted_portions):
-        frame_count = p.get("frame_count") or (p["end_frame"] - p["start_frame"] + 1)
-        if replace_mode:
-            # In replace mode, anchors are kept, only middle is regenerated
-            task_logger.debug(f"[EDIT_VIDEO]   Portion {i}: frames {p['start_frame']}-{p['end_frame']} "
-                   f"(anchors {p['start_frame']} & {p['end_frame']} kept, regenerate {p['start_frame']+1}-{p['end_frame']-1})")
-        else:
-            task_logger.debug(f"[EDIT_VIDEO]   Portion {i}: frames {p['start_frame']}-{p['end_frame']} ({frame_count} frames)")
+    task_logger.debug_block(
+        "SETUP",
+        {
+            "mode": mode_desc,
+            "total_frames": total_frames,
+            "portion_count": len(sorted_portions),
+            "portions": [
+                {
+                    "start": p["start_frame"],
+                    "end": p["end_frame"],
+                    "frame_count": p.get("frame_count") or (p["end_frame"] - p["start_frame"] + 1),
+                }
+                for p in sorted_portions
+            ],
+        },
+    )
     
     # Validate portions don't overlap
     for i in range(len(sorted_portions) - 1):
@@ -111,7 +116,6 @@ def _calculate_keeper_segments(
             "frame_count": keeper_end + 1
         }
         keepers.append(keeper)
-        task_logger.debug(f"[EDIT_VIDEO] Keeper 0 (before first portion): frames 0-{keeper['end_frame']} ({keeper['frame_count']} frames)")
     
     # Keepers between portions
     for i in range(len(sorted_portions) - 1):
@@ -131,10 +135,6 @@ def _calculate_keeper_segments(
                 "frame_count": gap_end - gap_start + 1
             }
             keepers.append(keeper)
-            task_logger.debug(f"[EDIT_VIDEO] Keeper {len(keepers)-1} (between portions): frames {gap_start}-{gap_end} ({keeper['frame_count']} frames)")
-        else:
-            # Adjacent portions with no gap - insert empty keeper marker
-            task_logger.debug(f"[EDIT_VIDEO] No keeper between portions {i} and {i+1} (adjacent)")
     
     # Keeper after last portion
     last_end = sorted_portions[-1]["end_frame"]
@@ -151,9 +151,13 @@ def _calculate_keeper_segments(
             "frame_count": total_frames - keeper_start
         }
         keepers.append(keeper)
-        task_logger.debug(f"[EDIT_VIDEO] Keeper {len(keepers)-1} (after last portion): frames {keeper['start_frame']}-{keeper['end_frame']} ({keeper['frame_count']} frames)")
-    
-    task_logger.debug(f"[EDIT_VIDEO] Total keeper segments: {len(keepers)}")
+    task_logger.debug_block(
+        "SETUP",
+        {
+            "keeper_count": len(keepers),
+            "keepers": keepers,
+        },
+    )
     
     return keepers
 
@@ -184,7 +188,6 @@ def _get_clip_url_or_path(
     # this function should upload to Supabase storage and return the URL.
     # Currently not needed because workers share filesystem.
     
-    task_logger.debug(f"[EDIT_VIDEO] Keeper clip {clip_name} at: {local_path}")
     return str(local_path)
 
 def _preprocess_portions_to_regenerate(
@@ -220,8 +223,6 @@ def _preprocess_portions_to_regenerate(
             "per_join_settings": List[dict]
         }
     """
-    task_logger.debug(f"[EDIT_VIDEO] Preprocessing {len(portions_to_regenerate)} portions to regenerate")
-    
     try:
         # Download source video if it's a URL
         source_video_path = download_video_if_url(
@@ -235,16 +236,17 @@ def _preprocess_portions_to_regenerate(
         if not source_video.exists():
             return {"success": False, "error": f"Source video not found: {source_video_path}"}
         
-        # === FRAME/FPS DIAGNOSTICS (BEFORE ANY RESAMPLING) ===
         target_fps = source_video_fps or 16
-        ffprobe_frames_before = get_video_frame_count_ffprobe(str(source_video))
-        opencv_frames_before, opencv_fps_before = get_video_frame_count_and_fps(str(source_video))
         ffprobe_fps_before = get_video_fps_ffprobe(str(source_video))
-        task_logger.debug(f"[EDIT_VIDEO] Payload expects: frames={source_video_total_frames}, fps={target_fps}")
-        task_logger.debug(
-            f"[EDIT_VIDEO] Source (pre-ensure_fps): "
-            f"ffprobe_frames={ffprobe_frames_before}, ffprobe_fps={ffprobe_fps_before}, "
-            f"opencv_frames={opencv_frames_before}, opencv_fps={opencv_fps_before}"
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "stage": "source_baseline",
+                "payload_frames": source_video_total_frames,
+                "target_fps": target_fps,
+                "detected_fps": ffprobe_fps_before,
+            },
+            task_id=orchestrator_task_id,
         )
 
         # Time↔frame sanity checks for each portion (if times are provided)
@@ -264,16 +266,19 @@ def _preprocess_portions_to_regenerate(
                     ef_payload = int(round(float(et) * float(target_fps))) - 1  # end_time is typically exclusive
                     sf_ff = int(round(float(st) * float(ffprobe_fps_before))) if ffprobe_fps_before else None
                     ef_ff = int(round(float(et) * float(ffprobe_fps_before))) - 1 if ffprobe_fps_before else None
-                    task_logger.debug(
-                        f"[EDIT_VIDEO] Portion {i}: frames={sf}-{ef}, "
-                        f"times={st:.6f}-{et:.6f}s -> "
-                        f"@payload_fps({target_fps}): {sf_payload}-{ef_payload}"
-                        + (f", @ffprobe_fps({ffprobe_fps_before:.6f}): {sf_ff}-{ef_ff}" if ffprobe_fps_before else "")
+                    task_logger.debug_block(
+                        "SETUP",
+                        {
+                            "stage": f"portion_{i}",
+                            "frames": (sf, ef),
+                            "times": (st, et),
+                            "payload_fps_frames": (sf_payload, ef_payload),
+                            "ffprobe_fps_frames": None if ffprobe_fps_before is None else (sf_ff, ef_ff),
+                        },
+                        task_id=orchestrator_task_id,
                     )
                 except (ValueError, KeyError, TypeError) as conv_err:
-                    task_logger.debug(f"[EDIT_VIDEO] Portion {i}: time↔frame conversion error: {conv_err}")
-            else:
-                task_logger.debug(f"[EDIT_VIDEO] Portion {i}: frames={sf}-{ef} (no times provided)")
+                    task_logger.debug_anomaly("EDIT_VIDEO", f"Portion {i}: time↔frame conversion error: {conv_err}")
         
         # Use tight FPS tolerance (0.01) to force resampling when there's any meaningful FPS difference
         # This is critical because frame indices are calculated for target_fps - even a 0.3 FPS difference
@@ -289,20 +294,24 @@ def _preprocess_portions_to_regenerate(
         except (OSError, ValueError, RuntimeError) as e:
             return {"success": False, "error": f"Failed to ensure video is at {target_fps} fps: {e}"}
 
-        if Path(source_video_before_ensure) != Path(source_video):
-            task_logger.debug(f"[EDIT_VIDEO] ensure_video_fps RESAMPLED: {source_video_before_ensure.name} -> {Path(source_video).name}")
-        else:
-            task_logger.debug(f"[EDIT_VIDEO] ensure_video_fps NO-OP: video already within tolerance of {target_fps}fps")
+        source_resampled = Path(source_video_before_ensure) != Path(source_video)
         
         # Get actual frame count from the (potentially resampled) video
         # Use ffprobe for accuracy - OpenCV's CAP_PROP_FRAME_COUNT is unreliable
         actual_frames_ffprobe = get_video_frame_count_ffprobe(str(source_video))
         actual_frames_opencv, actual_fps = get_video_frame_count_and_fps(str(source_video))
         actual_fps_ffprobe = get_video_fps_ffprobe(str(source_video))
-        task_logger.debug(
-            f"[EDIT_VIDEO] Source (post-ensure_fps): "
-            f"ffprobe_frames={actual_frames_ffprobe}, ffprobe_fps={actual_fps_ffprobe}, "
-            f"opencv_frames={actual_frames_opencv}, opencv_fps={actual_fps}"
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "stage": "source_post_ensure_fps",
+                "resampled": source_resampled,
+                "ffprobe_frames": actual_frames_ffprobe,
+                "ffprobe_fps": actual_fps_ffprobe,
+                "opencv_frames": actual_frames_opencv,
+                "opencv_fps": actual_fps,
+            },
+            task_id=orchestrator_task_id,
         )
         
         # Prefer ffprobe count, fall back to OpenCV
@@ -312,7 +321,7 @@ def _preprocess_portions_to_regenerate(
         
         # Log discrepancies for debugging
         if actual_frames_ffprobe and actual_frames_opencv and actual_frames_ffprobe != actual_frames_opencv:
-            task_logger.debug(f"[EDIT_VIDEO] Frame count: ffprobe={actual_frames_ffprobe}, OpenCV={actual_frames_opencv} (using ffprobe)")
+            task_logger.debug_anomaly("EDIT_VIDEO", f"Frame count: ffprobe={actual_frames_ffprobe}, OpenCV={actual_frames_opencv} (using ffprobe)")
         
         # Trust payload's frame count if close to actual - it was calculated for this video
         # Only use actual if significantly different (e.g., after resampling changed frame count)
@@ -320,15 +329,24 @@ def _preprocess_portions_to_regenerate(
             diff = abs(source_video_total_frames - actual_frames)
             if diff <= 3:
                 # Small difference - trust payload (frontend calculated correctly)
-                task_logger.debug(f"[EDIT_VIDEO] Using payload frame count: {source_video_total_frames} (actual: {actual_frames}, diff: {diff})")
+                task_logger.debug_anomaly("EDIT_VIDEO", f"Using payload frame count: {source_video_total_frames} (actual: {actual_frames}, diff: {diff})")
                 actual_frames = source_video_total_frames
             else:
-                task_logger.debug(f"[EDIT_VIDEO] Payload frame count differs significantly: payload={source_video_total_frames}, actual={actual_frames}, diff={diff}")
+                task_logger.debug_anomaly("EDIT_VIDEO", f"Payload frame count differs significantly: payload={source_video_total_frames}, actual={actual_frames}, diff={diff}")
         
         source_video_total_frames = actual_frames
         source_video_fps = actual_fps or target_fps
         
-        task_logger.debug(f"[EDIT_VIDEO] Final source video chosen: {source_video_total_frames} frames @ {source_video_fps} fps (target_fps={target_fps})")
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "stage": "source_selected",
+                "frames": source_video_total_frames,
+                "fps": source_video_fps,
+                "target_fps": target_fps,
+            },
+            task_id=orchestrator_task_id,
+        )
         
         # Calculate keeper segments
         keeper_segments = _calculate_keeper_segments(
@@ -375,7 +393,15 @@ def _preprocess_portions_to_regenerate(
                 "frame_count": keeper["frame_count"]
             })
         
-        task_logger.debug(f"[EDIT_VIDEO] ✅ Extracted {len(extracted_clips)} keeper clips")
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "stage": "keepers_extracted",
+                "clip_count": len(extracted_clips),
+                "clips": extracted_clips,
+            },
+            task_id=orchestrator_task_id,
+        )
         
         # Build per_join_settings from portions
         # Each join corresponds to a transition between keeper clips
@@ -403,14 +429,22 @@ def _preprocess_portions_to_regenerate(
             # This allows setting different gaps for each transition
             if "gap_frame_count" in portion:
                 join_setting["gap_frame_count"] = portion["gap_frame_count"]
-                task_logger.debug(f"[EDIT_VIDEO] Join {i}: using per-portion gap_frame_count={portion['gap_frame_count']}")
             
             new_per_join_settings.append(join_setting)
             
             portion_frame_count = portion.get("frame_count") or (portion["end_frame"] - portion["start_frame"] + 1)
             gap_override = join_setting.get("gap_frame_count")
             gap_info = f", gap={gap_override}" if gap_override else ""
-            task_logger.debug(f"[EDIT_VIDEO] Join {i}: chopped {portion_frame_count} frames (portion {portion['start_frame']}-{portion['end_frame']}){gap_info}")
+            task_logger.debug_block(
+                "SETUP",
+                {
+                    "stage": f"join_{i}",
+                    "portion_frames": portion_frame_count,
+                    "portion_range": (portion["start_frame"], portion["end_frame"]),
+                    "gap_override": gap_override,
+                },
+                task_id=orchestrator_task_id,
+            )
         
         return {
             "success": True,
@@ -450,16 +484,13 @@ def _handle_edit_video_orchestrator_task(
     Returns:
         (success: bool, message: str)
     """
-    task_logger.debug(f"[EDIT_VIDEO] Starting edit_video_orchestrator task {orchestrator_task_id_str}")
-    
     try:
         # === 1. PARSE ORCHESTRATOR PAYLOAD ===
         if 'orchestrator_details' not in task_params_from_db:
-            task_logger.debug("[EDIT_VIDEO] ERROR: orchestrator_details missing")
+            task_logger.debug_anomaly("EDIT_VIDEO", "ERROR: orchestrator_details missing")
             return False, "orchestrator_details missing"
         
         orchestrator_payload = task_params_from_db['orchestrator_details']
-        task_logger.debug(f"[EDIT_VIDEO] Orchestrator payload keys: {list(orchestrator_payload.keys())}")
         
         # Extract required fields for edit_video
         source_video_url = orchestrator_payload.get("source_video_url")
@@ -475,8 +506,17 @@ def _handle_edit_video_orchestrator_task(
         if not run_id:
             return False, "run_id is required"
         
-        task_logger.debug(f"[EDIT_VIDEO] Source: {source_video_url[:80]}...")
-        task_logger.debug(f"[EDIT_VIDEO] Portions to regenerate: {len(portions_to_regenerate)}")
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "task": orchestrator_task_id_str,
+                "run_id": run_id,
+                "source_video": source_video_url,
+                "portion_count": len(portions_to_regenerate),
+                "payload_keys": sorted(orchestrator_payload.keys()),
+            },
+            task_id=orchestrator_task_id_str,
+        )
         
         # === EARLY IDEMPOTENCY CHECK (before expensive preprocessing/VLM work) ===
         # Each portion to regenerate = one join task
@@ -498,13 +538,11 @@ def _handle_edit_video_orchestrator_task(
         # 2. Double-trimming of frames (gap already excluded from keepers, then trimmed again)
         # The join tasks should use INSERT mode since they're bridging clean keeper clips.
         join_settings["replace_mode"] = False
-        task_logger.debug(f"[EDIT_VIDEO] Overriding join_settings replace_mode to False (keepers are clean)")
         output_base_dir = orchestrator_payload.get("output_base_dir", str(main_output_dir_base.resolve()))
         
         # Create run-specific output directory
         current_run_output_dir = Path(output_base_dir) / f"edit_video_run_{run_id}"
         current_run_output_dir.mkdir(parents=True, exist_ok=True)
-        task_logger.debug(f"[EDIT_VIDEO] Run output directory: {current_run_output_dir}")
         
         # === 2. PREPROCESS: Extract keeper clips ===
         replace_mode = orchestrator_payload.get("replace_mode", False)
@@ -522,22 +560,29 @@ def _handle_edit_video_orchestrator_task(
         
         if not preprocess_result["success"]:
             error_msg = preprocess_result.get("error", "Unknown preprocessing error")
-            task_logger.debug(f"[EDIT_VIDEO] Preprocessing failed: {error_msg}")
+            task_logger.debug_anomaly("EDIT_VIDEO", f"Preprocessing failed: {error_msg}")
             return False, f"Preprocessing failed: {error_msg}"
         
         clip_list = preprocess_result["clip_list"]
         per_join_settings = preprocess_result["per_join_settings"]
         
         num_joins = len(clip_list) - 1
-        task_logger.debug(f"[EDIT_VIDEO] Preprocessed into {len(clip_list)} keeper clips = {num_joins} join tasks")
+        task_logger.debug_block(
+            "SETUP",
+            {
+                "stage": "preprocessed",
+                "keeper_clips": len(clip_list),
+                "join_count": num_joins,
+                "per_join_settings": len(per_join_settings),
+            },
+            task_id=orchestrator_task_id_str,
+        )
         
         # === 3. VLM PROMPT ENHANCEMENT (optional) ===
         enhance_prompt = orchestrator_payload.get("enhance_prompt", False)
         vlm_enhanced_prompts: List[Optional[str]] = [None] * num_joins
         
         if enhance_prompt:
-            task_logger.debug(f"[EDIT_VIDEO] enhance_prompt=True, generating VLM-enhanced prompts")
-            
             vlm_device = orchestrator_payload.get("vlm_device", "cuda")
             vlm_temp_dir = current_run_output_dir / "vlm_temp"
             vlm_temp_dir.mkdir(parents=True, exist_ok=True)
@@ -562,11 +607,8 @@ def _handle_edit_video_orchestrator_task(
                     base_prompt=base_prompt,
                     vlm_device=vlm_device)
                 
-                valid_count = sum(1 for p in vlm_enhanced_prompts if p is not None)
-                task_logger.debug(f"[EDIT_VIDEO] VLM enhancement complete: {valid_count}/{num_joins} prompts generated")
-                
             except (RuntimeError, ValueError, OSError) as vlm_error:
-                task_logger.debug(f"[EDIT_VIDEO] VLM enhancement failed, using base prompts: {vlm_error}", exc_info=True)
+                task_logger.warning(f"EDIT_VIDEO VLM enhancement failed, using base prompts: {vlm_error}", exc_info=True)
                 vlm_enhanced_prompts = [None] * num_joins
         
         # === CREATE JOIN CHAIN (using shared core function) ===
@@ -586,12 +628,11 @@ def _handle_edit_video_orchestrator_task(
             orchestrator_payload=orchestrator_payload,
             parent_generation_id=parent_generation_id)
         
-        task_logger.debug(f"[EDIT_VIDEO] {message}")
         return success, message
         
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as e:
         msg = f"Failed during edit_video orchestration: {e}"
-        task_logger.debug(f"[EDIT_VIDEO] ERROR: {msg}", exc_info=True)
+        task_logger.error(f"EDIT_VIDEO error: {msg}", exc_info=True)
         return False, msg
 
 

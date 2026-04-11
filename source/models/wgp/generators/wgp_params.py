@@ -22,9 +22,9 @@ def make_send_cmd() -> Callable:
             else:
                 generation_logger.debug(f"Progress: {data}")
         elif cmd == "output":
-            generation_logger.essential("Output generated")
+            generation_logger.debug("Output generated")
         elif cmd == "exit":
-            generation_logger.essential("Generation completed")
+            generation_logger.debug("Generation completed")
         elif cmd == "error":
             generation_logger.error(f"Error: {data}")
         elif cmd == "info":
@@ -193,10 +193,10 @@ def build_passthrough_params(
         if param_key not in ('task', 'send_cmd', 'state', 'model_type'):
             wgp_params[param_key] = param_value
             if param_key == 'guidance2_scale':
-                generation_logger.info(f"[PASSTHROUGH_DEBUG] Setting {param_key} = {param_value} from JSON")
+                generation_logger.debug_anomaly("PASSTHROUGH_DEBUG", f"Setting {param_key} = {param_value} from JSON")
 
     # Debug: Check final guidance2_scale value before WGP call
-    generation_logger.info(f"[PASSTHROUGH_DEBUG] Final wgp_params guidance2_scale = {wgp_params.get('guidance2_scale', 'NOT_SET')}")
+    generation_logger.debug_anomaly("PASSTHROUGH_DEBUG", f"Final wgp_params guidance2_scale = {wgp_params.get('guidance2_scale', 'NOT_SET')}")
 
     return wgp_params
 

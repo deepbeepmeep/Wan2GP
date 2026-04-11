@@ -80,7 +80,7 @@ def load_structure_video_frames(
         decord.bridge.set_bridge('torch')
         use_decord = True
     except ImportError:
-        generation_logger.debug("[STRUCTURE_VIDEO] decord not available, using cv2 fallback")
+        generation_logger.debug_anomaly("STRUCTURE_VIDEO", "decord not available, using cv2 fallback")
 
     if not use_decord:
         import cv2
@@ -98,7 +98,7 @@ def load_structure_video_frames(
         video_fps = round(cap.get(cv2.CAP_PROP_FPS))
         video_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    generation_logger.debug(f"[STRUCTURE_VIDEO] Loading frames from structure video:")
+    generation_logger.debug_anomaly("STRUCTURE_VIDEO", f"Loading frames from structure video:")
     generation_logger.debug(f"  Video: {video_frame_count} frames @ {video_fps}fps")
     generation_logger.debug(f"  Needed: {frames_to_load} frames")
     generation_logger.debug(f"  Treatment: {treatment}")
@@ -150,7 +150,7 @@ def load_structure_video_frames(
 
     if use_decord:
         frames = reader.get_batch(frame_indices)  # Returns torch tensors [T, H, W, C]
-        generation_logger.debug(f"[STRUCTURE_VIDEO] Loaded {len(frames)} frames")
+        generation_logger.debug_anomaly("STRUCTURE_VIDEO", f"Loaded {len(frames)} frames")
     else:
         frames = []
         for idx in frame_indices:
@@ -161,7 +161,7 @@ def load_structure_video_frames(
             elif frames:
                 frames.append(frames[-1].copy())
         cap.release()
-        generation_logger.debug(f"[STRUCTURE_VIDEO] Loaded {len(frames)} frames via cv2 fallback")
+        generation_logger.debug_anomaly("STRUCTURE_VIDEO", f"Loaded {len(frames)} frames via cv2 fallback")
 
     # Process frames to target resolution (WGP pattern from line 3826-3830)
     w, h = target_resolution
@@ -200,7 +200,7 @@ def load_structure_video_frames(
                     frame_pil = frame_pil.crop((0, top, src_w, top + new_h))
 
                 if i == 0:
-                    generation_logger.debug(f"[STRUCTURE_VIDEO] Center-cropped from {src_w}x{src_h} to {frame_pil.size[0]}x{frame_pil.size[1]}")
+                    generation_logger.debug_anomaly("STRUCTURE_VIDEO", f"Center-cropped from {src_w}x{src_h} to {frame_pil.size[0]}x{frame_pil.size[1]}")
 
         # Resize to target resolution
         frame_resized = frame_pil.resize((w, h), resample=Image.Resampling.LANCZOS)
@@ -208,6 +208,6 @@ def load_structure_video_frames(
 
         processed_frames.append(frame_resized_np)
 
-    generation_logger.debug(f"[STRUCTURE_VIDEO] Preprocessed {len(processed_frames)} frames to {w}x{h}")
+    generation_logger.debug_anomaly("STRUCTURE_VIDEO", f"Preprocessed {len(processed_frames)} frames to {w}x{h}")
 
     return processed_frames

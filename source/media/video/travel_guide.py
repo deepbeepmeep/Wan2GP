@@ -223,7 +223,7 @@ def create_guide_video_for_travel_segment(
     try:
         # If unified config provided, extract values from it
         if structure_config is not None:
-            generation_logger.debug(f"[GUIDE_VIDEO] Using unified StructureGuidanceConfig: {structure_config}")
+            generation_logger.debug_anomaly("GUIDE_VIDEO", f"Using unified StructureGuidanceConfig: {structure_config}")
             structure_video_path = structure_config.videos[0].path if structure_config.videos else None
             structure_video_treatment = structure_config.videos[0].treatment if structure_config.videos else "adjust"
             structure_type = structure_config.legacy_structure_type
@@ -261,7 +261,6 @@ def create_guide_video_for_travel_segment(
             generation_logger.debug(f"Task {task_id_for_logging}: Guide video has 0 frames. Skipping creation.")
             return None
 
-        generation_logger.debug(f"Task {task_id_for_logging}: Interpolating guide video with {total_frames_for_segment} frames...")
         frames_for_guide_list = [create_color_frame(parsed_res_wh, (128,128,128)).copy() for _ in range(total_frames_for_segment)]
 
         # Check for consolidated keyframe positions (frame consolidation optimization)
@@ -335,9 +334,6 @@ def create_guide_video_for_travel_segment(
 
             # Apply structure guidance to unguidanced frames before creating video
             if structure_video_path or structure_guidance_video_url:
-                generation_logger.debug(f"[GUIDANCE_TRACK] Pre-structure guidance summary:")
-                generation_logger.debug(guidance_tracker.debug_summary())
-
                 frames_for_guide_list = apply_structure_motion_with_tracking(
                     frames_for_guide_list=frames_for_guide_list,
                     guidance_tracker=guidance_tracker,
@@ -354,8 +350,9 @@ def create_guide_video_for_travel_segment(
                     structure_guidance_frame_offset=structure_guidance_frame_offset,
                 )
 
-                generation_logger.debug(f"[GUIDANCE_TRACK] Post-structure guidance summary:")
-                generation_logger.debug(guidance_tracker.debug_summary())
+                # Emit one guidance-track summary (post-structure) — the pre-state is
+                # implicit from the STRUCTURE_MOTION card just above.
+                generation_logger.debug_anomaly("GUIDANCE_TRACK", "post-structure:\n" + guidance_tracker.debug_summary())
 
             return create_video_from_frames_list(frames_for_guide_list, predefined_output_path or output_target_dir / guide_video_base_name, fps_helpers, parsed_res_wh)
 
@@ -370,9 +367,6 @@ def create_guide_video_for_travel_segment(
 
             end_anchor_frame_np = image_to_frame(end_anchor_img_path_str, parsed_res_wh, task_id_for_logging=task_id_for_logging, image_download_dir=segment_image_download_dir, debug_mode=debug_mode)
             if end_anchor_frame_np is None: raise ValueError(f"Failed to load end anchor image: {end_anchor_img_path_str}")
-        else:
-            # For single image journeys, we don't need an end anchor - only set the first frame
-            generation_logger.debug(f"Task {task_id_for_logging}: Single image journey - skipping end anchor setup, will only set first frame")
 
         num_end_anchor_duplicates = 1
         start_anchor_frame_np = None
@@ -387,7 +381,7 @@ def create_guide_video_for_travel_segment(
                 guidance_tracker.mark_single_frame(0)
 
             if single_image_journey:
-                generation_logger.debug(f"Task {task_id_for_logging}: Guide video for single image journey. Only first frame is set, all other frames remain gray/masked.")
+                pass  # Single-image journey: first frame is anchor, rest are gray/masked — silent
             else:
                 # This is the original logic for fading between start and end.
                 pot_max_idx_start_fade = total_frames_for_segment - num_end_anchor_duplicates - 1
@@ -512,8 +506,6 @@ def create_guide_video_for_travel_segment(
 
             # Log the final overlap calculation
             generation_logger.debug(f"GuideBuilder: Calculated actual_overlap_to_use: {actual_overlap_to_use if 'actual_overlap_to_use' in locals() else 'Not calculated'}")
-            generation_logger.debug(f"GuideBuilder: Extracted raw overlap frames count: {len(overlap_frames_raw) if 'overlap_frames_raw' in locals() else 'Not extracted'}")
-
             # Check video resolution to understand if it matches our target
             if overlap_frames_raw and len(overlap_frames_raw) > 0:
                 first_frame_shape = overlap_frames_raw[0].shape
@@ -602,9 +594,6 @@ def create_guide_video_for_travel_segment(
 
         # Apply structure guidance to unguidanced frames before creating video
         if structure_video_path or structure_guidance_video_url:
-            generation_logger.debug(f"[GUIDANCE_TRACK] Pre-structure guidance summary:")
-            generation_logger.debug(guidance_tracker.debug_summary())
-
             frames_for_guide_list = apply_structure_motion_with_tracking(
                 frames_for_guide_list=frames_for_guide_list,
                 guidance_tracker=guidance_tracker,
@@ -621,15 +610,13 @@ def create_guide_video_for_travel_segment(
                 structure_guidance_frame_offset=structure_guidance_frame_offset,
             )
 
-            generation_logger.debug(f"[GUIDANCE_TRACK] Post-structure guidance summary:")
-            generation_logger.debug(guidance_tracker.debug_summary())
+            generation_logger.debug_anomaly("GUIDANCE_TRACK", "post-structure:\n" + guidance_tracker.debug_summary())
 
         # Uni3C end frame exclusion: black out end frame so uni3c_zero_empty_frames=True
         # will zero the latent, letting i2v's native image_end handle the end frame alone
         if exclude_end_for_controlnet and frames_for_guide_list and len(frames_for_guide_list) > 0:
             black_frame = np.zeros((parsed_res_wh[1], parsed_res_wh[0], 3), dtype=np.uint8)
             frames_for_guide_list[-1] = black_frame
-            generation_logger.debug(f"[UNI3C_END_EXCLUDE] Seg {segment_idx_for_logging}: Blacked out end frame (idx {len(frames_for_guide_list)-1}) for controlnet - i2v will handle end anchor")
 
         if frames_for_guide_list:
             return create_video_from_frames_list(frames_for_guide_list, actual_guide_video_path, fps_helpers, parsed_res_wh)

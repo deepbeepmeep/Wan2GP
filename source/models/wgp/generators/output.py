@@ -94,8 +94,7 @@ def extract_output_path(
         )
         if outcome.ok:
             output_path = outcome.output_path
-            generation_logger.success(f"{model_type_desc} generation completed")
-            generation_logger.essential(f"Output saved to: {output_path}")
+            generation_logger.debug(f"{model_type_desc} generation completed → {output_path}")
             return output_path
 
         if outcome.error_code == "invalid_state":
@@ -196,13 +195,13 @@ def log_memory_stats() -> None:
             vram_reserved = torch.cuda.memory_reserved(0) / (1024**3)
             vram_total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
             vram_percent = (vram_reserved / vram_total) * 100
-            generation_logger.essential(
+            generation_logger.debug(
                 f"RAM: {ram_used_gb:.1f}GB / {ram_total_gb:.1f}GB ({ram_percent:.0f}%) | "
                 f"VRAM: {vram_reserved:.1f}GB / {vram_total:.1f}GB ({vram_percent:.0f}%) "
                 f"[Allocated: {vram_allocated:.1f}GB]"
             )
         else:
-            generation_logger.essential(
+            generation_logger.debug(
                 f"RAM: {ram_used_gb:.1f}GB / {ram_total_gb:.1f}GB ({ram_percent:.0f}%)"
             )
     except (RuntimeError, OSError, ImportError) as e:

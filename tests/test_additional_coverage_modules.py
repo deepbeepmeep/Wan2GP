@@ -16,6 +16,7 @@ import source.core.db.lifecycle.task_status as task_status
 import source.media.vlm.image_prep as image_prep
 import source.media.visualization.timeline as timeline
 import source.models.comfy.comfy_handler as comfy_handler
+import source.models.wgp.model_ops as model_ops
 import source.task_handlers.create_visualization as create_visualization
 
 
@@ -70,7 +71,8 @@ def test_add_task_to_db_queues_and_verifies(monkeypatch):
     )
     assert task_id == "task-fixed-id"
     assert called["function_name"] == "create-task"
-    assert called["payload"]["task_type"] == "travel_segment"
+    assert called["payload"]["family"] == "travel_segment"
+    assert called["payload"]["input"]["task_id"] == "task-fixed-id"
 
 
 def test_add_task_to_db_raises_when_edge_url_missing(monkeypatch):
@@ -215,6 +217,85 @@ def test_comfy_shutdown_stops_manager(monkeypatch):
     comfy_handler.shutdown_comfy()
     assert stopped["value"] is True
     assert comfy_handler._comfy_manager is None
+
+
+def test_model_ops_load_model_impl_emits_switch_debug_card(monkeypatch):
+    logs = []
+    rendered_cards = []
+    released = []
+    notified = []
+    perf_ticks = iter([10.0, 12.5])
+
+    class _Logger:
+        def essential(self, message, *args, **kwargs):
+            logs.append(("essential", message))
+        def debug(self, message, *args, **kwargs):
+            logs.append(("debug", message))
+        def success(self, message, *args, **kwargs):
+            logs.append(("success", message))
+        def warning(self, message, *args, **kwargs):
+            logs.append(("warning", message))
+        def error(self, message, *args, **kwargs):
+            logs.append(("error", message))
+        def debug_anomaly(self, *args, **kwargs):
+            logs.append(("debug_anomaly", args[0] if args else ""))
+
+    fake_wgp = types.SimpleNamespace(
+        transformer_type="old_model",
+        reload_needed=False,
+        offloadobj=types.SimpleNamespace(release=lambda: released.append(True)),
+        wan_model=object(),
+        get_model_def=lambda _key: {"architecture": "wan"},
+    )
+
+    def _load_models(model_key):
+        fake_wgp.transformer_type = model_key
+        return object(), "new-offload"
+
+    fake_wgp.load_models = _load_models
+
+    monkeypatch.setattr(model_ops, "model_logger", _Logger())
+    monkeypatch.setattr(model_ops, "is_debug_enabled", lambda: True)
+    monkeypatch.setattr(model_ops, "get_wgp_runtime_module_mutable", lambda: fake_wgp)
+    monkeypatch.setattr(model_ops, "get_wgp_runtime_module", lambda: types.SimpleNamespace(offloadobj="runtime-offload"))
+    monkeypatch.setattr(model_ops, "get_model_recursive_prop", lambda *_args, **_kwargs: ["transformer"])
+    monkeypatch.setattr(model_ops, "clear_wgp_loaded_model_state", lambda: None)
+    monkeypatch.setattr(model_ops, "set_wgp_loaded_model_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(model_ops, "set_wgp_reload_needed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(model_ops, "render_card", lambda _logger, card, task_id=None: rendered_cards.append((card.render(), task_id)))
+    monkeypatch.setattr(model_ops.time, "perf_counter", lambda: next(perf_ticks))
+    monkeypatch.setitem(
+        sys.modules,
+        "source.models.wgp.generation_helpers",
+        types.SimpleNamespace(notify_worker_model_switch=lambda **kwargs: notified.append(kwargs)),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: False)),
+    )
+
+    orchestrator = types.SimpleNamespace(
+        smoke_mode=False,
+        current_model="old_model",
+        state={},
+        offloadobj=None,
+        wan_root="/tmp",
+        _cached_uni3c_controlnet=None,
+        _get_base_model_type=lambda _model_key: "wan",
+    )
+
+    switched = model_ops.load_model_impl(orchestrator, "new_model")
+
+    assert switched is True
+    assert released == [True]
+    assert notified == [{"old_model": "old_model", "new_model": "new_model"}]
+    assert ("essential", f"Switching model: {model_ops.model_label('old_model')} → {model_ops.model_label('new_model')}") in logs
+    assert ("essential", f"Model loaded: {model_ops.model_label('new_model')}") in logs
+    assert rendered_cards and rendered_cards[0][1] is None
+    assert "Model Switch" in rendered_cards[0][0]
+    assert "offload_reuse" in rendered_cards[0][0]
+    assert "duration_s" in rendered_cards[0][0]
 
 
 def test_timeline_apply_video_treatment_adjust_mode(monkeypatch):

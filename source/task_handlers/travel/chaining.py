@@ -82,7 +82,8 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                 output_base_for_files = payload_dir_path.resolve()
         is_subsequent_segment_val = chain_details.get("is_subsequent_segment", False)
 
-        travel_logger.debug(f"Chaining for WGP task {wgp_task_id} (segment {segment_idx_completed} of run {orchestrator_run_id}). Initial video: {video_to_process_abs_path}", task_id=wgp_task_id)
+        chain_length = len(orchestrator_details.get("segment_frames_expanded", []) or [])
+        applied_post_steps = []
 
         # --- Always move WGP output to proper location first ---
         # Use consistent UUID-based naming and MOVE (not copy) to avoid duplicates
@@ -103,20 +104,20 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
             # Ensure encoder has finished writing the source file
             wait_for_file_stable(video_to_process_abs_path, checks=3, interval=1.0)
 
+            original_video_path = video_to_process_abs_path
             shutil.move(str(video_to_process_abs_path), str(moved_video_abs_path))
-            travel_logger.debug(f"Moved WGP output from {video_to_process_abs_path} to {moved_video_abs_path}", task_id=wgp_task_id)
             debug_video_analysis(moved_video_abs_path, f"MOVED_WGP_OUTPUT_Seg{segment_idx_completed}", wgp_task_id)
-            travel_logger.debug(f"Chain (Seg {segment_idx_completed}): Moved WGP output from {video_to_process_abs_path} to {moved_video_abs_path}", task_id=wgp_task_id)
 
             # Update paths for further processing
             video_to_process_abs_path = moved_video_abs_path
             final_video_path_for_db = str(moved_video_abs_path)  # Use absolute path as DB path
 
-            # No cleanup needed since we moved (not copied) the file
-            travel_logger.debug(f"Chain (Seg {segment_idx_completed}): WGP output successfully moved to final location", task_id=wgp_task_id)
-
         except OSError as e_move:
-            travel_logger.debug(f"Chain (Seg {segment_idx_completed}): Warning - could not move WGP output to proper location: {e_move}. Using original path.", task_id=wgp_task_id)
+            travel_logger.debug_anomaly(
+                "CHAIN_MOVE_FAILED",
+                f"Seg {segment_idx_completed}: move failed ({e_move}); using original path",
+                task_id=wgp_task_id,
+            )
             # If move failed, keep original paths for further processing
             final_video_path_for_db = str(video_to_process_abs_path)
 
@@ -140,26 +141,28 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
 
                 if expected_len and expected_len > 0:
                     actual_frames, actual_fps = get_video_frame_count_and_fps(str(video_to_process_abs_path))
-                    travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: ========== WGP OUTPUT ANALYSIS ==========", task_id=wgp_task_id)
-                    travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: WGP output video: {video_to_process_abs_path}", task_id=wgp_task_id)
-                    travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: WGP output total frames: {actual_frames}", task_id=wgp_task_id)
-                    travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: Desired NEW frames for segment: {expected_len} frames", task_id=wgp_task_id)
+                    requested_video_length_i = None
+                    overlap_size_i = None
 
                     # Optional: show what we actually requested from WGP (passed through task_registry)
                     try:
                         requested_video_length = wgp_task_params.get("video_length")
                         overlap_size = wgp_task_params.get("sliding_window_overlap") or SVI_STITCH_OVERLAP
-                        video_source_dbg = wgp_task_params.get("video_source")
                         if requested_video_length and overlap_size:
                             requested_video_length_i = int(requested_video_length)
                             overlap_size_i = int(overlap_size)
-                            new_frames_expected_from_wgp = requested_video_length_i - overlap_size_i
-                            travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: WGP request video_length={requested_video_length_i}, overlap_size={overlap_size_i}", task_id=wgp_task_id)
-                            travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: Expected NEW frames from diffusion = video_length - overlap = {new_frames_expected_from_wgp}", task_id=wgp_task_id)
-                            if isinstance(video_source_dbg, str) and video_source_dbg:
-                                travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: video_source (prefix clip): {video_source_dbg}", task_id=wgp_task_id)
-                    except (ValueError, KeyError, TypeError) as e_svi_debug:
-                        travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: Could not log WGP request params: {e_svi_debug}", task_id=wgp_task_id)
+                    except (ValueError, KeyError, TypeError):
+                        requested_video_length_i = None
+                        overlap_size_i = None
+
+                    travel_logger.debug(
+                        f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: "
+                        f"output={video_to_process_abs_path}, actual_frames={actual_frames}, "
+                        f"desired_new_frames={expected_len}, request_video_length={requested_video_length_i}, "
+                        f"overlap={overlap_size_i or SVI_STITCH_OVERLAP}, "
+                        f"video_source={bool(wgp_task_params.get('video_source'))}",
+                        task_id=wgp_task_id,
+                    )
 
                     if actual_frames and actual_frames > expected_len:
                         from source.media.video import extract_frame_range_to_video as extract_frame_range_to_video
@@ -170,15 +173,6 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                         frames_to_keep = int(expected_len) + SVI_STITCH_OVERLAP
                         start_frame = max(0, int(actual_frames) - frames_to_keep)
 
-                        # NOTE: "extra frames" here is not simply "prefix length":
-                        # WGP output structure is: [prefix_frames] + [generated_frames with overlap removed]
-                        # So the net-added frame count vs desired_new_frames depends on both prefix length AND overlap removal.
-                        travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: Net frames beyond desired_new_frames: {actual_frames - expected_len}", task_id=wgp_task_id)
-                        travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: Frame breakdown:", task_id=wgp_task_id)
-                        travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}:   - Frames 0-{start_frame-1}: Will be DISCARDED (extra prefix)", task_id=wgp_task_id)
-                        travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}:   - Frames {start_frame}-{start_frame+SVI_STITCH_OVERLAP-1}: OVERLAP frames (last 4 prefix, kept for stitching)", task_id=wgp_task_id)
-                        travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}:   - Frames {start_frame+SVI_STITCH_OVERLAP}-{actual_frames-1}: NEW frames ({expected_len} frames)", task_id=wgp_task_id)
-                        travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: Keeping frames [{start_frame}:{actual_frames}] = {frames_to_keep} frames total", task_id=wgp_task_id)
                         trim_filename = f"seg{segment_idx_completed:02d}_trimmed_{timestamp_short}_{unique_suffix}{video_to_process_abs_path.suffix}"
                         trimmed_video_abs_path, _ = prepare_output_path(
                             task_id=wgp_task_id,
@@ -201,14 +195,11 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                             or db_config.debug_mode
                         )
                         if debug_enabled:
-                            travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: Trimmed video: {trimmed_frames} frames (expected: {frames_to_keep})", task_id=wgp_task_id)
-                            travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: Trimmed video path: {trimmed_result}", task_id=wgp_task_id)
-                            travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: Final output breakdown:", task_id=wgp_task_id)
-                            travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}:   - First {SVI_STITCH_OVERLAP} frames: OVERLAP (from predecessor)", task_id=wgp_task_id)
-                            travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}:   - Next {expected_len} frames: NEW", task_id=wgp_task_id)
-                            travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}:   - Total: {trimmed_frames} frames", task_id=wgp_task_id)
-                            if trimmed_frames != frames_to_keep:
-                                travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: WARNING: Trimmed {trimmed_frames} frames, expected {frames_to_keep}", task_id=wgp_task_id)
+                            trim_summary = {
+                                "trimmed_frames": trimmed_frames,
+                                "expected_frames": frames_to_keep,
+                                "output": trimmed_result,
+                            }
 
                             # Optional duplication detector: does the *final frame* appear earlier?
                             try:
@@ -247,23 +238,26 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                                     cap.release()
 
                                     if last_hash:
-                                        if dup_hits:
-                                            travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: FINAL-FRAME DUPLICATION DETECTED (hash={last_hash}) at frames={dup_hits} (sampled)", task_id=wgp_task_id)
-                                        else:
-                                            travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: Final-frame hash={last_hash} not seen in sampled earlier frames", task_id=wgp_task_id)
-                            except (OSError, ValueError, RuntimeError) as e_hash:
-                                travel_logger.debug(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: WARNING: frame-hash duplication check failed: {e_hash}", task_id=wgp_task_id)
+                                        trim_summary["final_frame_hash"] = last_hash
+                                        trim_summary["dup_hits"] = dup_hits[:5]
+                            except (OSError, ValueError, RuntimeError):
+                                pass
+                            travel_logger.debug(
+                                f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: trim_result={trim_summary}, "
+                                f"discard_prefix={start_frame}, keep={frames_to_keep}",
+                                task_id=wgp_task_id,
+                            )
                         debug_video_analysis(Path(trimmed_result), f"SVI_TRIMMED_Seg{segment_idx_completed}", wgp_task_id)
                         # Replace the working video with the trimmed one
                         try:
                             if video_to_process_abs_path.exists():
                                 video_to_process_abs_path.unlink()
                         except OSError as e_unlink:
-                            travel_logger.debug(f"[SVI_PREFIX_TRIM] Seg {segment_idx_completed}: Could not remove old working video {video_to_process_abs_path}: {e_unlink}", task_id=wgp_task_id)
+                            travel_logger.debug_anomaly("SVI_PREFIX_TRIM", f"Seg {segment_idx_completed}: Could not remove old working video {video_to_process_abs_path}: {e_unlink}", task_id=wgp_task_id)
                         video_to_process_abs_path = Path(trimmed_result)
                         final_video_path_for_db = str(video_to_process_abs_path)
         except (OSError, ValueError, RuntimeError) as e_svi_trim:
-            travel_logger.debug(f"[SVI_PREFIX_TRIM] WARNING: Exception while trimming SVI segment output: {e_svi_trim}", task_id=wgp_task_id)
+            travel_logger.debug_anomaly("SVI_PREFIX_TRIM", f"WARNING: Exception while trimming SVI segment output: {e_svi_trim}", task_id=wgp_task_id)
 
         # --- Post-generation Processing Chain ---
         # Saturation and Brightness are only applied to segments AFTER the first one.
@@ -272,8 +266,6 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
             # --- 1. Saturation ---
             sat_level = orchestrator_details.get("after_first_post_generation_saturation")
             if sat_level is not None and isinstance(sat_level, (float, int)) and sat_level >= 0.0 and abs(sat_level - 1.0) > 1e-6:
-                travel_logger.debug(f"Chain (Seg {segment_idx_completed}): Applying post-gen saturation {sat_level} to {video_to_process_abs_path}", task_id=wgp_task_id)
-
                 sat_filename = f"{wgp_task_id}_seg{segment_idx_completed}_saturated.mp4"
                 saturated_video_output_abs_path, new_db_path = prepare_output_path(
                     task_id=wgp_task_id,
@@ -283,22 +275,19 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                 )
 
                 if apply_saturation_to_video_ffmpeg(str(video_to_process_abs_path), saturated_video_output_abs_path, sat_level):
-                    travel_logger.debug(f"Saturation applied successfully to segment {segment_idx_completed}", task_id=wgp_task_id)
                     debug_video_analysis(saturated_video_output_abs_path, f"SATURATED_Seg{segment_idx_completed}", wgp_task_id)
-                    travel_logger.debug(f"Chain (Seg {segment_idx_completed}): Saturation successful. New path: {new_db_path}", task_id=wgp_task_id)
                     _cleanup_intermediate_video(orchestrator_details, video_to_process_abs_path, segment_idx_completed, "raw", wgp_task_id)
 
                     video_to_process_abs_path = saturated_video_output_abs_path
                     final_video_path_for_db = new_db_path
+                    applied_post_steps.append(f"saturation:{sat_level}")
                 else:
                     travel_logger.warning(f"Saturation failed for segment {segment_idx_completed}", task_id=wgp_task_id)
-                    travel_logger.debug(f"[WARNING] Chain (Seg {segment_idx_completed}): Saturation failed. Continuing with unsaturated video.", task_id=wgp_task_id)
+                    travel_logger.debug_anomaly("WARNING", f"Chain (Seg {segment_idx_completed}): Saturation failed. Continuing with unsaturated video.", task_id=wgp_task_id)
 
             # --- 2. Brightness ---
             brightness_adjust = orchestrator_details.get("after_first_post_generation_brightness", 0.0)
             if isinstance(brightness_adjust, (float, int)) and abs(brightness_adjust) > 1e-6:
-                travel_logger.debug(f"Chain (Seg {segment_idx_completed}): Applying post-gen brightness {brightness_adjust} to {video_to_process_abs_path}", task_id=wgp_task_id)
-
                 bright_filename = f"{wgp_task_id}_seg{segment_idx_completed}_brightened.mp4"
                 brightened_video_output_abs_path, new_db_path = prepare_output_path(
                     task_id=wgp_task_id,
@@ -310,23 +299,24 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                 processed_video = apply_brightness_to_video_frames(str(video_to_process_abs_path), brightened_video_output_abs_path, brightness_adjust, wgp_task_id)
 
                 if processed_video and processed_video.exists():
-                    travel_logger.debug(f"Brightness adjustment applied successfully to segment {segment_idx_completed}", task_id=wgp_task_id)
                     debug_video_analysis(brightened_video_output_abs_path, f"BRIGHTENED_Seg{segment_idx_completed}", wgp_task_id)
-                    travel_logger.debug(f"Chain (Seg {segment_idx_completed}): Brightness adjustment successful. New path: {new_db_path}", task_id=wgp_task_id)
                     _cleanup_intermediate_video(orchestrator_details, video_to_process_abs_path, segment_idx_completed, "saturated", wgp_task_id)
 
                     video_to_process_abs_path = brightened_video_output_abs_path
                     final_video_path_for_db = new_db_path
+                    applied_post_steps.append(f"brightness:{brightness_adjust}")
                 else:
                     travel_logger.warning(f"Brightness adjustment failed for segment {segment_idx_completed}", task_id=wgp_task_id)
-                    travel_logger.debug(f"[WARNING] Chain (Seg {segment_idx_completed}): Brightness adjustment failed. Continuing with previous video version.", task_id=wgp_task_id)
+                    travel_logger.debug_anomaly("WARNING", f"Chain (Seg {segment_idx_completed}): Brightness adjustment failed. Continuing with previous video version.", task_id=wgp_task_id)
 
         # --- 3. Color Matching (Applied to all segments if enabled) ---
         if chain_details.get("colour_match_videos"):
             start_ref = chain_details.get("cm_start_ref_path")
             end_ref = chain_details.get("cm_end_ref_path")
-            travel_logger.debug(f"Color matching requested for segment {segment_idx_completed}. Start ref: {start_ref}, End ref: {end_ref}", task_id=wgp_task_id)
-            travel_logger.debug(f"Chain (Seg {segment_idx_completed}): Color matching requested. Start Ref: {start_ref}, End Ref: {end_ref}", task_id=wgp_task_id)
+            travel_logger.debug(
+                f"Color matching requested for segment {segment_idx_completed}: start_ref={start_ref}, end_ref={end_ref}",
+                task_id=wgp_task_id,
+            )
 
             if start_ref and end_ref and Path(start_ref).exists() and Path(end_ref).exists():
                 cm_filename = f"{wgp_task_id}_seg{segment_idx_completed}_colormatched.mp4"
@@ -346,19 +336,18 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                 )
 
                 if matched_video_path and Path(matched_video_path).exists():
-                    travel_logger.debug(f"Color matching applied successfully to segment {segment_idx_completed}", task_id=wgp_task_id)
                     debug_video_analysis(Path(matched_video_path), f"COLORMATCHED_Seg{segment_idx_completed}", wgp_task_id)
-                    travel_logger.debug(f"Chain (Seg {segment_idx_completed}): Color matching successful. New path: {new_db_path}", task_id=wgp_task_id)
                     _cleanup_intermediate_video(orchestrator_details, video_to_process_abs_path, segment_idx_completed, "pre-colormatch", wgp_task_id)
 
                     video_to_process_abs_path = Path(matched_video_path)
                     final_video_path_for_db = new_db_path
+                    applied_post_steps.append("color_match")
                 else:
                     travel_logger.warning(f"Color matching failed for segment {segment_idx_completed}", task_id=wgp_task_id)
-                    travel_logger.debug(f"[WARNING] Chain (Seg {segment_idx_completed}): Color matching failed. Continuing with previous video version.", task_id=wgp_task_id)
+                    travel_logger.debug_anomaly("WARNING", f"Chain (Seg {segment_idx_completed}): Color matching failed. Continuing with previous video version.", task_id=wgp_task_id)
             else:
                 travel_logger.warning(f"Color matching skipped - missing or invalid reference images", task_id=wgp_task_id)
-                travel_logger.debug(f"[WARNING] Chain (Seg {segment_idx_completed}): Skipping color matching due to missing or invalid reference image paths.", task_id=wgp_task_id)
+                travel_logger.debug_anomaly("WARNING", f"Chain (Seg {segment_idx_completed}): Skipping color matching due to missing or invalid reference image paths.", task_id=wgp_task_id)
 
         # --- 4. Optional: Overlay start/end images above the video ---
         if chain_details.get("show_input_images"):
@@ -378,25 +367,37 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                     end_image_path=banner_end,
                     input_video_path=str(video_to_process_abs_path),
                     output_video_path=str(banner_video_abs_path)):
-                    travel_logger.debug(f"Banner overlay applied successfully to segment {segment_idx_completed}", task_id=wgp_task_id)
                     debug_video_analysis(banner_video_abs_path, f"BANNER_OVERLAY_Seg{segment_idx_completed}", wgp_task_id)
-                    travel_logger.debug(f"Chain (Seg {segment_idx_completed}): Banner overlay successful. New path: {new_db_path}", task_id=wgp_task_id)
                     _cleanup_intermediate_video(orchestrator_details, video_to_process_abs_path, segment_idx_completed, "pre-banner", wgp_task_id)
 
                     video_to_process_abs_path = banner_video_abs_path
                     final_video_path_for_db = new_db_path
+                    applied_post_steps.append("banner_overlay")
                 else:
                     travel_logger.warning(f"Banner overlay failed for segment {segment_idx_completed}", task_id=wgp_task_id)
-                    travel_logger.debug(f"[WARNING] Chain (Seg {segment_idx_completed}): Banner overlay failed. Keeping previous video version.", task_id=wgp_task_id)
+                    travel_logger.debug_anomaly("WARNING", f"Chain (Seg {segment_idx_completed}): Banner overlay failed. Keeping previous video version.", task_id=wgp_task_id)
             else:
                 travel_logger.warning(f"Banner overlay skipped - missing valid start/end images", task_id=wgp_task_id)
-                travel_logger.debug(f"[WARNING] Chain (Seg {segment_idx_completed}): show_input_images enabled but valid start/end images not found.", task_id=wgp_task_id)
+                travel_logger.debug_anomaly("WARNING", f"Chain (Seg {segment_idx_completed}): show_input_images enabled but valid start/end images not found.", task_id=wgp_task_id)
 
-        # The orchestrator has already enqueued all segment and stitch tasks.
-        travel_logger.debug(f"Chaining complete for segment {segment_idx_completed}. Final video path for DB: {final_video_path_for_db}", task_id=wgp_task_id)
+        # One consolidated CHAIN card summarising the whole post-WGP chain pipeline.
+        from source.core.log.display_names import rel_path
+        travel_logger.debug_block(
+            "CHAIN",
+            {
+                "segment": segment_idx_completed,
+                "run": orchestrator_run_id,
+                "chain_length": chain_length,
+                "post_steps": applied_post_steps or ["none"],
+                "final_path": rel_path(final_video_path_for_db) if final_video_path_for_db else None,
+            },
+            task_id=wgp_task_id,
+        )
         debug_video_analysis(video_to_process_abs_path, f"FINAL_CHAINED_Seg{segment_idx_completed}", wgp_task_id)
-        msg = f"Chain (Seg {segment_idx_completed}): Post-WGP processing complete. Final path for this WGP task's output: {final_video_path_for_db}"
-        travel_logger.debug(msg, task_id=wgp_task_id)
+        msg = (
+            f"Chain (Seg {segment_idx_completed}): Post-WGP processing complete. "
+            f"steps={applied_post_steps or ['none']}, final_path={final_video_path_for_db}"
+        )
         return True, msg, str(final_video_path_for_db)
 
     except (RuntimeError, ValueError, OSError, KeyError, TypeError) as e_chain:

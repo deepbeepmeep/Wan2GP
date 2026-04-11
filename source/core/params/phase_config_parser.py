@@ -193,7 +193,7 @@ def _prepare_patch_config(
             )
             if svi_loras_present or phase_config.get("svi2pro", False):
                 temp_config["model"]["svi2pro"] = True
-                headless_logger.debug("[PATCH_CONFIG] Added svi2pro=True to model definition (SVI LoRAs detected)", task_id=task_id)
+                headless_logger.debug_anomaly("PATCH_CONFIG", "Added svi2pro=True to model definition (SVI LoRAs detected)", task_id=task_id)
 
         return temp_config
     except (OSError, ValueError, KeyError) as e:
@@ -209,7 +209,6 @@ def parse_phase_config(phase_config: dict, num_inference_steps: int, task_id: st
 
     sample_solver = phase_config.get("sample_solver", "euler")
     timesteps = _generate_timesteps(sample_solver, flow_shift, num_inference_steps, task_id)
-    headless_logger.debug(f"Generated timesteps for phase_config: {[f'{t:.1f}' for t in timesteps]}", task_id=task_id)
 
     switch_threshold, switch_threshold2 = _calculate_switch_thresholds(
         timesteps, steps_per_phase, num_phases, num_inference_steps

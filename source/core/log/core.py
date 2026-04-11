@@ -5,23 +5,30 @@ Provides structured logging with debug vs essential log levels.
 Essential logs are always shown, debug logs only appear when debug mode is enabled.
 """
 
-import sys
 import datetime
+import logging
+import os
+import sys
 import traceback
-from typing import Optional
 from pathlib import Path
+from typing import Mapping, Optional
+
+from source.core.log.debug_card import DebugCard, format_value
 
 __all__ = [
     "set_log_file",
     "enable_debug_mode",
     "disable_debug_mode",
+    "init_from_env",
     "is_debug_enabled",
+    "suppress_library_logging",
     "essential",
     "success",
     "warning",
     "error",
     "critical",
     "debug",
+    "debug_block",
     "progress",
     "status",
     "ComponentLogger",
@@ -74,6 +81,22 @@ def enable_debug_mode():
     global _debug_mode
     _debug_mode = True
 
+def _is_env_debug() -> bool:
+    """Return True when REIGH_DEBUG requests debug logging."""
+    return os.environ.get("REIGH_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+def init_from_env():
+    """Enable debug mode when requested by environment configuration."""
+    if _is_env_debug():
+        enable_debug_mode()
+
+def suppress_library_logging():
+    """Reduce noisy third-party Python logging for non-debug runs."""
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.WARNING)
+    for logger_name in ("diffusers", "transformers", "torch", "PIL", "mmgp", "triton", "httpx"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
 def disable_debug_mode():
     """Disable debug logging globally."""
     global _debug_mode
@@ -87,14 +110,20 @@ def _get_timestamp() -> str:
     """Get formatted timestamp for logs."""
     return datetime.datetime.now().strftime("%H:%M:%S")
 
-def _format_message(level: str, component: str, message: str, task_id: Optional[str] = None) -> str:
+def _format_message(
+    level: str,
+    component: str,
+    message: str,
+    task_id: Optional[str] = None,
+    *,
+    include_task_prefix: bool = True,
+) -> str:
     """Format a log message with consistent structure."""
     timestamp = _get_timestamp()
 
-    if task_id:
+    if task_id and include_task_prefix:
         return f"[{timestamp}] {level} {component} [Task {task_id}] {message}"
-    else:
-        return f"[{timestamp}] {level} {component} {message}"
+    return f"[{timestamp}] {level} {component} {message}"
 
 def _append_exc_info(formatted: str, exc_info: bool) -> str:
     """Append traceback to formatted message if exc_info=True and an exception is active."""
@@ -104,42 +133,130 @@ def _append_exc_info(formatted: str, exc_info: bool) -> str:
             formatted = f"{formatted}\n{exc_text.rstrip()}"
     return formatted
 
-def essential(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
+
+def _format_debug_block_message(stage: str, items: Mapping[str, object]) -> str:
+    """Format a structured debug block using aligned DebugCard rendering."""
+    if not items:
+        return stage
+
+    if len(items) == 1:
+        key, value = next(iter(items.items()))
+        return f"{stage} {key}={format_value(value)}"
+
+    card = DebugCard(stage)
+    for key, value in items.items():
+        card.row(key, value)
+    return card.render()
+
+def essential(
+    component: str,
+    message: str,
+    task_id: Optional[str] = None,
+    exc_info: bool = False,
+    *,
+    include_task_prefix: bool = True,
+):
     """Log an essential message that should always be shown."""
-    formatted = _append_exc_info(_format_message("INFO", component, message, task_id), exc_info)
+    formatted = _append_exc_info(
+        _format_message("INFO", component, message, task_id, include_task_prefix=include_task_prefix),
+        exc_info,
+    )
     print(formatted)
     _write_to_log_file(formatted)
 
-def success(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
-    """Log a success message that should always be shown."""
-    formatted = _append_exc_info(_format_message("\u2705", component, message, task_id), exc_info)
+def success(
+    component: str,
+    message: str,
+    task_id: Optional[str] = None,
+    exc_info: bool = False,
+    *,
+    include_task_prefix: bool = True,
+):
+    """Log a success message that should always be shown.
+
+    The level column uses plain `INFO` for visual consistency with other log lines.
+    If you want a visible success marker (like `✓`), put it in the message content —
+    the task lifecycle emitter does this for the `✓ Task done` anchor line.
+    """
+    formatted = _append_exc_info(
+        _format_message("INFO", component, message, task_id, include_task_prefix=include_task_prefix),
+        exc_info,
+    )
     print(formatted)
     _write_to_log_file(formatted)
 
 def warning(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
-    """Log a warning message that should always be shown."""
-    formatted = _append_exc_info(_format_message("\u26a0\ufe0f", component, message, task_id), exc_info)
+    """Log a warning message that should always be shown.
+
+    Uses plain `WARN` in the level column for visual consistency.
+    """
+    formatted = _append_exc_info(_format_message("WARN", component, message, task_id), exc_info)
     print(formatted)
     _write_to_log_file(formatted)
 
-def error(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
+def error(
+    component: str,
+    message: str,
+    task_id: Optional[str] = None,
+    exc_info: bool = False,
+    *,
+    include_task_prefix: bool = True,
+):
     """Log an error message that should always be shown."""
-    formatted = _append_exc_info(_format_message("\u274c", component, message, task_id), exc_info)
+    formatted = _append_exc_info(
+        _format_message("ERROR", component, message, task_id, include_task_prefix=include_task_prefix),
+        exc_info,
+    )
     print(formatted, file=sys.stderr)
     _write_to_log_file(formatted)
 
 def critical(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
     """Log a critical/fatal error message that should always be shown."""
-    formatted = _append_exc_info(_format_message("\U0001f534 CRITICAL", component, message, task_id), exc_info)
+    formatted = _append_exc_info(_format_message("FATAL", component, message, task_id), exc_info)
     print(formatted, file=sys.stderr)
     _write_to_log_file(formatted)
 
-def debug(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
+def debug(
+    component: str,
+    message: str,
+    task_id: Optional[str] = None,
+    exc_info: bool = False,
+    *,
+    include_task_prefix: bool = True,
+):
     """Log a debug message that only appears when debug mode is enabled."""
     if _debug_mode:
-        formatted = _append_exc_info(_format_message("DEBUG", component, message, task_id), exc_info)
+        formatted = _append_exc_info(
+            _format_message("DEBUG", component, message, task_id, include_task_prefix=include_task_prefix),
+            exc_info,
+        )
         print(formatted)
         _write_to_log_file(formatted)
+
+
+def debug_block(component: str, stage: str, items: Mapping[str, object], task_id: Optional[str] = None):
+    """Log a structured debug block for a chokepoint when debug mode is enabled.
+
+    The card's header line does NOT carry the `[Task X]` prefix — the prefix would
+    dominate the ──── STAGE ──── title visually, and card bodies already carry
+    enough context (task_id is still sent to the DB interceptor below).
+    """
+    if _debug_mode:
+        message = _format_debug_block_message(stage, items)
+        formatted = _format_message("DEBUG", component, message, task_id, include_task_prefix=False)
+        print(formatted)
+        _write_to_log_file(formatted)
+        _intercept_log("DEBUG", f"{component}: {message}", task_id)
+
+
+def debug_anomaly(component: str, stage: str, message: str, task_id: Optional[str] = None):
+    """Log an anomaly-focused debug message when debug mode is enabled."""
+    if _debug_mode:
+        anomaly_message = f"  \u26a1 {stage}: {message}"
+        formatted = _format_message("DEBUG", component, anomaly_message, task_id)
+        print(formatted)
+        _write_to_log_file(formatted)
+        _intercept_log("DEBUG", f"{component}: {anomaly_message}", task_id)
 
 def progress(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
     """Log a progress message that should always be shown."""
@@ -160,23 +277,57 @@ class ComponentLogger:
     def __init__(self, component_name: str):
         self.component = component_name
 
-    def essential(self, message: str, task_id: Optional[str] = None, exc_info: bool = False):
-        essential(self.component, message, task_id, exc_info=exc_info)
+    def essential(
+        self,
+        message: str,
+        task_id: Optional[str] = None,
+        exc_info: bool = False,
+        *,
+        include_task_prefix: bool = True,
+    ):
+        essential(self.component, message, task_id, exc_info=exc_info, include_task_prefix=include_task_prefix)
 
-    def success(self, message: str, task_id: Optional[str] = None, exc_info: bool = False):
-        success(self.component, message, task_id, exc_info=exc_info)
+    def success(
+        self,
+        message: str,
+        task_id: Optional[str] = None,
+        exc_info: bool = False,
+        *,
+        include_task_prefix: bool = True,
+    ):
+        success(self.component, message, task_id, exc_info=exc_info, include_task_prefix=include_task_prefix)
 
     def warning(self, message: str, task_id: Optional[str] = None, exc_info: bool = False):
         warning(self.component, message, task_id, exc_info=exc_info)
 
-    def error(self, message: str, task_id: Optional[str] = None, exc_info: bool = False):
-        error(self.component, message, task_id, exc_info=exc_info)
+    def error(
+        self,
+        message: str,
+        task_id: Optional[str] = None,
+        exc_info: bool = False,
+        *,
+        include_task_prefix: bool = True,
+    ):
+        error(self.component, message, task_id, exc_info=exc_info, include_task_prefix=include_task_prefix)
 
     def critical(self, message: str, task_id: Optional[str] = None, exc_info: bool = False):
         critical(self.component, message, task_id, exc_info=exc_info)
 
-    def debug(self, message: str, task_id: Optional[str] = None, exc_info: bool = False):
-        debug(self.component, message, task_id, exc_info=exc_info)
+    def debug(
+        self,
+        message: str,
+        task_id: Optional[str] = None,
+        exc_info: bool = False,
+        *,
+        include_task_prefix: bool = True,
+    ):
+        debug(self.component, message, task_id, exc_info=exc_info, include_task_prefix=include_task_prefix)
+
+    def debug_block(self, stage: str, items: Mapping[str, object], task_id: Optional[str] = None):
+        debug_block(self.component, stage, items, task_id)
+
+    def debug_anomaly(self, stage: str, message: str, task_id: Optional[str] = None):
+        debug_anomaly(self.component, stage, message, task_id)
 
     def progress(self, message: str, task_id: Optional[str] = None, exc_info: bool = False):
         progress(self.component, message, task_id, exc_info=exc_info)
@@ -184,9 +335,16 @@ class ComponentLogger:
     def status(self, message: str, task_id: Optional[str] = None, exc_info: bool = False):
         status(self.component, message, task_id, exc_info=exc_info)
 
-    def info(self, message: str, task_id: Optional[str] = None, exc_info: bool = False):
+    def info(
+        self,
+        message: str,
+        task_id: Optional[str] = None,
+        exc_info: bool = False,
+        *,
+        include_task_prefix: bool = True,
+    ):
         """Alias for essential() to maintain compatibility with standard logging."""
-        essential(self.component, message, task_id, exc_info=exc_info)
+        essential(self.component, message, task_id, exc_info=exc_info, include_task_prefix=include_task_prefix)
 
 # Pre-configured loggers for main components
 headless_logger = ComponentLogger("HEADLESS")
@@ -248,16 +406,42 @@ def _intercept_log(level: str, message: str, task_id: Optional[str] = None):
 
 # Modify existing logging functions to intercept
 _original_essential = essential
-def essential(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
+def essential(
+    component: str,
+    message: str,
+    task_id: Optional[str] = None,
+    exc_info: bool = False,
+    *,
+    include_task_prefix: bool = True,
+):
     """Log an essential message that should always be shown."""
-    _original_essential(component, message, task_id, exc_info=exc_info)
+    _original_essential(
+        component,
+        message,
+        task_id,
+        exc_info=exc_info,
+        include_task_prefix=include_task_prefix,
+    )
     _intercept_log("INFO", f"{component}: {message}", task_id)
 
 
 _original_success = success
-def success(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
+def success(
+    component: str,
+    message: str,
+    task_id: Optional[str] = None,
+    exc_info: bool = False,
+    *,
+    include_task_prefix: bool = True,
+):
     """Log a success message that should always be shown."""
-    _original_success(component, message, task_id, exc_info=exc_info)
+    _original_success(
+        component,
+        message,
+        task_id,
+        exc_info=exc_info,
+        include_task_prefix=include_task_prefix,
+    )
     _intercept_log("INFO", f"{component}: {message}", task_id)
 
 
@@ -269,9 +453,22 @@ def warning(component: str, message: str, task_id: Optional[str] = None, exc_inf
 
 
 _original_error = error
-def error(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
+def error(
+    component: str,
+    message: str,
+    task_id: Optional[str] = None,
+    exc_info: bool = False,
+    *,
+    include_task_prefix: bool = True,
+):
     """Log an error message that should always be shown."""
-    _original_error(component, message, task_id, exc_info=exc_info)
+    _original_error(
+        component,
+        message,
+        task_id,
+        exc_info=exc_info,
+        include_task_prefix=include_task_prefix,
+    )
     _intercept_log("ERROR", f"{component}: {message}", task_id)
 
 
@@ -283,10 +480,17 @@ def critical(component: str, message: str, task_id: Optional[str] = None, exc_in
 
 
 _original_debug = debug
-def debug(component: str, message: str, task_id: Optional[str] = None, exc_info: bool = False):
+def debug(
+    component: str,
+    message: str,
+    task_id: Optional[str] = None,
+    exc_info: bool = False,
+    *,
+    include_task_prefix: bool = True,
+):
     """Log a debug message that only appears when debug mode is enabled."""
-    _original_debug(component, message, task_id, exc_info=exc_info)
-    if _debug_mode:  # Only intercept if debug mode is enabled
+    _original_debug(component, message, task_id, exc_info=exc_info, include_task_prefix=include_task_prefix)
+    if _debug_mode:
         _intercept_log("DEBUG", f"{component}: {message}", task_id)
 
 

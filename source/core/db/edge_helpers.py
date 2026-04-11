@@ -82,7 +82,7 @@ def _call_edge_function_with_retry(
 
             # Handle 404 fallback (e.g. hyphen vs underscore naming)
             if resp.status_code == 404 and fallback_url:
-                headless_logger.debug(f"[RETRY] {function_name} returned 404; trying fallback URL: {fallback_url}")
+                headless_logger.debug_anomaly("RETRY", f"{function_name} returned 404; trying fallback URL: {fallback_url}")
                 if method == "PUT":
                     if isinstance(payload, (str, Path)) and Path(payload).exists():
                         with open(Path(payload), "rb") as f:
@@ -102,15 +102,15 @@ def _call_edge_function_with_retry(
                 should_retry = any(pattern.lower() in resp_text.lower() for pattern in retry_on_404_patterns)
                 if should_retry:
                     wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                    headless_logger.essential(f"[RETRY] {function_name} got 404 with retryable pattern{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
-                    headless_logger.debug(f"[RETRY] 404 response: {resp_text[:200]}")
+                    headless_logger.essential(f"{function_name} got 404 with retryable pattern{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                    headless_logger.debug_anomaly("RETRY", f"404 response: {resp_text[:200]}")
                     time.sleep(wait_time)
                     continue
 
             # Retryable error (5xx)
             if resp.status_code in RETRYABLE_STATUS_CODES and attempt < max_retries - 1:
                 wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                headless_logger.essential(f"[RETRY] {function_name} got {resp.status_code}{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                headless_logger.essential(f"{function_name} got {resp.status_code}{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
                 time.sleep(wait_time)
                 continue
 
@@ -126,7 +126,7 @@ def _call_edge_function_with_retry(
         except httpx.TimeoutException as e:
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt
-                headless_logger.essential(f"[RETRY] {function_name} timeout{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                headless_logger.essential(f"{function_name} timeout{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
                 time.sleep(wait_time)
                 continue
             else:
@@ -137,7 +137,7 @@ def _call_edge_function_with_retry(
         except httpx.RequestError as e:
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt
-                headless_logger.essential(f"[RETRY] {function_name} network error{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                headless_logger.essential(f"{function_name} network error{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
                 time.sleep(wait_time)
                 continue
             else:
@@ -168,7 +168,7 @@ def _get_user_id_from_jwt(jwt_str: str) -> str | None:
         headless_logger.debug(f"JWT Decode: Extracted user ID (sub): {user_id}")
         return user_id
     except (ValueError, KeyError, json.JSONDecodeError) as e:
-        headless_logger.debug(f"[ERROR] Could not decode JWT to get user ID: {e}")
+        headless_logger.debug_anomaly("ERROR", f"Could not decode JWT to get user ID: {e}")
         return None
 
 def _is_jwt_token(token_str: str) -> bool:

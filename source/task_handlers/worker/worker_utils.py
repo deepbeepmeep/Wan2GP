@@ -34,7 +34,7 @@ def log_ram_usage(label: str, task_id: str = "unknown") -> dict:
         sys_available_gb = sys_mem.available / BYTES_PER_GB
         sys_used_percent = sys_mem.percent
 
-        headless_logger.info(
+        headless_logger.debug(
             f"[RAM] {label}: Process={rss_mb:.0f}MB ({rss_gb:.2f}GB) | "
             f"System={sys_used_percent:.1f}% used, {sys_available_gb:.1f}GB/{sys_total_gb:.1f}GB available",
             task_id=task_id
@@ -87,4 +87,3 @@ def cleanup_generated_files(output_location: str, task_id: str = "unknown", debu
 
     except OSError as e:
         headless_logger.warning(f"Failed to cleanup generated file {output_location}: {e}", task_id=task_id)
-

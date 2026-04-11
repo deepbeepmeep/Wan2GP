@@ -92,7 +92,7 @@ def reverse_video(
     output_path = Path(output_video_path)
 
     if not input_path.exists():
-        generation_logger.debug(f"[REVERSE_VIDEO] Input video not found: {input_path}")
+        generation_logger.debug_anomaly("REVERSE_VIDEO", f"Input video not found: {input_path}")
         return None
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,29 +120,29 @@ def reverse_video(
     ]
 
     try:
-        generation_logger.debug(f"[REVERSE_VIDEO] Reversing video (visually lossless): {input_path.name} -> {output_path.name}")
+        generation_logger.debug_anomaly("REVERSE_VIDEO", f"Reversing video (visually lossless): {input_path.name} -> {output_path.name}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)  # Longer timeout for slow preset
 
         if result.returncode != 0:
-            generation_logger.debug(f"[REVERSE_VIDEO] FFmpeg failed: {result.stderr[:500]}")
+            generation_logger.debug_anomaly("REVERSE_VIDEO", f"FFmpeg failed: {result.stderr[:500]}")
             return None
 
         if not output_path.exists() or output_path.stat().st_size == 0:
-            generation_logger.debug(f"[REVERSE_VIDEO] Output missing or empty: {output_path}")
+            generation_logger.debug_anomaly("REVERSE_VIDEO", f"Output missing or empty: {output_path}")
             return None
 
         # Verify the reversed video
         reversed_frames, reversed_fps = get_video_frame_count_and_fps(str(output_path))
         original_frames, _ = get_video_frame_count_and_fps(str(input_path))
 
-        generation_logger.debug(f"[REVERSE_VIDEO] \u2705 Successfully reversed video: {original_frames} -> {reversed_frames} frames @ {reversed_fps} fps (CRF 17)")
+        generation_logger.debug_anomaly("REVERSE_VIDEO", f"\u2705 Successfully reversed video: {original_frames} -> {reversed_frames} frames @ {reversed_fps} fps (CRF 17)")
         return output_path
 
     except subprocess.TimeoutExpired:
-        generation_logger.debug(f"[REVERSE_VIDEO] FFmpeg timeout")
+        generation_logger.debug_anomaly("REVERSE_VIDEO", f"FFmpeg timeout")
         return None
     except (subprocess.SubprocessError, OSError) as e:
-        generation_logger.debug(f"[REVERSE_VIDEO] Exception: {e}", exc_info=True)
+        generation_logger.error(f"REVERSE_VIDEO exception: {e}", exc_info=True)
         return None
 
 def standardize_video_aspect_ratio(
@@ -169,7 +169,7 @@ def standardize_video_aspect_ratio(
     output_path = Path(output_video_path)
 
     if not input_path.exists():
-        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Input video not found: {input_path}")
+        generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Input video not found: {input_path}")
         return None
 
     # Parse aspect ratio
@@ -180,7 +180,7 @@ def standardize_video_aspect_ratio(
         target_w, target_h = float(ar_parts[0]), float(ar_parts[1])
         target_aspect = target_w / target_h
     except (ValueError, TypeError) as e:
-        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to parse aspect ratio '{target_aspect_ratio}': {e}")
+        generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Failed to parse aspect ratio '{target_aspect_ratio}': {e}")
         return None
 
     # Get input video dimensions using ffprobe
@@ -194,29 +194,29 @@ def standardize_video_aspect_ratio(
         ]
         result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
-            generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: ffprobe failed: {result.stderr}")
+            generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: ffprobe failed: {result.stderr}")
             return None
 
         width_str, height_str = result.stdout.strip().split(',')
         src_w, src_h = int(width_str), int(height_str)
         src_aspect = src_w / src_h
 
-        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Input video: {src_w}x{src_h} (aspect: {src_aspect:.3f})")
-        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Target aspect: {target_aspect:.3f}")
+        generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Input video: {src_w}x{src_h} (aspect: {src_aspect:.3f})")
+        generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Target aspect: {target_aspect:.3f}")
 
     except (subprocess.SubprocessError, OSError, ValueError) as e:
-        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to get video dimensions: {e}")
+        generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Failed to get video dimensions: {e}")
         return None
 
     # Check if aspect ratio is already correct (within 1% tolerance)
     if abs(src_aspect - target_aspect) < 0.01:
-        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Video already has target aspect ratio, copying...")
+        generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Video already has target aspect ratio, copying...")
         try:
             import shutil
             shutil.copy2(input_path, output_path)
             return output_path
         except OSError as e:
-            generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to copy video: {e}")
+            generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Failed to copy video: {e}")
             return None
 
     # Calculate crop dimensions
@@ -233,7 +233,7 @@ def standardize_video_aspect_ratio(
         crop_x = 0
         crop_y = (src_h - new_h) // 2
 
-    generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Center-cropping to {new_w}x{new_h}")
+    generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Center-cropping to {new_w}x{new_h}")
 
     # Apply crop using ffmpeg
     try:
@@ -246,23 +246,23 @@ def standardize_video_aspect_ratio(
 
         result = subprocess.run(crop_cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: ffmpeg crop failed: {result.stderr}")
+            generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: ffmpeg crop failed: {result.stderr}")
             return None
 
         if not output_path.exists() or output_path.stat().st_size == 0:
-            generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Output video not created or empty")
+            generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Output video not created or empty")
             return None
 
-        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Successfully standardized video to {target_aspect_ratio}")
+        generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Successfully standardized video to {target_aspect_ratio}")
         return output_path
 
     except (subprocess.SubprocessError, OSError) as e:
-        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to crop video: {e}")
+        generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: Failed to crop video: {e}")
         if output_path.exists():
             try:
                 output_path.unlink()
             except OSError as e_cleanup:
-                generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: DEBUG: Failed to clean up output {output_path}: {e_cleanup}")
+                generation_logger.debug_anomaly("STANDARDIZE_ASPECT", f"Task {task_id_for_logging}: DEBUG: Failed to clean up output {output_path}: {e_cleanup}")
         return None
 
 def add_audio_to_video(
@@ -291,16 +291,16 @@ def add_audio_to_video(
     temp_dir = Path(temp_dir)
 
     if not input_video_path.exists():
-        generation_logger.debug(f"[ADD_AUDIO] Input video does not exist: {input_video_path}")
+        generation_logger.debug_anomaly("ADD_AUDIO", f"Input video does not exist: {input_video_path}")
         return None
 
     if not audio_url:
-        generation_logger.debug(f"[ADD_AUDIO] No audio URL provided")
+        generation_logger.debug_anomaly("ADD_AUDIO", f"No audio URL provided")
         return None
 
-    generation_logger.debug(f"[ADD_AUDIO] Adding audio to video")
-    generation_logger.debug(f"[ADD_AUDIO]   Video: {input_video_path}")
-    generation_logger.debug(f"[ADD_AUDIO]   Audio: {audio_url[:80]}...")
+    generation_logger.debug_anomaly("ADD_AUDIO", f"Adding audio to video")
+    generation_logger.debug_anomaly("ADD_AUDIO", f"  Video: {input_video_path}")
+    generation_logger.debug_anomaly("ADD_AUDIO", f"  Audio: {audio_url[:80]}...")
 
     try:
         # Download audio if it's a URL
@@ -319,7 +319,7 @@ def add_audio_to_video(
             audio_filename = f"temp_audio_{uuid.uuid4().hex[:8]}{audio_ext}"
             local_audio_path = temp_dir / audio_filename
 
-            generation_logger.debug(f"[ADD_AUDIO] Downloading audio to {local_audio_path}...")
+            generation_logger.debug_anomaly("ADD_AUDIO", f"Downloading audio to {local_audio_path}...")
 
             response = requests.get(audio_url, stream=True, timeout=60)
             response.raise_for_status()
@@ -328,11 +328,11 @@ def add_audio_to_video(
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-            generation_logger.debug(f"[ADD_AUDIO] Audio downloaded: {local_audio_path.stat().st_size} bytes")
+            generation_logger.debug_anomaly("ADD_AUDIO", f"Audio downloaded: {local_audio_path.stat().st_size} bytes")
         else:
             local_audio_path = Path(audio_url)
             if not local_audio_path.exists():
-                generation_logger.debug(f"[ADD_AUDIO] Local audio file does not exist: {audio_url}")
+                generation_logger.debug_anomaly("ADD_AUDIO", f"Local audio file does not exist: {audio_url}")
                 return None
 
         # Get video duration for logging
@@ -346,9 +346,9 @@ def add_audio_to_video(
             result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
             video_duration = float(result.stdout.strip()) if result.returncode == 0 else None
             if video_duration:
-                generation_logger.debug(f"[ADD_AUDIO] Video duration: {video_duration:.2f}s")
+                generation_logger.debug_anomaly("ADD_AUDIO", f"Video duration: {video_duration:.2f}s")
         except (subprocess.SubprocessError, OSError, ValueError) as e:
-            generation_logger.debug(f"[ADD_AUDIO] DEBUG: Failed to probe video duration: {e}")
+            generation_logger.debug_anomaly("ADD_AUDIO", f"DEBUG: Failed to probe video duration: {e}")
             video_duration = None
 
         # Mux video with audio using FFmpeg
@@ -370,15 +370,15 @@ def add_audio_to_video(
             str(output_video_path)
         ]
 
-        generation_logger.debug(f"[ADD_AUDIO] Running FFmpeg to mux audio...")
+        generation_logger.debug_anomaly("ADD_AUDIO", f"Running FFmpeg to mux audio...")
         result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode != 0:
-            generation_logger.debug(f"[ADD_AUDIO] FFmpeg failed: {result.stderr[:500] if result.stderr else 'No error message'}")
+            generation_logger.debug_anomaly("ADD_AUDIO", f"FFmpeg failed: {result.stderr[:500] if result.stderr else 'No error message'}")
             return None
 
         if not output_video_path.exists() or output_video_path.stat().st_size == 0:
-            generation_logger.debug(f"[ADD_AUDIO] Output file not created or empty")
+            generation_logger.debug_anomaly("ADD_AUDIO", f"Output file not created or empty")
             return None
 
         # Clean up downloaded audio if we downloaded it
@@ -386,20 +386,20 @@ def add_audio_to_video(
             try:
                 local_audio_path.unlink()
             except OSError as e:
-                generation_logger.debug(f"[ADD_AUDIO] DEBUG: Failed to clean up downloaded audio file {local_audio_path}: {e}")
+                generation_logger.debug_anomaly("ADD_AUDIO", f"DEBUG: Failed to clean up downloaded audio file {local_audio_path}: {e}")
 
-        generation_logger.debug(f"[ADD_AUDIO] Successfully added audio to video: {output_video_path}")
-        generation_logger.debug(f"[ADD_AUDIO]   Output size: {output_video_path.stat().st_size} bytes")
+        generation_logger.debug_anomaly("ADD_AUDIO", f"Successfully added audio to video: {output_video_path}")
+        generation_logger.debug_anomaly("ADD_AUDIO", f"  Output size: {output_video_path.stat().st_size} bytes")
 
         return output_video_path
 
     except (subprocess.SubprocessError, OSError) as e:
-        generation_logger.debug(f"[ADD_AUDIO] Error adding audio: {e}", exc_info=True)
+        generation_logger.error(f"ADD_AUDIO error adding audio: {e}", exc_info=True)
         if output_video_path.exists():
             try:
                 output_video_path.unlink()
             except OSError as e_cleanup:
-                generation_logger.debug(f"[ADD_AUDIO] DEBUG: Failed to clean up output file {output_video_path}: {e_cleanup}")
+                generation_logger.debug_anomaly("ADD_AUDIO", f"DEBUG: Failed to clean up output file {output_video_path}: {e_cleanup}")
         return None
 
 def overlay_start_end_images_above_video(

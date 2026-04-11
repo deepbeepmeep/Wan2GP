@@ -41,7 +41,7 @@ def get_structure_preprocessor(
         Function that takes a list of frames (np.ndarray)
         and returns a list of processed frames (RGB visualizations).
     """
-    generation_logger.debug(f"[PREPROCESSOR_DEBUG] Initializing preprocessor with structure_type='{structure_type}'")
+    generation_logger.debug_anomaly("PREPROCESSOR_DEBUG", f"Initializing preprocessor with structure_type='{structure_type}'")
 
     if structure_type == "flow":
         wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
@@ -50,7 +50,7 @@ def get_structure_preprocessor(
         # Ensure RAFT model is downloaded
         flow_model_path = wan_dir / "ckpts" / "flow" / "raft-things.pth"
         if not flow_model_path.exists():
-            generation_logger.debug(f"[FLOW] RAFT model not found, downloading from Hugging Face...")
+            generation_logger.debug_anomaly("FLOW", f"RAFT model not found, downloading from Hugging Face...")
             try:
                 from huggingface_hub import hf_hub_download
                 flow_model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +60,7 @@ def get_structure_preprocessor(
                     local_dir=str(wan_dir / 'ckpts'),
                     subfolder="flow"
                 )
-                generation_logger.debug(f"[FLOW] RAFT model downloaded successfully")
+                generation_logger.debug_anomaly("FLOW", f"RAFT model downloaded successfully")
             except (OSError, ValueError, RuntimeError) as e:
                 raise RuntimeError(f"Failed to download RAFT model: {e}. Please manually download from https://huggingface.co/DeepBeepMeep/Wan2.1/tree/main/flow") from e
 
@@ -84,7 +84,7 @@ def get_structure_preprocessor(
             return flow_visualizations[:1] + flow_visualizations
 
         if abs(motion_strength - 1.0) > 1e-6:
-            generation_logger.debug(f"[FLOW] Applying motion_strength={motion_strength} to flow visualizations")
+            generation_logger.debug_anomaly("FLOW", f"Applying motion_strength={motion_strength} to flow visualizations")
 
         return process_with_motion_strength
 
@@ -95,7 +95,7 @@ def get_structure_preprocessor(
         # Ensure scribble/canny model is downloaded
         canny_model_path = wan_dir / "ckpts" / "scribble" / "netG_A_latest.pth"
         if not canny_model_path.exists():
-            generation_logger.debug(f"[CANNY] Scribble model not found, downloading from Hugging Face...")
+            generation_logger.debug_anomaly("CANNY", f"Scribble model not found, downloading from Hugging Face...")
             try:
                 from huggingface_hub import hf_hub_download
                 canny_model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,7 +105,7 @@ def get_structure_preprocessor(
                     local_dir=str(wan_dir / 'ckpts'),
                     subfolder="scribble"
                 )
-                generation_logger.debug(f"[CANNY] Scribble model downloaded successfully")
+                generation_logger.debug_anomaly("CANNY", f"Scribble model downloaded successfully")
             except (OSError, ValueError, RuntimeError) as e:
                 raise RuntimeError(f"Failed to download Scribble model: {e}. Please manually download from https://huggingface.co/DeepBeepMeep/Wan2.1/tree/main/scribble") from e
 
@@ -123,7 +123,7 @@ def get_structure_preprocessor(
                     # Scale pixel values by intensity factor
                     adjusted = (frame.astype(np.float32) * canny_intensity).clip(0, 255).astype(np.uint8)
                     adjusted_frames.append(adjusted)
-                generation_logger.debug(f"[STRUCTURE_PREPROCESS] Applied canny intensity: {canny_intensity}")
+                generation_logger.debug_anomaly("STRUCTURE_PREPROCESS", f"Applied canny intensity: {canny_intensity}")
                 return adjusted_frames
             return edge_frames
 
@@ -138,7 +138,7 @@ def get_structure_preprocessor(
         # Ensure depth model is downloaded
         depth_model_path = wan_dir / "ckpts" / "depth" / f"depth_anything_v2_{variant}.pth"
         if not depth_model_path.exists():
-            generation_logger.debug(f"[DEPTH] Depth Anything V2 {variant} model not found, downloading from Hugging Face...")
+            generation_logger.debug_anomaly("DEPTH", f"Depth Anything V2 {variant} model not found, downloading from Hugging Face...")
             try:
                 from huggingface_hub import hf_hub_download
                 depth_model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,7 +148,7 @@ def get_structure_preprocessor(
                     local_dir=str(wan_dir / 'ckpts'),
                     subfolder="depth"
                 )
-                generation_logger.debug(f"[DEPTH] Depth Anything V2 {variant} model downloaded successfully")
+                generation_logger.debug_anomaly("DEPTH", f"Depth Anything V2 {variant} model downloaded successfully")
             except (OSError, ValueError, RuntimeError) as e:
                 raise RuntimeError(f"Failed to download Depth Anything V2 model: {e}. Please manually download from https://huggingface.co/DeepBeepMeep/Wan2.1/tree/main/depth") from e
 
@@ -172,7 +172,7 @@ def get_structure_preprocessor(
                     adjusted = ((frame_float - 0.5) * depth_contrast + 0.5).clip(0, 1)
                     adjusted = (adjusted * 255).astype(np.uint8)
                     adjusted_frames.append(adjusted)
-                generation_logger.debug(f"[STRUCTURE_PREPROCESS] Applied depth contrast: {depth_contrast}")
+                generation_logger.debug_anomaly("STRUCTURE_PREPROCESS", f"Applied depth contrast: {depth_contrast}")
                 return adjusted_frames
             return depth_frames
 
@@ -211,7 +211,7 @@ def get_structure_preprocessor(
     elif structure_type in ("raw", "uni3c"):
         # Raw/uni3c use raw video frames as guidance - no preprocessing needed
         # For uni3c, frames are passed directly to WGP's uni3c encoder
-        generation_logger.debug(f"[STRUCTURE_PREPROCESS] {structure_type} type: returning frames without preprocessing")
+        generation_logger.debug_anomaly("STRUCTURE_PREPROCESS", f"{structure_type} type: returning frames without preprocessing")
         return lambda frames: frames
 
     else:
@@ -245,10 +245,10 @@ def process_structure_frames(
     """
     # Handle raw type - no preprocessing needed
     if structure_type == "raw":
-        generation_logger.debug(f"[STRUCTURE_PREPROCESS] Raw type: returning {len(frames)} frames without preprocessing")
+        generation_logger.debug_anomaly("STRUCTURE_PREPROCESS", f"Raw type: returning {len(frames)} frames without preprocessing")
         return frames
 
-    generation_logger.debug(f"[STRUCTURE_PREPROCESS] Processing {len(frames)} frames with '{structure_type}' preprocessor...")
+    generation_logger.debug_anomaly("STRUCTURE_PREPROCESS", f"Processing {len(frames)} frames with '{structure_type}' preprocessor...")
 
     preprocessor = get_structure_preprocessor(
         structure_type,
@@ -262,13 +262,13 @@ def process_structure_frames(
     processed_frames = preprocessor(frames)
     duration = time.time() - start_time
 
-    generation_logger.debug(f"[STRUCTURE_PREPROCESS] Preprocessing completed in {duration:.2f}s")
+    generation_logger.debug_anomaly("STRUCTURE_PREPROCESS", f"Preprocessing completed in {duration:.2f}s")
 
     # Handle N-1 case for optical flow
     if structure_type == "flow" and len(processed_frames) == len(frames) - 1:
         # Duplicate last flow frame to match input count
         processed_frames.append(processed_frames[-1].copy())
-        generation_logger.debug(f"[STRUCTURE_PREPROCESS] Duplicated last flow frame ({len(frames)-1} \u2192 {len(frames)} frames)")
+        generation_logger.debug_anomaly("STRUCTURE_PREPROCESS", f"Duplicated last flow frame ({len(frames)-1} \u2192 {len(frames)} frames)")
 
     # Validate output count
     if len(processed_frames) != len(frames):

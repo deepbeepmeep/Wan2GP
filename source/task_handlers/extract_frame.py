@@ -16,8 +16,6 @@ from source.utils.output_paths import (
 
 def handle_extract_frame_task(task_params_dict: dict, main_output_dir_base: Path, task_id: str):
     """Handles the 'extract_frame' task."""
-    task_logger.essential("Starting extract frame task", task_id=task_id)
-
     input_video_task_id = task_params_dict.get("input_video_task_id")
     frame_index = task_params_dict.get("frame_index", 0)  # Default to first frame
     custom_output_dir = task_params_dict.get("output_dir")
@@ -68,7 +66,6 @@ def handle_extract_frame_task(task_params_dict: dict, main_output_dir_base: Path
         if success:
             final_db_location = upload_and_get_final_output_location(
                 final_save_path, initial_db_location)
-            task_logger.essential(f"Successfully extracted frame {frame_index} to: {final_save_path}", task_id=task_id)
             return True, final_db_location
         else:
             msg = f"Task {task_id}: save_frame_from_video utility failed for video {video_abs_path}."

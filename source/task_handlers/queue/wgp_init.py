@@ -114,17 +114,15 @@ class WgpInitMixin:
 
         try:
             if is_debug_enabled():
-                self.logger.info("[LAZY_INIT] Initializing WanOrchestrator (first use)...")
-                self.logger.info("[LAZY_INIT] Warming up CUDA before importing wgp...")
+                self.logger.debug_anomaly("LAZY_INIT", "Initializing WanOrchestrator (first use)...")
+                self.logger.debug_anomaly("LAZY_INIT", "Warming up CUDA before importing wgp...")
 
             # Warm up CUDA before importing wgp (upstream T5EncoderModel has torch.cuda.current_device()
             # as a default arg, which is evaluated at module import time)
             import torch
 
-            # Detailed CUDA diagnostics
             if is_debug_enabled():
-                self.logger.info("[CUDA_DEBUG] ========== CUDA DIAGNOSTICS ==========")
-                self.logger.info(f"[CUDA_DEBUG] torch.cuda.is_available(): {torch.cuda.is_available()}")
+                self.logger.debug_anomaly("LAZY_INIT", f"CUDA availability before import: {torch.cuda.is_available()}")
 
             if torch.cuda.is_available():
                 if is_debug_enabled():
@@ -133,13 +131,10 @@ class WgpInitMixin:
                 if is_debug_enabled():
                     _log_cuda_unavailable_diagnostics(self.logger, torch)
 
-            if is_debug_enabled():
-                self.logger.info("[CUDA_DEBUG] ===========================================")
-
             self._import_and_create_orchestrator()
 
             if is_debug_enabled():
-                self.logger.info("[LAZY_INIT] WanOrchestrator initialized successfully")
+                self.logger.debug_anomaly("LAZY_INIT", "WanOrchestrator initialized successfully")
 
             # Now that orchestrator exists, complete wgp integration
             self._init_wgp_integration()
@@ -159,7 +154,7 @@ class WgpInitMixin:
         before import.
         """
         if is_debug_enabled():
-            self.logger.info("[LAZY_INIT] Importing WanOrchestrator (this imports wgp and model modules)...")
+            self.logger.debug_anomaly("LAZY_INIT", "Importing WanOrchestrator (this imports wgp and model modules)...")
 
         runtime_context = get_runtime_context(
             "queue.orchestrator_import",
@@ -170,7 +165,7 @@ class WgpInitMixin:
         runtime_context.prepare()
 
         if is_debug_enabled():
-            self.logger.info(f"[LAZY_INIT] Runtime context prepared for Wan2GP directory: {self.wan_dir}")
+            self.logger.debug_anomaly("LAZY_INIT", f"Runtime context prepared for Wan2GP directory: {self.wan_dir}")
 
         with temporary_process_globals(
             cwd=self.wan_dir,
@@ -190,7 +185,7 @@ class WgpInitMixin:
                 )
 
             if is_debug_enabled():
-                self.logger.info("[LAZY_INIT] Runtime context active, importing WanOrchestrator...")
+                self.logger.debug_anomaly("LAZY_INIT", "Runtime context active, importing WanOrchestrator...")
 
             from source.models.wgp.orchestrator import WanOrchestrator
 
@@ -198,7 +193,7 @@ class WgpInitMixin:
                 try:
                     from mmgp import offload
                     offload.default_verboseLevel = 2
-                    self.logger.info("[LAZY_INIT] Set offload.default_verboseLevel=2 for debug logging")
+                    self.logger.debug_anomaly("LAZY_INIT", "Set offload.default_verboseLevel=2 for debug logging")
                 except ImportError:
                     pass
 
@@ -220,37 +215,20 @@ class WgpInitMixin:
         # Core integration: reuse orchestrator's state management
         self.wgp_state = self.orchestrator.state
 
-        self.logger.info("WGP integration initialized")
+        self.logger.debug("WGP integration initialized")
 
 
 def _log_cuda_available_diagnostics(logger, torch):
     """Log detailed CUDA diagnostics when CUDA is available."""
     try:
         device_count = torch.cuda.device_count()
-        logger.info(f"[CUDA_DEBUG] Device count: {device_count}")
-
-        for i in range(device_count):
-            logger.info(f"[CUDA_DEBUG] Device {i}: {torch.cuda.get_device_name(i)}")
-            logger.info(f"[CUDA_DEBUG]   - Properties: {torch.cuda.get_device_properties(i)}")
-
-        # Try to get CUDA version info
-        try:
-            logger.info(f"[CUDA_DEBUG] CUDA version (torch): {torch.version.cuda}")
-        except Exception as e:
-            logger.debug(f"[CUDA_DEBUG] Could not retrieve CUDA version: {e}")
-
-        # Try to initialize current device
-        try:
-            current_dev = torch.cuda.current_device()
-            logger.info(f"[CUDA_DEBUG] Current device: {current_dev}")
-
-            # Try a simple tensor operation
-            test_tensor = torch.tensor([1.0], device='cuda')
-            logger.info(f"[CUDA_DEBUG] Successfully created tensor on CUDA: {test_tensor.device}")
-
-        except Exception as e:
-            logger.error(f"[CUDA_DEBUG] Failed to initialize current device: {e}")
-            raise
+        current_dev = torch.cuda.current_device()
+        device_name = torch.cuda.get_device_name(current_dev) if device_count > current_dev else "unknown"
+        test_tensor = torch.tensor([1.0], device='cuda')
+        logger.debug(
+            f"[LAZY_INIT] CUDA warmup validated: devices={device_count}, current_device={current_dev}, "
+            f"device_name={device_name}, torch_cuda={torch.version.cuda}, tensor_device={test_tensor.device}"
+        )
 
     except Exception as e:
         logger.error(f"[CUDA_DEBUG] Error during CUDA diagnostics: {e}\n{traceback.format_exc()}")
@@ -262,21 +240,25 @@ def _log_cuda_unavailable_diagnostics(logger, torch):
     logger.warning("[CUDA_DEBUG] torch.cuda.is_available() returned False")
     logger.warning("[CUDA_DEBUG] Checking why CUDA is not available...")
 
-    # Check if CUDA was built with torch
-    logger.info(f"[CUDA_DEBUG] torch.version.cuda: {torch.version.cuda}")
-    logger.info(f"[CUDA_DEBUG] torch.backends.cudnn.version(): {torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else 'N/A'}")
+    driver_version = "unknown"
+    device_count = "unknown"
+    device_names = []
 
     # Try to import pynvml for driver info
     try:
         import pynvml
         pynvml.nvmlInit()
         driver_version = pynvml.nvmlSystemGetDriverVersion()
-        logger.info(f"[CUDA_DEBUG] NVIDIA driver version: {driver_version}")
         device_count = pynvml.nvmlDeviceGetCount()
-        logger.info(f"[CUDA_DEBUG] NVML device count: {device_count}")
         for i in range(device_count):
             handle = pynvml.nvmlDeviceGetHandleByIndex(i)
             name = pynvml.nvmlDeviceGetName(handle)
-            logger.info(f"[CUDA_DEBUG] NVML Device {i}: {name}")
+            device_names.append(name.decode() if isinstance(name, bytes) else str(name))
     except Exception as e:
         logger.warning(f"[CUDA_DEBUG] Could not get NVML info: {e}")
+
+    logger.debug(
+        f"[LAZY_INIT] CUDA unavailable summary: torch_cuda={torch.version.cuda}, "
+        f"cudnn={torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else 'N/A'}, "
+        f"driver={driver_version}, nvml_devices={device_count}, device_names={device_names}"
+    )

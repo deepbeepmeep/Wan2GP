@@ -101,7 +101,7 @@ def load_structure_video_frames_with_range(
         decord.bridge.set_bridge('torch')
         use_decord = True
     except ImportError:
-        generation_logger.debug("[STRUCTURE_VIDEO_RANGE] decord not available, using cv2 fallback")
+        generation_logger.debug_anomaly("STRUCTURE_VIDEO_RANGE", "decord not available, using cv2 fallback")
 
     if use_decord:
         try:
@@ -109,7 +109,7 @@ def load_structure_video_frames_with_range(
             video_fps = round(reader.get_avg_fps())
             total_video_frames = len(reader)
         except (ModuleNotFoundError, RuntimeError, OSError, ValueError) as exc:
-            generation_logger.debug(f"[STRUCTURE_VIDEO_RANGE] decord reader unavailable, falling back to cv2: {exc}")
+            generation_logger.debug_anomaly("STRUCTURE_VIDEO_RANGE", f"decord reader unavailable, falling back to cv2: {exc}")
             use_decord = False
 
     if not use_decord:
@@ -127,11 +127,15 @@ def load_structure_video_frames_with_range(
 
     effective_source_frames = actual_end - actual_start
 
-    generation_logger.debug(f"[STRUCTURE_VIDEO_RANGE] Loading from source video:")
-    generation_logger.debug(f"  Total source frames: {total_video_frames} @ {video_fps}fps")
-    generation_logger.debug(f"  Source range: [{actual_start}, {actual_end}) = {effective_source_frames} frames")
-    generation_logger.debug(f"  Target frames needed: {target_frame_count}")
-    generation_logger.debug(f"  Treatment: {treatment}")
+    generation_logger.debug_block(
+        "STRUCTURE_RANGE",
+        {
+            "source_frames": f"{total_video_frames}@{video_fps}fps",
+            "range": (actual_start, actual_end, effective_source_frames),
+            "target": target_frame_count,
+            "treatment": treatment,
+        },
+    )
 
     # Load N+1 frames for flow processing (RAFT needs N frames to produce N-1 flows)
     frames_to_load = target_frame_count + 1
@@ -176,8 +180,6 @@ def load_structure_video_frames_with_range(
             while len(frame_indices) < frames_to_load:
                 remaining = frames_to_load - len(frame_indices)
                 frame_indices.extend(frame_indices[:remaining])
-
-        generation_logger.debug(f"  Clip: Extracted {len(frame_indices)} frame indices")
 
     if not frame_indices:
         raise ValueError(f"No frames could be extracted from range [{actual_start}, {actual_end})")
@@ -241,6 +243,6 @@ def load_structure_video_frames_with_range(
         frame_resized = frame_pil.resize((w, h), resample=Image.Resampling.LANCZOS)
         processed_frames.append(np.array(frame_resized))
 
-    generation_logger.debug(f"[STRUCTURE_VIDEO_RANGE] Loaded {len(processed_frames)} frames at {w}x{h}")
+    generation_logger.debug_anomaly("STRUCTURE_VIDEO_RANGE", f"Loaded {len(processed_frames)} frames at {w}x{h}")
 
     return processed_frames

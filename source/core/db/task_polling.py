@@ -105,9 +105,9 @@ def query_task_status(task_id: str, runtime_config=None) -> tuple[str | None, st
             elif resp.status_code == 404:
                 return None, None
             else:
-                headless_logger.debug(f"[POLL] Edge get-task-output returned {resp.status_code} for {task_id}")
+                headless_logger.debug_anomaly("POLL", f"Edge get-task-output returned {resp.status_code} for {task_id}")
         except (httpx.HTTPError, OSError, ValueError) as e:
-            headless_logger.debug(f"[POLL] Edge get-task-output failed for {task_id}: {e}")
+            headless_logger.debug_anomaly("POLL", f"Edge get-task-output failed for {task_id}: {e}")
 
     # Fallback to direct DB query (only available with service key)
     client = getattr(runtime, "supabase_client", None)

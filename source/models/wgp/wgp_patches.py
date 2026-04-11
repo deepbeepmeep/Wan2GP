@@ -149,7 +149,7 @@ def apply_qwen_model_routing_patch(wgp_module: "types.ModuleType", wan_root: str
                 base = base_model_type
 
             if isinstance(base, str) and "qwen" in base.lower():
-                model_logger.debug("[QWEN_LOAD] Routing to Qwen family loader via monkeypatch")
+                model_logger.debug_anomaly("QWEN_LOAD", "Routing to Qwen family loader via monkeypatch")
                 _qwen_handler = get_qwen_family_handler()
                 pipe_processor, pipe = _qwen_handler.load_model(
                     model_filename=model_filename,
@@ -176,7 +176,7 @@ def apply_qwen_model_routing_patch(wgp_module: "types.ModuleType", wan_root: str
         return True
 
     except (RuntimeError, AttributeError, ImportError) as e:
-        model_logger.debug(f"[QWEN_LOAD] Failed to apply load_wan_model patch: {e}")
+        model_logger.debug_anomaly("QWEN_LOAD", f"Failed to apply load_wan_model patch: {e}")
         return False
 
 
@@ -210,7 +210,7 @@ def apply_qwen_lora_directory_patch(wgp_module: "types.ModuleType", wan_root: st
                     if os.path.isdir(qwen_dir):
                         return qwen_dir
             except (ValueError, TypeError, OSError) as e:
-                model_logger.debug(f"[QWEN_LOAD] Error checking Qwen LoRA directory for model_type={model_type}: {e}")
+                model_logger.debug_anomaly("QWEN_LOAD", f"Error checking Qwen LoRA directory for model_type={model_type}: {e}")
             return _orig_get_lora_dir(model_type)
 
         _patched_get_lora_dir._headless_patch_name = "qwen_lora_directory"
@@ -225,7 +225,7 @@ def apply_qwen_lora_directory_patch(wgp_module: "types.ModuleType", wan_root: st
         return True
 
     except (RuntimeError, AttributeError, ImportError) as e:
-        model_logger.debug(f"[QWEN_LOAD] Failed to apply get_lora_dir patch: {e}")
+        model_logger.debug_anomaly("QWEN_LOAD", f"Failed to apply get_lora_dir patch: {e}")
         return False
 
 
@@ -250,7 +250,7 @@ def apply_lora_multiplier_parser_patch(wgp_module: "types.ModuleType") -> bool:
         return True
 
     except (ImportError, AttributeError) as e:
-        model_logger.debug(f"[QWEN_LOAD] Failed to apply lora parser patch: {e}")
+        model_logger.debug_anomaly("QWEN_LOAD", f"Failed to apply lora parser patch: {e}")
         return False
 
 
@@ -283,7 +283,7 @@ def apply_qwen_inpainting_lora_patch() -> bool:
 
     except (ImportError, AttributeError, AssertionError, RuntimeError) as e:
         # AssertionError/RuntimeError: CUDA init fails on non-GPU machines during import
-        model_logger.debug(f"[QWEN_LOAD] Failed to apply Qwen inpainting LoRA patch: {e}")
+        model_logger.debug_anomaly("QWEN_LOAD", f"Failed to apply Qwen inpainting LoRA patch: {e}")
         return False
 
 
@@ -374,8 +374,11 @@ def apply_lora_key_tolerance_patch(wgp_module: "types.ModuleType") -> bool:
                         continue
 
                 if keys_to_remove:
-                    model_logger.essential(f"[LORA_TOLERANCE] Stripping {len(keys_to_remove)} non-standard/incompatible keys from LoRA: "
-                          f"{keys_to_remove[:5]}{'...' if len(keys_to_remove) > 5 else ''}")
+                    model_logger.debug_anomaly(
+                        "LORA_TOLERANCE",
+                        f"Stripping {len(keys_to_remove)} non-standard/incompatible keys from LoRA: "
+                        f"{keys_to_remove[:5]}{'...' if len(keys_to_remove) > 5 else ''}"
+                    )
                     for k in keys_to_remove:
                         del sd[k]
 
@@ -387,7 +390,7 @@ def apply_lora_key_tolerance_patch(wgp_module: "types.ModuleType") -> bool:
         return True
 
     except (RuntimeError, AttributeError, ImportError) as e:
-        model_logger.debug(f"[LORA_TOLERANCE] Failed to apply LoRA key tolerance patch: {e}")
+        model_logger.debug_anomaly("LORA_TOLERANCE", f"Failed to apply LoRA key tolerance patch: {e}")
         return False
 
 
@@ -439,18 +442,18 @@ def apply_lora_caching_patch() -> bool:
                 and cached == requested
                 and getattr(model, "_loras_adapters", None) is not None
             ):
-                model_logger.essential(
+                model_logger.debug(
                     f"[LORA_CACHE] Skipping LoRA reload — same {len(requested)} LoRAs already loaded"
                 )
                 return
 
             # Different LoRAs or first load — do full cycle
             if cached is not None:
-                model_logger.essential(
+                model_logger.debug(
                     f"[LORA_CACHE] LoRAs changed ({len(cached)} -> {len(requested)}), reloading"
                 )
             else:
-                model_logger.essential(f"[LORA_CACHE] First LoRA load: {len(requested)} LoRAs")
+                model_logger.debug_anomaly("LORA_CACHE", f"First LoRA load: {len(requested)} LoRAs")
 
             # Explicitly unload via original (our global patch is a no-op, and
             # the internal unload inside _original_load also hits our no-op,
@@ -467,7 +470,7 @@ def apply_lora_caching_patch() -> bool:
             """No-op — keeps LoRAs loaded for reuse by next generation."""
             if model is None:
                 return
-            model_logger.debug("[LORA_CACHE] Deferring LoRA unload (cached for reuse)")
+            model_logger.debug_anomaly("LORA_CACHE", "Deferring LoRA unload (cached for reuse)")
 
         _cached_load._headless_patch_name = "lora_caching"
         _cached_load._headless_patch_target_key = target_key
@@ -484,7 +487,7 @@ def apply_lora_caching_patch() -> bool:
         return True
 
     except (ImportError, AttributeError, RuntimeError) as e:
-        model_logger.debug(f"[LORA_CACHE] Failed to apply LoRA caching patch: {e}")
+        model_logger.debug_anomaly("LORA_CACHE", f"Failed to apply LoRA caching patch: {e}")
         return False
 
 
@@ -505,7 +508,7 @@ def apply_headless_app_stub(wgp_module: "types.ModuleType") -> bool:
 
         if not hasattr(wgp_module, "app"):
             wgp_module.app = SimpleNamespace()
-            model_logger.debug("[WGP_PATCHES] Stubbed wgp.app for headless mode (no plugin_manager)")
+            model_logger.debug_anomaly("WGP_PATCHES", "Stubbed wgp.app for headless mode (no plugin_manager)")
         return True
     except Exception as e:
         model_logger.warning(f"[WGP_PATCHES] Failed to stub wgp.app: {e}")
@@ -561,9 +564,9 @@ def apply_all_wgp_patches(
     failed = [k for k, v in results.items() if not v]
 
     if successful:
-        model_logger.debug(f"[WGP_PATCHES] Applied: {', '.join(successful)}")
+        model_logger.debug_anomaly("WGP_PATCHES", f"Applied: {', '.join(successful)}")
     if failed:
-        model_logger.debug(f"[WGP_PATCHES] Failed (non-fatal): {', '.join(failed)}")
+        model_logger.debug_anomaly("WGP_PATCHES", f"Failed (non-fatal): {', '.join(failed)}")
 
     context_target_key = f"wgp_module:{id(wgp_module)}"
     for patch_name, applied in results.items():

@@ -69,9 +69,6 @@ def create_mask_video_from_inactive_indices(
         }
         normalized_fps = max(int(fps), 1)
 
-        headless_logger.debug(f"Task {task_id_for_logging}: Creating mask video - total_frames={total_frames}, "
-               f"inactive_indices={sorted(list(inactive_set))[:10]}{'...' if len(inactive_set) > 10 else ''}", task_id=task_id_for_logging)
-
         # Create mask frames: 0 (black) for inactive, 255 (white) for active
         mask_frames_buf: list[np.ndarray] = [
             np.full((h, w, 3), 0 if idx in inactive_set else 255, dtype=np.uint8)
@@ -94,7 +91,6 @@ def create_mask_video_from_inactive_indices(
                 normalized_fps,
                 resolution_wh,
             )
-        headless_logger.debug(f"Task {task_id_for_logging}: Mask video created successfully at {created_mask_video}", task_id=task_id_for_logging)
         return created_mask_video
 
     except (OSError, ValueError, RuntimeError) as e:

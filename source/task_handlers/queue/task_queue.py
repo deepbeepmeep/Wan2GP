@@ -165,7 +165,7 @@ class HeadlessTaskQueue:
         # We'll initialize it lazily when first needed
         self.orchestrator = None
         self._orchestrator_init_attempted = False
-        logging.getLogger('HeadlessQueue').info(f"HeadlessTaskQueue created (orchestrator will initialize on first use)")
+        logging.getLogger('HeadlessQueue').debug("HeadlessTaskQueue created (orchestrator will initialize on first use)")
         
         # Task management
         self.task_queue = queue.PriorityQueue()
@@ -194,7 +194,7 @@ class HeadlessTaskQueue:
         # Initialize wgp state (reuse existing state management)
         self._init_wgp_integration()
         
-        self.logger.info(f"HeadlessTaskQueue initialized with WanGP at {wan_dir}")
+        self.logger.debug(f"HeadlessTaskQueue initialized with WanGP at {wan_dir}")
 
     def ensure_orchestrator_runtime(self):
         """Run the extracted orchestrator bootstrap flow on this queue host."""
@@ -444,9 +444,9 @@ class HeadlessTaskQueue:
             
             # Log sanitization if filename changed
             if sanitized_filename != original_filename:
-                self.logger.info(f"[PNG_CONVERSION] Task {task.id}: Sanitized filename '{original_filename}' -> '{sanitized_filename}'")
+                self.logger.debug_anomaly("PNG_CONVERSION", f"Task {task.id}: Sanitized filename '{original_filename}' -> '{sanitized_filename}'")
             
-            self.logger.info(f"[PNG_CONVERSION] Task {task.id}: Converting {video_path_obj.name} to {png_path.name}")
+            self.logger.debug_anomaly("PNG_CONVERSION", f"Task {task.id}: Converting {video_path_obj.name} to {png_path.name}")
             
             # Extract the first frame using OpenCV
             cap = cv2.VideoCapture(str(video_path_obj))
@@ -457,12 +457,12 @@ class HeadlessTaskQueue:
                         # Save the frame as PNG
                         success = cv2.imwrite(str(png_path), frame)
                         if success and png_path.exists():
-                            self.logger.info(f"[PNG_CONVERSION] Task {task.id}: Successfully saved PNG to {png_path}")
+                            self.logger.debug_anomaly("PNG_CONVERSION", f"Task {task.id}: Successfully saved PNG to {png_path}")
                             
                             # Clean up the original video file
                             try:
                                 video_path_obj.unlink()
-                                self.logger.info(f"[PNG_CONVERSION] Task {task.id}: Removed original video file")
+                                self.logger.debug_anomaly("PNG_CONVERSION", f"Task {task.id}: Removed original video file")
                             except OSError as e_cleanup:
                                 self.logger.warning(f"[PNG_CONVERSION] Task {task.id}: Could not remove original video: {e_cleanup}")
                             
@@ -511,7 +511,7 @@ class HeadlessTaskQueue:
                         wgp_params[param] = value
                         applied_params[param] = value
                         
-                self.logger.info(f"Applied sampler '{sample_solver}' CFG preset: {applied_params}")
+                self.logger.debug(f"Applied sampler '{sample_solver}' CFG preset: {applied_params}")
             else:
                 self.logger.debug(f"No CFG preset found for sampler '{sample_solver}' in model '{model_key}'")
                 
@@ -531,22 +531,31 @@ def create_sample_task(task_id: str, model: str, prompt: str, **params) -> Gener
 
 def main():
     """Main entry point for the headless service."""
+    from source.core.log.core import _is_env_debug, disable_debug_mode, enable_debug_mode, suppress_library_logging
+    from source.core.log.lifecycle import lifecycle
+
     parser = argparse.ArgumentParser(description="WanGP Headless Task Queue")
     parser.add_argument("--wan-dir", required=True, help="Path to WanGP directory")
     parser.add_argument("--workers", type=int, default=1, help="Number of worker threads")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args()
+    debug_mode = args.debug or _is_env_debug()
 
-    if args.debug:
+    if debug_mode:
         logging.getLogger().setLevel(logging.DEBUG)
+        enable_debug_mode()
+    else:
+        disable_debug_mode()
+        suppress_library_logging()
 
     # Initialize queue
-    task_queue = HeadlessTaskQueue(args.wan_dir, max_workers=args.workers)
+    task_queue = HeadlessTaskQueue(args.wan_dir, max_workers=args.workers, debug_mode=debug_mode)
 
     # Setup signal handlers
     def signal_handler(signum, frame):
         queue_logger.essential("Received shutdown signal, stopping...")
+        lifecycle.run_summary.render_to(queue_logger)
         task_queue.stop()
         sys.exit(0)
 
@@ -563,7 +572,7 @@ def main():
         queue_logger.essential("Press Ctrl+C to stop...")
 
         # Example: Submit some test tasks
-        if args.debug:
+        if debug_mode:
             queue_logger.debug("Submitting test tasks...")
 
             # Test T2V task
@@ -582,7 +591,7 @@ def main():
             time.sleep(1.0)
 
             # Print periodic status
-            if args.debug:
+            if debug_mode:
                 status = task_queue.get_queue_status()
                 queue_logger.debug(f"Queue: {status.pending_tasks} pending, "
                       f"{status.completed_tasks} completed, "
@@ -590,10 +599,12 @@ def main():
 
     except KeyboardInterrupt:
         queue_logger.essential("Shutdown requested by user")
+        lifecycle.run_summary.render_to(queue_logger)
     except Exception as e:
         queue_logger.error(f"Fatal error: {e}")
         raise
     finally:
+        lifecycle.run_summary.render_to(queue_logger)
         task_queue.stop()
 
 

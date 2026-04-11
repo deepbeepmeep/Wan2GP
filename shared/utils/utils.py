@@ -287,6 +287,18 @@ def parse_outpainting_ratio(outpainting_ratio):
     return None if width_ratio <= 0 or height_ratio <= 0 else width_ratio / height_ratio
 
 
+def get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio = ""):
+    if video_guide_outpainting is None:
+        return None
+    video_guide_outpainting = str(video_guide_outpainting).strip()
+    if video_guide_outpainting.startswith("#"):
+        return None
+    if len(video_guide_outpainting) == 0 or video_guide_outpainting == "0 0 0 0":
+        return [0, 0, 0, 0] if len((video_guide_outpainting_ratio or "").strip()) > 0 else None
+    outpainting_dims = video_guide_outpainting.split(" ")
+    return None if len(outpainting_dims) != 4 else [int(v) for v in outpainting_dims]
+
+
 def _split_outpainting_padding(total_padding, before_weight, after_weight):
     total_padding = max(0, int(total_padding))
     if total_padding == 0:

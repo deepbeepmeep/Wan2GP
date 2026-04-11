@@ -477,10 +477,7 @@ def _infer_ic_lora_downscale_factor(loras_selected) -> int | None:
         factors.append(max(1, int(round(1.0 / ref_ratio))))
     if not factors:
         return None
-    unique_factors = sorted(set(factors))
-    if len(unique_factors) > 1:
-        raise ValueError(f"Conflicting IC-LoRA reference downscale factors in selected LoRAs: {unique_factors}")
-    return unique_factors[0]
+    return min(factors)
 
 
 def _collect_video_chunks(
@@ -822,6 +819,8 @@ class LTX2:
             "D": "depth",
             "E": "canny",
         }
+        from shared.utils.utils import get_outpainting_dims
+
         loras = []
         loras_mult = []
         video_prompt_type = video_prompt_type or ""
@@ -847,7 +846,7 @@ class LTX2:
         if model_def.get("ltx2_pipeline", "two_stage") == "distilled":
             if any(letter in video_prompt_type for letter in control_map):
                 _append_preload_lora("union-control", 1.0)
-            if resolved_base_model_type == "ltx2_22B" and (_normalize_outpainting_dims(kwargs.get("outpainting_dims")) is not None or (len(outpainting_ratio) > 0 and not outpainting_setting.startswith("#"))):
+            if resolved_base_model_type == "ltx2_22B" and get_outpainting_dims(outpainting_setting, outpainting_ratio) is not None:
                 _append_preload_lora("outpaint", 1.0)
         if "1" in audio_prompt_type:
             id_signature = "id-lora-celebvhq-ltx2.3" if resolved_base_model_type == "ltx2_22B" else "id-lora-celebvhq-ltx2"

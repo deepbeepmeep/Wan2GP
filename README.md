@@ -33,7 +33,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### 11th of April 2026: WanGP v11.25, Now I Can See
+### 11th of April 2026: WanGP v11.26, Now I Can See
 
 - **LTX-2 Ic Lora Rebooted**: *Ic Loras* behave like *Control Nets* and can do *Video to Video* by applying an effect specific to the Ic Lora for instance *Pose Extraction*, *Upsampling*, *Transfer Camera Movement*, ...  More and More Ic Loras are available nowadays. Until now WanGP Ic Lora implementation was based on the official LTX-2 github implementation (which a 2 phases process where the Ic Lora is only applied during the first low res phase). However I have just discovered that all the Ic Loras around expect in fact the ComfyUI implementation which is one phase only process at full res. 
 
@@ -44,6 +44,8 @@ As a bonus I have tuned *Sliding Windows* for Ic Loras, and if you set *Overlap 
 - **Outpaint Ic Lora**: this new impressive Ic Lora will be loaded automatically if you select the *Control Video for Ic Lora* option and enable *Outpainting*. If you use Sliding Windows with Outpainting you will be able to outpaint a full movie (assuming you have enough RAM).
 
 - **New Outpainting Auto Change Aspect Ratio**: As a reminder WanGP let you define manually where an Outpainting should happen. Alternatively you can now ask WanGP to use outpainting to change the *Width/ Height Aspect ratio* of the Control Video. For instance you can turn any 16/9 video into a 4/3 video by generating new details instead of adding black bars. The *Top/Bottom/Left/Right Sliders* in this new mode will be used to define which area should be expanded in priority to meet the requested aspect ratio.. 
+
+*update 11.26*: fixed outpainting ignored with if Manual Expansion was selected
 
 ### 8th of April 2026: WanGP v11.22, Self Destructing Model
 

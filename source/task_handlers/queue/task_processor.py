@@ -462,15 +462,18 @@ def _execute_generation_with_patches(
         )
         raise RuntimeError(f"Generation timeout after {elapsed:.1f}s")
 
+    _sigalrm_supported = hasattr(signal, "SIGALRM") and hasattr(signal, "alarm")
     try:
-        # Set timeout alarm (will raise SIGALRM)
-        try:
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(GENERATION_TIMEOUT_SECONDS)
-            queue.logger.debug(f"[GENERATION] Task {task.id}: Set {GENERATION_TIMEOUT_SECONDS}s timeout alarm")
-        except (ValueError, OSError) as e:
-            # Signal not available on all platforms (e.g., Windows), silently continue
-            queue.logger.debug(f"[GENERATION] Task {task.id}: Timeout not available on this platform: {e}")
+        # Set timeout alarm (will raise SIGALRM) — POSIX only; Windows has no SIGALRM/signal.alarm
+        if _sigalrm_supported:
+            try:
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(GENERATION_TIMEOUT_SECONDS)
+                queue.logger.debug(f"[GENERATION] Task {task.id}: Set {GENERATION_TIMEOUT_SECONDS}s timeout alarm")
+            except (ValueError, OSError) as e:
+                queue.logger.debug(f"[GENERATION] Task {task.id}: Timeout not available on this platform: {e}")
+        else:
+            queue.logger.debug(f"[GENERATION] Task {task.id}: signal.SIGALRM unavailable (Windows); generation timeout disabled")
 
         # Check if model supports VACE features
         queue.logger.debug(f"[GENERATION] Task {task.id}: Checking if model supports VACE...")
@@ -602,14 +605,15 @@ def _execute_generation_with_patches(
             except (RuntimeError, ImportError, AttributeError, KeyError) as restore_error:
                 queue.logger.warning(f"[SVI2PRO] Failed to restore svi2pro for task {task.id}: {restore_error}")
 
-        # Cancel the generation timeout alarm (if set and still active)
-        queue.logger.debug(f"[GENERATION] Task {task.id}: Canceling timeout alarm")
-        try:
-            signal.alarm(0)
-            queue.logger.debug(f"[GENERATION] Task {task.id}: Timeout alarm canceled")
-        except (ValueError, NameError) as e:
-            # Signal not available or not set, silently continue
-            queue.logger.debug(f"[GENERATION] Task {task.id}: Could not cancel timeout alarm: {e}")
+        # Cancel the generation timeout alarm (if set and still active) — POSIX only
+        if _sigalrm_supported:
+            queue.logger.debug(f"[GENERATION] Task {task.id}: Canceling timeout alarm")
+            try:
+                signal.alarm(0)
+                queue.logger.debug(f"[GENERATION] Task {task.id}: Timeout alarm canceled")
+            except (ValueError, NameError) as e:
+                # Signal not available or not set, silently continue
+                queue.logger.debug(f"[GENERATION] Task {task.id}: Could not cancel timeout alarm: {e}")
 
         queue.logger.debug(f"[GENERATION] Task {task.id}: Finally block cleanup complete")
 

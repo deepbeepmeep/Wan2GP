@@ -171,8 +171,8 @@ def _handle_join_clips_orchestrator_task(
 
             reversed_clip_path = loop_temp_dir / f"{first_clip_name}_reversed.mp4"
             reversed_path = reverse_video(
-                local_first_clip_path,
-                reversed_clip_path)
+                input_video_path=local_first_clip_path,
+                output_video_path=reversed_clip_path)
 
             if not reversed_path or not reversed_path.exists():
                 return False, f"Failed to reverse first clip: {local_first_clip_path}"

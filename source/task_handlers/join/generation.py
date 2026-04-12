@@ -599,7 +599,8 @@ def handle_join_clips_task(
             else:
                 # INSERT mode: Context is at the boundary (last/first frames)
                 # No frames are removed, we're just inserting new frames between clips
-                start_context_frames = start_all_frames[-context_frame_count:]
+                context_start_idx = len(start_all_frames) - context_frame_count
+                start_context_frames = start_all_frames[context_start_idx:]
                 end_context_frames = end_all_frames[:context_frame_count]
 
         except (OSError, ValueError, RuntimeError) as e:

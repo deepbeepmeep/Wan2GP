@@ -3,7 +3,8 @@
 from pathlib import Path
 
 import numpy as np
-import source.media.video.api as video_api
+
+from source.media.video.ffmpeg_ops import create_video_from_frames_list
 
 from source.core.log import headless_logger
 
@@ -27,7 +28,7 @@ def _api_create_mask_video(
         np.full((h, w, 3), 0 if idx in inactive_frame_indices else 255, dtype=np.uint8)
         for idx in range(total_frames)
     ]
-    return video_api.create_video_from_frames_list(frames, Path(output_path), fps, resolution_wh)
+    return create_video_from_frames_list(frames, Path(output_path), fps, resolution_wh)
 
 
 def create_mask_video_from_inactive_indices(

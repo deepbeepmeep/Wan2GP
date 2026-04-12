@@ -9,9 +9,10 @@ import datetime
 import logging
 import os
 import sys
+import threading
 import traceback
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Iterable, Mapping, Optional
 
 from source.core.log.debug_card import DebugCard, format_value
 
@@ -22,6 +23,10 @@ __all__ = [
     "init_from_env",
     "is_debug_enabled",
     "suppress_library_logging",
+    "DEFAULT_NOISE_SUBSTRINGS",
+    "StdoutFilter",
+    "install_stdout_filter",
+    "uninstall_stdout_filter",
     "essential",
     "success",
     "warning",
@@ -49,6 +54,16 @@ _debug_mode = False
 # Global log file handle
 _log_file = None
 _log_file_lock = None
+DEFAULT_NOISE_SUBSTRINGS = frozenset(
+    (
+        "Incorrect version of mmgp",
+        "[UNI3C]",
+        "[GGUF]",
+        "GGUF qtypes:",
+    )
+)
+_stdout_filter_state_lock = threading.Lock()
+_stdout_filter_instance = None
 
 def set_log_file(path: str):
     """Set a file path to mirror all logs to."""
@@ -96,6 +111,113 @@ def suppress_library_logging():
     root_logger.setLevel(logging.WARNING)
     for logger_name in ("diffusers", "transformers", "torch", "PIL", "mmgp", "triton", "httpx"):
         logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+class StdoutFilter:
+    """Filter raw stdout noise while preserving a normal file-like surface.
+
+    Complete newline-terminated lines are buffered until they can be matched against
+    the configured substring set. Partial trailing writes are kept in memory until
+    the next newline; if flush() is called before then, the undecidable trailing
+    text is released unmodified to avoid swallowing prompts or progress fragments.
+    """
+
+    def __init__(self, original, noise_substrings: Iterable[str]):
+        self._original = original
+        self._noise_substrings = frozenset(noise_substrings)
+        self._buffer = ""
+        self._buffer_lock = threading.Lock()
+
+    def _should_drop(self, text: str) -> bool:
+        return any(substring in text for substring in self._noise_substrings)
+
+    def _write_original(self, text: str):
+        try:
+            self._original.write(text)
+        except (OSError, ValueError):
+            pass
+
+    def _drain_buffered_lines_locked(self):
+        while True:
+            newline_index = self._buffer.find("\n")
+            if newline_index == -1:
+                return
+            line = self._buffer[: newline_index + 1]
+            self._buffer = self._buffer[newline_index + 1 :]
+            if not self._should_drop(line):
+                self._write_original(line)
+
+    def write(self, text):
+        if not text:
+            return 0
+        with self._buffer_lock:
+            self._buffer += text
+            self._drain_buffered_lines_locked()
+        return len(text)
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
+    def flush(self):
+        with self._buffer_lock:
+            trailing = self._buffer
+            self._buffer = ""
+        if trailing:
+            self._write_original(trailing)
+        try:
+            self._original.flush()
+        except (OSError, ValueError):
+            pass
+
+    def isatty(self):
+        try:
+            return self._original.isatty()
+        except (OSError, ValueError):
+            return False
+
+    def fileno(self):
+        return self._original.fileno()
+
+    @property
+    def encoding(self):
+        return getattr(self._original, "encoding", None)
+
+    def __getattr__(self, name):
+        # Proxy everything else to the underlying stream
+        return getattr(self._original, name)
+
+
+def install_stdout_filter(noise_substrings: Optional[Iterable[str]] = None) -> StdoutFilter:
+    """Wrap sys.stdout with a substring-based filter.
+
+    Installation is idempotent: if a StdoutFilter is already active, this returns the
+    existing wrapper without replacing or reconfiguring it.
+    """
+    global _stdout_filter_instance
+    with _stdout_filter_state_lock:
+        if isinstance(sys.stdout, StdoutFilter):
+            _stdout_filter_instance = sys.stdout
+            return sys.stdout
+        filter_stream = StdoutFilter(
+            sys.stdout,
+            DEFAULT_NOISE_SUBSTRINGS if noise_substrings is None else noise_substrings,
+        )
+        sys.stdout = filter_stream
+        _stdout_filter_instance = filter_stream
+        return filter_stream
+
+
+def uninstall_stdout_filter():
+    """Restore sys.stdout when the filter is active.
+
+    This is safe to call before installation or multiple times in a row.
+    """
+    global _stdout_filter_instance
+    with _stdout_filter_state_lock:
+        if isinstance(sys.stdout, StdoutFilter):
+            sys.stdout = sys.stdout._original
+        _stdout_filter_instance = None
 
 def disable_debug_mode():
     """Disable debug logging globally."""

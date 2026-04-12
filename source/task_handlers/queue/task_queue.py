@@ -441,6 +441,7 @@ class HeadlessTaskQueue:
             
             # Create PNG path with sanitized filename
             png_path = video_path_obj.parent / f"{sanitized_filename}.png"
+            last_error = "cap-not-opened"
             
             # Log sanitization if filename changed
             if sanitized_filename != original_filename:
@@ -448,33 +449,31 @@ class HeadlessTaskQueue:
             
             self.logger.debug_anomaly("PNG_CONVERSION", f"Task {task.id}: Converting {video_path_obj.name} to {png_path.name}")
             
-            # Extract the first frame using OpenCV
-            cap = cv2.VideoCapture(str(video_path_obj))
-            try:
-                if cap.isOpened():
-                    ret, frame = cap.read()
-                    if ret:
-                        # Save the frame as PNG
-                        success = cv2.imwrite(str(png_path), frame)
-                        if success and png_path.exists():
+            for attempt in range(1, 4):
+                cap = cv2.VideoCapture(str(video_path_obj))
+                try:
+                    if not cap.isOpened():
+                        last_error = "cap-not-opened"
+                    else:
+                        ret, frame = cap.read()
+                        success = cv2.imwrite(str(png_path), frame) if ret else False
+                        if ret and success and png_path.exists():
                             self.logger.debug_anomaly("PNG_CONVERSION", f"Task {task.id}: Successfully saved PNG to {png_path}")
-                            
+
                             # Clean up the original video file
                             try:
                                 video_path_obj.unlink()
                                 self.logger.debug_anomaly("PNG_CONVERSION", f"Task {task.id}: Removed original video file")
                             except OSError as e_cleanup:
                                 self.logger.warning(f"[PNG_CONVERSION] Task {task.id}: Could not remove original video: {e_cleanup}")
-                            
+
                             return str(png_path)
-                        else:
-                            self.logger.error(f"[PNG_CONVERSION] Task {task.id}: Failed to save PNG to {png_path}")
-                    else:
-                        self.logger.error(f"[PNG_CONVERSION] Task {task.id}: Failed to read frame from video")
-                else:
-                    self.logger.error(f"[PNG_CONVERSION] Task {task.id}: Failed to open video file")
-            finally:
-                cap.release()
+                        last_error = "frame-read-or-write"
+                finally:
+                    cap.release()
+                if attempt < 3:
+                    time.sleep(0.25)
+            self.logger.error(f"[PNG_CONVERSION] Task {task.id}: conversion failed after 3 attempts ({last_error})")
                 
         except ImportError:
             self.logger.warning(f"[PNG_CONVERSION] Task {task.id}: OpenCV not available, keeping video format")

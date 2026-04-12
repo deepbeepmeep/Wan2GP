@@ -252,7 +252,7 @@ def main():
     import logging
     from dotenv import load_dotenv
 
-    print("[WORKER] main() entered", flush=True)
+    headless_logger.essential("main() entered")
 
     load_dotenv()
     bootstrap_runtime_environment()
@@ -306,16 +306,16 @@ def main():
             _ctrl_handler_ref = _HANDLER_ROUTINE(_win_ctrl_handler)
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             if not kernel32.SetConsoleCtrlHandler(_ctrl_handler_ref, True):
-                print(f"[WORKER] SetConsoleCtrlHandler failed: {ctypes.get_last_error()}", flush=True)
+                headless_logger.essential(f"SetConsoleCtrlHandler failed: {ctypes.get_last_error()}")
             # Keep a module-level reference to prevent GC collecting the callback
             globals()["_win_ctrl_handler_keepalive"] = _ctrl_handler_ref
         except (OSError, AttributeError, ImportError) as e:
-            print(f"[WORKER] Could not install console control handler: {e}", flush=True)
+            headless_logger.essential(f"Could not install console control handler: {e}")
 
-    print("[WORKER] bootstrap done", flush=True)
+    headless_logger.essential("bootstrap done")
 
     cli_args = parse_args()
-    print(f"[WORKER] args parsed: worker={cli_args.worker}, debug={cli_args.debug}", flush=True)
+    headless_logger.essential(f"args parsed: worker={cli_args.worker}, debug={cli_args.debug}")
 
     # Resolve access token: prefer --reigh-access-token, fall back to --supabase-access-token
     access_token = cli_args.reigh_access_token or cli_args.supabase_access_token
@@ -330,7 +330,13 @@ def main():
     os.environ["WAN2GP_WORKER_MODE"] = "true"
 
     from source.core.log import set_log_file
-    from source.core.log.core import _is_env_debug, disable_debug_mode, enable_debug_mode, suppress_library_logging
+    from source.core.log.core import (
+        _is_env_debug,
+        disable_debug_mode,
+        enable_debug_mode,
+        install_stdout_filter,
+        suppress_library_logging,
+    )
     from source.core.log.lifecycle import lifecycle, run_summary
 
     debug_mode = cli_args.debug or _is_env_debug()
@@ -352,18 +358,19 @@ def main():
     else:
         disable_debug_mode()
         suppress_library_logging()
+        install_stdout_filter()
 
     if cli_args.save_logging:
         set_log_file(cli_args.save_logging)
 
     # Initialize DB runtime
-    print("[WORKER] initializing DB...", flush=True)
+    headless_logger.essential("initializing DB...")
     try:
         _, client_key = _initialize_db_runtime(cli_args, access_token=access_token, debug_mode_enabled=debug_mode)
         os.environ["SUPABASE_URL"] = cli_args.supabase_url
-        print("[WORKER] DB initialized", flush=True)
+        headless_logger.essential("DB initialized")
     except (ValueError, OSError, KeyError) as e:
-        print(f"[WORKER] DB init failed: {e}", flush=True)
+        headless_logger.essential(f"DB init failed: {e}")
         sys.exit(1)
 
     if cli_args.migrate_only:
@@ -425,10 +432,10 @@ def main():
         if cli_args.wgp_preload: wgp_mod.server_config["preload_in_VRAM"] = cli_args.wgp_preload
         if "transformer_types" not in wgp_mod.server_config: wgp_mod.server_config["transformer_types"] = []
 
-        print("[WORKER] WGP imported OK", flush=True)
+        headless_logger.essential("WGP imported OK")
 
     except (ImportError, RuntimeError, AttributeError, KeyError) as e:
-        print(f"[WORKER] WGP import failed: {e}", flush=True)
+        headless_logger.essential(f"WGP import failed: {e}")
         sys.exit(1)
     finally:
         os.chdir(original_cwd)
@@ -449,7 +456,7 @@ def main():
         preload_model = cli_args.preload_model if cli_args.preload_model else None
         task_queue.start(preload_model=preload_model)
     except (RuntimeError, ValueError, OSError) as e:
-        print(f"[WORKER] Queue init failed: {e}", flush=True)
+        headless_logger.essential(f"Queue init failed: {e}")
         sys.exit(1)
 
     # Status display with plant animation
@@ -507,7 +514,7 @@ def main():
                     else:
                         _display.on_task_start()  # clear display
                         headless_logger.essential(
-                            f"[WORKER] Idle for >={cli_args.idle_release_minutes:.1f} min — releasing resources (exit {IDLE_RELEASE_EXIT_CODE})"
+                            f"Idle for >={cli_args.idle_release_minutes:.1f} min — releasing resources (exit {IDLE_RELEASE_EXIT_CODE})"
                         )
                         run_summary.render_to(headless_logger)
                         sys.exit(IDLE_RELEASE_EXIT_CODE)

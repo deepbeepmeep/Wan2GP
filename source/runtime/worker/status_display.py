@@ -67,24 +67,42 @@ _CLEAR = "\033[K"
 class WorkerStatusDisplay:
     """Animated terminal status with a dandelion lifecycle."""
 
-    def __init__(self, gpu_name: str, profile_label: str):
+    def __init__(self, gpu_name: str, profile_label: str, *, quiet_idle: bool = False):
         self._gpu = gpu_name
         self._profile = profile_label
         self._tasks_done = 0
         self._start = time.time()
         self._tick = 0
         self._active = False
+        # When True, the `··· idle ···` transition marker is suppressed. Useful for
+        # non-polling contexts like the preview harness where every task is back-to-back
+        # and the breath separator between tasks already provides visual delineation.
+        self._quiet_idle = quiet_idle
+        # Tracks whether the worker is currently in a run of back-to-back tasks.
+        # Set True on task_done, cleared to False once an idle poll actually happens.
+        # Used so `··· idle ···` only fires on the transition back to idle, not
+        # between consecutive tasks arriving.
+        self._returning_to_idle = False
+        self._tty = os.environ.get("WORKER_STATUS_DISPLAY", "").strip().lower() != "off" and sys.stdout.isatty()
 
     def show_banner(self) -> None:
         """Reserve space for the display."""
+        if not self._tty:
+            return
         print(flush=True)
         print("\n" * _HEIGHT, end="", flush=True)
         self._active = True
 
     def show_idle(self) -> None:
         """Redraw the status block. Called each poll cycle while idle."""
-        if not self._active:
+        if not self._tty or not self._active:
             return
+        # Transition marker: only fires on the first idle poll after tasks stopped
+        # arriving. Not between back-to-back tasks.
+        if self._returning_to_idle:
+            self._returning_to_idle = False
+            print("··· idle ···", flush=True)
+            print("\n" * _HEIGHT, end="", flush=True)
         stage, _delay = _PLANT_STAGES[self._tick % len(_PLANT_STAGES)]
         dot_set = _DOTS_ACTIVE if self._tasks_done > 0 else _DOTS_FREE
         dots = dot_set[self._tick % len(dot_set)]
@@ -113,7 +131,7 @@ class WorkerStatusDisplay:
 
     def on_task_start(self) -> None:
         """Clear the display before task output."""
-        if not self._active:
+        if not self._tty or not self._active:
             return
         sys.stdout.write(_UP)
         for _ in range(_HEIGHT):
@@ -122,10 +140,13 @@ class WorkerStatusDisplay:
         sys.stdout.flush()
 
     def on_task_done(self) -> None:
-        """Increment counter and restart plant from seed."""
+        """Mark a task as complete and redraw the idle display immediately."""
         self._tasks_done += 1
         self._tick = 0
-        if self._active:
+        self._returning_to_idle = False
+        if not self._tty:
+            return
+        if self._active and not self._quiet_idle:
             print("··· idle ···", flush=True)
         print("\n" * _HEIGHT, end="", flush=True)
         self.show_idle()

@@ -60,6 +60,17 @@ def _format_start_summary(summary: Mapping[str, Any] | None) -> str:
     return f"  •  {', '.join(parts)}" if parts else ""
 
 
+def _fmt_summary_row(pairs: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key, value in pairs.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, (list, tuple, set, dict)) and not value:
+            continue
+        parts.append(f"{key}={value}")
+    return "  ".join(parts)
+
+
 class _TaskHandle:
     def __init__(self, task_id: str | None, task_type: str, details: dict[str, Any]):
         self.task_id = task_id
@@ -138,26 +149,30 @@ class RunSummary:
 
         card.row(
             "Overall",
-            {
-                "tasks": len(entries),
-                "successes": overall_successes,
-                "failures": overall_failures,
-                "total_wall_clock_s": round(total_duration, 1),
-                "sparkline": _sparkline(overall_durations),
-            },
+            _fmt_summary_row(
+                {
+                    "tasks": len(entries),
+                    "successes": overall_successes,
+                    "failures": overall_failures,
+                    "total_wall_clock_s": round(total_duration, 1),
+                    "sparkline": _sparkline(overall_durations),
+                }
+            ),
         )
 
         for task_type in sorted(grouped, key=task_type_label):
             stats = grouped[task_type]
             card.row(
                 task_type_label(task_type),
-                {
-                    "count": stats["count"],
-                    "successes": stats["successes"],
-                    "failures": stats["failures"],
-                    "total_duration_s": round(float(stats["total_duration_s"]), 1),
-                    "sparkline": _sparkline(stats["durations"]),
-                },
+                _fmt_summary_row(
+                    {
+                        "count": stats["count"],
+                        "successes": stats["successes"],
+                        "failures": stats["failures"],
+                        "total_duration_s": round(float(stats["total_duration_s"]), 1),
+                        "sparkline": _sparkline(stats["durations"]),
+                    }
+                ),
             )
 
         return card.render()
@@ -181,6 +196,8 @@ class TaskLifecycleEmitter:
             "task_lifecycle_active_anchor",
             default=None,
         )
+        self._active_task_ids: set[str] = set()
+        self._active_lock = threading.Lock()
         self.run_summary = RunSummary()
 
     @contextmanager
@@ -199,6 +216,13 @@ class TaskLifecycleEmitter:
             yield _PassthroughHandle(active)
             return
 
+        if task_id is not None:
+            with self._active_lock:
+                if task_id in self._active_task_ids:
+                    yield _TaskHandle(task_id, task_type, details)
+                    return
+                self._active_task_ids.add(task_id)
+
         handle = _TaskHandle(task_id, task_type, details)
         label = task_type_label(task_type)
         compact_id = friendly_task_id(task_id or "", task_type)
@@ -206,7 +230,6 @@ class TaskLifecycleEmitter:
         started_at = time.perf_counter()
 
         # Nested tasks return above, so the breath separator stays outer-task-only.
-        # Two blank lines create more separation between task runs.
         print("")
         print("")
         essential(
@@ -271,6 +294,9 @@ class TaskLifecycleEmitter:
             )
         finally:
             self._active_anchor.reset(token)
+            if task_id is not None:
+                with self._active_lock:
+                    self._active_task_ids.discard(task_id)
 
     def _emit_debug_card(
         self,

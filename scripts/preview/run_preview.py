@@ -427,54 +427,69 @@ def _summarize_statuses(spoof_db: SpoofDbRuntime) -> dict[str, int]:
 
 
 def run_preview(argv: Iterable[str] | None = None) -> int:
-    from source.core.log.core import _is_env_debug, disable_debug_mode, enable_debug_mode, suppress_library_logging
-
     args = parse_args(argv)
-    debug_mode = args.debug or _is_env_debug()
-    asset_paths = _prepare_environment()
-
-    from source.core.log import headless_logger, set_current_task_context
-    from source.core.params.task_result import TaskOutcome, TaskResult
-    from source.runtime.worker import server as worker_server
-    from source.runtime.worker.server import bootstrap_runtime_environment, process_single_task
-    from source.runtime.worker.status_display import WorkerStatusDisplay
-    from source.task_handlers.worker.fatal_error_handler import FatalWorkerError, is_retryable_error, reset_fatal_error_counter
-    from source.task_handlers.worker import worker_utils
-    from source.core.db.task_claim import ClaimPollOutcome
-
-    fixtures = get_fixtures(args.task_types)
-    spoof_db = SpoofDbRuntime(fixtures)
-    feed = SpoofTaskFeed(spoof_db, idle_polls_between_tasks=args.idle_polls)
-    spoof_queue = SpoofQueue(wan_dir=worker_server.wan2gp_path, db_runtime=spoof_db)
-    patch_log = _install_spoofs(spoof_db=spoof_db, feed=feed, asset_paths=asset_paths)
-
-    bootstrap_runtime_environment()
-    if debug_mode:
-        import logging
-        logging.getLogger().setLevel(logging.DEBUG)
-        enable_debug_mode()
-    else:
-        disable_debug_mode()
-        suppress_library_logging()
-
-    display = WorkerStatusDisplay("Preview GPU (spoofed)", "Preview Profile")
-    display.show_banner()
-    display.show_idle()
-
-    main_output_dir = (WORKER_ROOT / "outputs").resolve()
-    main_output_dir.mkdir(parents=True, exist_ok=True)
-
-    STATUS_COMPLETE = "Complete"
-    STATUS_FAILED = "Failed"
-    STATUS_IN_PROGRESS = "In Progress"
-    orchestrator_types = {"travel_orchestrator", "join_clips_orchestrator", "edit_video_orchestrator"}
-
-    headless_logger.essential(
-        f"[PREVIEW] Starting preview harness with {len(fixtures)} fixture(s): "
-        f"{', '.join(item['task_type'] for item in fixtures)}"
-    )
+    patch_log: dict[str, tuple[object, str, bool, Any]] = {}
+    headless_logger = None
+    set_current_task_context = lambda *_args, **_kwargs: None
+    uninstall_stdout_filter = lambda: None
+    FatalWorkerError = type("_PreviewFatalWorkerErrorPlaceholder", (Exception,), {})
+    debug_mode = False
 
     try:
+        from source.core.log.core import (
+            _is_env_debug,
+            disable_debug_mode,
+            enable_debug_mode,
+            install_stdout_filter,
+            suppress_library_logging,
+            uninstall_stdout_filter,
+        )
+        from source.core.log import headless_logger, set_current_task_context
+
+        debug_mode = args.debug or _is_env_debug()
+        asset_paths = _prepare_environment()
+
+        from source.core.params.task_result import TaskOutcome, TaskResult
+        from source.runtime.worker import server as worker_server
+        from source.runtime.worker.server import bootstrap_runtime_environment, process_single_task
+        from source.runtime.worker.status_display import WorkerStatusDisplay
+        from source.task_handlers.worker.fatal_error_handler import FatalWorkerError, is_retryable_error, reset_fatal_error_counter
+        from source.task_handlers.worker import worker_utils
+        from source.core.db.task_claim import ClaimPollOutcome
+
+        fixtures = get_fixtures(args.task_types)
+        spoof_db = SpoofDbRuntime(fixtures)
+        feed = SpoofTaskFeed(spoof_db, idle_polls_between_tasks=args.idle_polls)
+        spoof_queue = SpoofQueue(wan_dir=worker_server.wan2gp_path, db_runtime=spoof_db)
+        patch_log = _install_spoofs(spoof_db=spoof_db, feed=feed, asset_paths=asset_paths)
+
+        bootstrap_runtime_environment()
+        if debug_mode:
+            import logging
+            logging.getLogger().setLevel(logging.DEBUG)
+            enable_debug_mode()
+        else:
+            disable_debug_mode()
+            suppress_library_logging()
+            install_stdout_filter()
+
+        display = WorkerStatusDisplay("Preview GPU (spoofed)", "Preview Profile", quiet_idle=True)
+        display.show_banner()
+        display.show_idle()
+
+        main_output_dir = (WORKER_ROOT / "outputs").resolve()
+        main_output_dir.mkdir(parents=True, exist_ok=True)
+
+        STATUS_COMPLETE = "Complete"
+        STATUS_FAILED = "Failed"
+        STATUS_IN_PROGRESS = "In Progress"
+        orchestrator_types = {"travel_orchestrator", "join_clips_orchestrator", "edit_video_orchestrator"}
+
+        headless_logger.essential(
+            f"[PREVIEW] Starting preview harness with {len(fixtures)} fixture(s): "
+            f"{', '.join(item['task_type'] for item in fixtures)}"
+        )
+
         while True:
             poll_outcome, task_info = feed.poll(
                 worker_id="preview-worker",
@@ -581,12 +596,39 @@ def run_preview(argv: Iterable[str] | None = None) -> int:
             f"{status}={count}" for status, count in sorted(_summarize_statuses(spoof_db).items())
         ) or "no tasks"
         headless_logger.essential(f"[PREVIEW] Preview harness complete: {summary}")
+
+        # Render the Run Summary harvest card — the dandelion seed-head moment.
+        from source.core.log.lifecycle import run_summary
+        print("", flush=True)
+        run_summary.render_to(headless_logger)
+
         return 0
     except FatalWorkerError as exc:
         headless_logger.critical(f"[PREVIEW] Fatal worker error: {exc}")
         return 1
+    except KeyboardInterrupt:
+        if headless_logger is None:
+            print("[PREVIEW] Interrupted before logger init; rendering run summary...", file=sys.stderr, flush=True)
+            try:
+                from source.core.log import headless_logger as recovered_logger
+                headless_logger = recovered_logger
+            except Exception:
+                return 130
+
+        headless_logger.essential("[PREVIEW] Interrupted; rendering run summary...")
+        try:
+            from source.core.log.lifecycle import run_summary
+            run_summary.render_to(headless_logger)
+        except Exception:
+            pass
+        return 130
     finally:
-        _restore_patches(patch_log)
+        try:
+            uninstall_stdout_filter()
+        except Exception:
+            pass
+        if patch_log:
+            _restore_patches(patch_log)
 
 
 def main(argv: Iterable[str] | None = None) -> int:

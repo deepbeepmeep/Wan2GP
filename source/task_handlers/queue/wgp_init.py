@@ -209,7 +209,7 @@ class WgpInitMixin:
         Called after orchestrator is lazily initialized.
         """
         if self.orchestrator is None:
-            self.logger.warning("Skipping wgp integration - orchestrator not initialized yet")
+            self.logger.debug_anomaly("WGP_INIT", "Skipping wgp integration - orchestrator not initialized yet")
             return
 
         # Core integration: reuse orchestrator's state management

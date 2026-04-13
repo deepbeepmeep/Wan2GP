@@ -2106,6 +2106,8 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                     or orchestrator_payload.get("orchestrator_details", {}).get("parent_generation_id")
                 ),
                 "segment_index": idx,
+                "stitched_start_frame": segment_stitched_offsets[idx] if idx < len(segment_stitched_offsets) else 0,
+                "guidance_start_frame": sum(expanded_segment_frames[:idx]),
                 "is_first_segment": (idx == 0),
                 "is_last_segment": (idx == num_segments - 1),
                 # Standardized fields for completion handler

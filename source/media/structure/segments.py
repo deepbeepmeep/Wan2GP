@@ -307,6 +307,8 @@ def extract_segment_structure_guidance(
     canny_intensity: float = 1.0,
     depth_contrast: float = 1.0,
     download_dir: Optional[Path] = None,
+    segment_start_frame: Optional[int] = None,
+    segment_frame_count: Optional[int] = None,
 ) -> Optional[Path]:
     """
     Extract structure guidance for a single segment from the full structure_videos config.
@@ -327,6 +329,8 @@ def extract_segment_structure_guidance(
         canny_intensity: Canny edge intensity
         depth_contrast: Depth map contrast
         download_dir: Directory for downloading source videos
+        segment_start_frame: Optional precomputed GUIDANCE-timeline start frame
+        segment_frame_count: Optional precomputed segment frame count
 
     Returns:
         Path to the created segment guidance video, or None if no configs apply
@@ -342,9 +346,12 @@ def extract_segment_structure_guidance(
         return None
 
     # Calculate this segment's position in the GUIDANCE timeline (matches UX)
-    seg_start, seg_frames = calculate_segment_guidance_position(
-        segment_index, segment_frames_expanded,
-    )
+    if segment_start_frame is not None and segment_frame_count is not None:
+        seg_start, seg_frames = segment_start_frame, segment_frame_count
+    else:
+        seg_start, seg_frames = calculate_segment_guidance_position(
+            segment_index, segment_frames_expanded,
+        )
     seg_end = seg_start + seg_frames
 
     generation_logger.debug_anomaly("SEGMENT_GUIDANCE", f"Segment {segment_index} covers GUIDANCE frames [{seg_start}, {seg_end})")

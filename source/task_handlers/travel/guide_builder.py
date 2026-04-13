@@ -38,16 +38,18 @@ def _build_local_travel_guidance_video(
 
     from source.media.structure import create_composite_guidance_video, calculate_segment_stitched_position
 
-    segment_frames_expanded = ctx.orchestrator_details.get(
-        "segment_frames_expanded",
-        [ctx.total_frames_for_segment],
-    )
-    frame_overlap_expanded = ctx.orchestrator_details.get("frame_overlap_expanded", [0])
-    segment_start, _segment_frame_count = calculate_segment_stitched_position(
-        ctx.segment_idx,
-        segment_frames_expanded,
-        frame_overlap_expanded,
-    )
+    segment_start = ctx.segment_params.get("stitched_start_frame")
+    if segment_start is None:
+        segment_frames_expanded = ctx.orchestrator_details.get(
+            "segment_frames_expanded",
+            [ctx.total_frames_for_segment],
+        )
+        frame_overlap_expanded = ctx.orchestrator_details.get("frame_overlap_expanded", [0])
+        segment_start, _segment_frame_count = calculate_segment_stitched_position(
+            ctx.segment_idx,
+            segment_frames_expanded,
+            frame_overlap_expanded,
+        )
     segment_end = segment_start + ctx.total_frames_for_segment
 
     local_configs = []
@@ -374,10 +376,18 @@ def create_guide_video(proc: Any) -> Optional[Path]:
                 # Get segment layout from orchestrator payload
                 segment_frames_expanded = ctx.orchestrator_details.get("segment_frames_expanded", [ctx.total_frames_for_segment])
                 frame_overlap_expanded = ctx.orchestrator_details.get("frame_overlap_expanded", [0])
+                guidance_start = ctx.segment_params.get("guidance_start_frame")
 
                 # Generate path for segment's guidance video
                 segment_guidance_filename = f"segment_guidance_{ctx.segment_idx}_{uuid.uuid4().hex[:6]}.mp4"
                 segment_guidance_path = ctx.segment_processing_dir / segment_guidance_filename
+
+                guidance_kwargs = {}
+                if guidance_start is not None:
+                    guidance_kwargs = {
+                        "segment_start_frame": guidance_start,
+                        "segment_frame_count": ctx.total_frames_for_segment,
+                    }
 
                 # Extract this segment's guidance
                 local_guidance_path = extract_segment_structure_guidance(
@@ -391,7 +401,9 @@ def create_guide_video(proc: Any) -> Optional[Path]:
                     motion_strength=structure_video_motion_strength,
                     canny_intensity=structure_canny_intensity,
                     depth_contrast=structure_depth_contrast,
-                    download_dir=ctx.segment_processing_dir)
+                    download_dir=ctx.segment_processing_dir,
+                    **guidance_kwargs,
+                )
 
             if local_guidance_path and Path(local_guidance_path).exists():
                 travel_logger.debug_anomaly("STRUCTURE_VIDEO", f"Created local segment guidance: {local_guidance_path}", task_id=ctx.task_id)

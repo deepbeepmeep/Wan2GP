@@ -479,7 +479,16 @@ def _execute_generation_with_patches(
 
         # Check if model supports VACE features
         model_supports_vace = queue._model_supports_vace(task.model)
-        generation_path = "vace" if model_supports_vace else ("flux" if queue.orchestrator._is_flux() else "t2v")
+        is_flux = queue.orchestrator._is_flux()
+        is_z_image = queue.orchestrator._is_z_image()
+        if model_supports_vace:
+            generation_path = "vace"
+        elif is_flux:
+            generation_path = "flux"
+        elif is_z_image:
+            generation_path = "image"
+        else:
+            generation_path = "t2v"
         if model_supports_vace:
             # CRITICAL: VACE models require a video_guide parameter
             if "video_guide" in generation_params and generation_params["video_guide"]:
@@ -496,7 +505,7 @@ def _execute_generation_with_patches(
                 **generation_params
             )
             gen_call_elapsed = time.time() - gen_call_start
-        elif queue.orchestrator._is_flux():
+        elif is_flux:
             # For Flux, map video_length to num_images
             if "video_length" in generation_params:
                 generation_params["num_images"] = generation_params.pop("video_length")
@@ -509,7 +518,9 @@ def _execute_generation_with_patches(
             )
             gen_call_elapsed = time.time() - gen_call_start
         else:
-            # T2V or other models - pass model_type for proper parameter resolution
+            # T2V, Z Image, or other models - pass model_type for proper parameter resolution
+            # Z Image models are handled as image models by preflight (image_mode=1,
+            # video_length=1) so they generate a single frame directly via generate_t2v.
             # Note: WGP stdout is captured to svi_debug.txt file instead of logger
             # to avoid recursion issues
             gen_call_start = time.time()

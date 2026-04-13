@@ -42,6 +42,7 @@ from source.models.wgp.generation_helpers import (
     is_flux as _is_flux_impl,
     is_t2v as _is_t2v_impl,
     is_qwen as _is_qwen_impl,
+    is_z_image as _is_z_image_impl,
 )
 
 # ---------------------------------------------------------------------------
@@ -485,6 +486,10 @@ class WanOrchestrator:
             return resolver.is_current_model_qwen()
         return _is_qwen_impl(self)
 
+    def _is_z_image(self) -> bool:
+        """Check if current model is a Z Image model (image-only). Delegates to source.models.wgp.generation_helpers."""
+        return _is_z_image_impl(self)
+
     def _get_or_load_uni3c_controlnet(self):
         """Get cached Uni3C controlnet. Delegates to source.models.wgp.model_ops."""
         runtime = getattr(self, "model_runtime", None)
@@ -642,6 +647,7 @@ class WanOrchestrator:
         is_vace = self._is_vace()
         is_flux = self._is_flux()
         is_qwen = self._is_qwen()
+        is_z_image = self._is_z_image()
         is_t2v = self._is_t2v()
 
         generation_logger.debug_block(
@@ -652,6 +658,7 @@ class WanOrchestrator:
                 "is_vace": is_vace,
                 "is_flux": is_flux,
                 "is_qwen": is_qwen,
+                "is_z_image": is_z_image,
                 "is_t2v": is_t2v,
                 "resolution": resolution,
                 "video_length": video_length,
@@ -687,7 +694,7 @@ class WanOrchestrator:
 
         # Configure model-specific parameters (delegated to preflight module)
         model_params = configure_model_specific_params(
-            is_flux=is_flux, is_qwen=is_qwen, is_vace=is_vace,
+            is_flux=is_flux, is_qwen=is_qwen, is_z_image=is_z_image, is_vace=is_vace,
             resolved_params=resolved_params,
             final_video_length=final_video_length,
             final_batch_size=final_batch_size,

@@ -80,6 +80,7 @@ def configure_model_specific_params(
     *,
     is_flux: bool,
     is_qwen: bool,
+    is_z_image: bool = False,
     is_vace: bool,
     resolved_params: dict,
     final_video_length: int,
@@ -105,6 +106,14 @@ def configure_model_specific_params(
         actual_batch_size = final_video_length
         actual_guidance = final_embedded_guidance
     elif is_qwen:
+        image_mode = 1
+        actual_video_length = 1
+        actual_batch_size = resolved_params.get("batch_size", 1)
+        actual_guidance = final_guidance_scale
+    elif is_z_image:
+        # Z Image models are image-only (image_outputs: True in handler).
+        # They produce single images, not videos — set image_mode=1 and
+        # do NOT boost video_length to the video minimum frame count.
         image_mode = 1
         actual_video_length = 1
         actual_batch_size = resolved_params.get("batch_size", 1)

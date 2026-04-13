@@ -32,7 +32,7 @@ def generate_t2v(self, prompt: str, model_type: str = None, **kwargs) -> str:
     Returns:
         Path to generated video file.
     """
-    if not self._is_t2v():
+    if not self._is_t2v() and not self._is_z_image():
         generation_logger.warning(f"Current model {self.current_model} may not be optimized for T2V")
     return self.generate(prompt=prompt, model_type=model_type, **kwargs)
 

@@ -460,6 +460,11 @@ class HeadlessTaskQueue:
                         if ret and success and png_path.exists():
                             self.logger.debug_anomaly("PNG_CONVERSION", f"Task {task.id}: Successfully saved PNG to {png_path}")
 
+                            # Release the video handle BEFORE deleting the file.
+                            # On Windows, unlink() fails with WinError 32 if cv2
+                            # still holds the file open.
+                            cap.release()
+
                             # Clean up the original video file
                             try:
                                 video_path_obj.unlink()

@@ -31,7 +31,8 @@ def notify_worker_model_switch(old_model: Optional[str], new_model: str):
     if not worker_id:
         return
 
-    # Prefer service role; fall back to older env var name or PAT.
+    # Prefer service role key; fall back to older env var name or PAT.
+    # The edge function accepts both service role keys and PAT tokens.
     from source.core.db import config as _db_config
     supabase_key = (
         os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -248,3 +249,9 @@ def is_qwen(orchestrator) -> bool:
         model_logger.debug("Failed to check model family for qwen detection: %s", e)
     base_type = (orchestrator._get_base_model_type(orchestrator.current_model) or "").lower()
     return base_type.startswith("qwen")
+
+
+def is_z_image(orchestrator) -> bool:
+    """Check if current model is a Z Image model (image-only architecture)."""
+    base_type = (orchestrator._get_base_model_type(orchestrator.current_model) or "").lower()
+    return base_type.startswith("z_image")

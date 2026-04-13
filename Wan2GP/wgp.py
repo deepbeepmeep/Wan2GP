@@ -3279,7 +3279,7 @@ def download_file(url,filename):
         url_parts = url.split("/resolve/main/")
         repoId = url_parts[0]
         onefile = os.path.basename(url_parts[-1])
-        sourceFolder = os.path.dirname(url_parts[-1])
+        sourceFolder = os.path.dirname(url_parts[-1]).replace('\\', '/')
         if len(sourceFolder) == 0:
             hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = fl.get_download_location() if len(base_dir)==0 else base_dir)
         else:

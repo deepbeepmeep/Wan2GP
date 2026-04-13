@@ -86,7 +86,7 @@ def _initialize_db_runtime(cli_args, *, access_token: str | None, debug_mode_ena
         # With access-token auth, missing service key is non-fatal (old behavior: warn only)
         fatal_errors = [e for e in validation_errors if "SERVICE_KEY" not in e]
         for err in validation_errors:
-            if "SERVICE_KEY" in err:
+            if "SERVICE_KEY" in err and not access_token:
                 headless_logger.warning(f"[CONFIG] {err} (non-fatal with access token auth)")
         if fatal_errors:
             raise ValueError("; ".join(fatal_errors))
@@ -257,6 +257,105 @@ def main():
     load_dotenv()
     bootstrap_runtime_environment()
 
+    # -----------------------------------------------------------------------
+    # Subprocess tracker — records every subprocess we spawn so we can
+    # report them at shutdown time for forensic analysis of phantom CTRL_C.
+    # -----------------------------------------------------------------------
+    import threading as _threading_mod
+    _subprocess_registry_lock = _threading_mod.Lock()
+    _subprocess_registry: list[dict] = []  # {pid, cmd, started, ended, returncode}
+
+    def _register_subprocess(pid: int, cmd: str):
+        with _subprocess_registry_lock:
+            _subprocess_registry.append({
+                "pid": pid, "cmd": cmd,
+                "started": time.time(), "ended": None, "returncode": None,
+            })
+
+    def _deregister_subprocess(pid: int, returncode: int | None):
+        with _subprocess_registry_lock:
+            for entry in _subprocess_registry:
+                if entry["pid"] == pid and entry["ended"] is None:
+                    entry["ended"] = time.time()
+                    entry["returncode"] = returncode
+                    break
+
+    def _dump_subprocess_registry():
+        """Log all tracked subprocesses — active and recently exited."""
+        with _subprocess_registry_lock:
+            if not _subprocess_registry:
+                headless_logger.essential("[SHUTDOWN-DIAG] No tracked subprocesses")
+                return
+            now = time.time()
+            for entry in _subprocess_registry:
+                status = "ACTIVE" if entry["ended"] is None else f"exited rc={entry['returncode']}"
+                age = now - entry["started"]
+                ended_ago = f", ended {now - entry['ended']:.1f}s ago" if entry["ended"] else ""
+                headless_logger.essential(
+                    f"[SHUTDOWN-DIAG] subprocess pid={entry['pid']} "
+                    f"status={status} age={age:.1f}s{ended_ago} cmd={entry['cmd'][:120]}"
+                )
+
+    # Expose the registry globally so subprocess_utils can use it
+    globals()["_register_subprocess"] = _register_subprocess
+    globals()["_deregister_subprocess"] = _deregister_subprocess
+
+    def _dump_all_thread_stacks():
+        """Log stack traces for ALL threads, not just the main thread."""
+        import traceback as _tb
+        headless_logger.essential("[SHUTDOWN-DIAG] --- All thread stacks ---")
+        for thread_id, frame in sys._current_frames().items():
+            # Try to find the thread name
+            thread_name = "unknown"
+            for t in _threading_mod.enumerate():
+                if t.ident == thread_id:
+                    thread_name = t.name
+                    break
+            headless_logger.essential(f"[SHUTDOWN-DIAG] Thread {thread_id} ({thread_name}):")
+            for line in _tb.format_stack(frame):
+                for stack_line in line.rstrip().splitlines():
+                    headless_logger.essential(f"  {stack_line}")
+
+    def _dump_child_processes():
+        """Use psutil (if available) to enumerate actual child processes."""
+        try:
+            import psutil
+            current = psutil.Process()
+            children = current.children(recursive=True)
+            if not children:
+                headless_logger.essential("[SHUTDOWN-DIAG] No child processes (psutil)")
+                return
+            for child in children:
+                try:
+                    headless_logger.essential(
+                        f"[SHUTDOWN-DIAG] child pid={child.pid} name={child.name()} "
+                        f"status={child.status()} cmdline={' '.join(child.cmdline()[:5])}"
+                    )
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    headless_logger.essential(f"[SHUTDOWN-DIAG] child pid={child.pid} (gone/access denied)")
+        except ImportError:
+            headless_logger.essential("[SHUTDOWN-DIAG] psutil not available — cannot enumerate children")
+        except Exception as e:
+            headless_logger.essential(f"[SHUTDOWN-DIAG] child process enumeration failed: {e}")
+
+    def _full_shutdown_diagnostics(source_label: str):
+        """Dump comprehensive diagnostics at shutdown time."""
+        headless_logger.essential(f"[SHUTDOWN-DIAG] === Diagnostics triggered by: {source_label} ===")
+        headless_logger.essential(f"[SHUTDOWN-DIAG] PID={os.getpid()} PPID={os.getppid()}")
+        headless_logger.essential(f"[SHUTDOWN-DIAG] Active threads: {_threading_mod.active_count()}")
+        try:
+            _dump_all_thread_stacks()
+        except Exception as e:
+            headless_logger.essential(f"[SHUTDOWN-DIAG] thread stack dump failed: {e}")
+        try:
+            _dump_subprocess_registry()
+        except Exception as e:
+            headless_logger.essential(f"[SHUTDOWN-DIAG] subprocess registry dump failed: {e}")
+        try:
+            _dump_child_processes()
+        except Exception as e:
+            headless_logger.essential(f"[SHUTDOWN-DIAG] child process dump failed: {e}")
+
     def _request_shutdown(signum, frame):
         # Log who raised us and the stack at the moment of the signal so that
         # unexpected shutdowns (e.g. someone else sending SIGINT/SIGTERM to this
@@ -270,6 +369,7 @@ def main():
         for line in _tb.format_stack(frame):
             for stack_line in line.rstrip().splitlines():
                 headless_logger.essential(f"  {stack_line}")
+        _full_shutdown_diagnostics(f"signal {sig_name}")
         raise KeyboardInterrupt
 
     # Steady-state SIGTERM/SIGINT map to the existing KeyboardInterrupt cleanup path.
@@ -283,6 +383,14 @@ def main():
     # Install a console-control handler so we can log the specific event that
     # caused the shutdown — next time "it just crashed" happens we will know
     # whether it was Ctrl+C, the window closing, the user logging off, etc.
+    #
+    # IMPORTANT: On Windows, CTRL_C_EVENT (code 0) can be triggered NOT only by
+    # a user pressing Ctrl+C, but also by:
+    #   1. GenerateConsoleCtrlEvent() called by any process in the console group
+    #   2. A subprocess that crashes while sharing our console group
+    #   3. Fortran/MKL runtimes (via numpy/scipy) installing their own handlers
+    # The enhanced handler below logs thread stacks + child processes so we can
+    # identify the true source.
     if os.name == "nt":
         try:
             import ctypes
@@ -298,7 +406,14 @@ def main():
 
             def _win_ctrl_handler(event):
                 name = _CTRL_EVENT_NAMES.get(event, f"UNKNOWN_EVENT_{event}")
-                headless_logger.essential(f"[SHUTDOWN] Windows console control event: {name}")
+                headless_logger.essential(f"[SHUTDOWN] Windows console control event: {name} (code={event})")
+                # Dump full diagnostics — this is the key forensic data.
+                # The console handler runs on a dedicated OS thread, so we can
+                # see what every Python thread was doing at the moment of the event.
+                try:
+                    _full_shutdown_diagnostics(f"console ctrl event {name}")
+                except Exception as diag_err:
+                    headless_logger.essential(f"[SHUTDOWN] diagnostics failed in ctrl handler: {diag_err}")
                 # Return False so the default handler runs (which raises KI for
                 # CTRL_C_EVENT and terminates the process for CTRL_CLOSE_EVENT etc.)
                 return False
@@ -309,6 +424,22 @@ def main():
                 headless_logger.essential(f"SetConsoleCtrlHandler failed: {ctypes.get_last_error()}")
             # Keep a module-level reference to prevent GC collecting the callback
             globals()["_win_ctrl_handler_keepalive"] = _ctrl_handler_ref
+
+            # Log the console process group ID — helpful for understanding which
+            # processes share our console and could send us CTRL_C_EVENT.
+            try:
+                _GetConsoleProcessList = kernel32.GetConsoleProcessList
+                _GetConsoleProcessList.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]
+                _GetConsoleProcessList.restype = wintypes.DWORD
+                _pids_buf = (wintypes.DWORD * 64)()
+                _n = _GetConsoleProcessList(_pids_buf, 64)
+                _console_pids = [_pids_buf[i] for i in range(_n)]
+                headless_logger.essential(
+                    f"[STARTUP] Console group PIDs (count={_n}): {_console_pids}; our PID={os.getpid()}"
+                )
+            except Exception as e:
+                headless_logger.essential(f"[STARTUP] Could not enumerate console group: {e}")
+
         except (OSError, AttributeError, ImportError) as e:
             headless_logger.essential(f"Could not install console control handler: {e}")
 
@@ -405,6 +536,10 @@ def main():
             _global_log_buffer = LogBuffer(max_size=100, shared_queue=log_queue)
             _log_interceptor_instance = CustomLogInterceptor(_global_log_buffer)
             set_log_interceptor(_log_interceptor_instance)
+
+    # Show a loading message so users see feedback during the long model-load phase
+    from source.runtime.worker.status_display import show_loading_message
+    show_loading_message()
 
     # Apply WGP overrides
     original_cwd = os.getcwd()

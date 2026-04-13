@@ -64,6 +64,42 @@ _UP = f"\033[{_HEIGHT}A"
 _CLEAR = "\033[K"
 
 
+_LOADING_ART = [
+    "       ",
+    "       ",
+    "       ",
+    "       ",
+    "       ",
+    "       ",
+    "       ",
+    "       ",
+    "       ",
+    "       ",
+    "   .   ",
+    "  ▔▔▔  ",
+]
+
+def show_loading_message() -> None:
+    """Print a static loading banner before models are loaded.
+
+    This gives users immediate visual feedback that the worker is starting,
+    rather than staring at a blank console during the long model-load phase.
+    Safe to call before GPU/profile info is available.
+    """
+    if os.environ.get("WORKER_STATUS_DISPLAY", "").strip().lower() == "off":
+        return
+    if not sys.stdout.isatty():
+        return
+    print(flush=True)
+    for row in range(_ROWS):
+        plant = _LOADING_ART[row]
+        info = "Loading models..." if row == 6 else ""
+        sys.stdout.write(f"  {info:<43s}{plant}\n")
+    # 3 blank lines to match _HEIGHT
+    sys.stdout.write("\n\n\n")
+    sys.stdout.flush()
+
+
 class WorkerStatusDisplay:
     """Animated terminal status with a dandelion lifecycle."""
 
@@ -86,9 +122,15 @@ class WorkerStatusDisplay:
         self._tty = os.environ.get("WORKER_STATUS_DISPLAY", "").strip().lower() != "off" and sys.stdout.isatty()
 
     def show_banner(self) -> None:
-        """Reserve space for the display."""
+        """Clear any pre-load message and reserve space for the idle display."""
         if not self._tty:
             return
+        # Overwrite the static loading banner left by show_loading_message()
+        sys.stdout.write(_UP)
+        for _ in range(_HEIGHT):
+            sys.stdout.write(f"{_CLEAR}\n")
+        sys.stdout.write(_UP)
+        # Now reserve fresh space for the animated display
         print(flush=True)
         print("\n" * _HEIGHT, end="", flush=True)
         self._active = True

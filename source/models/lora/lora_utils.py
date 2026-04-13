@@ -95,7 +95,7 @@ def _download_lora_from_url(url: str, task_id: str, model_type: str = None) -> s
             # Decode URL-encoded path components (e.g., Chinese characters)
             rel_path = unquote(rel_path_encoded)
             filename = Path(rel_path).name
-            subfolder = str(Path(rel_path).parent) if Path(rel_path).parent != Path(".") else ""
+            subfolder = Path(rel_path).parent.as_posix() if Path(rel_path).parent != Path(".") else ""
 
             # Ensure LoRA directory exists
             lora_dir.mkdir(parents=True, exist_ok=True)

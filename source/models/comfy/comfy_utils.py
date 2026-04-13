@@ -42,12 +42,18 @@ class ComfyUIManager:
 
         headless_logger.debug(f"Starting ComfyUI server at {self.comfy_path}")
 
+        # On Windows, use CREATE_NEW_PROCESS_GROUP to isolate the child from
+        # our console Ctrl-C group; on POSIX, use setsid for the same purpose.
+        if os.name == "nt":
+            _extra = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+        else:
+            _extra = {"preexec_fn": os.setsid}
         self.process = subprocess.Popen(
             ["python", "main.py", "--listen", "0.0.0.0", "--port", str(self.port)],
             cwd=self.comfy_path,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            preexec_fn=os.setsid
+            **_extra,
         )
 
         headless_logger.debug(f"ComfyUI started with PID: {self.process.pid}")

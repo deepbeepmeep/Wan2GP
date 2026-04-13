@@ -1,5 +1,6 @@
 """FFmpeg-based video operations: creation, FPS conversion, frame extraction to video."""
 from dataclasses import dataclass
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -9,6 +10,13 @@ import numpy as np
 
 from source.core.log import generation_logger
 from source.utils.subprocess_utils import run_subprocess
+
+# On Windows, child processes must NOT share our console Ctrl-C group.
+# CREATE_NEW_PROCESS_GROUP prevents phantom CTRL_C_EVENT propagation.
+_SUBPROCESS_FLAGS = (
+    {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    if os.name == "nt" else {}
+)
 from source.media.video.video_info import (
     get_video_frame_count_and_fps,
     get_video_frame_count_ffprobe,
@@ -332,7 +340,8 @@ def create_video_from_frames_list(
             ffmpeg_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
+            **_SUBPROCESS_FLAGS,
         )
     except FileNotFoundError as e:
         raise OSError("FFmpeg not found - is it installed?") from e

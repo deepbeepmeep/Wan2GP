@@ -1,4 +1,5 @@
 """Video transforms: brightness, reverse, aspect ratio, audio, overlay."""
+import os
 import subprocess
 from pathlib import Path
 

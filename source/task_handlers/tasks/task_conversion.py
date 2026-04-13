@@ -236,7 +236,11 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
         generation_params["image_start"] = local_image_path
 
         # Set img2img parameters
-        generation_params.setdefault("video_prompt_type", "")  # Image input handled via image_start
+        # "GV" is required so WGP preserves denoising_strength (G) and doesn't reset it to 1.0
+        # "V" requires image_guide to pass validation — the control_image path in the z_image
+        # pipeline is guarded by has_control so it won't interfere with the base model
+        generation_params.setdefault("video_prompt_type", "GV")
+        generation_params["image_guide"] = local_image_path  # Satisfies WGP's "V" validation
         generation_params.setdefault("video_length", 1)  # Single image output
         generation_params.setdefault("guidance_scale", 0)  # Z-Image uses guidance_scale=0
         generation_params.setdefault("num_inference_steps", int(db_task_params.get("num_inference_steps", 12)))

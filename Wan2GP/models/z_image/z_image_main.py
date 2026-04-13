@@ -189,8 +189,14 @@ class model_factory:
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
         loras_slists=None,
+        denoising_strength: float = 1.0,
         **kwargs,
     ):
+        # Map image_start (from WGP) to input_frames for img2img
+        image_start = kwargs.get('image_start')
+        if input_frames is None and image_start is not None:
+            input_frames = image_start
+
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
         if seed is None or seed < 0:
             generator.seed()
@@ -217,6 +223,9 @@ class model_factory:
         if self.model_def.get("guidance_max_phases", 0) < 1:
             guide_scale = 0
 
+        # Route input_frames: img2img (init_image) vs control depending on strength
+        use_as_init_image = denoising_strength < 1.0 and input_frames is not None
+
         images = self.pipeline(
             prompt=input_prompt,
             negative_prompt=n_prompt,
@@ -235,7 +244,7 @@ class model_factory:
             cfg_truncation=cfg_truncation,
             callback=callback,
             pipeline=self.pipeline,
-            control_image=input_frames,
+            control_image=None if use_as_init_image else input_frames,
             inpaint_mask=input_masks,
             control_context_scale=None if context_scale is None else context_scale[0],
             input_ref_images= input_ref_images,
@@ -243,6 +252,8 @@ class model_factory:
             NAG_tau=NAG_tau,
             NAG_alpha=NAG_alpha,
             loras_slists=loras_slists,
+            init_image=input_frames if use_as_init_image else None,
+            denoising_strength=denoising_strength,
         )
 
         if images is None:

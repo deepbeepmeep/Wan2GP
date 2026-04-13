@@ -409,6 +409,8 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         NAG_tau: float = 3.5,
         NAG_alpha: float = 0.5,
         loras_slists = None,
+        init_image: Optional[torch.Tensor] = None,
+        denoising_strength: float = 1.0,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -590,6 +592,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
         )
         image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
 
+        first_step = 0  # Nonzero when img2img skips early steps
         use_unified = _is_unified_solver(sample_solver)
         if not use_unified:
             # 5. Prepare timesteps
@@ -611,6 +614,50 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             )
             num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
             self._num_timesteps = len(timesteps)
+
+            # ================================================================
+            # IMG2IMG: Encode init image and add noise for denoising
+            # Following diffusers FluxImg2ImgPipeline approach exactly
+            # ================================================================
+            if init_image is not None and denoising_strength < 1.0:
+                # Encode init image to latents
+                init_image_tensor = init_image.to(device=device, dtype=self.vae.dtype)
+
+                # Handle different input formats
+                if init_image_tensor.dim() == 4 and init_image_tensor.shape[1] == 1:
+                    # Video format [C, F=1, H, W] -> [1, C, H, W]
+                    init_image_tensor = init_image_tensor.squeeze(1).unsqueeze(0)
+                elif init_image_tensor.dim() == 3:
+                    # [C, H, W] -> [1, C, H, W]
+                    init_image_tensor = init_image_tensor.unsqueeze(0)
+
+                init_image_latents = self.vae.encode(init_image_tensor).latent_dist.mode()
+                init_image_latents = (init_image_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+                img2img_batch = init_image_latents.shape[0]
+
+                # Step 1: get_timesteps — truncate schedule based on strength
+                total_steps = len(timesteps)
+                init_timestep = min(total_steps * denoising_strength, total_steps)
+                t_start = int(max(total_steps - init_timestep, 0))
+
+                timesteps = timesteps[t_start * self.scheduler.order:]
+                if hasattr(self.scheduler, "set_begin_index"):
+                    self.scheduler.set_begin_index(t_start * self.scheduler.order)
+
+                num_steps_to_run = len(timesteps)
+                first_step = t_start
+
+                # Step 2: noise the init latents using scheduler.scale_noise
+                latent_timestep = timesteps[:1].repeat(img2img_batch)
+                noise = randn_tensor(
+                    init_image_latents.shape,
+                    generator=generator,
+                    device=init_image_latents.device,
+                    dtype=init_image_latents.dtype
+                )
+                latents = self.scheduler.scale_noise(init_image_latents, latent_timestep, noise)
+
+                print(f"[IMG2IMG] strength={denoising_strength}, running {num_steps_to_run}/{total_steps} steps (from step {t_start})")
 
         # Encode control image if provided and transformer supports it
         control_latent = control_image_tensor = None
@@ -886,7 +933,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
 
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 for i, t in enumerate(timesteps):
-                    offload.set_step_no_for_lora(self.transformer, i)
+                    offload.set_step_no_for_lora(self.transformer, first_step + i)
                     if self.interrupt:
                         break
 

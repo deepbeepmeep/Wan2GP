@@ -1,6 +1,7 @@
 """Travel orchestrator task handler - creates and manages segment tasks."""
 
 from dataclasses import replace
+import os
 from pathlib import Path
 import uuid
 from datetime import datetime
@@ -30,6 +31,14 @@ from .debug_utils import flush_ram_snapshots, log_ram_usage
 # Default seed used when no seed_base is provided in the orchestrator payload
 DEFAULT_SEED_BASE = 12345
 IC_LORA_UNION_CONTROL_FILENAME = "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors"
+IC_LORA_CAMERAMAN_FILENAME = "LTX2.3-22B_IC-LoRA-Cameraman_v1_10500.safetensors"
+IC_LORA_CAMERAMAN_URL = "https://huggingface.co/Cseti/LTX2.3-22B_IC-LoRA-Cameraman_v1/resolve/main/LTX2.3-22B_IC-LoRA-Cameraman_v1_10500.safetensors"
+
+# Mode → IC LoRA (filename, optional URL for on-demand download).
+# Modes not listed here fall back to the union control LoRA (preloaded, no URL needed).
+_IC_LORA_BY_MODE: dict[str, tuple[str, str | None]] = {
+    "cameraman": (IC_LORA_CAMERAMAN_FILENAME, IC_LORA_CAMERAMAN_URL),
+}
 HYBRID_SEGMENT_ANCHOR_SOFT_LIMIT = 4
 HYBRID_SEGMENT_ANCHOR_HARD_LIMIT = 8
 get_orchestrator_child_tasks = db_ops.get_orchestrator_child_tasks
@@ -381,8 +390,8 @@ def _build_minimal_orchestrator_details(
     }
 
 
-def _ensure_ic_lora_in_lora_dir() -> None:
-    """Ensure the IC-LoRA union control file is in WGP's lora directory.
+def _ensure_ic_lora_in_lora_dir(filename: str = IC_LORA_UNION_CONTROL_FILENAME) -> None:
+    """Ensure an IC-LoRA file is in WGP's lora directory.
 
     WGP downloads models to ckpts/ but validates LoRAs in loras/ltx2/.
     If the file exists in ckpts/ but not in the lora dir, create a symlink.
@@ -390,9 +399,9 @@ def _ensure_ic_lora_in_lora_dir() -> None:
     from source.core.runtime_paths import get_repo_root
 
     repo_root = get_repo_root()
-    ckpts_path = repo_root / "Wan2GP" / "ckpts" / IC_LORA_UNION_CONTROL_FILENAME
+    ckpts_path = repo_root / "Wan2GP" / "ckpts" / filename
     lora_dir = repo_root / "Wan2GP" / "loras" / "ltx2"
-    lora_path = lora_dir / IC_LORA_UNION_CONTROL_FILENAME
+    lora_path = lora_dir / filename
 
     if lora_path.exists():
         return
@@ -415,12 +424,19 @@ def _auto_inject_travel_guidance_lora(
     segment_loras: Optional[list[dict[str, Any]]],
     travel_guidance_config: Optional[TravelGuidanceConfig],
 ) -> Optional[list[dict[str, Any]]]:
-    """Add the union IC-LoRA for LTX control modes that require it."""
+    """Add the appropriate IC-LoRA for LTX control modes that require it."""
     if not travel_guidance_config or not travel_guidance_config.needs_ic_lora():
         return segment_loras
 
-    # Ensure the IC-LoRA file is where WGP expects it
-    _ensure_ic_lora_in_lora_dir()
+    # Pick mode-specific IC LoRA or fall back to union control (preloaded, no URL)
+    mode_entry = _IC_LORA_BY_MODE.get(travel_guidance_config.mode)
+    if mode_entry is not None:
+        ic_lora_filename, ic_lora_url = mode_entry
+    else:
+        ic_lora_filename, ic_lora_url = IC_LORA_UNION_CONTROL_FILENAME, None
+
+    # Ensure the IC-LoRA file is where WGP expects it (symlink ckpts/ → loras/)
+    _ensure_ic_lora_in_lora_dir(ic_lora_filename)
 
     lora_strength = (
         travel_guidance_config.control_strength
@@ -428,18 +444,23 @@ def _auto_inject_travel_guidance_lora(
         else travel_guidance_config.strength
     )
 
+    # Use URL as path when available so the download pipeline can fetch on demand;
+    # otherwise use the bare filename (relies on preload).
+    lora_path = ic_lora_url or ic_lora_filename
+
     merged_loras = [dict(entry) for entry in (segment_loras or [])]
     for existing in merged_loras:
-        if existing.get("path") == IC_LORA_UNION_CONTROL_FILENAME:
+        existing_base = os.path.basename(existing.get("path", ""))
+        if existing_base == ic_lora_filename:
             existing["strength"] = lora_strength
-            existing.setdefault("name", "ic-lora-union-control (auto-injected)")
+            existing.setdefault("name", f"ic-lora-{travel_guidance_config.mode} (auto-injected)")
             return merged_loras
 
     merged_loras.append(
         {
-            "path": IC_LORA_UNION_CONTROL_FILENAME,
+            "path": lora_path,
             "strength": lora_strength,
-            "name": "ic-lora-union-control (auto-injected)",
+            "name": f"ic-lora-{travel_guidance_config.mode} (auto-injected)",
         }
     )
     return merged_loras

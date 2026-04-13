@@ -17,7 +17,7 @@ _TRAVEL_GUIDANCE_LEGACY_KEYS = (
     "structure_videos",
     "use_uni3c",
 )
-_LTX_CONTROL_MODES = {"pose", "depth", "canny", "video"}
+_LTX_CONTROL_MODES = {"pose", "depth", "canny", "video", "cameraman"}
 
 
 def _has_payload_value(value: Any) -> bool:
@@ -214,7 +214,9 @@ class TravelGuidanceConfig(ParamGroup):
     @staticmethod
     def _default_strength(kind: str, mode: str) -> float:
         if kind == "ltx_control":
-            return 1.0 if mode == "video" else 0.5
+            if mode in ("video", "cameraman"):
+                return 1.0
+            return 0.5
         if kind in ("vace", "uni3c"):
             return 1.0
         if kind == "ltx_hybrid":
@@ -255,7 +257,7 @@ class TravelGuidanceConfig(ParamGroup):
     def needs_ic_lora(self) -> bool:
         """Return True when LTX control requires the union IC-LoRA."""
         if self.kind == "ltx_control":
-            return self.mode in {"pose", "depth", "canny"}
+            return self.mode in {"pose", "depth", "canny", "cameraman"}
         if self.kind == "ltx_hybrid":
             return self.has_control and self.mode in {"pose", "depth", "canny"}
         return False
@@ -265,7 +267,7 @@ class TravelGuidanceConfig(ParamGroup):
         if self.kind == "vace":
             return "raw" if self.mode == "raw" else self.mode
         if self.kind == "ltx_control":
-            return "raw" if self.mode == "video" else self.mode
+            return "raw" if self.mode in {"video", "cameraman"} else self.mode
         if self.kind == "ltx_hybrid":
             if not self.has_control:
                 return "raw"

@@ -43,6 +43,16 @@ def test_parse_each_travel_guidance_kind():
     assert none_cfg.kind == "none"
 
 
+def test_parse_ltx_control_cameraman():
+    config = TravelGuidanceConfig.from_payload(
+        {"travel_guidance": {"kind": "ltx_control", "mode": "cameraman", "videos": [VIDEO_ENTRY]}},
+        "ltx2_22B_distilled",
+    )
+
+    assert config.kind == "ltx_control"
+    assert config.mode == "cameraman"
+
+
 @pytest.mark.parametrize(
     ("payload", "model_name"),
     [
@@ -85,7 +95,7 @@ def test_to_structure_guidance_config_round_trip_for_uni3c():
 
 @pytest.mark.parametrize(
     ("mode", "expected"),
-    [("pose", True), ("depth", True), ("canny", True), ("video", False)],
+    [("pose", True), ("depth", True), ("canny", True), ("cameraman", True), ("video", False)],
 )
 def test_needs_ic_lora(mode, expected):
     config = TravelGuidanceConfig.from_payload(
@@ -161,6 +171,7 @@ def test_empty_videos_on_non_none_kind_errors(payload, model_name):
     [
         ({"travel_guidance": {"kind": "vace", "mode": "flow", "videos": [VIDEO_ENTRY]}}, "wan_2_2_vace_lightning_baseline_2_2_2", "flow"),
         ({"travel_guidance": {"kind": "ltx_control", "mode": "pose", "videos": [VIDEO_ENTRY]}}, "ltx2_22B_distilled", "pose"),
+        ({"travel_guidance": {"kind": "ltx_control", "mode": "cameraman", "videos": [VIDEO_ENTRY]}}, "ltx2_22B_distilled", "raw"),
         ({"travel_guidance": {"kind": "ltx_control", "mode": "video", "videos": [VIDEO_ENTRY]}}, "ltx2_22B_distilled", "raw"),
     ],
 )

@@ -954,8 +954,8 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
 
     # Auto-inject IC LoRA when travel guidance requires it (e.g. pose/depth/canny/cameraman).
     # This runs for both orchestrator-created and standalone individual_travel_segment tasks.
-    if isinstance(gen.structure_config, TravelGuidanceConfig):
-        ic_entry = gen.structure_config.get_ic_lora_entry()
+    if isinstance(structure.structure_config, TravelGuidanceConfig):
+        ic_entry = structure.structure_config.get_ic_lora_entry()
         if ic_entry is not None:
             segment_loras = list(segment_loras or [])
             # Deduplicate: update strength if the same LoRA is already present
@@ -968,7 +968,7 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
                     break
             if not found:
                 segment_loras.append(ic_entry)
-            headless_logger.debug(f"IC LoRA for mode '{gen.structure_config.mode}': {ic_basename}", task_id=task_id)
+            headless_logger.debug(f"IC LoRA for mode '{structure.structure_config.mode}': {ic_basename}", task_id=task_id)
 
     if segment_loras:
         # Pass through URLs/filenames without downloading - convert_to_wgp_task_impl() handles resolution

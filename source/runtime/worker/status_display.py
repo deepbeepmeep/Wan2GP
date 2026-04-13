@@ -140,30 +140,10 @@ class WorkerStatusDisplay:
         print("\n" * _HEIGHT, end="", flush=True)
         self._active = True
 
-    def show_idle(self) -> None:
-        """Redraw the status block. Called each poll cycle while idle."""
-        if not self._tty or not self._active:
-            return
-        # Transition marker: only fires on the first idle poll after tasks stopped
-        # arriving. Not between back-to-back tasks.
-        if self._returning_to_idle:
-            self._returning_to_idle = False
-            print("··· idle ···", flush=True)
-            print("\n" * _HEIGHT, end="", flush=True)
-        # Advance frames based on elapsed wall-clock time so the animation
-        # runs at its own pace regardless of the poll interval.
-        now = time.time()
-        if self._last_idle_call is not None:
-            elapsed = now - self._last_idle_call
-            self._frame_time_remaining -= elapsed
-            while self._frame_time_remaining <= 0:
-                self._frame_index = (self._frame_index + 1) % len(_PLANT_STAGES)
-                self._frame_time_remaining += _PLANT_STAGES[self._frame_index][1]
-        self._last_idle_call = now
-
+    def _redraw(self) -> None:
+        """Redraw the status block for the current frame."""
         stage, _delay = _PLANT_STAGES[self._frame_index]
         dot_set = _DOTS_ACTIVE if self._tasks_done > 0 else _DOTS_FREE
-        self._tick += 1
         dots = dot_set[self._tick % len(dot_set)]
 
         elapsed = time.time() - self._start
@@ -186,6 +166,50 @@ class WorkerStatusDisplay:
         sys.stdout.write(f"{_CLEAR}\n")
         sys.stdout.write(f"{_CLEAR}\n")
         sys.stdout.flush()
+
+    def animate_idle(self, poll_interval: float) -> None:
+        """Animate the idle display for the duration of one poll interval.
+
+        Redraws once per frame transition so the variable pacing in
+        _PLANT_STAGES is actually visible, then returns after
+        *poll_interval* seconds so the caller can check for new tasks.
+        """
+        if not self._tty or not self._active:
+            time.sleep(poll_interval)
+            return
+        # Transition marker: only fires on the first idle poll after tasks stopped
+        # arriving. Not between back-to-back tasks.
+        if self._returning_to_idle:
+            self._returning_to_idle = False
+            print("··· idle ···", flush=True)
+            print("\n" * _HEIGHT, end="", flush=True)
+
+        deadline = time.time() + poll_interval
+        while True:
+            self._tick += 1
+            self._redraw()
+            # Sleep until this frame expires or the poll interval is up
+            sleep_time = min(self._frame_time_remaining, deadline - time.time())
+            if sleep_time <= 0:
+                break
+            time.sleep(sleep_time)
+            self._frame_time_remaining -= sleep_time
+            if self._frame_time_remaining <= 0:
+                self._frame_index = (self._frame_index + 1) % len(_PLANT_STAGES)
+                self._frame_time_remaining = _PLANT_STAGES[self._frame_index][1]
+            if time.time() >= deadline:
+                break
+
+    def show_idle(self) -> None:
+        """Redraw the status block once (legacy single-shot call)."""
+        if not self._tty or not self._active:
+            return
+        if self._returning_to_idle:
+            self._returning_to_idle = False
+            print("··· idle ···", flush=True)
+            print("\n" * _HEIGHT, end="", flush=True)
+        self._tick += 1
+        self._redraw()
 
     def on_task_start(self) -> None:
         """Clear the display before task output."""

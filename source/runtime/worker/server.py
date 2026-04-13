@@ -653,8 +653,7 @@ def main():
                         )
                         run_summary.render_to(headless_logger)
                         sys.exit(IDLE_RELEASE_EXIT_CODE)
-                _display.show_idle()
-                time.sleep(cli_args.poll_interval)
+                _display.animate_idle(cli_args.poll_interval)
                 continue
             if poll_outcome == ClaimPollOutcome.ERROR:
                 time.sleep(cli_args.poll_interval)

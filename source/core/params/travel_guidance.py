@@ -19,6 +19,16 @@ _TRAVEL_GUIDANCE_LEGACY_KEYS = (
 )
 _LTX_CONTROL_MODES = {"pose", "depth", "canny", "video", "cameraman"}
 
+# IC LoRA registry: mode → (filename, optional download URL).
+# Modes not listed fall back to the preloaded union-control LoRA.
+_IC_LORA_UNION_CONTROL = "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors"
+_IC_LORA_BY_MODE: dict[str, tuple[str, str | None]] = {
+    "cameraman": (
+        "LTX2.3-22B_IC-LoRA-Cameraman_v1_10500.safetensors",
+        "https://huggingface.co/Cseti/LTX2.3-22B_IC-LoRA-Cameraman_v1/resolve/main/LTX2.3-22B_IC-LoRA-Cameraman_v1_10500.safetensors",
+    ),
+}
+
 
 def _has_payload_value(value: Any) -> bool:
     """Return True when a payload field should count as "present"."""
@@ -261,6 +271,28 @@ class TravelGuidanceConfig(ParamGroup):
         if self.kind == "ltx_hybrid":
             return self.has_control and self.mode in {"pose", "depth", "canny"}
         return False
+
+    def get_ic_lora_entry(self) -> Optional[Dict[str, Any]]:
+        """Return the IC LoRA dict to inject into segment_loras, or None."""
+        if not self.needs_ic_lora():
+            return None
+
+        mode_entry = _IC_LORA_BY_MODE.get(self.mode)
+        if mode_entry is not None:
+            filename, url = mode_entry
+        else:
+            filename, url = _IC_LORA_UNION_CONTROL, None
+
+        strength = (
+            self.control_strength if self.is_ltx_hybrid else self.strength
+        )
+        # Use URL when available so the download pipeline can fetch on demand;
+        # bare filename relies on preload.
+        return {
+            "path": url or filename,
+            "strength": strength,
+            "name": f"ic-lora-{self.mode} (auto-injected)",
+        }
 
     def get_preprocessor_type(self) -> str:
         """Return the preprocessor/compositing type used for this guidance."""

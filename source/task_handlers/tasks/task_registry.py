@@ -22,6 +22,7 @@ from functools import lru_cache
 from importlib import import_module
 from types import MappingProxyType
 from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING
+import os
 from pathlib import Path
 import time
 import json
@@ -950,6 +951,24 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
     segment_lora_config = None
     phase_config_source_name = "none"
     preset_name = None
+
+    # Auto-inject IC LoRA when travel guidance requires it (e.g. pose/depth/canny/cameraman).
+    # This runs for both orchestrator-created and standalone individual_travel_segment tasks.
+    if isinstance(gen.structure_config, TravelGuidanceConfig):
+        ic_entry = gen.structure_config.get_ic_lora_entry()
+        if ic_entry is not None:
+            segment_loras = list(segment_loras or [])
+            # Deduplicate: update strength if the same LoRA is already present
+            ic_basename = os.path.basename(ic_entry["path"])
+            found = False
+            for existing in segment_loras:
+                if os.path.basename(existing.get("path", "")) == ic_basename:
+                    existing["strength"] = ic_entry["strength"]
+                    found = True
+                    break
+            if not found:
+                segment_loras.append(ic_entry)
+            headless_logger.debug(f"IC LoRA for mode '{gen.structure_config.mode}': {ic_basename}", task_id=task_id)
 
     if segment_loras:
         # Pass through URLs/filenames without downloading - convert_to_wgp_task_impl() handles resolution

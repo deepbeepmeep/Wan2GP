@@ -235,16 +235,26 @@ def parse_phase_config(phase_config: dict, num_inference_steps: int, task_id: st
     )
 
     # Filter out LoRAs incompatible with the target model architecture.
-    # Wan 2.2 LoRAs (wan2.2_*) are incompatible with LTX-2 models and vice versa.
+    # LTX-2 and Wan 2.2 have fundamentally different transformer architectures —
+    # no LoRA weights are cross-compatible. For LTX-2 models, only keep LoRAs
+    # that are plausibly LTX-compatible (contain "ltx" in URL/filename).
+    # Previously this only checked for "wan2.2" in the URL, which missed
+    # Wan-architecture LoRAs with non-standard filenames (e.g. bloom.safetensors).
     if model_name and all_lora_urls:
         is_ltx2 = "ltx2" in model_name.lower()
+        is_wan = "wan" in model_name.lower()
         filtered_indices = []
         for i, url in enumerate(all_lora_urls):
             url_lower = url.lower()
-            wan_lora = "wan2.2" in url_lower or "wan_2.2" in url_lower
-            if is_ltx2 and wan_lora:
+            if is_ltx2 and "ltx" not in url_lower:
                 headless_logger.warning(
-                    f"Skipping Wan 2.2 LoRA incompatible with LTX-2 model '{model_name}': {url}",
+                    f"Skipping non-LTX LoRA incompatible with LTX-2 model '{model_name}': {url}",
+                    task_id=task_id,
+                )
+                continue
+            if is_wan and "ltx" in url_lower:
+                headless_logger.warning(
+                    f"Skipping LTX LoRA incompatible with Wan model '{model_name}': {url}",
                     task_id=task_id,
                 )
                 continue

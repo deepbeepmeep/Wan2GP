@@ -354,9 +354,9 @@ class TravelGuidanceConfig(ParamGroup):
         if self.kind == "uni3c" and self.mode:
             errors.append("travel_guidance kind 'uni3c' does not accept mode")
 
-        if self.kind == "ltx_control" and not 0.0 <= self.strength <= 1.0:
+        if self.kind == "ltx_control" and not 0.0 <= self.strength <= 2.0:
             errors.append(
-                f"travel_guidance strength for ltx_control must be within [0, 1], got {self.strength}"
+                f"travel_guidance strength for ltx_control must be within [0, 2], got {self.strength}"
             )
         elif self.strength < 0:
             errors.append(f"travel_guidance strength must be non-negative, got {self.strength}")

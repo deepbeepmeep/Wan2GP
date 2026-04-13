@@ -357,25 +357,21 @@ def _coerce_image_list(image_value):
 def _adjust_dev_distilled_lora_strengths(model_def, pipeline, sample_solver, audio_prompt_type, loras_slists, loras_selected):
     if not isinstance(pipeline, TI2VidTwoStagesPipeline):
         return loras_slists
-    if not loras_slists or (model_def or {}).get("ltx2_pipeline", "two_stage") == "distilled":
+    if not loras_slists or model_def.get("ltx2_pipeline", "two_stage") == "distilled":
         return loras_slists
-    use_hq_sampler = (sample_solver or "").lower() == "res2s"
-    use_id_lora = "1" in (audio_prompt_type or "")
+    use_hq_sampler = sample_solver == "res2s"
+    use_id_lora = "1" in audio_prompt_type
     if not use_hq_sampler and not use_id_lora:
         return loras_slists
     phase1 = loras_slists.get("phase1")
     phase2 = loras_slists.get("phase2")
     if not isinstance(phase2, list) or not phase2 or not isinstance(phase1, list) or not phase1:
         return loras_slists
-    builtin_loras = (model_def or {}).get("loras") or []
     adjusted_slists = None
-    for idx, builtin_lora in enumerate(builtin_loras):
+    for idx, lora_path in enumerate(loras_selected or []):
         if idx >= len(phase1) or idx >= len(phase2):
             break
-        builtin_name = os.path.basename(builtin_lora).lower()
-        if "distilled-lora" not in builtin_name:
-            continue
-        if loras_selected and idx < len(loras_selected) and os.path.basename(loras_selected[idx]).lower() != builtin_name:
+        if "distilled-lora" not in os.path.basename(str(lora_path)).lower():
             continue
         if adjusted_slists is None:
             adjusted_slists = copy.deepcopy(loras_slists)
@@ -823,13 +819,13 @@ class LTX2:
 
         loras = []
         loras_mult = []
-        video_prompt_type = video_prompt_type or ""
-        audio_prompt_type = kwargs.get("audio_prompt_type") or ""
-        outpainting_ratio = (kwargs.get("video_guide_outpainting_ratio") or "").strip()
-        outpainting_setting = str(kwargs.get("video_guide_outpainting") or "")
-        model_def = model_def or self.model_def
-        preload_urls = get_model_recursive_prop(model_type, "preload_URLs") or []
-        resolved_base_model_type = base_model_type or self.base_model_type
+        guidance_phases = max(1, int(kwargs["guidance_phases"]))
+        audio_prompt_type = kwargs["audio_prompt_type"]
+        outpainting_ratio = kwargs["video_guide_outpainting_ratio"].strip()
+        outpainting_setting = str(kwargs["video_guide_outpainting"])
+        preload_urls = get_model_recursive_prop(model_type, "preload_URLs")
+        pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
+        resolved_base_model_type = base_model_type
         selected_loras = {os.path.basename(lora).lower() for lora in kwargs.get("activated_loras", [])}
 
         def _append_preload_lora(signature, multiplier):
@@ -843,7 +839,9 @@ class LTX2:
                     loras_mult.append(multiplier)
                     return
 
-        if model_def.get("ltx2_pipeline", "two_stage") == "distilled":
+        if pipeline_kind != "distilled" and guidance_phases > 1:
+            _append_preload_lora("distilled-lora", "0;1")
+        if pipeline_kind == "distilled":
             if any(letter in video_prompt_type for letter in control_map):
                 _append_preload_lora("union-control", 1.0)
             if resolved_base_model_type == "ltx2_22B" and get_outpainting_dims(outpainting_setting, outpainting_ratio) is not None:
@@ -909,6 +907,7 @@ class LTX2:
         callback=None,
         set_progress_status=None,
         VAE_tile_size=None,
+        guide_phases= 1,
         **kwargs,
     ):
         if self._interrupt:
@@ -932,13 +931,12 @@ class LTX2:
         else:
             frames_relative_positions_list = [frames_relative_positions_list]
 
-        prefix_frames_count = int(prefix_frames_count or 0)
-        video_prompt_type = video_prompt_type or ""
         outpainting_dims = _normalize_outpainting_dims(outpainting_dims)
-        self_refiner_max_plans = int(self.model_def.get("self_refiner_max_plans", 1))
-        requested_outpaint_gamma_roundtrip = bool(
-            distill and self.base_model_type == "ltx2_22B" and outpainting_dims is not None and "G" in video_prompt_type
-        )
+        any_outpainting = outpainting_dims is not None and "V" in video_prompt_type
+        self_refiner_max_plans = self.model_def.get("self_refiner_max_plans", 1)
+        requested_outpaint_gamma_roundtrip =  distill and self.base_model_type == "ltx2_22B" and any_outpainting 
+        if any(letter in video_prompt_type for letter in "PDE") or any_outpainting:
+            guide_phases = 1        
         use_outpaint_gamma_roundtrip = False
         latent_stride = 8
         if hasattr(self.pipeline, "pipeline_components"):
@@ -946,56 +944,8 @@ class LTX2:
             if scale_factors is not None:
                 latent_stride = int(getattr(scale_factors, "time", scale_factors[0]))
 
-        def _get_frame_dim(video_tensor: torch.Tensor) -> int | None:
-            if video_tensor.dim() < 2:
-                return None
-            if video_tensor.dim() == 5:
-                if video_tensor.shape[1] in (1, 3, 4):
-                    return 2
-                if video_tensor.shape[-1] in (1, 3, 4):
-                    return 1
-            if video_tensor.shape[0] in (1, 3, 4):
-                return 1
-            if video_tensor.shape[-1] in (1, 3, 4):
-                return 0
-            return 0
-
-        def _frame_count(video_value) -> int | None:
-            if not torch.is_tensor(video_value):
-                return None
-            frame_dim = _get_frame_dim(video_value)
-            if frame_dim is None:
-                return None
-            return int(video_value.shape[frame_dim])
-
-        def _slice_frames(video_value: torch.Tensor, start: int, end: int) -> torch.Tensor:
-            frame_dim = _get_frame_dim(video_value)
-            if frame_dim == 1:
-                return video_value[:, start:end]
-            if frame_dim == 2:
-                return video_value[:, :, start:end]
-            return video_value[start:end]
-
-        def _maybe_trim_control(video_value, target_frames: int):
-            if not torch.is_tensor(video_value) or target_frames <= 0:
-                return video_value, None
-            current_frames = _frame_count(video_value)
-            if current_frames is None:
-                return video_value, None
-            if current_frames > target_frames:
-                video_value = _slice_frames(video_value, 0, target_frames)
-                current_frames = target_frames
-            return video_value, current_frames
-
-        try:
-            masking_strength = float(masking_strength) if masking_strength is not None else 0.0
-        except (TypeError, ValueError):
-            masking_strength = 0.0
-        try:
-            input_video_strength = float(input_video_strength) if input_video_strength is not None else 1.0
-        except (TypeError, ValueError):
-            input_video_strength = 1.0
         input_video_strength = max(0.0, min(1.0, input_video_strength))
+
         if requested_outpaint_gamma_roundtrip:
             conditioning_gamma_applied = _apply_gamma_to_media(image_start, LTX2_OUTPAINT_GAMMA)
             conditioning_gamma_applied = _apply_gamma_to_media(image_end, LTX2_OUTPAINT_GAMMA) or conditioning_gamma_applied
@@ -1009,24 +959,20 @@ class LTX2:
         if "G" not in video_prompt_type:
             denoising_strength = 1.0
             masking_strength = 0.0
+        control_strength = denoising_strength
         ic_lora_downscale_factor = None
         if distill:
             ic_lora_downscale_factor = _infer_ic_lora_downscale_factor(loras_selected)
         video_conditioning_downscale_factor = ic_lora_downscale_factor or 1
+        merge_conditioning_and_guide = any_outpainting and input_video is not None
         has_prefix_frames = input_video is not None 
         is_start_image_only = image_start is not None and (not has_prefix_frames or prefix_frames_count <= 1)
-        use_guiding_latent_for_start_image = bool(self.model_def.get("use_guiding_latent_for_start_image", False))
+        use_guiding_latent_for_start_image = self.model_def.get("use_guiding_latent_for_start_image", False)
         use_guiding_start_image = use_guiding_latent_for_start_image and is_start_image_only
         video_conditioning = None
         masking_source = None
         if input_frames is not None or input_frames2 is not None:
-            control_start_frame = int(prefix_frames_count)
-            skip_first_guide_latent = has_prefix_frames and not is_start_image_only
-            expected_guide_frames = max(1, int(frame_num) - control_start_frame + (1 if skip_first_guide_latent else 0))
-            input_frames, frames_len = _maybe_trim_control(input_frames, expected_guide_frames)
-            input_frames2, frames_len2 = _maybe_trim_control(input_frames2, expected_guide_frames)
-            input_masks, _ = _maybe_trim_control(input_masks, expected_guide_frames)
-            input_masks2, _ = _maybe_trim_control(input_masks2, expected_guide_frames)
+            skip_first_guide_latent = has_prefix_frames and (not is_start_image_only) and (not merge_conditioning_and_guide)
             if requested_outpaint_gamma_roundtrip:
                 control_tensor = input_frames if input_frames is not None else input_frames2
                 control_rect = None if control_tensor is None else _get_outpainting_inner_rect(control_tensor.shape[-2], control_tensor.shape[-1], outpainting_dims)
@@ -1034,15 +980,20 @@ class LTX2:
                     print("[WAN2GP][LTX2] Applying preserved-area gamma preprocessing for outpainting IC-LoRA control video.")
                     use_outpaint_gamma_roundtrip = True
 
-            control_strength = 1.0
-            if denoising_strength is not None and "G" in video_prompt_type:
-                try:
-                    control_strength = float(denoising_strength)
-                except (TypeError, ValueError):
-                    control_strength = 1.0
-            control_strength = max(0.0, min(1.0, control_strength))
             if skip_first_guide_latent:
                 control_start_frame = -control_start_frame
+
+            if merge_conditioning_and_guide:
+                if prefix_frames_count == 1:
+                    input_frames[:, 0] = input_video[:, 0]
+                else:
+                    input_frames = torch.concat( [input_video[:, :prefix_frames_count],  input_frames[:, 1:]], dim=1)
+                prefix_frames_count  = 0
+                input_video = None
+                control_start_frame = 0
+            else:
+                control_start_frame = prefix_frames_count
+
 
             conditioning_entries = []
             if input_frames is not None:
@@ -1074,7 +1025,7 @@ class LTX2:
         stage2_override = False
 
         def _append_prefix_entries(target_list, extra_list=None):
-            if not has_prefix_frames or is_start_image_only:
+            if input_video is None or is_start_image_only:
                 return
             frame_count = min(prefix_frames_count, input_video.shape[1])
             if frame_count <= 0:
@@ -1092,33 +1043,24 @@ class LTX2:
                 if extra_list is not None:
                     extra_list.append(entry)
 
-        if isinstance(self.pipeline, TI2VidTwoStagesPipeline):
+        if image_start is None:
             _append_prefix_entries(images, images_stage2)
-
-            if image_end is not None:
-                entry = (image_end, int(frame_num - 1), input_video_strength)
-                guiding_images.append(entry)
-                guiding_images_stage2.append(entry)
-
-            if image_start is not None:
-                entry = (image_start, _to_latent_index(0, latent_stride), input_video_strength, "lanczos")
-                if use_guiding_start_image:
-                    guiding_images.append(entry)
-                    images_stage2.append(entry)
-                    stage2_override = True
-                else:
-                    images.append(entry)
-                    images_stage2.append(entry)
-            _append_injected_ref_entries(guiding_images, guiding_images_stage2)
         else:
-            _append_prefix_entries(images)
-            if image_start is not None:
-                images.append((image_start, _to_latent_index(0, latent_stride), input_video_strength, "lanczos"))
-            if image_end is not None:
-                entry = (image_end, int(frame_num - 1), input_video_strength)
+            entry = (image_start, _to_latent_index(0, latent_stride), input_video_strength, "lanczos")
+            if use_guiding_start_image:
                 guiding_images.append(entry)
-                guiding_images_stage2.append(entry)
-            _append_injected_ref_entries(guiding_images, guiding_images_stage2)
+                images_stage2.append(entry)
+                stage2_override = True
+            else:
+                images.append(entry)
+                images_stage2.append(entry)
+
+        if image_end is not None:
+            entry = (image_end, int(frame_num - 1), input_video_strength)
+            guiding_images.append(entry)
+            guiding_images_stage2.append(entry)
+
+        _append_injected_ref_entries(guiding_images, guiding_images_stage2)
 
         tiling_config = _build_tiling_config(VAE_tile_size, fps)
         interrupt_check = lambda: self._interrupt
@@ -1239,14 +1181,14 @@ class LTX2:
                 latent_conditioning_stage2 = latent_conditioning_stage2.to(device=self.device, dtype=self.dtype)
 
         negative_prompt = n_prompt if n_prompt else DEFAULT_NEGATIVE_PROMPT
-        skip_stage_2 = bool(distill and LTX2_DISABLE_STAGE2_WITH_CONTROL_VIDEO and video_conditioning is not None)
+        skip_stage_2 = guide_phases <=1 # distill and LTX2_DISABLE_STAGE2_WITH_CONTROL_VIDEO and video_conditioning is not None
         if audio_cfg_scale is None:
             effective_audio_cfg_scale = LTX2_ID_LORA_AUDIO_CFG_SCALE if "1" in audio_prompt_type else float(guide_scale)
         else:
             effective_audio_cfg_scale = float(audio_cfg_scale)
         if "1" in audio_prompt_type and effective_audio_cfg_scale <= 1.0:
             effective_audio_cfg_scale = LTX2_ID_LORA_AUDIO_CFG_SCALE
-        sample_solver = (sample_solver or "euler").lower()
+        sample_solver = sample_solver.lower()
         loras_slists = _adjust_dev_distilled_lora_strengths(
             self.model_def,
             self.pipeline,
@@ -1296,6 +1238,7 @@ class LTX2:
                 masking_source=masking_source,
                 masking_strength=masking_strength,
                 return_latent_slice=return_latent_slice,
+                skip_stage_2=skip_stage_2,
                 self_refiner_setting=self_refiner_setting,
                 self_refiner_plan=self_refiner_plan,
                 self_refiner_f_uncertainty=self_refiner_f_uncertainty,
@@ -1323,6 +1266,7 @@ class LTX2:
                 images=images,
                 guiding_images=guiding_images or None,
                 guiding_images_stage2=guiding_images_stage2 or None,
+                images_stage2=images_stage2 if stage2_override else None,
                 alt_guidance_scale=float(alt_guide_scale),
                 audio_cfg_guidance_scale=effective_audio_cfg_scale,
                 video_conditioning=video_conditioning,

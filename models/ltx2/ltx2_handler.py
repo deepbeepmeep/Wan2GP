@@ -1,12 +1,16 @@
 import os
+import shutil
+import sys
 import torch
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
+import gradio as gr
 
 _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
 _GEMMA_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
+_DEV_DISTILLED_LORAS_MIGRATED = False
 
 _ARCH_SPECS = {
     "ltx2_19B": {
@@ -103,11 +107,31 @@ def _resolve_multi_file_paths(model_def, base_model_type):
     return paths
 
 
+def _migrate_dev_distilled_loras():
+    global _DEV_DISTILLED_LORAS_MIGRATED
+    if _DEV_DISTILLED_LORAS_MIGRATED:
+        return
+    wgp = sys.modules.get("wgp")
+    if wgp is None or not hasattr(wgp, "get_lora_root"):
+        return
+    try:
+        lora_root = wgp.get_lora_root()
+    except NameError:
+        return
+    for model_type, spec in _ARCH_SPECS.items():
+        filename = spec["distilled_lora"]
+        legacy_lora = os.path.join(lora_root, spec["lora_dir"], filename)
+        if os.path.isfile(legacy_lora):
+            target = fl.get_download_location(filename)
+            shutil.move(legacy_lora, target)
+            print(f"[WAN2GP][LTX2] Moved legacy distilled LoRA '{legacy_lora}' -> '{target}'")
+    _DEV_DISTILLED_LORAS_MIGRATED = True
 
 
 class family_handler:
     @staticmethod
     def query_supported_types():
+        _migrate_dev_distilled_loras()
         return ["ltx2_19B", "ltx2_22B"]
 
     @staticmethod
@@ -264,7 +288,7 @@ class family_handler:
                 extra_model_def["sample_solvers"] = [("Euler", "euler"), ("HQ (res2s)", "res2s")]
         extra_model_def["guidance_max_phases"] = 2
         extra_model_def["visible_phases"] = 0 if distilled else 1
-        extra_model_def["lock_guidance_phases"] = True
+        # extra_model_def["lock_guidance_phases"] = True
 
         # extra_model_def["custom_video_selection"] = {
         #     "choices":[
@@ -359,7 +383,7 @@ class family_handler:
             if inputs.get("perturbation",0) == 2:
                 inputs["perturbation"] = 0
         else:
-            sample_solver = (inputs.get("sample_solver") or ("euler" if base_model_type == "ltx2_22B" else "")).lower()
+            sample_solver = inputs.get("sample_solver", "euler" if base_model_type == "ltx2_22B" else "").lower()
             if base_model_type == "ltx2_22B":
                 if sample_solver not in {"euler", "res2s"}:
                     return f"Unsupported LTX2 sampler '{sample_solver}'."
@@ -374,10 +398,13 @@ class family_handler:
                     inputs["perturbation_switch"] = 0
             elif sample_solver not in {"", "euler"}:
                 return f"Sampler '{sample_solver}' is not supported for {base_model_type}."
-        video_guide_outpainting = str(inputs.get("video_guide_outpainting") or "")
-        video_prompt_type = inputs.get("video_prompt_type") or ""
-        audio_prompt_type = inputs.get("audio_prompt_type") or ""
-        if pipeline_kind == "distilled" and len(video_guide_outpainting) > 0 and not video_guide_outpainting.startswith("#") and video_guide_outpainting != "0 0 0 0":
+        video_guide_outpainting = inputs.get("video_guide_outpainting", None) 
+        video_guide_outpainting_ratio = inputs.get("video_guide_outpainting_ratio", "") 
+        video_prompt_type = inputs.get("video_prompt_type", "")
+        audio_prompt_type = inputs.get("audio_prompt_type", "")
+        from shared.utils.utils import get_outpainting_dims 
+        any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None        
+        if pipeline_kind == "distilled" and any_outpainting:
             if "V" in video_prompt_type :
                 if any(letter in video_prompt_type for letter in "PDE"):
                     return "LTX2 outpainting on Control Video supports only LTX2 Raw Format  / Contro Video for Ic Lora."
@@ -388,6 +415,10 @@ class family_handler:
                 if "A" in video_prompt_type :
                     return "LTX2 outpainting doesnt support Video Mask."
 
+        guide_phases = inputs.get("guidance_phases", 1)
+        if guide_phases !=1 and (any(letter in video_prompt_type for letter in "PDE") or any_outpainting):
+            inputs["guidance_phases"]=  1            
+            gr.Info("Number of Phases has been set to 1 as Outpainting is enabled" if any_outpainting else "Number of Phases is set to for Pose/Edge/Depth")
         if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
             audio_source = inputs.get("audio_source")
             if audio_source is not None:
@@ -464,8 +495,6 @@ class family_handler:
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
         default_perturbation_layers = _default_perturbation_layers(base_model_type)
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
-        if pipeline_kind != "distilled" and ui_defaults.get("guidance_phases", 0) < 2:
-            ui_defaults["guidance_phases"] = 2
         if pipeline_kind != "distilled" and ui_defaults.get("sample_solver", "") in {"", None}:
             ui_defaults["sample_solver"] = "euler"
 

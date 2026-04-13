@@ -345,7 +345,7 @@ transition: visibility 0s linear 1s, opacity 0.3s linear 1s; /* 1s delay before 
 }
 .btn_centered {margin-top: calc(10px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
 .cbx_centered label {margin-top: calc(8px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
-
+.cbx_bottom label {padding-top: calc(48px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
 .copy-swap { display:block; max-width:100%;
 }
 .copy-swap__trunc {

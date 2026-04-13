@@ -202,6 +202,7 @@ SYSTEM_PLUGINS = [
 ]
 BUNDLED_PLUGINS = {
     "wan2gp-sample",
+    "wan2gp-process-full-video",
 }
 
 USER_PLUGIN_INSERT_POSITION = 3
@@ -1340,8 +1341,32 @@ class WAN2GPApplication:
             with gr.Tab(tab_info['label'], id=f"plugin_{tab_info['id']}") as new_tab:
                 self.all_rendered_tabs.append(new_tab)
                 plugin = self.tab_to_plugin_map[new_tab.label]
-                plugin.goto_video_tab = goto_video_tab 
-                tab_info['component_constructor']()
+                plugin.goto_video_tab = goto_video_tab
+                constructor = tab_info['component_constructor']
+                if self._component_constructor_accepts_api(constructor):
+                    if not hasattr(plugin, "_wangp_session") or getattr(plugin, "_wangp_session", None) is None:
+                        from shared.api import create_gradio_webui_session
+
+                        plugin._wangp_session = create_gradio_webui_session(plugin)
+                    with plugin._wangp_session.plugin_ui_context():
+                        constructor(plugin._wangp_session)
+                else:
+                    constructor()
+
+    @staticmethod
+    def _component_constructor_accepts_api(component_constructor: callable) -> bool:
+        try:
+            parameters = list(inspect.signature(component_constructor).parameters.values())
+        except (TypeError, ValueError):
+            return False
+        if any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
+            return True
+        positional_parameters = [
+            parameter
+            for parameter in parameters
+            if parameter.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+        ]
+        return len(positional_parameters) >= 1
 
 
     def _setup_tab_events(self, main_tabs_component: gr.Tabs, state_component: gr.State, set_save_form_event):

@@ -25,6 +25,7 @@ Don't hesitate to have a look at the Sample PlugIn "wan2gp_sample" as it illustr
 -How to get Settings from the Main Form and then Modify them
 -How to suspend the Video Gen (and release VRAM) to execute your own GPU intensive process.
 -How to switch back automatically to the Main Tab
+-How to trigger a Video Gen from a plugin an track its progress
 
 A valid plugin folder must contain at a minimum:
 *   `__init__.py`: An empty file that tells Python to treat the directory as a package.

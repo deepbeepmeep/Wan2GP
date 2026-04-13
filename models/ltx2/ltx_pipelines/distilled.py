@@ -184,6 +184,7 @@ class DistilledPipeline:
         negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
         guiding_images: list[tuple] | None = None,
         guiding_images_stage2: list[tuple] | None = None,
+        images_stage2: list[tuple[str, int, float]] | None = None,
         alt_guidance_scale: float = 1.0,
         audio_cfg_guidance_scale: float = 1.0,
         NAG_scale: float = 1.0,
@@ -556,7 +557,7 @@ class DistilledPipeline:
             fps=frame_rate,
         )
         stage_2_conditionings = image_conditionings_by_replacing_latent(
-            images=images,
+            images=images_stage2 if images_stage2 is not None else images,
             height=stage_2_output_shape.height,
             width=stage_2_output_shape.width,
             video_encoder=video_encoder,

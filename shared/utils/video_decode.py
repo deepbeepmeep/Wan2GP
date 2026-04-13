@@ -7,6 +7,8 @@ from functools import lru_cache
 import numpy as np
 import torch
 
+from .virtual_media import clamp_virtual_frame_range, parse_virtual_media_path, strip_virtual_media_suffix
+
 _ZSCALE_TRANSFER_MAP = {"smpte2084": "smpte2084", "arib-std-b67": "arib-std-b67", "bt709": "bt709", "bt2020-10": "2020_10", "bt2020-12": "2020_12"}
 _ZSCALE_PRIMARIES_MAP = {"bt2020": "2020", "bt709": "709", "smpte170m": "170m", "bt470bg": "470bg"}
 _ZSCALE_MATRIX_MAP = {"bt2020nc": "2020_ncl", "bt2020c": "2020_cl", "bt709": "709", "smpte170m": "170m", "bt470bg": "470bg"}
@@ -72,13 +74,40 @@ def _resolve_media_binary(binary_name: str):
     return shutil.which(binary_name + (".exe" if os.name == "nt" else "")) or shutil.which(binary_name)
 
 
+def resolve_media_binary(binary_name: str):
+    return _resolve_media_binary(binary_name)
+
+
+def _augment_virtual_metadata(video_path, metadata):
+    spec = parse_virtual_media_path(video_path)
+    if spec is None or metadata is None:
+        return metadata
+    total_frames = int(metadata.get("frame_count") or 0)
+    start_frame, end_frame = clamp_virtual_frame_range(spec, total_frames)
+    virtual_metadata = dict(metadata)
+    virtual_metadata["source_path"] = spec.source_path
+    virtual_metadata["virtual_start_frame"] = start_frame
+    virtual_metadata["virtual_end_frame"] = end_frame
+    if end_frame is None:
+        return virtual_metadata
+    virtual_frame_count = max(0, end_frame - start_frame + 1)
+    virtual_metadata["frame_count"] = virtual_frame_count
+    fps_float = float(virtual_metadata.get("fps_float") or 0.0)
+    fps = int(virtual_metadata.get("fps") or 0)
+    effective_fps = fps_float if fps_float > 0 else float(fps or 0)
+    if effective_fps > 0:
+        virtual_metadata["duration"] = virtual_frame_count / effective_fps
+    return virtual_metadata
+
+
 @lru_cache(maxsize=128)
 def probe_video_stream_metadata(video_path):
     video_path = os.fspath(video_path)
+    source_path = os.fspath(strip_virtual_media_suffix(video_path))
     ffprobe_path = _resolve_media_binary("ffprobe")
     if ffprobe_path is None:
         return None
-    probe_cmd = [ffprobe_path, "-v", "error", "-select_streams", "v:0", "-show_streams", "-show_format", "-of", "json", video_path]
+    probe_cmd = [ffprobe_path, "-v", "error", "-select_streams", "v:0", "-show_streams", "-show_format", "-of", "json", source_path]
     probe = subprocess.run(probe_cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore", check=False)
     if probe.returncode != 0:
         return None
@@ -121,7 +150,7 @@ def probe_video_stream_metadata(video_path):
     is_hdr = color_transfer in {"smpte2084", "arib-std-b67"} or color_primaries == "bt2020" or any(
         str(item.get("side_data_type") or "").lower() in {"mastering display metadata", "content light level metadata"} for item in side_data
     )
-    return {
+    return _augment_virtual_metadata(video_path, {
         "width": width,
         "height": height,
         "display_width": display_width,
@@ -138,7 +167,7 @@ def probe_video_stream_metadata(video_path):
         "color_range": color_range,
         "needs_sar_fix": display_width != width,
         "needs_tonemap": is_hdr,
-    }
+    })
 
 
 def video_needs_corrected_decode(video_path):
@@ -193,15 +222,25 @@ def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, 
     metadata = probe_video_stream_metadata(video_path)
     if metadata is None:
         raise RuntimeError(f"Unable to probe video metadata for {video_path}")
+    decode_path = os.fspath(metadata.get("source_path") or strip_virtual_media_suffix(video_path))
     ffmpeg_path = _resolve_media_binary("ffmpeg")
     if ffmpeg_path is None:
         raise RuntimeError("ffmpeg binary not found")
+    start_frame = int(start_frame)
     max_frames = int(max_frames)
+    if metadata.get("virtual_end_frame") is not None:
+        available_frames = max(0, int(metadata["frame_count"]) - max(0, start_frame))
+        max_frames = min(max_frames, available_frames)
     if max_frames <= 0:
         empty = np.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=np.uint8)
         return torch.from_numpy(empty) if bridge == "torch" else empty
-    video_filter = _build_corrected_video_filter(metadata, start_frame=start_frame, end_frame=start_frame + max_frames)
-    cmd = [ffmpeg_path, "-v", "error", "-nostdin", "-threads", "0", "-i", os.fspath(video_path), "-an", "-sn"]
+    actual_start = start_frame + int(metadata.get("virtual_start_frame") or 0)
+    fps_float = float(metadata.get("fps_float") or metadata.get("fps") or 0.0)
+    video_filter = _build_corrected_video_filter(metadata)
+    cmd = [ffmpeg_path, "-v", "error", "-nostdin", "-threads", "0"]
+    if fps_float > 0 and actual_start > 0:
+        cmd += ["-ss", f"{actual_start / fps_float:.12g}"]
+    cmd += ["-i", decode_path, "-an", "-sn"]
     if len(video_filter) > 0:
         cmd += ["-vf", video_filter]
     cmd += ["-fps_mode", "passthrough", "-frames:v", str(max_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
@@ -233,6 +272,10 @@ def decode_video_frames_ffmpeg(video_path, start_frame, max_frames, target_fps=N
     metadata = probe_video_stream_metadata(video_path)
     if metadata is None:
         raise RuntimeError(f"Unable to probe video metadata for {video_path}")
+    start_frame = int(start_frame)
+    if metadata.get("virtual_end_frame") is not None and start_frame >= int(metadata["frame_count"]):
+        empty = np.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=np.uint8)
+        return torch.from_numpy(empty) if bridge == "torch" else empty
     if target_fps is None or float(target_fps) <= 0:
         return _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, bridge)
     source_fps = metadata["fps"] if metadata["fps"] > 0 else max(1, int(round(metadata["fps_float"] or 0)))

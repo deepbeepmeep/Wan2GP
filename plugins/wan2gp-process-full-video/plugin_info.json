@@ -1,0 +1,9 @@
+{
+  "name": "Outpaint Full Video",
+  "author": "DeepBeepMeep",
+  "version": "1.0.0",
+  "description": "Outpaint long videos (up to 2h) with reduced RAM.",
+  "date": "",
+  "wan2gp_version": "",
+  "uninstallable": false
+}

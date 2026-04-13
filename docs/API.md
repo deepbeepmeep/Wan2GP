@@ -56,11 +56,11 @@ else:
 
 - `init(...) -> WanGPSession`
   - Creates a reusable session and eagerly loads the runtime.
-- `WanGPSession.submit(source) -> SessionJob`
+- `WanGPSession.submit(source, callbacks=None) -> SessionJob`
   - Starts a job from a settings dict, a manifest list, or a saved `.json` / `.zip` file.
-- `WanGPSession.submit_task(settings) -> SessionJob`
+- `WanGPSession.submit_task(settings, callbacks=None) -> SessionJob`
   - Preferred single-task entrypoint.
-- `WanGPSession.submit_manifest(settings_list) -> SessionJob`
+- `WanGPSession.submit_manifest(settings_list, callbacks=None) -> SessionJob`
   - Batch entrypoint for multiple tasks.
 - `SessionJob.result() -> GenerationResult`
   - Waits for completion and returns a structured result object.
@@ -78,6 +78,7 @@ session = init(
     cli_args=["--attention", "sdpa"],              # optional
     console_output=True,                           # optional, default=True
     console_isatty=True,                           # optional, default=True
+    webui_state=None,                              # optional
 )
 ```
 
@@ -111,6 +112,115 @@ session = init(
   - Default: `True`
   - Keep this enabled if you want tqdm or other terminal-style progress output to behave like a live console stream even when WanGP is called from another Python process.
 
+- `webui_state`
+  - Optional live WanGP WebUI state dictionary.
+  - When provided, submitted tasks target the existing WanGP Gradio queue instead of calling the headless generation path directly.
+  - This lets plugins and in-process integrations share the same queue, gallery, progress, and abort behavior as the WebUI.
+  - In this mode, `output_dir` is ignored and `on_stream(...)` is not expected because the WebUI queue path is probe-based rather than stdout-capture based.
+
+### WebUI Queue Mode
+
+If your code is already running inside WanGP and you want to coexist with the live Gradio queue, pass the current `state` dict to `init(...)`:
+
+```python
+from shared.api import init
+
+session = init(webui_state=state, console_output=False)
+job = session.submit_task(
+    {
+        "model_type": "ltx2_22B_distilled",
+        "prompt": "A cinematic rainy street at night",
+        "resolution": "1280x720",
+        "num_inference_steps": 8,
+        "video_length": 241,
+    }
+)
+```
+
+This mode reuses WanGP's existing WebUI queue loader server-side, then probes the live queue by `client_id` until the task is admitted, completed, fails, or is cancelled.
+
+### Plugin Tab API Object
+
+For WanGP plugins, a WebUI-backed session can be injected directly into the tab constructor.
+
+If a plugin tab constructor accepts one extra positional argument, WanGP now passes a session-shaped API object there:
+
+```python
+def create_config_ui(self, api_session):
+    ...
+```
+
+That object behaves like a normal `WanGPSession`. In a WanGP plugin tab, the WebUI queue integration stays inside the injected session object, so plugin code can keep using the same `submit_task(...)`, `job.result()`, and `job.cancel()` pattern as CLI code.
+
+Minimal plugin pattern:
+
+```python
+def create_config_ui(self, api_session):
+    active_job = {"job": None}
+
+    def start_demo(progress=gr.Progress(track_tqdm=False)):
+        class DemoCallbacks:
+            ratio = 0.0
+
+            def on_status(self, status):
+                status = str(status or "").strip()
+                if status:
+                    progress(self.ratio, desc=status)
+
+            def on_progress(self, update):
+                self.ratio = max(0.0, min(1.0, float(getattr(update, "progress", 0)) / 100.0))
+                progress(self.ratio, desc=str(getattr(update, "status", "") or "Generating..."))
+
+        job = api_session.submit_task(settings, callbacks=DemoCallbacks())
+        active_job["job"] = job
+        result = job.result()
+        return result.generated_files[0] if result.success and result.generated_files else gr.update()
+
+    def cancel_demo():
+        job = active_job.get("job")
+        if job is not None and not job.done:
+            job.cancel()
+```
+
+In a plugin tab, callback methods like `on_status(...)` and `on_progress(...)` can safely update a local `gr.Progress(...)` while the job itself still runs through WanGP's main WebUI queue.
+
+Useful `SessionJob` handles for plugin authors:
+
+- `job.result(timeout=None) -> GenerationResult`
+  - Waits for completion and returns generated files, errors, and any requested returned media artifacts.
+- `job.cancel()`
+  - Requests cancellation of the current job.
+- `job.done`
+  - `True` once the job has fully finished.
+- `job.events`
+  - Event stream for progress, preview, status, output, and completion events.
+- `job.cancel_requested`
+  - `True` after cancellation was requested.
+
+Useful `GenerationResult` fields:
+
+- `result.generated_files`
+  - Output paths collected from WanGP's normal gallery / save path handling.
+- `result.errors`
+  - Structured generation errors. Runtime failures do not raise from `submit_task(...)`; they appear here.
+- `result.artifacts`
+  - Optional returned media payloads requested through `_api`.
+
+Useful `GeneratedArtifact` fields:
+
+- `artifact.path`
+  - Saved output path for that artifact when WanGP produced one.
+- `artifact.media_type`
+  - `"video"`, `"image"`, or `"audio"`.
+- `artifact.video_tensor_uint8`
+  - Optional returned video tensor in WanGP's native post-decode layout: `[C, F, H, W]`, `uint8`.
+- `artifact.audio_tensor`
+  - Optional returned audio tensor / array when requested.
+- `artifact.audio_sampling_rate`
+  - Sampling rate associated with `artifact.audio_tensor` when present.
+- `artifact.fps`
+  - Output FPS associated with `artifact.video_tensor_uint8` when present.
+
 ## Accepted Input Shapes
 
 Relative attachment paths are normalized to absolute paths when the job is submitted.
@@ -118,6 +228,36 @@ Relative attachment paths are normalized to absolute paths when the job is submi
 - For direct settings dictionaries and `.json` settings files, the base is the API caller's current working directory at submit time.
 - For `.zip` queue files, WanGP keeps the queue bundle behavior and resolves bundled media from the extracted queue contents.
 - A few WanGP string-like fields are normalized for convenience. For example, `force_fps` may be passed as `24` or `"24"`.
+
+### Optional API Meta Settings
+
+`submit_task(settings, ...)` also accepts a reserved `_api` dictionary inside `settings`. This is API metadata, not a normal WanGP generation setting.
+
+Current keys:
+
+- `_api={"return_media": True}`
+  - Requests returned media artifacts in `result.artifacts`.
+  - Video outputs return `artifact.video_tensor_uint8` when WanGP can expose a contiguous `uint8` tensor.
+  - Audio outputs return `artifact.audio_tensor` and `artifact.audio_sampling_rate` when available.
+
+Example:
+
+```python
+job = session.submit_task(
+    {
+        "model_type": "ltx2_22B_distilled",
+        "prompt": "generate a video",
+        "resolution": "1280x720",
+        "num_inference_steps": 8,
+        "video_length": 241,
+        "_api": {"return_media": True},
+    }
+)
+
+result = job.result()
+artifact = result.artifacts[0]
+video_tensor = artifact.video_tensor_uint8
+```
 
 ### Single Task
 
@@ -379,7 +519,7 @@ Fields:
 
 ## Callback Object
 
-You can pass a callback object to `init(...)` or `WanGPSession(...)`.
+You can pass a callback object to `init(...)` / `WanGPSession(...)` as the session default, or pass one directly to `submit(...)`, `submit_task(...)`, or `submit_manifest(...)` for a specific job.
 
 Supported callback methods:
 

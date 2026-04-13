@@ -46,6 +46,7 @@ from shared.utils.audio_video import extract_audio_tracks, combine_video_with_au
 from shared.utils.audio_video import read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension
 from shared.utils.audio_metadata import read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
 from shared.utils.media_recording import record_file_metadata as shared_record_file_metadata
+from shared.utils.virtual_media import parse_virtual_media_path, replace_virtual_media_source
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
@@ -1352,18 +1353,20 @@ def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="
             if not isinstance(filename, str) or not filename.strip():
                 print(f"{log_prefix} Warning: Invalid filename for key '{key}'. Skipping.")
                 continue
+            virtual_spec = parse_virtual_media_path(filename)
+            source_name = virtual_spec.source_path if virtual_spec is not None else filename
 
-            if os.path.isabs(filename):
-                source_path = filename
+            if os.path.isabs(source_name):
+                source_path = source_name
             else:
-                source_path = os.path.join(media_base_path, filename)
+                source_path = os.path.join(media_base_path, source_name)
 
             if not os.path.exists(source_path):
                 print(f"{log_prefix} Warning: File not found for '{key}': {source_path}")
                 continue
 
             if cache_dir:
-                final_path = os.path.join(cache_dir, os.path.basename(filename))
+                final_path = os.path.join(cache_dir, os.path.basename(source_name))
                 try:
                     shutil.copy2(source_path, final_path)
                 except Exception as e:
@@ -1381,7 +1384,7 @@ def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="
                 except Exception as e:
                     print(f"{log_prefix} Error loading image {final_path}: {e}")
             else:
-                loaded_items.append(final_path)
+                loaded_items.append(replace_virtual_media_source(filename, final_path) if virtual_spec is not None else final_path)
                 print(f"{log_prefix} Using path: {final_path}")
 
         # Update params, preserving list/single structure
@@ -1970,6 +1973,16 @@ def update_generation_status(html_content):
 family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.longcat.longcat_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.kandinsky5.kandinsky_handler",  "models.z_image.z_image_handler", "models.magi_human.magi_human_handler", "models.TTS.ace_step_handler", "models.TTS.chatterbox_handler", "models.TTS.qwen3_handler", "models.TTS.yue_handler", "models.TTS.heartmula_handler", "models.TTS.kugelaudio_handler", "models.TTS.index_tts2_handler"]
 DEFAULT_LORA_ROOT = "loras"
 
+def get_lora_root():
+    cli_lora_root = getattr(args, "loras", "")
+    if isinstance(cli_lora_root, str):
+        cli_lora_root = cli_lora_root.strip()
+    config_lora_root = None
+    if "server_config" in globals():
+        config_lora_root = server_config.get("loras_root", DEFAULT_LORA_ROOT)
+    lora_root = cli_lora_root or config_lora_root or DEFAULT_LORA_ROOT
+    return lora_root
+
 def get_lora_dir(model_type):
     base_model_type = get_base_model_type(model_type)
     if base_model_type is None:
@@ -1980,13 +1993,7 @@ def get_lora_dir(model_type):
     if get_dir is None:
         raise Exception("loras unknown")
 
-    cli_lora_root = getattr(args, "loras", "")
-    if isinstance(cli_lora_root, str):
-        cli_lora_root = cli_lora_root.strip()
-    config_lora_root = None
-    if "server_config" in globals():
-        config_lora_root = server_config.get("loras_root", DEFAULT_LORA_ROOT)
-    lora_root = cli_lora_root or config_lora_root or DEFAULT_LORA_ROOT
+    lora_root = get_lora_root()
 
     lora_dir = get_dir(base_model_type, args, lora_root)
     if lora_dir is None:
@@ -5571,6 +5578,41 @@ def get_output_filepath(file_path, is_image, audio_only):
         base_path = save_path
     return get_available_filename(base_path, file_path)
 
+
+def _get_api_output_options(plugin_data):
+    api_options = {} if not isinstance(plugin_data, dict) else plugin_data.get("api", {})
+    if not isinstance(api_options, dict):
+        return False, False
+    return_video = bool(api_options.get("return_video_uint8") or api_options.get("return_media"))
+    return_audio = bool(api_options.get("return_audio") or api_options.get("return_media"))
+    return return_video, return_audio
+
+
+def _store_api_output_artifact(gen, client_id, video_path, media_type, output_video_frames, output_audio_data, output_audio_sampling_rate, output_fps):
+    client_id = str(client_id or "").strip()
+    if len(client_id) == 0:
+        return
+    if isinstance(video_path, list):
+        output_path = str(video_path[0]) if len(video_path) > 0 else ""
+    else:
+        output_path = str(video_path or "")
+    video_tensor_uint8 = None
+    if torch.is_tensor(output_video_frames):
+        video_tensor_uint8 = output_video_frames
+    elif isinstance(output_video_frames, list) and len(output_video_frames) == 1 and torch.is_tensor(output_video_frames[0]):
+        video_tensor_uint8 = output_video_frames[0]
+    audio_tensor = None if output_audio_data is None else np.asarray(output_audio_data, dtype=np.float32)
+    gen.setdefault("api_output_artifacts", {})[client_id] = {
+        "client_id": client_id,
+        "path": output_path,
+        "media_type": media_type,
+        "video_tensor_uint8": video_tensor_uint8,
+        "audio_tensor": audio_tensor,
+        "audio_sampling_rate": int(output_audio_sampling_rate) if output_audio_sampling_rate else None,
+        "fps": float(output_fps) if output_fps else None,
+    }
+
+
 def record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=None, replace_last_file=False):
     return shared_record_file_metadata(video_path, configs, is_image, audio_only, gen, get_processed_queue=get_processed_queue, metadata_choice=server_config.get("metadata_type", "metadata"), embedded_images=embedded_images, replace_last_file=replace_last_file, lock=lock, verbose_level=verbose_level)
 
@@ -5701,6 +5743,7 @@ def generate_video(
 
     global wan_model, offloadobj, reload_needed
     gen = get_gen_info(state)
+    api_return_video_uint8, api_return_audio = _get_api_output_options(plugin_data)
     gen["early_stop"] = False
     gen["early_stop_forwarded"] = False
     torch.set_grad_enabled(False) 
@@ -6856,6 +6899,13 @@ def generate_video(
                 configs["creation_timestamp"] = int(end_time)
                 # if sample_is_image: configs["is_image"] = True
                 record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=embedded_images, replace_last_file=sliding_window and window_no > 1 and not server_config.get("keep_intermediate_sliding_windows", 1))
+                if api_return_video_uint8 or api_return_audio:
+                    media_type = "audio" if audio_only else ("image" if is_image else "video")
+                    artifact_audio = output_new_audio_data if api_return_audio else None
+                    if artifact_audio is None and api_return_audio and audio_only and sample is not None:
+                        artifact_audio = sample.squeeze(0).detach().cpu().float().numpy()
+                    artifact_video = output_video_frames if api_return_video_uint8 else None
+                    _store_api_output_artifact(gen, client_id, video_path, media_type, artifact_video, artifact_audio, output_audio_sampling_rate, output_fps if not audio_only else None)
 
                 embedded_images = None
                 # Play notification sound for single video
@@ -10293,11 +10343,10 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             guidance_phases = gr.Dropdown(
                                 choices=[
                                     ("One Phase", 1),
-                                    ("Two Phases", 2),
-                                    ("Three Phases", 3)],
+                                    ("Two Phases", 2)] + ([("Three Phases", 3)] if guidance_max_phases >=3 else []),
                                 value= guidance_phases_value,
-                                label="Guidance Phases",
-                                visible= guidance_max_phases >=2 and visible_phases>=2,
+                                label="Guidance Phases" if visible_phases>=2 else "Phases",
+                                visible= guidance_max_phases >=2 , 
                                 interactive = not model_def.get("lock_guidance_phases", False)
                             )
                         with gr.Row(visible = get_container_def("guidance_phases_row").visible and guidance_phases_value >= 2) as guidance_phases_row:
@@ -10762,7 +10811,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
         with gr.Column(visible=(tab_id == 'generate')):
             if not update_form:
                 state = default_state if default_state is not None else gr.State(state_dict)
-                gen_status = gr.Text(interactive= False, label = "Status")
+                gen_status = gr.Text(interactive=False, label="Status", lines=1, max_lines=1, autoscroll=False)
                 main_bridge_elem_ids = tab_id == 'generate'
                 status_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_status_trigger" if main_bridge_elem_ids else None)
                 load_queue_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_load_queue_trigger" if main_bridge_elem_ids else None)

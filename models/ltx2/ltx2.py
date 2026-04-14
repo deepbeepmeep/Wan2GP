@@ -11,7 +11,7 @@ import torchaudio
 from accelerate import init_empty_weights
 from shared.utils import files_locator as fl
 
-from .ltx_core.conditioning import AudioConditionByLatent, AudioConditionByReferenceLatent
+from .ltx_core.conditioning import AudioConditionByLatent, AudioConditionByLatentPrefix, AudioConditionByReferenceLatent
 from .ltx_core.model.audio_vae import (
     VOCODER_COMFY_KEYS_FILTER,
     AudioDecoderConfigurator,
@@ -1082,7 +1082,7 @@ class LTX2:
                 if waveform.ndim == 1:
                     waveform = waveform.unsqueeze(0).unsqueeze(0)
                 elif waveform.ndim == 2:
-                    waveform = waveform.unsqueeze(0)
+                    waveform = waveform.T.unsqueeze(0)
                 target_channels = int(getattr(self.audio_encoder, "in_channels", waveform.shape[1]))
                 if target_channels <= 0:
                     target_channels = waveform.shape[1]
@@ -1150,16 +1150,11 @@ class LTX2:
                     )
                     target_frames = target_shape.frames
                     if audio_latent.shape[2] < target_frames:
-                        pad_frames = target_frames - audio_latent.shape[2]
-                        pad = torch.zeros(
-                            (audio_latent.shape[0], audio_latent.shape[1], pad_frames, audio_latent.shape[3]),
-                            device=audio_latent.device,
-                            dtype=audio_latent.dtype,
-                        )
-                        audio_latent = torch.cat([audio_latent, pad], dim=2)
-                    elif audio_latent.shape[2] > target_frames:
-                        audio_latent = audio_latent[:, :, :target_frames, :]
-                    audio_conditionings = [AudioConditionByLatent(audio_latent, audio_strength)]
+                        audio_conditionings = [AudioConditionByLatentPrefix(audio_latent)]
+                    else:
+                        if audio_latent.shape[2] > target_frames:
+                            audio_latent = audio_latent[:, :, :target_frames, :]
+                        audio_conditionings = [AudioConditionByLatent(audio_latent, audio_strength)]
 
         target_height = int(height)
         target_width = int(width)

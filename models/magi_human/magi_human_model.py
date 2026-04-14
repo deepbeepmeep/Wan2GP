@@ -420,8 +420,10 @@ class MagiHumanModel:
         waveform = waveform.to(dtype=torch.float32)
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0)
+        elif waveform.ndim == 2:
+            waveform = waveform.T
         elif waveform.ndim == 3 and waveform.shape[0] == 1:
-            waveform = waveform.squeeze(0)
+            waveform = waveform.squeeze(0).T
         if waveform.ndim != 2:
             raise ValueError(f"Unexpected Magi Human waveform shape: {tuple(waveform.shape)}")
         target_sample_rate = 51200

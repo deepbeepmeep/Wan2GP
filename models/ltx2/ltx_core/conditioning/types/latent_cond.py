@@ -77,6 +77,37 @@ class AudioConditionByLatent(ConditioningItem):
         return latent_state
 
 
+class AudioConditionByLatentPrefix(ConditioningItem):
+    """
+    Conditions audio generation by freezing only an initial latent prefix.
+    The provided latents remain clean while the remaining target tokens stay noisy.
+    """
+
+    def __init__(self, latent: torch.Tensor):
+        self.latent = latent
+
+    def apply_to(self, latent_state: LatentState, latent_tools: LatentTools) -> LatentState:
+        if not isinstance(latent_tools.target_shape, AudioLatentShape):
+            raise ConditioningError("Audio prefix conditioning requires an audio latent target shape.")
+
+        cond_batch, cond_channels, cond_frames, cond_bins = self.latent.shape
+        tgt_batch, tgt_channels, tgt_frames, tgt_bins = latent_tools.target_shape.to_torch_shape()
+
+        if (cond_batch, cond_channels, cond_bins) != (tgt_batch, tgt_channels, tgt_bins) or cond_frames > tgt_frames:
+            raise ConditioningError(
+                f"Can't apply audio prefix conditioning item to latent with shape {latent_tools.target_shape}, expected "
+                f"shape is ({tgt_batch}, {tgt_channels}, <= {tgt_frames}, {tgt_bins})."
+            )
+
+        tokens = latent_tools.patchifier.patchify(self.latent)
+        latent_state = latent_state.clone()
+        latent_state.latent[:, : tokens.shape[1]] = tokens
+        latent_state.clean_latent[:, : tokens.shape[1]] = tokens
+        latent_state.denoise_mask[:, : tokens.shape[1]] = 0.0
+
+        return latent_state
+
+
 class AudioConditionByReferenceLatent(ConditioningItem):
     """
     Prepends clean reference-audio tokens to the audio latent state.

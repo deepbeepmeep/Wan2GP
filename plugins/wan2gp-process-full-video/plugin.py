@@ -1417,6 +1417,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         with gr.Column():
             with gr.Row():
+                gr.Markdown("This PlugIn is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. You can stop a Process and Resume it later.")
                 process_name = gr.Dropdown(PROCESS_CHOICES, value="outpaint_video", label="Process")
             with gr.Row():
                 source_path = gr.Textbox(label="Source Video Path File", value=DEFAULT_SOURCE_PATH, scale=3)

@@ -202,6 +202,7 @@ class family_handler:
             },
             "auto_null_audio": True,
             "audio_guide_window_slicing": True,
+            "video_length_not_limited_by_audio": True,
             "output_audio_is_input_audio": True,
             "multimedia_generation": True,
             "multiple_images_as_text_prompts": True,

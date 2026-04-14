@@ -33,6 +33,27 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
+
+### 14th of April 2026: WanGP v11.30, LTX-2 Mega Mix
+Lots of nice goodies for **LTX-2**:
+
+- **LTX-2.3 Distilled 1.1**: new version of the *Distilled model* released by *LTX team*, it should offer better audio and visuals. You will find also a Dev 1.1 version which uses Distilled 1.1 for Phase 2.
+
+- **VBVR Lora Preset**: This LoRA enhances the base LTX-2 for Enhanced Complex Prompt Understanding, Improved Motion Dynamics & Temporal Consistency. You can select it in the *Settings list* at the top.
+
+- **Phase 1/2 Choice**: you can now either you go for a good old *2 Phases Gen* (1st Phase Low Res, 2nd shorter Phase High res) or go straight to a single High Res Phase (needs more VRAM and slower, but potentially higher quality). Please note that Outpainting mode and Pose/Edge/Depth extractors are always using 1 phase.
+
+- **Improved Sliding Window**: transition between windows should be less noticable, *Sliding Windows overlapped Frames* carry now also the audio of the overlapped frames, so the higher the number of overlapped frames the higher the chance that the sound / voice used in the previous window will be used in the new one.
+
+- **Video Length not Limited by Audio**: if you provide an Audio input, WanGP will no longer stops when the audio is consumed. It will continue the Video/Audio Gen based on the content of your Text prompt, and guess what ? it may reuse the same voice/sound used up to now !  This is an option, you need to check the checkbox *Video Length not Limited by Audio*.
+
+- **Silent Movie Mode**: if for some reason you want video with not only no sound but that takes into account that there is no sound (you dont want people to open their mouth for instance), just now leave the *Control Audio* empty
+
+- **Process Full Video Plugin**: this *bundled PlugIn* which needs to be enabled first in *the PlugIn tab*, right now supports only *Outpainting*. It relies on *LTX2 Lora outpainting*. It is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. If you are patient enough you can change the Aspect Ratio of a few hours movie (check out below the 1 min sample). Behold how *Sliding Windows transitions* are almost invisible !
+
+- **WanGP API Video Gen**: *Plugin Developers* can now *Queue a Gen* directly from a plugin. This opens the possibility of plugins that place various gen orders and then combine the results (hint: we could have our very own version of *LTX-Destop* inside WanGP).
+
+
 ### 11th of April 2026: WanGP v11.26, Now I Can See
 
 - **LTX-2 Ic Lora Rebooted**: *Ic Loras* behave like *Control Nets* and can do *Video to Video* by applying an effect specific to the Ic Lora for instance *Pose Extraction*, *Upsampling*, *Transfer Camera Movement*, ...  More and More Ic Loras are available nowadays. Until now WanGP Ic Lora implementation was based on the official LTX-2 github implementation (which a 2 phases process where the Ic Lora is only applied during the first low res phase). However I have just discovered that all the Ic Loras around expect in fact the ComfyUI implementation which is one phase only process at full res. 

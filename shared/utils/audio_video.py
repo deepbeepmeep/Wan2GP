@@ -46,6 +46,42 @@ def write_wav_file(path, audio_data, sample_rate):
     return path
 
 
+def resample_audio_array(audio_data, source_sample_rate, target_sample_rate):
+    audio_array = np.asarray(audio_data, dtype=np.float32)
+    source_sample_rate = int(source_sample_rate or 0)
+    target_sample_rate = int(target_sample_rate or 0)
+    if audio_array.size == 0 or source_sample_rate <= 0 or target_sample_rate <= 0 or source_sample_rate == target_sample_rate:
+        return audio_array.astype(np.float32, copy=False)
+    import torchaudio.functional as taF
+    wave = torch.from_numpy(audio_array.T.copy() if audio_array.ndim == 2 else audio_array[None].copy()).to(dtype=torch.float32)
+    resampled = taF.resample(wave, source_sample_rate, target_sample_rate).cpu().numpy()
+    return (resampled.T if audio_array.ndim == 2 else resampled[0]).astype(np.float32, copy=False)
+
+
+def append_sliding_window_audio(existing_audio_data, existing_audio_path, generated_audio, audio_sampling_rate, committed_audio_samples, existing_audio_sample_rate=None):
+    generated_audio = np.asarray(generated_audio, dtype=np.float32)
+    if generated_audio.size == 0:
+        return generated_audio
+    prefix_sample_rate = int(existing_audio_sample_rate or audio_sampling_rate)
+    if existing_audio_data is not None:
+        prefix_audio = np.asarray(existing_audio_data, dtype=np.float32)
+    elif existing_audio_path:
+        prefix_audio, prefix_sample_rate = sf.read(os.fspath(existing_audio_path), dtype="float32", always_2d=generated_audio.ndim == 2)
+    else:
+        return generated_audio
+    if prefix_sample_rate != int(audio_sampling_rate):
+        prefix_audio = resample_audio_array(prefix_audio, prefix_sample_rate, audio_sampling_rate)
+    prefix_audio = prefix_audio[:max(0, int(committed_audio_samples))]
+    if prefix_audio.size == 0:
+        return generated_audio
+    if prefix_audio.ndim != generated_audio.ndim:
+        prefix_audio = prefix_audio[:, None] if prefix_audio.ndim == 1 else prefix_audio
+        generated_audio = generated_audio[:, None] if generated_audio.ndim == 1 else generated_audio
+    if prefix_audio.ndim == 2 and prefix_audio.shape[1] != generated_audio.shape[1]:
+        prefix_audio = np.repeat(prefix_audio[:, :1], generated_audio.shape[1], axis=1) if prefix_audio.shape[1] == 1 else prefix_audio[:, :generated_audio.shape[1]]
+    return np.concatenate([prefix_audio, generated_audio], axis=0)
+
+
 def create_silent_wav_file(output_dir=None, duration_seconds=0.0, sample_rate=16000, prefix="null_audio_"):
     sample_rate = int(sample_rate)
     num_samples = max(1, int(np.ceil(float(duration_seconds) * sample_rate)))

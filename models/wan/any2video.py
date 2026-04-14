@@ -14,13 +14,19 @@ from mmgp import offload
 import torch
 import torch.nn as nn
 import torch.cuda.amp as amp
-import torch.distributed as dist
+try:
+    import torch.distributed as dist
+except ImportError:
+    dist = None
 import numpy as np
 from tqdm import tqdm
 from PIL import Image
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
-from .distributed.fsdp import shard_model
+try:
+    from .distributed.fsdp import shard_model
+except (ImportError, ModuleNotFoundError):
+    shard_model = None
 from .modules.model import WanModel
 from mmgp.offload import get_cache, clear_caches
 from .modules.t5 import T5EncoderModel

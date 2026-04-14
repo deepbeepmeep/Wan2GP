@@ -1,7 +1,10 @@
 import random
 import os
 import torch
-import torch.distributed as dist
+try:
+    import torch.distributed as dist
+except ImportError:
+    dist = None
 from PIL import Image
 import subprocess
 import torchvision.transforms as transforms

@@ -1,12 +1,17 @@
-from torch.distributed._tensor import Replicate, Shard
-from torch.distributed.tensor.parallel import (
-    ColwiseParallel,
-    PrepareModuleInput,
-    PrepareModuleOutput,
-    RowwiseParallel,
-    SequenceParallel,
-    parallelize_module,
-)
+try:
+    from torch.distributed._tensor import Replicate, Shard
+    from torch.distributed.tensor.parallel import (
+        ColwiseParallel,
+        PrepareModuleInput,
+        PrepareModuleOutput,
+        RowwiseParallel,
+        SequenceParallel,
+        parallelize_module,
+    )
+except (ImportError, ModuleNotFoundError):
+    Replicate = Shard = None
+    ColwiseParallel = PrepareModuleInput = PrepareModuleOutput = None
+    RowwiseParallel = SequenceParallel = parallelize_module = None
 
 
 def parallelize_dit(model, tp_mesh):

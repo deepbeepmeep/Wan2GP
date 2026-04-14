@@ -29,9 +29,11 @@ PlugIn_Id = "ProcessFullVideo"
 
 PROCESS_CHOICES = [("Outpaint Video", "outpaint_video")]
 RATIO_CHOICES = [("1:1", "1:1"), ("4:3", "4:3"), ("3:4", "3:4"), ("16:9", "16:9"), ("9:16", "9:16"), ("21:9", "21:9"), ("9:21", "9:21")]
-DEFAULT_SOURCE_PATH = r"F:\ALIENS_t01.mkv"
+DEFAULT_SOURCE_PATH = ""
 DEFAULT_OUTPUT_PATH = ""
 DEFAULT_MODEL_TYPE = "ltx2_22B_distilled"
+MAX_STATUS_REFRESH_HZ = 3.0
+STATUS_REFRESH_INTERVAL_SECONDS = 1.0 / MAX_STATUS_REFRESH_HZ
 
 
 @dataclass(frozen=True)
@@ -912,7 +914,7 @@ def _render_chunk_status_html(total_chunks: int, completed_chunks: int, current_
     status_line_html = f"<div style='font-size:0.9em;color:#4b5563'>{status_html}</div>" if show_status_line else ""
     return (
         "<div style='display:flex;flex-direction:column;gap:8px'>"
-        f"<div style='font-weight:600'>Current chunk: {current_chunk} / {total_chunks}{continued_suffix}</div>"
+        f"<div style='font-weight:600'>Chunks Processed: {completed_chunks} / {total_chunks}{continued_suffix}</div>"
         "<div style='height:12px;border-radius:999px;background:#d7dce3;overflow:hidden'>"
         f"<div style='height:100%;width:{top_width};background:linear-gradient(90deg,#2f7de1,#5db0ff)'></div>"
         "</div>"
@@ -1190,11 +1192,15 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     _reset_live_chunk_status(state)
                     job = api_session.submit_task(settings, callbacks=callbacks)
                     active_job["job"] = job
+                    next_status_refresh_at = 0.0
                     while not job.done:
-                        html_value = _render_chunk_status_html(total_chunks_display, completed_chunks, min(completed_chunks + 1, total_chunks_display), callbacks.phase_label, callbacks.status_text, continued=continued_mode, phase_current_step=callbacks.current_step, phase_total_steps=callbacks.total_steps, prefer_status_phase=True, **_timing_kwargs(callbacks.current_step, callbacks.total_steps))
-                        if html_value != last_html:
-                            last_html = html_value
-                            yield _ui_update(html_value)
+                        now = time.monotonic()
+                        if now >= next_status_refresh_at:
+                            html_value = _render_chunk_status_html(total_chunks_display, completed_chunks, min(completed_chunks + 1, total_chunks_display), callbacks.phase_label, callbacks.status_text, continued=continued_mode, phase_current_step=callbacks.current_step, phase_total_steps=callbacks.total_steps, prefer_status_phase=True, **_timing_kwargs(callbacks.current_step, callbacks.total_steps))
+                            next_status_refresh_at = now + STATUS_REFRESH_INTERVAL_SECONDS
+                            if html_value != last_html:
+                                last_html = html_value
+                                yield _ui_update(html_value)
                         time.sleep(0.1)
                     try:
                         result = job.result()
@@ -1409,22 +1415,20 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 return gr.update(value="Start Process", interactive=False), gr.update(value="Stop", interactive=False)
             return gr.update(value="Start Process", interactive=True), gr.update(value="Stop", interactive=False)
 
-        stop_process._wangp_skip_webui_wrap = True
-
         with gr.Column():
             with gr.Row():
                 process_name = gr.Dropdown(PROCESS_CHOICES, value="outpaint_video", label="Process")
             with gr.Row():
                 source_path = gr.Textbox(label="Source Video Path File", value=DEFAULT_SOURCE_PATH, scale=3)
-                output_path = gr.Textbox(label="Output File Path File", value=DEFAULT_OUTPUT_PATH, scale=3)
+                output_path = gr.Textbox(label="Output File Path File (None for auto, Full Name or Target Folder)", value=DEFAULT_OUTPUT_PATH, scale=3)
                 continue_enabled = gr.Checkbox(label="Continue", value=True, elem_classes="cbx_bottom", scale=1)
             with gr.Row():
                 output_resolution = gr.Dropdown([("1080p", "1080p"), ("900p", "900p"), ("720p", "720p"), ("540p", "540p")], value="720p", label="Output Resolution")
                 target_ratio = gr.Dropdown(RATIO_CHOICES, value="4:3", label="Target Ratio")
                 chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=10.0, precision=2)
             with gr.Row():
-                start_seconds = gr.Textbox(label="Start (s/MM:SS/HH:MM:SS)", value="40:00", placeholder="seconds, MM:SS, or HH:MM:SS")
-                end_seconds = gr.Textbox(label="End (s/MM:SS/HH:MM:SS)", value="50:00", placeholder="seconds, MM:SS, or HH:MM:SS")
+                start_seconds = gr.Textbox(label="Start (s/MM:SS/HH:MM:SS)", value="", placeholder="seconds, MM:SS, or HH:MM:SS")
+                end_seconds = gr.Textbox(label="End (s/MM:SS/HH:MM:SS)", value="", placeholder="seconds, MM:SS, or HH:MM:SS")
                 source_audio_track = gr.Number(label="Source Audio Track (1-based)", value=1, precision=0, minimum=1)
             with gr.Row():
                 start_btn = gr.Button("Start Process")

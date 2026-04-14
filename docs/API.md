@@ -4,6 +4,8 @@
 
 The main goal is to let third-party code call WanGP directly, keep the last loaded model alive across requests, receive structured progress updates, and still capture the same stdout/stderr output that would normally go to the console.
 
+This same API can be used directly from a WanGP PlugIn and uses WanGP Web Queue to process the requested Jobs of called from a Third Party App (for instance https://github.com/deepbeepmeep/LTX-Desktop-WanGP).
+
 **Please note that use of the WanGP API is subject to the WanGP Terms and Conditions. Any product that integrates WanGP should clearly disclose that it uses WanGP in both its user interface and its documentation.**
 
 ## Quick Start
@@ -56,6 +58,7 @@ else:
 
 - `init(...) -> WanGPSession`
   - Creates a reusable session and eagerly loads the runtime.
+  - This is the normal entrypoint for standalone / CLI-style third-party integrations.
 - `WanGPSession.submit(source, callbacks=None) -> SessionJob`
   - Starts a job from a settings dict, a manifest list, or a saved `.json` / `.zip` file.
 - `WanGPSession.submit_task(settings, callbacks=None) -> SessionJob`
@@ -66,6 +69,17 @@ else:
   - Waits for completion and returns a structured result object.
 - `SessionJob.cancel()`
   - Requests cancellation of the active generation.
+
+### When `init(...)` Is Needed
+
+- Standalone / CLI-style third-party app or Python script:
+  - yes, call `init(...)`
+- WanGP plugin tab receiving an injected `api_session` in `create_config_ui(...)`:
+  - no, do not call `init(...)`
+  - use the injected `api_session` directly
+- Low-level in-process integration inside WanGP with direct access to the live Gradio `state`:
+  - possible with `init(webui_state=state, ...)`
+  - this is an advanced/internal path, not the normal plugin entrypoint
 
 ## `init(...)` Parameters
 
@@ -115,12 +129,15 @@ session = init(
 - `webui_state`
   - Optional live WanGP WebUI state dictionary.
   - When provided, submitted tasks target the existing WanGP Gradio queue instead of calling the headless generation path directly.
-  - This lets plugins and in-process integrations share the same queue, gallery, progress, and abort behavior as the WebUI.
+  - This is mainly a low-level internal / advanced integration hook.
+  - Normal WanGP plugins should use the injected `api_session` instead of calling `init(...)` themselves.
   - In this mode, `output_dir` is ignored and `on_stream(...)` is not expected because the WebUI queue path is probe-based rather than stdout-capture based.
 
 ### WebUI Queue Mode
 
-If your code is already running inside WanGP and you want to coexist with the live Gradio queue, pass the current `state` dict to `init(...)`:
+This is the WebUI-backed queue mode used by WanGP plugin integrations.
+
+If you are implementing a low-level in-process integration and explicitly need to bind the API to WanGP's live Gradio queue yourself, pass the current `state` dict to `init(...)`:
 
 ```python
 from shared.api import init
@@ -139,6 +156,16 @@ job = session.submit_task(
 
 This mode reuses WanGP's existing WebUI queue loader server-side, then probes the live queue by `client_id` until the task is admitted, completed, fails, or is cancelled.
 
+Differences versus standalone / CLI-style mode:
+
+- third-party apps normally use plain `init(...)` without `webui_state`
+- this WebUI-backed mode is the WanGP-side queue path
+- low-level direct use still calls `init(...)`, but with `webui_state=state`
+- jobs run through WanGP's existing Gradio queue instead of the headless direct generation path
+- `output_dir` is ignored
+- `on_stream(...)` / `job.events` console lines are not the primary signal because this path is probe-based
+- the API banner is intentionally not printed in this mode
+
 ### Plugin Tab API Object
 
 For WanGP plugins, a WebUI-backed session can be injected directly into the tab constructor.
@@ -151,6 +178,13 @@ def create_config_ui(self, api_session):
 ```
 
 That object behaves like a normal `WanGPSession`. In a WanGP plugin tab, the WebUI queue integration stays inside the injected session object, so plugin code can keep using the same `submit_task(...)`, `job.result()`, and `job.cancel()` pattern as CLI code.
+
+Plugin-specific difference:
+
+- in a plugin tab, you normally do **not** call `init(...)`
+- WanGP creates and injects the WebUI-backed session object for you
+- plugin code should treat `api_session` as the API entrypoint
+- this is the normal WebUI/API path for WanGP plugins
 
 Minimal plugin pattern:
 
@@ -205,6 +239,8 @@ Useful `GenerationResult` fields:
   - Structured generation errors. Runtime failures do not raise from `submit_task(...)`; they appear here.
 - `result.artifacts`
   - Optional returned media payloads requested through `_api`.
+- `result.cancelled`
+  - Optional returned if job was cancelled / aborted.
 
 Useful `GeneratedArtifact` fields:
 
@@ -221,6 +257,49 @@ Useful `GeneratedArtifact` fields:
 - `artifact.fps`
   - Output FPS associated with `artifact.video_tensor_uint8` when present.
 
+### Getting Outputs In Memory
+
+By default, the API gives you output file paths in `result.generated_files`.
+
+If you also want the generated media directly in memory, request it explicitly:
+
+- pass `_api={"return_media": True}` in the submitted task settings
+- then read the returned payloads from `result.artifacts`
+
+Important notes:
+
+- `result.generated_files` and `result.artifacts` are not mutually exclusive
+  - WanGP still saves normal output files
+  - the same completed task can also return in-memory media through `result.artifacts`
+- `result.artifacts` is ordered like the submitted tasks for the tasks that actually returned media
+- for video, the returned tensor layout is `[C, F, H, W]` with `dtype=uint8`
+- for audio, use `artifact.audio_tensor` together with `artifact.audio_sampling_rate`
+
+Minimal example:
+
+```python
+job = session.submit_task(
+    {
+        "model_type": "ltx2_22B_distilled",
+        "prompt": "generate a video",
+        "resolution": "1280x720",
+        "num_inference_steps": 8,
+        "video_length": 241,
+        "_api": {"return_media": True},
+    }
+)
+
+result = job.result()
+
+artifact = result.artifacts[0]
+video_tensor = artifact.video_tensor_uint8   # [C, F, H, W], uint8
+audio_tensor = artifact.audio_tensor         # optional
+audio_sr = artifact.audio_sampling_rate      # optional
+saved_path = artifact.path                   # optional saved file path
+```
+
+If you only care about the in-memory result, you can ignore `result.generated_files` and work directly from `result.artifacts`.
+
 ## Accepted Input Shapes
 
 Relative attachment paths are normalized to absolute paths when the job is submitted.
@@ -228,6 +307,43 @@ Relative attachment paths are normalized to absolute paths when the job is submi
 - For direct settings dictionaries and `.json` settings files, the base is the API caller's current working directory at submit time.
 - For `.zip` queue files, WanGP keeps the queue bundle behavior and resolves bundled media from the extracted queue contents.
 - A few WanGP string-like fields are normalized for convenience. For example, `force_fps` may be passed as `24` or `"24"`.
+
+### Targeting A Frame Range Inside A Video File
+
+For media inputs that accept a file path, WanGP also supports a virtual-media suffix so you can target only part of a source file without extracting an intermediate clip first.
+
+Syntax:
+
+- `path/to/file.ext|start_frame=123,end_frame=456`
+
+Notes:
+
+- `start_frame` is zero-based
+- `end_frame` is inclusive
+- the underlying source file stays the same; WanGP just decodes the requested frame range
+- this is especially useful for `video_guide`, `video_mask`, and similar video-input fields
+
+Optional audio-track targeting is also supported:
+
+- `path/to/file.ext|start_frame=123,end_frame=456,audio_track_no=2`
+
+Example:
+
+```python
+job = session.submit_task(
+    {
+        "model_type": "ltx2_22B_distilled",
+        "prompt": "generate a video",
+        "video_prompt_type": "VG",
+        "video_guide": r"F:\ALIENS_t01.mkv|start_frame=57542,end_frame=57782",
+        "resolution": "1280x720",
+        "num_inference_steps": 8,
+        "video_length": 241,
+    }
+)
+```
+
+If you want to build that string programmatically, use `shared.utils.virtual_media.build_virtual_media_path(...)`.
 
 ### Optional API Meta Settings
 

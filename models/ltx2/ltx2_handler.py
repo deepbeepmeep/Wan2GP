@@ -29,6 +29,7 @@ _ARCH_SPECS = {
         "distilled_embeddings_connector": "ltx-2-19b-distilled_embeddings_connector.safetensors",
         "profiles_dir": "ltx2",
         "preset_profiles_dir": "ltx2_presets",
+        "distilled_preset_profiles_dir": "ltx2_distilled_presets",
         "lora_dir": "ltx2",
     },
     "ltx2_22B": {
@@ -46,6 +47,7 @@ _ARCH_SPECS = {
         "embeddings_connector": "ltx-2.3-22b_embeddings_connector.safetensors",
         "profiles_dir": "ltx2",
         "preset_profiles_dir": "ltx2_presets",
+        "distilled_preset_profiles_dir": "ltx2_distilled_presets",
         "lora_dir": "ltx2_22B",
     },
 }
@@ -187,7 +189,7 @@ class family_handler:
             "any_audio_prompt": True,
             "audio_prompt_choices": True,
             "one_speaker_only": True,
-            "audio_guide_label": "Audio Prompt (Soundtrack)",
+            "audio_guide_label": "Audio Prompt (Soundtrack, leave blank to to use a Null Audio)",
             "audio_scale_name": "Prompt Audio Strength",
             "audio_prompt_type_sources": {
                 "selection": audio_prompt_selection,
@@ -198,6 +200,7 @@ class family_handler:
                 "letters_filter": "A1OFK",
                 "show_label": False,
             },
+            "auto_null_audio": True,
             "audio_guide_window_slicing": True,
             "output_audio_is_input_audio": True,
             "multimedia_generation": True,
@@ -216,9 +219,7 @@ class family_handler:
             extra_model_def["video_guide_outpainting_label"] = "Enable Spatial Outpainting on Control Video using Ic Lora Outpaint"
             extra_model_def["guide_inpaint_color"] = 0
 
-        preset_profiles_dir = spec.get("preset_profiles_dir")
-        if preset_profiles_dir and not distilled:
-            extra_model_def["preset_profiles_dir"] = [preset_profiles_dir]
+        extra_model_def["preset_profiles_dir"] = [spec.get("distilled_preset_profiles_dir") if distilled else spec.get("preset_profiles_dir")]
         extra_model_def["extra_control_frames"] = 1
         extra_model_def["dont_cat_preguide"] = True
         extra_model_def["input_video_strength"] = {
@@ -547,6 +548,7 @@ class family_handler:
                 "masking_strength": 0,
                 "audio_prompt_type": "",
                 "perturbation_layers": default_perturbation_layers,
+                "guidance_phases": 2,
 	            }
         )
         ui_defaults.setdefault("audio_scale", 1.0)
@@ -554,8 +556,6 @@ class family_handler:
         if pipeline_kind != "distilled":
             ui_defaults.update(_default_dev_settings(base_model_type))
             ui_defaults.setdefault("sample_solver", "euler")
-        else:
-            ui_defaults.setdefault("guidance_phases", 1)
 
     @staticmethod
     def get_custom_prompt_enhancer_instructions(model_type, prompt_enhancer_mode, is_image, enhancer_kwargs):

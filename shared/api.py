@@ -7,6 +7,7 @@ import copy
 import importlib
 import io
 import json
+import numpy as np
 import os
 import queue
 import re
@@ -96,6 +97,20 @@ class GeneratedArtifact:
     audio_sampling_rate: int | None = None
     fps: float | None = None
 
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any], *, default_client_id: str = "") -> "GeneratedArtifact | None":
+        if not isinstance(payload, dict):
+            return None
+        return cls(
+            path=str(payload.get("path") or "") or None,
+            media_type=str(payload.get("media_type") or "video"),
+            client_id=str(payload.get("client_id") or default_client_id or "").strip(),
+            video_tensor_uint8=payload.get("video_tensor_uint8"),
+            audio_tensor=payload.get("audio_tensor"),
+            audio_sampling_rate=payload.get("audio_sampling_rate"),
+            fps=payload.get("fps"),
+        )
+
 
 @dataclass(frozen=True)
 class GenerationResult:
@@ -128,6 +143,53 @@ class GenerationError:
         if stage == "cancelled":
             return True
         return str(self.message or "").strip().lower() == "generation was cancelled"
+
+
+def get_api_output_options(plugin_data: Any) -> tuple[bool, bool]:
+    api_options = {} if not isinstance(plugin_data, dict) else plugin_data.get("api", {})
+    if not isinstance(api_options, dict):
+        return False, False
+    return bool(api_options.get("return_video_uint8") or api_options.get("return_media")), bool(api_options.get("return_audio") or api_options.get("return_media"))
+
+
+def _coerce_api_video_tensor_uint8(output_video_frames: Any) -> Any:
+    try:
+        import torch
+    except Exception:
+        torch = None
+    if torch is not None and torch.is_tensor(output_video_frames):
+        return output_video_frames
+    if isinstance(output_video_frames, list) and len(output_video_frames) == 1 and torch is not None and torch.is_tensor(output_video_frames[0]):
+        return output_video_frames[0]
+    return None
+
+
+def _coerce_api_audio_tensor(output_audio_data: Any) -> Any:
+    return None if output_audio_data is None else np.asarray(output_audio_data, dtype=np.float32)
+
+
+def build_api_output_artifact_payload(client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any) -> dict[str, Any] | None:
+    client_id = str(client_id or "").strip()
+    if len(client_id) == 0:
+        return None
+    output_path = str(video_path[0]) if isinstance(video_path, list) and len(video_path) > 0 else str(video_path or "")
+    return {
+        "client_id": client_id,
+        "path": output_path,
+        "media_type": str(media_type or "video"),
+        "video_tensor_uint8": _coerce_api_video_tensor_uint8(output_video_frames),
+        "audio_tensor": _coerce_api_audio_tensor(output_audio_data),
+        "audio_sampling_rate": int(output_audio_sampling_rate) if output_audio_sampling_rate else None,
+        "fps": float(output_fps) if output_fps else None,
+    }
+
+
+def store_api_output_artifact(gen: dict[str, Any], client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any) -> bool:
+    payload = build_api_output_artifact_payload(client_id, video_path, media_type, output_video_frames, output_audio_data, output_audio_sampling_rate, output_fps)
+    if payload is None:
+        return False
+    gen.setdefault("api_output_artifacts", {})[payload["client_id"]] = payload
+    return True
 
 
 class SessionStream:
@@ -248,6 +310,7 @@ class SessionJob:
         self._webui_manifest: list[dict[str, Any]] = []
         self._webui_client_ids: tuple[str, ...] = ()
         self._webui_load_queue_token = ""
+        self._webui_owner_call_id = ""
 
     def _bind_thread(self, thread: threading.Thread) -> None:
         self._thread = thread
@@ -266,6 +329,9 @@ class SessionJob:
 
     def _mark_webui_submission_ready(self) -> None:
         self._webui_submission_ready.set()
+
+    def _bind_webui_owner_call(self, call_id: str) -> None:
+        self._webui_owner_call_id = str(call_id or "").strip()
 
     def cancel(self) -> None:
         self._cancel_requested.set()
@@ -317,6 +383,10 @@ class SessionJob:
     @property
     def webui_submission_ready(self) -> bool:
         return self._webui_submission_ready.is_set()
+
+    @property
+    def webui_owner_call_id(self) -> str:
+        return self._webui_owner_call_id
 
 
 class WanGPSession:
@@ -641,17 +711,7 @@ class WanGPSession:
         if not isinstance(artifacts, dict):
             return None
         payload = artifacts.pop(str(client_id or "").strip(), None)
-        if not isinstance(payload, dict):
-            return None
-        return GeneratedArtifact(
-            path=str(payload.get("path") or "") or None,
-            media_type=str(payload.get("media_type") or "video"),
-            client_id=str(payload.get("client_id") or client_id or "").strip(),
-            video_tensor_uint8=payload.get("video_tensor_uint8"),
-            audio_tensor=payload.get("audio_tensor"),
-            audio_sampling_rate=payload.get("audio_sampling_rate"),
-            fps=payload.get("fps"),
-        )
+        return GeneratedArtifact.from_payload(payload, default_client_id=str(client_id or "").strip())
 
     def _peek_output_artifact(self, client_id: str) -> GeneratedArtifact | None:
         gen = self._state["gen"]
@@ -659,17 +719,7 @@ class WanGPSession:
         if not isinstance(artifacts, dict):
             return None
         payload = artifacts.get(str(client_id or "").strip(), None)
-        if not isinstance(payload, dict):
-            return None
-        return GeneratedArtifact(
-            path=str(payload.get("path") or "") or None,
-            media_type=str(payload.get("media_type") or "video"),
-            client_id=str(payload.get("client_id") or client_id or "").strip(),
-            video_tensor_uint8=payload.get("video_tensor_uint8"),
-            audio_tensor=payload.get("audio_tensor"),
-            audio_sampling_rate=payload.get("audio_sampling_rate"),
-            fps=payload.get("fps"),
-        )
+        return GeneratedArtifact.from_payload(payload, default_client_id=str(client_id or "").strip())
 
     def _consume_output_artifacts(self, tasks: Sequence[dict[str, Any]]) -> tuple[GeneratedArtifact, ...]:
         artifacts: list[GeneratedArtifact] = []
@@ -881,7 +931,7 @@ class WanGPSession:
                 config_path=self._config_path,
                 cli_args=self._cli_args,
             )
-            _print_banner_once(module)
+            _print_banner_once(module, enabled=not self._use_webui_queue)
             return _RUNTIME
 
     @staticmethod
@@ -1005,8 +1055,10 @@ def _temporary_argv(argv: Sequence[str]) -> Iterator[None]:
         sys.argv = previous
 
 
-def _print_banner_once(module) -> None:
+def _print_banner_once(module, *, enabled: bool = True) -> None:
     global _BANNER_PRINTED
+    if not enabled:
+        return
     if _BANNER_PRINTED:
         return
     _BANNER_PRINTED = True

@@ -811,7 +811,7 @@ class GradioWanGPSession:
                 fn = args[0]
             if not callable(fn):
                 return original_click(button, *args, **kwargs)
-            if bool(getattr(fn, "_wangp_skip_webui_wrap", False)):
+            if not self._callback_uses_api_session(fn):
                 return original_click(button, *args, **kwargs)
             return self._wrap_button_click(original_click, button, *args, **kwargs)
 
@@ -1018,6 +1018,7 @@ class GradioWanGPSession:
         call_id = str(getattr(self._ui_local, "call_id", "") or "").strip()
         if len(call_id) == 0:
             return
+        job._bind_webui_owner_call(call_id)
         state = self._get_wrapped_call(call_id)
         if state is not None:
             if state.job is None:
@@ -1026,7 +1027,7 @@ class GradioWanGPSession:
                 state.add_followup_job(job)
 
     def _capture_cancelled_job(self, job: SessionJob) -> None:
-        call_id = str(getattr(self._ui_local, "call_id", "") or "").strip()
+        call_id = str(job.webui_owner_call_id or getattr(self._ui_local, "call_id", "") or "").strip()
         if len(call_id) == 0:
             return
         state = self._get_wrapped_call(call_id)
@@ -1044,6 +1045,31 @@ class GradioWanGPSession:
     def _forget_wrapped_call(self, call_id: str) -> None:
         with self._wrapped_calls_lock:
             self._wrapped_calls.pop(call_id, None)
+
+    def _callback_uses_api_session(self, fn) -> bool:
+        candidates: list[Any] = []
+        try:
+            closure_vars = inspect.getclosurevars(fn)
+        except Exception:
+            closure_vars = None
+        if closure_vars is not None:
+            candidates.extend(closure_vars.nonlocals.values())
+            candidates.extend(closure_vars.globals.values())
+        for values in (getattr(fn, "__defaults__", None) or (), (getattr(fn, "__kwdefaults__", None) or {}).values()):
+            candidates.extend(values)
+        for cell in getattr(fn, "__closure__", ()) or ():
+            try:
+                candidates.append(cell.cell_contents)
+            except ValueError:
+                continue
+        for candidate in candidates:
+            if candidate is self or candidate is self._session:
+                return True
+            if isinstance(candidate, (GradioWanGPSession, WanGPSession)):
+                return True
+            if inspect.ismethod(candidate) and candidate.__self__ in (self, self._session):
+                return True
+        return False
 
     def _wrap_callbacks_for_current_call(self, callbacks: object | None) -> object | None:
         if callbacks is None:

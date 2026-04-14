@@ -43,7 +43,7 @@ from shared.utils.utils import convert_tensor_to_image, save_image, get_video_in
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_dims, get_outpainting_frame_location, get_outpainting_full_area_dimensions, resolve_outpainting_dims
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
 from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_image
-from shared.utils.audio_video import read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension
+from shared.utils.audio_video import read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension, create_silent_wav_file
 from shared.utils.audio_metadata import read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
 from shared.utils.media_recording import record_file_metadata as shared_record_file_metadata
 from shared.utils.virtual_media import parse_virtual_media_path, replace_virtual_media_source
@@ -98,6 +98,7 @@ from tqdm import tqdm
 import requests
 from shared.gradio.gallery import AdvancedMediaGallery, get_gradio_file_path
 from shared.ffmpeg_setup import download_ffmpeg
+from shared.api import get_api_output_options, store_api_output_artifact
 from shared.utils.plugins import PluginManager, WAN2GPApplication, SYSTEM_PLUGINS
 from shared.llm_engines.nanovllm.vllm_support import resolve_lm_decoder_engine
 from shared.gradio import assistant_chat
@@ -118,7 +119,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.26"
+WanGP_version = "11.30"
 settings_version = 2.56
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -890,7 +891,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         input_video_strength = 1.0
 
     if "A" in audio_prompt_type:
-        if audio_guide == None:
+        if audio_guide == None and not model_def.get("auto_null_audio", False):
             return err("You must provide an Audio Source")
     else:
         audio_guide = None
@@ -4226,6 +4227,11 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
                     video_guidance_scale = f"{video_guidance_scale}, {video_guidance2_scale} & {video_guidance3_scale} with Switch at Noise Levels {video_switch_threshold} & {video_switch_threshold2}"
                     if multiple_submodels:
                         video_guidance_scale += f" + Model Switch at {video_switch_threshold if video_model_switch_phase ==1 else video_switch_threshold2}"
+            video_phases_label = "Phases"
+            video_phases_value = None
+            if video_guidance_phases != visible_phases :
+                video_phases_value = str(video_guidance_phases)
+
             if  model_def.get("flow_shift", False): 
                 video_flow_shift = configs.get("flow_shift", None)
             else:
@@ -4329,8 +4335,8 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             if model_def.get("sample_solvers", None) is not None and len(video_sample_solver) > 0 :
                 values += [video_sample_solver]
                 labels += ["Sampler Solver"]                                        
-            values += [video_resolution, video_length_summary, video_seed, video_guidance_scale, video_audio_guidance_scale]
-            labels += ["Resolution", video_length_label, "Seed", video_guidance_label, "Audio Guidance Scale"]
+            values += [video_resolution, video_length_summary, video_seed, video_phases_value, video_guidance_scale, video_audio_guidance_scale]
+            labels += ["Resolution", video_length_label, "Seed", video_phases_label,  video_guidance_label, "Audio Guidance Scale"]
             video_custom_settings = configs.get("custom_settings", None)
             if isinstance(video_custom_settings, dict):
                 custom_settings = get_model_custom_settings(model_def)
@@ -5579,40 +5585,6 @@ def get_output_filepath(file_path, is_image, audio_only):
     return get_available_filename(base_path, file_path)
 
 
-def _get_api_output_options(plugin_data):
-    api_options = {} if not isinstance(plugin_data, dict) else plugin_data.get("api", {})
-    if not isinstance(api_options, dict):
-        return False, False
-    return_video = bool(api_options.get("return_video_uint8") or api_options.get("return_media"))
-    return_audio = bool(api_options.get("return_audio") or api_options.get("return_media"))
-    return return_video, return_audio
-
-
-def _store_api_output_artifact(gen, client_id, video_path, media_type, output_video_frames, output_audio_data, output_audio_sampling_rate, output_fps):
-    client_id = str(client_id or "").strip()
-    if len(client_id) == 0:
-        return
-    if isinstance(video_path, list):
-        output_path = str(video_path[0]) if len(video_path) > 0 else ""
-    else:
-        output_path = str(video_path or "")
-    video_tensor_uint8 = None
-    if torch.is_tensor(output_video_frames):
-        video_tensor_uint8 = output_video_frames
-    elif isinstance(output_video_frames, list) and len(output_video_frames) == 1 and torch.is_tensor(output_video_frames[0]):
-        video_tensor_uint8 = output_video_frames[0]
-    audio_tensor = None if output_audio_data is None else np.asarray(output_audio_data, dtype=np.float32)
-    gen.setdefault("api_output_artifacts", {})[client_id] = {
-        "client_id": client_id,
-        "path": output_path,
-        "media_type": media_type,
-        "video_tensor_uint8": video_tensor_uint8,
-        "audio_tensor": audio_tensor,
-        "audio_sampling_rate": int(output_audio_sampling_rate) if output_audio_sampling_rate else None,
-        "fps": float(output_fps) if output_fps else None,
-    }
-
-
 def record_file_metadata(video_path, configs, is_image, audio_only, gen, embedded_images=None, replace_last_file=False):
     return shared_record_file_metadata(video_path, configs, is_image, audio_only, gen, get_processed_queue=get_processed_queue, metadata_choice=server_config.get("metadata_type", "metadata"), embedded_images=embedded_images, replace_last_file=replace_last_file, lock=lock, verbose_level=verbose_level)
 
@@ -5743,7 +5715,7 @@ def generate_video(
 
     global wan_model, offloadobj, reload_needed
     gen = get_gen_info(state)
-    api_return_video_uint8, api_return_audio = _get_api_output_options(plugin_data)
+    api_return_video_uint8, api_return_audio = get_api_output_options(plugin_data)
     gen["early_stop"] = False
     gen["early_stop_forwarded"] = False
     torch.set_grad_enabled(False) 
@@ -5968,6 +5940,11 @@ def generate_video(
         video_source_duration = video_frames_count / video_fps
     else:
         video_source_duration = 0
+
+    if "A" in audio_prompt_type and audio_guide is None:
+        audio_guide = create_silent_wav_file(save_path, video_length / fps, audio_sampling_rate)
+        temp_filenames_list.append(audio_guide)
+
 
     reset_control_aligment = "T" in video_prompt_type
 
@@ -6905,7 +6882,7 @@ def generate_video(
                     if artifact_audio is None and api_return_audio and audio_only and sample is not None:
                         artifact_audio = sample.squeeze(0).detach().cpu().float().numpy()
                     artifact_video = output_video_frames if api_return_video_uint8 else None
-                    _store_api_output_artifact(gen, client_id, video_path, media_type, artifact_video, artifact_audio, output_audio_sampling_rate, output_fps if not audio_only else None)
+                    store_api_output_artifact(gen, client_id, video_path, media_type, artifact_video, artifact_audio, output_audio_sampling_rate, output_fps if not audio_only else None)
 
                 embedded_images = None
                 # Play notification sound for single video
@@ -8040,7 +8017,7 @@ def prepare_inputs_dict(target, inputs, model_type = None, model_filename = None
     guidance_phases = inputs.get("guidance_phases", 1)
     visible_phases = model_def.get("visible_phases", guidance_phases) 
 
-    if guidance_max_phases < 1 or visible_phases < 1:
+    if guidance_max_phases < 1 and visible_phases < 1:
         pop += ["guidance_scale", "guidance_phases"]
 
     if guidance_max_phases < 2 or guidance_phases < 2 or visible_phases < 2:

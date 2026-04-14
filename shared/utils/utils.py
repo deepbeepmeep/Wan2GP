@@ -34,14 +34,17 @@ def seed_everything(seed: int):
         torch.mps.manual_seed(seed)
 
 def has_video_file_extension(filename):
+    filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
     return extension in [".mp4", ".mkv"]
 
 def has_image_file_extension(filename):
+    filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
     return extension in [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"]
 
 def has_audio_file_extension(filename):
+    filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
     return extension in [".wav", ".mp3", ".aac"]
 

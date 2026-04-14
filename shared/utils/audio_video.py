@@ -46,6 +46,14 @@ def write_wav_file(path, audio_data, sample_rate):
     return path
 
 
+def create_silent_wav_file(output_dir=None, duration_seconds=0.0, sample_rate=16000, prefix="null_audio_"):
+    sample_rate = int(sample_rate)
+    num_samples = max(1, int(np.ceil(float(duration_seconds) * sample_rate)))
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix=".wav", dir=output_dir)
+    os.close(fd)
+    return write_wav_file(path, np.zeros(num_samples, dtype=np.float32), sample_rate)
+
+
 def _compute_active_abs_amplitude(audio_data):
     abs_audio = np.abs(np.asarray(audio_data, dtype=np.float32)).reshape(-1)
     if abs_audio.size == 0:

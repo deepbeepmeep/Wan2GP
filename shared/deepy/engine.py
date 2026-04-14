@@ -611,9 +611,9 @@ def _summarize_interrupted_committed_messages(messages: list[dict[str, Any]]) ->
                 if len(tool_names) > 0:
                     summary_parts.append("assistant called " + ", ".join(tool_names))
                     continue
-            model_content = str(message.get("model_content", "") or message.get("content", "") or "").strip()
-            if len(model_content) > 0:
-                cleaned = qwen35_text._clean_generated_text(model_content)
+            content = str(message.get("content", "") or "").strip()
+            if len(content) > 0:
+                cleaned = qwen35_text._clean_generated_text(content)
                 cleaned = re.sub(r"\s+", " ", cleaned).strip()
                 if len(cleaned) > 0:
                     summary_parts.append(f"assistant said: {cleaned[:140]}{'...' if len(cleaned) > 140 else ''}")
@@ -650,9 +650,6 @@ def _normalize_interrupted_committed_messages(messages: list[dict[str, Any]]) ->
             content = str(message.get("content", "") or "").strip()
             if len(content) > 0:
                 normalized_message["content"] = content
-            model_content = str(message.get("model_content", "") or "").strip()
-            if len(model_content) > 0:
-                normalized_message["model_content"] = model_content
         if role == "assistant" and isinstance(message.get("tool_calls"), list) and len(message.get("tool_calls") or []) > 0:
             normalized_message["tool_calls"] = copy.deepcopy(list(message.get("tool_calls") or []))
         if role == "tool":
@@ -683,6 +680,28 @@ def _build_interrupted_assistant_content(reasoning_text: str, answer_text: str) 
     return answer
 
 
+def _build_assistant_history_content(raw_text: str, tool_calls: list[dict[str, Any]] | None = None) -> str:
+    # Assistant completions are generated after the prompt has already opened the
+    # thinking block, so fragments like "</think><tool_call>..." are valid raw
+    # completions but malformed as standalone chat history. Rebuild a canonical
+    # assistant message before storing or replaying it.
+    cleaned_text = strip_tool_blocks(raw_text)
+    if tool_calls:
+        cleaned_text = strip_inline_tool_call_text(cleaned_text)
+    stripped_text = strip_trailing_stop_markup(cleaned_text)
+    thinking_text, answer_text = qwen35_text._split_generated_text(stripped_text)
+    rebuilt = _build_interrupted_assistant_content(thinking_text, answer_text)
+    if len(rebuilt) > 0:
+        return rebuilt
+    cleaned_visible = qwen35_text._clean_generated_text(stripped_text)
+    if len(cleaned_visible) > 0:
+        return cleaned_visible
+    lowered = stripped_text.lower()
+    if any(tag in lowered for tag in ("<think>", "</think>", "<tool_call>", "</tool_call>")):
+        return ""
+    return stripped_text
+
+
 def _merge_interrupted_visible_assistant_fragments(session: AssistantSessionState, assistant_message_id: str, committed_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     message_id = str(assistant_message_id or "").strip()
     if len(message_id) == 0:
@@ -694,7 +713,7 @@ def _merge_interrupted_visible_assistant_fragments(session: AssistantSessionStat
     if len(committed_messages) > 0:
         last_message = committed_messages[-1]
         if str(last_message.get("role", "")).strip().lower() == "assistant" and not last_message.get("tool_calls"):
-            existing_content = str(last_message.get("content", "") or last_message.get("model_content", "") or "").strip()
+            existing_content = str(last_message.get("content", "") or "").strip()
             existing_reasoning, existing_answer = qwen35_text._split_generated_text(existing_content)
             merged_reasoning = _merge_visible_fragment_text(existing_reasoning, visible_reasoning)
             merged_answer = _merge_visible_fragment_text(existing_answer, visible_answer)
@@ -704,12 +723,11 @@ def _merge_interrupted_visible_assistant_fragments(session: AssistantSessionStat
             if merged_content == existing_content:
                 return committed_messages
             last_message["content"] = merged_content
-            last_message["model_content"] = merged_content
             return committed_messages
     merged_content = _build_interrupted_assistant_content(visible_reasoning, visible_answer)
     if len(merged_content) == 0:
         return committed_messages
-    committed_messages.append({"role": "assistant", "content": merged_content, "model_content": merged_content})
+    committed_messages.append({"role": "assistant", "content": merged_content})
     return committed_messages
 
 
@@ -4890,7 +4908,7 @@ class AssistantEngine:
                 safe_text = thinking_text.encode(encoding, errors="replace").decode(encoding, errors="replace")
                 sys.stdout.write(safe_text + "\n")
                 sys.stdout.flush()
-        return thinking_text, answer_text
+        return thinking_text, qwen35_text._clean_answer_text(_strip_partial_tool_markup(answer_text))
 
     @staticmethod
     def _should_print_raw_debug_text(raw_text: str, thinking_text: str, answer_text: str) -> bool:
@@ -5175,11 +5193,9 @@ class AssistantEngine:
             role = str(message.get("role", "")).strip().lower()
             if role == "assistant":
                 model_message = {"role": "assistant"}
-                model_content = message.get("model_content", None)
-                if isinstance(model_content, str) and len(model_content) > 0:
-                    model_message["content"] = model_content
-                elif "content" in message:
-                    model_message["content"] = message["content"]
+                assistant_content = str(message.get("content", "") or "").strip()
+                if len(assistant_content) > 0:
+                    model_message["content"] = assistant_content
                 if "tool_calls" in message:
                     model_message["tool_calls"] = message["tool_calls"]
                 messages.append(model_message)
@@ -5718,10 +5734,8 @@ class AssistantEngine:
             return None
         if assistant_message.get("tool_calls"):
             return None
-        if str(assistant_message.get("model_content", "") or "").strip():
-            return None
         user_content = self._message_render_content(user_message).strip()
-        assistant_content = self._message_render_content(assistant_message).strip()
+        assistant_content = str(assistant_message.get("content", "") or "").strip()
         if len(user_content) == 0 or len(assistant_content) == 0:
             return None
         suffix = f"<|im_start|>user\n{user_content}<|im_end|>\n<|im_start|>assistant\n{assistant_content}<|im_end|>\n"
@@ -5763,7 +5777,7 @@ class AssistantEngine:
                 else {
                     **({"tool_calls": message["tool_calls"]} if "tool_calls" in message else {}),
                     "role": "assistant",
-                    "content": str(message.get("model_content", "") or message.get("content", "") or ""),
+                    "content": str(message.get("content", "") or "").strip(),
                 }
                 for message in list(messages or [])
             ],
@@ -5957,33 +5971,14 @@ class AssistantEngine:
         return True
 
     def _append_assistant_message(self, raw_text: str, tool_calls: list[dict[str, Any]] | None = None, merge_with_last: bool = False) -> list[dict[str, Any]]:
-        cleaned_text = strip_tool_blocks(raw_text)
-        if tool_calls:
-            cleaned_text = strip_inline_tool_call_text(cleaned_text)
         message = {"role": "assistant"}
-        stripped_text = strip_trailing_stop_markup(cleaned_text)
-        stripped_raw_text = strip_trailing_stop_markup(raw_text)
-        thinking_text, answer_text = qwen35_text._split_generated_text(stripped_text)
-        thinking_enabled = self.runtime is not None and qwen35_text._prompt_enhancer_thinking_enabled(self.runtime.model, thinking_enabled=self.thinking_enabled)
-        if thinking_enabled and ("<think>" in stripped_text.lower() or "</think>" in stripped_text.lower() or len(thinking_text) > 0):
-            content = "<think>\n"
-            if len(thinking_text) > 0:
-                content += f"{thinking_text}\n"
-            content += "</think>"
-            if len(answer_text) > 0:
-                content += f"\n\n{answer_text}"
-        else:
-            content = answer_text if len(answer_text) > 0 else stripped_text
+        content = _build_assistant_history_content(raw_text, tool_calls=tool_calls)
         if len(content) > 0:
             message["content"] = content
-        if len(stripped_raw_text) > 0 and not tool_calls:
-            message["model_content"] = stripped_raw_text
         if merge_with_last and not tool_calls and len(self.session.messages) > 0 and str(self.session.messages[-1].get("role", "")).strip().lower() == "assistant":
             last_message = self.session.messages[-1]
             if "content" in message:
                 last_message["content"] = self._merge_text_continuation(str(last_message.get("content", "") or ""), str(message.get("content", "") or ""))
-            if "model_content" in message:
-                last_message["model_content"] = self._merge_text_continuation(str(last_message.get("model_content", "") or ""), str(message.get("model_content", "") or ""))
             return last_message.get("tool_calls", []) or []
         if tool_calls:
             message["tool_calls"] = [

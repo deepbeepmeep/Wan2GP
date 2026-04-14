@@ -1180,6 +1180,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         "force_fps": "control",
                         "video_prompt_type": "VG",
                         "audio_prompt_type": "K",
+                        "guidance_phases": 1,
                         "image_prompt_type": "" if not plan.drop_first_frame else "V",
                         "denoising_strength": 1,
                         "video_guide": build_virtual_media_path(source_path, start_frame=plan.control_start_frame, end_frame=plan.control_end_frame, audio_track_no=selected_audio_track),

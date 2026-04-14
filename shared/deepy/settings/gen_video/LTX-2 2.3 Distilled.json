@@ -5,5 +5,6 @@
     "resolution": "1280x720",
     "type": "LTX-2 2.3 Distilled",
 	"input_video_strength": 1.0,
+	"guidance_phases":2,
 	"model_type": "ltx2_22B_distilled"
 }

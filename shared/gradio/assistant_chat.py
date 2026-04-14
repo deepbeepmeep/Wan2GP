@@ -3241,6 +3241,7 @@ def _markdown_to_html(text: str) -> str:
     text = str(text or "").strip()
     if len(text) == 0:
         return ""
+    text = html.escape(text, quote=False)
     return markdown.markdown(text, extensions=_MARKDOWN_EXTENSIONS, output_format="html5")
 
 

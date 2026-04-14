@@ -34,7 +34,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 ## 🔥 Latest Updates : 
 
-### 14th of April 2026: WanGP v11.30, LTX-2 Mega Mix
+### 14th of April 2026: WanGP v11.31, LTX-2 Mega Mix
 Lots of nice goodies for **LTX-2**:
 
 - **LTX-2.3 Distilled 1.1**: new version of the *Distilled model* released by *LTX team*, it should offer better audio and visuals. You will find also a Dev 1.1 version which uses Distilled 1.1 for Phase 2.
@@ -53,6 +53,7 @@ Lots of nice goodies for **LTX-2**:
 
 - **WanGP API Video Gen**: *Plugin Developers* can now *Queue a Gen* directly from a plugin. This opens the possibility of plugins that place various gen orders and then combine the results (hint: we could have our very own version of *LTX-Destop* inside WanGP).
 
+*update 11.31*: fixed phase 1 forced incorrectly in some cases
 
 ### 11th of April 2026: WanGP v11.26, Now I Can See
 

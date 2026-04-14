@@ -418,9 +418,9 @@ class family_handler:
                     return "LTX2 outpainting doesnt support Video Mask."
 
         guide_phases = inputs.get("guidance_phases", 1)
-        if guide_phases !=1 and (any(letter in video_prompt_type for letter in "PDE") or any_outpainting):
+        if guide_phases !=1 and "V" in video_prompt_type and (any(letter in video_prompt_type for letter in "PDE") or any_outpainting):
             inputs["guidance_phases"]=  1            
-            gr.Info("Number of Phases has been set to 1 as Outpainting is enabled" if any_outpainting else "Number of Phases is set to for Pose/Edge/Depth")
+            gr.Info("Number of Phases has been set to 1 as Outpainting is enabled" if any_outpainting else "Number of Phases is set to 1 for Pose/Edge/Depth")
         if "A" in audio_prompt_type and inputs.get("audio_guide") is None:
             audio_source = inputs.get("audio_source")
             if audio_source is not None:
@@ -538,6 +538,8 @@ class family_handler:
                 from shared.utils.self_refiner import convert_refiner_list_to_string
                 ui_defaults["self_refiner_plan"] = convert_refiner_list_to_string(plan)
 
+        if settings_version < 2.57:
+            ui_defaults.setdefault("guidance_phases",2)
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         default_perturbation_layers = _default_perturbation_layers(base_model_type)

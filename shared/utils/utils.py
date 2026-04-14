@@ -400,10 +400,10 @@ def get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio 
     if video_guide_outpainting is None:
         return None
     video_guide_outpainting = str(video_guide_outpainting).strip()
-    if video_guide_outpainting.startswith("#"):
+    if video_guide_outpainting.startswith("#") :
         return None
-    if len(video_guide_outpainting) == 0 or video_guide_outpainting == "0 0 0 0":
-        return [0, 0, 0, 0] if len((video_guide_outpainting_ratio or "").strip()) > 0 else None
+    if video_guide_outpainting == "0 0 0 0" or len(video_guide_outpainting) == 0:
+        return [0, 0, 0, 0] if len(video_guide_outpainting_ratio) else None
     outpainting_dims = video_guide_outpainting.split(" ")
     return None if len(outpainting_dims) != 4 else [int(v) for v in outpainting_dims]
 

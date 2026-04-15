@@ -538,8 +538,8 @@ class family_handler:
                 from shared.utils.self_refiner import convert_refiner_list_to_string
                 ui_defaults["self_refiner_plan"] = convert_refiner_list_to_string(plan)
 
-        if settings_version < 2.57:
-            ui_defaults.setdefault("guidance_phases",2)
+        if settings_version < 2.58 and pipeline_kind == "distilled":
+            ui_defaults["guidance_phases"]=2
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         default_perturbation_layers = _default_perturbation_layers(base_model_type)

@@ -22,6 +22,7 @@ from shared.utils.audio_video import extract_audio_tracks, get_video_encode_args
 from shared.utils.plugins import WAN2GPPlugin
 from shared.utils.utils import get_video_info_details
 from shared.utils.video_decode import decode_video_frames_ffmpeg, resolve_media_binary
+from shared.utils.video_metadata import DEFAULT_RESERVED_VIDEO_METADATA_BYTES, read_metadata_from_video, save_video_metadata, write_reserved_video_ffmetadata
 from shared.utils.virtual_media import build_virtual_media_path
 
 PlugIn_Name = "Process Full Video"
@@ -34,6 +35,7 @@ DEFAULT_OUTPUT_PATH = ""
 DEFAULT_MODEL_TYPE = "ltx2_22B_distilled"
 MAX_STATUS_REFRESH_HZ = 3.0
 STATUS_REFRESH_INTERVAL_SECONDS = 1.0 / MAX_STATUS_REFRESH_HZ
+PROCESS_FULL_VIDEO_METADATA_KEY = "fill_process_video"
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,13 @@ def _format_time_token(seconds: float | None) -> str:
     if milliseconds > 0:
         token += f"{milliseconds:03d}ms"
     return token
+
+
+def _format_time_hms(seconds: float | None) -> str:
+    total_seconds = max(0, int(round(float(seconds or 0.0))))
+    minutes, seconds_only = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds_only:02d}"
 
 
 def _parse_time_input(value, *, label: str, allow_empty: bool) -> float | None:
@@ -203,25 +212,34 @@ def _frame_to_image(frame_tensor: torch.Tensor) -> Image.Image:
 
 
 def _extract_exact_frame_image(video_path: str, frame_no: int) -> Image.Image:
-    frames = decode_video_frames_ffmpeg(video_path, int(frame_no), 1, target_fps=None, bridge="torch")
-    if frames.shape[0] <= 0:
+    ffmpeg_path = resolve_media_binary("ffmpeg")
+    if ffmpeg_path is None or not os.path.isfile(video_path) or int(frame_no) < 0:
         raise gr.Error(f"Unable to decode frame {frame_no} from {video_path}")
-    return Image.fromarray(frames[0].cpu().numpy())
+    with tempfile.TemporaryDirectory(prefix="wangp_tail_frame_") as temp_dir:
+        output_path = os.path.join(temp_dir, "frame.png")
+        command = [ffmpeg_path, "-v", "error", "-y", "-i", video_path, "-an", "-sn", "-vf", f"select=eq(n\\,{int(frame_no)})", "-frames:v", "1", output_path]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0 or not os.path.isfile(output_path):
+            raise gr.Error(f"Unable to decode frame {frame_no} from {video_path}")
+        with Image.open(output_path) as frame_image:
+            return frame_image.convert("RGB").copy()
 
 
 def _resolve_resume_last_frame(video_path: str, reported_frame_count: int) -> tuple[int, Image.Image | None, str]:
     candidate_count = max(0, int(reported_frame_count))
     if candidate_count <= 0:
         return 0, None, "existing output contains no decodable frame"
-    for window in (1, 8, 32, 128, 512, 2048, 8192):
-        window = min(candidate_count, window)
-        start_frame = max(0, candidate_count - window)
-        frames = decode_video_frames_ffmpeg(video_path, start_frame, window, target_fps=None, bridge="torch")
-        if frames.shape[0] <= 0:
+    for backtrack in (0, 1, 2, 4, 8, 16, 32, 64, 128, 256):
+        frame_no = candidate_count - 1 - backtrack
+        if frame_no < 0:
             continue
-        actual_frame_count = start_frame + int(frames.shape[0])
+        try:
+            frame_image = _extract_exact_frame_image(video_path, frame_no)
+        except gr.Error:
+            continue
+        actual_frame_count = frame_no + 1
         message = "" if actual_frame_count == candidate_count else f"Adjusted continuation point to {actual_frame_count} decodable frame(s) from the existing output."
-        return actual_frame_count, Image.fromarray(frames[-1].cpu().numpy()), message
+        return actual_frame_count, frame_image, message
     return 0, None, f"Unable to decode a valid tail frame from {video_path}"
 
 
@@ -323,24 +341,6 @@ def _count_completed_chunks(plans: list[ChunkPlan], completed_unique_frames: int
 
 
 def _probe_resume_frame_count(ffprobe_path: str, output_path: str, fps_float: float) -> tuple[int, str]:
-    probe = subprocess.run([ffprobe_path, "-v", "error", "-show_entries", "format_tags=comment:format_tags=COMMENT:format_tags=description:format_tags=DESCRIPTION", "-of", "json", output_path], capture_output=True, text=True, encoding="utf-8", errors="ignore", check=False)
-    if probe.returncode == 0:
-        try:
-            tags = (json.loads(probe.stdout).get("format") or {}).get("tags") or {}
-            for key in ("comment", "COMMENT", "description", "DESCRIPTION"):
-                payload = tags.get(key)
-                if not payload:
-                    continue
-                metadata = json.loads(payload)
-                frame_count = int(metadata.get("written_unique_frames") or 0)
-                if frame_count > 0:
-                    return frame_count, ""
-        except (TypeError, ValueError, json.JSONDecodeError):
-            pass
-    metadata = get_video_info_details(output_path)
-    frame_count = int(metadata.get("frame_count") or 0)
-    if frame_count > 0:
-        return frame_count, ""
     probe = subprocess.run([ffprobe_path, "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "json", output_path], capture_output=True, text=True, encoding="utf-8", errors="ignore", check=False)
     if probe.returncode == 0:
         try:
@@ -357,6 +357,10 @@ def _probe_resume_frame_count(ffprobe_path: str, output_path: str, fps_float: fl
             frame_count = 0
         if frame_count > 0:
             return frame_count, ""
+    metadata = get_video_info_details(output_path)
+    frame_count = int(metadata.get("frame_count") or 0)
+    if frame_count > 0:
+        return frame_count, ""
     duration = float(metadata.get("duration") or 0.0)
     if duration > 0 and fps_float > 0:
         return int(round(duration * fps_float)), ""
@@ -375,6 +379,27 @@ def _get_live_mux_output_args(video_container: str | None) -> list[str]:
     if video_container == "mp4":
         return ["-movflags", "+frag_keyframe+empty_moov+default_base_moof"]
     return []
+
+
+def _get_mmgp_verbose_level() -> int:
+    try:
+        from mmgp import offload
+        return int(getattr(offload, "default_verboseLevel", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _log_existing_output_metadata(output_path: str, verbose_level: int) -> None:
+    if int(verbose_level or 0) < 2 or not os.path.isfile(output_path):
+        return
+    metadata = read_metadata_from_video(output_path)
+    if not isinstance(metadata, dict) or len(metadata) == 0:
+        print(f"[Process Full Video] Existing output metadata not found in {output_path}")
+        return
+    creation_date = str(metadata.get("creation_date") or "unknown")
+    generation_time = metadata.get("generation_time")
+    generation_time_text = "unknown" if generation_time in (None, "") else str(generation_time)
+    print(f"[Process Full Video] Existing output metadata found: creation_date={creation_date}, generation_time={generation_time_text}")
 
 
 def _probe_media_duration(ffprobe_path: str, media_path: str) -> float:
@@ -447,7 +472,7 @@ def _validate_audio_copy_container(ffprobe_path: str, source_path: str, video_co
         raise gr.Error(f"MP4 output cannot packet-copy {track_label} with codec(s): {codecs_text}. Use an .mkv output path or choose a compatible track.")
 
 
-def _start_video_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str) -> subprocess.Popen:
+def _start_video_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, reserved_metadata_path: str | None = None) -> subprocess.Popen:
     command = [
         ffmpeg_path,
         "-y",
@@ -463,16 +488,21 @@ def _start_video_mux_process(ffmpeg_path: str, output_path: str, width: int, hei
         f"{float(fps_float):.12g}",
         "-i",
         "pipe:0",
-        "-map",
-        "0:v:0",
     ]
+    metadata_input_index = None
+    if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
+        command += ["-f", "ffmetadata", "-i", reserved_metadata_path]
+        metadata_input_index = 1
+    if metadata_input_index is not None:
+        command += ["-map_metadata", str(metadata_input_index)]
+    command += ["-map", "0:v:0"]
     command += get_video_encode_args(video_codec, video_container)
     command += _get_live_mux_output_args(video_container)
     command += [output_path]
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0)
 
 
-def _start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, source_path: str, start_seconds: float, audio_track_no: int | None) -> subprocess.Popen:
+def _start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height: int, fps_float: float, video_codec: str, video_container: str, source_path: str, start_seconds: float, audio_track_no: int | None, reserved_metadata_path: str | None = None) -> subprocess.Popen:
     command = [
         ffmpeg_path,
         "-y",
@@ -492,11 +522,14 @@ def _start_av_mux_process(ffmpeg_path: str, output_path: str, width: int, height
         f"{max(0.0, float(start_seconds)):.12g}",
         "-i",
         source_path,
-        "-map_metadata",
-        "1",
-        "-map",
-        "0:v:0",
     ]
+    metadata_input_index = None
+    if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
+        command += ["-f", "ffmetadata", "-i", reserved_metadata_path]
+        metadata_input_index = 2
+    else:
+        metadata_input_index = 1
+    command += ["-map_metadata", str(metadata_input_index), "-map", "0:v:0"]
     if audio_track_no is None:
         command += ["-map", "1:a?"]
     else:
@@ -524,9 +557,15 @@ def _finalize_mux_process(process: subprocess.Popen, *, timeout_seconds: float =
     return return_code, stderr, forced_termination
 
 
-def _mux_source_audio(ffmpeg_path: str, video_only_path: str, output_path: str, source_path: str, start_seconds: float, duration_seconds: float, audio_track_no: int | None) -> None:
+def _mux_source_audio(ffmpeg_path: str, video_only_path: str, output_path: str, source_path: str, start_seconds: float, duration_seconds: float, audio_track_no: int | None, reserved_metadata_path: str | None = None) -> None:
     temp_output_path = str(Path(output_path).with_name(f"{Path(output_path).stem}_mux{Path(output_path).suffix}"))
-    command = [ffmpeg_path, "-y", "-v", "error", "-i", video_only_path, "-ss", f"{max(0.0, float(start_seconds)):.12g}", "-t", f"{max(0.0, float(duration_seconds)):.12g}", "-i", source_path, "-map_metadata", "1", "-map", "0:v:0"]
+    command = [ffmpeg_path, "-y", "-v", "error", "-i", video_only_path, "-ss", f"{max(0.0, float(start_seconds)):.12g}", "-t", f"{max(0.0, float(duration_seconds)):.12g}", "-i", source_path]
+    if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
+        command += ["-f", "ffmetadata", "-i", reserved_metadata_path]
+        command += ["-map_metadata", "2"]
+    else:
+        command += ["-map_metadata", "1"]
+    command += ["-map", "0:v:0"]
     if audio_track_no is None:
         command += ["-map", "1:a?"]
     else:
@@ -542,18 +581,67 @@ def _mux_source_audio(ffmpeg_path: str, video_only_path: str, output_path: str, 
         raise gr.Error((result.stderr or result.stdout or "ffmpeg audio mux failed").strip())
     os.replace(temp_output_path, output_path)
 
-def _write_output_metadata(ffmpeg_path: str, output_path: str, metadata: dict) -> None:
-    if len(metadata) == 0 or not os.path.isfile(output_path):
+def _create_reserved_metadata_file(temp_dir: str) -> str:
+    reserved_metadata_path = os.path.join(temp_dir, "reserved_metadata.ffmeta")
+    write_reserved_video_ffmetadata(reserved_metadata_path, DEFAULT_RESERVED_VIDEO_METADATA_BYTES)
+    return reserved_metadata_path
+
+
+def _store_output_metadata(output_path: str, last_segment_path: str | None, *, source_path: str, process_name: str, source_start_seconds: float, start_frame: int, fps_float: float, selected_audio_track: int | None, total_generation_time: float, actual_frame_count: int, process_metadata: dict | None = None, verbose_level: int = 0) -> None:
+    if not os.path.isfile(output_path):
         return
-    temp_output_path = str(Path(output_path).with_name(f"{Path(output_path).stem}_metadata{Path(output_path).suffix}"))
-    command = [ffmpeg_path, "-y", "-v", "error", "-i", output_path, "-map", "0", "-c", "copy", "-metadata", f"comment={json.dumps(metadata, ensure_ascii=False)}", temp_output_path]
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode == 0 and os.path.isfile(temp_output_path):
-        os.replace(temp_output_path, output_path)
+    if not last_segment_path or not os.path.isfile(last_segment_path):
+        print(f"[Process Full Video] Warning: no segment metadata source was available for {output_path}")
         return
-    if os.path.isfile(temp_output_path):
-        os.remove(temp_output_path)
-    print(f"[Process Full Video] Warning: failed to write metadata to {output_path}: {(result.stderr or result.stdout or '').strip()}")
+    metadata = read_metadata_from_video(last_segment_path)
+    if not isinstance(metadata, dict) or len(metadata) == 0:
+        print(f"[Process Full Video] Warning: failed to read WanGP metadata from {last_segment_path}")
+        return
+    final_metadata = metadata.copy()
+    source_name = os.path.basename(source_path)
+    end_frame = max(int(start_frame), int(start_frame) + max(0, int(actual_frame_count)) - 1)
+    start_seconds = max(0.0, float(source_start_seconds or 0.0))
+    end_seconds = start_seconds + max(0, int(actual_frame_count)) / float(fps_float)
+    final_metadata["video_guide"] = build_virtual_media_path(source_path, start_frame=start_frame, end_frame=end_frame, audio_track_no=selected_audio_track)
+    final_metadata["video_length"] = int(actual_frame_count)
+    final_metadata["frame_count"] = int(actual_frame_count)
+    final_metadata["generation_time"] = max(0.0, float(total_generation_time))
+    operation_comment = f'{PlugIn_Name}: {process_name} on "{source_name}" Start { _format_time_hms(start_seconds) } End { _format_time_hms(end_seconds) }'
+    existing_comments = str(final_metadata.get("comments") or "").strip()
+    final_metadata["comments"] = operation_comment if len(existing_comments) == 0 else f"{existing_comments}\n{operation_comment}"
+    final_metadata["segments"] = [{
+        "plugin": PlugIn_Name,
+        "process": process_name,
+        "source_file": source_name,
+        "start_frame": int(start_frame),
+        "end_frame": end_frame,
+        "start_seconds": start_seconds,
+        "end_seconds": end_seconds,
+    }]
+    final_metadata[PROCESS_FULL_VIDEO_METADATA_KEY] = process_metadata.copy() if isinstance(process_metadata, dict) else {}
+    for key in ("plugin", "process", "source_video", "source_segment", "video_source"):
+        final_metadata.pop(key, None)
+    final_metadata["creation_date"] = datetime.now().isoformat(timespec="seconds")
+    final_metadata["creation_timestamp"] = int(time.time())
+    if not save_video_metadata(output_path, final_metadata, allow_inplace_update=True, verbose_level=verbose_level):
+        print(f"[Process Full Video] Warning: failed to write metadata to {output_path}")
+
+
+def _read_metadata_generation_time(video_path: str | None) -> float:
+    if not video_path or not os.path.isfile(video_path):
+        return 0.0
+    metadata = read_metadata_from_video(video_path)
+    if not isinstance(metadata, dict):
+        return 0.0
+    try:
+        return max(0.0, float(metadata.get("generation_time") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _get_last_generated_video_path(paths: list[str]) -> str | None:
+    video_paths = [str(Path(path).resolve()) for path in paths if isinstance(path, str) and os.path.isfile(path) and str(Path(path).suffix).lower() in {".mp4", ".mkv"}]
+    return video_paths[-1] if len(video_paths) > 0 else None
 
 
 def _make_output_temp_dir(output_path: str, prefix: str) -> str:
@@ -779,7 +867,7 @@ def _concat_audio_segments(ffmpeg_path: str, segment_paths: list[str], output_pa
             os.remove(list_path)
 
 
-def _concat_video_segments(ffmpeg_path: str, segment_paths: list[str], output_path: str, video_codec: str, video_container: str, audio_codec_key: str, *, segment_audio_trim_seconds: list[float] | None = None, fps_float: float | None = None, selected_audio_track_no: int | None = None) -> None:
+def _concat_video_segments(ffmpeg_path: str, segment_paths: list[str], output_path: str, video_codec: str, video_container: str, audio_codec_key: str, *, segment_audio_trim_seconds: list[float] | None = None, fps_float: float | None = None, selected_audio_track_no: int | None = None, reserved_metadata_path: str | None = None) -> None:
     segment_paths = [str(Path(path).resolve()) for path in segment_paths if isinstance(path, str) and os.path.isfile(path)]
     if len(segment_paths) == 0:
         raise gr.Error("No output segments available to merge.")
@@ -844,7 +932,11 @@ def _concat_video_segments(ffmpeg_path: str, segment_paths: list[str], output_pa
                     segment_audio_duration_seconds[segment_index] = max(0.0, actual_video_duration - trim_seconds)
             _concat_audio_segments(ffmpeg_path, segment_paths, merged_audio_path, concat_dir, segment_trim_seconds=segment_audio_trim_seconds, segment_duration_seconds=segment_audio_duration_seconds, audio_stream_indices=audio_stream_indices)
             command += ["-i", merged_audio_path]
-        command += ["-map_metadata", "0"]
+        if reserved_metadata_path and os.path.isfile(reserved_metadata_path):
+            command += ["-f", "ffmetadata", "-i", reserved_metadata_path]
+            command += ["-map_metadata", "2" if has_audio else "1"]
+        else:
+            command += ["-map_metadata", "0"]
         command += ["-map", "0:v:0"]
         if has_audio:
             command += ["-map", "1:a:0"]
@@ -1018,6 +1110,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 _plugin_info("Starting Process Full Video conversion...")
                 output_path, resume_existing_output = _resolve_output_path(source_path, output_path, target_ratio, str(output_resolution), start_seconds, end_seconds, bool(continue_enabled))
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                verbose_level = _get_mmgp_verbose_level()
                 metadata = get_video_info_details(source_path)
                 start_frame, end_frame_exclusive, fps_float, total_source_frames = _compute_selected_frame_range(metadata, start_seconds, end_seconds)
                 audio_track_count = int(extract_audio_tracks(source_path, query_only=True))
@@ -1051,8 +1144,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 mux_process = None
                 stopped = False
                 temp_dir = _make_output_temp_dir(output_path, "wangp_process_full_video_")
+                reserved_metadata_path = _create_reserved_metadata_file(temp_dir)
                 last_frame_path = os.path.join(temp_dir, "last_frame.png")
                 last_frame_image = None
+                last_segment_path = None
                 continuation_output_path = ""
                 chunk_output_paths: list[str] = []
                 written_unique_frames = 0
@@ -1070,6 +1165,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 exact_start_seconds = start_frame / fps_float
                 if resume_existing_output:
                     yield _ui_update(_render_chunk_status_html(max(1, len(full_plans)), 0, 1, "Inspecting Existing Output", f"Inspecting existing output to continue: {output_path}"), output_path, str(time.time_ns()))
+                    _log_existing_output_metadata(output_path, verbose_level)
                     resumed_unique_frames, resume_reason = _probe_resume_frame_count(ffprobe_path, output_path, fps_float)
                     resumed_unique_frames = max(0, min(requested_unique_frames, resumed_unique_frames))
                     if resumed_unique_frames <= 0:
@@ -1219,6 +1315,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         for path in result.generated_files
                         if isinstance(path, str) and len(path.strip()) > 0 and str(Path(path).resolve()) not in chunk_output_paths
                     )
+                    last_segment_path = _get_last_generated_video_path(list(result.generated_files)) or last_segment_path
                     artifact = next((item for item in result.artifacts if item.video_tensor_uint8 is not None), None)
                     if artifact is None or not torch.is_tensor(artifact.video_tensor_uint8):
                         raise gr.Error(f"Chunk {chunk_index} completed without returned video tensor data.")
@@ -1250,7 +1347,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     if frames_to_write <= 0:
                         continue
                     if mux_process is None:
-                        mux_process = _start_av_mux_process(ffmpeg_path, output_path_for_write, resolved_width, resolved_height, fps_float, self.server_config.get("video_output_codec", "libx264_8"), output_container, source_path, exact_start_seconds, selected_audio_track) if use_live_av_mux else _start_video_mux_process(ffmpeg_path, video_only_output_path, resolved_width, resolved_height, fps_float, self.server_config.get("video_output_codec", "libx264_8"), output_container)
+                        mux_process = _start_av_mux_process(ffmpeg_path, output_path_for_write, resolved_width, resolved_height, fps_float, self.server_config.get("video_output_codec", "libx264_8"), output_container, source_path, exact_start_seconds, selected_audio_track, reserved_metadata_path) if use_live_av_mux else _start_video_mux_process(ffmpeg_path, video_only_output_path, resolved_width, resolved_height, fps_float, self.server_config.get("video_output_codec", "libx264_8"), output_container, reserved_metadata_path)
                     last_frame_tensor = _write_video_chunk(mux_process, video_tensor_uint8, start_frame=skip_frames, frame_count=frames_to_write)
                     written_unique_frames += frames_to_write
                     last_frame_image = _frame_to_image(last_frame_tensor)
@@ -1285,45 +1382,35 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     raise gr.Error("ffmpeg created an empty continuation file.")
                 if not use_live_av_mux and os.path.isfile(video_only_output_path):
                     yield _ui_update(_render_chunk_status_html(total_chunks_display, completed_chunks, min(completed_chunks + 1, total_chunks_display), "Muxing Audio", "Muxing source audio into the written video segment...", continued=continued_mode, **_timing_kwargs()), output_path if os.path.isfile(output_path) else ui_skip, str(time.time_ns()), start_enabled=False, abort_enabled=False)
-                    _mux_source_audio(ffmpeg_path, video_only_output_path, output_path_for_write, source_path, exact_start_seconds, written_unique_frames / fps_float, selected_audio_track)
+                    _mux_source_audio(ffmpeg_path, video_only_output_path, output_path_for_write, source_path, exact_start_seconds, written_unique_frames / fps_float, selected_audio_track, reserved_metadata_path)
                 if continuation_output_path and os.path.isfile(output_path_for_write):
                     try:
+                        existing_output_generation_time = _read_metadata_generation_time(output_path)
                         yield _ui_update(_render_chunk_status_html(total_chunks_display, completed_chunks, min(completed_chunks + 1, total_chunks_display), "Merging Continuation", "Merging the continued segment into the main output...", continued=continued_mode, **_timing_kwargs()), output_path, str(time.time_ns()), start_enabled=False, abort_enabled=False)
-                        _concat_video_segments(ffmpeg_path, [output_path, output_path_for_write], output_path, self.server_config.get("video_output_codec", "libx264_8"), output_container, self.server_config.get("audio_output_codec", "aac_128"), segment_audio_trim_seconds=[0.0, resume_audio_trim_seconds], fps_float=fps_float, selected_audio_track_no=selected_audio_track)
+                        _concat_video_segments(ffmpeg_path, [output_path, output_path_for_write], output_path, self.server_config.get("video_output_codec", "libx264_8"), output_container, self.server_config.get("audio_output_codec", "aac_128"), segment_audio_trim_seconds=[0.0, resume_audio_trim_seconds], fps_float=fps_float, selected_audio_track_no=selected_audio_track, reserved_metadata_path=reserved_metadata_path)
                         merged_continuation = True
                     except Exception as exc:
                         raise gr.Error(f"Failed to finalize continued output. Existing output kept, and continuation was preserved at {continuation_output_path}. {exc}") from exc
                     if os.path.isfile(output_path_for_write):
                         os.remove(output_path_for_write)
+                else:
+                    existing_output_generation_time = 0.0
                 total_written_unique_frames = resumed_unique_frames + written_unique_frames
                 metadata_target_path = output_path if merged_continuation or not continuation_output_path else output_path_for_write
                 yield _ui_update(_render_chunk_status_html(total_chunks_display, completed_chunks, min(completed_chunks + 1, total_chunks_display), "Writing Metadata", "Writing final output metadata...", continued=continued_mode, **_timing_kwargs()), metadata_target_path if os.path.isfile(metadata_target_path) else output_path, str(time.time_ns()), start_enabled=False, abort_enabled=False)
-                _write_output_metadata(ffmpeg_path, metadata_target_path, {
-                    "plugin": PlugIn_Name,
-                    "process": process_name,
-                    "source_video": source_path,
-                    "source_segment": build_virtual_media_path(source_path, start_frame=start_frame, end_frame=start_frame + requested_unique_frames - 1, audio_track_no=selected_audio_track),
-                    "target_ratio": target_ratio,
-                    "resolution_budget": str(output_resolution),
-                    "resolved_output_resolution": resolved_resolution,
-                    "fps": float(fps_float),
-                    "chunk_size_seconds": float(chunk_size_seconds or 0.0),
-                    "chunk_frames": int(chunk_frames),
-                    "chunks": int(total_chunks_display),
+                metadata_source_path = last_segment_path or _get_last_generated_video_path(chunk_output_paths)
+                actual_output_frames = _probe_resume_frame_count(ffprobe_path, metadata_target_path, fps_float)[0] if os.path.isfile(metadata_target_path) else 0
+                actual_output_frames = int(actual_output_frames or total_written_unique_frames)
+                total_generation_time = existing_output_generation_time + _read_metadata_generation_time(metadata_source_path) if merged_continuation else _read_metadata_generation_time(metadata_source_path)
+                process_metadata = {
                     "written_unique_frames": int(total_written_unique_frames),
-                    "start_seconds": float(start_frame / fps_float),
-                    "end_seconds": float((start_frame + total_written_unique_frames) / fps_float) if stopped else float((start_frame + requested_unique_frames) / fps_float),
-                    "audio_track_no": selected_audio_track,
-                    "model_type": model_type,
-                    "video_prompt_type": "VG",
-                    "audio_prompt_type": "K",
-                    "image_prompt_type": "V",
-                    "prompt": "generate a video",
-                    "continued_from_existing": resumed_unique_frames > 0,
-                    "resume_start_frame": int(start_frame + resumed_unique_frames),
-                    "stopped": stopped,
-                    "creation_date": datetime.now().isoformat(timespec="seconds"),
-                })
+                    "chunks": int(total_chunks_display),
+                    "start_seconds": float(start_seconds),
+                    "end_seconds": float(start_seconds + (total_written_unique_frames / float(fps_float))),
+                    "source_video": source_path,
+                    "source_segment": build_virtual_media_path(source_path, start_frame=start_frame, end_frame=max(int(start_frame), int(start_frame) + max(0, int(total_written_unique_frames)) - 1), audio_track_no=selected_audio_track),
+                }
+                _store_output_metadata(metadata_target_path, metadata_source_path, source_path=source_path, process_name=process_name, source_start_seconds=start_seconds, start_frame=start_frame, fps_float=fps_float, selected_audio_track=selected_audio_track, total_generation_time=total_generation_time, actual_frame_count=actual_output_frames, process_metadata=process_metadata, verbose_level=verbose_level)
                 chunk_output_paths = _delete_released_chunk_outputs(state, chunk_output_paths)
                 if stopped:
                     stopped_output_path = output_path

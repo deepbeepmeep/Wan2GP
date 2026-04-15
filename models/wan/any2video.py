@@ -14,13 +14,11 @@ from mmgp import offload
 import torch
 import torch.nn as nn
 import torch.cuda.amp as amp
-import torch.distributed as dist
 import numpy as np
 from tqdm import tqdm
 from PIL import Image
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
-from .distributed.fsdp import shard_model
 from .modules.model import WanModel
 from mmgp.offload import get_cache, clear_caches
 from .modules.t5 import T5EncoderModel
@@ -111,7 +109,7 @@ class WanAny2V:
                 tokenizer_path = os.path.dirname(fl.locate_file(os.path.join(text_encoder_folder, "tokenizer_config.json")))
             else:
                 tokenizer_path = os.path.dirname(text_encoder_filename)
-            self.text_encoder = T5EncoderModel(text_len=config.text_len, dtype=config.t5_dtype, device=torch.device('cpu'), checkpoint_path=text_encoder_filename, tokenizer_path=tokenizer_path, shard_fn=None)
+            self.text_encoder = T5EncoderModel(text_len=config.text_len, dtype=config.t5_dtype, device=torch.device('cpu'), checkpoint_path=text_encoder_filename, tokenizer_path=tokenizer_path)
             self.text_encoder_cache = TextEncoderCache()
         if hasattr(config, "clip_checkpoint") and not model_def.get("i2v_2_2", False) or base_model_type in ["animate"]:
             self.clip = CLIPModel(

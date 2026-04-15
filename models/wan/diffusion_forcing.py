@@ -28,7 +28,6 @@ class DTT2V:
         self,
         config,
         checkpoint_dir,
-        rank=0,
         model_filename = None,
         model_type = None,
         model_def = None,
@@ -42,7 +41,6 @@ class DTT2V:
     ):
         self.device = torch.device(f"cuda")
         self.config = config
-        self.rank = rank
         self.dtype = dtype
         self.num_train_timesteps = config.num_train_timesteps
         self.param_dtype = config.param_dtype
@@ -57,8 +55,7 @@ class DTT2V:
             dtype=config.t5_dtype,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=tokenizer_path,
-            shard_fn= None)
+            tokenizer_path=tokenizer_path)
         self.model_def = model_def
         self.image_outputs = model_def.get("image_outputs", False)
 

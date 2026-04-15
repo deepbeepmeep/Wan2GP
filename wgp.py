@@ -5187,7 +5187,7 @@ def edit_video(
                 from shared.utils.video_metadata import extract_source_images, save_video_metadata
                 temp_images_path = get_available_filename(save_path, video_source, force_extension= ".temp")
                 embedded_images = extract_source_images(video_source, temp_images_path)
-                save_video_metadata(new_video_path, configs, embedded_images)
+                save_video_metadata(new_video_path, configs, embedded_images, verbose_level=verbose_level)
                 if os.path.isdir(temp_images_path):
                     shutil.rmtree(temp_images_path, ignore_errors= True)
             gen["last_was_audio"] = False

@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
-from shared.api import GeneratedArtifact, GenerationError, GenerationResult, PreviewUpdate, ProgressUpdate, SessionJob, WanGPSession, _pushd, extract_status_phase_label
+from shared.api import GeneratedArtifact, GenerationError, GenerationResult, PreviewUpdate, SessionJob, WanGPSession, _pushd
 
 _NO_YIELDED_RESULT = object()
 _GRADIO_LOG_PATCH_LOCK = threading.Lock()
@@ -219,6 +219,7 @@ class WebUIQueueProbe:
         self._last_active_client_id = ""
         self._last_progress_key: tuple[Any, ...] | None = None
         self._last_preview_key: tuple[Any, ...] | None = None
+        self._active_progress_seed: Any = None
         self._cancel_issued = False
         self._cancel_requested_at: float | None = None
         self._submitted_at = 0.0
@@ -312,6 +313,7 @@ class WebUIQueueProbe:
         self._gen["early_stop_forwarded"] = False
         self._gen["status"] = ""
         self._gen["status_display"] = False
+        self._gen["last_progress_args"] = None
         self._gen["progress_args"] = None
         self._gen["preview"] = None
 
@@ -453,57 +455,32 @@ class WebUIQueueProbe:
             self._last_progress_key = None
             self._last_preview_key = None
             self._last_status_text = ""
-        status_text = str(self._gen.get("status", "") or "").strip()
-        queue_errors = self._gen.get("queue_errors", {}) or {}
+            self._active_progress_seed = copy.deepcopy(self._gen.get("last_progress_args"))
         live_generation_running = bool(self._gen.get("in_progress", False))
         active_client_is_live = live_generation_running and active_client_id in self._client_ids and active_client_id not in self._outputs_by_client_id and active_client_id not in self._errors_by_client_id
-        if active_client_is_live and self._session._normalize_phase(status_text) == "cancelled" and active_client_id not in queue_errors:
-            active_client_is_live = False
         if active_client_is_live:
             self._live_started_client_ids.add(active_client_id)
-            progress_update = self._session._build_progress_update(self._gen.get("progress_args"))
-            status_phase_label = extract_status_phase_label(status_text)
-            should_publish_status = len(status_text) > 0
-            if len(status_phase_label) == 0 and len(str(progress_update.raw_phase or "").strip()) > 0:
-                should_publish_status = False
-            elif self._session._normalize_phase(status_text) == "inference" and status_text.lower().startswith("generating") and len(str(progress_update.raw_phase or "").strip()) > 0:
-                should_publish_status = False
-            if should_publish_status and status_text != self._last_status_text:
-                self._last_status_text = status_text
-                self._publish("status", status_text, "on_status")
-            if len(status_text) > 0:
-                status_phase = self._session._normalize_phase(status_text)
-                progress_phases = {
-                    self._session._normalize_phase(progress_update.raw_phase),
-                    self._session._normalize_phase(progress_update.status),
-                    str(progress_update.phase or ""),
-                }
-                if status_phase not in progress_phases:
-                    if isinstance(progress_update.current_step, int):
-                        return
-                    progress_update = ProgressUpdate(
-                        phase=status_phase,
-                        status=status_text,
-                        progress=self._session._estimate_progress(status_phase, None, None),
-                        current_step=None,
-                        total_steps=None,
-                        raw_phase=extract_status_phase_label(status_text) or None,
-                        unit=progress_update.unit,
-                    )
-            progress_key = (
-                active_client_id,
-                progress_update.phase,
-                progress_update.progress,
-                progress_update.current_step,
-                progress_update.total_steps,
-                progress_update.status,
-                progress_update.unit,
-            )
-            if progress_key != self._last_progress_key:
-                self._last_progress_key = progress_key
-                self._publish("progress", progress_update, "on_progress")
+            progress_args = self._gen.get("last_progress_args")
+            progress_ready = progress_args != self._active_progress_seed
+            progress_update = self._session._build_progress_update(progress_args, include_state_fallback=False) if progress_ready else None
+            if progress_update is not None:
+                if len(progress_update.status) > 0 and progress_update.status != self._last_status_text:
+                    self._last_status_text = progress_update.status
+                    self._publish("status", progress_update.status, "on_status")
+                progress_key = (
+                    active_client_id,
+                    progress_update.phase,
+                    progress_update.progress,
+                    progress_update.current_step,
+                    progress_update.total_steps,
+                    progress_update.status,
+                    progress_update.unit,
+                )
+                if progress_key != self._last_progress_key:
+                    self._last_progress_key = progress_key
+                    self._publish("progress", progress_update, "on_progress")
             preview_image = self._gen.get("preview")
-            if preview_image is not None:
+            if preview_image is not None and progress_update is not None:
                 preview_key = (active_client_id, id(preview_image), getattr(preview_image, "size", None), progress_update.progress)
                 if preview_key != self._last_preview_key:
                     self._last_preview_key = preview_key

@@ -5716,6 +5716,7 @@ def generate_video(
     api_return_video_uint8, api_return_audio = get_api_output_options(plugin_data)
     gen["early_stop"] = False
     gen["early_stop_forwarded"] = False
+    gen["last_progress_args"] = None
     torch.set_grad_enabled(False) 
     if mode.startswith("edit_"):
         edit_video(send_cmd, state, mode, video_source, seed, temporal_upsampling, spatial_upsampling, film_grain_intensity, film_grain_saturation, MMAudio_setting, MMAudio_prompt, MMAudio_neg_prompt, repeat_generation, audio_source)
@@ -7156,12 +7157,14 @@ def process_tasks(state):
             raise gr.Error(data, print_exception= False, duration = 0)
         elif cmd == "status":
             gen["status"] = data
+            status_text = str(data or "").strip()
+            gen["last_progress_args"] = [0, status_text] if len(status_text) > 0 else None
         elif cmd == "output":
             gen["preview"] = None
             gen["refresh_tab"] = True
             yield time.time(), time.time(), gr.update()
         elif cmd == "progress":
-            gen["progress_args"] = data
+            gen["last_progress_args"] = gen["progress_args"] = data
         elif cmd == "preview":
             current_model_type = "unknown"
             with lock:

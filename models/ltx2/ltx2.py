@@ -965,6 +965,7 @@ class LTX2:
             ic_lora_downscale_factor = _infer_ic_lora_downscale_factor(loras_selected)
         video_conditioning_downscale_factor = ic_lora_downscale_factor or 1
         merge_conditioning_and_guide = any_outpainting and input_video is not None
+         # merge_conditioning_and_guide = False
         has_prefix_frames = input_video is not None 
         is_start_image_only = image_start is not None and (not has_prefix_frames or prefix_frames_count <= 1)
         use_guiding_latent_for_start_image = self.model_def.get("use_guiding_latent_for_start_image", False)
@@ -982,8 +983,7 @@ class LTX2:
 
             if skip_first_guide_latent:
                 control_start_frame = -prefix_frames_count
-
-            if merge_conditioning_and_guide:
+            elif merge_conditioning_and_guide:
                 if prefix_frames_count == 1:
                     input_frames[:, 0] = input_video[:, 0]
                 else:

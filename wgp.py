@@ -4871,8 +4871,8 @@ def preprocess_video(height, width, video_in, max_frames, start_frame=0, fit_can
         else:
             scale =   ((height * width ) /  (frame_height * frame_width))**(1/2)
 
-        new_height = (int(frame_height * scale) // block_size) * block_size
-        new_width = (int(frame_width * scale) // block_size) * block_size
+        new_height = round(frame_height * scale / block_size) * block_size
+        new_width = round(frame_width * scale / block_size) * block_size
 
     def resize_frame(frame):
         if torch.is_tensor(frame):

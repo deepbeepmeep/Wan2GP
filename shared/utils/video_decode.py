@@ -2,18 +2,21 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from functools import lru_cache
 
 import numpy as np
 import torch
 
-from .virtual_media import clamp_virtual_frame_range, parse_virtual_media_path, strip_virtual_media_suffix
+from .virtual_media import clamp_virtual_frame_range, get_virtual_media_entry, parse_virtual_media_path, strip_virtual_media_suffix
 
 _ZSCALE_TRANSFER_MAP = {"smpte2084": "smpte2084", "arib-std-b67": "arib-std-b67", "bt709": "bt709", "bt2020-10": "2020_10", "bt2020-12": "2020_12"}
 _ZSCALE_PRIMARIES_MAP = {"bt2020": "2020", "bt709": "709", "smpte170m": "170m", "bt470bg": "470bg"}
 _ZSCALE_MATRIX_MAP = {"bt2020nc": "2020_ncl", "bt2020c": "2020_cl", "bt709": "709", "smpte170m": "170m", "bt470bg": "470bg"}
 _ZSCALE_RANGE_MAP = {"tv": "limited", "limited": "limited", "pc": "full", "full": "full"}
 _HDR_REFERENCE_WHITE_NITS = 203
+_VIRTUAL_MEDIA_PRESEEK_FRAMES = 64
+_VIRTUAL_MEDIA_LOCAL_SEARCH_FRAMES = 8
 
 
 def _parse_media_ratio(value, default=None):
@@ -100,9 +103,53 @@ def _augment_virtual_metadata(video_path, metadata):
     return virtual_metadata
 
 
+def _build_vsource_metadata(video_path, entry):
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("kind") == "image":
+        image = entry.get("image")
+        if image is None:
+            return None
+        width, height = image.size
+        fps_float = 1.0
+        frame_count = 1
+    elif entry.get("kind") == "video":
+        tensor = entry.get("tensor")
+        if tensor is None or int(getattr(tensor, "ndim", 0)) != 4:
+            return None
+        width = int(tensor.shape[3])
+        height = int(tensor.shape[2])
+        frame_count = int(tensor.shape[1])
+        fps_float = max(float(entry.get("fps") or 0.0), 1.0)
+    else:
+        return None
+    return _augment_virtual_metadata(video_path, {
+        "source_path": parse_virtual_media_path(video_path).source_path if parse_virtual_media_path(video_path) is not None else "",
+        "width": width,
+        "height": height,
+        "display_width": width,
+        "display_height": height,
+        "fps_float": fps_float,
+        "fps": int(round(fps_float)),
+        "frame_count": frame_count,
+        "duration": float(frame_count / fps_float) if fps_float > 0 else 0.0,
+        "start_time": 0.0,
+        "sample_aspect_ratio": "1:1",
+        "display_aspect_ratio": "",
+        "color_transfer": "",
+        "color_primaries": "",
+        "color_space": "",
+        "color_range": "",
+        "needs_sar_fix": False,
+        "needs_tonemap": False,
+    })
+
+
 @lru_cache(maxsize=128)
 def probe_video_stream_metadata(video_path):
     video_path = os.fspath(video_path)
+    if (entry := get_virtual_media_entry(video_path)) is not None:
+        return _build_vsource_metadata(video_path, entry)
     source_path = os.fspath(strip_virtual_media_suffix(video_path))
     ffprobe_path = _resolve_media_binary("ffprobe")
     if ffprobe_path is None:
@@ -137,6 +184,10 @@ def probe_video_stream_metadata(video_path):
     except (TypeError, ValueError):
         duration = 0.0
     try:
+        start_time = float(stream.get("start_time") or 0.0)
+    except (TypeError, ValueError):
+        start_time = 0.0
+    try:
         frame_count = int(stream.get("nb_frames"))
     except (TypeError, ValueError):
         frame_count = int(round(duration * fps_float)) if duration > 0 and fps_float > 0 else 0
@@ -159,6 +210,7 @@ def probe_video_stream_metadata(video_path):
         "fps": int(round(fps_float)) if fps_float > 0 else 0,
         "frame_count": frame_count,
         "duration": duration,
+        "start_time": start_time,
         "sample_aspect_ratio": sample_aspect_ratio,
         "display_aspect_ratio": display_aspect_ratio,
         "color_transfer": color_transfer,
@@ -168,6 +220,30 @@ def probe_video_stream_metadata(video_path):
         "needs_sar_fix": display_width != width,
         "needs_tonemap": is_hdr,
     })
+
+
+def _decode_virtual_media_frames(video_path, metadata, entry, start_frame, max_frames, target_fps, bridge):
+    if entry.get("kind") == "image":
+        if int(start_frame) > 0 or int(max_frames) <= 0:
+            frames = torch.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=torch.uint8)
+        else:
+            image = np.asarray(entry["image"].convert("RGB"), dtype=np.uint8)[None]
+            frames = torch.from_numpy(image)
+    else:
+        tensor = entry["tensor"]
+        start_index = int(metadata.get("virtual_start_frame") or 0)
+        end_index = metadata.get("virtual_end_frame")
+        tensor = tensor[:, start_index:] if end_index is None else tensor[:, start_index:int(end_index) + 1]
+        frame_count = int(tensor.shape[1])
+        if target_fps is None or float(target_fps) <= 0:
+            start_index = max(0, int(start_frame))
+            frames = tensor[:, start_index:start_index + max(0, int(max_frames))].permute(1, 2, 3, 0)
+        else:
+            source_fps = metadata["fps"] if metadata["fps"] > 0 else max(1, int(round(metadata["fps_float"] or 0)))
+            frame_nos = _resample_frame_indices(source_fps, frame_count, int(max_frames), float(target_fps), int(start_frame))
+            frames = tensor[:, frame_nos].permute(1, 2, 3, 0) if len(frame_nos) > 0 else tensor[:, :0].permute(1, 2, 3, 0)
+        frames = frames.add(1.0).mul(127.5).clamp_(0, 255).to(torch.uint8).contiguous()
+    return frames if bridge == "torch" else frames.numpy()
 
 
 def video_needs_corrected_decode(video_path):
@@ -218,10 +294,33 @@ def _read_exact(stream, size):
     return buf
 
 
+def _drain_stream(stream, chunks):
+    while True:
+        chunk = stream.read(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+
+
+def _parse_first_showinfo_pts_time(stderr_text):
+    for line in str(stderr_text or "").splitlines():
+        pts_marker = " pts_time:"
+        pts_index = line.find(pts_marker)
+        if pts_index < 0:
+            continue
+        pts_text = line[pts_index + len(pts_marker):].split(None, 1)[0].strip()
+        try:
+            return float(pts_text)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, bridge="torch"):
     metadata = probe_video_stream_metadata(video_path)
     if metadata is None:
         raise RuntimeError(f"Unable to probe video metadata for {video_path}")
+    virtual_spec = parse_virtual_media_path(video_path)
     decode_path = os.fspath(metadata.get("source_path") or strip_virtual_media_suffix(video_path))
     ffmpeg_path = _resolve_media_binary("ffmpeg")
     if ffmpeg_path is None:
@@ -236,27 +335,56 @@ def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, 
         return torch.from_numpy(empty) if bridge == "torch" else empty
     actual_start = start_frame + int(metadata.get("virtual_start_frame") or 0)
     fps_float = float(metadata.get("fps_float") or metadata.get("fps") or 0.0)
-    video_filter = _build_corrected_video_filter(metadata)
-    cmd = [ffmpeg_path, "-v", "error", "-nostdin", "-threads", "0"]
-    if fps_float > 0 and actual_start > 0:
-        cmd += ["-ss", f"{actual_start / fps_float:.12g}"]
+    actual_end_exclusive = actual_start + max_frames
+    filter_start_frame = 0
+    filter_end_frame = None
+    decode_seek_frame = actual_start
+    local_search_enabled = virtual_spec is not None and fps_float > 0 and actual_start > 0
+    requested_frames = max_frames
+    if virtual_spec is not None:
+        if local_search_enabled:
+            decode_seek_frame = max(0, actual_start - _VIRTUAL_MEDIA_PRESEEK_FRAMES - _VIRTUAL_MEDIA_LOCAL_SEARCH_FRAMES)
+            filter_start_frame = actual_start - decode_seek_frame
+            requested_frames = filter_start_frame + max_frames + _VIRTUAL_MEDIA_LOCAL_SEARCH_FRAMES
+        elif fps_float > 0 and actual_start > 0:
+            decode_seek_frame = max(0, actual_start - _VIRTUAL_MEDIA_PRESEEK_FRAMES)
+            filter_start_frame = actual_start - decode_seek_frame
+            filter_end_frame = filter_start_frame + max_frames
+        else:
+            filter_start_frame = actual_start
+            filter_end_frame = actual_end_exclusive
+    video_filter = _build_corrected_video_filter(metadata, start_frame=filter_start_frame if virtual_spec is not None and not local_search_enabled else 0, end_frame=filter_end_frame if virtual_spec is not None and not local_search_enabled else None)
+    if local_search_enabled:
+        video_filter = "showinfo" if len(video_filter) == 0 else video_filter + ",showinfo"
+    cmd = [ffmpeg_path, "-v", "info" if local_search_enabled else "error", "-nostdin", "-threads", "0"]
+    if local_search_enabled:
+        cmd += ["-copyts"]
+    if fps_float > 0 and decode_seek_frame > 0:
+        cmd += ["-ss", f"{float(metadata.get('start_time') or 0.0) + (decode_seek_frame / fps_float):.12g}"]
     cmd += ["-i", decode_path, "-an", "-sn"]
     if len(video_filter) > 0:
         cmd += ["-vf", video_filter]
-    cmd += ["-fps_mode", "passthrough", "-frames:v", str(max_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+    cmd += ["-fps_mode", "passthrough", "-frames:v", str(requested_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**7)
     frame_bytes = metadata["display_width"] * metadata["display_height"] * 3
-    frames = np.empty((max_frames, metadata["display_height"], metadata["display_width"], 3), dtype=np.uint8)
+    frames = np.empty((requested_frames, metadata["display_height"], metadata["display_width"], 3), dtype=np.uint8)
     frame_count = 0
+    stderr_chunks = []
+    stderr_thread = None
     try:
-        while frame_count < max_frames:
+        if process.stderr is not None:
+            stderr_thread = threading.Thread(target=_drain_stream, args=(process.stderr, stderr_chunks), daemon=True)
+            stderr_thread.start()
+        while frame_count < requested_frames:
             raw_frame = _read_exact(process.stdout, frame_bytes)
             if raw_frame is None or len(raw_frame) < frame_bytes:
                 break
             frames[frame_count] = np.frombuffer(raw_frame, dtype=np.uint8).reshape(metadata["display_height"], metadata["display_width"], 3)
             frame_count += 1
-        stderr = process.stderr.read().decode("utf-8", errors="ignore").strip()
         return_code = process.wait()
+        if stderr_thread is not None:
+            stderr_thread.join()
+        stderr = b"".join(stderr_chunks).decode("utf-8", errors="ignore").strip()
     finally:
         if process.stdout is not None:
             process.stdout.close()
@@ -265,6 +393,11 @@ def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, 
     if return_code != 0 and frame_count == 0:
         raise RuntimeError(f"ffmpeg decode failed for {video_path}: {stderr}")
     frames = frames[:frame_count]
+    if local_search_enabled and frame_count > 0:
+        first_pts_time = _parse_first_showinfo_pts_time(stderr)
+        target_pts_time = float(metadata.get("start_time") or 0.0) + (actual_start / fps_float)
+        local_start_frame = filter_start_frame if first_pts_time is None else max(0, int(round((target_pts_time - first_pts_time) * fps_float)))
+        frames = frames[local_start_frame:local_start_frame + max_frames]
     return torch.from_numpy(frames) if bridge == "torch" else frames
 
 
@@ -272,6 +405,8 @@ def decode_video_frames_ffmpeg(video_path, start_frame, max_frames, target_fps=N
     metadata = probe_video_stream_metadata(video_path)
     if metadata is None:
         raise RuntimeError(f"Unable to probe video metadata for {video_path}")
+    if (entry := get_virtual_media_entry(video_path)) is not None:
+        return _decode_virtual_media_frames(video_path, metadata, entry, start_frame, max_frames, target_fps, bridge)
     start_frame = int(start_frame)
     if metadata.get("virtual_end_frame") is not None and start_frame >= int(metadata["frame_count"]):
         empty = np.empty((0, metadata["display_height"], metadata["display_width"], 3), dtype=np.uint8)

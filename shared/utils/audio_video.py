@@ -19,7 +19,7 @@ import soundfile as sf
 import zlib
 
 from .video_decode import probe_video_stream_metadata
-from .virtual_media import parse_virtual_media_path, strip_virtual_media_suffix
+from .virtual_media import get_virtual_media_entry, parse_virtual_media_path, strip_virtual_media_suffix
 
 def rand_name(length=8, suffix=''):
     name = binascii.b2a_hex(os.urandom(length)).decode('utf-8')
@@ -224,6 +224,8 @@ def save_audio_file(path, audio_data, sample_rate, codec_key="wav"):
 def _resolve_virtual_audio_segment(video_path: str) -> tuple[str, dict[str, Any], int]:
     if isinstance(video_path, Image.Image):
         return "", {}, 0
+    if get_virtual_media_entry(video_path) is not None:
+        return "", {}, 0
     spec = parse_virtual_media_path(video_path)
     source_path = os.fspath(strip_virtual_media_suffix(video_path))
     time_args: dict[str, Any] = {}
@@ -248,6 +250,8 @@ def extract_audio_track_to_wav(video_path, output_path):
         return None
     video_path = os.fspath(video_path)
     source_path, time_args, audio_track_index = _resolve_virtual_audio_segment(video_path)
+    if len(source_path) == 0:
+        return None
     import ffmpeg
     try:
         output_kwargs = {"map": f"0:a:{audio_track_index}", "acodec": "pcm_s16le"}
@@ -276,6 +280,8 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False, codec_ke
     if isinstance(source_video, Image.Image):
         return 0 if query_only else ([], [])
     source_path, time_args, selected_track_index = _resolve_virtual_audio_segment(source_video)
+    if len(source_path) == 0:
+        return 0 if query_only else ([], [])
     if not os.path.exists(source_path):
         msg = f"ffprobe skipped; file not found: {source_video}"
         if verbose:

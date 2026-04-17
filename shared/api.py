@@ -21,7 +21,7 @@ from typing import Any, Iterator, Sequence
 from PIL import Image
 
 from shared.utils.process_locks import set_main_generation_running
-from shared.utils.virtual_media import parse_virtual_media_path, replace_virtual_media_source
+from shared.utils.virtual_media import get_virtual_media_vsource, parse_virtual_media_path, replace_virtual_media_source
 
 _RUNTIME_LOCK = threading.RLock()
 _GENERATION_LOCK = threading.RLock()
@@ -874,6 +874,8 @@ class WanGPSession:
         if not isinstance(value, str) or not value.strip():
             return value
         spec = parse_virtual_media_path(value)
+        if spec is not None and get_virtual_media_vsource(spec) is not None:
+            return value
         path = Path(spec.source_path if spec is not None else value)
         if path.is_absolute():
             resolved = str(path.resolve())

@@ -18,7 +18,7 @@ import tempfile
 import time
 from functools import lru_cache
 from .video_decode import probe_video_stream_metadata, video_needs_corrected_decode, decode_video_frames_ffmpeg, get_video_summary_extras
-from .virtual_media import parse_virtual_media_path, strip_virtual_media_suffix
+from .virtual_media import get_virtual_image, parse_virtual_media_path, strip_virtual_media_suffix
 os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
 
 
@@ -164,7 +164,10 @@ def process_images_multithread(image_processor, items, process_type, wrap_in_lis
 def get_resampled_video_transparent(video_in, start_frame, max_frames, target_fps, bridge='torch'):
     virtual_spec = parse_virtual_media_path(video_in) if isinstance(video_in, str) else None
     base_video_in = strip_virtual_media_suffix(video_in) if isinstance(video_in, str) else video_in
-    if isinstance(base_video_in, str) and has_image_file_extension(base_video_in):
+    virtual_image = get_virtual_image(video_in) if isinstance(video_in, str) else None
+    if virtual_image is not None:
+        video_in = virtual_image
+    elif isinstance(base_video_in, str) and has_image_file_extension(base_video_in):
         video_in = Image.open(base_video_in)
     if isinstance(video_in, Image.Image):
         frame = torch.from_numpy(np.array(video_in).astype(np.uint8)).unsqueeze(0)
@@ -261,7 +264,7 @@ def get_video_info_details(video_path):
 def get_video_frame(file_name: str, frame_no: int, return_last_if_missing: bool = False, target_fps = None,  return_PIL = True) -> torch.Tensor:
     """Extract nth frame from video as PyTorch tensor normalized to [-1, 1]."""
     metadata = probe_video_stream_metadata(file_name)
-    if metadata is not None and (metadata["needs_sar_fix"] or metadata["needs_tonemap"]):
+    if metadata is not None and (metadata["needs_sar_fix"] or metadata["needs_tonemap"] or parse_virtual_media_path(file_name) is not None):
         fps_float = metadata["fps_float"] if metadata["fps_float"] > 0 else float(metadata["fps"] or 1)
         if target_fps is not None and float(target_fps) > 0:
             max_target_frames = int(round(metadata["frame_count"] / fps_float * float(target_fps))) if metadata["frame_count"] > 0 else 0

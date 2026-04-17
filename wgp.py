@@ -46,7 +46,7 @@ from shared.utils.audio_video import extract_audio_tracks, combine_video_with_au
 from shared.utils.audio_video import append_sliding_window_audio, read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension, create_silent_wav_file
 from shared.utils.audio_metadata import read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
 from shared.utils.media_recording import record_file_metadata as shared_record_file_metadata
-from shared.utils.virtual_media import parse_virtual_media_path, replace_virtual_media_source
+from shared.utils.virtual_media import get_virtual_image, get_virtual_media_vsource, parse_virtual_media_path, replace_virtual_media_source, strip_virtual_media_suffix
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import get_attention_modes, get_supported_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers
@@ -119,7 +119,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.31"
+WanGP_version = "11.32"
 settings_version = 2.58
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -249,8 +249,11 @@ def pil_to_base64_uri(pil_image, format="png", quality=75):
         return None
 
     if isinstance(pil_image, str):
+        virtual_image = get_virtual_image(pil_image)
+        if virtual_image is not None:
+            pil_image = virtual_image
         # Check file type and load appropriately
-        if has_video_file_extension(pil_image):
+        elif has_video_file_extension(pil_image):
             from shared.utils.utils import get_video_frame
             pil_image = get_video_frame(pil_image, 0)
         elif has_image_file_extension(pil_image):
@@ -279,6 +282,13 @@ def pil_to_base64_uri(pil_image, format="png", quality=75):
         print(f"Error converting PIL to base64: {e}")
         return None
 
+
+def _open_image_input(image):
+    if not isinstance(image, str):
+        return image
+    virtual_image = get_virtual_image(image)
+    return virtual_image if virtual_image is not None else Image.open(image)
+
 def is_integer(n):
     try:
         float(n)
@@ -301,7 +311,7 @@ def clean_image_list(gradio_list):
 
     if any( not isinstance(image, (Image.Image, str))  for image in gradio_list): return None
     if any( isinstance(image, str) and not has_image_file_extension(image) for image in gradio_list): return None
-    gradio_list = [ convert_image( Image.open(img) if isinstance(img, str) else img  ) for img in gradio_list  ]        
+    gradio_list = [convert_image(_open_image_input(img)) for img in gradio_list]
     return gradio_list
 
 
@@ -1355,6 +1365,10 @@ def _load_task_attachments(params, media_base_path, cache_dir=None, log_prefix="
                 print(f"{log_prefix} Warning: Invalid filename for key '{key}'. Skipping.")
                 continue
             virtual_spec = parse_virtual_media_path(filename)
+            if virtual_spec is not None and get_virtual_media_vsource(virtual_spec) is not None:
+                loaded_items.append(filename)
+                print(f"{log_prefix} Using virtual source: {filename}")
+                continue
             source_name = virtual_spec.source_path if virtual_spec is not None else filename
 
             if os.path.isabs(source_name):
@@ -4034,7 +4048,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             pass 
         configs = settings_list[choice]
         file_name = files[choice]
-        values = [  os.path.basename(file_name)]
+        values = [os.path.basename(strip_virtual_media_suffix(file_name))]
         labels = [ "File Name"]
         misc_values= []
         misc_labels = []
@@ -4050,7 +4064,7 @@ def select_video(state, current_gallery_tab, input_file_list, file_selected, aud
             width, height = 0, 0
             frames_count = fps = 1
         elif not has_video_file_extension(file_name):
-            img = Image.open(file_name)
+            img = _open_image_input(file_name)
             width, height = img.size
             is_image = True
             frames_count = fps = 1
@@ -4468,7 +4482,7 @@ def convert_image(image):
     from PIL import ImageOps
     from typing import cast
     if isinstance(image, str):
-        image = Image.open(image)
+        image = _open_image_input(image)
     image = image.convert('RGB')
     return cast(Image, ImageOps.exif_transpose(image))
 
@@ -5017,7 +5031,7 @@ def any_audio_track(model_type):
     return ( model_def.get("returns_audio", False) or model_def.get("any_audio_prompt", False) )
 
 def get_available_filename(target_path, video_source, suffix = "", force_extension = None):
-    name, extension =  os.path.splitext(os.path.basename(video_source))
+    name, extension =  os.path.splitext(os.path.basename(strip_virtual_media_suffix(video_source)))
     if force_extension != None:
         extension = force_extension
     name+= suffix
@@ -5268,7 +5282,7 @@ def process_prompt_enhancer(model_type, model_def, prompt_enhancer, original_pro
             prompt_images += image_start[:1]
         if original_image_refs != None:
             prompt_images += original_image_refs[:1]
-    prompt_images = [Image.open(img) if isinstance(img,str) else img for img in prompt_images]
+    prompt_images = [_open_image_input(img) if isinstance(img, str) else img for img in prompt_images]
     if len(original_prompts) == 0 and "T" not in prompt_enhancer_mode:
         return None
     else:
@@ -8277,7 +8291,7 @@ def add_videos_to_gallery(state, input_file_list, choice, audio_files_paths, aud
                     elif has_video_file_extension(file_path):
                         fps, width, height, frames_count = get_video_info(file_path)
                     elif has_image_file_extension(file_path):
-                        width, height = Image.open(file_path).size
+                        width, height = _open_image_input(file_path).size
                         fps = 1 
                 except:
                     pass

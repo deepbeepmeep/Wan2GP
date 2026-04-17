@@ -95,6 +95,8 @@ class _WrappedCallState:
         self.error: BaseException | None = None
         self.job: SessionJob | None = None
         self.abort_client_id = ""
+        self._abort_client_ids: list[str] = []
+        self._abort_client_ids_lock = threading.Lock()
         self.callback_context_ready = threading.Event()
         self.callback_context: dict[str, Any] | None = None
         self._followup_jobs: list[SessionJob] = []
@@ -145,6 +147,21 @@ class _WrappedCallState:
         self._primary_job_forwarded = True
         self.enable_followup_queue_triggers()
         return self.job.webui_load_queue_token
+
+    def queue_abort_client_id(self, client_id: str) -> None:
+        client_id = str(client_id or "").strip()
+        if len(client_id) == 0:
+            return
+        with self._abort_client_ids_lock:
+            self._abort_client_ids.append(client_id)
+
+    def pop_abort_client_id(self) -> str:
+        with self._abort_client_ids_lock:
+            if not self._abort_client_ids:
+                return ""
+            client_id = self._abort_client_ids.pop(0)
+        self.abort_client_id = client_id
+        return client_id
 
     def push_yielded_result(self, result: Any) -> None:
         with self._yielded_results_lock:
@@ -222,6 +239,7 @@ class WebUIQueueProbe:
         self._active_progress_seed: Any = None
         self._cancel_issued = False
         self._cancel_requested_at: float | None = None
+        self._cancel_dispatched_client_ids: set[str] = set()
         self._submitted_at = 0.0
         self._queue_wait_suspended = False
         self._logged_admitted_client_ids: set[str] = set()
@@ -318,8 +336,6 @@ class WebUIQueueProbe:
         self._gen["preview"] = None
 
     def _poll_once(self) -> None:
-        if self._job.cancel_requested and not self._cancel_issued:
-            self._request_cancel()
         queue_client_ids, active_client_id = self._get_queue_snapshot()
         for client_id in queue_client_ids:
             if client_id in self._client_ids:
@@ -327,6 +343,8 @@ class WebUIQueueProbe:
                 if client_id not in self._logged_admitted_client_ids:
                     print(f"WanGP API admitted client_id={client_id}")
                     self._logged_admitted_client_ids.add(client_id)
+        if self._job.cancel_requested:
+            self._request_cancel()
         if self._queue_wait_suspended and any(client_id in self._admitted_client_ids for client_id in self._client_ids):
             print("WanGP back in focus API queue resumed")
             self._queue_wait_suspended = False
@@ -538,35 +556,29 @@ class WebUIQueueProbe:
             self._register_error(client_id, "Generation was cancelled", stage="cancelled")
 
     def _request_cancel(self) -> None:
-        self._cancel_issued = True
-        self._cancel_requested_at = time.time()
+        dispatched_any = False
         for client_id in self._client_ids:
             if client_id in self._outputs_by_client_id or client_id in self._errors_by_client_id:
                 continue
+            if client_id in self._cancel_dispatched_client_ids:
+                continue
             if self._remove_inline_queue_client_id(client_id):
+                self._cancel_dispatched_client_ids.add(client_id)
+                dispatched_any = True
                 continue
             if client_id in self._admitted_client_ids:
-                self._trigger_abort_event(client_id)
+                self._queue_abort_client_id(client_id)
+                self._cancel_dispatched_client_ids.add(client_id)
+                dispatched_any = True
+        if dispatched_any:
+            self._cancel_issued = True
+            self._cancel_requested_at = time.time()
 
-    def _trigger_abort_event(self, client_id: str) -> None:
-        gradio_context = getattr(self._session, "_gradio_webui_context", None)
-        if not isinstance(gradio_context, dict):
-            raise RuntimeError("WanGP WebUI abort requires an active Gradio session context.")
-        fn_index = gradio_context.get("abort_fn_index")
-        blocks = gradio_context.get("blocks")
-        request = gradio_context.get("request")
-        session_hash = gradio_context.get("session_hash")
-        if not isinstance(fn_index, int) or blocks is None or request is None or not session_hash:
-            raise RuntimeError("WanGP WebUI abort trigger is unavailable for the current Gradio session.")
-        from gradio.data_classes import PredictBodyInternal
-
-        request = _normalize_queue_request(request)
-        if getattr(blocks._queue, "server_app", None) is None and getattr(blocks, "app", None) is not None:
-            blocks._queue.set_server_app(blocks.app)
-        body = PredictBodyInternal(session_hash=session_hash, fn_index=fn_index, data=[None, client_id], request=request)
-        success, error_or_event_id = asyncio.run(blocks._queue.push(body=body, request=request, username=getattr(request, "username", None)))
-        if not success:
-            raise RuntimeError(str(error_or_event_id))
+    def _queue_abort_client_id(self, client_id: str) -> None:
+        owner = getattr(self._session, "_gradio_session_proxy", None)
+        enqueue = getattr(owner, "_enqueue_abort_client_id", None)
+        if not callable(enqueue) or not enqueue(self._job, client_id):
+            raise RuntimeError("WanGP WebUI abort trigger is unavailable for the current wrapped Gradio call.")
 
     def _remove_inline_queue_client_id(self, client_id: str) -> bool:
         inline_queue = self._gen.get("inline_queue")
@@ -923,6 +935,11 @@ class GradioWanGPSession:
                     print(f"WanGP API forwarding follow-up load_queue_trigger token={load_queue_token}")
                     yield [*self._blank_outputs(output_count), load_queue_token, gr.skip(), call_id]
                     continue
+                abort_client_id = state.pop_abort_client_id()
+                if abort_client_id:
+                    print(f"WanGP API forwarding abort_client_id={abort_client_id}")
+                    yield [*self._blank_outputs(output_count), gr.skip(), abort_client_id, call_id]
+                    continue
                 yielded_result = state.pop_yielded_result()
                 if yielded_result is not _NO_YIELDED_RESULT:
                     yield [*self._normalize_callback_result(yielded_result, output_count), gr.skip(), gr.skip(), call_id]
@@ -1004,12 +1021,17 @@ class GradioWanGPSession:
                 state.add_followup_job(job)
 
     def _capture_cancelled_job(self, job: SessionJob) -> None:
-        call_id = str(job.webui_owner_call_id or getattr(self._ui_local, "call_id", "") or "").strip()
+        return
+
+    def _enqueue_abort_client_id(self, job: SessionJob, client_id: str) -> bool:
+        call_id = str(getattr(job, "webui_owner_call_id", "") or getattr(self._ui_local, "call_id", "") or "").strip()
         if len(call_id) == 0:
-            return
+            return False
         state = self._get_wrapped_call(call_id)
-        if state is not None and not state.abort_client_id:
-            state.abort_client_id = job.primary_client_id
+        if state is None:
+            return False
+        state.queue_abort_client_id(client_id)
+        return True
 
     def _remember_wrapped_call(self, call_id: str, state: _WrappedCallState) -> None:
         with self._wrapped_calls_lock:

@@ -981,7 +981,7 @@ class LTX2:
                     use_outpaint_gamma_roundtrip = True
 
             if skip_first_guide_latent:
-                control_start_frame = -control_start_frame
+                control_start_frame = -prefix_frames_count
 
             if merge_conditioning_and_guide:
                 if prefix_frames_count == 1:

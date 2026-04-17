@@ -1,5 +1,5 @@
 {
-  "name": "Outpaint Full Video",
+  "name": "Process Full Video",
   "author": "DeepBeepMeep",
   "version": "1.0.0",
   "description": "Outpaint long videos (up to 2h) with reduced RAM.",

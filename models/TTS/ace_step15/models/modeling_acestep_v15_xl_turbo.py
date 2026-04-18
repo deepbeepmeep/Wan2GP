@@ -110,12 +110,7 @@ class AceStepAudioTokenizer(_BaseAceStepAudioTokenizer):
         hidden_states = self.audio_acoustic_proj(hidden_states)
         hidden_states = self.attention_pooler(hidden_states)
         input_dtype = hidden_states.dtype
-        quantizer_dtype = next(self.quantizer.parameters()).dtype
-        if quantizer_dtype != torch.float32:
-            self.quantizer.float()
         quantized, indices = self.quantizer(hidden_states.float())
-        if quantizer_dtype != torch.float32:
-            self.quantizer.to(quantizer_dtype)
         quantized = quantized.to(input_dtype)
         return quantized, indices
 

@@ -5,11 +5,12 @@ from __future__ import annotations
 import contextlib
 import copy
 import importlib
-import inspect
 import io
 import json
+import numpy as np
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -20,12 +21,36 @@ from typing import Any, Iterator, Sequence
 from PIL import Image
 
 from shared.utils.process_locks import set_main_generation_running
-from shared.utils.thread_utils import AsyncStream
+from shared.utils.virtual_media import get_virtual_media_vsource, parse_virtual_media_path, replace_virtual_media_source
 
 _RUNTIME_LOCK = threading.RLock()
 _GENERATION_LOCK = threading.RLock()
 _RUNTIME: "_WanGPRuntime | None" = None
 _BANNER_PRINTED = False
+_STATUS_STEP_PREFIX_RE = re.compile(r"^(?:prompt|sample|sliding window|window|chunk|task|step|phase|pass)\s+\d+\s*/\s*\d+\s*(?:,\s*)?", re.IGNORECASE)
+_STATUS_INDEX_RE = re.compile(r"^\[\s*\d+\s*/\s*\d+\s*\]\s*")
+_STATUS_TIME_ONLY_RE = re.compile(r"^[\d:.]+\s*[smh]?$", re.IGNORECASE)
+
+
+def extract_status_phase_label(text: str | None) -> str:
+    raw_text = str(text or "").strip()
+    if len(raw_text) == 0:
+        return ""
+    parts = [part.strip() for part in raw_text.split("|") if len(part.strip()) > 0] or [raw_text]
+    stripped_wrapper = False
+    for part in parts:
+        phase_text = part.rsplit(" - ", 1)[-1].strip()
+        while True:
+            cleaned = _STATUS_INDEX_RE.sub("", phase_text)
+            cleaned = _STATUS_STEP_PREFIX_RE.sub("", cleaned)
+            cleaned = cleaned.lstrip(" -:,")
+            if cleaned == phase_text:
+                break
+            stripped_wrapper = True
+            phase_text = cleaned.strip()
+        if len(phase_text) > 0 and not _STATUS_TIME_ONLY_RE.fullmatch(phase_text):
+            return phase_text
+    return "" if stripped_wrapper else raw_text
 
 
 @dataclass(frozen=True)
@@ -63,6 +88,31 @@ class SessionEvent:
 
 
 @dataclass(frozen=True)
+class GeneratedArtifact:
+    path: str | None
+    media_type: str
+    client_id: str = ""
+    video_tensor_uint8: Any = None
+    audio_tensor: Any = None
+    audio_sampling_rate: int | None = None
+    fps: float | None = None
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any], *, default_client_id: str = "") -> "GeneratedArtifact | None":
+        if not isinstance(payload, dict):
+            return None
+        return cls(
+            path=str(payload.get("path") or "") or None,
+            media_type=str(payload.get("media_type") or "video"),
+            client_id=str(payload.get("client_id") or default_client_id or "").strip(),
+            video_tensor_uint8=payload.get("video_tensor_uint8"),
+            audio_tensor=payload.get("audio_tensor"),
+            audio_sampling_rate=payload.get("audio_sampling_rate"),
+            fps=payload.get("fps"),
+        )
+
+
+@dataclass(frozen=True)
 class GenerationResult:
     success: bool
     generated_files: list[str]
@@ -70,6 +120,11 @@ class GenerationResult:
     total_tasks: int
     successful_tasks: int
     failed_tasks: int
+    artifacts: tuple[GeneratedArtifact, ...] = ()
+
+    @property
+    def cancelled(self) -> bool:
+        return len(self.errors) > 0 and all(error.cancelled for error in self.errors)
 
 
 @dataclass(frozen=True)
@@ -81,6 +136,60 @@ class GenerationError:
 
     def __str__(self) -> str:
         return self.message
+
+    @property
+    def cancelled(self) -> bool:
+        stage = str(self.stage or "").strip().lower()
+        if stage == "cancelled":
+            return True
+        return str(self.message or "").strip().lower() == "generation was cancelled"
+
+
+def get_api_output_options(plugin_data: Any) -> tuple[bool, bool]:
+    api_options = {} if not isinstance(plugin_data, dict) else plugin_data.get("api", {})
+    if not isinstance(api_options, dict):
+        return False, False
+    return bool(api_options.get("return_video_uint8") or api_options.get("return_media")), bool(api_options.get("return_audio") or api_options.get("return_media"))
+
+
+def _coerce_api_video_tensor_uint8(output_video_frames: Any) -> Any:
+    try:
+        import torch
+    except Exception:
+        torch = None
+    if torch is not None and torch.is_tensor(output_video_frames):
+        return output_video_frames
+    if isinstance(output_video_frames, list) and len(output_video_frames) == 1 and torch is not None and torch.is_tensor(output_video_frames[0]):
+        return output_video_frames[0]
+    return None
+
+
+def _coerce_api_audio_tensor(output_audio_data: Any) -> Any:
+    return None if output_audio_data is None else np.asarray(output_audio_data, dtype=np.float32)
+
+
+def build_api_output_artifact_payload(client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any) -> dict[str, Any] | None:
+    client_id = str(client_id or "").strip()
+    if len(client_id) == 0:
+        return None
+    output_path = str(video_path[0]) if isinstance(video_path, list) and len(video_path) > 0 else str(video_path or "")
+    return {
+        "client_id": client_id,
+        "path": output_path,
+        "media_type": str(media_type or "video"),
+        "video_tensor_uint8": _coerce_api_video_tensor_uint8(output_video_frames),
+        "audio_tensor": _coerce_api_audio_tensor(output_audio_data),
+        "audio_sampling_rate": int(output_audio_sampling_rate) if output_audio_sampling_rate else None,
+        "fps": float(output_fps) if output_fps else None,
+    }
+
+
+def store_api_output_artifact(gen: dict[str, Any], client_id: str, video_path: Any, media_type: str, output_video_frames: Any, output_audio_data: Any, output_audio_sampling_rate: Any, output_fps: Any) -> bool:
+    payload = build_api_output_artifact_payload(client_id, video_path, media_type, output_video_frames, output_audio_data, output_audio_sampling_rate, output_fps)
+    if payload is None:
+        return False
+    gen.setdefault("api_output_artifacts", {})[payload["client_id"]] = payload
+    return True
 
 
 class SessionStream:
@@ -191,21 +300,45 @@ class _WanGPRuntime:
 class SessionJob:
     def __init__(self, session: "WanGPSession") -> None:
         self._session = session
+        self._callbacks: object | None = None
         self.events = SessionStream()
         self._done = threading.Event()
         self._cancel_requested = threading.Event()
+        self._webui_submission_ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._result: GenerationResult | None = None
+        self._webui_manifest: list[dict[str, Any]] = []
+        self._webui_client_ids: tuple[str, ...] = ()
+        self._webui_load_queue_token = ""
+        self._webui_owner_call_id = ""
 
     def _bind_thread(self, thread: threading.Thread) -> None:
         self._thread = thread
+
+    def _bind_callbacks(self, callbacks: object | None) -> None:
+        self._callbacks = callbacks
 
     def _set_result(self, result: GenerationResult) -> None:
         self._result = result
         self._done.set()
 
+    def _set_webui_bridge(self, *, manifest: Sequence[dict[str, Any]], client_ids: Sequence[str], load_queue_token: str) -> None:
+        self._webui_manifest = copy.deepcopy(list(manifest))
+        self._webui_client_ids = tuple(str(client_id or "").strip() for client_id in client_ids if str(client_id or "").strip())
+        self._webui_load_queue_token = str(load_queue_token or "").strip()
+
+    def _mark_webui_submission_ready(self) -> None:
+        self._webui_submission_ready.set()
+
+    def _bind_webui_owner_call(self, call_id: str) -> None:
+        self._webui_owner_call_id = str(call_id or "").strip()
+
     def cancel(self) -> None:
         self._cancel_requested.set()
+        owner = getattr(self._session, "_gradio_session_proxy", None)
+        capture = getattr(owner, "_capture_cancelled_job", None)
+        if callable(capture):
+            capture(self)
 
     def result(self, timeout: float | None = None) -> GenerationResult:
         if not self._done.wait(timeout=timeout):
@@ -217,6 +350,7 @@ class SessionJob:
             total_tasks=0,
             successful_tasks=0,
             failed_tasks=0,
+            artifacts=(),
         )
 
     def join(self, timeout: float | None = None) -> GenerationResult:
@@ -230,6 +364,30 @@ class SessionJob:
     def cancel_requested(self) -> bool:
         return self._cancel_requested.is_set()
 
+    @property
+    def webui_manifest(self) -> list[dict[str, Any]]:
+        return copy.deepcopy(self._webui_manifest)
+
+    @property
+    def webui_client_ids(self) -> tuple[str, ...]:
+        return self._webui_client_ids
+
+    @property
+    def primary_client_id(self) -> str:
+        return "" if not self._webui_client_ids else self._webui_client_ids[0]
+
+    @property
+    def webui_load_queue_token(self) -> str:
+        return self._webui_load_queue_token
+
+    @property
+    def webui_submission_ready(self) -> bool:
+        return self._webui_submission_ready.is_set()
+
+    @property
+    def webui_owner_call_id(self) -> str:
+        return self._webui_owner_call_id
+
 
 class WanGPSession:
     def __init__(
@@ -242,6 +400,7 @@ class WanGPSession:
         cli_args: Sequence[str] = (),
         console_output: bool = True,
         console_isatty: bool = True,
+        webui_state: dict[str, Any] | None = None,
     ) -> None:
         self._root = Path(root or Path(__file__).resolve().parents[1]).resolve()
         self._config_path = Path(config_path).resolve() if config_path is not None else (self._root / "wgp_config.json").resolve()
@@ -250,7 +409,8 @@ class WanGPSession:
         self._cli_args = tuple(str(arg) for arg in cli_args)
         self._console_output = bool(console_output)
         self._console_isatty = bool(console_isatty)
-        self._state = self._create_headless_state()
+        self._use_webui_queue = isinstance(webui_state, dict)
+        self._state = webui_state if isinstance(webui_state, dict) else self._create_headless_state()
         self._active_job: SessionJob | None = None
         self._job_lock = threading.Lock()
         self._attachment_keys: tuple[str, ...] | None = None
@@ -259,33 +419,35 @@ class WanGPSession:
         self._ensure_runtime()
         return self
 
-    def submit(self, source: str | os.PathLike[str] | dict[str, Any] | list[dict[str, Any]]) -> SessionJob:
+    def submit(self, source: str | os.PathLike[str] | dict[str, Any] | list[dict[str, Any]], callbacks: object | None = None) -> SessionJob:
         tasks = self._normalize_source(source, caller_base_path=self._get_caller_base_path())
-        return self._submit_tasks(tasks)
+        return self._submit_tasks(tasks, callbacks=callbacks)
 
-    def submit_task(self, settings: dict[str, Any]) -> SessionJob:
+    def submit_task(self, settings: dict[str, Any], callbacks: object | None = None) -> SessionJob:
         caller_base_path = self._get_caller_base_path()
         task = self._normalize_task(settings, task_index=1)
-        return self._submit_tasks([self._absolutize_task_paths(task, caller_base_path)])
+        return self._submit_tasks([self._absolutize_task_paths(task, caller_base_path)], callbacks=callbacks)
 
-    def submit_manifest(self, settings_list: list[dict[str, Any]]) -> SessionJob:
+    def submit_manifest(self, settings_list: list[dict[str, Any]], callbacks: object | None = None) -> SessionJob:
         caller_base_path = self._get_caller_base_path()
         tasks = [
             self._absolutize_task_paths(self._normalize_task(settings, task_index=index + 1), caller_base_path)
             for index, settings in enumerate(settings_list)
         ]
-        return self._submit_tasks(tasks)
+        return self._submit_tasks(tasks, callbacks=callbacks)
 
-    def run(self, source: str | os.PathLike[str] | dict[str, Any] | list[dict[str, Any]]) -> GenerationResult:
-        return self.submit(source).result()
+    def run(self, source: str | os.PathLike[str] | dict[str, Any] | list[dict[str, Any]], callbacks: object | None = None) -> GenerationResult:
+        return self.submit(source, callbacks=callbacks).result()
 
-    def run_task(self, settings: dict[str, Any]) -> GenerationResult:
-        return self.submit_task(settings).result()
+    def run_task(self, settings: dict[str, Any], callbacks: object | None = None) -> GenerationResult:
+        return self.submit_task(settings, callbacks=callbacks).result()
 
-    def run_manifest(self, settings_list: list[dict[str, Any]]) -> GenerationResult:
-        return self.submit_manifest(settings_list).result()
+    def run_manifest(self, settings_list: list[dict[str, Any]], callbacks: object | None = None) -> GenerationResult:
+        return self.submit_manifest(settings_list, callbacks=callbacks).result()
 
     def close(self) -> None:
+        if self._use_webui_queue:
+            return
         runtime = self._ensure_runtime()
         with _GENERATION_LOCK, _pushd(runtime.root):
             runtime.module.release_model()
@@ -316,18 +478,25 @@ class WanGPSession:
                 "total_windows": 0,
                 "progress_status": "",
                 "process_status": "process:main",
+                "api_output_artifacts": {},
             },
             "loras": [],
         }
 
-    def _submit_tasks(self, tasks: list[dict[str, Any]]) -> SessionJob:
+    def _submit_tasks(self, tasks: list[dict[str, Any]], callbacks: object | None = None) -> SessionJob:
         with self._job_lock:
             if self._active_job is not None and not self._active_job.done:
                 raise RuntimeError("WanGP session already has a generation in progress")
             job = SessionJob(self)
+            self._bind_callbacks_to_job(job, callbacks)
+            prepared_tasks = copy.deepcopy(tasks)
+            client_ids = self._ensure_task_client_ids(prepared_tasks, priority=self._use_webui_queue)
+            if self._use_webui_queue:
+                prepared_tasks, manifest, load_queue_token = self._prepare_webui_bridge(prepared_tasks)
+                job._set_webui_bridge(manifest=manifest, client_ids=client_ids, load_queue_token=load_queue_token)
             thread = threading.Thread(
                 target=self._run_job,
-                args=(job, copy.deepcopy(tasks)),
+                args=(job, prepared_tasks),
                 daemon=True,
                 name="wangp-session-job",
             )
@@ -336,253 +505,64 @@ class WanGPSession:
             thread.start()
             return job
 
-    def _run_job(self, job: SessionJob, tasks: list[dict[str, Any]]) -> None:
-        stream = AsyncStream()
-        gen = self._state["gen"]
-        worker_done = threading.Event()
-        base_file_count = len(gen["file_list"])
-        base_audio_count = len(gen["audio_file_list"])
-        total_tasks = len(tasks)
-        runtime: _WanGPRuntime | None = None
-        task_summary: dict[str, Any] = {
-            "errors": [],
-            "successful_tasks": 0,
-            "failed_tasks": 0,
-            "total_tasks": total_tasks,
-        }
-
+    def _bind_callbacks_to_job(self, job: SessionJob, callbacks: object | None = None) -> None:
+        callback = self._callbacks if callbacks is None else callbacks
+        job._bind_callbacks(callback)
+        if callback is None:
+            return
+        binder = getattr(callback, "bind_job", None)
+        if not callable(binder):
+            return
         try:
-            runtime = self._ensure_runtime()
-            with _GENERATION_LOCK, _pushd(runtime.root):
-                self._configure_runtime(runtime)
-                self._prepare_state_for_run(tasks)
-                job.events.put("started", {"tasks": len(tasks)})
+            binder(session=self, job=job)
+        except TypeError:
+            binder(job)
 
-                def worker() -> None:
-                    stdout_capture = _OutputCapture(
-                        "stdout",
-                        lambda stream_name, line: self._emit_stream(job, stream_name, line),
-                        console=sys.__stdout__ if self._console_output else None,
-                        console_isatty=self._console_isatty,
-                    )
-                    stderr_capture = _OutputCapture(
-                        "stderr",
-                        lambda stream_name, line: self._emit_stream(job, stream_name, line),
-                        console=sys.__stderr__ if self._console_output else None,
-                        console_isatty=self._console_isatty,
-                    )
-                    try:
-                        with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
-                            self._run_tasks_worker(runtime.module, tasks, stream, job, task_summary)
-                    except BaseException as exc:
-                        failure = self._make_generation_error(
-                            exc,
-                            task_index=None,
-                            task_id=None,
-                            stage="runtime",
-                        )
-                        task_summary["errors"].append(failure)
-                        stream.output_queue.push("error", failure)
-                    finally:
-                        stdout_capture.flush()
-                        stderr_capture.flush()
-                        stream.output_queue.push("worker_exit", None)
-                        worker_done.set()
+    @staticmethod
+    def _ensure_task_client_ids(tasks: list[dict[str, Any]], *, priority: bool = False) -> tuple[str, ...]:
+        client_seed = time.time_ns()
+        client_ids: list[str] = []
+        for index, task in enumerate(tasks, start=1):
+            params = copy.deepcopy(WanGPSession._get_task_settings(task))
+            client_id = str(params.get("client_id", "") or "").strip()
+            if len(client_id) == 0:
+                client_id = f"api_{client_seed}_{index}"
+            params["client_id"] = client_id
+            if priority:
+                params["priority"] = True
+            elif "priority" in params and not params["priority"]:
+                params.pop("priority", None)
+            task["params"] = params
+            client_ids.append(client_id)
+        return tuple(client_ids)
 
-                worker_thread = threading.Thread(target=worker, daemon=True, name="wangp-session-worker")
-                worker_thread.start()
+    def _prepare_webui_bridge(self, tasks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+        manifest = []
+        for index, task in enumerate(tasks, start=1):
+            params = copy.deepcopy(self._get_task_settings(task))
+            params["priority"] = True
+            task["params"] = params
+            manifest.append({
+                "id": task.get("id", index),
+                "params": copy.deepcopy(params),
+                "plugin_data": copy.deepcopy(task.get("plugin_data", {})),
+            })
+        return tasks, manifest, str(time.time_ns())
 
-                while True:
-                    if job.cancel_requested:
-                        self._request_cancel_unlocked(runtime.module)
-                    item = stream.output_queue.pop()
-                    if item is None:
-                        if worker_done.is_set() and not worker_thread.is_alive():
-                            break
-                        time.sleep(0.01)
-                        continue
-                    command, data = item
-                    if command == "worker_exit":
-                        break
-                    self._handle_command(job, runtime.module, tasks, command, data)
-
-                worker_thread.join(timeout=0.1)
-                outputs = self._collect_outputs(base_file_count, base_audio_count)
-                if job.cancel_requested and not task_summary["errors"]:
-                    task_summary["errors"].append(
-                        GenerationError(message="Generation was cancelled", stage="cancelled")
-                    )
-                    task_summary["failed_tasks"] = max(task_summary["failed_tasks"], 1)
-                result = GenerationResult(
-                    success=not task_summary["errors"],
-                    generated_files=outputs,
-                    errors=list(task_summary["errors"]),
-                    total_tasks=task_summary["total_tasks"],
-                    successful_tasks=task_summary["successful_tasks"],
-                    failed_tasks=task_summary["failed_tasks"],
-                )
-                job.events.put("completed", result)
-                self._emit_callback("on_complete", result)
-                job._set_result(result)
-        except BaseException as exc:
-            failure = self._make_generation_error(exc, task_index=None, task_id=None, stage="runtime")
-            result = GenerationResult(
-                success=False,
-                generated_files=[],
-                errors=[failure],
-                total_tasks=total_tasks,
-                successful_tasks=task_summary["successful_tasks"],
-                failed_tasks=max(task_summary["failed_tasks"], 1 if total_tasks > 0 else 0),
-            )
-            job.events.put("error", failure)
-            self._emit_callback("on_error", failure)
-            job.events.put("completed", result)
-            self._emit_callback("on_complete", result)
-            job._set_result(result)
-        finally:
-            job.events.close()
-            if runtime is not None:
-                self._reset_state_after_run()
-            with self._job_lock:
-                if self._active_job is job:
-                    self._active_job = None
-
-    def _run_tasks_worker(
-        self,
-        wgp,
-        tasks: list[dict[str, Any]],
-        stream: AsyncStream,
-        job: SessionJob,
-        task_summary: dict[str, Any],
-    ) -> None:
-        expected_args = set(inspect.signature(wgp.generate_video).parameters.keys())
-        total_tasks = len(tasks)
-
-        for task_index, task in enumerate(tasks, start=1):
-            if job.cancel_requested:
-                break
-
-            self._state["gen"]["prompt_no"] = task_index
-            self._state["gen"]["prompts_max"] = total_tasks
-            self._state["gen"]["queue"] = tasks
-            task_id = task.get("id")
-            task_errors: list[GenerationError] = []
-
-            def send_cmd(command: str, data: Any = None) -> None:
-                if command == "error":
-                    failure = self._make_generation_error(
-                        data,
-                        task_index=task_index,
-                        task_id=task_id,
-                        stage="generation",
-                    )
-                    task_errors.append(failure)
-                    stream.output_queue.push("error", failure)
-                    return
-                stream.output_queue.push(command, data)
-
-            validated_settings, validation_error = wgp.validate_task(task, self._state)
-            if validated_settings is None:
-                failure = GenerationError(
-                    message=validation_error or f"Task {task_index} failed validation",
-                    task_index=task_index,
-                    task_id=task_id,
-                    stage="validation",
-                )
-                task_summary["errors"].append(failure)
-                task_summary["failed_tasks"] += 1
-                stream.output_queue.push("error", failure)
-                continue
-
-            task_settings = validated_settings.copy()
-            task_settings["state"] = self._state
-            filtered_params = {key: value for key, value in task_settings.items() if key in expected_args}
-            plugin_data = task.get("plugin_data", {})
-            try:
-                success = wgp.generate_video(task, send_cmd, plugin_data=plugin_data, **filtered_params)
-            except BaseException as exc:
-                if not task_errors:
-                    task_errors.append(
-                        self._make_generation_error(
-                            exc,
-                            task_index=task_index,
-                            task_id=task_id,
-                            stage="generation",
-                        )
-                    )
-                    stream.output_queue.push("error", task_errors[-1])
-                success = False
-
-            if self._state["gen"].get("abort", False) or job.cancel_requested:
-                task_errors.append(
-                    GenerationError(
-                        message="Generation was cancelled",
-                        task_index=task_index,
-                        task_id=task_id,
-                        stage="cancelled",
-                    )
-                )
-                stream.output_queue.push("error", task_errors[-1])
-                task_summary["errors"].extend(task_errors)
-                task_summary["failed_tasks"] += 1
-                break
-
-            if task_errors:
-                task_summary["errors"].extend(task_errors)
-                task_summary["failed_tasks"] += 1
-                continue
-
-            if not success:
-                failure = GenerationError(
-                    message=f"Task {task_index} did not complete successfully",
-                    task_index=task_index,
-                    task_id=task_id,
-                    stage="generation",
-                )
-                task_summary["errors"].append(failure)
-                task_summary["failed_tasks"] += 1
-                stream.output_queue.push("error", failure)
-                continue
-
-            task_summary["successful_tasks"] += 1
-
-    def _handle_command(self, job: SessionJob, wgp, tasks: list[dict[str, Any]], command: str, data: Any) -> None:
-        if command == "progress":
-            progress = self._build_progress_update(data)
-            job.events.put("progress", progress)
-            self._emit_callback("on_progress", progress)
+    def _run_job(self, job: SessionJob, tasks: list[dict[str, Any]]) -> None:
+        if self._use_webui_queue:
+            self._run_webui_job(job, tasks)
             return
-        if command == "preview":
-            preview = self._build_preview_update(wgp, tasks, data)
-            if preview is not None:
-                job.events.put("preview", preview)
-                self._emit_callback("on_preview", preview)
-            return
-        if command == "status":
-            text = str(data or "")
-            job.events.put("status", text)
-            self._emit_callback("on_status", text)
-            return
-        if command == "info":
-            text = str(data or "")
-            job.events.put("info", text)
-            self._emit_callback("on_info", text)
-            return
-        if command == "output":
-            job.events.put("output", data)
-            self._emit_callback("on_output", data)
-            return
-        if command == "refresh_models":
-            job.events.put("refresh_models", data)
-            return
-        if command == "error":
-            error = data if isinstance(data, GenerationError) else self._make_generation_error(data)
-            job.events.put("error", error)
-            self._emit_callback("on_error", error)
-            return
-        job.events.put(command, data)
+        from shared.api_cli import run_cli_job
 
-    def _build_progress_update(self, data: Any) -> ProgressUpdate:
+        run_cli_job(self, job, tasks)
+
+    def _run_webui_job(self, job: SessionJob, tasks: list[dict[str, Any]]) -> None:
+        from shared.api_webui import run_webui_job
+
+        run_webui_job(self, job, tasks)
+
+    def _build_progress_update(self, data: Any, *, include_state_fallback: bool = True) -> ProgressUpdate:
         current_step: int | None = None
         total_steps: int | None = None
         status = ""
@@ -602,10 +582,35 @@ class WanGPSession:
             status = str(data or "")
 
         raw_phase = None
-        progress_phase = self._state["gen"].get("progress_phase")
-        if isinstance(progress_phase, tuple) and progress_phase:
-            raw_phase = str(progress_phase[0] or "")
-        phase = self._normalize_phase(raw_phase or status)
+        if include_state_fallback:
+            progress_phase = self._state["gen"].get("progress_phase")
+            if isinstance(progress_phase, tuple) and progress_phase:
+                raw_phase = extract_status_phase_label(progress_phase[0])
+                if current_step is None and len(progress_phase) > 1 and "denoising" in raw_phase.lower():
+                    try:
+                        progress_step = int(progress_phase[1])
+                    except (TypeError, ValueError):
+                        progress_step = -1
+                    try:
+                        inference_steps = int(self._state["gen"].get("num_inference_steps") or 0)
+                    except (TypeError, ValueError):
+                        inference_steps = 0
+                    if progress_step >= 0 and inference_steps > 0:
+                        current_step = progress_step
+                        total_steps = inference_steps
+            if len(status) == 0:
+                status = str(self._state["gen"].get("progress_status", "") or raw_phase or "")
+        status_phase_label = extract_status_phase_label(status)
+        if len(status_phase_label) > 0 and len(str(raw_phase or "").strip()) > 0 and current_step is None:
+            normalized_status_phase = self._normalize_phase(status_phase_label)
+            normalized_raw_phase = self._normalize_phase(raw_phase)
+            if normalized_status_phase != normalized_raw_phase:
+                raw_phase = None
+        display_phase = raw_phase or status_phase_label
+        phase = self._normalize_phase(display_phase or status)
+        if not self._phase_supports_progress(phase):
+            current_step = None
+            total_steps = None
         progress = self._estimate_progress(phase, current_step, total_steps)
         return ProgressUpdate(
             phase=phase,
@@ -613,7 +618,7 @@ class WanGPSession:
             progress=progress,
             current_step=current_step,
             total_steps=total_steps,
-            raw_phase=raw_phase,
+            raw_phase=display_phase or None,
             unit=unit,
         )
 
@@ -636,10 +641,10 @@ class WanGPSession:
     def _emit_stream(self, job: SessionJob, stream_name: str, line: str) -> None:
         message = StreamMessage(stream=stream_name, text=line)
         job.events.put("stream", message)
-        self._emit_callback("on_stream", message)
+        self._emit_callback("on_stream", message, job=job)
 
-    def _emit_callback(self, method_name: str, payload: Any) -> None:
-        callback = self._callbacks
+    def _emit_callback(self, method_name: str, payload: Any, *, job: SessionJob | None = None) -> None:
+        callback = self._callbacks if job is None or job._callbacks is None else job._callbacks
         if callback is None:
             return
         method = getattr(callback, method_name, None)
@@ -679,6 +684,7 @@ class WanGPSession:
         gen["preview"] = None
         gen["status"] = "Generating..."
         gen["in_progress"] = True
+        gen.setdefault("api_output_artifacts", {})
         self._ensure_runtime().module.gen_in_progress = True
 
     def _reset_state_after_run(self) -> None:
@@ -699,6 +705,33 @@ class WanGPSession:
         files = gen["file_list"][base_file_count:]
         audio_files = gen["audio_file_list"][base_audio_count:]
         return [str(Path(path).resolve()) for path in [*files, *audio_files]]
+
+    def _consume_output_artifact(self, client_id: str) -> GeneratedArtifact | None:
+        gen = self._state["gen"]
+        artifacts = gen.get("api_output_artifacts")
+        if not isinstance(artifacts, dict):
+            return None
+        payload = artifacts.pop(str(client_id or "").strip(), None)
+        return GeneratedArtifact.from_payload(payload, default_client_id=str(client_id or "").strip())
+
+    def _peek_output_artifact(self, client_id: str) -> GeneratedArtifact | None:
+        gen = self._state["gen"]
+        artifacts = gen.get("api_output_artifacts")
+        if not isinstance(artifacts, dict):
+            return None
+        payload = artifacts.get(str(client_id or "").strip(), None)
+        return GeneratedArtifact.from_payload(payload, default_client_id=str(client_id or "").strip())
+
+    def _consume_output_artifacts(self, tasks: Sequence[dict[str, Any]]) -> tuple[GeneratedArtifact, ...]:
+        artifacts: list[GeneratedArtifact] = []
+        for task in tasks:
+            client_id = str(self._get_task_settings(task).get("client_id", "") or "").strip()
+            if len(client_id) == 0:
+                continue
+            artifact = self._consume_output_artifact(client_id)
+            if artifact is not None:
+                artifacts.append(artifact)
+        return tuple(artifacts)
 
     def _request_cancel_unlocked(self, wgp) -> None:
         gen = self._state["gen"]
@@ -741,8 +774,16 @@ class WanGPSession:
         normalized.setdefault("id", task_index)
         normalized.setdefault("plugin_data", {})
         normalized.setdefault("params", {})
+        if not isinstance(normalized["plugin_data"], dict):
+            normalized["plugin_data"] = {}
         settings = normalized["params"]
         if isinstance(settings, dict):
+            api_options = settings.pop("_api", None)
+            if isinstance(api_options, dict):
+                normalized["plugin_data"]["api"] = copy.deepcopy(api_options)
+            runtime_settings_version = getattr(self._ensure_runtime().module, "settings_version", None)
+            if runtime_settings_version is not None:
+                settings.setdefault("settings_version", runtime_settings_version)
             self._normalize_settings_values(settings)
             normalized.setdefault("prompt", settings.get("prompt", ""))
             normalized.setdefault("length", settings.get("video_length"))
@@ -832,10 +873,15 @@ class WanGPSession:
             value = os.fspath(value)
         if not isinstance(value, str) or not value.strip():
             return value
-        path = Path(value)
+        spec = parse_virtual_media_path(value)
+        if spec is not None and get_virtual_media_vsource(spec) is not None:
+            return value
+        path = Path(spec.source_path if spec is not None else value)
         if path.is_absolute():
-            return str(path.resolve())
-        return str((caller_base_path / path).resolve())
+            resolved = str(path.resolve())
+        else:
+            resolved = str((caller_base_path / path).resolve())
+        return replace_virtual_media_source(value, resolved) if spec is not None else resolved
 
     @staticmethod
     def _make_generation_error(
@@ -888,12 +934,12 @@ class WanGPSession:
                 config_path=self._config_path,
                 cli_args=self._cli_args,
             )
-            _print_banner_once(module)
+            _print_banner_once(module, enabled=not self._use_webui_queue)
             return _RUNTIME
 
     @staticmethod
     def _normalize_phase(text: str | None) -> str:
-        lowered = str(text or "").lower()
+        lowered = extract_status_phase_label(text).lower()
         if "denoising first pass" in lowered or "denoising 1st pass" in lowered:
             return "inference_stage_1"
         if "denoising second pass" in lowered or "denoising 2nd pass" in lowered:
@@ -911,6 +957,10 @@ class WanGPSession:
         if "cancel" in lowered or "abort" in lowered:
             return "cancelled"
         return "inference"
+
+    @staticmethod
+    def _phase_supports_progress(phase: str | None) -> bool:
+        return str(phase or "") in {"inference", "inference_stage_1", "inference_stage_2", "inference_stage_3"}
 
     @staticmethod
     def _estimate_progress(phase: str, current_step: int | None, total_steps: int | None) -> int:
@@ -960,6 +1010,8 @@ def init(
     callbacks: object | None = None,
     cli_args: Sequence[str] = (),
     console_output: bool = True,
+    console_isatty: bool = True,
+    webui_state: dict[str, Any] | None = None,
 ) -> WanGPSession:
     """Create and eagerly initialize a reusable WanGP session."""
 
@@ -970,7 +1022,20 @@ def init(
         callbacks=callbacks,
         cli_args=cli_args,
         console_output=console_output,
+        console_isatty=console_isatty,
+        webui_state=webui_state,
     ).ensure_ready()
+
+def create_gradio_webui_session(plugin) -> Any:
+    from shared.api_webui import create_gradio_webui_session as _create_gradio_webui_session
+
+    return _create_gradio_webui_session(plugin, init_fn=init)
+
+
+def create_gradio_progress_callbacks(progress) -> Any:
+    from shared.api_webui import create_gradio_progress_callbacks as _create_gradio_progress_callbacks
+
+    return _create_gradio_progress_callbacks(progress)
 
 
 @contextlib.contextmanager
@@ -993,8 +1058,10 @@ def _temporary_argv(argv: Sequence[str]) -> Iterator[None]:
         sys.argv = previous
 
 
-def _print_banner_once(module) -> None:
+def _print_banner_once(module, *, enabled: bool = True) -> None:
     global _BANNER_PRINTED
+    if not enabled:
+        return
     if _BANNER_PRINTED:
         return
     _BANNER_PRINTED = True

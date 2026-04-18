@@ -18,9 +18,7 @@ import json
 from mmgp import offload
 from shared.utils.loras_mutipliers import update_loras_slists, get_model_switch_steps
 
-
-
-def init_fusion_score_model_ovi(rank: int = 0, meta_init=True):
+def init_fusion_score_model_ovi():
     config_root = os.path.join("models", "wan", "ovi", "configs")
     video_config_path = os.path.join(config_root , "video.json")
     audio_config_path = os.path.join(config_root , "audio.json")
@@ -106,8 +104,7 @@ class OviFusionEngine:
             dtype=torch.bfloat16,
             device=torch.device('cpu'),
             checkpoint_path=text_encoder_filename,
-            tokenizer_path=tokenizer_path,
-            shard_fn= None)
+            tokenizer_path=tokenizer_path)
         
 
 

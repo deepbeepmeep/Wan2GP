@@ -423,6 +423,29 @@ def do_install_interactive(env_type, config, detected_key):
         print(f"\n[*] '{name}' is the only environment, setting as active.")
         manager.set_active(name)
 
+def do_install_auto(env_type, config, detected_key):
+    manager = EnvsManager()
+    create_wgp_config(detected_key, config)
+
+    name = f"env_{env_type}" if env_type != "none" else "system"
+    cwd = os.getcwd()
+    path = os.path.join(cwd, name) if env_type != "none" else ""
+
+    if name in manager.list_envs():
+        manager.remove_env(name)
+    elif os.path.exists(path) and env_type != "none":
+        try: shutil.rmtree(path)
+        except: pass
+
+    print(f"\n[*] Starting Automatic Install (Hardware Profile: {detected_key})...")
+    p = config['gpu_profiles'][detected_key]
+    
+    install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('flash'), p['kernels'], config)
+
+    manager.add_env(name, env_type, path)
+    manager.set_active(name)
+    print(f"\n[*] Automatic Install Complete! '{name}' is now active.")
+
 def do_manage():
     manager = EnvsManager()
     while True:
@@ -482,29 +505,6 @@ def do_manage():
             input("Press Enter...")
         elif choice == "5":
             break
-
-def do_migrate(config):
-    manager = EnvsManager()
-    print("\n" + "="*60)
-    print("      WAN2GP AUTOMATED PLATFORM MIGRATION (TO 3.11)")
-    print("="*60)
-    
-    env_name = manager.resolve_target_env()
-    env_data = manager.list_envs()[env_name]
-    
-    print(f"\nTarget Environment: {env_name} ({env_data['type']})")
-    confirm = input(f"This will wipe '{env_name}' and rebuild it. Proceed? (y/n): ")
-    if confirm.lower() != 'y': return
-
-    target = config['gpu_profiles']['RTX_50']
-
-    manager.remove_env(env_name)
-
-    install_logic(env_name, env_data['type'], env_data['path'], 
-                  target['python'], target['torch'], target['triton'], 
-                  target['sage'], target.get('flash'), target['kernels'], config)
-    
-    manager.add_env(env_name, env_data['type'], env_data['path'])
 
 def do_upgrade(config):
     manager = EnvsManager()
@@ -667,8 +667,9 @@ def inject_system_paths():
 if __name__ == "__main__":
     inject_system_paths()
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["install", "run", "update", "migrate", "upgrade", "status", "manage"])
+    parser.add_argument("mode", choices=["install", "run", "update", "upgrade", "status", "manage"])
     parser.add_argument("--env", default="venv", help="Type of env for install (venv, uv, conda, none)")
+    parser.add_argument("--auto", action="store_true", help="Run 1-click automatic install")
     args = parser.parse_args()
     cfg = load_config()
     
@@ -686,7 +687,10 @@ if __name__ == "__main__":
 
     if args.mode == "install":
         print(f"Hardware Detected: {gpu_name} ({vendor})")
-        do_install_interactive(args.env, cfg, profile_key)
+        if args.auto:
+            do_install_auto(args.env, cfg, profile_key)
+        else:
+            do_install_interactive(args.env, cfg, profile_key)
     
     elif args.mode == "run":
         manager = EnvsManager()
@@ -722,9 +726,6 @@ if __name__ == "__main__":
         install_fmt = ENV_TEMPLATES[env_data['type']]['install']
         cmd = f"{install_fmt.format(dir=env_data['path'])} -r requirements.txt"
         run_cmd(cmd)
-
-    elif args.mode == "migrate":
-        do_migrate(cfg)
 
     elif args.mode == "upgrade":
         do_upgrade(cfg)

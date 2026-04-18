@@ -43,6 +43,7 @@ class VideoConditionByReferenceLatent(ConditioningItem):
             tokens = tokens[:, frame_tokens:]
             denoise_mask = denoise_mask[:, frame_tokens:]
             positions = positions[:, :, frame_tokens:]
+            positions[:, 0, ...] -= latent_tools.scale_factors.time / latent_tools.fps
 
         return LatentState(
             latent=torch.cat([latent_state.latent, tokens], dim=1),

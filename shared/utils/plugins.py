@@ -194,17 +194,17 @@ def auto_install_and_enable_default_plugins(manager: 'PluginManager', wgp_global
 
 SYSTEM_PLUGINS = [
     "wan2gp-video-mask-creator",
-    "wan2gp-motion-designer",
     "wan2gp-guides",
     "wan2gp-configuration",
     "wan2gp-plugin-manager",
     "wan2gp-about",
 ]
 BUNDLED_PLUGINS = {
+    "wan2gp-motion-designer",
     "wan2gp-sample",
+    "wan2gp-process-full-video",
 }
-
-USER_PLUGIN_INSERT_POSITION = 3
+USER_PLUGIN_INSERT_POSITION = 1
 
 @dataclass
 class InsertAfterRequest:
@@ -247,6 +247,9 @@ class WAN2GPPlugin:
         pass
 
     def on_tab_deselect(self, state: Dict[str, Any]) -> None:
+        pass
+
+    def on_model_change(self, state: Dict[str, Any], model_type: str) -> None:
         pass
 
     def request_component(self, component_id: str) -> None:
@@ -1135,6 +1138,26 @@ class PluginManager:
     def get_all_plugins(self) -> Dict[str, WAN2GPPlugin]:
         return self.plugins.copy()
 
+    def _plugin_overrides_method(self, plugin: WAN2GPPlugin, method_name: str) -> bool:
+        plugin_method = getattr(type(plugin), method_name, None)
+        base_method = getattr(WAN2GPPlugin, method_name, None)
+        return callable(plugin_method) and plugin_method is not base_method
+
+    def _dispatch_plugin_event(self, method_name: str, *args, **kwargs) -> None:
+        for plugin_id, plugin in self.plugins.items():
+            if not self._plugin_overrides_method(plugin, method_name):
+                continue
+            try:
+                getattr(plugin, method_name)(*args, **kwargs)
+            except Exception as e:
+                print(f"[PluginManager] Error in {method_name} for plugin {plugin_id}: {e}")
+                traceback.print_exc()
+
+    def notify_model_change(self, state: Dict[str, Any], model_type: str) -> None:
+        if not model_type:
+            return
+        self._dispatch_plugin_event("on_model_change", state, model_type)
+
     def get_custom_js(self) -> str:
         if not self.custom_js_snippets:
             return ""
@@ -1262,6 +1285,9 @@ class WAN2GPApplication:
             print("[PluginManager] ERROR: server_config not found in globals.")
             return
         self.plugin_manager.set_server_config(server_config, server_config_filename)
+        if not safe_mode and not server_config.get("motion_designer_bundled_migrated", 0):
+            server_config["enabled_plugins"] = server_config.get("enabled_plugins", []) + ([] if "wan2gp-motion-designer" in server_config.get("enabled_plugins", []) else ["wan2gp-motion-designer"]); server_config["motion_designer_bundled_migrated"] = 1
+            self.plugin_manager._save_server_config()
         self.plugin_manager.cleanup_pending_deletions()
 
         self.enabled_plugins = server_config.get("enabled_plugins", [])
@@ -1296,7 +1322,6 @@ class WAN2GPApplication:
                 else:
                     user_tabs.append((plugin_id, tab_info))
 
-        # Respect the declared system order, then splice user tabs after the configured index.
         system_tabs_sorted = sorted(
             system_tabs,
             key=lambda t: (system_order.get(t['plugin_id'], 1_000_000), t['label']),
@@ -1317,8 +1342,32 @@ class WAN2GPApplication:
             with gr.Tab(tab_info['label'], id=f"plugin_{tab_info['id']}") as new_tab:
                 self.all_rendered_tabs.append(new_tab)
                 plugin = self.tab_to_plugin_map[new_tab.label]
-                plugin.goto_video_tab = goto_video_tab 
-                tab_info['component_constructor']()
+                plugin.goto_video_tab = goto_video_tab
+                constructor = tab_info['component_constructor']
+                if self._component_constructor_accepts_api(constructor):
+                    if not hasattr(plugin, "_wangp_session") or getattr(plugin, "_wangp_session", None) is None:
+                        from shared.api import create_gradio_webui_session
+
+                        plugin._wangp_session = create_gradio_webui_session(plugin)
+                    with plugin._wangp_session.plugin_ui_context():
+                        constructor(plugin._wangp_session)
+                else:
+                    constructor()
+
+    @staticmethod
+    def _component_constructor_accepts_api(component_constructor: callable) -> bool:
+        try:
+            parameters = list(inspect.signature(component_constructor).parameters.values())
+        except (TypeError, ValueError):
+            return False
+        if any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
+            return True
+        positional_parameters = [
+            parameter
+            for parameter in parameters
+            if parameter.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+        ]
+        return len(positional_parameters) >= 1
 
 
     def _setup_tab_events(self, main_tabs_component: gr.Tabs, state_component: gr.State, set_save_form_event):

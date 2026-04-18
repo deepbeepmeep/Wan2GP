@@ -11,10 +11,9 @@ echo ======================================================
 python setup.py status
 echo 1. Update (git pull + install requirements)
 echo 2. Upgrade (Upgrade Torch, Triton, Sage Attention, etc.)
-echo 3. Platform Migration (Upgrade to Py 3.11/Torch 2.10)
-echo 4. Exit
+echo 3. Exit
 echo ------------------------------------------------------
-set /p choice="Select an option (1-4): "
+set /p choice="Select an option (1-3): "
 
 if "%choice%"=="1" (
     python setup.py update
@@ -28,12 +27,5 @@ if "%choice%"=="2" (
     goto MENU
 )
 
-if "%choice%"=="3" (
-    echo [!] This will rebuild your environment with Python 3.11/Torch 2.10
-    python setup.py migrate
-    pause
-    goto MENU
-)
-
-if "%choice%"=="4" exit
+if "%choice%"=="3" exit
 goto MENU

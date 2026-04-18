@@ -15,10 +15,10 @@ import random
 import ffmpeg
 import os
 import tempfile
-import subprocess
-import json
 import time
 from functools import lru_cache
+from .video_decode import probe_video_stream_metadata, video_needs_corrected_decode, decode_video_frames_ffmpeg, get_video_summary_extras
+from .virtual_media import get_virtual_image, parse_virtual_media_path, strip_virtual_media_suffix
 os.environ["U2NET_HOME"] = os.path.join(os.getcwd(), "ckpts", "rembg")
 
 
@@ -34,22 +34,25 @@ def seed_everything(seed: int):
         torch.mps.manual_seed(seed)
 
 def has_video_file_extension(filename):
+    filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
     return extension in [".mp4", ".mkv"]
 
 def has_image_file_extension(filename):
+    filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
     return extension in [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"]
 
 def has_audio_file_extension(filename):
+    filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
     return extension in [".wav", ".mp3", ".aac"]
 
 def resample(video_fps, video_frames_count, max_target_frames_count, target_fps, start_target_frame ):
     import math
 
-    video_frame_duration = 1 /video_fps
-    target_frame_duration = 1 / target_fps 
+    video_frame_duration = 1 /round(video_fps, 0)
+    target_frame_duration = 1 / round(target_fps, 0) 
     
     target_time = start_target_frame * target_frame_duration
     frame_no = math.ceil(target_time / video_frame_duration)  
@@ -157,32 +160,141 @@ def process_images_multithread(image_processor, items, process_type, wrap_in_lis
     # print(f"duration:{end_time-start_time:.1f}")
 
     return results
+
+def get_resampled_video_transparent(video_in, start_frame, max_frames, target_fps, bridge='torch'):
+    virtual_spec = parse_virtual_media_path(video_in) if isinstance(video_in, str) else None
+    base_video_in = strip_virtual_media_suffix(video_in) if isinstance(video_in, str) else video_in
+    virtual_image = get_virtual_image(video_in) if isinstance(video_in, str) else None
+    if virtual_image is not None:
+        video_in = virtual_image
+    elif isinstance(base_video_in, str) and has_image_file_extension(base_video_in):
+        video_in = Image.open(base_video_in)
+    if isinstance(video_in, Image.Image):
+        frame = torch.from_numpy(np.array(video_in).astype(np.uint8)).unsqueeze(0)
+        return frame if bridge == "torch" else frame.numpy()
+    if virtual_spec is None and isinstance(video_in, str) and not video_needs_corrected_decode(video_in):
+        decord.bridge.set_bridge(bridge)
+        reader = decord.VideoReader(video_in)
+        fps = round(reader.get_avg_fps())
+        if max_frames < 0:
+            max_frames = int(max(len(reader) / fps * target_fps + max_frames, 0))
+        frame_nos = resample(fps, len(reader), max_target_frames_count=max_frames, target_fps=target_fps, start_target_frame=start_frame)
+        return reader.get_batch(frame_nos)
+    metadata = probe_video_stream_metadata(video_in)
+    fps_float = metadata["fps_float"] if metadata is not None else 0.0
+    if max_frames < 0:
+        max_frames = int(max((metadata["frame_count"] / fps_float) * target_fps + max_frames, 0)) if metadata is not None and fps_float > 0 else 0
+    return decode_video_frames_ffmpeg(video_in, start_frame, max_frames, target_fps=target_fps, bridge=bridge)
+
+
 @lru_cache(maxsize=100)
-def get_video_info(video_path):
+def _get_video_info_cached(video_path):
+    metadata = probe_video_stream_metadata(video_path)
+    if metadata is not None:
+        return metadata["fps"], metadata["display_width"], metadata["display_height"], metadata["frame_count"]
     global video_info_cache
     import cv2
     cap = cv2.VideoCapture(video_path)
-    
-    # Get FPS
     fps = round(cap.get(cv2.CAP_PROP_FPS))
-    
-    # Get resolution
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) 
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
-    
     return fps, width, height, frame_count
+
+
+def get_video_info(video_path):
+    if isinstance(video_path, Image.Image):
+        width, height = video_path.size
+        return 1, width, height, 1
+    return _get_video_info_cached(video_path)
+
+
+@lru_cache(maxsize=100)
+def _get_video_info_details_cached(video_path):
+    metadata = probe_video_stream_metadata(video_path)
+    if metadata is not None:
+        return metadata
+    fps, width, height, frame_count = get_video_info(video_path)
+    return {
+        "source_path": strip_virtual_media_suffix(video_path),
+        "width": width,
+        "height": height,
+        "display_width": width,
+        "display_height": height,
+        "fps_float": float(fps),
+        "fps": int(fps),
+        "frame_count": int(frame_count),
+        "duration": float(frame_count / fps) if fps > 0 else 0.0,
+        "sample_aspect_ratio": "1:1",
+        "display_aspect_ratio": "",
+        "color_transfer": "",
+        "color_primaries": "",
+        "color_space": "",
+        "color_range": "",
+        "needs_sar_fix": False,
+        "needs_tonemap": False,
+    }
+
+
+def get_video_info_details(video_path):
+    if isinstance(video_path, Image.Image):
+        width, height = video_path.size
+        return {
+            "source_path": "",
+            "width": width,
+            "height": height,
+            "display_width": width,
+            "display_height": height,
+            "fps_float": 1.0,
+            "fps": 1,
+            "frame_count": 1,
+            "duration": 1.0,
+            "sample_aspect_ratio": "1:1",
+            "display_aspect_ratio": "",
+            "color_transfer": "",
+            "color_primaries": "",
+            "color_space": "",
+            "color_range": "",
+            "needs_sar_fix": False,
+            "needs_tonemap": False,
+        }
+    return _get_video_info_details_cached(video_path)
 
 def get_video_frame(file_name: str, frame_no: int, return_last_if_missing: bool = False, target_fps = None,  return_PIL = True) -> torch.Tensor:
     """Extract nth frame from video as PyTorch tensor normalized to [-1, 1]."""
-    cap = cv2.VideoCapture(file_name)
+    metadata = probe_video_stream_metadata(file_name)
+    if metadata is not None and (metadata["needs_sar_fix"] or metadata["needs_tonemap"] or parse_virtual_media_path(file_name) is not None):
+        fps_float = metadata["fps_float"] if metadata["fps_float"] > 0 else float(metadata["fps"] or 1)
+        if target_fps is not None and float(target_fps) > 0:
+            max_target_frames = int(round(metadata["frame_count"] / fps_float * float(target_fps))) if metadata["frame_count"] > 0 else 0
+            if return_last_if_missing and max_target_frames > 0:
+                frame_no = min(max(0, int(frame_no)), max_target_frames - 1)
+            frames = decode_video_frames_ffmpeg(file_name, int(frame_no), 1, target_fps=float(target_fps), bridge="torch")
+        else:
+            if return_last_if_missing and metadata["frame_count"] > 0:
+                frame_no = min(max(0, int(frame_no)), metadata["frame_count"] - 1)
+            frames = decode_video_frames_ffmpeg(file_name, int(frame_no), 1, target_fps=None, bridge="torch")
+        if frames.shape[0] == 0:
+            raise ValueError(f"Failed to read frame {frame_no}")
+        frame = frames[0]
+        if return_PIL:
+            return Image.fromarray(frame.numpy())
+        return frame.permute(2, 0, 1).float().div_(127.5).sub_(1.0)
+    virtual_spec = parse_virtual_media_path(file_name)
+    base_file_name = strip_virtual_media_suffix(file_name)
+    cap = cv2.VideoCapture(base_file_name)
     
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {file_name}")
     
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = round(cap.get(cv2.CAP_PROP_FPS))
+    virtual_start = 0
+    if virtual_spec is not None and total_frames > 0:
+        virtual_start = max(0, min(int(virtual_spec.start_frame), total_frames - 1))
+        virtual_end = total_frames - 1 if virtual_spec.end_frame is None else max(virtual_start, min(int(virtual_spec.end_frame), total_frames - 1))
+        total_frames = max(0, virtual_end - virtual_start + 1)
     if target_fps is not None:
         frame_no = round(target_fps * frame_no /fps)
 
@@ -195,7 +307,7 @@ def get_video_frame(file_name: str, frame_no: int, return_last_if_missing: bool 
             raise IndexError(f"Frame {frame_no} out of bounds (0-{total_frames-1})")
     
     # Get frame
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, virtual_start + frame_no)
     ret, frame = cap.read()
     cap.release()
     
@@ -273,8 +385,72 @@ def convert_tensor_to_image(t, frame_no = 0, mask_levels = False):
 def save_image(tensor_image, name, frame_no = -1):
     convert_tensor_to_image(tensor_image, frame_no).save(name)
 
-def get_outpainting_full_area_dimensions(frame_height,frame_width, outpainting_dims):
-    outpainting_top, outpainting_bottom, outpainting_left, outpainting_right= outpainting_dims
+def parse_outpainting_ratio(outpainting_ratio):
+    ratio = "" if outpainting_ratio is None else str(outpainting_ratio).strip()
+    if len(ratio) == 0:
+        return None
+    ratio = ratio.split(":")
+    if len(ratio) != 2:
+        return None
+    try:
+        width_ratio, height_ratio = float(ratio[0]), float(ratio[1])
+    except (TypeError, ValueError):
+        return None
+    return None if width_ratio <= 0 or height_ratio <= 0 else width_ratio / height_ratio
+
+
+def get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio = ""):
+    if video_guide_outpainting is None:
+        return None
+    video_guide_outpainting = str(video_guide_outpainting).strip()
+    if video_guide_outpainting.startswith("#") :
+        return None
+    if video_guide_outpainting == "0 0 0 0" or len(video_guide_outpainting) == 0:
+        return [0, 0, 0, 0] if len(video_guide_outpainting_ratio) else None
+    outpainting_dims = video_guide_outpainting.split(" ")
+    return None if len(outpainting_dims) != 4 else [int(v) for v in outpainting_dims]
+
+
+def _split_outpainting_padding(total_padding, before_weight, after_weight):
+    total_padding = max(0, int(total_padding))
+    if total_padding == 0:
+        return 0, 0
+    before_weight = max(0.0, float(before_weight))
+    after_weight = max(0.0, float(after_weight))
+    if before_weight == after_weight:
+        before_padding = total_padding // 2
+    elif before_weight == 0:
+        before_padding = 0
+    elif after_weight == 0:
+        before_padding = total_padding
+    else:
+        before_padding = round(total_padding * before_weight / (before_weight + after_weight))
+    before_padding = max(0, min(total_padding, int(before_padding)))
+    return before_padding, total_padding - before_padding
+
+
+def resolve_outpainting_dims(frame_height, frame_width, outpainting_dims, outpainting_ratio = ""):
+    target_ratio = parse_outpainting_ratio(outpainting_ratio)
+    if outpainting_dims is None:
+        return None if target_ratio is None else [0.0, 0.0, 0.0, 0.0]
+    outpainting_top, outpainting_bottom, outpainting_left, outpainting_right = [max(0.0, float(v)) for v in outpainting_dims]
+    if target_ratio is None or frame_height <= 0 or frame_width <= 0:
+        return [outpainting_top, outpainting_bottom, outpainting_left, outpainting_right]
+
+    source_ratio = frame_width / frame_height
+    if source_ratio < target_ratio:
+        total_padding = max(0, round(frame_height * target_ratio - frame_width))
+        left_padding, right_padding = _split_outpainting_padding(total_padding, outpainting_left, outpainting_right)
+        return [0.0, 0.0, 100.0 * left_padding / frame_width, 100.0 * right_padding / frame_width]
+    if source_ratio > target_ratio:
+        total_padding = max(0, round(frame_width / target_ratio - frame_height))
+        top_padding, bottom_padding = _split_outpainting_padding(total_padding, outpainting_top, outpainting_bottom)
+        return [100.0 * top_padding / frame_height, 100.0 * bottom_padding / frame_height, 0.0, 0.0]
+    return [0.0, 0.0, 0.0, 0.0]
+
+
+def get_outpainting_full_area_dimensions(frame_height,frame_width, outpainting_dims, outpainting_ratio = ""):
+    outpainting_top, outpainting_bottom, outpainting_left, outpainting_right = resolve_outpainting_dims(frame_height, frame_width, outpainting_dims, outpainting_ratio)
     frame_height = int(frame_height * (100 + outpainting_top + outpainting_bottom) / 100)
     frame_width =  int(frame_width * (100 + outpainting_left + outpainting_right) / 100)
     return frame_height, frame_width  
@@ -286,7 +462,9 @@ def rgb_bw_to_rgba_mask(img, thresh=127):
     return Image.fromarray(rgba, 'RGBA')
 
 
-def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims, block_size = 8):
+def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims, block_size = 8, outpainting_ratio = "", source_height = None, source_width = None):
+    if source_height is not None and source_width is not None:
+        outpainting_dims = resolve_outpainting_dims(source_height, source_width, outpainting_dims, outpainting_ratio)
     outpainting_top, outpainting_bottom, outpainting_left, outpainting_right= outpainting_dims
     raw_height = int(final_height / ((100 + outpainting_top + outpainting_bottom) / 100))
     height = int(raw_height / block_size) * block_size
@@ -301,7 +479,7 @@ def  get_outpainting_frame_location(final_height, final_width,  outpainting_dims
     if (margin_top + height) > final_height or outpainting_bottom == 0: margin_top = final_height - height
     margin_left = int(outpainting_left/(100 + outpainting_left + outpainting_right) * final_width)
     if extra_width != 0 and (outpainting_left + outpainting_right) != 0:
-        margin_left += int(outpainting_left / (outpainting_left + outpainting_right) * extra_height)
+        margin_left += int(outpainting_left / (outpainting_left + outpainting_right) * extra_width)
     if (margin_left + width) > final_width or outpainting_right == 0: margin_left = final_width - width
     return height, width, margin_top, margin_left
 
@@ -346,7 +524,7 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
         image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
     return image, new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255] ):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255] ):
     if rm_background:
         session = new_session() 
 
@@ -357,7 +535,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
         resized_mask = None
         if any_background_ref == 1 and i==0 or any_background_ref == 2:
             if outpainting_dims is not None and background_ref_outpainted:
-                resized_image, resized_mask = fit_image_into_canvas(img, (budget_height, budget_width), inpaint_color, full_frame = True, outpainting_dims = outpainting_dims, return_mask= True, return_image= True)
+                resized_image, resized_mask = fit_image_into_canvas(img, (budget_height, budget_width), inpaint_color, full_frame = True, outpainting_dims = outpainting_dims, outpainting_ratio = outpainting_ratio, return_mask= True, return_image= True)
             elif img.size != (budget_width, budget_height):
                 resized_image= img.resize((budget_width, budget_height), resample=Image.Resampling.LANCZOS) 
             else:
@@ -392,7 +570,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
 
     return output_list, output_mask_list
 
-def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, return_mask = False, return_image = False):
+def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu", full_frame = False, outpainting_dims = None, outpainting_ratio = "", return_mask = False, return_image = False):
     inpaint_color = to_rgb_tensor(canvas_tf_bg, device=device, dtype=torch.float) / 127.5 - 1
     inpaint_color = inpaint_color.unsqueeze(1)
 
@@ -403,7 +581,7 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
     else:
         if outpainting_dims != None:
             final_height, final_width = image_size
-            canvas_height, canvas_width, margin_top, margin_left =   get_outpainting_frame_location(final_height, final_width,  outpainting_dims, 1)        
+            canvas_height, canvas_width, margin_top, margin_left = get_outpainting_frame_location(final_height, final_width, outpainting_dims, 1, outpainting_ratio, ref_height, ref_width)
         else:
             canvas_height, canvas_width = image_size
         if full_frame:
@@ -443,7 +621,7 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
 
     return ref_img.to(device), canvas
 
-def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, device ="cpu"):
+def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, outpainting_ratio = "", device ="cpu"):
     src_videos, src_masks = [], []
     inpaint_color_compressed = to_rgb_tensor(guide_inpaint_color, device=device, dtype=torch.float) / 127.5 - 1
     inpaint_color_compressed = inpaint_color_compressed.unsqueeze(1)
@@ -485,7 +663,7 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
             for k, frame in enumerate(inject_frames):
                 if frame != None:
                     pos = prepend_count + k
-                    src_video[:, pos:pos+1], msk = fit_image_into_canvas(frame, image_size, guide_inpaint_color, device, True, outpainting_dims, return_mask= any_mask)
+                    src_video[:, pos:pos+1], msk = fit_image_into_canvas(frame, image_size, guide_inpaint_color, device, True, outpainting_dims, outpainting_ratio, return_mask= any_mask)
                     if any_mask: src_mask[:, pos:pos+1] = msk
         src_videos.append(src_video)
         src_masks.append(src_mask)

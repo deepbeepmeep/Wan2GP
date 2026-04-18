@@ -94,6 +94,7 @@ class TI2VidOneStagePipeline:
         enhance_prompt: bool = False,
         audio_conditionings: list | None = None,
         callback: Callable[..., None] | None = None,
+        set_progress_status: Callable[[str], None] | None = None,
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
         text_connectors: dict | None = None,
@@ -183,8 +184,8 @@ class TI2VidOneStagePipeline:
                 phase_switch_step2=stage_1_steps,
             )
 
-        if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=len(sigmas) - 1, pass_no=1)
+        if set_progress_status is not None:
+            set_progress_status("VAE Encoding")
 
         def first_stage_denoising_loop(
             sigmas: torch.Tensor,
@@ -247,6 +248,8 @@ class TI2VidOneStagePipeline:
             generator=mask_generator,
             num_steps=len(sigmas) - 1,
         )
+        if callback is not None:
+            callback(-1, None, True, override_num_inference_steps=len(sigmas) - 1, pass_no=1)
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_1_output_shape,
             conditionings=stage_1_conditionings,

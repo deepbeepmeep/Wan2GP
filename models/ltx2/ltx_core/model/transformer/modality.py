@@ -28,6 +28,7 @@ class Modality:
         torch.Tensor
     )  # Shape: (B, 3, T) for video, where 3 is the number of dimensions and T is the number of tokens
     context: torch.Tensor | PreparedConditioning
+    nag: dict | None = None
     enabled: bool = True
     context_mask: torch.Tensor | None = None
     attention_mask: torch.Tensor | None = None

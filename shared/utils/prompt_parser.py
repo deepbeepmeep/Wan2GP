@@ -16,6 +16,7 @@ def normalize_multi_prompts_mode(value):
     return value if value in {"FG", "G", "PG", "W", "PW"} else "G"
 
 def split_prompt_units(prompt_text, multi_prompts_gen_type, single_prompt=False, originals=False):
+    multi_prompts_gen_type = multi_prompts_gen_type or ""
     prompt_text = prompt_text.replace("\r\n", "\n").replace("\r", "\n")
     if prompt_text.startswith(ENHANCED_PROMPT_PREFIX):
         prompt_text = prompt_text[len(ENHANCED_PROMPT_PREFIX):]

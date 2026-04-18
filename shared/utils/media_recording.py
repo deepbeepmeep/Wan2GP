@@ -41,7 +41,7 @@ def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bo
                 elif is_image:
                     save_image_metadata(path, saved_configs)
                 else:
-                    save_video_metadata(path, saved_configs, embedded_images)
+                    save_video_metadata(path, saved_configs, embedded_images, verbose_level=verbose_level)
         if verbose_level > 0:
             if audio_only:
                 print(f"New audio file saved to Path: {path}")

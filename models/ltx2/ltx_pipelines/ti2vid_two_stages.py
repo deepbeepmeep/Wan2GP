@@ -154,12 +154,14 @@ class TI2VidTwoStagesPipeline:
         audio_conditionings_stage2: list | None = None,
         audio_identity_guidance_scale: float = 0.0,
         callback: Callable[..., None] | None = None,
+        set_progress_status: Callable[[str], None] | None = None,
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
         text_connectors: dict | None = None,
         masking_source: dict | None = None,
         masking_strength: float | None = None,
         return_latent_slice: slice | None = None,
+        skip_stage_2: bool = False,
         self_refiner_setting: int = 0,
         self_refiner_plan: str = "",
         self_refiner_f_uncertainty: float = 0.1,
@@ -175,6 +177,8 @@ class TI2VidTwoStagesPipeline:
         use_hq_sampler = sample_solver == "res2s"
         if sample_solver not in {"euler", "res2s"}:
             raise ValueError(f"Unsupported LTX2 sampler '{sample_solver}'.")
+        skip_stage_2 = bool(skip_stage_2)
+        stage_1_pass_no = 0 if skip_stage_2 else 1
         stepper = Res2sDiffusionStep() if use_hq_sampler else EulerDiffusionStep()
         self_refiner_handler = None
         self_refiner_handler_audio = None
@@ -259,8 +263,8 @@ class TI2VidTwoStagesPipeline:
         stage_1_output_shape = VideoPixelShape(
             batch=1,
             frames=num_frames,
-            width=width // 2,
-            height=height // 2,
+            width=width if skip_stage_2 else width // 2,
+            height=height if skip_stage_2 else height // 2,
             fps=frame_rate,
         )
         video_encoder = self._get_stage_model(1, "video_encoder")
@@ -289,8 +293,8 @@ class TI2VidTwoStagesPipeline:
                 phase_switch_step2=stage_1_steps,
             )
 
-        if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=len(sigmas) - 1, pass_no=1)
+        if set_progress_status is not None:
+            set_progress_status("VAE Encoding")
 
         def first_stage_denoising_loop(
             sigmas: torch.Tensor,
@@ -337,7 +341,7 @@ class TI2VidTwoStagesPipeline:
                     interrupt_check=interrupt_check,
                     callback=callback,
                     preview_tools=preview_tools,
-                    pass_no=1,
+                    pass_no=stage_1_pass_no,
                     transformer=transformer,
                 )
             return euler_denoising_loop(
@@ -365,7 +369,7 @@ class TI2VidTwoStagesPipeline:
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
-                pass_no=1,
+                pass_no=stage_1_pass_no,
                 transformer=transformer,
                 self_refiner_handler=self_refiner_handler,
                 self_refiner_handler_audio=self_refiner_handler_audio,
@@ -426,6 +430,8 @@ class TI2VidTwoStagesPipeline:
             generator=mask_generator,
             num_steps=len(sigmas) - 1,
         )
+        if callback is not None:
+            callback(-1, None, True, override_num_inference_steps=len(sigmas) - 1, pass_no=stage_1_pass_no)
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_1_output_shape,
             conditionings=stage_1_conditionings,
@@ -443,6 +449,30 @@ class TI2VidTwoStagesPipeline:
             return None, None
         if interrupt_check is not None and interrupt_check():
             return None, None
+        if skip_stage_2:
+            torch.cuda.synchronize()
+            del transformer
+            del video_encoder
+            cleanup_memory()
+
+            latent_slice = None
+            if return_latent_slice is not None:
+                latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
+            decoded_video = vae_decode_video_to_tensor(
+                video_state.latent,
+                self._get_stage_model(1, "video_decoder"),
+                tiling_config,
+                expected_frames=int(stage_1_output_shape.frames),
+                expected_height=int(stage_1_output_shape.height),
+                expected_width=int(stage_1_output_shape.width),
+                interrupt_check=interrupt_check,
+            )
+            decoded_audio = vae_decode_audio(
+                audio_state.latent, self._get_stage_model(1, "audio_decoder"), self._get_stage_model(1, "vocoder")
+            )
+            if latent_slice is not None:
+                return decoded_video, decoded_audio, latent_slice
+            return decoded_video, decoded_audio
 
         torch.cuda.synchronize()
         del transformer
@@ -471,8 +501,8 @@ class TI2VidTwoStagesPipeline:
                 phase_switch_step2=stage_2_steps,
             )
 
-        if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=len(distilled_sigmas) - 1, pass_no=2)
+        if set_progress_status is not None:
+            set_progress_status("VAE Encoding")
 
         def second_stage_denoising_loop(
             sigmas: torch.Tensor,
@@ -560,6 +590,8 @@ class TI2VidTwoStagesPipeline:
             generator=mask_generator,
             num_steps=len(distilled_sigmas) - 1,
         )
+        if callback is not None:
+            callback(-1, None, True, override_num_inference_steps=len(distilled_sigmas) - 1, pass_no=2)
         freeze_audio_stage2 = audio_identity_guidance_scale > 0.0
         stage_2_audio_conditionings = audio_conditionings if audio_conditionings_stage2 is None else audio_conditionings_stage2
         video_state, audio_state = denoise_audio_video(

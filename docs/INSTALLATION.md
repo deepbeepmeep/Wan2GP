@@ -1,6 +1,6 @@
 # Manual Installation Guide For Windows & Linux
 
-This guide covers installation for different GPU generations and operating systems.
+This guide covers manual installation for different GPU generations and operating systems. Alternatively you may use the 1 click install / update scripts (please check the repo readme for instructions).
 
 ## Requirements
 

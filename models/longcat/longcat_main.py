@@ -93,7 +93,6 @@ class LongCatModel:
             device=torch.device("cpu"),
             checkpoint_path=text_encoder_path,
             tokenizer_path=tokenizer_path,
-            shard_fn=None,
         )
         self.text_encoder_cache = TextEncoderCache()
 

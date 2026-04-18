@@ -33,14 +33,57 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### 5rd of April 2026: WanGP v11.20, Self Destructing Model
+
+### 14th of April 2026: WanGP v11.31, LTX-2 Mega Mix
+Lots of nice goodies for **LTX-2**:
+
+- **LTX-2.3 Distilled 1.1**: new version of the *Distilled model* released by *LTX team*, it should offer better audio and visuals. You will find also a Dev 1.1 version which uses Distilled 1.1 for Phase 2.
+
+- **VBVR Lora Preset**: This LoRA enhances the base LTX-2 for Enhanced Complex Prompt Understanding, Improved Motion Dynamics & Temporal Consistency. You can select it in the *Settings list* at the top.
+
+- **Phase 1/2 Choice**: you can now either you go for a good old *2 Phases Gen* (1st Phase Low Res, 2nd shorter Phase High res) or go straight to a single High Res Phase (needs more VRAM and slower, but potentially higher quality). Please note that Outpainting mode and Pose/Edge/Depth extractors are always using 1 phase.
+
+- **Improved Sliding Window**: transition between windows should be less noticable, *Sliding Windows overlapped Frames* carry now also the audio of the overlapped frames, so the higher the number of overlapped frames the higher the chance that the sound / voice used in the previous window will be used in the new one.
+
+- **Video Length not Limited by Audio**: if you provide an Audio input, WanGP will no longer stops when the audio is consumed. It will continue the Video/Audio Gen based on the content of your Text prompt, and guess what ? it may reuse the same voice/sound used up to now !  This is an option, you need to check the checkbox *Video Length not Limited by Audio*.
+
+- **Silent Movie Mode**: if for some reason you want video with not only no sound but that takes into account that there is no sound (you dont want people to open their mouth for instance), just now leave the *Control Audio* empty
+
+- **Process Full Video Plugin**: this *bundled PlugIn* which needs to be enabled first in *the PlugIn tab*, right now supports only *Outpainting*. It relies on *LTX2 Lora outpainting*. It is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. If you are patient enough you can change the Aspect Ratio of a few hours movie (check out below the 1 min sample). Behold how *Sliding Windows transitions* are almost invisible !
+
+- **WanGP API Video Gen**: *Plugin Developers* can now *Queue a Gen* directly from a plugin. This opens the possibility of plugins that place various gen orders and then combine the results (hint: we could have our very own version of *LTX-Destop* inside WanGP).
+
+*update 11.31*: fixed phase 1 forced incorrectly in some cases
+
+### 11th of April 2026: WanGP v11.26, Now I Can See
+
+- **LTX-2 Ic Lora Rebooted**: *Ic Loras* behave like *Control Nets* and can do *Video to Video* by applying an effect specific to the Ic Lora for instance *Pose Extraction*, *Upsampling*, *Transfer Camera Movement*, ...  More and More Ic Loras are available nowadays. Until now WanGP Ic Lora implementation was based on the official LTX-2 github implementation (which a 2 phases process where the Ic Lora is only applied during the first low res phase). However I have just discovered that all the Ic Loras around expect in fact the ComfyUI implementation which is one phase only process at full res. 
+
+So from then on WanGP Ic Lora will work this way too. The downside is that a single Full Res pass is much more GPU intensive. But all is good in WanGP world, as the LTX2 VRAM optimisations will allow you to use Ic Loras at resolutions impossible anywhere else.
+
+As a bonus I have tuned *Sliding Windows* for Ic Loras, and if you set *Overlap Size* to a single frame, transitions between windows when using Ic Lora will be almost invisible. 
+
+- **Outpaint Ic Lora**: this new impressive Ic Lora will be loaded automatically if you select the *Control Video for Ic Lora* option and enable *Outpainting*. If you use Sliding Windows with Outpainting you will be able to outpaint a full movie (assuming you have enough RAM).
+
+- **New Outpainting Auto Change Aspect Ratio**: As a reminder WanGP let you define manually where an Outpainting should happen. Alternatively you can now ask WanGP to use outpainting to change the *Width/ Height Aspect ratio* of the Control Video. For instance you can turn any 16/9 video into a 4/3 video by generating new details instead of adding black bars. The *Top/Bottom/Left/Right Sliders* in this new mode will be used to define which area should be expanded in priority to meet the requested aspect ratio.. 
+
+-- **New One Click Install / Update Scripts**: We have to thank **Tophness / @steve_Jabz** for that one. *Huge Kudos to him!* The scripts will not only install WanGP but also all the *Kernels* (among *Triton, Sage, Flash, GGuf, Lightx2v, Nunchaku*) supported by your GPU. Please have a look at the instructions further down. Dont't hesitate to share feedback or report any issue.
+
+*update 11.26*: fixed outpainting ignored with if Manual Expansion was selected
+
+### 8th of April 2026: WanGP v11.22, Self Destructing Model
+
 - **Magi Human**: this is a newly *Talking Head* model that accepts either a *custom soundrack* or can generate the *audio speech* that comes with the video. 
    - *The bad news* :it is VRAM hungry (targets RTX 5090+) and very res picky, that is the ouput res must be either 256p or 1080p (using a 2 stage pipeline with upsampling). There is also a 540p version (using also an upsampler) but it is not included as I found it unpractical (ghosting guaranteed if your output is not exactly the right height/width ratio), 
    - *The good news* : now that it is WanGP optimized, 101 frames at 1080p requires "only" 16 GB of VRAM. If you dont have that much VRAM I recommend to still go for 1080p but set a 45 frames *Sliding Window* (not too low to avoid artifacts) as *Sliding Windows* sometime works well with this model.  
 
 **I have spent a lot of time optimizing Magi Human, but I am not yet sure it is worth keeping it given all the constraints to run this model. So this is where I need YOU. Please share your experience using Magi Human on the Discord server and you shall decide its fate. Should we keep it or send it to the model graveyard ?**
 
+- **Ace 1.5 Turbo XL**: the best open source song generator has now a big brother *XL* that delivers better audio quality and sticks closer to the requested lyrics. 
+
 - **LTX 2 Id Lora**: due to a huge popular demand I have added this one (it is a new *Generate Video* option). You can provide a voice audio sample, a start image and text script and it will turn LTX 2/2.3 into talking heads. Cost is high to get this feature as **Id Lora works only with LTX2/2.3 DEV**. By chance it seems it can produce decent results in only 10 inference steps. To get the best results it is recommended to use prefix tags [VISUAL], [SPEECH] & [SOUND]. Alternatively you can use WanGP *Prompt Enhancer* that has been to tuned to generate a prompt following this syntax. 
+
+- **LTX 2 NAG**: you can now inject a *Negative Prompt* even if you use the Distilled Model thanks to *NAG* support for LTX 2
 
 - **LTX 2 DEV HQ Mode**: this High Quality mode should produce better output at higher res. You can turn it on using the new *HQ (res2s)* Sampler and set 15 steps and guidance rescaler to 0.45. It is compatible with *Id Loras*. Note that a HQ steps is twice as slow as a vanilla Dev step, so it is going to be as slow as Dev if not slower.
 
@@ -56,7 +99,9 @@ As a reminder beside writting huge essays about how great you are, Deepy can gen
 
 - **Multi Multilines Prompts**: check new options in *"How to Process each Line of the Text Prompt"*, you can now have multiple multi lines prompts. They just need to be separated by an empty line.
    
- 
+ *update 11.21*: added Ace Step 1.5 Turbo XL\
+ *update 11.22*: added LTX2 NAG
+
 ### March 30th 2026: WanGP v11.13, The Machine Within The Machine
 
 Meet **Deepy** your friendly *WanGP Agent*.
@@ -169,12 +214,59 @@ See full changelog: **[Changelog](docs/CHANGELOG.md)**
 
 ## 🚀 Quick Start
 
-**One-click installation:** 
+### One-click Bat/SH Script Auto-installer:
+
+The 1-click automated scripts for both **Windows (`.bat`)** and **Linux/macOS (`.sh`)** make installation, environment management, and updates as seamless as possible. These scripts will not only install WanGP but also best acceleration kernels (Triton, Sage, Flash, GGuf, Lightx2v, Nunchaku) available for your config.
+
+*👉 **Windows Users:** Double-click the `.bat` files. **Linux Users:** Run the `.sh` files in your terminal.*
+
+#### **1️⃣ Installation (`scripts\install.bat` | `scripts/install.sh`)**
+
+**Choose Installation Type**
+- **Auto Install**
+- **Manual Install**
+
+**Manual Install**
+
+If you selected Manual Install, you will be guided through:
+
+1. **Choose your package manager**
+2. **Name your environment**
+3. **Select your Install Mode**
+
+#### 2️⃣ Starting the App (`scripts\run.bat` | `scripts/run.sh`)
+Once installed, use this script to launch the application. It runs WAN2GP using your active environment.
+
+##### ⚙️ Customizing Launch Arguments (`args.txt`)
+If you want to pass extra command-line flags to the WAN2GP launcher (like enabling advanced UI features or automatically opening your browser), create an `args.txt` file in your `scripts` folder.
+
+**Example `args.txt`:**
+```text
+--advanced  --open-browser
+```
+
+#### 3️⃣ Updating & Upgrading (`scripts\update.bat` | `scripts/update.sh`)
+Use this script to get the latest updates for WAN2GP and upgrade dependencies.
+* **1. Update:** Fetches the latest code from GitHub (`git pull`) and updates requirements (`pip install -r requirements.txt`).
+* **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention) based on your hardware profile.
+
+#### 4️⃣ Managing Environments (`scripts\manage.bat` | `/manage.sh`)
+Use this script to manage and switch between your sandboxed environments safely.
+
+* **Example Scenario:** Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, you can run `install.bat`, create a *new* environment called `env_testing`, and select "Use Latest".
+* If the testing environment breaks or gives you errors, you can simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
+
+---
+
+### One-click (Pinokio) installer:
+
 Get started instantly with [Pinokio App](https://pinokio.computer/)\
 It is recommended to use in Pinokio the Community Scripts *wan2gp* or *wan2gp-amd* by **Morpheus** rather than the official Pinokio install.
 
+---
 
-**Manual installation: (old python 3.10, to be deprecated)**
+### Manual installation: (old python 3.10, to be deprecated)
+
 ```bash
 git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
@@ -184,7 +276,8 @@ pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pyt
 pip install -r requirements.txt
 ```
 
-**Manual installation: (new python 3.11 setup)**
+### Manual installation: (new python 3.11 setup)
+
 ```bash
 git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
@@ -194,14 +287,14 @@ pip install torch==2.10.0 torchvision torchaudio --index-url https://download.py
 pip install -r requirements.txt
 ```
 
-**Run the application:**
+#### Run the application:
 ```bash
 python wgp.py
 ```
 
 First time using WanGP ? Just check the *Guides* tab, and you will find a selection of recommended models to use.
 
-**Update the application (stay in the old pyton / pytorch version):**
+#### Update the application (stay in the old python / pytorch version):
 If using Pinokio use Pinokio to update otherwise:
 Get in the directory where WanGP is installed and:
 ```bash
@@ -210,7 +303,7 @@ conda activate wan2gp
 pip install -r requirements.txt
 ```
 
-**Upgrade to 3.11, Pytorch 2.10, Cuda 13/13.1** (for non GTX10xx users)
+#### Upgrade to 3.11, Pytorch 2.10, Cuda 13/13.1 (for non GTX10xx users)
 I recommend creating a new conda env for the Python 3.11 to avoid bad surprises. Let's call the new conda env *wangp* (instead of *wan2gp* the old name of this project)
 Get in the directory where WanGP is installed and:
 ```bash
@@ -221,7 +314,7 @@ pip install torch==2.10.0 torchvision torchaudio --index-url https://download.py
 pip install -r requirements.txt
 ```
 
-**Git Errors**
+#### Git Errors
 Once you are done you will have to reinstall *Sage Attention*, *Triton*, *Flash Attention*. Check the **[Installation Guide](docs/INSTALLATION.md)** -
 
 if you get some error messages related to git, you may try the following (beware this will overwrite local changes made to the source code of WanGP):
@@ -234,7 +327,8 @@ When you have the confirmation it works well you can then delete the old conda e
 ```bash
 conda uninstall -n wan2gp --all  
 ```
-**Run headless (batch processing):**
+
+#### Run headless (batch processing):
 
 Process saved queues without launching the web UI:
 ```bash

@@ -162,7 +162,11 @@ def video_conditionings_by_keyframe(
         #     encoded_video = vae_encode_video(video, video_encoder, tiling_config)
 
         encoded_video = vae_encode_video(video, video_encoder, tiling_config)
-        cond =VideoConditionByKeyframeIndex(keyframes=encoded_video, frame_idx=frame_idx, strength=strength)
+        cond = VideoConditionByKeyframeIndex(
+            keyframes=encoded_video,
+            frame_idx=frame_idx,
+            strength=strength,
+        )
         conditionings.append(cond)
 
     return conditionings
@@ -829,6 +833,7 @@ def modality_from_latent_state(
     context: torch.Tensor,
     sigma: float | torch.Tensor,
     enabled: bool = True,
+    nag: dict | None = None,
     step_index: int | None = None,
     sigma_schedule: torch.Tensor | None = None,
 ) -> Modality:
@@ -855,6 +860,7 @@ def modality_from_latent_state(
         timesteps=timesteps,
         positions=state.positions,
         context=context,
+        nag=nag,
         context_mask=None,
         attention_mask=None,
         frame_indices=frame_indices,
@@ -1083,6 +1089,8 @@ def simple_denoising_func(
     video_context: torch.Tensor,
     audio_context: torch.Tensor,
     transformer: X0Model,
+    video_nag: dict | None = None,
+    audio_nag: dict | None = None,
     alt_guidance_scale: float = 1.0,
     audio_context_n: torch.Tensor | None = None,
     audio_guidance_scale: float = 1.0,
@@ -1118,10 +1126,10 @@ def simple_denoising_func(
         _prewarm(video_state, audio_state, sigmas)
         sigma = sigmas[step_index]
         pos_video = modality_from_latent_state(
-            video_state, prepared_video_context, sigma, step_index=step_index, sigma_schedule=sigmas
+            video_state, prepared_video_context, sigma, nag=video_nag, step_index=step_index, sigma_schedule=sigmas
         )
         pos_audio = modality_from_latent_state(
-            audio_state, prepared_audio_context, sigma, step_index=step_index, sigma_schedule=sigmas
+            audio_state, prepared_audio_context, sigma, nag=audio_nag, step_index=step_index, sigma_schedule=sigmas
         )
 
         if transformer is not None and manage_lora_step:
@@ -1156,12 +1164,12 @@ def simple_denoising_func(
             neg_index = len(video_list)
             video_list.append(
                 modality_from_latent_state(
-                    video_state, prepared_video_context, sigma, step_index=step_index, sigma_schedule=sigmas
+                    video_state, prepared_video_context, sigma, nag=video_nag, step_index=step_index, sigma_schedule=sigmas
                 )
             )
             audio_list.append(
                 modality_from_latent_state(
-                    audio_state, prepared_audio_context_n, sigma, step_index=step_index, sigma_schedule=sigmas
+                    audio_state, prepared_audio_context_n, sigma, nag=audio_nag, step_index=step_index, sigma_schedule=sigmas
                 )
             )
             perturbations.append(None)
@@ -1169,12 +1177,12 @@ def simple_denoising_func(
             alt_index = len(video_list)
             video_list.append(
                 modality_from_latent_state(
-                    video_state, prepared_video_context, sigma, step_index=step_index, sigma_schedule=sigmas
+                    video_state, prepared_video_context, sigma, nag=video_nag, step_index=step_index, sigma_schedule=sigmas
                 )
             )
             audio_list.append(
                 modality_from_latent_state(
-                    audio_state, prepared_audio_context, sigma, step_index=step_index, sigma_schedule=sigmas
+                    audio_state, prepared_audio_context, sigma, nag=audio_nag, step_index=step_index, sigma_schedule=sigmas
                 )
             )
             perturbations.append(_cross_attn_perturbations(batch_size))
@@ -1182,12 +1190,12 @@ def simple_denoising_func(
             id_index = len(video_list)
             video_list.append(
                 modality_from_latent_state(
-                    video_state, prepared_video_context, sigma, step_index=step_index, sigma_schedule=sigmas
+                    video_state, prepared_video_context, sigma, nag=video_nag, step_index=step_index, sigma_schedule=sigmas
                 )
             )
             audio_list.append(
                 modality_from_latent_state(
-                    id_audio_state, prepared_audio_context_id, sigma, step_index=step_index, sigma_schedule=sigmas
+                    id_audio_state, prepared_audio_context_id, sigma, nag=audio_nag, step_index=step_index, sigma_schedule=sigmas
                 )
             )
             perturbations.append(None)

@@ -233,7 +233,8 @@ class family_handler():
     def custom_prompt_preprocess(prompt, video_guide_outpainting, model_mode, **kwargs):
         if model_mode == 0:
             # from wgp import get_outpainting_dims
-            if len(video_guide_outpainting) and not video_guide_outpainting.startswith("#") and video_guide_outpainting != "0 0 0 0":
+            outpainting_ratio = (kwargs.get("video_guide_outpainting_ratio") or "").strip()
+            if ((len(video_guide_outpainting) and not video_guide_outpainting.startswith("#") and video_guide_outpainting != "0 0 0 0") or (len(outpainting_ratio) > 0 and not video_guide_outpainting.startswith("#"))):
                 if not prompt.endswith("."): prompt += "."
                 prompt += "Remove the red paddings on the sides and show what's behind them."
         return prompt  

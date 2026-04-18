@@ -55,6 +55,23 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _align_seq_len(tensor: torch.Tensor | None, target_len: int) -> torch.Tensor | None:
+    if tensor is None:
+        return tensor
+    seq_dim = 0 if tensor.dim() == 2 else 1
+    cur_len = tensor.shape[seq_dim]
+    if cur_len == target_len:
+        return tensor
+    if cur_len < target_len:
+        pad_len = target_len - cur_len
+        if seq_dim == 0:
+            pad = tensor[-1:].repeat(pad_len, 1)
+            return torch.cat([tensor, pad], dim=0)
+        pad = tensor[:, -1:, :].repeat(1, pad_len, 1)
+        return torch.cat([tensor, pad], dim=1)
+    return tensor.narrow(seq_dim, 0, target_len)
+
+
 class _TransformerBenchWrapper:
     def __init__(self, module, enabled: bool = False) -> None:
         self._module = module
@@ -167,8 +184,12 @@ class DistilledPipeline:
         negative_prompt: str = DEFAULT_NEGATIVE_PROMPT,
         guiding_images: list[tuple] | None = None,
         guiding_images_stage2: list[tuple] | None = None,
+        images_stage2: list[tuple[str, int, float]] | None = None,
         alt_guidance_scale: float = 1.0,
         audio_cfg_guidance_scale: float = 1.0,
+        NAG_scale: float = 1.0,
+        NAG_tau: float = 3.5,
+        NAG_alpha: float = 0.5,
         video_conditioning: list[tuple[str, float]] | None = None,
         video_conditioning_downscale_factor: int = 1,
         latent_conditioning_stage2: torch.Tensor | None = None,
@@ -178,12 +199,14 @@ class DistilledPipeline:
         audio_conditionings_stage2: list | None = None,
         audio_identity_guidance_scale: float = 0.0,
         callback: Callable[..., None] | None = None,
+        set_progress_status: Callable[[str], None] | None = None,
         interrupt_check: Callable[[], bool] | None = None,
         loras_slists: dict | None = None,
         text_connectors: dict | None = None,
         masking_source: dict | None = None,
         masking_strength: float | None = None,
         return_latent_slice: slice | None = None,
+        skip_stage_2: bool = False,
         self_refiner_setting: int = 0,
         self_refiner_plan: str = "",
         self_refiner_f_uncertainty: float = 0.1,
@@ -249,21 +272,61 @@ class DistilledPipeline:
             video_connector,
             audio_connector,
         )
-        contexts = self.text_encoder_cache.encode(encode_fn, [prompt, negative_prompt], device=self.device, parallel=True)
+        enable_audio_text_nag = False
+        video_NAG = None
+        audio_NAG = None
+        if float(NAG_scale) > 1.0:
+            contexts = self.text_encoder_cache.encode(
+                encode_fn,
+                [prompt, negative_prompt],
+                device=self.device,
+                parallel=True,
+            )
+        else:
+            contexts = self.text_encoder_cache.encode(encode_fn, [prompt], device=self.device, parallel=True)
 
         torch.cuda.synchronize()
         del text_encoder
         cleanup_memory()
-        (video_context, audio_context), (_, audio_context_n) = contexts
+        audio_context_n = None
+        if float(NAG_scale) > 1.0:
+            (video_context, audio_context), (video_context_n, audio_context_nag) = contexts
+            video_pos_len = video_context.shape[0] if video_context.dim() == 2 else video_context.shape[1]
+            video_context_n = _align_seq_len(video_context_n, video_pos_len)
+            video_cat_dim = 0 if video_context.dim() == 2 else 1
+            video_context = torch.cat([video_context, video_context_n], dim=video_cat_dim)
+            video_NAG = {
+                "scale": float(NAG_scale),
+                "tau": float(NAG_tau),
+                "alpha": float(NAG_alpha),
+                "cap_embed_len": int(video_pos_len),
+                "enable_audio_text_nag": enable_audio_text_nag,
+            }
+            if enable_audio_text_nag:
+                audio_pos_len = audio_context.shape[0] if audio_context.dim() == 2 else audio_context.shape[1]
+                audio_context_nag = _align_seq_len(audio_context_nag, audio_pos_len)
+                audio_cat_dim = 0 if audio_context.dim() == 2 else 1
+                audio_context = torch.cat([audio_context, audio_context_nag], dim=audio_cat_dim)
+                audio_NAG = {
+                    "scale": float(NAG_scale),
+                    "tau": float(NAG_tau),
+                    "alpha": float(NAG_alpha),
+                    "cap_embed_len": int(audio_pos_len),
+                    "enable_audio_text_nag": enable_audio_text_nag,
+                }
+        else:
+            video_context, audio_context = contexts[0]
 
         # Stage 1: Initial low resolution video generation.
         bench_transformer = _env_flag(_BENCH_TRANSFORMER_ENV, "0")
+        skip_stage_2 = bool(skip_stage_2)
+        stage_1_pass_no = 0 if skip_stage_2 else 1
         video_encoder = self._get_model("video_encoder")
         transformer = _TransformerBenchWrapper(self._get_model("transformer"), enabled=bench_transformer)
         bind_interrupt_check(transformer, interrupt_check)
         # DISTILLED_SIGMA_VALUES = [0.421875, 0]
         stage_1_sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
-        pass_no = 1
+        pass_no = stage_1_pass_no
         if loras_slists is not None:
             stage_1_steps = len(stage_1_sigmas) - 1
             update_loras_slists(
@@ -274,8 +337,8 @@ class DistilledPipeline:
                 phase_switch_step2=stage_1_steps,
             )
 
-        if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=len(stage_1_sigmas) - 1, pass_no=pass_no)
+        if set_progress_status is not None:
+            set_progress_status("VAE Encoding")
 
         def denoising_loop_stage1(
             sigmas: torch.Tensor,
@@ -294,6 +357,8 @@ class DistilledPipeline:
                     video_context=video_context,
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
+                    video_nag=video_NAG,
+                    audio_nag=audio_NAG,
                     alt_guidance_scale=alt_guidance_scale,
                     audio_context_n=audio_context_n,
                     audio_guidance_scale=audio_cfg_guidance_scale,
@@ -303,7 +368,7 @@ class DistilledPipeline:
                 interrupt_check=interrupt_check,
                 callback=callback,
                 preview_tools=preview_tools,
-                pass_no=1,
+                pass_no=stage_1_pass_no,
                 transformer=transformer,
                 self_refiner_handler=self_refiner_handler,
                 self_refiner_handler_audio=self_refiner_handler_audio,
@@ -313,8 +378,8 @@ class DistilledPipeline:
         stage_1_output_shape = VideoPixelShape(
             batch=1,
             frames=num_frames,
-            width=width // 2,
-            height=height // 2,
+            width=width if skip_stage_2 else width // 2,
+            height=height if skip_stage_2 else height // 2,
             fps=frame_rate,
         )
         stage_1_conditionings = image_conditionings_by_replacing_latent(
@@ -373,6 +438,8 @@ class DistilledPipeline:
             generator=mask_generator,
             num_steps=len(stage_1_sigmas) - 1,
         )
+        if callback is not None:
+            callback(-1, None, True, override_num_inference_steps=len(stage_1_sigmas) - 1, pass_no=pass_no)
         video_state, audio_state = denoise_audio_video(
             output_shape=stage_1_output_shape,
             conditionings=stage_1_conditionings,
@@ -398,6 +465,34 @@ class DistilledPipeline:
             return None, None
         if interrupt_check is not None and interrupt_check():
             return None, None
+        if skip_stage_2:
+            if bench_transformer:
+                print(
+                    "[WAN2GP][LTX2][bench] transformer total: "
+                    f"{stage1_transformer_ms / 1000.0:.3f}s ({stage1_transformer_calls} calls)"
+                )
+            torch.cuda.synchronize()
+            del transformer
+            del video_encoder
+            cleanup_memory()
+            latent_slice = None
+            if return_latent_slice is not None:
+                latent_slice = video_state.latent[:, :, return_latent_slice].detach().to("cpu")
+            decoded_video = vae_decode_video_to_tensor(
+                video_state.latent,
+                self._get_model("video_decoder"),
+                tiling_config,
+                expected_frames=int(stage_1_output_shape.frames),
+                expected_height=int(stage_1_output_shape.height),
+                expected_width=int(stage_1_output_shape.width),
+                interrupt_check=interrupt_check,
+            )
+            decoded_audio = vae_decode_audio(
+                audio_state.latent, self._get_model("audio_decoder"), self._get_model("vocoder")
+            )
+            if latent_slice is not None:
+                return decoded_video, decoded_audio, latent_slice
+            return decoded_video, decoded_audio
 
         stage_2_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
         upscaled_video_latent = upsample_video(
@@ -419,8 +514,8 @@ class DistilledPipeline:
                 phase_switch_step=0,
                 phase_switch_step2=stage_2_steps,
             )
-        if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=pass_no)
+        if set_progress_status is not None:
+            set_progress_status("VAE Encoding")
 
         def denoising_loop_stage2(
             sigmas: torch.Tensor,
@@ -439,6 +534,8 @@ class DistilledPipeline:
                     video_context=video_context,
                     audio_context=audio_context,
                     transformer=transformer,  # noqa: F821
+                    video_nag=video_NAG,
+                    audio_nag=audio_NAG,
                     alt_guidance_scale=alt_guidance_scale,
                 ),
                 mask_context=mask_context,
@@ -460,7 +557,7 @@ class DistilledPipeline:
             fps=frame_rate,
         )
         stage_2_conditionings = image_conditionings_by_replacing_latent(
-            images=images,
+            images=images_stage2 if images_stage2 is not None else images,
             height=stage_2_output_shape.height,
             width=stage_2_output_shape.width,
             video_encoder=video_encoder,
@@ -496,6 +593,8 @@ class DistilledPipeline:
             generator=mask_generator,
             num_steps=len(stage_2_sigmas) - 1,
         )
+        if callback is not None:
+            callback(-1, None, True, override_num_inference_steps=len(stage_2_sigmas) - 1, pass_no=pass_no)
         freeze_audio_stage2 = audio_identity_guidance_scale > 0.0
         stage_2_audio_conditionings = audio_conditionings if audio_conditionings_stage2 is None else audio_conditionings_stage2
         video_state, audio_state = denoise_audio_video(

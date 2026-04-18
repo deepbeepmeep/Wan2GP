@@ -1,8 +1,8 @@
 {
     "model": {
-        "name": "LTX-2 2.3 Distilled GGUF Q4_K_M Light 22B",
+        "name": "LTX-2 2.3 Distilled 1.0 GGUF Q4_K_M Light 22B",
         "architecture": "ltx2_22B",
-        "description": "LTX-2.3 distilled GGUF Q4_K_M light checkpoint (22B) without bundled AV connector weights.",
+        "description": "LTX-2.3 distilled 1.0 GGUF Q4_K_M light checkpoint (22B) without bundled AV connector weights.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-Q4_K_M_light.gguf"
         ],

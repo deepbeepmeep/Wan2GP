@@ -828,7 +828,7 @@ class LTX2:
                 _append_preload_lora("outpaint", 1.0)
         if "1" in audio_prompt_type:
             id_signature = "id-lora-celebvhq-ltx2.3" if resolved_base_model_type == "ltx2_22B" else "id-lora-celebvhq-ltx2"
-            _append_preload_lora(id_signature, "1;0")
+            _append_preload_lora(id_signature, 1.0 if guidance_phases == 1 else "1;0")
         return loras, loras_mult
 
     def generate(

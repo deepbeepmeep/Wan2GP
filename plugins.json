@@ -2,7 +2,7 @@
   {
     "name": "File Gallery",
     "author": "Tophness and Neires",
-    "version": "2.0.1",
+    "version": "2.0.3",
     "description": "Adds a Gallery tab that allows you to view metadata of all files in your output folders, join video frames with a single click, and more",
     "date": "",
     "wan2gp_version": "",
@@ -27,49 +27,40 @@
     "wan2gp_version": ""
   },
   {
-    "name": "Lora Manager",
-    "author": "Tophness and Kovacs3d",
-    "version": "2.5.3",
-    "description": "Manage your lora files, view their CivitAi metadata, assign prompts to them, browse CivitAI, send loras and prompts to generator.",
-    "url": "https://github.com/Tophness/wan2gp-lora-manager",
+    "name": "LoRA Manager",
+    "author": "Tophness",
+    "version": "2.5.5",
+    "description": "Manage local LoRAs with lset support and granular prompt/file injection.",
     "date": "",
-    "wan2gp_version": ""
+    "wan2gp_version": "",
+    "url": "https://github.com/Tophness/wan2gp-lora-manager"
+  },
+  {
+    "name": "LoRA Merger",
+    "author": "Tophness",
+    "version": "1.1.0",
+    "description": "Advanced LoRA Merger with granular block control and drift visualization.",
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/Tophness/wan2gp-lora-merger"
   },
   {
     "name": "Lora Multipliers UI",
     "author": "Tophness",
-    "version": "1.0.0",
+    "version": "1.0.9",
     "description": "Dynamically set lora multipliers with a fast, JavaScript-powered UI.",
-    "url": "https://github.com/Tophness/wan2gp-lora-multipliers-ui",
-    "date": "",
-    "wan2gp_version": ""
-  },
-  {
-    "name": "Multi-Angle Prompt Helper",
-    "author": "",
-    "version": "1.4.0",
-    "description": "Injects a prompt helper into the Video Generator UI. Outputs degree/factor text.",
     "date": "",
     "wan2gp_version": "",
-    "url": "https://github.com/CodeBarrie/wan2gp-multiangle-prompt-helper"
+    "url": "https://github.com/Tophness/wan2gp-lora-multipliers-ui"
   },
   {
-    "name": "Lora Merger",
-    "author": "Tophness",
-    "version": "1.0.0",
-    "description": "Advanced LoRA Merger with granular block control and drift visualization.",
-    "url": "https://github.com/Tophness/wan2gp-lora-merger",
+    "name": "Lora Organizer",
+    "author": "ppc2017",
+    "version": "1.11",
+    "description": "Lora Organizer adds a UI to the lora tab, letting you organize loras into groups and subgroups, store metadata, and activate loras with their trigger words and strength in one click.",
     "date": "",
-    "wan2gp_version": ""
-  },
-  {
-    "name": "Queue Editor",
-    "author": "Tophness",
-    "version": "1.0.0",
-    "description": "Perform advanced/bulk queue.zip operations offline without affecting your main generator queue.",
-    "url": "https://github.com/Tophness/wan2gp-queue-editor",
-    "date": "",
-    "wan2gp_version": ""
+    "wan2gp_version": "",
+    "url": "https://github.com/ppc2017/wan2gp-lora-organizer"
   },
   {
     "name": "Multi-Angle Prompt Helper",
@@ -79,5 +70,14 @@
     "date": "",
     "wan2gp_version": "",
     "url": "https://github.com/CodeBarrie/wan2gp-multiangle-prompt-helper"
-  }  
+  },
+  {
+    "name": "Queue Editor",
+    "author": "Tophness",
+    "version": "1.1.0",
+    "description": "Perform advanced/bulk queue.zip operations offline without affecting your main generator queue.",
+    "date": "",
+    "wan2gp_version": "",
+    "url": "https://github.com/Tophness/wan2gp-queue-editor"
+  }
 ]

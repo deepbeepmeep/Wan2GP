@@ -60,7 +60,7 @@ Lots of nice goodies for **LTX-2**:
 - **New One Click Install / Update Scripts**: We have to thank **Tophness / @steve_Jabz** for that one. *Huge Kudos to him!* The scripts will not only install WanGP but also all the *Kernels* (among *Triton, Sage, Flash, GGuf, Lightx2v, Nunchaku*) supported by your GPU. Please have a look at the instructions further down. Dont't hesitate to share feedback or report any issue.
 
 *update 11.31*: fixed phase 1 forced incorrectly in some cases\
-*update 11.32*: bugs fixes, Process Full Video now support Distilled 1.1 & accept video without audio\
+*update 11.32*: bugs fixes, Process Full Video now supports Distilled 1.1 & accepts video without audio\
 *update 11.33*: Separated LTX2 & LTX2.3 loras in different folders, added easy loras multipliers override
 
 ### 11th of April 2026: WanGP v11.26, Now I Can See

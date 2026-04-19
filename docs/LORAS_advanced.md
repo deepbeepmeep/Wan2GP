@@ -20,15 +20,12 @@ Each Lora should include two files, unlike those for wan2.1/etc.  When you downl
 
 In WanGP the strength of a Lora and granular control over how those Loras affect different areas of video generation is more complex than it seems at first, and is primarily determined by the values entered into two boxes:
 
-> "Activated Loras"
->
-> ![](C:\LORA\act.png)
+"Activated Loras"
+
 
 and 
 
-> "Loras Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored"
->
-> ![](C:\LORA\mult.png)
+"Loras Multipliers (1.0 by default) separated by Space chars or CR, lines that start with # are ignored"
 
 
 
@@ -181,13 +178,6 @@ Additional things to be aware of:
 - Splitting Loras by Video Time:
   - Unfortunately, none of these controls allow you to apply Loras to different time-stamps of a video. Phases are applied to ALL parts of a video equally, as every second of every video is generated in the same phases.
   - To use Lora1 for seconds 1 to 5 of your video, and then use Lora2 for seconds 6 to 10, you have to create two videos, each with the Lora you want to affect them. So for seconds 1 to 5 you create a 5 second video using Lora1. Then you select "extend video" and add another 5 seconds to it using Lora2. It's not perfect but its that or make totally unique videos and stitch them together manually. which I find ten times less efficient and consistent.
-
-
-
-In case text didn't line up just right, here's what you're going for: 
-
-![](C:\LORA\layout.png)
-
 
 
 That's all I can think of for now, happy Lora-ing folks, I hoped this helped someone! 

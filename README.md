@@ -271,18 +271,8 @@ It is recommended to use in Pinokio the Community Scripts *wan2gp* or *wan2gp-am
 
 ---
 
-### Manual installation: (old python 3.10, to be deprecated)
 
-```bash
-git clone https://github.com/deepbeepmeep/Wan2GP.git
-cd Wan2GP
-conda create -n wan2gp python=3.10.9
-conda activate wan2gp
-pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
-pip install -r requirements.txt
-```
-
-### Manual installation: (new python 3.11 setup)
+### Manual installation: (for RTX20xx - RTX50xx)
 
 ```bash
 git clone https://github.com/deepbeepmeep/Wan2GP.git
@@ -293,6 +283,17 @@ pip install torch==2.10.0 torchvision torchaudio --index-url https://download.py
 pip install -r requirements.txt
 ```
 
+### Manual installation: (for GTX 10xx)
+
+```bash
+git clone https://github.com/deepbeepmeep/Wan2GP.git
+cd Wan2GP
+conda create -n wan2gp python=3.10.9
+conda activate wan2gp
+pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+pip install -r requirements.txt
+```
+
 #### Run the application:
 ```bash
 python wgp.py
@@ -300,7 +301,7 @@ python wgp.py
 
 First time using WanGP ? Just check the *Guides* tab, and you will find a selection of recommended models to use.
 
-#### Update the application (stay in the old python / pytorch version):
+#### Update the application (stay in the current python / pytorch version):
 If using Pinokio use Pinokio to update otherwise:
 Get in the directory where WanGP is installed and:
 ```bash
@@ -309,29 +310,33 @@ conda activate wan2gp
 pip install -r requirements.txt
 ```
 
-#### Upgrade to 3.11, Pytorch 2.10, Cuda 13/13.1 (for non GTX10xx users)
-I recommend creating a new conda env for the Python 3.11 to avoid bad surprises. Let's call the new conda env *wangp* (instead of *wan2gp* the old name of this project)
+#### Upgrade from Python 3.10, Pytorch 2.7.1, Cuda 12.8 to Python 3.11, Pytorch 2.10, Cuda 13/13.1 (for non GTX10xx users)
+I recommend renaming first the old conda environment to avoid bad surprises when installing a different config in this old environment.
+
+```bash
+conda rename -n wan2gp  old_wan2gp
+```
+
 Get in the directory where WanGP is installed and:
 ```bash
 git pull
-conda create -n wangp python=3.11.9
-conda activate wangp
+conda create -n wa2gp python=3.11.9
+conda activate wan2gp
 pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
 
-#### Git Errors
 Once you are done you will have to reinstall *Sage Attention*, *Triton*, *Flash Attention*. Check the **[Installation Guide](docs/INSTALLATION.md)** -
 
 if you get some error messages related to git, you may try the following (beware this will overwrite local changes made to the source code of WanGP):
 ```bash
 git fetch origin && git reset --hard origin/main
-conda activate wangp
+conda activate wan2gp
 pip install -r requirements.txt
 ```
 When you have the confirmation it works well you can then delete the old conda env:
 ```bash
-conda uninstall -n wan2gp --all  
+conda uninstall -n old_wan2gp --all  
 ```
 
 #### Run headless (batch processing):

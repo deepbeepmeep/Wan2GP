@@ -119,7 +119,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.32"
+WanGP_version = "11.33"
 settings_version = 2.58
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2940,22 +2940,7 @@ def get_loras_preprocessor(transformer, model_type):
     def preprocessor_wrapper(sd):
         return preprocessor(model_type, sd)
 
-    return preprocessor_wrapper
-
-def get_local_model_filename(model_filename, use_locator = True, extra_paths = None):
-    if model_filename.startswith("http"):
-        local_model_filename =os.path.basename(model_filename)
-    else:
-        local_model_filename = model_filename
-    if use_locator:
-        if extra_paths is not None:
-            if not isinstance(extra_paths, list): extra_paths = [extra_paths]
-            for path in extra_paths:
-                filename = fl.locate_file(os.path.join(path, local_model_filename), error_if_none= False)
-                if filename is not None: return filename
-        local_model_filename = fl.locate_file(local_model_filename, error_if_none= False )
-    return local_model_filename
-    
+    return preprocessor_wrapper    
 
 
 def process_files_def(repoId = None, sourceFolderList = None, fileList = None, targetFolderList = None):
@@ -2993,6 +2978,7 @@ def download_mmaudio():
 
 
 def download_file(url,filename):
+    url = url.split("|")[0]
     if url.startswith("https://huggingface.co/") and "/resolve/main/" in url:
         base_dir = os.path.dirname(filename)
         url = url[len("https://huggingface.co/"):]
@@ -3066,7 +3052,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
     model_type_handler = model_types_handlers[base_model_type]
  
     if not (any_source and file_type==0 or any_module_source and file_type==1):
-        local_model_filename = get_local_model_filename(model_filename, extra_paths= force_path)
+        local_model_filename = fl.get_local_model_filename(model_filename, extra_paths= force_path)
         if local_model_filename is None and len(model_filename) > 0:
             local_model_filename = fl.get_smart_download_location(os.path.basename(model_filename), force_path= force_path)
             url = model_filename
@@ -3079,7 +3065,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
                 if os.path.isfile(local_model_filename): os.remove(local_model_filename) 
                 raise Exception(f"'{url}' is invalid for Model '{model_type}' : {str(e)}'")
             if file_type!=0: return
-
+    lora_dir = get_lora_dir(model_type) 
     for prop, recursive in zip(["preload_URLs", "VAE_URLs"], [True, False]):
         if recursive:
             preload_URLs = get_model_recursive_prop(model_type, prop, return_list= True)
@@ -3088,9 +3074,9 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
             if isinstance(preload_URLs, str): preload_URLs = [preload_URLs]
 
         for url in preload_URLs:
-            filename = get_local_model_filename(url)
+            filename = fl.get_local_model_filename(url, lora_dir = lora_dir)
             if filename is None: 
-                filename = fl.get_download_location(os.path.basename(url))
+                filename = fl.get_download_location(url, lora_dir = lora_dir)
                 if not url.startswith("http"):
                     raise Exception(f"{prop} '{filename}' was not found locally and no URL was provided to download it. Please add an URL in the model definition file.")
                 try:
@@ -3101,7 +3087,7 @@ def download_models(model_filename = None, model_type= None, file_type = 0, subm
 
     model_loras = get_model_recursive_prop(model_type, "loras", return_list= True)
     for url in model_loras:
-        filename = os.path.join(get_lora_dir(model_type), url.split("/")[-1])
+        filename = os.path.join(lora_dir, url.split("/")[-1])
         if not os.path.isfile(filename ): 
             if not url.startswith("http"):
                 raise Exception(f"Lora '{filename}' was not found in the Loras Folder and no URL was provided to download it. Please add an URL in the model definition file.")
@@ -3425,7 +3411,7 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
     for filename, file_model_type, file_source_type, submodel_no in zip(model_file_list, model_type_list, source_type_list, model_submodel_no_list):
         if len(filename) == 0: continue 
         download_models(filename, file_model_type, file_source_type, submodel_no)
-        local_file_name = get_local_model_filename(filename )
+        local_file_name = fl.get_local_model_filename(filename )
         local_model_file_list.append( os.path.basename(filename) if local_file_name is None else local_file_name )
     if len(local_model_file_list) == 0:
         download_models("", model_type, 0, -1)
@@ -3449,7 +3435,7 @@ def load_models(model_type, override_profile = -1, output_type="video", **model_
         text_encoder_folder = model_def.get("text_encoder_folder", None)
         if text_encoder_filename is not None:
             download_models(text_encoder_filename, file_model_type, 2, -1, force_path =text_encoder_folder)
-            text_encoder_filename =  get_local_model_filename(text_encoder_filename, extra_paths=text_encoder_folder)
+            text_encoder_filename =  fl.get_local_model_filename(text_encoder_filename, extra_paths=text_encoder_folder)
             _load_models_info(f"Loading Text Encoder '{text_encoder_filename}' ...")
 
 
@@ -3542,7 +3528,7 @@ def generate_header(model_type, compile, attention_mode):
     else:
         header += ", Data Type <B>BF16</B>"
 
-    quant_label = quant_router.detect_quantization_label_from_filename(get_local_model_filename(full_filename))
+    quant_label = quant_router.detect_quantization_label_from_filename(fl.get_local_model_filename(full_filename))
     if quant_label:
         header += f", Quantization <B>{quant_label}</B>"
     header += "</DIV>"
@@ -5845,6 +5831,7 @@ def generate_video(
     prompts = prompt_parser.split_prompt_units(prompt, multi_prompts_gen_type)
     parsed_keep_frames_video_source= max_source_video_frames if len(keep_frames_video_source) ==0 else int(keep_frames_video_source) 
     transformer_loras_filenames, transformer_loras_multipliers  = get_transformer_loras(model_type)
+    lora_dir = get_lora_dir(model_type)
     if guidance_phases < 1: guidance_phases = 1
     if transformer_loras_filenames != None:
         loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(transformer_loras_multipliers, len(transformer_loras_filenames), num_inference_steps, nb_phases = guidance_phases, model_switch_phase= model_switch_phase )
@@ -5860,7 +5847,6 @@ def generate_video(
     if len(activated_loras) > 0:
         loras_list_mult_choices_nums, loras_slists, errors =  parse_loras_multipliers(loras_multipliers, len(activated_loras), num_inference_steps, nb_phases = guidance_phases, merge_slist= loras_slists, model_switch_phase= model_switch_phase )
         if len(errors) > 0: raise Exception(f"Error parsing Loras: {errors}")
-        lora_dir = get_lora_dir(model_type)
         errors = check_loras_exist(model_type, activated_loras, True, send_cmd)
         if len(errors) > 0 : raise gr.Error(errors)
         loras_selected += [ os.path.join(lora_dir, os.path.basename(lora)) for lora in activated_loras]
@@ -11438,7 +11424,7 @@ def _get_dropdown_deps():
         get_model_def=get_model_def,
         get_model_recursive_prop=get_model_recursive_prop,
         get_model_filename=get_model_filename,
-        get_local_model_filename=get_local_model_filename,
+        get_local_model_filename=fl.get_local_model_filename,
         get_lora_dir=get_lora_dir,
         get_parent_model_type=get_parent_model_type,
         get_base_model_type=get_base_model_type,

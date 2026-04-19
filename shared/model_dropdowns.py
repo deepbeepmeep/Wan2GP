@@ -220,7 +220,7 @@ def has_secondary_model_files_for_status(deps, model_type, quantization, dtype_p
             text_encoder_folder = model_def.get("text_encoder_folder", None)
             if deps.get_local_model_filename(text_encoder_filename, extra_paths=text_encoder_folder) is None:
                 return False
-
+    lora_dir = deps.get_lora_dir(model_type)
     for prop, recursive in (("preload_URLs", True), ("VAE_URLs", False)):
         if recursive:
             urls = deps.get_model_recursive_prop(model_type, prop, return_list=True)
@@ -233,7 +233,7 @@ def has_secondary_model_files_for_status(deps, model_type, quantization, dtype_p
         for url in urls:
             if not isinstance(url, str) or len(url) == 0:
                 continue
-            if deps.get_local_model_filename(url) is None:
+            if deps.get_local_model_filename(url, lora_dir=lora_dir) is None:
                 return False
 
     model_loras = deps.get_model_recursive_prop(model_type, "loras", return_list=True)

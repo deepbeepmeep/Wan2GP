@@ -354,35 +354,6 @@ def _coerce_image_list(image_value):
     return image_value
 
 
-def _adjust_dev_distilled_lora_strengths(model_def, pipeline, sample_solver, audio_prompt_type, loras_slists, loras_selected):
-    if not isinstance(pipeline, TI2VidTwoStagesPipeline):
-        return loras_slists
-    if not loras_slists or model_def.get("ltx2_pipeline", "two_stage") == "distilled":
-        return loras_slists
-    use_hq_sampler = sample_solver == "res2s"
-    use_id_lora = "1" in audio_prompt_type
-    if not use_hq_sampler and not use_id_lora:
-        return loras_slists
-    phase1 = loras_slists.get("phase1")
-    phase2 = loras_slists.get("phase2")
-    if not isinstance(phase2, list) or not phase2 or not isinstance(phase1, list) or not phase1:
-        return loras_slists
-    adjusted_slists = None
-    for idx, lora_path in enumerate(loras_selected or []):
-        if idx >= len(phase1) or idx >= len(phase2):
-            break
-        if "distilled-lora" not in os.path.basename(str(lora_path)).lower():
-            continue
-        if adjusted_slists is None:
-            adjusted_slists = copy.deepcopy(loras_slists)
-        if use_hq_sampler:
-            adjusted_slists["phase1"][idx] = 0.25
-            adjusted_slists["phase2"][idx] = 0.5
-        elif use_id_lora:
-            adjusted_slists["phase2"][idx] = 0.8
-    return adjusted_slists or loras_slists
-
-
 def _to_latent_index(frame_idx: int, stride: int) -> int:
     frame_idx = int(frame_idx)
     stride = int(stride)
@@ -809,7 +780,7 @@ class LTX2:
             trans = self.model
         return trans, None
 
-    def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, base_model_type=None, model_def = None, **kwargs):
+    def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, base_model_type=None, model_def = None, lora_dir = None, sample_solver = None, **kwargs):
         control_map = {
             "P": "pose",
             "D": "depth",
@@ -831,16 +802,25 @@ class LTX2:
         def _append_preload_lora(signature, multiplier):
             signature = signature.lower()
             for file_name in preload_urls:
-                base_name = os.path.basename(file_name)
+                local_filename = fl.get_local_model_filename(file_name, lora_dir=lora_dir)
+                base_name = os.path.basename(local_filename)
                 if signature in base_name.lower():
                     if base_name.lower() in selected_loras or any(os.path.basename(lora).lower() == base_name.lower() for lora in loras):
                         return
-                    loras.append(fl.locate_file(base_name))
+                    loras.append(local_filename)
                     loras_mult.append(multiplier)
                     return
 
         if pipeline_kind != "distilled" and guidance_phases > 1:
-            _append_preload_lora("distilled-lora", "0;1")
+            use_hq_sampler = sample_solver == "res2s"
+            use_id_lora = "1" in audio_prompt_type
+            if use_hq_sampler:
+                mult = "0.25;0.5"
+            elif use_id_lora:
+                mult = "0;0.8"
+            else:
+                mult = "0;1"
+            _append_preload_lora("distilled-lora", mult)
         if pipeline_kind == "distilled":
             if any(letter in video_prompt_type for letter in control_map):
                 _append_preload_lora("union-control", 1.0)
@@ -1184,14 +1164,7 @@ class LTX2:
         if "1" in audio_prompt_type and effective_audio_cfg_scale <= 1.0:
             effective_audio_cfg_scale = LTX2_ID_LORA_AUDIO_CFG_SCALE
         sample_solver = sample_solver.lower()
-        loras_slists = _adjust_dev_distilled_lora_strengths(
-            self.model_def,
-            self.pipeline,
-            sample_solver,
-            audio_prompt_type,
-            loras_slists,
-            loras_selected,
-        )
+
         if isinstance(self.pipeline, TI2VidTwoStagesPipeline):
             pipeline_output = self.pipeline(
                 prompt=input_prompt,

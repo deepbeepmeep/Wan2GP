@@ -34,7 +34,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 ## 🔥 Latest Updates : 
 
-### 14th of April 2026: WanGP v11.31, LTX-2 Mega Mix
+### 19th of April 2026: WanGP v11.33, LTX-2 Mega Mix
 Lots of nice goodies for **LTX-2**:
 
 - **LTX-2.3 Distilled 1.1**: new version of the *Distilled model* released by *LTX team*, it should offer better audio and visuals. You will find also a Dev 1.1 version which uses Distilled 1.1 for Phase 2.
@@ -49,11 +49,19 @@ Lots of nice goodies for **LTX-2**:
 
 - **Silent Movie Mode**: if for some reason you want video with not only no sound but that takes into account that there is no sound (you dont want people to open their mouth for instance), just now leave the *Control Audio* empty
 
+- **LTX2/2.3 Loras Split**: as LTX2.0 Loras work badly with LTX2-3 and were getting on the way, now each version of LTX2 has its own lora folder. Loras will be moved automatically at startup using a lora migration script. I invit you to verify that the loras landed in the right folder.
+
+- **System Loras Multipliers Overrides**: WanGP adds automatically and transparently loras (that is they are loaded although they are not visible) if needed by a feature (distilled lora, id lora, outpaint lora, union control lora). You can now override the default multipliers used by WanGP by selecting the target lora in the *Activated Loras* input and by specifiying the corresponding *Loras Multipliers*.
+
 - **Process Full Video Plugin**: this *bundled PlugIn* which needs to be enabled first in *the PlugIn tab*, right now supports only *Outpainting*. It relies on *LTX2 Lora outpainting*. It is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. If you are patient enough you can change the Aspect Ratio of a few hours movie (check out below the 1 min sample). Behold how *Sliding Windows transitions* are almost invisible !
 
 - **WanGP API Video Gen**: *Plugin Developers* can now *Queue a Gen* directly from a plugin. This opens the possibility of plugins that place various gen orders and then combine the results (hint: we could have our very own version of *LTX-Destop* inside WanGP).
 
-*update 11.31*: fixed phase 1 forced incorrectly in some cases
+- **New One Click Install / Update Scripts**: We have to thank **Tophness / @steve_Jabz** for that one. *Huge Kudos to him!* The scripts will not only install WanGP but also all the *Kernels* (among *Triton, Sage, Flash, GGuf, Lightx2v, Nunchaku*) supported by your GPU. Please have a look at the instructions further down. Dont't hesitate to share feedback or report any issue.
+
+*update 11.31*: fixed phase 1 forced incorrectly in some cases\
+*update 11.32*: bugs fixes, Process Full Video now support Distilled 1.1 & accept video without audio\
+*update 11.33*: Separated LTX2 & LTX2.3 loras in different folders, added easy loras multipliers override
 
 ### 11th of April 2026: WanGP v11.26, Now I Can See
 
@@ -66,8 +74,6 @@ As a bonus I have tuned *Sliding Windows* for Ic Loras, and if you set *Overlap 
 - **Outpaint Ic Lora**: this new impressive Ic Lora will be loaded automatically if you select the *Control Video for Ic Lora* option and enable *Outpainting*. If you use Sliding Windows with Outpainting you will be able to outpaint a full movie (assuming you have enough RAM).
 
 - **New Outpainting Auto Change Aspect Ratio**: As a reminder WanGP let you define manually where an Outpainting should happen. Alternatively you can now ask WanGP to use outpainting to change the *Width/ Height Aspect ratio* of the Control Video. For instance you can turn any 16/9 video into a 4/3 video by generating new details instead of adding black bars. The *Top/Bottom/Left/Right Sliders* in this new mode will be used to define which area should be expanded in priority to meet the requested aspect ratio.. 
-
--- **New One Click Install / Update Scripts**: We have to thank **Tophness / @steve_Jabz** for that one. *Huge Kudos to him!* The scripts will not only install WanGP but also all the *Kernels* (among *Triton, Sage, Flash, GGuf, Lightx2v, Nunchaku*) supported by your GPU. Please have a look at the instructions further down. Dont't hesitate to share feedback or report any issue.
 
 *update 11.26*: fixed outpainting ignored with if Manual Expansion was selected
 

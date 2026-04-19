@@ -35,9 +35,9 @@ def extract_alternate_path(url, lora_dir = None):
     if len(path_parts) == 1: return new_url
     if len(path_parts) != 2: raise f"Invalid path {url}"
     alternate_path = path_parts[1]
-    if alternate_path == "%lora":
+    if alternate_path == "%lora_dir":
         if lora_dir is None:
-            raise Exception(f"Unable to compute %lora in {url}, no lora_dir was provided")
+            raise Exception(f"Unable to compute %lora_dir in {url}, no lora_dir was provided")
         alternate_path = os.path.abspath(lora_dir)
     return os.path.join(alternate_path, new_url) 
 

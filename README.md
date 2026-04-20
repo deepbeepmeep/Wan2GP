@@ -34,7 +34,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 ## 🔥 Latest Updates : 
 
-### 19th of April 2026: WanGP v11.33, LTX-2 Mega Mix
+### 20th of April 2026: WanGP v11.34, LTX-2 Mega Mix
 Lots of nice goodies for **LTX-2**:
 
 - **LTX-2.3 Distilled 1.1**: new version of the *Distilled model* released by *LTX team*, it should offer better audio and visuals. You will find also a Dev 1.1 version which uses Distilled 1.1 for Phase 2.
@@ -49,7 +49,8 @@ Lots of nice goodies for **LTX-2**:
 
 - **Silent Movie Mode**: if for some reason you want video with not only no sound but that takes into account that there is no sound (you dont want people to open their mouth for instance), just now leave the *Control Audio* empty
 
-- **LTX2/2.3 Loras Split**: as LTX2.0 Loras work badly with LTX2-3 and were getting on the way, now each version of LTX2 has its own lora folder. Loras will be moved automatically at startup using a lora migration script. I invit you to verify that the loras landed in the right folder.
+~~ - LTX2/2.3 Loras Split: as LTX2.0 Loras work badly with LTX2-3 and were getting on the way, now each version of LTX2 has its own lora folder. Loras will be moved automatically at startup using a lora migration script. I invit you to verify that the loras landed in the right folder.~~ 
+
 
 - **System Loras Multipliers Overrides**: WanGP adds automatically and transparently loras (that is they are loaded although they are not visible) if needed by a feature (distilled lora, id lora, outpaint lora, union control lora). You can now override the default multipliers used by WanGP by selecting the target lora in the *Activated Loras* input and by specifiying the corresponding *Loras Multipliers*.
 
@@ -61,7 +62,8 @@ Lots of nice goodies for **LTX-2**:
 
 *update 11.31*: fixed phase 1 forced incorrectly in some cases\
 *update 11.32*: bugs fixes, Process Full Video now supports Distilled 1.1 & accepts video without audio\
-*update 11.33*: Separated LTX2 & LTX2.3 loras in different folders, added easy loras multipliers override
+*update 11.33*: Separated LTX2 & LTX2.3 loras in different folders, added easy loras multipliers override\
+*update 11.34*: Reverted split as not popular
 
 ### 11th of April 2026: WanGP v11.26, Now I Can See
 

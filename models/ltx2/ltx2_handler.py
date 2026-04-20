@@ -40,6 +40,7 @@ _ARCH_SPECS = {
         "spatial_upscaler": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
         "temporal_upscaler": "ltx-2.3-temporal-upscaler-x2-1.0.safetensors",
         "distilled_lora": "ltx-2.3-22b-distilled-lora-384.safetensors",
+        "distilled_1_1_lora": "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
         "union_control_lora": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
         "id_lora": "id-lora-celebvhq-ltx2.3.safetensors",
         "outpaint_lora": "ltx-2.3-22b-ic-lora-outpaint.safetensors",
@@ -121,24 +122,23 @@ def _migrate_loras():
 
     lora_19B_dir = os.path.join(lora_root, _ARCH_SPECS["ltx2_19B"]["lora_dir"])
     lora_22B_dir = os.path.join(lora_root, _ARCH_SPECS["ltx2_22B"]["lora_dir"])
-    source, target_folder = Path(lora_19B_dir), Path(lora_22B_dir)
-    if not (target_folder.exists() and any(target_folder.iterdir()) ):
-        print("LTX-2 and LTX-2.3 no longer shares the same Lora folder. A migration script has been launched to move the loras to their corresponding folders. Please verify that the loras are in the right folders.")
+    source, target_folder = Path(lora_22B_dir), Path(lora_19B_dir)
+    if source.exists():
+        print("LTX-2 and LTX-2.3 merged again, bye bye split loras. Please verify that the loras are in the right folders.")
         target_folder.mkdir(parents=True, exist_ok=True)
         for f in source.iterdir():
-            if f.is_file() and any(p in f.name for p in ("2.3", "22B")):
+            if f.is_file() and not os.path.isfile(str(target_folder / f.name)):
                 shutil.move(f, target_folder / f.name)
-            elif f.is_file() and f.suffix in  {".json", ".lset"}:
-                shutil.copy2(f, target_folder / f.name)
+        shutil.move(str(source), os.path.join( os.path.dirname(str(source)),  "old_" + os.path.basename(str(source))))
 
     for model_type, spec in _ARCH_SPECS.items():
-        lora_dir = os.path.join(lora_root, spec["lora_dir"])
-        for key in ["distilled_lora", "union_control_lora", "id_lora", "outpaint_lora"]: 
+        lora_dir = lora_19B_dir
+        for key in ["distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora"]: 
             filename = spec.get(key, None)
             if filename is None: continue
-            source = fl.locate_file(filename, error_if_none= False)
-            if source is not None:
-                target = os.path.join(lora_dir, filename)
+            source = os.path.join(lora_dir, filename)
+            if source is not None and os.path.isfile(source):
+                target = fl.get_download_location(filename)
                 shutil.move(source, target)
                 print(f"[WAN2GP][LTX2] Moved {key} LoRA '{source}' -> '{target}'")
             
@@ -335,17 +335,17 @@ class family_handler:
             default=None,
             help=f"Path to a directory that contains LTX-2 LoRAs (default: {os.path.join(lora_root, 'ltx2')})",
         )
-        parser.add_argument(
-            "--lora-dir-ltx2-22b",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains LTX-2.3 22B LoRAs (default: {os.path.join(lora_root, 'ltx2_22B')})",
-        )
+        # parser.add_argument(
+        #     "--lora-dir-ltx2-22b",
+        #     type=str,
+        #     default=None,
+        #     help=f"Path to a directory that contains LTX-2.3 22B LoRAs (default: {os.path.join(lora_root, 'ltx2_22B')})",
+        # )
 
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
-        if base_model_type == "ltx2_22B":
-            return getattr(args, "lora_dir_ltx2_22b", None) or os.path.join(lora_root, "ltx2_22B")
+        # if base_model_type == "ltx2_22B":
+        #     return getattr(args, "lora_dir_ltx2_22b", None) or os.path.join(lora_root, "ltx2_22B")
         return getattr(args, "lora_dir_ltx2", None) or os.path.join(lora_root, "ltx2")
 
     @staticmethod

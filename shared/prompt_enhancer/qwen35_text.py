@@ -693,6 +693,7 @@ def _unload_prompt_enhancer_text_runtime(self):
         finally:
             self._prompt_enhancer_vllm_engine = None
             self._prompt_enhancer_vllm_mode = None
+    self._prompt_enhancer_assistant_graph_pool_handle = None
     try:
         clear_qwen35_runtime_caches()
     except Exception:

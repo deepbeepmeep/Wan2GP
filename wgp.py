@@ -6337,6 +6337,8 @@ def generate_video(
                         if "O" in video_prompt_type and pre_video_guide is None and all_letters(video_prompt_type, "IK"):
                             from shared.utils.utils import get_outpainting_full_area_dimensions
                             w, h = image_refs[0].size
+                            if outpainting_dims != None:
+                                h, w = get_outpainting_full_area_dimensions(h, w, outpainting_dims, video_guide_outpainting_ratio)
                             image_size = calculate_new_dimensions(height, width, h, w, fit_canvas)                            
                             sample_fit_canvas = None 
                             ref_pose_tensor  = resize_and_remove_background(image_refs[nb_frames_positions:nb_frames_positions+1], image_size[1], image_size[0],
@@ -6346,7 +6348,7 @@ def generate_video(
                                                                                             outpainting_dims =outpainting_dims,
                                                                                             outpainting_ratio = video_guide_outpainting_ratio,
                                                                                             background_ref_outpainted = model_def.get("background_ref_outpainted", True),
-                                                                                            return_tensor= True)[0]
+                                                                                            return_tensor= True)[0][0]
                         else:
                             ref_pose_tensor = pre_video_guide
  
@@ -9840,7 +9842,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             "": "No Control Video",
                             "UV": "Keep Control Video Unchanged",
                             "PV": f"Transfer Human {pose_label}",
-                            "OV": f"Aligned Transfer Human {pose_label}",
+                            "OV": f"Transfer Aligned Human {pose_label}",
                             "DV": "Transfer Depth",
                             "EV": "Transfer Canny Edges",
                             "SV": "Transfer Shapes",

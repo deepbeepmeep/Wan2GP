@@ -83,11 +83,23 @@ def _nan_to_one(val: float) -> float:
     return 1.0 if not np.isfinite(val) else float(val)
 
 
-def _transform_points(points: np.ndarray, orig_center: np.ndarray, new_center: np.ndarray, scale: float) -> np.ndarray:
+def _pose_point_mask(points):
+    points = np.asarray(points)
+    return np.all(np.isfinite(points), axis=-1) & ~np.all(points == -1, axis=-1)
+
+
+def _point_in_unit_frame(point):
+    point = np.asarray(point)
+    return np.all(np.isfinite(point)) and 0.0 <= point[0] <= 1.0 and 0.0 <= point[1] <= 1.0
+
+
+def _transform_points(points: np.ndarray, orig_center: np.ndarray, new_center: np.ndarray, scale: float, point_mask=None, orig_center_valid=True, new_center_valid=True) -> np.ndarray:
     out = points.copy()
-    if not _valid_xy(orig_center) or not _valid_xy(new_center):
+    if not orig_center_valid or not new_center_valid:
         return out
-    mask = _valid_xy(points)
+    if not np.all(np.isfinite(orig_center)) or not np.all(np.isfinite(new_center)):
+        return out
+    mask = _pose_point_mask(points) if point_mask is None else (np.asarray(point_mask) & np.all(np.isfinite(points), axis=-1))
     if np.any(mask):
         out[mask] = new_center + (points[mask] - orig_center) * scale
     return out
@@ -207,6 +219,9 @@ def _apply_pose_alignment(pose: dict, scales: dict, offset: np.ndarray, ref_rati
     body_orig = pose["bodies"]["candidate"].astype(np.float32).copy()
     hands_orig = pose["hands"].astype(np.float32).copy()
     faces_orig = pose["faces"].astype(np.float32).copy()
+    body_valid = _valid_xy(body_orig)
+    hands_valid = _valid_xy(hands_orig)
+    faces_valid = _valid_xy(faces_orig)
 
     body_orig[:, 0] *= drive_ratio
     hands_orig[:, :, 0] *= drive_ratio
@@ -216,24 +231,24 @@ def _apply_pose_alignment(pose: dict, scales: dict, offset: np.ndarray, ref_rati
     hands = hands_orig.copy()
     faces = faces_orig.copy()
 
-    body[0:1] = _transform_points(body_orig[0:1], body_orig[1], body[1], scales["scale_neck"])
-    body[[14, 16]] = _transform_points(body_orig[[14, 16]], body_orig[0], body[0], scales["scale_face_left"])
-    body[[15, 17]] = _transform_points(body_orig[[15, 17]], body_orig[0], body[0], scales["scale_face_right"])
-    body[[2, 5]] = _transform_points(body_orig[[2, 5]], body_orig[1], body[1], scales["scale_shoulder"])
+    body[0:1] = _transform_points(body_orig[0:1], body_orig[1], body[1], scales["scale_neck"], point_mask=body_valid[0:1], orig_center_valid=body_valid[1], new_center_valid=body_valid[1])
+    body[[14, 16]] = _transform_points(body_orig[[14, 16]], body_orig[0], body[0], scales["scale_face_left"], point_mask=body_valid[[14, 16]], orig_center_valid=body_valid[0], new_center_valid=body_valid[0])
+    body[[15, 17]] = _transform_points(body_orig[[15, 17]], body_orig[0], body[0], scales["scale_face_right"], point_mask=body_valid[[15, 17]], orig_center_valid=body_valid[0], new_center_valid=body_valid[0])
+    body[[2, 5]] = _transform_points(body_orig[[2, 5]], body_orig[1], body[1], scales["scale_shoulder"], point_mask=body_valid[[2, 5]], orig_center_valid=body_valid[1], new_center_valid=body_valid[1])
 
-    body[[3]] = _transform_points(body_orig[[3]], body_orig[2], body[2], scales["scale_arm_upper"])
-    body[[4]] = _transform_points(body_orig[[4]], body_orig[3], body[3], scales["scale_arm_lower"])
-    hands[1] = _transform_points(hands_orig[1], body_orig[4], body[4], scales["scale_hand"])
+    body[[3]] = _transform_points(body_orig[[3]], body_orig[2], body[2], scales["scale_arm_upper"], point_mask=body_valid[[3]], orig_center_valid=body_valid[2], new_center_valid=body_valid[2])
+    body[[4]] = _transform_points(body_orig[[4]], body_orig[3], body[3], scales["scale_arm_lower"], point_mask=body_valid[[4]], orig_center_valid=body_valid[3], new_center_valid=body_valid[3])
+    hands[1] = _transform_points(hands_orig[1], body_orig[4], body[4], scales["scale_hand"], point_mask=hands_valid[1], orig_center_valid=body_valid[4], new_center_valid=body_valid[4])
 
-    body[[6]] = _transform_points(body_orig[[6]], body_orig[5], body[5], scales["scale_arm_upper"])
-    body[[7]] = _transform_points(body_orig[[7]], body_orig[6], body[6], scales["scale_arm_lower"])
-    hands[0] = _transform_points(hands_orig[0], body_orig[7], body[7], scales["scale_hand"])
+    body[[6]] = _transform_points(body_orig[[6]], body_orig[5], body[5], scales["scale_arm_upper"], point_mask=body_valid[[6]], orig_center_valid=body_valid[5], new_center_valid=body_valid[5])
+    body[[7]] = _transform_points(body_orig[[7]], body_orig[6], body[6], scales["scale_arm_lower"], point_mask=body_valid[[7]], orig_center_valid=body_valid[6], new_center_valid=body_valid[6])
+    hands[0] = _transform_points(hands_orig[0], body_orig[7], body[7], scales["scale_hand"], point_mask=hands_valid[0], orig_center_valid=body_valid[7], new_center_valid=body_valid[7])
 
-    body[[8, 11]] = _transform_points(body_orig[[8, 11]], body_orig[1], body[1], scales["scale_body_len"])
-    body[[9]] = _transform_points(body_orig[[9]], body_orig[8], body[8], scales["scale_leg_upper"])
-    body[[10]] = _transform_points(body_orig[[10]], body_orig[9], body[9], scales["scale_leg_lower"])
-    body[[12]] = _transform_points(body_orig[[12]], body_orig[11], body[11], scales["scale_leg_upper"])
-    body[[13]] = _transform_points(body_orig[[13]], body_orig[12], body[12], scales["scale_leg_lower"])
+    body[[8, 11]] = _transform_points(body_orig[[8, 11]], body_orig[1], body[1], scales["scale_body_len"], point_mask=body_valid[[8, 11]], orig_center_valid=body_valid[1], new_center_valid=body_valid[1])
+    body[[9]] = _transform_points(body_orig[[9]], body_orig[8], body[8], scales["scale_leg_upper"], point_mask=body_valid[[9]], orig_center_valid=body_valid[8], new_center_valid=body_valid[8])
+    body[[10]] = _transform_points(body_orig[[10]], body_orig[9], body[9], scales["scale_leg_lower"], point_mask=body_valid[[10]], orig_center_valid=body_valid[9], new_center_valid=body_valid[9])
+    body[[12]] = _transform_points(body_orig[[12]], body_orig[11], body[11], scales["scale_leg_upper"], point_mask=body_valid[[12]], orig_center_valid=body_valid[11], new_center_valid=body_valid[11])
+    body[[13]] = _transform_points(body_orig[[13]], body_orig[12], body[12], scales["scale_leg_lower"], point_mask=body_valid[[13]], orig_center_valid=body_valid[12], new_center_valid=body_valid[12])
 
     if len(faces):
         face = faces_orig[0]
@@ -241,22 +256,28 @@ def _apply_pose_alignment(pose: dict, scales: dict, offset: np.ndarray, ref_rati
             face_center = face[30]
             drive_nose = body_orig[0]
             aligned_nose = body[0]
-            if _valid_xy(face_center) and _valid_xy(drive_nose) and _valid_xy(aligned_nose):
+            face_center_valid = faces_valid[0, 30] if faces_valid.shape[1] > 30 else False
+            if face_center_valid and body_valid[0]:
                 new_center = aligned_nose + (face_center - drive_nose) * scales["scale_face"]
-                faces[0] = _transform_points(face, face_center, new_center, scales["scale_face"])
+                faces[0] = _transform_points(face, face_center, new_center, scales["scale_face"], point_mask=faces_valid[0], orig_center_valid=face_center_valid, new_center_valid=body_valid[0])
 
-    body_mask = _valid_xy(body)
-    hands_mask = _valid_xy(hands)
-    faces_mask = _valid_xy(faces)
-    if np.any(body_mask):
-        body[body_mask] += offset
-        body[body_mask, 0] /= max(ref_ratio, 1e-6)
-    if np.any(hands_mask):
-        hands[hands_mask] += offset
-        hands[hands_mask, 0] /= max(ref_ratio, 1e-6)
-    if np.any(faces_mask):
-        faces[faces_mask] += offset
-        faces[faces_mask, 0] /= max(ref_ratio, 1e-6)
+    if np.any(body_valid):
+        body[body_valid] += offset
+        body[..., 0][body_valid] /= max(ref_ratio, 1e-6)
+    if np.any(hands_valid):
+        hands[hands_valid] += offset
+        hands[..., 0][hands_valid] /= max(ref_ratio, 1e-6)
+    if np.any(faces_valid):
+        faces[faces_valid] += offset
+        faces[..., 0][faces_valid] /= max(ref_ratio, 1e-6)
+
+    body[~body_valid] = -1
+    hands[~hands_valid] = -1
+    faces[~faces_valid] = -1
+
+    for hand_idx, wrist_idx in ((0, 7), (1, 4)):
+        if not body_valid[wrist_idx] or not _point_in_unit_frame(body[wrist_idx]):
+            hands[hand_idx] = -1
 
     body = np.nan_to_num(body, nan=-1.0)
     hands = np.nan_to_num(hands, nan=-1.0)
@@ -273,6 +294,44 @@ def _render_pose_map(pose: dict, render_shape, orig_shape, *, use_face=True):
     render_h, render_w = render_shape
     orig_h, orig_w = orig_shape
     canvas = draw_pose(pose, render_h, render_w, use_hand=True, use_body=True, use_face=use_face)
+    interpolation = cv2.INTER_LANCZOS4 if orig_h * orig_w > render_h * render_w else cv2.INTER_AREA
+    return cv2.resize(canvas[..., ::-1], (orig_w, orig_h), interpolation=interpolation)
+
+
+def _render_pose_map_overscan(pose: dict, render_shape, orig_shape, overscan: float, *, use_face=True):
+    if overscan <= 1.0:
+        return _render_pose_map(pose, render_shape, orig_shape, use_face=use_face)
+
+    render_h, render_w = render_shape
+    pad_y = max(0, int(round((overscan - 1.0) * render_h / 2.0)))
+    pad_x = max(0, int(round((overscan - 1.0) * render_w / 2.0)))
+    expanded_h = render_h + 2 * pad_y
+    expanded_w = render_w + 2 * pad_x
+
+    pose_for_draw = {
+        "bodies": {
+            "candidate": pose["bodies"]["candidate"].copy(),
+            "subset": pose["bodies"]["subset"].copy(),
+        },
+        "hands": pose["hands"].copy(),
+        "faces": pose["faces"].copy(),
+    }
+
+    def _remap_points(points):
+        mask = _pose_point_mask(points)
+        if np.any(mask):
+            points = points.copy()
+            points[mask, 0] = (points[mask, 0] * render_w + pad_x) / expanded_w
+            points[mask, 1] = (points[mask, 1] * render_h + pad_y) / expanded_h
+        return points
+
+    pose_for_draw["bodies"]["candidate"] = _remap_points(pose_for_draw["bodies"]["candidate"])
+    pose_for_draw["hands"] = _remap_points(pose_for_draw["hands"])
+    pose_for_draw["faces"] = _remap_points(pose_for_draw["faces"])
+
+    canvas = draw_pose(pose_for_draw, expanded_h, expanded_w, use_hand=True, use_body=True, use_face=use_face)
+    canvas = canvas[pad_y:pad_y + render_h, pad_x:pad_x + render_w]
+    orig_h, orig_w = orig_shape
     interpolation = cv2.INTER_LANCZOS4 if orig_h * orig_w > render_h * render_w else cv2.INTER_AREA
     return cv2.resize(canvas[..., ::-1], (orig_w, orig_h), interpolation=interpolation)
 
@@ -690,6 +749,7 @@ class AlignedPoseBodyFaceVideoAnnotator:
         self.cfg = cfg
         self.ref_image = cfg.get("REF_IMAGE")
         self.resize_size = cfg.get("RESIZE_SIZE", 1024)
+        self.render_overscan = max(1.0, float(cfg.get("ALIGN_RENDER_OVERSCAN", 2.0)))
         self.annotator = OptimizedPoseAnnotator(cfg)
         self._fallback = None
 
@@ -776,7 +836,7 @@ class AlignedPoseBodyFaceVideoAnnotator:
 
             cur_ratio = detection["render_shape"][1] / max(detection["render_shape"][0], 1)
             aligned_pose = _apply_pose_alignment(detection["pose"], scales, offset, ref_ratio, cur_ratio)
-            ret_frames.append(_render_pose_map(aligned_pose, detection["render_shape"], detection["orig_shape"], use_face=True))
+            ret_frames.append(_render_pose_map_overscan(aligned_pose, detection["render_shape"], detection["orig_shape"], self.render_overscan, use_face=True))
         return ret_frames
 
 

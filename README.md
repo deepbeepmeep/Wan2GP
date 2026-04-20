@@ -51,7 +51,6 @@ Lots of nice goodies for **LTX-2**:
 
 ~~ - LTX2/2.3 Loras Split: as LTX2.0 Loras work badly with LTX2-3 and were getting on the way, now each version of LTX2 has its own lora folder. Loras will be moved automatically at startup using a lora migration script. I invit you to verify that the loras landed in the right folder.~~ 
 
-
 - **System Loras Multipliers Overrides**: WanGP adds automatically and transparently loras (that is they are loaded although they are not visible) if needed by a feature (distilled lora, id lora, outpaint lora, union control lora). You can now override the default multipliers used by WanGP by selecting the target lora in the *Activated Loras* input and by specifiying the corresponding *Loras Multipliers*.
 
 - **Process Full Video Plugin**: this *bundled PlugIn* which needs to be enabled first in *the PlugIn tab*, right now supports only *Outpainting*. It relies on *LTX2 Lora outpainting*. It is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. If you are patient enough you can change the Aspect Ratio of a few hours movie (check out below the 1 min sample). Behold how *Sliding Windows transitions* are almost invisible !

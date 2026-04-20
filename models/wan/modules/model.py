@@ -708,7 +708,7 @@ class WanAttentionBlock(nn.Module):
                         x.add_(hint, alpha= scale)
 
         if motion_vec is not None and self.block_no % 5 == 0:
-            x += self.face_adapter_fuser_blocks(x.to(self.face_adapter_fuser_blocks.linear1_kv.weight.dtype), motion_vec, None, False)
+            x += self.face_adapter_fuser_blocks(x.to(self.face_adapter_fuser_blocks.linear1_kv.weight.dtype), motion_vec, None)
 
         return x 
 

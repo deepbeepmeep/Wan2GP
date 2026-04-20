@@ -252,11 +252,11 @@ class family_handler:
         }
         
         control_choices = [("No Video Process", "")]
-        control_choices += [ ("Transfer Human Motion", "PVG") , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("LTX2 Raw Format / Control Video for Ic Lora", "VG")] if distilled else []
+        control_choices += [ ("Transfer Human Motion", "PVG"), ("Transfer Human Motion With Pose Alignment", "OVG")  , ("Transfer Depth", "DVG") , ("Transfer Canny Edges", "EVG"), ("LTX2 Raw Format / Control Video for Ic Lora", "VG")] if distilled else []
         control_choices +=   [("Inject Frames", "KFI")]
         extra_model_def["guide_custom_choices"] = {
             "choices": control_choices,
-            "letters_filter": "PDEVGKFI",
+            "letters_filter": "OPDEVGKFI",
             "default": "",
             "label": "Control Video / Frames Injection"
         }
@@ -423,7 +423,7 @@ class family_handler:
         any_outpainting = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio) is not None        
         if pipeline_kind == "distilled" and any_outpainting:
             if "V" in video_prompt_type :
-                if any(letter in video_prompt_type for letter in "PDE"):
+                if any(letter in video_prompt_type for letter in "OPDE"):
                     return "LTX2 outpainting on Control Video supports only LTX2 Raw Format  / Contro Video for Ic Lora."
                 if "1" in audio_prompt_type:
                     return "LTX2 outpainting on Control Video is not compatible with the ID-LoRA option."
@@ -433,7 +433,7 @@ class family_handler:
                     return "LTX2 outpainting doesnt support Video Mask."
 
         guide_phases = inputs.get("guidance_phases", 1)
-        if guide_phases !=1 and "V" in video_prompt_type and (any(letter in video_prompt_type for letter in "PDE") or any_outpainting):
+        if guide_phases !=1 and "V" in video_prompt_type and (any(letter in video_prompt_type for letter in "OPDE") or any_outpainting):
             inputs["guidance_phases"]=  1            
             gr.Info("Number of Phases has been set to 1 as Outpainting is enabled" if any_outpainting else "Number of Phases is set to 1 for Pose/Edge/Depth")
         if "A" in audio_prompt_type and inputs.get("audio_guide") is None:

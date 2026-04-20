@@ -1030,6 +1030,11 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     else:        
         image_end = None
 
+    if "V" in video_prompt_type and "O" in video_prompt_type:
+        if image_start is None and video_source is None and "L" not in video_prompt_type and not all_letters(video_prompt_type, "IK"):
+            return err("Aligned Pose transfer requires a Start Image or Source Video to continue to be used")    
+        if "A" in video_prompt_type and any_letters(video_prompt_type, "YWZ"):
+            return err("Aligned Pose transfer supports only Inpainting process outside the masked area")    
 
     if test_any_sliding_window(model_type) and image_mode == 0:
         if video_length > sliding_window_size:
@@ -3929,14 +3934,14 @@ def select_audio(state, audio_files_paths, audio_file_selected):
     set_file_choice(gen,  audio_file_list, choice, audio_files=True )
 
 
-video_guide_processes = "PEDSLCMU"
+video_guide_processes = "OPEDSLCMU"
 all_guide_processes = video_guide_processes + "VGBH"
 
 process_map_outside_mask = { "Y" : "depth", "W": "scribble", "X": "inpaint", "Z": "flow"}
-process_map_video_guide = { "P": "pose", "D" : "depth", "S": "scribble", "E": "canny", "L": "flow", "C": "gray", "M": "inpaint", "U": "identity"}
+process_map_video_guide = { "O": "pose_align", "P": "pose", "D" : "depth", "S": "scribble", "E": "canny", "L": "flow", "C": "gray", "M": "inpaint", "U": "identity"}
 all_process_map_video_guide =  { "B": "face", "H" : "bbox"}
 all_process_map_video_guide.update(process_map_video_guide)
-processes_names = { "pose": "Open Pose", "depth": "Depth Mask", "scribble" : "Shapes", "flow" : "Flow Map", "gray" : "Gray Levels", "inpaint" : "Inpaint Mask", "identity": "Identity Mask", "raw" : "Raw Format", "canny" : "Canny Edges", "face": "Face Movements", "bbox": "BBox"}
+processes_names = { "pose": "Open Pose", "pose_align": "Aligned Open Pose", "depth": "Depth Mask", "scribble" : "Shapes", "flow" : "Flow Map", "gray" : "Gray Levels", "inpaint" : "Inpaint Mask", "identity": "Identity Mask", "raw" : "Raw Format", "canny" : "Canny Edges", "face": "Face Movements", "bbox": "BBox"}
 
 
 def resolve_media_creation_date(file_name, configs=None):
@@ -4517,14 +4522,16 @@ def get_resampled_video(video_in, start_frame, max_frames, target_fps, bridge='t
 #     return frames
 
 
-def get_preprocessor(process_type, inpaint_color):
-    if process_type=="pose":
+def get_preprocessor(process_type, inpaint_color, pre_video_guide=None):
+    if process_type in ["pose", "pose_align"]:
         from preprocessing.dwpose.pose import PoseBodyFaceVideoAnnotator
         cfg_dict = {
             "DETECTION_MODEL": fl.locate_file("pose/yolox_l.onnx"),
             "POSE_MODEL": fl.locate_file("pose/dw-ll_ucoco_384.onnx"),
             "RESIZE_SIZE": 1024
         }
+        if process_type == "pose_align" and torch.is_tensor(pre_video_guide) and pre_video_guide.ndim == 4 and pre_video_guide.shape[1] > 0:
+            cfg_dict["REF_IMAGE"] = pre_video_guide[:, -1]
         anno_ins = lambda img: PoseBodyFaceVideoAnnotator(cfg_dict).forward(img)
     elif process_type=="depth":
 
@@ -4666,10 +4673,12 @@ def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_pat
         any_identity_mask = True
         negate_mask = False
         process_outside_mask = None
-    preproc = get_preprocessor(process_type, inpaint_color)
+    if process_type == "pose_align" and any_mask:
+        process_outside_mask = None
+    preproc = get_preprocessor(process_type, inpaint_color, pre_video_guide=pre_video_guide)
     preproc2 = None
     if process_type2 != None:
-        preproc2 = get_preprocessor(process_type2, inpaint_color) if process_type != process_type2 else preproc
+        preproc2 = get_preprocessor(process_type2, inpaint_color, pre_video_guide=pre_video_guide) if process_type != process_type2 else preproc
     if process_outside_mask == process_type :
         preproc_outside = preproc
     elif preproc2 != None and process_outside_mask == process_type2 :
@@ -4787,7 +4796,11 @@ def preprocess_video_with_mask(pre_video_guide, input_video_path, input_mask_pat
         if isinstance(processed_img_outside, (list, tuple)):
             processed_img_outside = np.full((height, width, 3), processed_img_outside, dtype=np.uint8)
         if any_mask :
-            masked_frame = np.where(mask[..., None], processed_img, processed_img_outside)
+            if process_type == "pose_align":
+                masked_frame = processed_img
+                mask = np.full_like(mask, 0)
+            else:
+                masked_frame = np.where(mask[..., None], processed_img, processed_img_outside)
             if process_outside_mask != None:
                 mask = np.full_like(mask, 255)
             mask = torch.from_numpy(mask)
@@ -6320,10 +6333,26 @@ def generate_video(
                         context_scale = [control_net_weight /2, control_net_weight2 /2] if preprocess_type2 is not None else [control_net_weight]
 
                         if not (preprocess_type == "identity" and preprocess_type2 is None and video_mask is None):send_cmd("progress", [0, get_latest_status(state, status_info)])
-                        inpaint_color = 0 if preprocess_type=="pose" and process_outside_mask == "inpaint" else guide_inpaint_color
-                        video_guide_processed, video_mask_processed = preprocess_video_with_mask(pre_video_guide, video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type )
+                        inpaint_color = 0 if "pose" in preprocess_type and process_outside_mask == "inpaint" else guide_inpaint_color
+                        if "O" in video_prompt_type and pre_video_guide is None and all_letters(video_prompt_type, "IK"):
+                            from shared.utils.utils import get_outpainting_full_area_dimensions
+                            w, h = image_refs[0].size
+                            image_size = calculate_new_dimensions(height, width, h, w, fit_canvas)                            
+                            sample_fit_canvas = None 
+                            ref_pose_tensor  = resize_and_remove_background(image_refs[nb_frames_positions:nb_frames_positions+1], image_size[1], image_size[0],
+                                                                                            False, True, 
+                                                                                            fit_into_canvas= model_def.get("fit_into_canvas_image_refs", 1),
+                                                                                            block_size=block_size,
+                                                                                            outpainting_dims =outpainting_dims,
+                                                                                            outpainting_ratio = video_guide_outpainting_ratio,
+                                                                                            background_ref_outpainted = model_def.get("background_ref_outpainted", True),
+                                                                                            return_tensor= True)[0]
+                        else:
+                            ref_pose_tensor = pre_video_guide
+ 
+                        video_guide_processed, video_mask_processed = preprocess_video_with_mask(ref_pose_tensor, video_guide if sparse_video_image is None else sparse_video_image, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =1, inpaint_color =inpaint_color, block_size = block_size, to_bbox = "H" in video_prompt_type )
                         if preprocess_type2 != None:
-                            video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(pre_video_guide, video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type  )
+                            video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(ref_pose_tensor, video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type )
 
                     if video_guide_processed is not None  and sample_fit_canvas is not None:
                         image_size = video_guide_processed.shape[-2:]
@@ -9811,6 +9840,7 @@ def generate_video_tab(update_form = False, state_dict = None, ui_defaults = Non
                             "": "No Control Video",
                             "UV": "Keep Control Video Unchanged",
                             "PV": f"Transfer Human {pose_label}",
+                            "OV": f"Aligned Transfer Human {pose_label}",
                             "DV": "Transfer Depth",
                             "EV": "Transfer Canny Edges",
                             "SV": "Transfer Shapes",

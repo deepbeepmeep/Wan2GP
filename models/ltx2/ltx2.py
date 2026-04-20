@@ -782,6 +782,7 @@ class LTX2:
 
     def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, base_model_type=None, model_def = None, lora_dir = None, sample_solver = None, **kwargs):
         control_map = {
+            "O": "pose_align",
             "P": "pose",
             "D": "depth",
             "E": "canny",
@@ -925,7 +926,6 @@ class LTX2:
                 latent_stride = int(getattr(scale_factors, "time", scale_factors[0]))
 
         input_video_strength = max(0.0, min(1.0, input_video_strength))
-
         if requested_outpaint_gamma_roundtrip:
             conditioning_gamma_applied = _apply_gamma_to_media(image_start, LTX2_OUTPAINT_GAMMA)
             conditioning_gamma_applied = _apply_gamma_to_media(image_end, LTX2_OUTPAINT_GAMMA) or conditioning_gamma_applied

@@ -1,1 +1,0 @@
-from .align import AlignImage

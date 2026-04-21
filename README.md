@@ -36,7 +36,7 @@ Both commands always `cd` into the configured repo path first so copy-pasting fr
 - `pyproject.toml` is the canonical dependency definition for the worker runtime.
 - `requirements.txt` remains committed as rollback ballast during the rollout.
 - `uv.lock` is expected to be refreshed from the worker repo root with Python 3.10.
-- `Wan2GP/requirements.txt` is still vendored upstream input. Short-term drift between the subtree and the root lock is acceptable only until the next planned lock refresh; if upstream requirements change, update the mirrored root dependency set and regenerate the lock.
+- `Wan2GP/requirements.txt` now comes from the pinned `Wan2GP/` submodule. If upstream requirements change, bump the submodule pointer, mirror the required dependency changes into the root project metadata, and regenerate `uv.lock`.
 
 ## Rollback
 
@@ -100,4 +100,4 @@ See [STRUCTURE.md](STRUCTURE.md) for detailed project layout.
 
 ## Powered By
 
-[Wan2GP](https://github.com/deepbeepmeep/Wan2GP) by [deepbeepmeep](https://github.com/deepbeepmeep) — the `Wan2GP/` directory contains the upstream engine.
+[Wan2GP](https://github.com/deepbeepmeep/Wan2GP) by [deepbeepmeep](https://github.com/deepbeepmeep) — the `Wan2GP/` directory is a git submodule pinned to [banodoco/Wan2GP](https://github.com/banodoco/Wan2GP).

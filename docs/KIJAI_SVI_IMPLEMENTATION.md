@@ -199,7 +199,7 @@ Look for `[SVI_DEBUG]` prefix in logs.
 
 ## Dependency Drift Note
 
-`Wan2GP/` is still a vendored upstream subtree. If kijai-side dependency requirements change, do not edit the worker runtime ad hoc inside the pod. Mirror the requirement change back into the root worker project metadata, regenerate `uv.lock`, and then let the normal `uv sync --locked --python 3.10` launch path pick it up. Temporary subtree drift is acceptable only until that lock refresh lands.
+`Wan2GP/` is now a git submodule pinned to the maintained fork. If kijai-side dependency requirements change, do not edit the worker runtime ad hoc inside the pod. Mirror the requirement change back into the root worker project metadata, regenerate `uv.lock`, and then let the normal `uv sync --locked --python 3.10` launch path pick it up. Any temporary fork drift is acceptable only until that lock refresh lands.
 
 If a migration rollback is needed while debugging dependency changes, keep the same repo-level rule: do not add a runtime pip fallback on the uv branch. Restore the timestamped `*.pre-uv-*` environment backup for a first-migration failure, or revert the rollout commits to return to the older `requirements.txt` bootstrap.
 

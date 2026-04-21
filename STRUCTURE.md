@@ -19,7 +19,7 @@ Queue-based video generation system built on [Wan2GP](https://github.com/deepbee
 - Runtime commands now assume `uv sync --locked --python 3.10` from the repo root on every launch.
 - `uv run --python 3.10 ...` is the supported execution path for the worker and debug tools.
 - Local Linux installs are validated against Ubuntu 22.04 as the baseline. Ubuntu 24.04+ requires Python 3.10 packages from deadsnakes before sync can succeed.
-- `Wan2GP/` remains vendored upstream. Dependency drift inside that subtree is tolerated only until the next lock refresh; any upstream requirement change must be mirrored back into the root project metadata before regenerating `uv.lock`.
+- `Wan2GP/` is a git submodule pinned to `banodoco/Wan2GP`. Any upstream requirement change should land via a pointer bump plus the matching root metadata update before regenerating `uv.lock`.
 - Rollback stays repo-based: there is no runtime pip fallback on the uv branch. First-migration failures restore the timestamped `venv.pre-uv-*` or `.venv.pre-uv-*` backup, while release rollback means reverting to the pre-uv revision that still uses `requirements.txt`.
 
 ## source/ Package
@@ -67,7 +67,7 @@ Thin facade with `_ConfigProxy` for runtime config propagation. Delegates to `so
 
 ## External
 
-- `Wan2GP/` — Upstream video generation engine (vendored, DO NOT MODIFY)
+- `Wan2GP/` — Git submodule pointing at `banodoco/Wan2GP`; edit via fork PR + pointer bump, not in-place
 - `debug/` — CLI tool for investigating tasks/workers (`python -m debug`)
 - `scripts/` — Standalone utilities (test task creation, LoRA rank conversion)
 

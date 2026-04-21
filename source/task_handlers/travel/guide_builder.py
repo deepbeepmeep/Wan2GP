@@ -259,6 +259,9 @@ def create_guide_video(proc: Any) -> Optional[Path]:
             **ctx.segment_params
         })
     proc._structure_config = structure_config
+    if travel_guidance_config is not None and travel_guidance_config.is_ltx_anchor:
+        proc._detected_structure_type = None
+        return None
 
     guide_required = (
         proc.is_vace_model

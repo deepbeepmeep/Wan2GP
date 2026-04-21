@@ -2,32 +2,44 @@
 
 This document explains what "multi-frame" means in the LTX travel path in this repository, and compares it to the implementation in `Lightricks/LTX-Desktop` at commit `4a8e74b9ae47795fd43983e437d02ef0930a0b2f` (inspected on 2026-03-18).
 
+## Update (2026-04-21): `ltx_anchor` — native anchor path added
+
+A new `travel_guidance.kind = "ltx_anchor"` has been added as a sibling to `ltx_control` and `ltx_hybrid`. This is the path to use when a travel segment's only guidance is anchor images (first frame, optional middle frames, last frame) without any pose/depth/canny control video.
+
+- Opt-in only. `ltx_control` remains the default for backwards compatibility; nothing auto-flips.
+- Routes anchors through the native LTX `VideoConditionByKeyframeIndex` primitive (`Wan2GP/models/ltx2/ltx_core/conditioning/types/keyframe_cond.py`), delivered via `image_refs_paths` + `frames_positions` + `image_refs_strengths` and `video_prompt_type = "KFI"`. The per-segment pixel cross-fade bake is skipped entirely.
+- Gated to LTX-2 distilled models only (same gate as `ltx_control`/`ltx_hybrid`).
+- Anchors-only: rejects `videos`, `mode`, `audio`, `control_strength`, `canny_intensity`, `depth_contrast`. Requires ≥2 anchors.
+- Default strength policy, applied at parse time when no caller strengths are provided, sorted globally by `frame_position`:
+  - **2 anchors** (first + last): `[1.0, 1.0]` — both hard. Matches the LTX community "Inplace / Keyframer" FF+LF pattern.
+  - **3+ anchors** (first + middle(s) + last): `[1.0, 0.0, ..., 0.0, 1.0]` — hard on start/end, `0.0` on middles so the text prompt drives the transition. Matches the "AddGuide / Sequencer" pattern for middle frames; prevents the known Inplace-style middle-frame stutter.
+- All-or-nothing override. If *any* anchor in the payload specifies an explicit `strength`, the default rewrite is skipped entirely and all payload-literal values pass through. This is the power-user escape hatch for non-default strength patterns (e.g., `0.8`/`0.9` on first/last for visually "weird" pairs, or a non-zero middle for mild adherence).
+- Prompt convention. Authoring convention per LTX community consensus: describe the first frame, the transition, and the last frame in one prompt (e.g., *"Woman standing in a field, turns and walks toward camera, now close-up on her face"*). Hard anchors surface bad FF/LF pairs as jump cuts; explicit transition text prevents that.
+
+Known gaps (out of scope for `ltx_anchor`, left as follow-ups):
+
+- Upscaler-stage re-injection of anchors (LTX 2.3 is known to lose anchor fidelity through the upscaler pass).
+- Identity drift across anchors. Layer in an ID-LoRA / IP-adapter if needed.
+- Real-GPU empirical validation before promoting `ltx_anchor` to the default kind.
+
 ## Short Version
 
-Our LTX travel path is **not** an LTX-native multi-anchor continuation system.
+LTX travel now supports two parallel paths:
 
-What we do today is:
+- **`kind = "ltx_control"`** (default, unchanged): segmented travel + per-segment pixel guide clip + `video_prompt_type = "VG"`. Best for control-video guidance (pose/depth/canny via IC-LoRA) where the guide video is the real signal. Start/end anchors are baked into the pixel timeline with cross-fades.
+- **`kind = "ltx_anchor"`** (new, opt-in): native LTX keyframe conditioning. Anchors flow through `image_refs_paths` / `frames_positions` / `image_refs_strengths` to the KFI path and are injected as `VideoConditionByKeyframeIndex` tokens with a position-encoded frame index. No pixel bake.
 
-- split travel into segments
-- decide which segments overlap a stitched guidance timeline
-- build a segment-local control clip for each overlapping segment
-- feed that clip to LTX as `travel_guidance.kind = "ltx_control"`
-- force `video_prompt_type = "VG"`
-- optionally auto-inject the LTX union IC-LoRA for `pose`, `depth`, and `canny`
-
-What we do **not** do for LTX:
+What we still do **not** do for LTX:
 
 - SVI-style continuation
 - `video_source` prefix-window continuation
-- native first/middle/last image anchors mapped to LTX frame indices
-- arbitrary per-frame image conditioning through LTX's `ImageConditioningInput(frame_idx=...)` interface
+- Arbitrary per-frame image conditioning for *non-anchor* frames
 
-So the best mental model is:
+So the best mental model is now:
 
-- **Headless-Wan2GP LTX travel** = segmented travel + per-segment control video
+- **`ltx_control`** = segmented travel + per-segment control video (good for pose/depth/canny)
+- **`ltx_anchor`** = segmented travel + native LTX keyframe anchors (good for FF/MF/LF without structure guidance)
 - **LTX-Desktop** = native LTX generation primitives, retake, and IC-LoRA workflows
-
-Those are adjacent, but not the same implementation.
 
 ## What Our Code Does
 

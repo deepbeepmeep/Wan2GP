@@ -10,7 +10,14 @@ from source.runtime.wgp_bridge import get_model_def
 from .base import ParamGroup
 from .structure_guidance import StructureGuidanceConfig, StructureVideoEntry
 
-_TRAVEL_GUIDANCE_KIND = Literal["none", "vace", "ltx_control", "ltx_hybrid", "uni3c"]
+_TRAVEL_GUIDANCE_KIND = Literal[
+    "none",
+    "vace",
+    "ltx_control",
+    "ltx_hybrid",
+    "ltx_anchor",
+    "uni3c",
+]
 _TRAVEL_GUIDANCE_LEGACY_KEYS = (
     "structure_type",
     "structure_video_path",
@@ -49,14 +56,14 @@ def _infer_allowed_kinds(model_name: str) -> set[str]:
             model_def = get_model_def(model_name)
             if isinstance(model_def, dict):
                 pipeline_kind = model_def.get("ltx2_pipeline")
-        except (ImportError, TypeError, ValueError, KeyError, AttributeError):
+        except (ImportError, RuntimeError, TypeError, ValueError, KeyError, AttributeError):
             pipeline_kind = None
 
         is_distilled = pipeline_kind == "distilled" or (
             pipeline_kind is None and "distilled" in lowered
         )
         if is_distilled:
-            return {"none", "ltx_control", "ltx_hybrid", "uni3c"}
+            return {"none", "ltx_control", "ltx_hybrid", "ltx_anchor", "uni3c"}
         return {"none"}
 
     return {"none", "vace", "uni3c"}
@@ -141,6 +148,7 @@ class TravelGuidanceConfig(ParamGroup):
     # Internal orchestration state
     _guidance_video_url: Optional[str] = None
     _frame_offset: int = 0
+    _raw_keys: frozenset[str] = field(default_factory=frozenset)
 
     @classmethod
     def from_params(cls, params: Dict[str, Any], **context) -> "TravelGuidanceConfig":
@@ -172,6 +180,8 @@ class TravelGuidanceConfig(ParamGroup):
         strength_default = cls._default_strength(kind, mode)
         audio_raw = raw.get("audio")
         anchors_raw = raw.get("anchors", []) or []
+        if kind == "ltx_anchor":
+            anchors_raw = cls._apply_ltx_anchor_default_strengths(anchors_raw)
 
         config = cls(
             kind=kind,  # type: ignore[arg-type]
@@ -188,6 +198,7 @@ class TravelGuidanceConfig(ParamGroup):
             keep_on_gpu=bool(raw.get("keep_on_gpu", False)),
             _guidance_video_url=raw.get("_guidance_video_url"),
             _frame_offset=int(raw.get("_frame_offset", 0) or 0),
+            _raw_keys=frozenset(raw.keys()),
         )
 
         step_window = raw.get("step_window", [0.0, 1.0])
@@ -229,9 +240,28 @@ class TravelGuidanceConfig(ParamGroup):
             return 0.5
         if kind in ("vace", "uni3c"):
             return 1.0
-        if kind == "ltx_hybrid":
+        if kind in {"ltx_hybrid", "ltx_anchor"}:
             return 0.0
         return 0.0
+
+    @staticmethod
+    def _apply_ltx_anchor_default_strengths(anchors_raw: Any) -> Any:
+        if not isinstance(anchors_raw, list):
+            return anchors_raw
+        if not anchors_raw or not all(isinstance(anchor, dict) for anchor in anchors_raw):
+            return anchors_raw
+        if any("strength" in anchor for anchor in anchors_raw):
+            return anchors_raw
+
+        copies = [dict(anchor) for anchor in anchors_raw]
+        ordered = sorted(
+            copies,
+            key=lambda anchor: int(anchor.get("frame_position", 0) or 0),
+        )
+        last_index = len(ordered) - 1
+        for index, anchor in enumerate(ordered):
+            anchor["strength"] = 1.0 if index == 0 or index == last_index else 0.0
+        return copies
 
     def to_structure_guidance_config(self) -> StructureGuidanceConfig:
         """Bridge into the existing WGP-facing structure guidance config."""
@@ -304,6 +334,8 @@ class TravelGuidanceConfig(ParamGroup):
             if not self.has_control:
                 return "raw"
             return "raw" if self.mode == "video" else self.mode
+        if self.kind == "ltx_anchor":
+            return "raw"
         if self.kind == "uni3c":
             return "uni3c"
         return "raw"
@@ -312,6 +344,12 @@ class TravelGuidanceConfig(ParamGroup):
         """Serialize to the segment-level ``travel_guidance`` payload."""
         if self.kind == "none":
             return {"kind": "none"}
+        if self.kind == "ltx_anchor":
+            return {
+                "kind": self.kind,
+                "anchors": [anchor.to_dict() for anchor in self.anchors],
+                "_frame_offset": frame_offset,
+            }
 
         payload: Dict[str, Any] = {
             "kind": self.kind,
@@ -347,10 +385,10 @@ class TravelGuidanceConfig(ParamGroup):
         errors: List[str] = []
         allowed_kinds = _infer_allowed_kinds(model_name)
 
-        if self.kind not in {"none", "vace", "ltx_control", "ltx_hybrid", "uni3c"}:
+        if self.kind not in {"none", "vace", "ltx_control", "ltx_hybrid", "ltx_anchor", "uni3c"}:
             errors.append(
                 "Invalid travel_guidance.kind "
-                f"'{self.kind}'. Must be one of none, vace, ltx_control, ltx_hybrid, uni3c"
+                f"'{self.kind}'. Must be one of none, vace, ltx_control, ltx_hybrid, ltx_anchor, uni3c"
             )
             return errors
 
@@ -367,6 +405,8 @@ class TravelGuidanceConfig(ParamGroup):
 
         if self.kind == "ltx_hybrid" and not (self.has_control or self.has_anchors):
             errors.append("travel_guidance kind 'ltx_hybrid' requires anchors or videos")
+        if self.kind == "ltx_anchor" and len(self.anchors) < 2:
+            errors.append("travel_guidance kind 'ltx_anchor' requires at least two anchors")
 
         if self.kind == "vace" and self.mode not in {"flow", "canny", "depth", "raw"}:
             errors.append(
@@ -383,6 +423,19 @@ class TravelGuidanceConfig(ParamGroup):
                 )
             if not self.has_control and self.mode == "raw":
                 errors.append("travel_guidance kind 'ltx_hybrid' does not accept mode='raw'")
+        if self.kind == "ltx_anchor":
+            if self.videos or "videos" in self._raw_keys:
+                errors.append("travel_guidance kind 'ltx_anchor' does not accept videos")
+            if self.mode or "mode" in self._raw_keys:
+                errors.append("travel_guidance kind 'ltx_anchor' does not accept mode")
+            if self.audio is not None or "audio" in self._raw_keys:
+                errors.append("travel_guidance kind 'ltx_anchor' does not accept audio")
+            if self.control_strength != 1.0 or "control_strength" in self._raw_keys:
+                errors.append("travel_guidance kind 'ltx_anchor' does not accept control_strength")
+            if self.canny_intensity != 1.0 or "canny_intensity" in self._raw_keys:
+                errors.append("travel_guidance kind 'ltx_anchor' does not accept canny_intensity")
+            if self.depth_contrast != 1.0 or "depth_contrast" in self._raw_keys:
+                errors.append("travel_guidance kind 'ltx_anchor' does not accept depth_contrast")
         if self.kind == "uni3c" and self.mode:
             errors.append("travel_guidance kind 'uni3c' does not accept mode")
 
@@ -409,7 +462,7 @@ class TravelGuidanceConfig(ParamGroup):
             if not video.path:
                 errors.append(f"travel_guidance video {index} has an empty path")
 
-        if self.kind == "ltx_hybrid":
+        if self.kind in {"ltx_hybrid", "ltx_anchor"}:
             for index, anchor in enumerate(self.anchors):
                 if not anchor.image_url:
                     errors.append(f"travel_guidance anchor {index} has an empty image_url")
@@ -418,6 +471,7 @@ class TravelGuidanceConfig(ParamGroup):
                         f"travel_guidance anchor {index} strength must be within [0, 1], got {anchor.strength}"
                     )
 
+        if self.kind == "ltx_hybrid":
             if self.audio is not None:
                 if self.audio.source not in {"external", "control_track"}:
                     errors.append(
@@ -465,6 +519,10 @@ class TravelGuidanceConfig(ParamGroup):
     @property
     def is_ltx_hybrid(self) -> bool:
         return self.kind == "ltx_hybrid"
+
+    @property
+    def is_ltx_anchor(self) -> bool:
+        return self.kind == "ltx_anchor"
 
     @property
     def has_control(self) -> bool:

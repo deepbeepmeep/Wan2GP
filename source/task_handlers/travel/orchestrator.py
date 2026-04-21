@@ -131,7 +131,7 @@ def _segment_has_travel_guidance_overlap(
         else 0
     )
 
-    if travel_guidance_config.is_ltx_hybrid and travel_guidance_config.anchors:
+    if (travel_guidance_config.is_ltx_hybrid or travel_guidance_config.is_ltx_anchor) and travel_guidance_config.anchors:
         for anchor in travel_guidance_config.anchors:
             if segment_start <= anchor.frame_position < segment_end:
                 return True
@@ -175,7 +175,7 @@ def _segment_has_travel_guidance_control_overlap(
     return False
 
 
-def _build_segment_hybrid_guidance_config(
+def _build_segment_anchor_guidance_config(
     *,
     config: TravelGuidanceConfig,
     segment_index: int,
@@ -183,6 +183,14 @@ def _build_segment_hybrid_guidance_config(
     segment_stitched_offsets: list[int],
     total_stitched_frames: int,
 ) -> TravelGuidanceConfig:
+    """Remap global anchors onto a segment-local timeline.
+
+    Supports both ``ltx_hybrid`` and ``ltx_anchor`` kinds. For ``ltx_anchor``,
+    videos/audio/guidance-video fields are always cleared (ltx_anchor forbids
+    them). For both kinds, per-anchor strengths are preserved verbatim — this
+    function MUST NOT recompute strengths based on the local anchor count
+    (FLAG-003).
+    """
     segment_start = segment_stitched_offsets[segment_index] if segment_index < len(segment_stitched_offsets) else 0
     segment_frame_count = (
         segment_frames_expanded[segment_index]
@@ -204,20 +212,32 @@ def _build_segment_hybrid_guidance_config(
     local_positions = [anchor.frame_position for anchor in remapped_anchors]
     if len(local_positions) != len(set(local_positions)):
         raise ValueError(
-            "ltx_hybrid segment contains duplicate local frame positions after remap"
+            f"travel_guidance kind '{config.kind}' segment contains duplicate local frame positions after remap"
         )
 
     if len(remapped_anchors) > HYBRID_SEGMENT_ANCHOR_HARD_LIMIT:
         raise ValueError(
-            "ltx_hybrid segment exceeds anchor cap: "
+            f"travel_guidance kind '{config.kind}' segment exceeds anchor cap: "
             f"{len(remapped_anchors)} > {HYBRID_SEGMENT_ANCHOR_HARD_LIMIT}"
         )
     if len(remapped_anchors) > HYBRID_SEGMENT_ANCHOR_SOFT_LIMIT:
         travel_logger.warning(
-            "[TRAVEL_GUIDANCE] Segment %s has %s hybrid anchors (soft limit=%s)",
+            "[TRAVEL_GUIDANCE] Segment %s has %s anchors (soft limit=%s)",
             segment_index,
             len(remapped_anchors),
             HYBRID_SEGMENT_ANCHOR_SOFT_LIMIT,
+        )
+
+    if config.is_ltx_anchor:
+        if not remapped_anchors:
+            return TravelGuidanceConfig(kind="none")
+        return replace(
+            config,
+            anchors=remapped_anchors,
+            _frame_offset=segment_start,
+            videos=[],
+            audio=None,
+            _guidance_video_url=None,
         )
 
     has_control = _segment_has_travel_guidance_control_overlap(
@@ -1255,6 +1275,18 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             if travel_guidance_config.kind == "none":
                 use_stitched_offsets = False
                 travel_logger.debug("travel_guidance kind=none: skipping guidance video processing", task_id=orchestrator_task_id_str)
+            elif travel_guidance_config.is_ltx_anchor:
+                # FLAG-002: ltx_anchor uses the KFI (image_refs) route — it MUST
+                # bypass the composite-guidance-video path entirely. Do NOT invoke
+                # create_composite_guidance_video here. Anchors are delivered via
+                # the per-segment anchor payload (image_refs_paths/frames_positions/
+                # image_refs_strengths) built by the segment processor.
+                use_stitched_offsets = True
+                structure_guidance_video_url = None
+                travel_logger.debug(
+                    "travel_guidance kind=ltx_anchor: skipping composite guidance video (KFI route)",
+                    task_id=orchestrator_task_id_str,
+                )
             else:
                 travel_logger.debug(
                     f"travel_guidance mode: kind={travel_guidance_config.kind}, videos={len(structure_videos)}",
@@ -2076,7 +2108,13 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
                 segment_stitched_offsets[idx]
                 if (
                     use_stitched_offsets
-                    or (using_travel_guidance and travel_guidance_config.is_ltx_hybrid)
+                    or (
+                        using_travel_guidance
+                        and (
+                            travel_guidance_config.is_ltx_hybrid
+                            or travel_guidance_config.is_ltx_anchor
+                        )
+                    )
                 )
                 else (segment_flow_offsets[idx] if idx < len(segment_flow_offsets) else 0)
             )
@@ -2084,8 +2122,8 @@ def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_b
             segment_has_guidance = False
             segment_travel_guidance_config = travel_guidance_config
             if using_travel_guidance:
-                if travel_guidance_config.is_ltx_hybrid:
-                    segment_travel_guidance_config = _build_segment_hybrid_guidance_config(
+                if travel_guidance_config.is_ltx_hybrid or travel_guidance_config.is_ltx_anchor:
+                    segment_travel_guidance_config = _build_segment_anchor_guidance_config(
                         config=travel_guidance_config,
                         segment_index=idx,
                         segment_frames_expanded=expanded_segment_frames,

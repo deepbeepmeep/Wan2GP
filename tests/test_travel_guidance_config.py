@@ -17,6 +17,24 @@ VIDEO_ENTRY = {
     "end_frame": 16,
     "treatment": "adjust",
 }
+LTX_DISTILLED_MODEL = "ltx2_22B_distilled"
+VACE_MODEL = "wan_2_2_vace_lightning_baseline_2_2_2"
+
+
+def _anchor(image_url: str, frame_position: int, **extra):
+    anchor = {"image_url": image_url, "frame_position": frame_position}
+    anchor.update(extra)
+    return anchor
+
+
+def _ltx_anchor_payload(anchors, **extra):
+    return {
+        "travel_guidance": {
+            "kind": "ltx_anchor",
+            "anchors": anchors,
+            **extra,
+        }
+    }
 
 
 def test_parse_each_travel_guidance_kind():
@@ -178,6 +196,245 @@ def test_empty_videos_on_non_none_kind_errors(payload, model_name):
 def test_get_preprocessor_type(payload, model_name, expected):
     config = TravelGuidanceConfig.from_payload(payload, model_name)
     assert config.get_preprocessor_type() == expected
+
+
+def test_parse_ltx_anchor_kind():
+    config = TravelGuidanceConfig.from_payload(
+        _ltx_anchor_payload(
+            [
+                _anchor("https://example.com/a.png", 0),
+                _anchor("https://example.com/b.png", 16),
+            ]
+        ),
+        LTX_DISTILLED_MODEL,
+    )
+
+    assert config.kind == "ltx_anchor"
+    assert config.videos == []
+    assert config.is_ltx_anchor is True
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value", "expected_message"),
+    [
+        ("videos", [VIDEO_ENTRY], "does not accept videos"),
+        ("mode", "pose", "does not accept mode"),
+        ("audio", {"source": "external", "audio_url": "https://example.com/a.wav"}, "does not accept audio"),
+        ("control_strength", 1.0, "does not accept control_strength"),
+        ("canny_intensity", 0.5, "does not accept canny_intensity"),
+        ("depth_contrast", 0.5, "does not accept depth_contrast"),
+    ],
+)
+def test_ltx_anchor_rejects_videos_mode_audio(field_name, field_value, expected_message):
+    payload = _ltx_anchor_payload(
+        [
+            _anchor("https://example.com/a.png", 0),
+            _anchor("https://example.com/b.png", 16),
+        ],
+        **{field_name: field_value},
+    )
+
+    with pytest.raises(ValueError, match=expected_message):
+        TravelGuidanceConfig.from_payload(payload, LTX_DISTILLED_MODEL)
+
+
+@pytest.mark.parametrize("model_name", [VACE_MODEL, "ltx2_22B"])
+def test_ltx_anchor_rejects_non_ltx_models(model_name):
+    with pytest.raises(ValueError, match="does not support travel_guidance kind 'ltx_anchor'"):
+        TravelGuidanceConfig.from_payload(
+            _ltx_anchor_payload(
+                [
+                    _anchor("https://example.com/a.png", 0),
+                    _anchor("https://example.com/b.png", 16),
+                ]
+            ),
+            model_name,
+        )
+
+
+@pytest.mark.parametrize(
+    "anchors",
+    [
+        [],
+        [_anchor("https://example.com/a.png", 0)],
+    ],
+)
+def test_ltx_anchor_requires_two_or_more_anchors(anchors):
+    with pytest.raises(ValueError, match="requires at least two anchors"):
+        TravelGuidanceConfig.from_payload(_ltx_anchor_payload(anchors), LTX_DISTILLED_MODEL)
+
+
+@pytest.mark.parametrize("strength", [-0.1, 1.1])
+def test_ltx_anchor_per_anchor_strength_validated(strength):
+    with pytest.raises(ValueError, match="strength must be within \\[0, 1\\]"):
+        TravelGuidanceConfig.from_payload(
+            _ltx_anchor_payload(
+                [
+                    _anchor("https://example.com/a.png", 0, strength=strength),
+                    _anchor("https://example.com/b.png", 16),
+                ]
+            ),
+            LTX_DISTILLED_MODEL,
+        )
+
+
+def test_ltx_anchor_two_anchor_default_strengths_applied_at_parse():
+    config = TravelGuidanceConfig.from_payload(
+        _ltx_anchor_payload(
+            [
+                _anchor("https://example.com/late.png", 16),
+                _anchor("https://example.com/early.png", 0),
+            ]
+        ),
+        LTX_DISTILLED_MODEL,
+    )
+
+    strengths_by_frame = [
+        anchor.strength
+        for anchor in sorted(config.anchors, key=lambda anchor: anchor.frame_position)
+    ]
+    assert strengths_by_frame == [1.0, 1.0]
+
+
+def test_ltx_anchor_three_anchor_default_strengths_applied_at_parse():
+    three_anchor_config = TravelGuidanceConfig.from_payload(
+        _ltx_anchor_payload(
+            [
+                _anchor("https://example.com/middle.png", 10),
+                _anchor("https://example.com/last.png", 20),
+                _anchor("https://example.com/first.png", 0),
+            ]
+        ),
+        LTX_DISTILLED_MODEL,
+    )
+    four_anchor_config = TravelGuidanceConfig.from_payload(
+        _ltx_anchor_payload(
+            [
+                _anchor("https://example.com/middle-b.png", 20),
+                _anchor("https://example.com/last.png", 30),
+                _anchor("https://example.com/first.png", 0),
+                _anchor("https://example.com/middle-a.png", 10),
+            ]
+        ),
+        LTX_DISTILLED_MODEL,
+    )
+
+    three_strengths = [
+        anchor.strength
+        for anchor in sorted(three_anchor_config.anchors, key=lambda anchor: anchor.frame_position)
+    ]
+    four_strengths = [
+        anchor.strength
+        for anchor in sorted(four_anchor_config.anchors, key=lambda anchor: anchor.frame_position)
+    ]
+
+    assert three_strengths == [1.0, 0.0, 1.0]
+    assert four_strengths == [1.0, 0.0, 0.0, 1.0]
+
+
+def test_ltx_anchor_explicit_strength_skips_global_rewrite():
+    config = TravelGuidanceConfig.from_payload(
+        _ltx_anchor_payload(
+            [
+                _anchor("https://example.com/late.png", 30),
+                _anchor("https://example.com/first.png", 0),
+                _anchor("https://example.com/middle.png", 10, strength=0.3),
+                _anchor("https://example.com/middle-late.png", 20),
+            ]
+        ),
+        LTX_DISTILLED_MODEL,
+    )
+
+    strengths_by_frame = [
+        anchor.strength
+        for anchor in sorted(config.anchors, key=lambda anchor: anchor.frame_position)
+    ]
+
+    assert strengths_by_frame == [1.0, 0.3, 1.0, 1.0]
+
+
+def test_ltx_anchor_one_omitted_among_explicit_still_skips_rewrite():
+    # Reverse subcase of the all-or-nothing rule: three explicit, one omitted.
+    # The omitted anchor must fall through to AnchorEntry's default (1.0), NOT
+    # to the count-based rewrite (which would make it 0.0 as a middle).
+    config = TravelGuidanceConfig.from_payload(
+        _ltx_anchor_payload(
+            [
+                _anchor("https://example.com/first.png", 0, strength=0.9),
+                _anchor("https://example.com/middle.png", 10),  # omitted
+                _anchor("https://example.com/middle-late.png", 20, strength=0.5),
+                _anchor("https://example.com/last.png", 30, strength=0.9),
+            ]
+        ),
+        LTX_DISTILLED_MODEL,
+    )
+
+    strengths_by_frame = [
+        anchor.strength
+        for anchor in sorted(config.anchors, key=lambda anchor: anchor.frame_position)
+    ]
+
+    assert strengths_by_frame == [0.9, 1.0, 0.5, 0.9]
+
+
+def test_ltx_anchor_from_payload_does_not_mutate_caller_anchors():
+    # Purity contract: from_payload must not insert a `strength` key into the
+    # caller's raw anchor dicts when applying the count-based default rewrite.
+    raw_anchors = [
+        {"image_url": "https://example.com/a.png", "frame_position": 0},
+        {"image_url": "https://example.com/b.png", "frame_position": 8},
+        {"image_url": "https://example.com/c.png", "frame_position": 16},
+    ]
+    snapshot = [dict(a) for a in raw_anchors]
+
+    TravelGuidanceConfig.from_payload(
+        _ltx_anchor_payload(raw_anchors),
+        LTX_DISTILLED_MODEL,
+    )
+
+    assert raw_anchors == snapshot
+    for anchor in raw_anchors:
+        assert "strength" not in anchor
+
+
+def test_ltx_anchor_to_segment_payload_serialization():
+    config = TravelGuidanceConfig.from_payload(
+        _ltx_anchor_payload(
+            [
+                _anchor("https://example.com/a.png", 0),
+                _anchor("https://example.com/b.png", 16),
+            ]
+        ),
+        LTX_DISTILLED_MODEL,
+    )
+
+    payload = config.to_segment_payload(frame_offset=7)
+
+    assert payload["kind"] == "ltx_anchor"
+    assert payload["_frame_offset"] == 7
+    assert payload["anchors"] == [
+        {
+            "image_url": anchor.image_url,
+            "frame_position": anchor.frame_position,
+            "strength": anchor.strength,
+        }
+        for anchor in config.anchors
+    ]
+    assert set(payload.keys()) == {"kind", "anchors", "_frame_offset"}
+
+
+def test_ltx_anchor_does_not_need_ic_lora():
+    config = TravelGuidanceConfig.from_payload(
+        _ltx_anchor_payload(
+            [
+                _anchor("https://example.com/a.png", 0),
+                _anchor("https://example.com/b.png", 16),
+            ]
+        ),
+        LTX_DISTILLED_MODEL,
+    )
+
+    assert config.needs_ic_lora() is False
 
 
 ROOT = Path(__file__).resolve().parents[1]

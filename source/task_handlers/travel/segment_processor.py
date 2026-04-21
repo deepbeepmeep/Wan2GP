@@ -114,7 +114,11 @@ class TravelSegmentProcessor:
     def _build_hybrid_anchor_payload(self) -> Dict[str, Any]:
         ctx = self.ctx
         travel_guidance_config = self._get_travel_guidance_config()
-        if travel_guidance_config is None or not travel_guidance_config.is_ltx_hybrid or not travel_guidance_config.has_anchors:
+        if (
+            travel_guidance_config is None
+            or not (travel_guidance_config.is_ltx_hybrid or travel_guidance_config.is_ltx_anchor)
+            or not travel_guidance_config.has_anchors
+        ):
             return {
                 "image_refs_paths": None,
                 "frames_positions": None,
@@ -229,7 +233,10 @@ class TravelSegmentProcessor:
         raw_guide_used = False
 
         if travel_guidance_config is not None:
-            if travel_guidance_config.is_ltx_hybrid:
+            if travel_guidance_config.is_ltx_anchor:
+                video_prompt_type_str = "KFI"
+                path_taken = "travel_guidance:ltx_anchor"
+            elif travel_guidance_config.is_ltx_hybrid:
                 parts = []
                 if travel_guidance_config.has_control:
                     mode_map = {

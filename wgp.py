@@ -1032,7 +1032,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
 
     if "V" in video_prompt_type and "O" in video_prompt_type:
         if image_start is None and video_source is None and "L" not in video_prompt_type and not all_letters(video_prompt_type, "IK"):
-            return err("Aligned Pose transfer requires a Start Image or Source Video to continue to be used")    
+            return err("Aligned Pose transfer requires a Start Image, a Source Video to continue or Background Ref Frame to be used")    
         if "A" in video_prompt_type and any_letters(video_prompt_type, "YWZ"):
             return err("Aligned Pose transfer supports only Inpainting process outside the masked area")    
 

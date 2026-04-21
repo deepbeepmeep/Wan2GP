@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import html
 import json
 import math
@@ -28,21 +29,47 @@ from shared.utils.virtual_media import build_virtual_media_path, clear_virtual_m
 PlugIn_Name = "Process Full Video"
 PlugIn_Id = "ProcessFullVideo"
 
-PROCESS_CHOICES = [
-    ("Outpaint Video with LTX-2.3 1.0 Distilled", "outpaint_video"),
-    ("Outpaint Video with LTX-2.3 1.1 Distilled", "outpaint_video_1_1"),
-]
+PLUGIN_DIR = Path(__file__).resolve().parent
+PROCESS_SETTINGS_DIR = PLUGIN_DIR / "settings"
 RATIO_CHOICES = [("1:1", "1:1"), ("4:3", "4:3"), ("3:4", "3:4"), ("16:9", "16:9"), ("9:16", "9:16"), ("21:9", "21:9"), ("9:21", "9:21")]
 DEFAULT_SOURCE_PATH = ""
 DEFAULT_OUTPUT_PATH = ""
-PROCESS_MODEL_TYPES = {"outpaint_video": "ltx2_22B_distilled", "outpaint_video_1_1": "ltx2_22B_distilled_1_1"}
-DEFAULT_MODEL_TYPE = "ltx2_22B_distilled"
+LAUNCH_DEFAULT_PROCESS_NAME = "Outpaint Video - LTX 2.3 Distilled 1.1"
 MAX_STATUS_REFRESH_HZ = 3.0
 STATUS_REFRESH_INTERVAL_SECONDS = 1.0 / MAX_STATUS_REFRESH_HZ
 PROCESS_FULL_VIDEO_METADATA_KEY = "fill_process_video"
 PROCESS_FULL_VIDEO_VSOURCE = "process_full_video"
 PROCESS_FULL_VIDEO_VFILE = "last_frames.mp4"
 USE_SOURCE_AUDIO_FOR_CONTINUATION_MERGE = True
+
+
+def _load_process_definitions() -> tuple[dict[str, dict], str | None]:
+    if not PROCESS_SETTINGS_DIR.is_dir():
+        return {}, f"Missing process settings folder: {PROCESS_SETTINGS_DIR}"
+    process_definitions: dict[str, dict] = {}
+    for settings_path in sorted(PROCESS_SETTINGS_DIR.glob("*.json")):
+        try:
+            raw_settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return {}, f"Unable to read process setting file {settings_path.name}: {exc}"
+        if not isinstance(raw_settings, dict):
+            return {}, f"Process setting file {settings_path.name} must contain a JSON object."
+        process_name = str(settings_path.stem).strip()
+        model_type = str(raw_settings.get("model_type") or "").strip()
+        if len(process_name) == 0:
+            return {}, f"Process setting file {settings_path.name} has an empty filename stem."
+        if len(model_type) == 0:
+            return {}, f"Process setting file {settings_path.name} is missing model_type."
+        process_definitions[process_name] = {"settings": raw_settings, "path": str(settings_path)}
+    if len(process_definitions) == 0:
+        return {}, f"No process setting files were found in: {PROCESS_SETTINGS_DIR}"
+    return process_definitions, None
+
+
+PROCESS_DEFINITIONS, PROCESS_DEFINITIONS_ERROR = _load_process_definitions()
+PROCESS_CHOICES = [(process_name, process_name) for process_name in PROCESS_DEFINITIONS]
+DEFAULT_PROCESS_NAME = LAUNCH_DEFAULT_PROCESS_NAME if LAUNCH_DEFAULT_PROCESS_NAME in PROCESS_DEFINITIONS else next(iter(PROCESS_DEFINITIONS), "")
+DEFAULT_MODEL_TYPE = str(PROCESS_DEFINITIONS.get(DEFAULT_PROCESS_NAME, {}).get("settings", {}).get("model_type") or "")
 
 
 @dataclass(frozen=True)
@@ -60,6 +87,14 @@ class ChunkPlan:
 class FramePlanRules:
     frame_step: int
     minimum_requested_frames: int
+
+
+def _require_process_definition(process_name: str) -> dict:
+    process_definition = PROCESS_DEFINITIONS.get(str(process_name))
+    if not isinstance(process_definition, dict):
+        available = ", ".join(PROCESS_DEFINITIONS.keys()) or "none"
+        raise gr.Error(f"Unsupported process: {process_name}. Available process settings: {available}.")
+    return process_definition
 
 
 def _require_model_def(model_type: str, get_model_def) -> dict:
@@ -194,14 +229,32 @@ def _parse_time_input(value, *, label: str, allow_empty: bool) -> float | None:
         raise gr.Error(f"{label} must be a number of seconds, MM:SS, or HH:MM:SS.") from exc
 
 
-def _build_auto_output_path(source_path: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, output_dir: str | None = None) -> str:
+def _get_process_filename_token(process_name: str) -> str:
+    words = str(process_name or "").strip().split()
+    if len(words) == 0:
+        return "process"
+    token = "".join(char for char in words[0].lower() if char.isalnum() or char in {"-", "_"})
+    return token or "process"
+
+
+def _process_has_outpaint(process_name: str) -> bool:
+    process_definition = PROCESS_DEFINITIONS.get(str(process_name))
+    settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
+    return isinstance(settings, dict) and "video_guide_outpainting" in settings
+
+
+def _build_auto_output_path(source_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, output_dir: str | None = None) -> str:
     source = Path(source_path)
-    ratio_suffix = str(ratio_text or "").replace(":", "x") or "ratio"
+    process_token = _get_process_filename_token(process_name)
     resolution_suffix = str(output_resolution or "").strip() or "res"
     start_suffix = _format_time_token(start_seconds)
     end_suffix = _format_time_token(end_seconds)
     target_dir = source.parent if not output_dir else Path(output_dir)
-    return str(target_dir / f"{source.stem}_outpaint_{ratio_suffix}_{resolution_suffix}_{start_suffix}_{end_suffix}{source.suffix}")
+    name_parts = [source.stem, process_token]
+    if _process_has_outpaint(process_name):
+        name_parts.append(str(ratio_text or "").replace(":", "x") or "ratio")
+    name_parts.extend([resolution_suffix, start_suffix, end_suffix])
+    return str(target_dir / f"{'_'.join(name_parts)}{source.suffix}")
 
 
 def _make_output_variant(output: Path) -> str:
@@ -338,22 +391,76 @@ def _read_recorded_written_unique_frames(output_path: str) -> int:
         return 0
 
 
-def _resolve_output_path(source_path: str, output_path: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, continue_enabled: bool) -> tuple[str, bool]:
+def _build_requested_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None) -> Path:
     output_text = str(output_path or "").strip()
     if len(output_text) == 0:
-        output = Path(_build_auto_output_path(source_path, ratio_text, output_resolution, start_seconds, end_seconds))
+        output = Path(_build_auto_output_path(source_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds))
     elif output_text.endswith(("\\", "/")) or Path(output_text).is_dir():
-        output = Path(_build_auto_output_path(source_path, ratio_text, output_resolution, start_seconds, end_seconds, output_dir=output_text))
+        output = Path(_build_auto_output_path(source_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds, output_dir=output_text))
     else:
         output = Path(output_text)
     source_suffix = Path(source_path).suffix
     if not output.suffix:
         output = output.with_suffix(source_suffix)
+    return output
+
+
+def _resolve_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, continue_enabled: bool) -> tuple[str, bool]:
+    output = _build_requested_output_path(source_path, output_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds)
     if continue_enabled:
         return str(output), output.exists()
     if output.exists():
         return _make_output_variant(output), False
     return str(output), False
+
+
+def _normalize_identity_path(path_value: str) -> str:
+    text = str(path_value or "").strip()
+    if len(text) == 0:
+        return ""
+    try:
+        return str(Path(text).resolve()).casefold()
+    except (OSError, RuntimeError, ValueError):
+        return text.casefold()
+
+
+def _read_output_identity(output_path: str) -> tuple[str, str, str] | None:
+    if not isinstance(output_path, str) or not os.path.isfile(output_path):
+        return None
+    metadata = read_metadata_from_video(output_path)
+    if not isinstance(metadata, dict) or len(metadata) == 0:
+        return None
+    process_metadata = metadata.get(PROCESS_FULL_VIDEO_METADATA_KEY)
+    process_metadata = process_metadata if isinstance(process_metadata, dict) else {}
+    process_name = str(process_metadata.get("process") or "").strip()
+    if len(process_name) == 0:
+        segments = metadata.get("segments")
+        first_segment = next((segment for segment in list(segments or []) if isinstance(segment, dict)), None)
+        if first_segment is not None:
+            process_name = str(first_segment.get("process") or "").strip()
+    source_video = str(process_metadata.get("source_video") or metadata.get("source_video") or "").strip()
+    source_segment = str(process_metadata.get("source_segment") or metadata.get("source_segment") or "").strip()
+    return process_name, source_video, source_segment
+
+
+def _get_output_identity_mismatch_message(output_path: str, *, process_name: str, source_path: str, source_segment: str) -> str | None:
+    if not isinstance(output_path, str) or not os.path.isfile(output_path):
+        return None
+    identity = _read_output_identity(output_path)
+    if identity is None:
+        return f"Output file already exists at {output_path}, but it does not contain readable WanGP metadata. Processing was stopped."
+    existing_process, existing_source_video, existing_source_segment = identity
+    mismatches: list[str] = []
+    if str(existing_process or "").strip() != str(process_name or "").strip():
+        mismatches.append("process")
+    if _normalize_identity_path(existing_source_video) != _normalize_identity_path(source_path):
+        mismatches.append("source_video")
+    if str(existing_source_segment or "").strip() != str(source_segment or "").strip():
+        mismatches.append("source_segment")
+    if len(mismatches) == 0:
+        return None
+    mismatch_text = ", ".join(mismatches)
+    return f"Output file already exists at {output_path}, but its metadata does not match the current {mismatch_text}. Processing was stopped."
 
 
 def _frame_to_image(frame_tensor: torch.Tensor) -> Image.Image:
@@ -1537,9 +1644,22 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.add_tab(tab_id=PlugIn_Id, label=PlugIn_Name, component_constructor=self.create_config_ui)
 
     def create_config_ui(self, api_session):
+        if PROCESS_DEFINITIONS_ERROR is not None:
+            with gr.Blocks() as plugin_blocks:
+                gr.Markdown(f"Process settings configuration error: {html.escape(PROCESS_DEFINITIONS_ERROR)}")
+            return plugin_blocks
         get_model_def = getattr(self, "get_model_def", None)
-        overlap_step = _get_vae_temporal_latent_size(DEFAULT_MODEL_TYPE, get_model_def)
-        overlap_max = _get_overlap_slider_max(DEFAULT_MODEL_TYPE, get_model_def)
+        process_names_by_model_type: dict[str, list[str]] = {}
+        for process_name, process_definition in PROCESS_DEFINITIONS.items():
+            model_type = str(process_definition.get("settings", {}).get("model_type") or "")
+            process_names_by_model_type.setdefault(model_type, []).append(process_name)
+        default_model_type = DEFAULT_MODEL_TYPE if DEFAULT_MODEL_TYPE in process_names_by_model_type else next(iter(process_names_by_model_type), DEFAULT_MODEL_TYPE)
+        default_process_choices = list(process_names_by_model_type.get(default_model_type, []))
+        default_process_name = DEFAULT_PROCESS_NAME if DEFAULT_PROCESS_NAME in default_process_choices else (default_process_choices[0] if default_process_choices else DEFAULT_PROCESS_NAME)
+        overlap_step = _get_vae_temporal_latent_size(default_model_type, get_model_def)
+        overlap_max = _get_overlap_slider_max(default_model_type, get_model_def)
+        default_overlap_value = int(PROCESS_DEFINITIONS.get(default_process_name, {}).get("settings", {}).get("sliding_window_overlap") or 1)
+        default_overlap_value = min(max(1, default_overlap_value), overlap_max)
         active_job = {"job": None}
         preview_state = {"image": None}
         ui_skip = object()
@@ -1573,11 +1693,60 @@ class ConfigTabPlugin(WAN2GPPlugin):
             gen["progress_status"] = ""
             gen["preview"] = None
 
+        def _get_model_type_label(model_type: str) -> str:
+            if len(str(model_type or "").strip()) == 0:
+                return "Unknown Model"
+            try:
+                model_def = _require_model_def(str(model_type), get_model_def)
+            except gr.Error:
+                return str(model_type)
+            model_block = model_def.get("model")
+            if isinstance(model_block, dict):
+                model_name = str(model_block.get("name") or "").strip()
+                if len(model_name) > 0:
+                    return model_name
+            model_name = str(model_def.get("name") or "").strip()
+            return model_name if len(model_name) > 0 else str(model_type)
+
+        def _has_process_outpaint(process_name: str) -> bool:
+            _require_process_definition(process_name)
+            return _process_has_outpaint(process_name)
+
+        def _get_target_ratio_update(process_name: str):
+            return gr.update(visible=_has_process_outpaint(process_name))
+
+        def _get_overlap_control_updates(process_name: str):
+            process_definition = _require_process_definition(process_name)
+            settings = process_definition["settings"]
+            model_type = str(settings.get("model_type") or "")
+            step = _get_vae_temporal_latent_size(model_type, get_model_def)
+            maximum = _get_overlap_slider_max(model_type, get_model_def)
+            value = int(settings.get("sliding_window_overlap") or 1)
+            return gr.update(minimum=1, maximum=maximum, step=step, value=min(max(1, value), maximum))
+
+        def _get_process_dropdown_and_overlap_updates(model_type: str):
+            process_choices = list(process_names_by_model_type.get(str(model_type or ""), []))
+            process_value = process_choices[0] if process_choices else None
+            process_update = gr.update(choices=process_choices, value=process_value)
+            overlap_update = gr.update()
+            target_ratio_update = gr.update()
+            if process_value is not None:
+                overlap_update = _get_overlap_control_updates(process_value)
+                target_ratio_update = _get_target_ratio_update(process_value)
+            return process_update, overlap_update, target_ratio_update
+
+        model_type_choices = [(_get_model_type_label(model_type), model_type) for model_type in process_names_by_model_type]
+
         def start_process(state, process_name, source_path, output_path, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
-            model_type = PROCESS_MODEL_TYPES.get(str(process_name))
-            if model_type is None:
-                yield _info_exit(f"Unsupported process: {process_name}")
+            try:
+                process_definition = _require_process_definition(process_name)
+            except gr.Error as exc:
+                yield _info_exit(str(exc).strip() or f"Unsupported process: {process_name}")
                 return
+            process_settings = process_definition["settings"]
+            model_type = str(process_settings.get("model_type") or "")
+            has_outpaint = "video_guide_outpainting" in process_settings
+            active_target_ratio = str(target_ratio or "").strip() if has_outpaint else ""
             source_path = str(source_path or "").strip()
             if not os.path.isfile(source_path):
                 yield _info_exit(f"Source video not found: {source_path}")
@@ -1595,11 +1764,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 yield _ui_update(_render_chunk_status_html(1, 0, 1, "Initializing", "Preparing processing job..."), ui_skip, str(time.time_ns()), start_enabled=False, abort_enabled=True)
                 started_ui = True
                 try:
-                    output_path, resume_existing_output = _resolve_output_path(source_path, output_path, target_ratio, str(output_resolution), start_seconds, end_seconds, bool(continue_enabled))
-                    try:
-                        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-                    except OSError as exc:
-                        raise gr.Error(f"Unable to create the output folder for: {output_path}") from exc
                     verbose_level = _get_mmgp_verbose_level()
                     try:
                         metadata = get_video_info_details(source_path)
@@ -1648,6 +1812,17 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         overlap_frames=overlap_frames,
                     )
                     requested_unique_frames = _count_planned_unique_frames(full_plans)
+                    requested_source_segment = build_virtual_media_path(source_path, start_frame=start_frame, end_frame=max(int(start_frame), int(start_frame) + max(0, int(requested_unique_frames)) - 1), audio_track_no=selected_audio_track)
+                    requested_output_path = str(_build_requested_output_path(source_path, output_path, process_name, active_target_ratio, str(output_resolution), start_seconds, end_seconds))
+                    identity_mismatch_message = _get_output_identity_mismatch_message(requested_output_path, process_name=process_name, source_path=source_path, source_segment=requested_source_segment)
+                    if identity_mismatch_message is not None:
+                        yield _info_exit(identity_mismatch_message, output=requested_output_path)
+                        return
+                    output_path, resume_existing_output = _resolve_output_path(source_path, output_path, process_name, active_target_ratio, str(output_resolution), start_seconds, end_seconds, bool(continue_enabled))
+                    try:
+                        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+                    except OSError as exc:
+                        raise gr.Error(f"Unable to create the output folder for: {output_path}") from exc
                     dropped_tail_frames = max(0, selected_unique_frames - requested_unique_frames)
                     if dropped_tail_frames > 0:
                         _plugin_info(f"Dropping the last {dropped_tail_frames} source frame(s) so the selected range fits the current model chunk shape.")
@@ -1900,30 +2075,28 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         f"[Process Full Video] Chunk {chunk_index}: control video {_describe_frame_range(actual_control_start_frame, int(plan.requested_frames))}; "
                         + (f"overlap buffer {_describe_frame_range(overlap_buffer_start_frame, int(plan.overlap_frames))}" if needs_video_source else "overlap buffer not used")
                     )
-                    settings = {
-                        "model_type": model_type,
-                        "prompt": "generate a video",
-                        "resolution": resolved_resolution or budget_resolution,
-                        "num_inference_steps": 8,
-                        "video_length": model_video_length,
-                        "sliding_window_size": 481,
-                        "sliding_window_overlap": max(1, int(plan.overlap_frames)),
-                        "force_fps": "control",
-                        "video_prompt_type": "VG",
-                        "audio_prompt_type": "K",
-                        "guidance_phases": 1,
-                        "image_prompt_type": "V" if needs_video_source else "",
-                        "denoising_strength": 1,
-                        # Keep the plugin-side control cursor tied to frames actually written.
-                        # WGP applies any extra_control_frames model behavior internally, so this
-                        # stays correct for models that use it and for models where it is 0.
-                        "video_guide": build_virtual_media_path(source_path, start_frame=actual_control_start_frame, end_frame=actual_control_end_frame, audio_track_no=selected_audio_track),
-                        "video_guide_outpainting": "0 0 0 0",
-                        "video_guide_outpainting_ratio": target_ratio,
-                        "_api": {"return_media": True},
-                    }
+                    settings = copy.deepcopy(process_definition["settings"])
+                    image_prompt_type = str(settings.get("image_prompt_type") or "V").strip() or "V"
+                    settings["model_type"] = model_type
+                    settings["resolution"] = resolved_resolution or budget_resolution
+                    settings["video_length"] = model_video_length
+                    settings["sliding_window_overlap"] = max(1, int(plan.overlap_frames))
+                    settings["image_prompt_type"] = image_prompt_type if needs_video_source else ""
+                    # Keep the plugin-side control cursor tied to frames actually written.
+                    # WGP applies any extra_control_frames model behavior internally, so this
+                    # stays correct for models that use it and for models where it is 0.
+                    settings["video_guide"] = build_virtual_media_path(source_path, start_frame=actual_control_start_frame, end_frame=actual_control_end_frame, audio_track_no=selected_audio_track)
+                    if has_outpaint:
+                        settings["video_guide_outpainting_ratio"] = active_target_ratio
+                    else:
+                        settings.pop("video_guide_outpainting_ratio", None)
+                    api_settings = settings.get("_api")
+                    settings["_api"] = dict(api_settings) if isinstance(api_settings, dict) else {}
+                    settings["_api"]["return_media"] = True
                     if needs_video_source:
                         settings["video_source"] = _build_process_full_video_source_path()
+                    else:
+                        settings.pop("video_source", None)
                     _reset_live_chunk_status(state)
                     job = api_session.submit_task(settings, callbacks=callbacks)
                     active_job["job"] = job
@@ -2084,13 +2257,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 actual_output_frames = int(actual_output_frames or total_written_unique_frames)
                 total_generation_time = existing_output_generation_time + _read_metadata_generation_time(metadata_source_path) if merged_continuation else _read_metadata_generation_time(metadata_source_path)
                 process_metadata = {
+                    "process": process_name,
                     "written_unique_frames": int(total_written_unique_frames),
                     "chunks": int(total_chunks_display),
                     "sliding_window_overlap": int(overlap_frames),
                     "start_seconds": float(start_seconds),
                     "end_seconds": float(start_seconds + (total_written_unique_frames / float(fps_float))),
                     "source_video": source_path,
-                    "source_segment": build_virtual_media_path(source_path, start_frame=start_frame, end_frame=max(int(start_frame), int(start_frame) + max(0, int(total_written_unique_frames)) - 1), audio_track_no=selected_audio_track),
+                    "source_segment": requested_source_segment,
                     "merged_continuations": _normalize_merged_continuation_signatures(merged_continuation_signatures),
                 }
                 _store_output_metadata(metadata_target_path, metadata_source_path, source_path=source_path, process_name=process_name, source_start_seconds=start_seconds, start_frame=start_frame, fps_float=fps_float, selected_audio_track=selected_audio_track, total_generation_time=total_generation_time, actual_frame_count=actual_output_frames, process_metadata=process_metadata, verbose_level=verbose_level)
@@ -2190,18 +2364,19 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         with gr.Column():
             with gr.Row():
-                gr.Markdown("This PlugIn is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. You can stop a Process and Resume it later.")
+                gr.Markdown("This PlugIn is a *Super Sliding Windows* mode with *Low RAM requirements*, lossless Audio Copy and no risk to explode your Web Browser and the *Video Gallery* with huge files. You can stop a Process and Resume it later.")
             with gr.Row():
-                process_name = gr.Dropdown(PROCESS_CHOICES, value="outpaint_video", label="Process")
+                process_model_type = gr.Dropdown(model_type_choices, value=default_model_type, label="Model", scale=1)
+                process_name = gr.Dropdown(default_process_choices, value=default_process_name, label="Process", scale=3)
             with gr.Row():
                 source_path = gr.Textbox(label="Source Video Path File", value=DEFAULT_SOURCE_PATH, scale=3)
                 output_path = gr.Textbox(label="Output File Path File (None for auto, Full Name or Target Folder)", value=DEFAULT_OUTPUT_PATH, scale=3)
                 continue_enabled = gr.Checkbox(label="Continue", value=True, elem_classes="cbx_bottom", scale=1)
             with gr.Row():
                 output_resolution = gr.Dropdown([("1080p", "1080p"), ("900p", "900p"), ("720p", "720p"), ("540p", "540p")], value="720p", label="Output Resolution")
-                target_ratio = gr.Dropdown(RATIO_CHOICES, value="4:3", label="Target Ratio")
+                target_ratio = gr.Dropdown(RATIO_CHOICES, value="4:3", label="Target Ratio", visible=_has_process_outpaint(default_process_name))
                 chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=10.0, precision=2)
-                sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=1, maximum=overlap_max, step=overlap_step, value=1)
+                sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=1, maximum=overlap_max, step=overlap_step, value=default_overlap_value)
             with gr.Row():
                 start_seconds = gr.Textbox(label="Start (s/MM:SS/HH:MM:SS)", value="", placeholder="seconds, MM:SS, or HH:MM:SS")
                 end_seconds = gr.Textbox(label="End (s/MM:SS/HH:MM:SS)", value="", placeholder="seconds, MM:SS, or HH:MM:SS")
@@ -2214,6 +2389,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             output_file = gr.HTML(value=_render_output_file_html(""))
             preview_refresh = gr.Textbox(value="", visible=False)
 
+        process_model_type.change(fn=_get_process_dropdown_and_overlap_updates, inputs=[process_model_type], outputs=[process_name, sliding_window_overlap, target_ratio], queue=False, show_progress="hidden")
+        process_name.change(fn=lambda process_name: (_get_overlap_control_updates(process_name), _get_target_ratio_update(process_name)), inputs=[process_name], outputs=[sliding_window_overlap, target_ratio], queue=False, show_progress="hidden")
         start_btn.click(
             fn=start_process,
             inputs=[self.state, process_name, source_path, output_path, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],

@@ -2,7 +2,7 @@
   "name": "Process Full Video",
   "author": "DeepBeepMeep",
   "version": "1.0.0",
-  "description": "Outpaint long videos (up to 2h) with reduced RAM.",
+  "description": "Outpaint, unblur or remove compression artifacts. Optimized for long videos (up to 2h), Low RAM requirements.",
   "date": "",
   "wan2gp_version": "",
   "uninstallable": false

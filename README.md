@@ -53,7 +53,13 @@ Lots of nice goodies for **LTX-2**:
 
 - **System Loras Multipliers Overrides**: WanGP adds automatically and transparently loras (that is they are loaded although they are not visible) if needed by a feature (distilled lora, id lora, outpaint lora, union control lora). You can now override the default multipliers used by WanGP by selecting the target lora in the *Activated Loras* input and by specifiying the corresponding *Loras Multipliers*.
 
-- **Process Full Video Plugin**: this *bundled PlugIn* which needs to be enabled first in *the PlugIn tab*, right now supports only *Outpainting*. It relies on *LTX2 Lora outpainting*. It is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. If you are patient enough you can change the Aspect Ratio of a few hours movie (check out below the 1 min sample). Behold how *Sliding Windows transitions* are almost invisible !
+- **Transfer Human Motion With Pose Alignment**: you are trying to transfer a human motion from a control video, but you use a start image with a person who has a different body shape (larger, taller, ...) and stands in a different location in the frame. This is not going to work well as you start image wil end up distorted. This is a past issue, as now the control video pose can be aligned with the start image if you pick Transfer *Human Motion With Pose Alignment*. This feature is also supported by *Wan Vace*, start image  must be the *Background ref image*.
+
+- **Injected Frames & Sliding Windows**: injected frames were not properly injected starting from window no 2. This is now supported.
+
+- **Process Process Full Video Plugin**: this *bundled PlugIn* which needs to be enabled first in *the PlugIn tab*, right now supports only *Outpainting*. It relies on *LTX2 Lora outpainting*. It is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. If you are patient enough you can change the Aspect Ratio of a few hours movie (check out below the 1 min sample). Behold how *Sliding Windows transitions* are almost invisible !
+- **Inje
+- **NEW Processes for Full Video Plugin**: *Refocus* (remove blur) and *Incompress* (remove compression artifacts) have been added. Many thanks to *Oumoumad Mohamed* who created the Ic Loras (including the *Outpainting* lora ) that power these processes. If you have found some Ic Loras that are useful and dont cause glitches with Sliding Windows, let me know and I all add them.
 
 - **WanGP API Video Gen**: *Plugin Developers* can now *Queue a Gen* directly from a plugin. This opens the possibility of plugins that place various gen orders and then combine the results (hint: we could have our very own version of *LTX-Destop* inside WanGP).
 
@@ -62,7 +68,8 @@ Lots of nice goodies for **LTX-2**:
 *update 11.31*: fixed phase 1 forced incorrectly in some cases\
 *update 11.32*: bugs fixes, Process Full Video now supports Distilled 1.1 & accepts video without audio\
 *update 11.33*: Separated LTX2 & LTX2.3 loras in different folders, added easy loras multipliers override\
-*update 11.34*: Reverted split as not popular
+*update 11.34*: Reverted split as not popular\
+*update 11.35*: added Aligned Pose Transfer, Injected Frames & Sliding Windows support, new processes for Process Full Video Plugin 
 
 ### 11th of April 2026: WanGP v11.26, Now I Can See
 

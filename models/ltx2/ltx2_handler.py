@@ -228,6 +228,7 @@ class family_handler:
             "self_refiner_max_plans": 2,
             "no_background_removal": True,
             "vae_block_size": 64,
+            "keep_frames_video_guide_not_supported": True,
         }
         
         if distilled and base_model_type in ["ltx2_22B"]:

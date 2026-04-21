@@ -1,0 +1,14 @@
+{
+  "settings_version": 2.58,
+  "model_type": "ltx2_22B_distilled",
+  "prompt": "generate a video",
+  "num_inference_steps": 8,
+  "sliding_window_size": 481,
+  "force_fps": "control",
+  "video_prompt_type": "VG",
+  "audio_prompt_type": "K",
+  "guidance_phases": 1,
+  "image_prompt_type": "V",
+  "denoising_strength": 1,
+  "video_guide_outpainting": "0 0 0 0"
+}

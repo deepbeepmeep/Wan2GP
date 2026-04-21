@@ -119,7 +119,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.34"
+WanGP_version = "11.35"
 settings_version = 2.58
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -5969,7 +5969,7 @@ def generate_video(
     # Image Ref (non background and non positioned frames) are boxed in a white canvas in order to keep their own width/height ratio
     frames_to_inject = []
     any_background_ref  = 0
-    custom_frames_injection = model_def.get("custom_frames_injection", False) and image_refs is not None and len(image_refs)
+    custom_frames_injection = model_def.get("custom_frames_injection", False) and image_refs is not None and len(image_refs) > 0
     if "K" in video_prompt_type: 
         any_background_ref = 2 if model_def.get("all_image_refs_are_background_ref", False) or custom_frames_injection else 1
     outpainting_dims = get_outpainting_dims(video_guide_outpainting, video_guide_outpainting_ratio)
@@ -6270,14 +6270,11 @@ def generate_video(
                             else:
                                 frames_positions_list.append(int(pos)-1 + alignment_shift)
                     frames_positions_list = frames_positions_list[:len(image_refs)]
-                nb_frames_positions = len(frames_positions_list) if not custom_frames_injection else 0
+                nb_frames_positions = len(frames_positions_list) 
                 if nb_frames_positions > 0:
                     frames_to_inject = [None] * (max(frames_positions_list) + 1)
                     for i, pos in enumerate(frames_positions_list):
                         frames_to_inject[pos] = image_refs[i] 
-            if custom_frames_injection:
-                frames_relative_positions_list= [ i -aligned_window_start_frame for i in  frames_positions_list if aligned_window_start_frame <= i < aligned_window_start_frame + current_video_length ]
-
 
             video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = sparse_video_image = None
             if video_guide is not None:
@@ -6417,9 +6414,8 @@ def generate_video(
                                                                                         return_tensor= model_def.get("return_image_refs_tensor", False),
                                                                                         ignore_last_refs =model_def.get("no_processing_on_last_images_refs",0),
                                                                                         background_removal_color = model_def.get("background_removal_color", [255, 255, 255] ))
-
             frames_to_inject_parsed = frames_to_inject[ window_start_frame if extract_guide_from_window_start else guide_start_frame: guide_end_frame]
-            if video_guide is not None or len(frames_to_inject_parsed) > 0 or model_def.get("forced_guide_mask_inputs", False): 
+            if video_guide is not None or len(frames_to_inject_parsed) > 0 and not custom_frames_injection or model_def.get("forced_guide_mask_inputs", False): 
                 any_mask = video_mask is not None or model_def.get("forced_guide_mask_inputs", False)
                 any_guide_padding = model_def.get("pad_guide_video", False)
                 dont_cat_preguide = extract_guide_from_window_start or model_def.get("dont_cat_preguide", False) or sparse_video_image is not None 
@@ -6429,7 +6425,7 @@ def generate_video(
                                                                         None if dont_cat_preguide else pre_video_guide, 
                                                                         image_size, current_video_length, latent_size,
                                                                         any_mask, any_guide_padding, guide_inpaint_color, 
-                                                                        keep_frames_parsed, frames_to_inject_parsed , outpainting_dims, video_guide_outpainting_ratio)
+                                                                        keep_frames_parsed, [] if custom_frames_injection else frames_to_inject_parsed , outpainting_dims, video_guide_outpainting_ratio)
                 video_guide_processed = video_guide_processed2 = video_mask_processed = video_mask_processed2 = None
                 if len(src_videos) == 1:
                     src_video, src_video2, src_mask, src_mask2 = src_videos[0], None, src_masks[0], None 
@@ -6471,7 +6467,11 @@ def generate_video(
 
             if src_ref_images is not None or nb_frames_positions:
                 if len(frames_to_inject_parsed):
-                    new_image_refs = [convert_tensor_to_image(src_video, frame_no + (0 if extract_guide_from_window_start else (aligned_guide_start_frame - aligned_window_start_frame)) ) for frame_no, inject in enumerate(frames_to_inject_parsed) if inject]
+                    if custom_frames_injection:
+                        frames_relative_positions_list= [ frame_no + (0 if extract_guide_from_window_start else (aligned_guide_start_frame - aligned_window_start_frame)) for frame_no, frame in enumerate(frames_to_inject_parsed) if frame is not None]
+                        frames_to_inject_parsed = new_image_refs = [frame for frame in frames_to_inject_parsed if frame is not None]
+                    else:
+                        new_image_refs = [convert_tensor_to_image(src_video, frame_no + (0 if extract_guide_from_window_start else (aligned_guide_start_frame - aligned_window_start_frame)) ) for frame_no, inject in enumerate(frames_to_inject_parsed) if inject]
                 else:
                     new_image_refs = []
                 if src_ref_images is not None:
@@ -6632,7 +6632,8 @@ def generate_video(
                     top_k=top_k,
                     set_progress_status=set_progress_status,
                     loras_selected=loras_selected,
-                    frames_relative_positions_list = frames_relative_positions_list,                 
+                    frames_relative_positions_list = frames_relative_positions_list,
+                    frames_to_inject = frames_to_inject_parsed,
                 )
             except Exception as e:
                 if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:

@@ -846,7 +846,7 @@ class LTX2:
         conditioning_latents_size: int = 0,
         input_frames=None,
         input_frames2=None,
-        input_ref_images=None,
+        frames_to_inject = None,
         input_masks=None,
         input_masks2=None,
         frames_relative_positions_list=None,
@@ -899,18 +899,25 @@ class LTX2:
             audio_prompt_type = audio_prompt_type.replace("1", "")
         image_start = _coerce_image_list(image_start)
         image_end = _coerce_image_list(image_end)
-        if input_ref_images is None:
-            input_ref_images = []
-        elif isinstance(input_ref_images, (list, tuple)):
-            input_ref_images = list(input_ref_images)
-        else:
-            input_ref_images = [input_ref_images]
+        if frames_to_inject is None:
+            frames_to_inject = []
         if frames_relative_positions_list is None:
             frames_relative_positions_list = []
         elif isinstance(frames_relative_positions_list, (list, tuple)):
             frames_relative_positions_list = list(frames_relative_positions_list)
         else:
             frames_relative_positions_list = [frames_relative_positions_list]
+        if image_start is None:
+            new_frames_to_inject = []
+            new_frames_relative_positions_list = []
+            for frame_to_inject, frame_relative_position in zip(frames_to_inject,frames_relative_positions_list):
+                if frame_relative_position == 0:
+                    image_start = frame_to_inject
+                else:
+                    new_frames_to_inject.append(frame_to_inject)
+                    new_frames_relative_positions_list.append(frame_relative_position)
+            frames_to_inject = new_frames_to_inject 
+            frames_relative_positions_list = new_frames_relative_positions_list
 
         outpainting_dims = _normalize_outpainting_dims(outpainting_dims)
         any_outpainting = outpainting_dims is not None and "V" in video_prompt_type
@@ -931,7 +938,7 @@ class LTX2:
             conditioning_gamma_applied = _apply_gamma_to_media(image_end, LTX2_OUTPAINT_GAMMA) or conditioning_gamma_applied
             if torch.is_tensor(input_video) and prefix_frames_count > 0:
                 conditioning_gamma_applied = _apply_gamma_to_media(input_video[:, :prefix_frames_count], LTX2_OUTPAINT_GAMMA) or conditioning_gamma_applied
-            for ref_image in input_ref_images:
+            for ref_image in frames_to_inject:
                 conditioning_gamma_applied = _apply_gamma_to_media(ref_image, LTX2_OUTPAINT_GAMMA) or conditioning_gamma_applied
             if conditioning_gamma_applied:
                 print("[WAN2GP][LTX2] Applying full-frame gamma preprocessing for outpainting IC-LoRA conditioning images.")
@@ -1016,8 +1023,8 @@ class LTX2:
                 extra_list.append(entry)
 
         def _append_injected_ref_entries(target_list, extra_list=None):
-            injected_ref_count = min(len(input_ref_images), len(frames_relative_positions_list))
-            for ref_image, frame_idx in zip(input_ref_images[:injected_ref_count], frames_relative_positions_list[:injected_ref_count]):
+            injected_ref_count = min(len(frames_to_inject), len(frames_relative_positions_list))
+            for ref_image, frame_idx in zip(frames_to_inject[:injected_ref_count], frames_relative_positions_list[:injected_ref_count]):
                 entry = (ref_image, int(frame_idx), input_video_strength, "lanczos")
                 target_list.append(entry)
                 if extra_list is not None:

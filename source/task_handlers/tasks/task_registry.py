@@ -864,6 +864,17 @@ def _process_structure_guidance(ctx: SegmentContext, gen: GenerationInputs, task
     )
 
 
+def _inject_ic_lora_with_dedup(segment_loras, ic_entry):
+    segment_loras = list(segment_loras or [])
+    ic_basename = os.path.basename(ic_entry["path"])
+    for existing in segment_loras:
+        if os.path.basename(existing.get("path", "")) == ic_basename:
+            existing["strength"] = ic_entry["strength"]
+            return segment_loras
+    segment_loras.append(ic_entry)
+    return segment_loras
+
+
 def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_refs: ImageRefs, structure: StructureOutputs, task_id: str) -> dict:
     """Build the WGP generation_params dict from resolved inputs.
 
@@ -957,17 +968,8 @@ def _build_generation_params(ctx: SegmentContext, gen: GenerationInputs, image_r
     if isinstance(structure.structure_config, TravelGuidanceConfig):
         ic_entry = structure.structure_config.get_ic_lora_entry()
         if ic_entry is not None:
-            segment_loras = list(segment_loras or [])
-            # Deduplicate: update strength if the same LoRA is already present
             ic_basename = os.path.basename(ic_entry["path"])
-            found = False
-            for existing in segment_loras:
-                if os.path.basename(existing.get("path", "")) == ic_basename:
-                    existing["strength"] = ic_entry["strength"]
-                    found = True
-                    break
-            if not found:
-                segment_loras.append(ic_entry)
+            segment_loras = _inject_ic_lora_with_dedup(segment_loras, ic_entry)
             headless_logger.debug(f"IC LoRA for mode '{structure.structure_config.mode}': {ic_basename}", task_id=task_id)
 
     if segment_loras:

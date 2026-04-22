@@ -74,7 +74,9 @@ samples/
 tests/
 tests_output/
 
-# Keep tests ignored by default, but allow tracking specific regression tests
+# Keep tests ignored by default, but allow tracking specific regression tests.
+# These exceptions are intentional so the orchestrator can plain-`git add`
+# the Sprint 3 handoff file list without `-f`.
 !tests/
 tests/*
 !tests/test_lora_flow.py
@@ -83,6 +85,12 @@ tests/*
 !tests/test_travel_ltx_vpt.py
 !tests/test_ltx_hybrid_travel.py
 !tests/test_idle_release.py
+!tests/test_travel_guidance_ic_lora_override.py
+!tests/test_task_registry_ic_lora_dedup.py
+!tests/test_clear_conditioning_byte_identity.py
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/clear_conditioning_oracle.pt
 
 # Task database files
 tasks.db-shm

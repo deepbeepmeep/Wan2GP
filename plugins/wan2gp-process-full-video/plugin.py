@@ -32,8 +32,9 @@ PlugIn_Id = "ProcessFullVideo"
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 APP_ROOT_DIR = PLUGIN_DIR.parent.parent
+APP_SETTINGS_DIR = APP_ROOT_DIR / "settings"
 PROCESS_SETTINGS_DIR = PLUGIN_DIR / "settings"
-PROCESS_FULL_VIDEO_SETTINGS_FILE = APP_ROOT_DIR / "process_full_video_settings.json"
+PROCESS_FULL_VIDEO_SETTINGS_FILE = APP_SETTINGS_DIR / "process_full_video_settings.json"
 RATIO_CHOICES = [("1:1", "1:1"), ("4:3", "4:3"), ("3:4", "3:4"), ("16:9", "16:9"), ("9:16", "9:16"), ("21:9", "21:9"), ("9:21", "9:21")]
 DEFAULT_SOURCE_PATH = ""
 DEFAULT_OUTPUT_PATH = ""

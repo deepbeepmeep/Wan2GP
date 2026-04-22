@@ -7,6 +7,21 @@ This migration plan is intentionally a planning artifact, not an implementation 
 
 The non-negotiable constraint is that no functionality may be lost during any sprint. The plan therefore treats these as protected behaviors that must survive with explicit verification: IC-LoRA auto-injection for pose, depth, canny, and cameraman modes; the newly landed `ltx_anchor` kind; the existing `ltx_control` pixel cross-fade guide-video path; the `ltx_hybrid` route; `clear_conditioning` keyframe-token stripping before VAE decode; the existing 6-file travel test suite; and the import-path contract that supports both dotted `Wan2GP.*` callers and bare-module callers.
 
+## Migration Status
+
+**Migration complete — 2026-04-22.** All four sprints landed on `banodoco/reigh-worker main` and the submodule now tracks `banodoco/Wan2GP @ 181bb71a` (fork branch `reigh-sprint-3`).
+
+| Sprint | Status | Commit | Date |
+| --- | --- | --- | --- |
+| Sprint 1 — Triage & Fork Cut | ✅ Done | `9656cc90` | 2026-04-21 |
+| Sprint 2 — Submodule Cut-over, Low-Risk Resync, Doc Updates | ✅ Done | `253e9fba` | 2026-04-22 |
+| Sprint 3 — `models/ltx2/` Resync + Cameraman/Dedup Tests | ✅ Done | `550320a3` | 2026-04-22 |
+| Sprint 4 — Patch Consolidation, Upstream PRs, Sustainability | ✅ Done | `90e05f2d` | 2026-04-22 |
+
+Rollback anchors: tags `wan2gp-mig-sprint-{1,2,3,4}-baseline` (baseline-N = state *before* sprint N began). Tag `wan2gp-mig-complete` points at the Sprint 4 commit (`90e05f2d`).
+
+An independent regression audit (codex) confirmed the migration landed additively: `Wan2GP/wgp.py` byte-identical pre→post, all 97 pre-existing `models/ltx2/*.py` files SHA-identical, zero pre-existing file contents modified. Only `.gitignore` differs in content. See §10 Audit Findings for details.
+
 ## 2. Current-State Inventory
 
 ### 2a. Vendored tree facts
@@ -68,7 +83,7 @@ Feature exposure is also staged. SD-005 keeps `res_2s` and `self_refiner` behind
 Sustainability is handled as part of the architecture, not as follow-up cleanup. SD-007 sets a monthly rebase cadence with event-triggered syncs on upstream minor-version bumps, while SD-008 adds scheduled drift detection in CI so the repository does not slide back into another opaque vendor snapshot. Together, SD-001 through SD-008 define a maintainable fork-plus-patch-layer model rather than a one-time resync.
 
 ## 4. Sprint Plan (4 × 2 weeks)
-### Sprint 1 — Triage & Fork Cut (Weeks 1-2)
+### ✅ Sprint 1 — Triage & Fork Cut (Weeks 1-2)
 #### Goals
 - Fork `banodoco/Wan2GP` at upstream HEAD and establish it as the future source of truth.
 - Build `docs/wan2gp-triage.csv` and classify every differing file into the SD-002 buckets.
@@ -90,7 +105,7 @@ Sustainability is handled as part of the architecture, not as follow-up cleanup.
 - Zero `reigh-worker` code changes means zero risk to IC-LoRA behavior, `ltx_anchor`, `ltx_control`, `ltx_hybrid`, `clear_conditioning`, and the path/import contract during Sprint 1.
 - The only outputs are the fork setup and the triage artifact, so every protected behavior is preserved by construction.
 
-### Sprint 2 — Submodule Cut-over, Low-Risk Resync, Doc Updates (Weeks 3-4)
+### ✅ Sprint 2 — Submodule Cut-over, Low-Risk Resync, Doc Updates (Weeks 3-4)
 #### Goals
 - Replace the flat `Wan2GP/` tree with a git submodule at the same mount path.
 - Resync `shared/` and `postprocessing/`, absorb `self_refiner` drift, and introduce `res2s.py` behind an off-by-default flag per SD-005.
@@ -122,7 +137,7 @@ Sustainability is handled as part of the architecture, not as follow-up cleanup.
 - The strict path-contract smoke remains green and proves that `Wan2GP/` is on `sys.path` and all three bare-import targets still exist.
 - The doc sweeps plus reviewer pass show no stale wording remains in approved locations.
 
-### Sprint 3 — `models/ltx2/` Resync + Write Cameraman/Dedup Tests (Weeks 5-6)
+### ✅ Sprint 3 — `models/ltx2/` Resync + Write Cameraman/Dedup Tests (Weeks 5-6)
 #### Goals
 - Resync the 22-file `models/ltx2/` hot zone while explicitly carrying `clear_conditioning`.
 - Add `ltx2_22B_distilled_1_1.json` as available-but-not-default per SD-004.
@@ -160,7 +175,7 @@ Sustainability is handled as part of the architecture, not as follow-up cleanup.
 - `ltx_hybrid` remains unchanged.
 - The 26+ `Wan2GP.*` call sites and the bare-module callers still resolve after the hot-zone resync.
 
-### Sprint 4 — Patch Consolidation, Upstream PRs, Sustainability (Weeks 7-8)
+### ✅ Sprint 4 — Patch Consolidation, Upstream PRs, Sustainability (Weeks 7-8)
 #### Goals
 - Extend `source/models/wgp/wgp_patches.py` using the existing runtime-patch primitives.
 - Open upstream PRs for bucket `(b)` items.
@@ -308,3 +323,31 @@ Sustainability is handled as part of the architecture, not as follow-up cleanup.
 - `load_bearing`: `true`
 - `decision`: Add `.github/workflows/wan2gp-drift.yml` as a weekly scheduled CI job that compares the pinned submodule pointer against upstream HEAD and reports drift for review.
 - `rationale`: Once the vendor tree becomes a submodule, drift becomes measurable. A scheduled CI check converts that measurability into an operating habit, so the repo does not return to a silent `.git`-less copy that is only audited after major divergence has already accumulated.
+
+## 10. Post-Migration Audit Findings
+
+Independent codex audits ran at end-of-migration. Headline results:
+
+**Regression audit (pre-migration vs post-Sprint-3 submodule):** Migration landed as purely additive.
+- `Wan2GP/wgp.py` (12,054 lines) byte-identical; sha256 `d8aab33f6d835fd87658446ea8da89fa57a1ca90685394fe0b7bfd5a3219a800`
+- All 97 pre-existing `models/ltx2/*.py` files SHA-identical; 2 pure additions (`prompt_enhancer.py`, `ltx_pipelines/utils/res2s.py`)
+- Zero pre-existing file contents modified across `shared/`, `postprocessing/`, `preprocessing/`, `plugins/`, `defaults/`, `models/`
+- Only `.gitignore` differs in content
+- All 17 `wgp.*` symbols referenced by `source/models/wgp/{orchestrator,wgp_patches}.py` resolve
+- The `22d82ca6` class of silent-loss risk (upstream sync rewriting a feature file) is provably impossible here
+
+**Upstream-PR inventory audit:** §2b is effectively obsolete.
+- `res2s.py`, `ltx2_22B_distilled_1_1.json`, prompt-enhancer, `self_refiner` all already present in the submodule (absorbed as additive sync, not fork-only carries)
+- `_apply_gamma_to_media`, `LTX2_OUTPAINT_GAMMA`, `LTX2_DISABLE_STAGE2_WITH_CONTROL_VIDEO` appear only in this document — no code occurrence (planning placeholders)
+- Sprint 4's `scripts/sprint4/upstream_prs/*.md` drafts should be reclassified as triage/investigation notes, not filed as upstream PRs. 0 of the §2b items are currently PR-ready.
+
+**Adversarial review of Sprint 3:** One CRITICAL-severity finding landed as followup.
+- IC-LoRA dedup at `source/task_handlers/tasks/task_registry.py:867-875` only matches exact `basename()` equality. Case-variant filenames and URL-decorated paths bypass the check and can silently double-apply a LoRA. Tracked as a post-migration followup.
+
+**Post-migration risk register (independent):** HIGH-severity items are all in the monkeypatch layer, not in the migration surface.
+- Qwen patch failures are non-fatal (`wgp_patches.py:554-569`) — green bootstrap can hide broken Qwen lane
+- LoRA cache key ignores `lora_multi` (`wgp_patches.py:429-447`) — strength changes silently ignored
+- LoRA tolerance strip silently neutralizes new-format keys (`wgp_patches.py:315-381`)
+- Drift CI correctly exempts `Wan2GP/wgp_config.json` (per audit flag), since worker boot rewrites it via `source/models/wgp/orchestrator.py:198-220`
+
+See `scripts/sprint4/upstream_prs/` (triage notes) and `docs/wan2gp-rebase-runbook.md` §8 for followup work.

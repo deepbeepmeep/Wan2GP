@@ -1,0 +1,7 @@
+.gitignore
+tests/test_travel_guidance_ic_lora_override.py
+tests/test_task_registry_ic_lora_dedup.py
+tests/test_clear_conditioning_byte_identity.py
+tests/fixtures/clear_conditioning_oracle.pt
+scripts/sprint3/capture_clear_conditioning_fixture.py
+source/task_handlers/tasks/task_registry.py

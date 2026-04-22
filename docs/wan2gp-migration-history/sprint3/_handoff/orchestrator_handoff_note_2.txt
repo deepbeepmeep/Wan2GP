@@ -1,0 +1,43 @@
+Sprint 3 handoff #2
+
+This file is the authoritative replacement for the earlier shell-form draft
+note. Do not re-wrap it inside a shell-interpolated `--note "..."` command.
+If the orchestrator re-emits this text through a CLI, pass it as argv/file
+content so the remote-SHA command stays literal text.
+
+The executor must not run remote git commands. Treat the `git ls-remote` line
+below as literal orchestrator-only instructions.
+
+PRE_RESYNC_SHA=35f48f1bca69b5bbddd5391588412cac46a92905
+LOCAL_SHA=181bb71a21008032e4771e11663f33e4489c4512
+
+Stage these tracked and untracked repo paths:
+- .gitignore
+- tests/test_travel_guidance_ic_lora_override.py
+- tests/test_task_registry_ic_lora_dedup.py
+- tests/test_clear_conditioning_byte_identity.py
+- tests/fixtures/clear_conditioning_oracle.pt
+- scripts/sprint3/capture_clear_conditioning_fixture.py
+- source/task_handlers/tasks/task_registry.py
+
+Use the plain path list above together with `scripts/sprint3/_handoff/staged_file_list.txt`.
+`.gitignore` now explicitly unignores the Sprint 3 regression tests and oracle
+fixture, so plain `git add` works without `-f`.
+
+Gate summary:
+- IC-LoRA/dedup suite passed 4/4 post-resync.
+- 6-file travel suite passed 113 passed / 7 skipped / 120 collected post-resync.
+- clear_conditioning byte-identity passed 1/1 post-resync.
+- PATH A skip gate passed 4/4 post-resync.
+- travel_guidance_config collect-only gate passed with 53 total and 20 anchor-named tests.
+- strict path-contract smoke passed post-resync.
+- local submodule verification passed with LOCAL_SHA above and `.gitmodules` naming `reigh-sprint-3`.
+- `-k` selector audit returned zero matching lines.
+
+Orchestrator-only remote-SHA check. Block staging if this does not match LOCAL_SHA:
+git ls-remote https://github.com/banodoco/Wan2GP.git reigh-sprint-3 | awk '{print $1}'
+
+Known anomalies:
+- The executor's first shell-form draft note was unsafe because the shell could
+  interpolate the backticked example command. Use this file or an argv-based
+  note emitter so the remote command stays literal text.

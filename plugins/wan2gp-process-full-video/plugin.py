@@ -36,6 +36,7 @@ APP_SETTINGS_DIR = APP_ROOT_DIR / "settings"
 PROCESS_SETTINGS_DIR = PLUGIN_DIR / "settings"
 PROCESS_FULL_VIDEO_SETTINGS_FILE = APP_SETTINGS_DIR / "process_full_video_settings.json"
 RATIO_CHOICES = [("1:1", "1:1"), ("4:3", "4:3"), ("3:4", "3:4"), ("16:9", "16:9"), ("9:16", "9:16"), ("21:9", "21:9"), ("9:21", "9:21")]
+RATIO_CHOICES_WITH_EMPTY = [("", "")] + RATIO_CHOICES
 DEFAULT_SOURCE_PATH = ""
 DEFAULT_OUTPUT_PATH = ""
 LAUNCH_DEFAULT_PROCESS_NAME = "Outpaint Video - LTX 2.3 Distilled 1.1"
@@ -135,6 +136,13 @@ def _save_process_full_video_settings(settings: dict) -> None:
 def _get_error_message(exc: BaseException) -> str:
     message = getattr(exc, "message", exc)
     return str(message or "").strip()
+
+
+def _get_default_process_strength(process_settings: dict) -> float:
+    process_strength = process_settings.get("process_strength")
+    if process_strength is None:
+        process_strength = process_settings.get("loras_multipliers", 1.0)
+    return float(process_strength)
 
 
 @dataclass(frozen=True)
@@ -1773,7 +1781,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         default_overlap_value = _normalize_overlap_frames(default_overlap_value, frame_step=overlap_step)
         default_overlap_value = min(max(1, default_overlap_value), overlap_max)
         default_source_path = str(saved_ui_settings.get("source_path") or DEFAULT_SOURCE_PATH)
-        default_control_video_strength = _coerce_float(saved_ui_settings.get("control_video_strength"), 1.0, minimum=0.0, maximum=1.0)
+        saved_process_strength = saved_ui_settings.get("process_strength", saved_ui_settings.get("control_video_strength"))
+        default_process_strength = 1.0 if saved_process_strength is None else float(saved_process_strength)
         default_output_path = str(saved_ui_settings.get("output_path") or DEFAULT_OUTPUT_PATH)
         default_continue_enabled = _coerce_bool(saved_ui_settings.get("continue_enabled"), True)
         default_output_resolution = str(saved_ui_settings.get("output_resolution") or "720p").strip()
@@ -1839,8 +1848,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
             _require_process_definition(process_name)
             return _process_has_outpaint(process_name)
 
-        def _get_target_ratio_update(process_name: str):
-            return gr.update(visible=_has_process_outpaint(process_name))
+        def _get_target_ratio_update(process_name: str, target_ratio: str | None = None):
+            visible = _has_process_outpaint(process_name)
+            return gr.update(value=target_ratio if visible else "", visible=visible, choices=RATIO_CHOICES if visible else RATIO_CHOICES_WITH_EMPTY)
+
+        def _get_process_strength_update(process_name: str, process_strength: float | None = None):
+            visible = not _has_process_outpaint(process_name)
+            value = 1.0 if not visible else float(1.0 if process_strength is None else process_strength)
+            return gr.update(value=value, visible=visible)
 
         def _get_overlap_control_updates(process_name: str):
             process_definition = _require_process_definition(process_name)
@@ -1866,7 +1881,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 "process_model_type": model_type,
                 "process_name": process_name,
                 "source_path": DEFAULT_SOURCE_PATH,
-                "control_video_strength": _coerce_float(process_settings.get("denoising_strength"), 1.0, minimum=0.0, maximum=1.0),
+                "process_strength": _get_default_process_strength(process_settings),
                 "output_path": DEFAULT_OUTPUT_PATH,
                 "prompt": str(process_settings.get("prompt") or ""),
                 "continue_enabled": True,
@@ -1880,7 +1895,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
             }
             raw_state = raw_state if isinstance(raw_state, dict) else {}
             default_state["source_path"] = str(raw_state.get("source_path") or default_state["source_path"])
-            default_state["control_video_strength"] = _coerce_float(raw_state.get("control_video_strength"), default_state["control_video_strength"], minimum=0.0, maximum=1.0)
+            saved_process_strength = raw_state.get("process_strength", raw_state.get("control_video_strength"))
+            if saved_process_strength is not None:
+                default_state["process_strength"] = float(saved_process_strength)
             default_state["output_path"] = str(raw_state.get("output_path") or default_state["output_path"])
             if "prompt" in raw_state:
                 default_state["prompt"] = str(raw_state.get("prompt") or "")
@@ -1898,10 +1915,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
             default_state["end_seconds"] = "" if raw_state.get("end_seconds") in (None, "") else str(raw_state.get("end_seconds"))
             return default_state
 
-        def _snapshot_form_state(process_name: str, source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds) -> dict:
+        def _snapshot_form_state(process_name: str, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds) -> dict:
             return _build_process_form_state(process_name, {
                 "source_path": source_path,
-                "control_video_strength": control_video_strength,
+                "process_strength": process_strength,
                 "output_path": output_path,
                 "prompt": prompt_text,
                 "continue_enabled": continue_enabled,
@@ -1914,28 +1931,29 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 "end_seconds": end_seconds,
             })
 
-        def _store_process_form_memory(memory_state: dict | None, current_process_name: str, source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
+        def _store_process_form_memory(memory_state: dict | None, current_process_name: str, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
             updated_memory = dict(memory_state) if isinstance(memory_state, dict) else {}
             current_process_name = str(current_process_name or "").strip()
             if current_process_name in PROCESS_DEFINITIONS:
-                updated_memory[current_process_name] = _snapshot_form_state(current_process_name, source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
+                updated_memory[current_process_name] = _snapshot_form_state(current_process_name, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
             return updated_memory
 
-        def _switch_process_form_memory(memory_state: dict | None, current_process_name: str, next_process_name: str, source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
-            updated_memory = _store_process_form_memory(memory_state, current_process_name, source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
+        def _switch_process_form_memory(memory_state: dict | None, current_process_name: str, next_process_name: str, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
+            updated_memory = _store_process_form_memory(memory_state, current_process_name, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
             return updated_memory, str(next_process_name or "").strip()
 
         def _restore_process_form_state(memory_state: dict | None, process_name: str, current_source_path: str):
             state = _build_process_form_state(process_name, (memory_state or {}).get(process_name))
             overlap_update = _get_overlap_control_updates(process_name)
-            target_ratio_update = gr.update(value=state["target_ratio"], visible=_has_process_outpaint(process_name))
+            target_ratio_update = _get_target_ratio_update(process_name, state["target_ratio"])
+            process_strength_update = _get_process_strength_update(process_name, state["process_strength"])
             source_path_value = str(current_source_path or "").strip() or state["source_path"]
-            return source_path_value, state["control_video_strength"], state["output_path"], state["prompt"], state["continue_enabled"], state["source_audio_track"], state["output_resolution"], target_ratio_update, state["chunk_size_seconds"], overlap_update, state["start_seconds"], state["end_seconds"]
+            return source_path_value, process_strength_update, state["output_path"], state["prompt"], state["continue_enabled"], state["source_audio_track"], state["output_resolution"], target_ratio_update, state["chunk_size_seconds"], overlap_update, state["start_seconds"], state["end_seconds"]
 
         model_type_choices = [(_get_model_type_label(model_type), model_type) for model_type in process_names_by_model_type]
         initial_process_form_memory = {default_process_name: _build_process_form_state(default_process_name, {
             "source_path": default_source_path,
-            "control_video_strength": default_control_video_strength,
+            "process_strength": default_process_strength,
             "output_path": default_output_path,
             "prompt": default_prompt,
             "continue_enabled": default_continue_enabled,
@@ -1948,7 +1966,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "end_seconds": default_end_seconds,
         })}
 
-        def start_process(state, process_name, source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
+        def start_process(state, process_name, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
             try:
                 process_definition = _require_process_definition(process_name)
             except gr.Error as exc:
@@ -1965,12 +1983,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
             prompt_text = str(prompt_text or "")
             start_seconds = "" if start_seconds in (None, "") else str(start_seconds)
             end_seconds = "" if end_seconds in (None, "") else str(end_seconds)
+            active_process_strength = 1.0 if has_outpaint else float(process_strength)
             try:
                 _save_process_full_video_settings({
                     "process_model_type": model_type,
                     "process_name": str(process_name or "").strip(),
                     "source_path": source_path,
-                    "control_video_strength": _coerce_float(control_video_strength, 1.0, minimum=0.0, maximum=1.0),
+                    "process_strength": active_process_strength,
                     "output_path": output_path,
                     "prompt": prompt_text,
                     "continue_enabled": bool(continue_enabled),
@@ -2329,7 +2348,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     settings["resolution"] = resolved_resolution or budget_resolution
                     settings["video_length"] = model_video_length
                     settings["sliding_window_overlap"] = max(1, int(plan.overlap_frames))
-                    settings["denoising_strength"] = float(control_video_strength)
                     settings["image_prompt_type"] = image_prompt_type if needs_video_source else ""
                     # Keep the plugin-side control cursor tied to frames actually written.
                     # WGP applies any extra_control_frames model behavior internally, so this
@@ -2339,6 +2357,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         settings["video_guide_outpainting_ratio"] = active_target_ratio
                     else:
                         settings.pop("video_guide_outpainting_ratio", None)
+                        settings["loras_multipliers"] = str(active_process_strength)
                     api_settings = settings.get("_api")
                     settings["_api"] = dict(api_settings) if isinstance(api_settings, dict) else {}
                     settings["_api"]["return_media"] = True
@@ -2625,16 +2644,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 output_path = gr.Textbox(label="Output File Path File (None for auto, Full Name or Target Folder)", value=default_output_path, scale=3)
                 continue_enabled = gr.Checkbox(label="Continue", value=default_continue_enabled, elem_classes="cbx_bottom", scale=1)
             with gr.Row():
+                output_resolution = gr.Dropdown(output_resolution_choices, value=default_output_resolution, label="Output Resolution")
+                target_ratio = gr.Dropdown(RATIO_CHOICES if _has_process_outpaint(default_process_name) else RATIO_CHOICES_WITH_EMPTY, value=default_target_ratio if _has_process_outpaint(default_process_name) else "", label="Target Ratio", visible=_has_process_outpaint(default_process_name))
+                process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=0.0, maximum=1.0, step=0.01, value=1.0 if _has_process_outpaint(default_process_name) else default_process_strength, visible=not _has_process_outpaint(default_process_name))
+            with gr.Row():
+                chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_chunk_size_seconds, precision=2)
+                sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=1, maximum=overlap_max, step=overlap_step, value=default_overlap_value)
+            with gr.Row():
                 start_seconds = gr.Textbox(label="Start (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_start_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)")
                 end_seconds = gr.Textbox(label="End (s/MM:SS(.xx)/HH:MM:SS(.xx))", value=default_end_seconds, placeholder="seconds, MM:SS(.xx), or HH:MM:SS(.xx)")
                 source_audio_track = gr.Dropdown(source_audio_track_choices, value=default_source_audio_track, label="Source Audio Track")
-            with gr.Row():
-                output_resolution = gr.Dropdown(output_resolution_choices, value=default_output_resolution, label="Output Resolution")
-                target_ratio = gr.Dropdown(RATIO_CHOICES, value=default_target_ratio, label="Target Ratio", visible=_has_process_outpaint(default_process_name))
-                chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_chunk_size_seconds, precision=2)
-            with gr.Row():
-                control_video_strength = gr.Slider(label="Control Video Strength", minimum=0.0, maximum=1.0, step=0.01, value=default_control_video_strength)
-                sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=1, maximum=overlap_max, step=overlap_step, value=default_overlap_value)
             with gr.Row():
                 prompt_text = gr.Textbox(
                     label="Prompt (timed blocks supported: MM:SS(.xx) / HH:MM:SS(.xx))",
@@ -2653,7 +2672,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         gr.on(
             [
                 source_path.change,
-                control_video_strength.change,
+                process_strength.change,
                 output_path.change,
                 prompt_text.change,
                 continue_enabled.change,
@@ -2666,14 +2685,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 end_seconds.change,
             ],
             fn=_store_process_form_memory,
-            inputs=[process_form_memory, active_process_name_state, source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            inputs=[process_form_memory, active_process_name_state, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
             outputs=[process_form_memory],
             queue=False,
             show_progress="hidden",
         )
         process_model_type.change(
             fn=_store_process_form_memory,
-            inputs=[process_form_memory, active_process_name_state, source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            inputs=[process_form_memory, active_process_name_state, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
             outputs=[process_form_memory],
             queue=False,
             show_progress="hidden",
@@ -2686,20 +2705,20 @@ class ConfigTabPlugin(WAN2GPPlugin):
         )
         process_name.change(
             fn=_switch_process_form_memory,
-            inputs=[process_form_memory, active_process_name_state, process_name, source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            inputs=[process_form_memory, active_process_name_state, process_name, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
             outputs=[process_form_memory, active_process_name_state],
             queue=False,
             show_progress="hidden",
         ).then(
             fn=_restore_process_form_state,
             inputs=[process_form_memory, active_process_name_state, source_path],
-            outputs=[source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            outputs=[source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
             queue=False,
             show_progress="hidden",
         )
         start_btn.click(
             fn=start_process,
-            inputs=[self.state, process_name, source_path, control_video_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            inputs=[self.state, process_name, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
             outputs=[status_html, output_file, preview_refresh, start_btn, abort_btn],
             queue=False,
             show_progress="hidden",

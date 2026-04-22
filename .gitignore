@@ -1,5 +1,8 @@
 .*
 !.env.example
+!.github/
+!.github/workflows/
+!.github/workflows/wan2gp-drift.yml
 *.py[cod]
 venv_headless_wan2gp/
 # *.jpg
@@ -88,6 +91,9 @@ tests/*
 !tests/test_travel_guidance_ic_lora_override.py
 !tests/test_task_registry_ic_lora_dedup.py
 !tests/test_clear_conditioning_byte_identity.py
+!tests/test_runtime_model_patch_contracts.py
+!tests/test_wgp_patch_context_contracts.py
+!tests/test_wgp_patch_lifecycle.py
 !tests/fixtures/
 tests/fixtures/*
 !tests/fixtures/clear_conditioning_oracle.pt

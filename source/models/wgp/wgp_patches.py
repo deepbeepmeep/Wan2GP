@@ -15,10 +15,14 @@ from typing import TYPE_CHECKING
 
 from source.core.log import model_logger
 from source.runtime.wgp_bridge import (
+    apply_runtime_model_patch,
+    begin_runtime_model_patch,
     get_qwen_family_handler,
     get_qwen_main_module,
     get_shared_lora_utils_module,
+    rollback_runtime_model_patch,
 )
+from source.runtime.wgp_ports import runtime_registry
 
 if TYPE_CHECKING:
     import types
@@ -111,6 +115,66 @@ def rollback_wgp_patches(
             _PATCH_CONTEXT_STATE.pop(normalized_context, None)
 
     return restored
+
+
+def apply_runtime_model_definition_patch(
+    model_name: str,
+    patch_values: dict[str, object],
+    *,
+    patch_name: str,
+    context_id: str | None = None,
+) -> bool:
+    """
+    Apply a runtime patch against a model definition using the shared patch registry.
+
+    Sprint 4 only uses the default patch context during production bootstrap.
+    Multi-context concurrent application against a shared WGP runtime is not safe
+    and is deferred to Sprint 5.
+    """
+    try:
+        target_key = f"model_def:{model_name}"
+        existing = get_wgp_patch_state(context_id=context_id).get(patch_name, {})
+        runtime = runtime_registry.get_wgp_runtime_module()
+        live_models_def = runtime.models_def.get(model_name, {})
+        is_active = (
+            getattr(runtime, "transformer_type", None) == model_name
+            and getattr(runtime, "wan_model", None) is not None
+        )
+        live_loaded = runtime.wan_model.model_def if is_active else None
+        models_def_matches = all(live_models_def.get(key) == value for key, value in patch_values.items())
+        loaded_matches = (not is_active) or all(live_loaded.get(key) == value for key, value in patch_values.items())
+
+        if target_key in existing and models_def_matches and loaded_matches:
+            return True
+        if target_key in existing:
+            rollback_wgp_patches(
+                patch_name=patch_name,
+                target_key=target_key,
+                context_id=context_id,
+            )
+
+        transaction = begin_runtime_model_patch(model_name, keys=tuple(patch_values.keys()))
+        apply_runtime_model_patch(transaction, patch_values)
+
+        def _rollback_runtime_definition_patch() -> int:
+            rollback_runtime_model_patch(transaction)
+            return len(transaction.keys)
+
+        _register_patch_application(
+            patch_name,
+            target_key,
+            applied=True,
+            context_id=context_id,
+            rollback=_rollback_runtime_definition_patch,
+        )
+        return True
+
+    except (RuntimeError, AttributeError, ImportError, TypeError) as e:
+        model_logger.debug_anomaly(
+            "WGP_PATCHES",
+            f"Failed to apply runtime model definition patch for {model_name}: {e}",
+        )
+        return False
 
 
 def apply_qwen_model_routing_patch(wgp_module: "types.ModuleType", wan_root: str) -> bool:
@@ -226,6 +290,36 @@ def apply_qwen_lora_directory_patch(wgp_module: "types.ModuleType", wan_root: st
 
     except (RuntimeError, AttributeError, ImportError) as e:
         model_logger.debug_anomaly("QWEN_LOAD", f"Failed to apply get_lora_dir patch: {e}")
+        return False
+
+
+def apply_ltx2_runtime_fork_markers_patch(
+    wgp_module: "types.ModuleType",
+    *,
+    context_id: str | None = None,
+) -> bool:
+    """Mark LTX2 runtime model definitions so bootstrap can verify a single registry."""
+    try:
+        ltx2_model_names = [
+            model_name
+            for model_name in wgp_module.models_def.keys()
+            if isinstance(model_name, str) and model_name.startswith("ltx2")
+        ]
+        if not ltx2_model_names:
+            return True
+
+        for model_name in ltx2_model_names:
+            if not apply_runtime_model_definition_patch(
+                model_name,
+                {"_banodoco_fork_runtime_patch": True},
+                patch_name="ltx2_runtime_fork_markers",
+                context_id=context_id,
+            ):
+                return False
+        return True
+
+    except (RuntimeError, AttributeError, ImportError, TypeError) as e:
+        model_logger.debug_anomaly("WGP_PATCHES", f"Failed to apply LTX2 runtime marker patch: {e}")
         return False
 
 
@@ -558,6 +652,10 @@ def apply_all_wgp_patches(
     results["lora_key_tolerance"] = apply_lora_key_tolerance_patch(wgp_module)
     results["lora_caching"] = apply_lora_caching_patch()
     results["headless_app_stub"] = apply_headless_app_stub(wgp_module)
+    results["ltx2_runtime_fork_markers"] = apply_ltx2_runtime_fork_markers_patch(
+        wgp_module,
+        context_id=context_id,
+    )
 
     # Log summary
     successful = [k for k, v in results.items() if v]

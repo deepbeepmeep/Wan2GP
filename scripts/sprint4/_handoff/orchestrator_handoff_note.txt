@@ -1,0 +1,72 @@
+Sprint 4 orchestrator handoff
+Updated for batch 5 of 5.
+
+1. Sprint 4 file inventory staged for review
+
+Modified:
+- .gitignore
+- source/models/wgp/wgp_patches.py
+
+Untracked:
+- .github/workflows/wan2gp-drift.yml
+- docs/wan2gp-rebase-runbook.md
+- scripts/sprint4/patch_lifecycle_smoke.py
+- scripts/sprint4/upstream_prs/README.md
+- scripts/sprint4/upstream_prs/01-ltx2-hotzone-drift.md
+- scripts/sprint4/upstream_prs/02-wan-runtime-drift.md
+- scripts/sprint4/upstream_prs/03-shared-runtime-drift.md
+- scripts/sprint4/upstream_prs/04-shared-utility-drift.md
+- scripts/sprint4/upstream_prs/05-model-implementation-drift.md
+- scripts/sprint4/upstream_prs/06-tts-implementation-drift.md
+- scripts/sprint4/upstream_prs/07-llm-engine-drift.md
+- scripts/sprint4/upstream_prs/08-gradio-ui-drift.md
+- scripts/sprint4/upstream_prs/09-plugin-integration-drift.md
+- scripts/sprint4/upstream_prs/10-preset-config-drift.md
+- scripts/sprint4/upstream_prs/11-documentation-drift.md
+- scripts/sprint4/upstream_prs/12-installer-update-script-drift.md
+- scripts/sprint4/upstream_prs/13-project-metadata-drift.md
+- scripts/sprint4/upstream_prs/14-content-drift.md
+- tests/test_runtime_model_patch_contracts.py
+- tests/test_wgp_patch_context_contracts.py
+- tests/test_wgp_patch_lifecycle.py
+
+Present in the worktree but not part of the Sprint 4 handoff:
+- .github/workflows/architecture-boundaries.yml
+- docs/wan2gp-triage.csv
+- scripts/live_test/
+- scripts/sprint3/_handoff/
+- scripts/sprint3/_pre_resync_notes.txt
+
+2. Gate ownership summary
+
+Executor-green now:
+- Focused patch tests are green. Command used: `PYTHONPATH=.:/Users/peteromalley/.pyenv/versions/3.8.10/lib/python3.8/site-packages .venv/bin/python -m pytest tests/test_wgp_patch_lifecycle.py tests/test_wgp_patch_context_contracts.py tests/test_runtime_model_patch_contracts.py` -> 10 passed, including the 5 new Sprint 4 tests.
+- Strict path-contract smoke is green. Command used: `.venv/bin/python -c "import os, sys; from source.core.runtime_paths import ensure_wan2gp_on_path, get_wan2gp_path; ensure_wan2gp_on_path(); ...; print('path-contract smoke OK')"` -> printed `path-contract smoke OK`.
+- Executor-side yaml validation path was `tokenizer`. Command used: `.venv/bin/python - <<'PY' ... assert ['on:', 'workflow_dispatch', 'schedule', 'cron'] ... PY` -> `workflow tokenizer validation OK`.
+- Throwaway reproducer script was run and deleted. Command used: `.venv/bin/python .tmp_sprint4_patch_reproducer.py` -> printed `{"model_def:ltx2_22B": {"applied": true}, "model_def:ltx2_22B_distilled": {"applied": true}, "wgp_module:<id>": {"applied": true}}`, confirming the `ltx2_runtime_fork_markers` bucket contains `model_def:ltx2_*` entries.
+- Sprint 4 deliverables are staged with `git add` and remain uncommitted.
+
+Executor-side blocked in this darwin-arm64 environment:
+- Full 8-file regression suite did not run green on a compliant 3.10 interpreter because the only approved 3.10 executor path (`.venv/bin/python`) lacks a compatible scientific stack, and reusing the existing 3.8 site-packages bridge under 3.10 fails in binary imports (`numpy.core._multiarray_umath`, `cv2`, `PIL`). Diagnostic fallback on local 3.11 was not accepted as a gate and also hit a separate SciPy/NumPy ABI mismatch in `tests/test_ltx_hybrid_vgkfi.py`.
+
+Orchestrator-owned:
+- Drift CI once-through via `workflow_dispatch`.
+- Full WanOrchestrator bootstrap smoke on Linux via `scripts/sprint4/patch_lifecycle_smoke.py`.
+- Any baseline-tag move needed after the executor-side regression blocker is resolved.
+- Commit, push, and PR creation against `deepbeepmeep/Wan2GP` using the bodies under `scripts/sprint4/upstream_prs/`.
+
+3. YAML validation path
+
+Recorded executor path: `tokenizer`.
+Reason: `.venv/bin/pip` is absent in this environment, matching FLAG-008 / all_locations-v4.
+
+4. Sprint 5 backlog item
+
+Multi-context runtime-patch isolation is still deferred.
+Reference: iter-3 gate `FLAG-007 / scope-v3`.
+Reference runbook section: `docs/wan2gp-rebase-runbook.md`, section `8. Sprint 5 Followup`.
+Required follow-up: either make `context_id` drive a per-context runtime view (copy-on-write against `runtime.models_def`) or forbid same-model runtime patches under differing contexts.
+
+5. Baseline tag status
+
+Confirmed locally: `wan2gp-mig-sprint-4-baseline` already exists on `reigh-worker`.

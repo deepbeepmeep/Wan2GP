@@ -1,0 +1,50 @@
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Report Wan2GP Drift
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pinned_sha="$(git -C Wan2GP rev-parse HEAD)"
+          git -C Wan2GP remote remove upstream >/dev/null 2>&1 || true
+          git -C Wan2GP remote add upstream https://github.com/deepbeepmeep/Wan2GP.git
+          git -C Wan2GP fetch --no-tags --depth=1 upstream HEAD
+          upstream_sha="$(git -C Wan2GP rev-parse FETCH_HEAD)"
+          drift_count="$(git -C Wan2GP rev-list --count "${pinned_sha}..${upstream_sha}")"
+          dirty_files="$(git -C Wan2GP ls-files -m -- ':(exclude)wgp_config.json')"
+          dirty_count="$(printf '%s\n' "${dirty_files}" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+          {
+            echo "## Wan2GP Drift Report"
+            echo
+            echo "- Pinned submodule SHA: \`${pinned_sha}\`"
+            echo "- Upstream head SHA: \`${upstream_sha}\`"
+            echo "- Commits behind upstream: \`${drift_count}\`"
+            echo "- Dirty tracked files excluding \`wgp_config.json\`: \`${dirty_count}\`"
+
+            if [ -n "${dirty_files}" ]; then
+              echo
+              echo "### Dirty tracked files excluding \`wgp_config.json\`"
+              printf '%s\n' "${dirty_files}"
+            else
+              echo
+              echo "No tracked drift beyond the expected \`wgp_config.json\` boot rewrite was detected."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

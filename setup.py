@@ -664,6 +664,29 @@ def inject_system_paths():
             
     os.environ["PATH"] = current_path
 
+def repair_git_repo():
+    print("[*] Repairing WAN2GP repository...")
+    if not os.path.exists(".git"):
+        run_cmd("git init")
+        
+    try:
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/deepbeepmeep/Wan2GP.git"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except: 
+        pass
+        
+    run_cmd("git fetch origin")
+    
+    try:
+        subprocess.run(["git", "rev-parse", "--verify", "origin/main"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        default_branch = "main"
+    except subprocess.CalledProcessError:
+        default_branch = "master"
+        
+    print(f"[*] Force resetting local files to match origin/{default_branch}...")
+    run_cmd(f"git reset --hard origin/{default_branch}")
+    run_cmd(f"git branch -M {default_branch}")
+    run_cmd(f"git branch --set-upstream-to=origin/{default_branch} {default_branch}")
+
 if __name__ == "__main__":
     inject_system_paths()
     parser = argparse.ArgumentParser()
@@ -718,14 +741,43 @@ if __name__ == "__main__":
         run_cmd(cmd, env_vars=env_vars)
 
     elif args.mode == "update":
-        run_cmd("git pull")
         manager = EnvsManager()
         env_name = manager.resolve_target_env()
         env_data = manager.list_envs()[env_name]
         
-        install_fmt = ENV_TEMPLATES[env_data['type']]['install']
-        cmd = f"{install_fmt.format(dir=env_data['path'])} -r requirements.txt"
-        run_cmd(cmd)
+        needs_install = False
+
+        if not os.path.exists(".git"):
+            print("[*] No .git folder found.")
+            repair_git_repo()
+            needs_install = True
+        else:
+            print("[*] Checking for updates...")
+            try:
+                old_head = subprocess.check_output(["git", "rev-parse", "HEAD"], encoding='utf-8', stderr=subprocess.DEVNULL).strip()
+            except:
+                old_head = ""
+                
+            try:
+                subprocess.run(["git", "pull"], check=True)
+                new_head = subprocess.check_output(["git", "rev-parse", "HEAD"], encoding='utf-8', stderr=subprocess.DEVNULL).strip()
+
+                if old_head != new_head or not old_head:
+                    needs_install = True
+                    
+            except subprocess.CalledProcessError:
+                print("\n[!] 'git pull' failed.")
+                print("[*] Attempting automatic recovery...")
+                repair_git_repo()
+                needs_install = True
+
+        if needs_install:
+            print("\n[*] Updates found. Installing/Verifying requirements...")
+            install_fmt = ENV_TEMPLATES[env_data['type']]['install']
+            cmd = f"{install_fmt.format(dir=env_data['path'])} -r requirements.txt"
+            run_cmd(cmd)
+        else:
+            print("\n[*] Code is already up to date. Skipping requirements installation.")
 
     elif args.mode == "upgrade":
         do_upgrade(cfg)

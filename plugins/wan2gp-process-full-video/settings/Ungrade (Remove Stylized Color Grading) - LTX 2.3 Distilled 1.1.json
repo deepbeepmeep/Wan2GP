@@ -1,7 +1,7 @@
 {
   "settings_version": 2.58,
-  "model_type": "ltx2_22B_distilled",
-  "prompt": "generate a video",
+  "model_type": "ltx2_22B_distilled_1_1",
+  "prompt": "Remove stylized color grading",
   "num_inference_steps": 8,
   "sliding_window_size": 481,
   "force_fps": "control",
@@ -12,6 +12,6 @@
   "denoising_strength": 1,
   "loras_multipliers": "1",
   "activated_loras": [
-    "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-ic-lora-uncompress.safetensors"
+    "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-ic-lora-ungrade.safetensors"
   ]
 }

@@ -1,7 +1,7 @@
 {
   "settings_version": 2.58,
   "model_type": "ltx2_22B_distilled",
-  "prompt": "generate a video",
+  "prompt": "Remove blur",
   "num_inference_steps": 8,
   "sliding_window_size": 481,
   "force_fps": "control",

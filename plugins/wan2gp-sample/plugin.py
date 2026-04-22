@@ -1,5 +1,6 @@
+from datetime import datetime
 import time
-
+import json
 import gradio as gr
 
 from shared.utils.plugins import WAN2GPPlugin
@@ -23,6 +24,7 @@ def release_GPU(state):
 class ConfigTabPlugin(WAN2GPPlugin):
     def setup_ui(self):
         self.request_global("get_current_model_settings")
+        self.request_global("refresh_model_defs")        
         self.request_component("refresh_form_trigger")
         self.request_component("state")
         self.request_component("resolution")
@@ -100,11 +102,30 @@ class ConfigTabPlugin(WAN2GPPlugin):
             if job is not None and not job.done:
                 job.cancel()
 
+        def write_finetune():
+            the_time= datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            finetune_def =  {
+                "model": {
+                        "name": f"Finetune of {the_time}",
+                        "architecture": "ltx2_22B",
+                        "description": "enjoy this finetune of the moment",
+                "URLs": "ltx2_22B",
+                "preload_URLs":"ltx2_22B",        
+                "ltx2_pipeline": "distilled"
+                },
+                "prompt": f"A video that is all about {the_time}",
+            }
+            with open(f"finetunes/to_be_deleted{the_time}.json", "w", encoding="utf-8") as writer:
+                writer.write(json.dumps(finetune_def, indent=4))
+            self.refresh_model_defs()
+            gr.Info(f"finetune {the_time} had been created")
+
+
         with gr.Column():
             state = self.state
             settings = self.get_current_model_settings(state.value)
             prompt = settings["prompt"]
-            gr.HTML("<B><B>Sample Plugin that illustrates</B>:<BR>-How to get Settings from Main Form and then Modify them<BR>-How to suspend the Video Gen (and release VRAM) to execute your own GPU intensive process.<BR>-How to switch back automatically to the Main Tab<BR>-How to trigger a Video Gen from a plugin an track its progress")
+            gr.HTML("<B><B>Sample Plugin that illustrates</B>:<BR>-How to get Settings from Main Form and then Modify them<BR>-How to suspend the Video Gen (and release VRAM) to execute your own GPU intensive process.<BR>-How to switch back automatically to the Main Tab<BR>-How to trigger a Video Gen from a plugin an track its progress<BR>-Add a new finetune on the fly")
             sample_text = gr.Text(label="Prompt Copy", value=prompt, lines=5)
             update_btn = gr.Button("Update Prompt On Main Page")
             gr.Markdown()
@@ -114,7 +135,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
             gr.Markdown("---")
             start_btn = gr.Button("Generate a LTX 2.3 Video")
             output_video = gr.Video(label="Output")
-            abort_btn = gr.Button("Abort")
+            abort_btn = gr.Button("Abort Generation")
+
+            write_finetune_btn = gr.Button("Generate a Random LTX 2 Finetune")
 
         self.on_tab_outputs = [sample_text]
 
@@ -123,3 +146,5 @@ class ConfigTabPlugin(WAN2GPPlugin):
         goto_btn.click(fn=self.goto_video_tab, inputs=[state], outputs=[self.main_tabs])
         start_btn.click(fn=generate_video, outputs=[output_video], queue=False)
         abort_btn.click(fn=cancel_demo, queue=False)
+        write_finetune_btn.click(fn=write_finetune)
+

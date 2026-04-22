@@ -119,7 +119,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.7.6"
-WanGP_version = "11.35"
+WanGP_version = "11.351"
 settings_version = 2.58
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2690,38 +2690,50 @@ def init_model_def(model_type, model_def):
     return default_model_def
 
 
-models_def_paths =  glob.glob( os.path.join("defaults", "*.json") ) + glob.glob( os.path.join("finetunes", "*.json") ) 
-models_def_paths.sort()
-for file_path in models_def_paths:
-    model_type = os.path.basename(file_path)[:-5]
-    with open(file_path, "r", encoding="utf-8") as f:
-        try:
-            json_def = json.load(f)
-        except Exception as e:
-            raise Exception(f"Error while parsing Model Definition File '{file_path}': {str(e)}")
-    model_def = json_def["model"]
-    model_def["path"] = file_path
-    del json_def["model"]      
-    settings = json_def   
-    existing_model_def = models_def.get(model_type, None) 
-    if existing_model_def is not None:
-        existing_settings = models_def.get("settings", None)
-        if existing_settings != None:
-            existing_settings.update(settings)
-        existing_model_def.update(model_def)
-    else:
-        models_def[model_type] = model_def # partial def
-        model_def= init_model_def(model_type, model_def)
-        models_def[model_type] = model_def # replace with full def
-        model_def["settings"] = settings
+def refresh_model_defs():
+    global models_def, model_types, displayed_model_types
+    models_def = {}
+    displayed_model_types = []
+    model_types = []
+    models_def_paths =  glob.glob( os.path.join("defaults", "*.json") ) 
+    defaults_paths = models_def_paths.copy()
+    models_def_paths += glob.glob( os.path.join("finetunes", "*.json") ) 
+    models_def_paths.sort()
+    for file_path in models_def_paths:
+        model_type = os.path.basename(file_path)[:-5]
+        with open(file_path, "r", encoding="utf-8") as f:
+            try:
+                json_def = json.load(f)
+            except Exception as e:
+                if file_path in defaults_paths:
+                    raise Exception(f"Error while parsing Model Definition File '{file_path}': {str(e)}")
+                else:
+                    print(f"Finetune Definition File '{file_path}' will be ignored as there was an error in its parsing: {str(e)}")
+                    continue
+        model_def = json_def["model"]
+        model_def["path"] = file_path
+        del json_def["model"]      
+        settings = json_def   
+        existing_model_def = models_def.get(model_type, None) 
+        if existing_model_def is not None:
+            existing_settings = models_def.get("settings", None)
+            if existing_settings != None:
+                existing_settings.update(settings)
+            existing_model_def.update(model_def)
+        else:
+            models_def[model_type] = model_def # partial def
+            model_def= init_model_def(model_type, model_def)
+            models_def[model_type] = model_def # replace with full def
+            model_def["settings"] = settings
 
-model_types = models_def.keys()
-displayed_model_types= []
-for model_type in model_types:
-    model_def = get_model_def(model_type)
-    if not model_def is None and model_def.get("visible", True): 
-        displayed_model_types.append(model_type)
+    model_types = models_def.keys()
+    displayed_model_types= []
+    for model_type in model_types:
+        model_def = get_model_def(model_type)
+        if not model_def is None and model_def.get("visible", True): 
+            displayed_model_types.append(model_type)
 
+refresh_model_defs()
 
 transformer_types = server_config.get("transformer_types", [])
 new_transformer_types = []

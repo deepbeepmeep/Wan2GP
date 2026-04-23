@@ -15,13 +15,14 @@ def run(client: DebugClient, options: dict):
     print("=" * 80)
     
     try:
-        from gpu_orchestrator.runpod_client import create_runpod_client, get_network_volumes
-        
-        runpod_client = create_runpod_client()
-        
+        from runpod_lifecycle import RunPodConfig, get_network_volumes
+        from runpod_lifecycle.storage import get_storage_volume_id
+
+        runpod_config = RunPodConfig.from_env()
+
         # Get all storage volumes from RunPod
         print("\n📊 RunPod Network Volumes:\n")
-        volumes = get_network_volumes(runpod_client.api_key)
+        volumes = get_network_volumes(runpod_config.api_key)
         
         if not volumes:
             print("   No network volumes found")
@@ -72,11 +73,11 @@ def run(client: DebugClient, options: dict):
             print(f"   {'='*60}")
             
             # Get volume ID
-            volume_id = runpod_client._get_storage_volume_id(storage_name)
+            volume_id = get_storage_volume_id(runpod_config.api_key, storage_name)
             if not volume_id:
                 print(f"      ❌ Could not find volume ID")
                 continue
-            
+
             # Pick a worker with recent heartbeat
             check_worker = None
             for w in storage_workers:
@@ -84,23 +85,23 @@ def run(client: DebugClient, options: dict):
                 if runpod_id:
                     check_worker = w
                     break
-            
+
             if not check_worker:
                 print(f"      ❌ No worker available to SSH")
                 continue
-            
+
             runpod_id = check_worker.get('metadata', {}).get('runpod_id')
             print(f"      Checking via worker: {check_worker['id']}")
             print(f"      RunPod ID: {runpod_id}")
-            
-            # Check storage health
-            health = runpod_client.check_storage_health(
-                storage_name=storage_name,
-                volume_id=volume_id,
-                active_runpod_id=runpod_id,
+
+            # Check storage health via the pod's SSH
+            import asyncio
+            from runpod_lifecycle import get_pod
+            pod = asyncio.run(get_pod(runpod_id, runpod_config))
+            health = asyncio.run(pod.check_storage_health(
                 min_free_gb=int(os.getenv('STORAGE_MIN_FREE_GB', '50')),
-                max_percent_used=int(os.getenv('STORAGE_MAX_PERCENT_USED', '85'))
-            )
+                max_percent_used=int(os.getenv('STORAGE_MAX_PERCENT_USED', '85')),
+            ))
             
             print()
             if health.get('error'):
@@ -125,27 +126,28 @@ def run(client: DebugClient, options: dict):
         if expand_target:
             print(f"\n🔧 Expanding storage '{expand_target}'...")
             
-            volume_id = runpod_client._get_storage_volume_id(expand_target)
+            volume_id = get_storage_volume_id(runpod_config.api_key, expand_target)
             if not volume_id:
                 print(f"   ❌ Could not find volume ID for '{expand_target}'")
                 return False
-            
+
             # Get current size
-            volumes = get_network_volumes(runpod_client.api_key)
+            volumes = get_network_volumes(runpod_config.api_key)
             volume_info = next((v for v in volumes if v.get('name') == expand_target), None)
-            
+
             if not volume_info:
                 print(f"   ❌ Could not find volume info for '{expand_target}'")
                 return False
-            
+
             current_size = volume_info.get('size', 100)
             increment = int(os.getenv('STORAGE_EXPANSION_INCREMENT_GB', '50'))
             new_size = current_size + increment
-            
+
             print(f"   Current size: {current_size} GB")
             print(f"   New size: {new_size} GB (+{increment} GB)")
-            
-            if runpod_client._expand_network_volume(volume_id, new_size):
+
+            from runpod_lifecycle.storage import _expand_network_volume
+            if _expand_network_volume(runpod_config.api_key, volume_id, new_size):
                 print(f"   ✅ Successfully expanded to {new_size} GB!")
             else:
                 print(f"   ❌ Expansion failed for '{expand_target}'")

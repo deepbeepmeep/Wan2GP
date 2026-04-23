@@ -129,3 +129,6 @@ Wan2GP_original
 # Supabase edge functions (managed separately)
 supabase/
 .env.example
+
+# live_test run artifacts
+scripts/live_test/runs/

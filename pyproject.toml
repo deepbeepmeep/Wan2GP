@@ -86,6 +86,7 @@ dependencies = [
   "supabase>=2.23.0",
   "python-dotenv>=1.0.0",
   "replicate>=1.0.0",
+  "runpod-lifecycle @ git+https://github.com/banodoco/runpod-lifecycle@v0.1.0",
 ]
 
 [project.optional-dependencies]

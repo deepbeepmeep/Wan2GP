@@ -6,13 +6,13 @@ from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
 import gradio as gr
 from pathlib import Path
-import shutil
 
 _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
 _GEMMA_FILENAME = f"{_GEMMA_FOLDER}.safetensors"
 _GEMMA_QUANTO_FILENAME = f"{_GEMMA_FOLDER}_quanto_bf16_int8.safetensors"
 _LORAS_MIGRATED = False
+_LORA_SPEC_KEYS = ("distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora")
 
 _ARCH_SPECS = {
     "ltx2_19B": {
@@ -52,7 +52,7 @@ _ARCH_SPECS = {
         "profiles_dir": "ltx2",
         "preset_profiles_dir": "ltx2_presets",
         "distilled_preset_profiles_dir": "ltx2_distilled_presets",
-        "lora_dir": "ltx2_22B",
+        "lora_dir": "ltx2",
     },
 }
 
@@ -120,27 +120,25 @@ def _migrate_loras():
     wgp = sys.modules.get("wgp")
     lora_root = wgp.get_lora_root()
 
-    lora_19B_dir = os.path.join(lora_root, _ARCH_SPECS["ltx2_19B"]["lora_dir"])
-    lora_22B_dir = os.path.join(lora_root, _ARCH_SPECS["ltx2_22B"]["lora_dir"])
-    source, target_folder = Path(lora_22B_dir), Path(lora_19B_dir)
-    if source.exists():
-        print("LTX-2 and LTX-2.3 merged again, bye bye split loras. Please verify that the loras are in the right folders.")
-        target_folder.mkdir(parents=True, exist_ok=True)
-        for f in source.iterdir():
-            if f.is_file() and not os.path.isfile(str(target_folder / f.name)):
-                shutil.move(f, target_folder / f.name)
-        shutil.move(str(source), os.path.join( os.path.dirname(str(source)),  "old_" + os.path.basename(str(source))))
+    lora_dir = Path(lora_root) / _ARCH_SPECS["ltx2_19B"]["lora_dir"]
+    lora_dir.mkdir(parents=True, exist_ok=True)
 
-    for model_type, spec in _ARCH_SPECS.items():
-        lora_dir = lora_19B_dir
-        for key in ["distilled_lora", "distilled_1_1_lora", "union_control_lora", "id_lora", "outpaint_lora"]: 
+    moved = set()
+    for spec in _ARCH_SPECS.values():
+        for key in _LORA_SPEC_KEYS:
             filename = spec.get(key, None)
-            if filename is None: continue
-            source = os.path.join(lora_dir, filename)
-            if source is not None and os.path.isfile(source):
-                target = fl.get_download_location(filename)
-                shutil.move(source, target)
-                print(f"[WAN2GP][LTX2] Moved {key} LoRA '{source}' -> '{target}'")
+            if filename is None or filename in moved:
+                continue
+            source = fl.locate_file(filename, error_if_none=False)
+            if source is None:
+                continue
+            target = lora_dir / filename
+            if Path(source).resolve() == target.resolve() or target.exists():
+                moved.add(filename)
+                continue
+            shutil.move(source, target)
+            print(f"[WAN2GP][LTX2] Moved {key} LoRA '{source}' -> '{target}'")
+            moved.add(filename)
             
     _LORAS_MIGRATED = True
 
@@ -173,7 +171,20 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
+        preload_urls = model_def.get("preload_URLs")
         spec = _get_arch_spec(base_model_type)
+        if isinstance(preload_urls, list): 
+            # migrate old finetunes
+            lora_filenames = {spec[key] for key in _LORA_SPEC_KEYS if key in spec}
+            def add_lora_dir_suffix(entry):
+                if not isinstance(entry, str) or "|%lora_dir" in entry:
+                    return entry
+                source_entry = entry.split("|", 1)[0]
+                if source_entry.startswith("http") and os.path.basename(source_entry) in lora_filenames:
+                    return f"{source_entry}|%lora_dir"
+                return entry
+            model_def["preload_URLs"] = [add_lora_dir_suffix(entry) for entry in preload_urls]
+
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
 
         distilled = pipeline_kind == "distilled"

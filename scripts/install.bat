@@ -51,8 +51,8 @@ echo ======================================================
 echo                SELECT ENVIRONMENT TYPE
 echo ======================================================
 echo 1. Use 'venv' (Easiest - Comes prepackaged with python)
-echo 2. Use 'uv' (Recommended - Handles Python 3.11 better)
-echo 3. Use 'Conda'
+echo 2. Use 'uv' (Recommended - Faster but requires installing uv)
+echo 3. Use 'conda'
 echo 4. No Environment (Not Recommended)
 echo 5. Exit
 echo ------------------------------------------------------

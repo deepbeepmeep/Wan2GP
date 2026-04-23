@@ -690,7 +690,7 @@ def repair_git_repo():
 if __name__ == "__main__":
     inject_system_paths()
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["install", "run", "update", "upgrade", "status", "manage", "get_env_info"])
+    parser.add_argument("mode", choices=["install", "update", "upgrade", "status", "manage", "get_env_info"])
     parser.add_argument("--env", default="venv", help="Type of env for install (venv, uv, conda, none)")
     parser.add_argument("--auto", action="store_true", help="Run 1-click automatic install")
     args = parser.parse_args()
@@ -725,31 +725,6 @@ if __name__ == "__main__":
             do_install_auto(args.env, cfg, profile_key)
         else:
             do_install_interactive(args.env, cfg, profile_key)
-    
-    elif args.mode == "run":
-        manager = EnvsManager()
-        active = manager.get_active()
-        if not active:
-            print("[!] No active environment found. Run install or manage.")
-            sys.exit(1)
-        
-        env_data = manager.list_envs().get(active)
-        if not env_data:
-            print(f"[!] Active environment '{active}' data missing from registry.")
-            sys.exit(1)
-
-        print(f"[*] Launching using active environment: {active}")
-
-        extra_args = ""
-        if os.path.exists("scripts/args.txt"):
-            with open("scripts/args.txt", "r") as f:
-                lines = [l.strip() for l in f.readlines() if l.strip() and not l.startswith("#")]
-                extra_args = " ".join(lines)
-        
-        env_vars = profile.get("env", {})
-        cmd_fmt = ENV_TEMPLATES[env_data['type']]['run']
-        cmd = f"{cmd_fmt.format(dir=env_data['path'])} wgp.py {extra_args}"
-        run_cmd(cmd, env_vars=env_vars)
 
     elif args.mode == "update":
         manager = EnvsManager()

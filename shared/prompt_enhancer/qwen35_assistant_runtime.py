@@ -277,8 +277,8 @@ class Qwen35AssistantRuntime:
             f"kv_cache={self._describe_tensor(kv_cache)}"
         )
 
-    def _get_engine(self, max_context_tokens: int, max_new_tokens: int):
-        engine = qwen35_text._get_or_create_vllm_engine(self.model, usage_mode="assistant")
+    def _get_engine(self, max_context_tokens: int, max_new_tokens: int, usage_mode: str = "assistant"):
+        engine = qwen35_text._get_or_create_vllm_engine(self.model, usage_mode=usage_mode)
         desired_model_len, desired_num_seqs, desired_num_batched_tokens = engine._compute_runtime_hints(prompt_len=max_context_tokens, max_tokens=max_new_tokens, cfg_scale=1.0)
         desired_model_len = max(desired_model_len, engine._get_min_model_len_hint())
         desired_num_batched_tokens = max(desired_num_batched_tokens, desired_model_len * desired_num_seqs)
@@ -512,7 +512,11 @@ class Qwen35AssistantRuntime:
             f"max_new={int(max_new_tokens)} seed={seed} do_sample={bool(do_sample)}"
         )
         snapshot = self.snapshot_context()
-        engine = self._get_engine(max_context_tokens=len(prompt_token_ids), max_new_tokens=max_new_tokens)
+        engine = self._get_engine(
+            max_context_tokens=len(prompt_token_ids),
+            max_new_tokens=max_new_tokens,
+            usage_mode="assistant" if snapshot is not None else "multimodal",
+        )
         try:
             temp, normalized_top_p, normalized_top_k = qwen35_text._normalize_vllm_sampling(
                 do_sample=bool(do_sample),

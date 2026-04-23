@@ -533,7 +533,7 @@ class family_handler():
             extra_model_def["control_net_weight_name"] = "Vace"
             extra_model_def["control_net_weight_size"] = 2
             extra_model_def["guide_preprocessing"] = {
-                    "selection": ["", "UV", "PV", "DV", "SV", "LV", "CV", "MV", "V", "PDV", "PSV", "PLV" , "DSV", "DLV", "SLV"],
+                    "selection": ["", "UV", "PV", "OV", "DV", "SV", "LV", "CV", "MV", "V", "PDV", "PSV", "PLV" , "DSV", "DLV", "SLV"],
                     "labels" : { "V": "Use Vace raw format"}
                 }
             extra_model_def["mask_preprocessing"] = {

@@ -354,35 +354,6 @@ def _coerce_image_list(image_value):
     return image_value
 
 
-def _adjust_dev_distilled_lora_strengths(model_def, pipeline, sample_solver, audio_prompt_type, loras_slists, loras_selected):
-    if not isinstance(pipeline, TI2VidTwoStagesPipeline):
-        return loras_slists
-    if not loras_slists or model_def.get("ltx2_pipeline", "two_stage") == "distilled":
-        return loras_slists
-    use_hq_sampler = sample_solver == "res2s"
-    use_id_lora = "1" in audio_prompt_type
-    if not use_hq_sampler and not use_id_lora:
-        return loras_slists
-    phase1 = loras_slists.get("phase1")
-    phase2 = loras_slists.get("phase2")
-    if not isinstance(phase2, list) or not phase2 or not isinstance(phase1, list) or not phase1:
-        return loras_slists
-    adjusted_slists = None
-    for idx, lora_path in enumerate(loras_selected or []):
-        if idx >= len(phase1) or idx >= len(phase2):
-            break
-        if "distilled-lora" not in os.path.basename(str(lora_path)).lower():
-            continue
-        if adjusted_slists is None:
-            adjusted_slists = copy.deepcopy(loras_slists)
-        if use_hq_sampler:
-            adjusted_slists["phase1"][idx] = 0.25
-            adjusted_slists["phase2"][idx] = 0.5
-        elif use_id_lora:
-            adjusted_slists["phase2"][idx] = 0.8
-    return adjusted_slists or loras_slists
-
-
 def _to_latent_index(frame_idx: int, stride: int) -> int:
     frame_idx = int(frame_idx)
     stride = int(stride)
@@ -809,8 +780,9 @@ class LTX2:
             trans = self.model
         return trans, None
 
-    def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, base_model_type=None, model_def = None, **kwargs):
+    def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, base_model_type=None, model_def = None, lora_dir = None, sample_solver = None, **kwargs):
         control_map = {
+            "O": "pose_align",
             "P": "pose",
             "D": "depth",
             "E": "canny",
@@ -831,16 +803,25 @@ class LTX2:
         def _append_preload_lora(signature, multiplier):
             signature = signature.lower()
             for file_name in preload_urls:
-                base_name = os.path.basename(file_name)
+                local_filename = fl.get_local_model_filename(file_name, lora_dir=lora_dir)
+                base_name = os.path.basename(local_filename)
                 if signature in base_name.lower():
                     if base_name.lower() in selected_loras or any(os.path.basename(lora).lower() == base_name.lower() for lora in loras):
                         return
-                    loras.append(fl.locate_file(base_name))
+                    loras.append(local_filename)
                     loras_mult.append(multiplier)
                     return
 
         if pipeline_kind != "distilled" and guidance_phases > 1:
-            _append_preload_lora("distilled-lora", "0;1")
+            use_hq_sampler = sample_solver == "res2s"
+            use_id_lora = "1" in audio_prompt_type
+            if use_hq_sampler:
+                mult = "0.25;0.5"
+            elif use_id_lora:
+                mult = "0;0.8"
+            else:
+                mult = "0;1"
+            _append_preload_lora("distilled-lora", mult)
         if pipeline_kind == "distilled":
             if any(letter in video_prompt_type for letter in control_map):
                 _append_preload_lora("union-control", 1.0)
@@ -848,7 +829,7 @@ class LTX2:
                 _append_preload_lora("outpaint", 1.0)
         if "1" in audio_prompt_type:
             id_signature = "id-lora-celebvhq-ltx2.3" if resolved_base_model_type == "ltx2_22B" else "id-lora-celebvhq-ltx2"
-            _append_preload_lora(id_signature, "1;0")
+            _append_preload_lora(id_signature, 1.0 if guidance_phases == 1 else "1;0")
         return loras, loras_mult
 
     def generate(
@@ -865,7 +846,7 @@ class LTX2:
         conditioning_latents_size: int = 0,
         input_frames=None,
         input_frames2=None,
-        input_ref_images=None,
+        frames_to_inject = None,
         input_masks=None,
         input_masks2=None,
         frames_relative_positions_list=None,
@@ -918,18 +899,25 @@ class LTX2:
             audio_prompt_type = audio_prompt_type.replace("1", "")
         image_start = _coerce_image_list(image_start)
         image_end = _coerce_image_list(image_end)
-        if input_ref_images is None:
-            input_ref_images = []
-        elif isinstance(input_ref_images, (list, tuple)):
-            input_ref_images = list(input_ref_images)
-        else:
-            input_ref_images = [input_ref_images]
+        if frames_to_inject is None:
+            frames_to_inject = []
         if frames_relative_positions_list is None:
             frames_relative_positions_list = []
         elif isinstance(frames_relative_positions_list, (list, tuple)):
             frames_relative_positions_list = list(frames_relative_positions_list)
         else:
             frames_relative_positions_list = [frames_relative_positions_list]
+        if image_start is None:
+            new_frames_to_inject = []
+            new_frames_relative_positions_list = []
+            for frame_to_inject, frame_relative_position in zip(frames_to_inject,frames_relative_positions_list):
+                if frame_relative_position == 0:
+                    image_start = frame_to_inject
+                else:
+                    new_frames_to_inject.append(frame_to_inject)
+                    new_frames_relative_positions_list.append(frame_relative_position)
+            frames_to_inject = new_frames_to_inject 
+            frames_relative_positions_list = new_frames_relative_positions_list
 
         outpainting_dims = _normalize_outpainting_dims(outpainting_dims)
         any_outpainting = outpainting_dims is not None and "V" in video_prompt_type
@@ -945,13 +933,12 @@ class LTX2:
                 latent_stride = int(getattr(scale_factors, "time", scale_factors[0]))
 
         input_video_strength = max(0.0, min(1.0, input_video_strength))
-
         if requested_outpaint_gamma_roundtrip:
             conditioning_gamma_applied = _apply_gamma_to_media(image_start, LTX2_OUTPAINT_GAMMA)
             conditioning_gamma_applied = _apply_gamma_to_media(image_end, LTX2_OUTPAINT_GAMMA) or conditioning_gamma_applied
             if torch.is_tensor(input_video) and prefix_frames_count > 0:
                 conditioning_gamma_applied = _apply_gamma_to_media(input_video[:, :prefix_frames_count], LTX2_OUTPAINT_GAMMA) or conditioning_gamma_applied
-            for ref_image in input_ref_images:
+            for ref_image in frames_to_inject:
                 conditioning_gamma_applied = _apply_gamma_to_media(ref_image, LTX2_OUTPAINT_GAMMA) or conditioning_gamma_applied
             if conditioning_gamma_applied:
                 print("[WAN2GP][LTX2] Applying full-frame gamma preprocessing for outpainting IC-LoRA conditioning images.")
@@ -1036,8 +1023,8 @@ class LTX2:
                 extra_list.append(entry)
 
         def _append_injected_ref_entries(target_list, extra_list=None):
-            injected_ref_count = min(len(input_ref_images), len(frames_relative_positions_list))
-            for ref_image, frame_idx in zip(input_ref_images[:injected_ref_count], frames_relative_positions_list[:injected_ref_count]):
+            injected_ref_count = min(len(frames_to_inject), len(frames_relative_positions_list))
+            for ref_image, frame_idx in zip(frames_to_inject[:injected_ref_count], frames_relative_positions_list[:injected_ref_count]):
                 entry = (ref_image, int(frame_idx), input_video_strength, "lanczos")
                 target_list.append(entry)
                 if extra_list is not None:
@@ -1184,14 +1171,7 @@ class LTX2:
         if "1" in audio_prompt_type and effective_audio_cfg_scale <= 1.0:
             effective_audio_cfg_scale = LTX2_ID_LORA_AUDIO_CFG_SCALE
         sample_solver = sample_solver.lower()
-        loras_slists = _adjust_dev_distilled_lora_strengths(
-            self.model_def,
-            self.pipeline,
-            sample_solver,
-            audio_prompt_type,
-            loras_slists,
-            loras_selected,
-        )
+
         if isinstance(self.pipeline, TI2VidTwoStagesPipeline):
             pipeline_output = self.pipeline(
                 prompt=input_prompt,

@@ -620,8 +620,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         if "enhancer_enabled" in changes or "enhancer_mode" in changes or "prompt_enhancer_quantization" in changes or "lm_decoder_engine" in changes or DEEPY_ENABLED_KEY in changes or DEEPY_VRAM_MODE_KEY in changes:
             get_or_create_assistant_session(state).force_loading_status_once = True
-            self.release_deepy_vram(state, clear_session_state=False)
+            self.release_deepy_vram(state, clear_session_state=True, discard_runtime_snapshot=True)
             self.reset_prompt_enhancer()
+            self.reset_prompt_enhancer_if_requested()
         if "enable_int8_kernels" in changes:
             self.apply_int8_kernel_setting(new_server_config["enable_int8_kernels"], True)
 

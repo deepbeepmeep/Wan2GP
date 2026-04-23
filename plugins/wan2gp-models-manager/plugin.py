@@ -51,7 +51,6 @@ class modelsManagerPlugin(WAN2GPPlugin):
         self.request_global("get_model_handler")
         self.request_global("get_model_recursive_prop")
         self.request_global("get_model_filename")
-        self.request_global("get_local_model_filename")
         self.request_global("get_lora_dir")
         self.request_global("compact_name")
         self.request_global("create_models_hierarchy")
@@ -766,7 +765,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             get_model_def=self.get_model_def,
             get_model_recursive_prop=self.get_model_recursive_prop,
             get_model_filename=self.get_model_filename,
-            get_local_model_filename=self.get_local_model_filename,
+            get_local_model_filename=fl.get_local_model_filename,
             get_lora_dir=self.get_lora_dir,
             get_parent_model_type=self.get_parent_model_type,
             get_base_model_type=self.get_base_model_type,
@@ -2942,7 +2941,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
             return repo_rel
 
         try:
-            local_path = self.get_local_model_filename(value, extra_paths=force_folder)
+            local_path = fl.get_local_model_filename(value, extra_paths=force_folder)
         except Exception:
             local_path = None
         if local_path:

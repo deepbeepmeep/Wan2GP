@@ -34,7 +34,7 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 ## 🔥 Latest Updates : 
 
-### 14th of April 2026: WanGP v11.31, LTX-2 Mega Mix
+### 21st of April 2026: WanGP v11.35, LTX-2 Mega Mix
 Lots of nice goodies for **LTX-2**:
 
 - **LTX-2.3 Distilled 1.1**: new version of the *Distilled model* released by *LTX team*, it should offer better audio and visuals. You will find also a Dev 1.1 version which uses Distilled 1.1 for Phase 2.
@@ -49,11 +49,27 @@ Lots of nice goodies for **LTX-2**:
 
 - **Silent Movie Mode**: if for some reason you want video with not only no sound but that takes into account that there is no sound (you dont want people to open their mouth for instance), just now leave the *Control Audio* empty
 
-- **Process Full Video Plugin**: this *bundled PlugIn* which needs to be enabled first in *the PlugIn tab*, right now supports only *Outpainting*. It relies on *LTX2 Lora outpainting*. It is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. If you are patient enough you can change the Aspect Ratio of a few hours movie (check out below the 1 min sample). Behold how *Sliding Windows transitions* are almost invisible !
+~~ - LTX2/2.3 Loras Split: as LTX2.0 Loras work badly with LTX2-3 and were getting on the way, now each version of LTX2 has its own lora folder. Loras will be moved automatically at startup using a lora migration script. I invit you to verify that the loras landed in the right folder.~~ 
+
+- **System Loras Multipliers Overrides**: WanGP adds automatically and transparently loras (that is they are loaded although they are not visible) if needed by a feature (distilled lora, id lora, outpaint lora, union control lora). You can now override the default multipliers used by WanGP by selecting the target lora in the *Activated Loras* input and by specifiying the corresponding *Loras Multipliers*.
+
+- **Transfer Human Motion With Pose Alignment**: you are trying to transfer a human motion from a control video, but you use a start image with a person who has a different body shape (larger, taller, ...) and stands in a different location in the frame. This is not going to work well as you start image wil end up distorted. This is a past issue, as now the control video pose can be aligned with the start image if you pick Transfer *Human Motion With Pose Alignment*. This feature is also supported by *Wan Vace*, start image  must be the *Background ref image*.
+
+- **Injected Frames & Sliding Windows**: injected frames were not properly injected starting from window no 2. This is now supported.
+
+- **Process Process Full Video Plugin**: this *bundled PlugIn* which needs to be enabled first in *the PlugIn tab*, right now supports only *Outpainting*. It relies on *LTX2 Lora outpainting*. It is more or less a *Super Sliding Windows* mode but without the *RAM restrictions* and no risk to explode the *Video Gallery* with huge files. If you are patient enough you can change the Aspect Ratio of a few hours movie (check out below the 1 min sample). Behold how *Sliding Windows transitions* are almost invisible !
+
+- **NEW Processes for Full Video Plugin**: *Refocus* (remove blur), *Ungrade* (remove stylized color grading) and *Uncompress* (remove compression artifacts) have been added. Many thanks to *Oumoumad Mohamed* who created the Ic Loras (including the *Outpainting* lora ) that power these processes. If you have found some Ic Loras that are useful and dont cause glitches with Sliding Windows, let me know and I will add them.
 
 - **WanGP API Video Gen**: *Plugin Developers* can now *Queue a Gen* directly from a plugin. This opens the possibility of plugins that place various gen orders and then combine the results (hint: we could have our very own version of *LTX-Destop* inside WanGP).
 
-*update 11.31*: fixed phase 1 forced incorrectly in some cases
+- **New One Click Install / Update Scripts**: We have to thank **Tophness / @steve_Jabz** for that one. *Huge Kudos to him!* The scripts will not only install WanGP but also all the *Kernels* (among *Triton, Sage, Flash, GGuf, Lightx2v, Nunchaku*) supported by your GPU. Please have a look at the instructions further down. Dont't hesitate to share feedback or report any issue.
+
+*update 11.31*: fixed phase 1 forced incorrectly in some cases\
+*update 11.32*: bugs fixes, Process Full Video now supports Distilled 1.1 & accepts video without audio\
+*update 11.33*: Separated LTX2 & LTX2.3 loras in different folders, added easy loras multipliers override\
+*update 11.34*: Reverted split as not popular\
+*update 11.35*: added Aligned Pose Transfer, Injected Frames & Sliding Windows support, new processes for Process Full Video Plugin 
 
 ### 11th of April 2026: WanGP v11.26, Now I Can See
 
@@ -66,8 +82,6 @@ As a bonus I have tuned *Sliding Windows* for Ic Loras, and if you set *Overlap 
 - **Outpaint Ic Lora**: this new impressive Ic Lora will be loaded automatically if you select the *Control Video for Ic Lora* option and enable *Outpainting*. If you use Sliding Windows with Outpainting you will be able to outpaint a full movie (assuming you have enough RAM).
 
 - **New Outpainting Auto Change Aspect Ratio**: As a reminder WanGP let you define manually where an Outpainting should happen. Alternatively you can now ask WanGP to use outpainting to change the *Width/ Height Aspect ratio* of the Control Video. For instance you can turn any 16/9 video into a 4/3 video by generating new details instead of adding black bars. The *Top/Bottom/Left/Right Sliders* in this new mode will be used to define which area should be expanded in priority to meet the requested aspect ratio.. 
-
--- **New One Click Install / Update Scripts**: We have to thank **Tophness / @steve_Jabz** for that one. *Huge Kudos to him!* The scripts will not only install WanGP but also all the *Kernels* (among *Triton, Sage, Flash, GGuf, Lightx2v, Nunchaku*) supported by your GPU. Please have a look at the instructions further down. Dont't hesitate to share feedback or report any issue.
 
 *update 11.26*: fixed outpainting ignored with if Manual Expansion was selected
 
@@ -265,18 +279,8 @@ It is recommended to use in Pinokio the Community Scripts *wan2gp* or *wan2gp-am
 
 ---
 
-### Manual installation: (old python 3.10, to be deprecated)
 
-```bash
-git clone https://github.com/deepbeepmeep/Wan2GP.git
-cd Wan2GP
-conda create -n wan2gp python=3.10.9
-conda activate wan2gp
-pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
-pip install -r requirements.txt
-```
-
-### Manual installation: (new python 3.11 setup)
+### Manual installation: (for RTX20xx - RTX50xx)
 
 ```bash
 git clone https://github.com/deepbeepmeep/Wan2GP.git
@@ -287,6 +291,17 @@ pip install torch==2.10.0 torchvision torchaudio --index-url https://download.py
 pip install -r requirements.txt
 ```
 
+### Manual installation: (for GTX 10xx)
+
+```bash
+git clone https://github.com/deepbeepmeep/Wan2GP.git
+cd Wan2GP
+conda create -n wan2gp python=3.10.9
+conda activate wan2gp
+pip install torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu128
+pip install -r requirements.txt
+```
+
 #### Run the application:
 ```bash
 python wgp.py
@@ -294,7 +309,7 @@ python wgp.py
 
 First time using WanGP ? Just check the *Guides* tab, and you will find a selection of recommended models to use.
 
-#### Update the application (stay in the old python / pytorch version):
+#### Update the application (stay in the current python / pytorch version):
 If using Pinokio use Pinokio to update otherwise:
 Get in the directory where WanGP is installed and:
 ```bash
@@ -303,29 +318,33 @@ conda activate wan2gp
 pip install -r requirements.txt
 ```
 
-#### Upgrade to 3.11, Pytorch 2.10, Cuda 13/13.1 (for non GTX10xx users)
-I recommend creating a new conda env for the Python 3.11 to avoid bad surprises. Let's call the new conda env *wangp* (instead of *wan2gp* the old name of this project)
+#### Upgrade from Python 3.10, Pytorch 2.7.1, Cuda 12.8 to Python 3.11, Pytorch 2.10, Cuda 13/13.1 (for non GTX10xx users)
+I recommend renaming first the old conda environment to avoid bad surprises when installing a different config in this old environment.
+
+```bash
+conda rename -n wan2gp  old_wan2gp
+```
+
 Get in the directory where WanGP is installed and:
 ```bash
 git pull
-conda create -n wangp python=3.11.9
-conda activate wangp
+conda create -n wa2gp python=3.11.9
+conda activate wan2gp
 pip install torch==2.10.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
 
-#### Git Errors
 Once you are done you will have to reinstall *Sage Attention*, *Triton*, *Flash Attention*. Check the **[Installation Guide](docs/INSTALLATION.md)** -
 
 if you get some error messages related to git, you may try the following (beware this will overwrite local changes made to the source code of WanGP):
 ```bash
 git fetch origin && git reset --hard origin/main
-conda activate wangp
+conda activate wan2gp
 pip install -r requirements.txt
 ```
 When you have the confirmation it works well you can then delete the old conda env:
 ```bash
-conda uninstall -n wan2gp --all  
+conda uninstall -n old_wan2gp --all  
 ```
 
 #### Run headless (batch processing):

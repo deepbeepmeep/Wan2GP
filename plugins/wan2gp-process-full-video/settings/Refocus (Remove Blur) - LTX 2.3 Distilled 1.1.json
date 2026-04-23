@@ -1,0 +1,17 @@
+{
+  "settings_version": 2.58,
+  "model_type": "ltx2_22B_distilled_1_1",
+  "prompt": "Remove blur",
+  "num_inference_steps": 8,
+  "sliding_window_size": 481,
+  "force_fps": "control",
+  "video_prompt_type": "VG",
+  "audio_prompt_type": "K",
+  "guidance_phases": 1,
+  "image_prompt_type": "V",
+  "denoising_strength": 1,
+  "loras_multipliers": "1",
+  "activated_loras": [
+    "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-ic-lora-refocus.safetensors"
+  ]
+}

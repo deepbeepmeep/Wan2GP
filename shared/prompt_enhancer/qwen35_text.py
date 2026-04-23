@@ -84,7 +84,7 @@ def get_qwen35_text_quanto_int8_path(assets_dir: str, variant: str | None = None
 
 def _resolve_gguf_linear_attention_layout_from_filename(model_path: str) -> tuple[bool, bool, bool]:
     filename = os.path.basename(str(model_path or "")).strip().lower().replace("_", "-")
-    if filename == "qwen3.5-9b-abliterated-q4-k-m-bis.gguf":
+    if filename == "qwen3.5-9b-abliterated-text-q4-k-m-bis.gguf":
         return True, True, False
     if filename in {
         "qwen3.5-9b-abliterated-text-q4-k-m.gguf",
@@ -693,6 +693,7 @@ def _unload_prompt_enhancer_text_runtime(self):
         finally:
             self._prompt_enhancer_vllm_engine = None
             self._prompt_enhancer_vllm_mode = None
+    self._prompt_enhancer_assistant_graph_pool_handle = None
     try:
         clear_qwen35_runtime_caches()
     except Exception:
@@ -943,6 +944,14 @@ def load_qwen35_text_prompt_enhancer(
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Qwen3.5 text checkpoint not found: {model_path}")
     print(f"[Qwen3.5VL][{spec['display_name']}][{backend}] Loading text checkpoint: {model_path}")
+    if backend == enhancer_quantization_GGUF:
+        print(
+            "[Qwen3.5VL]"
+            f"[{spec['display_name']}][gguf] Linear-attention layout flags: "
+            f"v_head_reordered={bool(gguf_v_head_reordered)} "
+            f"ssm_param_reordered={bool(gguf_ssm_param_reordered)} "
+            f"interleave_ssm_ab={bool(gguf_interleave_ssm_ab)}"
+        )
 
     model = _load_local_text_model(
         model_path,

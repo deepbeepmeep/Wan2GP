@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "LTX-2 2.3 Distilled 1.1",
+        "name": "LTX-2 2.3 Distilled 1.1 22B",
         "architecture": "ltx2_22B",
         "description": "LTX-2.3 distilled 1.1 checkpoint (22B) with faster generation. Please note Ic Loras Union (for Pose/Depth/Edges) and Outpainting are automatically added when needed.",
         "URLs": [

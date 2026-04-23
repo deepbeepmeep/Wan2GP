@@ -690,12 +690,23 @@ def repair_git_repo():
 if __name__ == "__main__":
     inject_system_paths()
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["install", "run", "update", "upgrade", "status", "manage"])
+    parser.add_argument("mode", choices=["install", "run", "update", "upgrade", "status", "manage", "get_env_info"])
     parser.add_argument("--env", default="venv", help="Type of env for install (venv, uv, conda, none)")
     parser.add_argument("--auto", action="store_true", help="Run 1-click automatic install")
     args = parser.parse_args()
     cfg = load_config()
-    
+
+    if args.mode == "get_env_info":
+        manager = EnvsManager()
+        active = manager.get_active()
+        
+        if not active or not manager.list_envs().get(active):
+            sys.exit(1)
+            
+        env_data = manager.list_envs()[active]
+        print(f"ENV_INFO|{env_data['type']}|{env_data['path']}")
+        sys.exit(0)
+
     if args.mode == "status":
         show_status()
         sys.exit(0)

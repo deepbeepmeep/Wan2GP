@@ -267,13 +267,13 @@ Use this script to get the latest updates for WAN2GP and upgrade dependencies.
 #### 4️⃣ Managing Environments (`scripts\manage.bat` | `/manage.sh`)
 Use this script to manage and switch between your sandboxed environments safely.
 
-* **Example Scenario 1:** Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, you can run `install.bat`, create a *new* environment called `env_testing`, and select "Use Latest".
+* **Example Scenario 1: Testing New Configurations**
+    * Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, run `install.bat`, create a *new* environment called `env_testing`, and select "Use Latest".
+    * *Recovery:* If the testing environment breaks, simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
 
-If the testing environment breaks or gives you errors, you can simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
-
-* **Example Scenario 2:** Let's say you have an environment named `venv` that works perfectly, and you want to use this with the new one-click update and run scripts. You can run `manage.bat`, select **Add Existing Environment**, copy paste it's folder path in (e.g. `C:\WAN2GP\venv`) to add this pre-existing environment, select type `venv`, then select `Set Active Environment` and type venv.
-
-Now when you open `run.bat` or `update.bat`, it will use your existing `venv` environment.
+* **Example Scenario 2: Migrating an Existing Setup**
+    * If you have a folder named `venv` that works perfectly and want to use it with the new one-click scripts, run `manage.bat` and select **Add Existing Environment**.
+    * Copy-paste the folder path (e.g., `C:\WAN2GP\venv`), select type `venv`, then use **Set Active Environment** to make it the default. Now `run.bat` and `update.bat` will target your existing setup.
 
 ---
 

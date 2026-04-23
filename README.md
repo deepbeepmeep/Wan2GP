@@ -268,10 +268,10 @@ Use this script to get the latest updates for WAN2GP and upgrade dependencies.
 Use this script to manage and switch between your sandboxed environments safely.
 
 * **Example Scenario 1:** Let's say you have an environment named `env_stable` that works perfectly, but you want to try the new "Use Latest" combo. Instead of risking your working setup, you can run `install.bat`, create a *new* environment called `env_testing`, and select "Use Latest".
-* If the testing environment breaks or gives you errors, you can simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
+ If the testing environment breaks or gives you errors, you can simply open `manage.bat`, select **Set Active Environment**, and switch back to `env_stable`. You are back up and running instantly.
 
 * **Example Scenario 2:** Let's say you have an environment named `venv` that works perfectly, and you want to use this with the new one-click update and run scripts. You can run `manage.bat`, select **Add Existing Environment**, copy paste it's folder path in (e.g. `C:\WAN2GP\venv`) to add this pre-existing environment, select type `venv`, then select `Set Active Environment` and type venv.
-* Now when you open `run.bat` or `update.bat`, it will use your existing `venv` environment.
+ Now when you open `run.bat` or `update.bat`, it will use your existing `venv` environment.
 
 ---
 

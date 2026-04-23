@@ -251,13 +251,13 @@ If you selected Manual Install, you will be guided through:
 #### 2️⃣ Starting the App (`scripts\run.bat` | `scripts/run.sh`)
 Once installed, use this script to launch the application. It runs WAN2GP using your active environment.
 
-##### ⚙️ Customizing Launch Arguments (`args.txt`)
-If you want to pass extra command-line flags to the WAN2GP launcher (like enabling advanced UI features or automatically opening your browser), create an `args.txt` file in your `scripts` folder.
-
-**Example `args.txt`:**
-```text
---advanced  --open-browser
-```
+    ##### ⚙️ Customizing Launch Arguments (`args.txt`)
+    If you want to pass extra command-line flags to the WAN2GP launcher (like enabling advanced UI features or automatically opening your browser), create an `args.txt` file in your `scripts` folder.
+    
+    **Example `args.txt`:**
+    ```text
+    --advanced  --open-browser
+    ```
 
 #### 3️⃣ Updating & Upgrading (`scripts\update.bat` | `scripts/update.sh`)
 Use this script to get the latest updates for WAN2GP and upgrade dependencies.

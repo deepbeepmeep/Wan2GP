@@ -108,7 +108,19 @@ def run_install(ssh, workdir: str) -> None:
             "fi\n"
             f"cd {shlex.quote(workdir)}\n"
             "export PATH=\"$HOME/.local/bin:$PATH\"\n"
-            "uv sync --locked --extra cuda124\n"
+            # Network volume is MooseFS which doesn't support hardlinks; force copy.
+            "export UV_LINK_MODE=copy\n"
+            # --locked dropped: main has newer pyproject deps (runpod-lifecycle)
+            # that the committed uv.lock doesn't yet include; let uv update lock in-place.
+            "for attempt in 1 2 3; do\n"
+            "  if uv sync --extra cuda124; then\n"
+            "    break\n"
+            "  fi\n"
+            "  echo \"uv sync attempt $attempt failed; cleaning partial venv and retrying\"\n"
+            "  rm -rf .venv\n"
+            "  sleep 5\n"
+            "  if [ $attempt -eq 3 ]; then exit 1; fi\n"
+            "done\n"
         )
     )
     _execute(ssh, command, timeout=3600)

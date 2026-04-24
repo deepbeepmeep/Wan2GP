@@ -75,6 +75,7 @@ def insert_spoof_task(
     )
     payload = copy.deepcopy(source_payload)
     payload.pop("notes", None)
+    payload.pop("description", None)
     payload["project_id"] = project_id
     payload["task_type"] = task_type
     payload["status"] = "Queued"

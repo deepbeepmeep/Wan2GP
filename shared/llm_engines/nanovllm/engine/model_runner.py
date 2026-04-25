@@ -500,7 +500,7 @@ class ModelRunner:
                 f"Requested max_model_len={config.max_model_len}, max_num_seqs={config.max_num_seqs}."
             )
         try:
-            self.kv_cache = torch.empty(
+            self.kv_cache = torch.zeros(
                 2,
                 kv_cache_layer_count,
                 config.num_kvcache_blocks,

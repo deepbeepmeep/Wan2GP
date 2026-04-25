@@ -33,11 +33,13 @@ WanGP supports the Wan (and derived models) but also Hunyuan Video, Flux, Qwen, 
 
 
 ## 🔥 Latest Updates : 
-### 21st of April 2026: WanGP v11.35, LTX-2 Mega Mix Part 2
-More of nice goodies for **LTX-2**:
+### 25th of April 2026: WanGP v11.35, LTX-2 Mega Mix Part 2
+More nice goodies for **LTX-2**:
 - **HDR Control Video support**: you can now provide an HDR Control Video it will be automatically converted to SDR if model doesnt support HDR
 
 - **LTX 2.3 HDR to SDR**: thanks to a new HDR Ic lora, you can now convert SDR Videos to HDR using LTX 2.3. This feature is available as a new *Control Video process* and also in the *Process Full Video* plugin. Please note that the embedded Gradio Gallery video player converts automatically any HDR content to SDR, so if you want to enjoy the full HDR content you will need an external media player (for instance *MPC-BE*)
+
+- **LTX 2.3 Control Video Injection in Phase 2**: up to now even if you picked 2 phases, the *Control Video* was only injected in Phase 1 (Phase 2 was only used for upsampling). Now if you have chosen for at least one Ic Lora, a non null mutiplier for phase 2, the control video will be injected also for phase 2. This will increase output quality with 2 phases but will require more VRAM for phase 2.
 
 ### 21st of April 2026: WanGP v11.35, LTX-2 Mega Mix
 Lots of nice goodies for **LTX-2**:

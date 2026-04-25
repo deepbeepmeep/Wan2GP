@@ -43,7 +43,7 @@ More nice goodies for **LTX-2**:
 
 - **Process Full Video Custom Settigs**: you can now reuse your own presaved settings in the plugin. This is a link to your saved settings any change to them will be immediatly available in the plugin. If you find some great combination of loras / model / settings to be used with this Plugin please share them on the discord server so that I can add them in the official list.
 
-*update 22.41*: added Process Full Video Custom Settigs 
+*update 22.41*: added Process Full Video Custom Settings 
 
 ### 21st of April 2026: WanGP v11.35, LTX-2 Mega Mix
 Lots of nice goodies for **LTX-2**:

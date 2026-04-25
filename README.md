@@ -41,9 +41,9 @@ More nice goodies for **LTX-2**:
 
 - **LTX 2.3 Control Video Injection in Phase 2**: up to now even if you picked 2 phases, the *Control Video* was only injected in Phase 1 (Phase 2 was only used for upsampling). Now if you have chosen for at least one Ic Lora, a non null mutiplier for phase 2, the control video will be injected also for phase 2. This will increase output quality with 2 phases but will require more VRAM for phase 2.
 
-- **Process Full Video Custom Settigs**: you can now reuse your own presaved settings in the plugin. This is a link to your saved settings any change to them will be immediatly available in the plugin. If you find some great combination of loras / model / settings to be used with this Plugin please share them on the discord server so that I can add them in the official list.
+- **Process Full Video Custom Settings**: you can now reuse your own presaved settings in the plugin. As you will  link the plugin to your settings any change to the saved settings  will be immediatly available in the plugin. If you find some great combination of loras / model / settings to be used with this Plugin please share them on the discord server so that I can add them in the official list.
 
-*update 22.41*: added Process Full Video Custom Settings 
+*update 11.41*: added Process Full Video Custom Settings 
 
 ### 21st of April 2026: WanGP v11.35, LTX-2 Mega Mix
 Lots of nice goodies for **LTX-2**:

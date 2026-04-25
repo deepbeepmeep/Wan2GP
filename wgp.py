@@ -2963,6 +2963,14 @@ def get_loras_preprocessor(transformer, model_type):
 
 
 def process_files_def(repoId = None, sourceFolderList = None, fileList = None, targetFolderList = None):
+    reporter = globals().get("send_cmd", None)
+    if callable(reporter):
+        def emit_status(message):
+            reporter("status", message)
+    else:
+        def emit_status(message):
+            print(message)
+
     if targetFolderList is None:
         targetFolderList = [None] * len(sourceFolderList)
     for targetFolder, sourceFolder, files in zip(targetFolderList, sourceFolderList,fileList ):
@@ -2970,17 +2978,33 @@ def process_files_def(repoId = None, sourceFolderList = None, fileList = None, t
         explicit_target = targetFolder if targetFolder is not None else (sourceFolder if len(sourceFolder) > 0 else None)
         targetRoot = fl.get_smart_download_root(explicit_target)
         local_dir = os.path.join(targetRoot, targetFolder) if targetFolder is not None else targetRoot
+        display_folder = sourceFolder if len(sourceFolder) > 0 else "<root>"
         if len(files)==0:
             if fl.locate_folder(sourceFolder if targetFolder is None else os.path.join(targetFolder, sourceFolder), error_if_none= False ) is None:
+                emit_status(f"Downloading dependency set '{display_folder}' from '{repoId}'...")
                 snapshot_download(repo_id=repoId,  allow_patterns=sourceFolder +"/*", local_dir= local_dir)
+                emit_status(f"Dependency set '{display_folder}' download complete.")
+            else:
+                emit_status(f"Dependency set '{display_folder}' already exists, skipping.")
         else:
             for onefile in files:     
+                display_file = f"{sourceFolder}/{onefile}" if len(sourceFolder) > 0 else onefile
                 if len(sourceFolder) > 0: 
-                    if fl.locate_file( (sourceFolder + "/" + onefile)  if targetFolder is None else os.path.join(targetFolder, sourceFolder, onefile), error_if_none= False) is None:   
+                    local_file_name = os.path.join(sourceFolder, onefile) if targetFolder is None else os.path.join(targetFolder, sourceFolder, onefile)
+                    if fl.locate_file(local_file_name, error_if_none= False) is None:
+                        emit_status(f"Downloading {display_file} from '{repoId}'...")
                         hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = local_dir, subfolder=sourceFolder)
+                        emit_status(f"Downloaded {display_file}.")
+                    else:
+                        emit_status(f"Dependency {display_file} already exists, skipping.")
                 else:
-                    if fl.locate_file(onefile if targetFolder is None else os.path.join(targetFolder, onefile), error_if_none= False) is None:          
+                    local_file_name = onefile if targetFolder is None else os.path.join(targetFolder, onefile)
+                    if fl.locate_file(local_file_name, error_if_none= False) is None:
+                        emit_status(f"Downloading {display_file} from '{repoId}'...")
                         hf_hub_download(repo_id=repoId,  filename=onefile, local_dir = local_dir)
+                        emit_status(f"Downloaded {display_file}.")
+                    else:
+                        emit_status(f"Dependency {display_file} already exists, skipping.")
 
 
 def download_mmaudio():

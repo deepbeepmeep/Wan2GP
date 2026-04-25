@@ -41,6 +41,13 @@ RATIO_CHOICES_WITH_EMPTY = [("", "")] + RATIO_CHOICES
 DEFAULT_SOURCE_PATH = ""
 DEFAULT_OUTPUT_PATH = ""
 LAUNCH_DEFAULT_PROCESS_NAME = "Outpaint Video - LTX 2.3 Distilled 1.1"
+ADD_USER_SETTINGS_MODEL_TYPE = "__add_user_settings__"
+ADD_USER_SETTINGS_LABEL = "<Add User Settings>"
+NO_USER_SETTINGS_VALUE = "__no_user_settings__"
+NO_USER_SETTINGS_LABEL = "<No choice>"
+USER_SETTINGS_STORAGE_KEY = "user_settings"
+USER_PROCESS_VALUE_PREFIX = "__user_settings__:"
+USER_SETTINGS_HINT_HTML = "<div style='font-size:10px;line-height:1;opacity:.65;'>* user settings</div>"
 MAX_STATUS_REFRESH_HZ = 3.0
 STATUS_REFRESH_INTERVAL_SECONDS = 1.0 / MAX_STATUS_REFRESH_HZ
 PROCESS_FULL_VIDEO_METADATA_KEY = "fill_process_video"
@@ -134,6 +141,70 @@ def _save_process_full_video_settings(settings: dict) -> None:
     PROCESS_FULL_VIDEO_SETTINGS_FILE.write_text(json.dumps(settings, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
 
+def _normalize_user_settings_ref(value) -> str:
+    text = str(value or "").strip().strip('"').replace("\\", "/")
+    if len(text) == 0 or text.startswith(("/", "./", "../")):
+        return ""
+    if len(text) >= 2 and text[1] == ":":
+        return ""
+    parts = [part.strip() for part in text.split("/") if len(part.strip()) > 0]
+    if len(parts) != 2:
+        return ""
+    base_model_type, filename = parts
+    filename = Path(filename).name
+    if not filename.lower().endswith(".json"):
+        return ""
+    return f"{base_model_type}/{filename}"
+
+
+def _is_user_process_value(value) -> bool:
+    return str(value or "").startswith(USER_PROCESS_VALUE_PREFIX)
+
+
+def _user_process_value(ref: str) -> str:
+    normalized = _normalize_user_settings_ref(ref)
+    return f"{USER_PROCESS_VALUE_PREFIX}{normalized}" if len(normalized) > 0 else ""
+
+
+def _user_process_ref_from_value(value) -> str:
+    text = str(value or "").strip()
+    if not text.startswith(USER_PROCESS_VALUE_PREFIX):
+        return ""
+    return _normalize_user_settings_ref(text[len(USER_PROCESS_VALUE_PREFIX):])
+
+
+def _get_saved_user_settings_refs(settings: dict | None) -> list[str]:
+    raw_refs = settings.get(USER_SETTINGS_STORAGE_KEY, []) if isinstance(settings, dict) else []
+    if isinstance(raw_refs, str):
+        raw_refs = [raw_refs]
+    if not isinstance(raw_refs, list):
+        return []
+    refs: list[str] = []
+    seen: set[str] = set()
+    for raw_ref in raw_refs:
+        ref = _normalize_user_settings_ref(raw_ref)
+        if len(ref) == 0 or ref.casefold() in seen:
+            continue
+        refs.append(ref)
+        seen.add(ref.casefold())
+    return refs
+
+
+def _store_user_settings_refs(refs: list[str]) -> None:
+    saved_settings = _load_saved_process_full_video_settings()
+    normalized_refs = _get_saved_user_settings_refs({USER_SETTINGS_STORAGE_KEY: refs})
+    saved_settings[USER_SETTINGS_STORAGE_KEY] = normalized_refs
+    _save_process_full_video_settings(saved_settings)
+
+
+def _save_process_full_video_ui_settings(settings: dict) -> None:
+    saved_settings = _load_saved_process_full_video_settings()
+    user_refs = _get_saved_user_settings_refs(saved_settings)
+    next_settings = dict(settings)
+    next_settings[USER_SETTINGS_STORAGE_KEY] = user_refs
+    _save_process_full_video_settings(next_settings)
+
+
 def _get_error_message(exc: BaseException) -> str:
     message = getattr(exc, "message", exc)
     return str(message or "").strip()
@@ -143,7 +214,7 @@ def _get_default_process_strength(process_settings: dict) -> float:
     process_strength = process_settings.get("process_strength")
     if process_strength is None:
         process_strength = process_settings.get("loras_multipliers", 1.0)
-    return float(process_strength)
+    return _coerce_float(process_strength, 1.0)
 
 
 @dataclass(frozen=True)
@@ -353,7 +424,7 @@ def _process_has_outpaint(process_name: str) -> bool:
     return isinstance(settings, dict) and "video_guide_outpainting" in settings
 
 
-def _build_auto_output_path(source_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, output_dir: str | None = None) -> str:
+def _build_auto_output_path(source_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, output_dir: str | None = None, *, has_outpaint: bool | None = None) -> str:
     source = Path(source_path)
     process_token = _get_process_filename_token(process_name)
     resolution_suffix = str(output_resolution or "").strip() or "res"
@@ -361,7 +432,7 @@ def _build_auto_output_path(source_path: str, process_name: str, ratio_text: str
     end_suffix = _format_time_token(end_seconds)
     target_dir = source.parent if not output_dir else Path(output_dir)
     name_parts = [source.stem, process_token]
-    if _process_has_outpaint(process_name):
+    if _process_has_outpaint(process_name) if has_outpaint is None else bool(has_outpaint):
         name_parts.append(str(ratio_text or "").replace(":", "x") or "ratio")
     name_parts.extend([resolution_suffix, start_suffix, end_suffix])
     return str(target_dir / f"{'_'.join(name_parts)}{source.suffix}")
@@ -501,12 +572,12 @@ def _read_recorded_written_unique_frames(output_path: str) -> int:
         return 0
 
 
-def _build_requested_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None) -> Path:
+def _build_requested_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, *, has_outpaint: bool | None = None) -> Path:
     output_text = str(output_path or "").strip()
     if len(output_text) == 0:
-        output = Path(_build_auto_output_path(source_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds))
+        output = Path(_build_auto_output_path(source_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds, has_outpaint=has_outpaint))
     elif output_text.endswith(("\\", "/")) or Path(output_text).is_dir():
-        output = Path(_build_auto_output_path(source_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds, output_dir=output_text))
+        output = Path(_build_auto_output_path(source_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds, output_dir=output_text, has_outpaint=has_outpaint))
     else:
         output = Path(output_text)
     source_suffix = Path(source_path).suffix
@@ -515,8 +586,8 @@ def _build_requested_output_path(source_path: str, output_path: str, process_nam
     return output
 
 
-def _resolve_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, continue_enabled: bool) -> tuple[str, bool]:
-    output = _build_requested_output_path(source_path, output_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds)
+def _resolve_output_path(source_path: str, output_path: str, process_name: str, ratio_text: str, output_resolution: str, start_seconds: float | None, end_seconds: float | None, continue_enabled: bool, *, has_outpaint: bool | None = None) -> tuple[str, bool]:
+    output = _build_requested_output_path(source_path, output_path, process_name, ratio_text, output_resolution, start_seconds, end_seconds, has_outpaint=has_outpaint)
     if continue_enabled:
         return str(output), output.exists()
     if output.exists():
@@ -1845,9 +1916,17 @@ def _delete_released_chunk_outputs(state: dict, chunk_output_paths: list[str]) -
 class ConfigTabPlugin(WAN2GPPlugin):
     def setup_ui(self):
         self.request_global("get_model_def")
+        self.request_global("get_lora_dir")
+        self.request_global("get_base_model_type")
+        self.request_global("get_current_model_settings")
         self.request_global("server_config")
         self.request_component("state")
+        self.request_component("lset_name")
+        self.request_component("refresh_form_trigger")
         self.add_tab(tab_id=PlugIn_Id, label=PlugIn_Name, component_constructor=self.create_config_ui)
+
+    def on_tab_select(self, state: dict) -> str:
+        return str(time.time_ns())
 
     def create_config_ui(self, api_session):
         if PROCESS_DEFINITIONS_ERROR is not None:
@@ -1855,31 +1934,297 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 gr.Markdown(f"Process settings configuration error: {html.escape(PROCESS_DEFINITIONS_ERROR)}")
             return plugin_blocks
         get_model_def = getattr(self, "get_model_def", None)
+        get_lora_dir = getattr(self, "get_lora_dir", None)
+        get_base_model_type = getattr(self, "get_base_model_type", None)
+        get_current_model_settings = getattr(self, "get_current_model_settings", None)
         output_resolution_choices = [("1080p", "1080p"), ("900p", "900p"), ("720p", "720p"), ("540p", "540p"), ("480p", "480p"), ("360p", "360p"), ("256p", "256p")]
         output_resolution_values = {value for _, value in output_resolution_choices}
         source_audio_track_choices = [("Auto", "")] + [(f"Audio Track {track_no}", str(track_no)) for track_no in range(1, 10)]
         source_audio_track_values = {value for _, value in source_audio_track_choices}
         ratio_values = {value for _, value in RATIO_CHOICES}
-        process_names_by_model_type: dict[str, list[str]] = {}
-        for process_name, process_definition in PROCESS_DEFINITIONS.items():
-            model_type = str(process_definition.get("settings", {}).get("model_type") or "")
-            process_names_by_model_type.setdefault(model_type, []).append(process_name)
+
+        def _get_model_type_label(model_type: str) -> str:
+            if len(str(model_type or "").strip()) == 0:
+                return "Unknown Model"
+            try:
+                model_def = _require_model_def(str(model_type), get_model_def)
+            except gr.Error:
+                return str(model_type)
+            model_block = model_def.get("model")
+            if isinstance(model_block, dict):
+                model_name = str(model_block.get("name") or "").strip()
+                if len(model_name) > 0:
+                    return model_name
+            model_name = str(model_def.get("name") or "").strip()
+            return model_name if len(model_name) > 0 else str(model_type)
+
+        def _get_base_model_type_for_ref(model_type: str) -> str:
+            model_type = str(model_type or "").strip()
+            if callable(get_base_model_type):
+                try:
+                    base_model_type = str(get_base_model_type(model_type) or "").strip()
+                    if len(base_model_type) > 0:
+                        return base_model_type
+                except Exception:
+                    pass
+            return model_type
+
+        def _resolve_user_settings_ref(ref: str) -> Path | None:
+            ref = _normalize_user_settings_ref(ref)
+            if len(ref) == 0 or not callable(get_lora_dir):
+                return None
+            base_model_type, filename = ref.split("/", 1)
+            try:
+                lora_dir = Path(get_lora_dir(base_model_type))
+            except Exception:
+                return None
+            settings_path = (lora_dir / Path(filename).name).resolve()
+            if settings_path.is_file() and settings_path.suffix.lower() == ".json":
+                return settings_path
+            return None
+
+        def _load_settings_payload(settings_path: Path) -> dict | None:
+            try:
+                payload = json.loads(settings_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+            return payload if isinstance(payload, dict) else None
+
+        def _build_user_process_definition(ref: str) -> dict | None:
+            normalized_ref = _normalize_user_settings_ref(ref)
+            settings_path = _resolve_user_settings_ref(normalized_ref)
+            if settings_path is None:
+                return None
+            payload = _load_settings_payload(settings_path)
+            if not isinstance(payload, dict):
+                return None
+            model_type = str(payload.get("model_type") or "").strip()
+            if len(model_type) == 0:
+                return None
+            return {
+                "settings": payload,
+                "path": str(settings_path),
+                "source": "user",
+                "ref": normalized_ref,
+                "name": settings_path.stem,
+                "value": _user_process_value(normalized_ref),
+            }
+
+        def _get_user_process_definitions(user_refs: list[str]) -> dict[str, dict]:
+            definitions: dict[str, dict] = {}
+            for ref in _get_saved_user_settings_refs({USER_SETTINGS_STORAGE_KEY: user_refs}):
+                definition = _build_user_process_definition(ref)
+                if definition is None:
+                    continue
+                value = str(definition.get("value") or "")
+                if len(value) > 0:
+                    definitions[value] = definition
+            return definitions
+
+        def _get_system_process_definition(process_name: str) -> dict | None:
+            process_definition = PROCESS_DEFINITIONS.get(str(process_name or "").strip())
+            if not isinstance(process_definition, dict):
+                return None
+            return {
+                "settings": process_definition.get("settings", {}),
+                "path": process_definition.get("path", ""),
+                "source": "system",
+                "name": str(process_name or "").strip(),
+                "value": str(process_name or "").strip(),
+            }
+
+        def _get_main_model_type(main_state: dict | None) -> str:
+            if isinstance(main_state, dict):
+                key = "model_type" if main_state.get("active_form", "add") == "add" else "edit_model_type"
+                model_type = str(main_state.get(key) or main_state.get("model_type") or "").strip()
+                if len(model_type) > 0:
+                    return model_type
+            return ""
+
+        def _get_main_lset_name(main_state: dict | None, main_lset_name: str | None = None) -> str:
+            lset_name = str(main_lset_name or "").strip()
+            if len(lset_name) > 0:
+                return lset_name
+            if callable(get_current_model_settings) and isinstance(main_state, dict):
+                try:
+                    settings = get_current_model_settings(main_state)
+                    if isinstance(settings, dict):
+                        return str(settings.get("lset_name") or "").strip()
+                except Exception:
+                    pass
+            return ""
+
+        def _get_current_user_settings_filenames(main_state: dict | None) -> list[str]:
+            loras_presets = main_state.get("loras_presets", []) if isinstance(main_state, dict) else []
+            if not isinstance(loras_presets, list):
+                return []
+            filenames: list[str] = []
+            seen: set[str] = set()
+            for item in loras_presets:
+                filename = str(item or "").strip()
+                if "/" in filename or "\\" in filename or not filename.lower().endswith(".json"):
+                    continue
+                if filename.casefold() in seen:
+                    continue
+                filenames.append(filename)
+                seen.add(filename.casefold())
+            return sorted(filenames, key=lambda name: Path(name).stem.casefold())
+
+        def _normalize_main_lset_selection(main_state: dict | None, main_lset_name: str | None) -> str:
+            selection = str(main_lset_name or "").strip()
+            filenames = _get_current_user_settings_filenames(main_state)
+            if selection in filenames:
+                return selection
+            normalized_label = selection.replace("\u2500", "").replace(chr(160), " ").strip().casefold()
+            for filename in filenames:
+                if Path(filename).stem.casefold() == normalized_label:
+                    return filename
+            return ""
+
+        def _resolve_current_user_settings_file(main_state: dict | None, settings_filename: str) -> Path | None:
+            filename = str(settings_filename or "").strip()
+            if filename not in _get_current_user_settings_filenames(main_state) or not callable(get_lora_dir):
+                return None
+            model_type = _get_main_model_type(main_state)
+            if len(model_type) == 0:
+                return None
+            try:
+                lora_dir = Path(get_lora_dir(model_type))
+            except Exception:
+                return None
+            settings_path = (lora_dir / Path(filename).name).resolve()
+            if settings_path.is_file() and settings_path.suffix.lower() == ".json":
+                return settings_path
+            return None
+
+        def _build_current_user_settings_ref(main_state: dict | None, settings_filename: str) -> str:
+            model_type = _get_main_model_type(main_state)
+            base_model_type = _get_base_model_type_for_ref(model_type)
+            filename = Path(str(settings_filename or "").strip()).name
+            return _normalize_user_settings_ref(f"{base_model_type}/{filename}")
+
+        def _build_candidate_user_process_definition(main_state: dict | None, settings_filename: str) -> dict | None:
+            settings_path = _resolve_current_user_settings_file(main_state, settings_filename)
+            if settings_path is None:
+                return None
+            payload = _load_settings_payload(settings_path)
+            if not isinstance(payload, dict):
+                return None
+            model_type = str(payload.get("model_type") or _get_main_model_type(main_state)).strip()
+            if len(model_type) == 0:
+                return None
+            ref = _build_current_user_settings_ref(main_state, settings_path.name)
+            return {
+                "settings": payload,
+                "path": str(settings_path),
+                "source": "user",
+                "ref": ref,
+                "name": settings_path.stem,
+                "value": settings_path.name,
+            }
+
+        def _get_process_definition(process_value: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> dict | None:
+            process_value = str(process_value or "").strip()
+            if len(process_value) == 0 or process_value == NO_USER_SETTINGS_VALUE:
+                return None
+            system_definition = _get_system_process_definition(process_value)
+            if system_definition is not None:
+                return system_definition
+            if _is_user_process_value(process_value):
+                ref = _user_process_ref_from_value(process_value)
+                if len(ref) == 0:
+                    return None
+                if user_refs is not None and ref.casefold() not in {item.casefold() for item in _get_saved_user_settings_refs({USER_SETTINGS_STORAGE_KEY: user_refs})}:
+                    return None
+                return _build_user_process_definition(ref)
+            if process_value.lower().endswith(".json"):
+                return _build_candidate_user_process_definition(main_state, process_value)
+            return None
+
+        def _process_definition_model_type(process_definition: dict | None) -> str:
+            settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
+            return str(settings.get("model_type") or "").strip() if isinstance(settings, dict) else ""
+
+        def _get_process_values_by_model_type(user_refs: list[str]) -> dict[str, list[str]]:
+            values_by_model_type: dict[str, list[str]] = {}
+            for process_name, process_definition in PROCESS_DEFINITIONS.items():
+                model_type = str(process_definition.get("settings", {}).get("model_type") or "").strip()
+                if len(model_type) > 0:
+                    values_by_model_type.setdefault(model_type, []).append(process_name)
+            for value, definition in _get_user_process_definitions(user_refs).items():
+                model_type = _process_definition_model_type(definition)
+                if len(model_type) > 0:
+                    values_by_model_type.setdefault(model_type, []).append(value)
+            return values_by_model_type
+
+        def _get_model_type_choices(user_refs: list[str]) -> list[tuple[str, str]]:
+            model_types = sorted(_get_process_values_by_model_type(user_refs), key=lambda item: _get_model_type_label(item).casefold())
+            choices = [(_get_model_type_label(model_type), model_type) for model_type in model_types]
+            choices.append((ADD_USER_SETTINGS_LABEL, ADD_USER_SETTINGS_MODEL_TYPE))
+            return choices
+
+        def _normal_process_choices(model_type: str, user_refs: list[str]) -> list[tuple[str, str]]:
+            model_type = str(model_type or "").strip()
+            entries: list[tuple[str, str, str]] = []
+            for process_name, process_definition in PROCESS_DEFINITIONS.items():
+                if str(process_definition.get("settings", {}).get("model_type") or "").strip() == model_type:
+                    entries.append((process_name, process_name, "system"))
+            for value, definition in _get_user_process_definitions(user_refs).items():
+                if _process_definition_model_type(definition) == model_type:
+                    label = f"{Path(str(definition.get('name') or value)).stem} *"
+                    entries.append((label, value, "user"))
+            entries.sort(key=lambda item: (item[0].removesuffix(" *").casefold(), 0 if item[2] == "system" else 1))
+            return [(label, value) for label, value, _source in entries]
+
+        def _current_user_settings_choices(main_state: dict | None, main_lset_name: str | None) -> tuple[list[tuple[str, str]], str]:
+            filenames = _get_current_user_settings_filenames(main_state)
+            if len(filenames) == 0:
+                return [(NO_USER_SETTINGS_LABEL, NO_USER_SETTINGS_VALUE)], NO_USER_SETTINGS_VALUE
+            choices = [(Path(filename).stem, filename) for filename in filenames]
+            selected = _normalize_main_lset_selection(main_state, main_lset_name)
+            value = selected if selected in filenames else filenames[0]
+            return choices, value
+
+        def _get_process_choices(process_model_type: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str]) -> tuple[list[tuple[str, str]], str | None]:
+            if str(process_model_type or "").strip() == ADD_USER_SETTINGS_MODEL_TYPE:
+                return _current_user_settings_choices(main_state, main_lset_name)
+            choices = _normal_process_choices(str(process_model_type or "").strip(), user_refs)
+            return choices, choices[0][1] if len(choices) > 0 else None
+
+        def _process_choices_have_user_settings(process_choices: list[tuple[str, str]]) -> bool:
+            return any(_is_user_process_value(value) for _label, value in list(process_choices or []))
+
+        def _user_settings_hint_update(process_choices: list[tuple[str, str]]):
+            return gr.update(visible=_process_choices_have_user_settings(process_choices))
+
+        def _settings_action_updates(process_model_type_value: str, process_value: str):
+            add_visible = str(process_model_type_value or "").strip() == ADD_USER_SETTINGS_MODEL_TYPE
+            delete_visible = _is_user_process_value(process_value)
+            placeholder_visible = not add_visible and not delete_visible
+            return gr.update(visible=add_visible), gr.update(visible=delete_visible), gr.update(visible=placeholder_visible)
+
         saved_ui_settings = _load_saved_process_full_video_settings()
+        initial_user_refs = _get_saved_user_settings_refs(saved_ui_settings)
         saved_process_name = str(saved_ui_settings.get("process_name") or "").strip()
         saved_model_type = str(saved_ui_settings.get("process_model_type") or "").strip()
-        if saved_process_name in PROCESS_DEFINITIONS:
-            saved_model_type = str(PROCESS_DEFINITIONS[saved_process_name].get("settings", {}).get("model_type") or saved_model_type)
+        saved_process_definition = _get_process_definition(saved_process_name, getattr(self.state, "value", None), initial_user_refs)
+        if saved_process_definition is not None:
+            saved_model_type = _process_definition_model_type(saved_process_definition) or saved_model_type
+        process_names_by_model_type = _get_process_values_by_model_type(initial_user_refs)
         default_model_type = saved_model_type if saved_model_type in process_names_by_model_type else DEFAULT_MODEL_TYPE if DEFAULT_MODEL_TYPE in process_names_by_model_type else next(iter(process_names_by_model_type), DEFAULT_MODEL_TYPE)
-        default_process_choices = list(process_names_by_model_type.get(default_model_type, []))
-        default_process_name = saved_process_name if saved_process_name in default_process_choices else DEFAULT_PROCESS_NAME if DEFAULT_PROCESS_NAME in default_process_choices else (default_process_choices[0] if default_process_choices else DEFAULT_PROCESS_NAME)
+        default_process_choices = _normal_process_choices(default_model_type, initial_user_refs)
+        default_process_values = [value for _label, value in default_process_choices]
+        default_process_name = saved_process_name if saved_process_name in default_process_values else DEFAULT_PROCESS_NAME if DEFAULT_PROCESS_NAME in default_process_values else (default_process_values[0] if default_process_values else DEFAULT_PROCESS_NAME)
+        default_process_definition = _get_process_definition(default_process_name, getattr(self.state, "value", None), initial_user_refs) or _get_system_process_definition(DEFAULT_PROCESS_NAME)
+        default_process_settings = default_process_definition.get("settings", {}) if isinstance(default_process_definition, dict) else {}
         overlap_step = _get_vae_temporal_latent_size(default_model_type, get_model_def)
         overlap_max = _get_overlap_slider_max(default_model_type, get_model_def)
-        default_overlap_value = _coerce_int(saved_ui_settings.get("sliding_window_overlap"), int(PROCESS_DEFINITIONS.get(default_process_name, {}).get("settings", {}).get("sliding_window_overlap") or 1), minimum=1)
+        default_overlap_value = _coerce_int(saved_ui_settings.get("sliding_window_overlap"), int(default_process_settings.get("sliding_window_overlap") or 1), minimum=1)
         default_overlap_value = _normalize_overlap_frames(default_overlap_value, frame_step=overlap_step)
         default_overlap_value = min(max(1, default_overlap_value), overlap_max)
         default_source_path = str(saved_ui_settings.get("source_path") or DEFAULT_SOURCE_PATH)
         saved_process_strength = saved_ui_settings.get("process_strength", saved_ui_settings.get("control_video_strength"))
-        default_process_strength = 1.0 if saved_process_strength is None else float(saved_process_strength)
+        default_process_strength = _get_default_process_strength(default_process_settings) if saved_process_strength is None else _coerce_float(saved_process_strength, _get_default_process_strength(default_process_settings))
         default_output_path = str(saved_ui_settings.get("output_path") or DEFAULT_OUTPUT_PATH)
         default_continue_enabled = _coerce_bool(saved_ui_settings.get("continue_enabled"), True)
         default_output_resolution = str(saved_ui_settings.get("output_resolution") or "720p").strip()
@@ -1887,7 +2232,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         default_target_ratio = str(saved_ui_settings.get("target_ratio") or "4:3").strip()
         default_target_ratio = default_target_ratio if default_target_ratio in ratio_values else "4:3"
         default_chunk_size_seconds = _coerce_float(saved_ui_settings.get("chunk_size_seconds"), 10.0, minimum=0.1)
-        template_default_prompt = str(PROCESS_DEFINITIONS.get(default_process_name, {}).get("settings", {}).get("prompt") or "")
+        template_default_prompt = str(default_process_settings.get("prompt") or "")
         default_prompt = str(saved_ui_settings.get("prompt")) if "prompt" in saved_ui_settings else template_default_prompt
         default_start_seconds = "" if saved_ui_settings.get("start_seconds") in (None, "") else str(saved_ui_settings.get("start_seconds"))
         default_end_seconds = "" if saved_ui_settings.get("end_seconds") in (None, "") else str(saved_ui_settings.get("end_seconds"))
@@ -1926,52 +2271,50 @@ class ConfigTabPlugin(WAN2GPPlugin):
             gen["progress_status"] = ""
             gen["preview"] = None
 
-        def _get_model_type_label(model_type: str) -> str:
-            if len(str(model_type or "").strip()) == 0:
-                return "Unknown Model"
-            try:
-                model_def = _require_model_def(str(model_type), get_model_def)
-            except gr.Error:
-                return str(model_type)
-            model_block = model_def.get("model")
-            if isinstance(model_block, dict):
-                model_name = str(model_block.get("name") or "").strip()
-                if len(model_name) > 0:
-                    return model_name
-            model_name = str(model_def.get("name") or "").strip()
-            return model_name if len(model_name) > 0 else str(model_type)
+        def _get_default_process_definition() -> dict:
+            definition = _get_system_process_definition(DEFAULT_PROCESS_NAME)
+            if definition is not None:
+                return definition
+            for process_name in PROCESS_DEFINITIONS:
+                definition = _get_system_process_definition(process_name)
+                if definition is not None:
+                    return definition
+            return {"settings": {}, "path": "", "source": "system", "name": "", "value": ""}
 
-        def _has_process_outpaint(process_name: str) -> bool:
-            _require_process_definition(process_name)
-            return _process_has_outpaint(process_name)
+        def _get_process_definition_or_default(process_name: str, main_state: dict | None, user_refs: list[str] | None) -> dict:
+            return _get_process_definition(process_name, main_state, user_refs) or _get_default_process_definition()
 
-        def _get_target_ratio_update(process_name: str, target_ratio: str | None = None):
-            visible = _has_process_outpaint(process_name)
+        def _has_process_outpaint(process_name: str, main_state: dict | None = None, user_refs: list[str] | None = None) -> bool:
+            process_definition = _get_process_definition(process_name, main_state, user_refs)
+            settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
+            return isinstance(settings, dict) and "video_guide_outpainting" in settings
+
+        def _get_target_ratio_update(process_name: str, main_state: dict | None, user_refs: list[str] | None, target_ratio: str | None = None):
+            visible = _has_process_outpaint(process_name, main_state, user_refs)
             return gr.update(value=target_ratio if visible else "", visible=visible, choices=RATIO_CHOICES if visible else RATIO_CHOICES_WITH_EMPTY)
 
-        def _get_process_strength_update(process_name: str, process_strength: float | None = None):
-            visible = not _has_process_outpaint(process_name)
-            value = 1.0 if not visible else float(1.0 if process_strength is None else process_strength)
+        def _get_process_strength_update(process_name: str, main_state: dict | None, user_refs: list[str] | None, process_strength: float | None = None):
+            visible = not _has_process_outpaint(process_name, main_state, user_refs)
+            value = 1.0 if not visible else _coerce_float(process_strength, 1.0)
             return gr.update(value=value, visible=visible)
 
-        def _get_overlap_control_updates(process_name: str):
-            process_definition = _require_process_definition(process_name)
-            settings = process_definition["settings"]
+        def _get_overlap_control_updates(process_name: str, main_state: dict | None, user_refs: list[str] | None):
+            process_definition = _get_process_definition_or_default(process_name, main_state, user_refs)
+            settings = process_definition.get("settings", {})
             model_type = str(settings.get("model_type") or "")
             step = _get_vae_temporal_latent_size(model_type, get_model_def)
             maximum = _get_overlap_slider_max(model_type, get_model_def)
-            value = int(settings.get("sliding_window_overlap") or 1)
-            return gr.update(minimum=1, maximum=maximum, step=step, value=min(max(1, value), maximum))
+            value = _coerce_int(settings.get("sliding_window_overlap"), 1, minimum=1)
+            return gr.update(minimum=1, maximum=maximum, step=step, value=min(max(1, _normalize_overlap_frames(value, frame_step=step)), maximum))
 
-        def _get_process_dropdown_update(model_type: str):
-            process_choices = list(process_names_by_model_type.get(str(model_type or ""), []))
-            process_value = process_choices[0] if process_choices else None
+        def _get_process_dropdown_update(model_type: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str]):
+            process_choices, process_value = _get_process_choices(model_type, main_state, main_lset_name, user_refs)
             return gr.update(choices=process_choices, value=process_value)
 
-        def _build_process_form_state(process_name: str, raw_state: dict | None = None) -> dict:
-            process_definition = _require_process_definition(process_name)
-            process_settings = process_definition["settings"]
-            model_type = str(process_settings.get("model_type") or "")
+        def _build_process_form_state(process_name: str, raw_state: dict | None = None, main_state: dict | None = None, user_refs: list[str] | None = None) -> dict:
+            process_definition = _get_process_definition_or_default(process_name, main_state, user_refs)
+            process_settings = process_definition.get("settings", {})
+            model_type = str(process_settings.get("model_type") or DEFAULT_MODEL_TYPE)
             step = _get_vae_temporal_latent_size(model_type, get_model_def)
             maximum = _get_overlap_slider_max(model_type, get_model_def)
             default_state = {
@@ -1986,7 +2329,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 "output_resolution": "720p",
                 "target_ratio": "4:3",
                 "chunk_size_seconds": 10.0,
-                "sliding_window_overlap": min(max(1, _normalize_overlap_frames(int(process_settings.get("sliding_window_overlap") or 1), frame_step=step)), maximum),
+                "sliding_window_overlap": min(max(1, _normalize_overlap_frames(_coerce_int(process_settings.get("sliding_window_overlap"), 1, minimum=1), frame_step=step)), maximum),
                 "start_seconds": "",
                 "end_seconds": "",
             }
@@ -1994,7 +2337,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             default_state["source_path"] = str(raw_state.get("source_path") or default_state["source_path"])
             saved_process_strength = raw_state.get("process_strength", raw_state.get("control_video_strength"))
             if saved_process_strength is not None:
-                default_state["process_strength"] = float(saved_process_strength)
+                default_state["process_strength"] = _coerce_float(saved_process_strength, default_state["process_strength"])
             default_state["output_path"] = str(raw_state.get("output_path") or default_state["output_path"])
             if "prompt" in raw_state:
                 default_state["prompt"] = str(raw_state.get("prompt") or "")
@@ -2012,7 +2355,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             default_state["end_seconds"] = "" if raw_state.get("end_seconds") in (None, "") else str(raw_state.get("end_seconds"))
             return default_state
 
-        def _snapshot_form_state(process_name: str, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds) -> dict:
+        def _snapshot_form_state(process_name: str, main_state: dict | None, user_refs: list[str] | None, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds) -> dict:
             return _build_process_form_state(process_name, {
                 "source_path": source_path,
                 "process_strength": process_strength,
@@ -2026,28 +2369,211 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 "sliding_window_overlap": sliding_window_overlap,
                 "start_seconds": start_seconds,
                 "end_seconds": end_seconds,
-            })
+            }, main_state, user_refs)
 
-        def _store_process_form_memory(memory_state: dict | None, current_process_name: str, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
+        def _store_process_form_memory(memory_state: dict | None, current_process_name: str, main_state: dict | None, user_refs: list[str] | None, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
             updated_memory = dict(memory_state) if isinstance(memory_state, dict) else {}
             current_process_name = str(current_process_name or "").strip()
-            if current_process_name in PROCESS_DEFINITIONS:
-                updated_memory[current_process_name] = _snapshot_form_state(current_process_name, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
+            if _get_process_definition(current_process_name, main_state, user_refs) is not None:
+                updated_memory[current_process_name] = _snapshot_form_state(current_process_name, main_state, user_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
             return updated_memory
 
-        def _switch_process_form_memory(memory_state: dict | None, current_process_name: str, next_process_name: str, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
-            updated_memory = _store_process_form_memory(memory_state, current_process_name, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
-            return updated_memory, str(next_process_name or "").strip()
-
-        def _restore_process_form_state(memory_state: dict | None, process_name: str, current_source_path: str):
-            state = _build_process_form_state(process_name, (memory_state or {}).get(process_name))
-            overlap_update = _get_overlap_control_updates(process_name)
-            target_ratio_update = _get_target_ratio_update(process_name, state["target_ratio"])
-            process_strength_update = _get_process_strength_update(process_name, state["process_strength"])
+        def _restore_process_form_state(memory_state: dict | None, process_name: str, current_source_path: str, main_state: dict | None, user_refs: list[str] | None):
+            state = _build_process_form_state(process_name, (memory_state or {}).get(process_name), main_state, user_refs)
+            overlap_update = _get_overlap_control_updates(process_name, main_state, user_refs)
+            target_ratio_update = _get_target_ratio_update(process_name, main_state, user_refs, state["target_ratio"])
+            process_strength_update = _get_process_strength_update(process_name, main_state, user_refs, state["process_strength"])
             source_path_value = str(current_source_path or "").strip() or state["source_path"]
             return source_path_value, process_strength_update, state["output_path"], state["prompt"], state["continue_enabled"], state["source_audio_track"], state["output_resolution"], target_ratio_update, state["chunk_size_seconds"], overlap_update, state["start_seconds"], state["end_seconds"]
 
-        model_type_choices = [(_get_model_type_label(model_type), model_type) for model_type in process_names_by_model_type]
+        def _change_process_model_type(memory_state: dict | None, current_process_name: str, next_model_type: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str] | None, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
+            refs = _get_saved_user_settings_refs({USER_SETTINGS_STORAGE_KEY: user_refs})
+            updated_memory = _store_process_form_memory(memory_state, current_process_name, main_state, refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
+            process_choices, next_process_name = _get_process_choices(next_model_type, main_state, main_lset_name, refs)
+            next_process_name = str(next_process_name or NO_USER_SETTINGS_VALUE).strip()
+            restored = _restore_process_form_state(updated_memory, next_process_name, source_path, main_state, refs)
+            add_update, delete_update, placeholder_update = _settings_action_updates(next_model_type, next_process_name)
+            return (
+                updated_memory,
+                next_process_name,
+                gr.update(choices=process_choices, value=next_process_name),
+                _user_settings_hint_update(process_choices),
+                add_update,
+                delete_update,
+                placeholder_update,
+                *restored,
+            )
+
+        def _change_process_name(memory_state: dict | None, current_process_name: str, next_process_name: str, process_model_type_value: str, main_state: dict | None, user_refs: list[str] | None, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
+            refs = _get_saved_user_settings_refs({USER_SETTINGS_STORAGE_KEY: user_refs})
+            updated_memory = _store_process_form_memory(memory_state, current_process_name, main_state, refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
+            next_process_name = str(next_process_name or "").strip()
+            restored = _restore_process_form_state(updated_memory, next_process_name, source_path, main_state, refs)
+            _add_update, delete_update, placeholder_update = _settings_action_updates(process_model_type_value, next_process_name)
+            return (
+                updated_memory,
+                next_process_name,
+                delete_update,
+                placeholder_update,
+                *restored,
+            )
+
+        def _refresh_process_form_from_main(_refresh_id, memory_state: dict | None, current_process_name: str, process_model_type_value: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str] | None, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
+            refs = _get_saved_user_settings_refs({USER_SETTINGS_STORAGE_KEY: user_refs})
+            model_choices = _get_model_type_choices(refs)
+            process_model_type_value = str(process_model_type_value or "").strip()
+            if process_model_type_value != ADD_USER_SETTINGS_MODEL_TYPE:
+                valid_model_values = {value for _label, value in model_choices}
+                model_value = process_model_type_value if process_model_type_value in valid_model_values else default_model_type
+                return (
+                    gr.update(choices=model_choices, value=model_value),
+                    gr.update(),
+                    gr.update(),
+                    memory_state,
+                    current_process_name,
+                    gr.update(visible=False),
+                    gr.update(visible=_is_user_process_value(current_process_name)),
+                    gr.update(visible=not _is_user_process_value(current_process_name)),
+                    *[gr.skip()] * 12,
+                )
+            updated_memory = _store_process_form_memory(memory_state, current_process_name, main_state, refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds)
+            process_choices, next_process_name = _current_user_settings_choices(main_state, main_lset_name)
+            restored = _restore_process_form_state(updated_memory, next_process_name, source_path, main_state, refs)
+            return (
+                gr.update(choices=model_choices, value=ADD_USER_SETTINGS_MODEL_TYPE),
+                gr.update(choices=process_choices, value=next_process_name),
+                _user_settings_hint_update(process_choices),
+                updated_memory,
+                next_process_name,
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                *restored,
+            )
+
+        def _validate_user_process_definition(process_definition: dict | None) -> list[str]:
+            settings = process_definition.get("settings") if isinstance(process_definition, dict) else None
+            if not isinstance(settings, dict):
+                return ["The selected settings file could not be read."]
+            model_type = str(settings.get("model_type") or "").strip()
+            if len(model_type) == 0:
+                return ["The selected settings file does not define a model."]
+            try:
+                model_def = _require_model_def(model_type, get_model_def)
+            except gr.Error as exc:
+                return [_get_error_message(exc) or "The selected model is not available."]
+            problems: list[str] = []
+            image_mode = _coerce_int(settings.get("image_mode"), 0)
+            if image_mode != 0 or bool(model_def.get("audio_only", False)) or bool(model_def.get("image_outputs", False)) or bool(settings.get("image_outputs", False)):
+                problems.append("The selected settings must generate a video, not images or audio only.")
+            video_prompt_type = str(settings.get("video_prompt_type") or "")
+            if "V" not in video_prompt_type:
+                problems.append("Control Video must be enabled.")
+            if "I" in video_prompt_type:
+                problems.append("Reference Images must be disabled.")
+            image_prompt_types_allowed = str(model_def.get("image_prompt_types_allowed", "") or "")
+            if "V" not in image_prompt_types_allowed:
+                problems.append("The selected model must support using a source video for continuation.")
+            audio_prompt_type = str(settings.get("audio_prompt_type") or "")
+            audio_features = []
+            if "A" in audio_prompt_type:
+                audio_features.append("Audio Source")
+            if "B" in audio_prompt_type:
+                audio_features.append("Audio Source #2")
+            if "X" in audio_prompt_type:
+                audio_features.append("two-speaker auto separation")
+            if len(audio_features) > 0:
+                problems.append("Disable these audio features: " + ", ".join(audio_features) + ".")
+            return problems
+
+        def _format_user_process_validation_error(process_definition: dict | None, problems: list[str]) -> str:
+            name = str((process_definition or {}).get("name") or "selected settings").strip()
+            if len(problems) == 0:
+                return ""
+            return f'Cannot add "{name}" as a full-video process:\n- ' + "\n- ".join(problems)
+
+        def _add_user_process_link(process_value: str, main_state: dict | None, main_lset_name: str | None, user_refs: list[str] | None):
+            if str(process_value or "").strip() == NO_USER_SETTINGS_VALUE:
+                raise gr.Error("No user settings are available to add.")
+            process_definition = _get_process_definition(process_value, main_state, user_refs)
+            if process_definition is None:
+                raise gr.Error("The selected user settings file could not be found.")
+            problems = _validate_user_process_definition(process_definition)
+            if len(problems) > 0:
+                raise gr.Error(_format_user_process_validation_error(process_definition, problems))
+            ref = _normalize_user_settings_ref(process_definition.get("ref"))
+            if len(ref) == 0:
+                raise gr.Error("The selected user settings file could not be linked.")
+            refs = _get_saved_user_settings_refs({USER_SETTINGS_STORAGE_KEY: user_refs})
+            model_label = _get_model_type_label(_process_definition_model_type(process_definition))
+            if ref.casefold() not in {item.casefold() for item in refs}:
+                refs.append(ref)
+                _store_user_settings_refs(refs)
+                gr.Info(f'User settings "{process_definition.get("name")}" have been added for {model_label}.')
+            else:
+                gr.Info(f'User settings "{process_definition.get("name")}" are already linked for {model_label}.')
+            process_choices, selected = _current_user_settings_choices(main_state, main_lset_name)
+            if str(process_value or "").strip() in {value for _label, value in process_choices}:
+                selected = str(process_value or "").strip()
+            return (
+                refs,
+                gr.update(choices=_get_model_type_choices(refs), value=ADD_USER_SETTINGS_MODEL_TYPE),
+                gr.update(choices=process_choices, value=selected),
+                _user_settings_hint_update(process_choices),
+                selected,
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(visible=False),
+            )
+
+        def _select_after_user_process_delete(deleted_process_value: str, deleted_model_type: str, old_refs: list[str], new_refs: list[str]) -> tuple[str, str, list[tuple[str, str]]]:
+            old_choices = _normal_process_choices(deleted_model_type, old_refs)
+            deleted_index = next((index for index, (_label, value) in enumerate(old_choices) if value == deleted_process_value), -1)
+            new_choices = _normal_process_choices(deleted_model_type, new_refs)
+            new_values = {value for _label, value in new_choices}
+            if deleted_index >= 0:
+                for _label, value in old_choices[deleted_index + 1:]:
+                    if _is_user_process_value(value) and value in new_values:
+                        return deleted_model_type, value, new_choices
+            first_system_value = next((value for _label, value in new_choices if not _is_user_process_value(value)), None)
+            if first_system_value is not None:
+                return deleted_model_type, first_system_value, new_choices
+            for model_type in sorted(_get_process_values_by_model_type(new_refs), key=lambda item: _get_model_type_label(item).casefold()):
+                choices = _normal_process_choices(model_type, new_refs)
+                first_system_value = next((value for _label, value in choices if not _is_user_process_value(value)), None)
+                if first_system_value is not None:
+                    return model_type, first_system_value, choices
+            if len(new_choices) > 0:
+                return deleted_model_type, new_choices[0][1], new_choices
+            return default_model_type, default_process_name, _normal_process_choices(default_model_type, new_refs)
+
+        def _delete_user_process_link(memory_state: dict | None, process_value: str, main_state: dict | None, user_refs: list[str] | None, source_path: str):
+            process_value = str(process_value or "").strip()
+            ref = _user_process_ref_from_value(process_value)
+            if len(ref) == 0:
+                raise gr.Error("Choose a linked user settings process to remove.")
+            old_refs = _get_saved_user_settings_refs({USER_SETTINGS_STORAGE_KEY: user_refs})
+            deleted_definition = _build_user_process_definition(ref)
+            deleted_model_type = _process_definition_model_type(deleted_definition)
+            new_refs = [item for item in old_refs if item.casefold() != ref.casefold()]
+            _store_user_settings_refs(new_refs)
+            model_type, next_process_name, process_choices = _select_after_user_process_delete(process_value, deleted_model_type, old_refs, new_refs)
+            restored = _restore_process_form_state(memory_state, next_process_name, source_path, main_state, new_refs)
+            gr.Info(f'Removed user settings "{Path(ref).stem}".')
+            add_update, delete_update, placeholder_update = _settings_action_updates(model_type, next_process_name)
+            return (
+                new_refs,
+                gr.update(choices=_get_model_type_choices(new_refs), value=model_type),
+                gr.update(choices=process_choices, value=next_process_name),
+                _user_settings_hint_update(process_choices),
+                next_process_name,
+                add_update,
+                delete_update,
+                placeholder_update,
+                *restored,
+            )
+
+        model_type_choices = _get_model_type_choices(initial_user_refs)
         initial_process_form_memory = {default_process_name: _build_process_form_state(default_process_name, {
             "source_path": default_source_path,
             "process_strength": default_process_strength,
@@ -2061,18 +2587,27 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "sliding_window_overlap": default_overlap_value,
             "start_seconds": default_start_seconds,
             "end_seconds": default_end_seconds,
-        })}
+        }, getattr(self.state, "value", None), initial_user_refs)}
 
-        def start_process(state, process_name, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
-            try:
-                process_definition = _require_process_definition(process_name)
-            except gr.Error as exc:
-                yield _info_exit(_get_error_message(exc) or f"Unsupported process: {process_name}")
+        def start_process(state, process_name, user_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds):
+            process_definition = _get_process_definition(process_name, state, user_refs)
+            if process_definition is None:
+                yield _info_exit(f"Unsupported process: {process_name}")
                 return
+            if process_definition.get("source") == "user":
+                problems = _validate_user_process_definition(process_definition)
+                if len(problems) > 0:
+                    yield _info_exit(_format_user_process_validation_error(process_definition, problems))
+                    return
             process_settings = process_definition["settings"]
             model_type = str(process_settings.get("model_type") or "")
+            if len(model_type) == 0:
+                yield _info_exit(f"Unsupported process: {process_name}")
+                return
+            process_display_name = str(process_definition.get("name") or process_name or "").strip()
             process_is_hdr = VIDEO_PROMPT_HDR_OUTPUT_FLAG in str(process_settings.get("video_prompt_type") or "")
             has_outpaint = "video_guide_outpainting" in process_settings
+            is_user_process = process_definition.get("source") == "user"
             source_path = str(source_path or "").strip()
             output_path = str(output_path or "").strip()
             source_audio_track = str(source_audio_track or "").strip()
@@ -2081,9 +2616,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
             prompt_text = str(prompt_text or "")
             start_seconds = "" if start_seconds in (None, "") else str(start_seconds)
             end_seconds = "" if end_seconds in (None, "") else str(end_seconds)
-            active_process_strength = 1.0 if has_outpaint else float(process_strength)
+            active_process_strength = 1.0 if has_outpaint else _coerce_float(process_strength, 1.0)
             try:
-                _save_process_full_video_settings({
+                _save_process_full_video_ui_settings({
                     "process_model_type": model_type,
                     "process_name": str(process_name or "").strip(),
                     "source_path": source_path,
@@ -2176,12 +2711,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     )
                     requested_unique_frames = _count_planned_unique_frames(full_plans)
                     requested_source_segment = build_virtual_media_path(source_path, start_frame=start_frame, end_frame=max(int(start_frame), int(start_frame) + max(0, int(requested_unique_frames)) - 1), audio_track_no=selected_audio_track)
-                    requested_output_path = str(_build_requested_output_path(source_path, output_path, process_name, active_target_ratio, str(output_resolution), start_seconds, end_seconds))
-                    identity_mismatch_message = _get_output_identity_mismatch_message(requested_output_path, process_name=process_name, source_path=source_path, source_segment=requested_source_segment)
+                    requested_output_path = str(_build_requested_output_path(source_path, output_path, process_display_name, active_target_ratio, str(output_resolution), start_seconds, end_seconds, has_outpaint=has_outpaint))
+                    identity_mismatch_message = _get_output_identity_mismatch_message(requested_output_path, process_name=process_display_name, source_path=source_path, source_segment=requested_source_segment)
                     if identity_mismatch_message is not None:
                         yield _info_exit(identity_mismatch_message, output=requested_output_path)
                         return
-                    output_path, resume_existing_output = _resolve_output_path(source_path, output_path, process_name, active_target_ratio, str(output_resolution), start_seconds, end_seconds, bool(continue_enabled))
+                    output_path, resume_existing_output = _resolve_output_path(source_path, output_path, process_display_name, active_target_ratio, str(output_resolution), start_seconds, end_seconds, bool(continue_enabled), has_outpaint=has_outpaint)
                     try:
                         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                     except OSError as exc:
@@ -2439,14 +2974,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         + (f"overlap buffer {_describe_frame_range(overlap_buffer_start_frame, int(plan.overlap_frames))}" if needs_video_source else "overlap buffer not used")
                     )
                     settings = copy.deepcopy(process_definition["settings"])
-                    image_prompt_type = str(settings.get("image_prompt_type") or "V").strip() or "V"
                     chunk_prompt_start_seconds = max(0.0, float(actual_done) / float(fps_float))
                     settings["model_type"] = model_type
                     settings["prompt"] = _resolve_prompt_for_chunk(prompt_schedule, chunk_prompt_start_seconds, default_prompt_text)
                     settings["resolution"] = resolved_resolution or budget_resolution
                     settings["video_length"] = model_video_length
                     settings["sliding_window_overlap"] = max(1, int(plan.overlap_frames))
-                    settings["image_prompt_type"] = image_prompt_type if needs_video_source else ""
+                    settings["image_prompt_type"] = "V" if needs_video_source else ""
+                    settings["audio_prompt_type"] = "K"
+                    if is_user_process:
+                        settings["force_fps"] = "control"
                     # Keep the plugin-side control cursor tied to frames actually written.
                     # WGP applies any extra_control_frames model behavior internally, so this
                     # stays correct for models that use it and for models where it is 0.
@@ -2455,7 +2992,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         settings["video_guide_outpainting_ratio"] = active_target_ratio
                     else:
                         settings.pop("video_guide_outpainting_ratio", None)
-                        settings["loras_multipliers"] = str(active_process_strength)
+                        if not is_user_process:
+                            settings["loras_multipliers"] = str(active_process_strength)
                     api_settings = settings.get("_api")
                     settings["_api"] = dict(api_settings) if isinstance(api_settings, dict) else {}
                     settings["_api"]["return_media"] = True
@@ -2630,7 +3168,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 actual_output_frames = int(actual_output_frames or total_written_unique_frames)
                 total_generation_time = existing_output_generation_time + _read_metadata_generation_time(metadata_source_path) if merged_continuation else _read_metadata_generation_time(metadata_source_path)
                 process_metadata = {
-                    "process": process_name,
+                    "process": process_display_name,
                     "written_unique_frames": int(total_written_unique_frames),
                     "chunks": int(total_chunks_display),
                     "sliding_window_overlap": int(overlap_frames),
@@ -2642,7 +3180,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 }
                 if process_is_hdr:
                     process_metadata["hdr"] = True
-                _store_output_metadata(metadata_target_path, metadata_source_path, source_path=source_path, process_name=process_name, source_start_seconds=start_seconds, start_frame=start_frame, fps_float=fps_float, selected_audio_track=selected_audio_track, total_generation_time=total_generation_time, actual_frame_count=actual_output_frames, process_metadata=process_metadata, verbose_level=verbose_level)
+                _store_output_metadata(metadata_target_path, metadata_source_path, source_path=source_path, process_name=process_display_name, source_start_seconds=start_seconds, start_frame=start_frame, fps_float=fps_float, selected_audio_track=selected_audio_track, total_generation_time=total_generation_time, actual_frame_count=actual_output_frames, process_metadata=process_metadata, verbose_level=verbose_level)
                 chunk_output_paths = _delete_released_chunk_outputs(state, chunk_output_paths)
                 if stopped:
                     stopped_output_path = output_path
@@ -2739,12 +3277,81 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         process_form_memory = gr.State(initial_process_form_memory)
         active_process_name_state = gr.State(default_process_name)
+        user_process_refs = gr.State(initial_user_refs)
         with gr.Column():
+            gr.HTML(
+                """
+                <style>
+                #process-full-video-settings-actions {
+                    align-self: flex-end !important;
+                    margin-bottom: 1px;
+                    padding-bottom: 4px !important;
+                    gap: 4px;
+                    width: 34px !important;
+                    min-width: 34px !important;
+                    max-width: 34px !important;
+                }
+                #process-full-video-settings-actions > .form {
+                    padding: 0 !important;
+                    border: 0 !important;
+                    background: transparent !important;
+                    box-shadow: none !important;
+                }
+                #process-full-video-settings-actions button {
+                    width: 34px !important;
+                    min-width: 34px !important;
+                    max-width: 34px !important;
+                    height: 34px;
+                    min-height: 34px;
+                    padding: 0 !important;
+                }
+                #process-full-video-settings-actions .process-full-video-settings-action-placeholder {
+                    width: 34px;
+                    min-width: 34px;
+                    max-width: 34px;
+                    height: 34px;
+                    min-height: 34px;
+                }
+                #process-full-video-user-settings-hint-row {
+                    height: 12px !important;
+                    min-height: 0 !important;
+                    max-height: 12px !important;
+                    margin-top: -10px !important;
+                    margin-bottom: -4px !important;
+                    padding: 0 !important;
+                    overflow: visible !important;
+                }
+                #process-full-video-user-settings-hint-row > .form {
+                    padding: 0 !important;
+                    border: 0 !important;
+                    background: transparent !important;
+                    box-shadow: none !important;
+                    min-height: 0 !important;
+                    overflow: visible !important;
+                }
+                #process-full-video-user-settings-hint-row .block,
+                #process-full-video-user-settings-hint-row .html-container,
+                #process-full-video-user-settings-hint-row .prose {
+                    height: auto !important;
+                    margin: 0 !important;
+                    min-height: 0 !important;
+                    padding: 0 !important;
+                    overflow: visible !important;
+                }
+                </style>
+                """
+            )
             with gr.Row():
                 gr.Markdown("This PlugIn is a *Super Sliding Windows* mode with *Low RAM requirements*, lossless Audio Copy and no risk to explode your Web Browser and the *Video Gallery* with huge files. You can stop a Process and Resume it later. You can define different prompts for different time range. However quite often the prompt should have little impact on the ouput.")
             with gr.Row():
                 process_model_type = gr.Dropdown(model_type_choices, value=default_model_type, label="Model", scale=1)
                 process_name = gr.Dropdown(default_process_choices, value=default_process_name, label="Process", scale=3)
+                with gr.Column(scale=0, min_width=34, elem_id="process-full-video-settings-actions"):
+                    add_user_settings_btn = gr.Button("\u2795", size="sm", min_width=1, visible=default_model_type == ADD_USER_SETTINGS_MODEL_TYPE, elem_classes=["wangp-assistant-chat__template-tool-icon-btn"])
+                    delete_user_settings_btn = gr.Button("\U0001F5D1\uFE0F", size="sm", min_width=1, visible=_is_user_process_value(default_process_name), elem_classes=["wangp-assistant-chat__template-tool-icon-btn", "wangp-assistant-chat__template-tool-icon-btn--danger"])
+                    settings_actions_placeholder = gr.HTML("<div class='process-full-video-settings-action-placeholder'></div>", visible=default_model_type != ADD_USER_SETTINGS_MODEL_TYPE and not _is_user_process_value(default_process_name))
+            with gr.Row(visible=_process_choices_have_user_settings(default_process_choices), elem_id="process-full-video-user-settings-hint-row") as process_user_settings_hint_row:
+                gr.HTML(value=USER_SETTINGS_HINT_HTML)
             with gr.Row():
                 source_path = gr.Textbox(label="Source Video Path File", value=default_source_path, scale=3)
             with gr.Row():
@@ -2753,7 +3360,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             with gr.Row():
                 output_resolution = gr.Dropdown(output_resolution_choices, value=default_output_resolution, label="Output Resolution")
                 target_ratio = gr.Dropdown(RATIO_CHOICES if _has_process_outpaint(default_process_name) else RATIO_CHOICES_WITH_EMPTY, value=default_target_ratio if _has_process_outpaint(default_process_name) else "", label="Target Ratio", visible=_has_process_outpaint(default_process_name))
-                process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=0.0, maximum=1.0, step=0.01, value=1.0 if _has_process_outpaint(default_process_name) else default_process_strength, visible=not _has_process_outpaint(default_process_name))
+                process_strength = gr.Slider(label="Process Strength (LoRA Multiplier)", minimum=0.0, maximum=3.0, step=0.01, value=1.0 if _has_process_outpaint(default_process_name) else default_process_strength, visible=not _has_process_outpaint(default_process_name))
             with gr.Row():
                 chunk_size_seconds = gr.Number(label="Chunk Size (seconds)", value=default_chunk_size_seconds, precision=2)
                 sliding_window_overlap = gr.Slider(label="Sliding Window Overlap", minimum=1, maximum=overlap_max, step=overlap_step, value=default_overlap_value)
@@ -2775,6 +3382,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
             preview_image = gr.Image(label="Last Frame Preview", type="pil")
             output_file = gr.HTML(value=_render_output_file_html(""))
             preview_refresh = gr.Textbox(value="", visible=False)
+            tab_refresh_trigger = gr.Textbox(value="", visible=False)
+
+        self.on_tab_outputs = [tab_refresh_trigger]
 
         gr.on(
             [
@@ -2792,40 +3402,54 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 end_seconds.change,
             ],
             fn=_store_process_form_memory,
-            inputs=[process_form_memory, active_process_name_state, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            inputs=[process_form_memory, active_process_name_state, self.state, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
             outputs=[process_form_memory],
             queue=False,
             show_progress="hidden",
         )
         process_model_type.change(
-            fn=_store_process_form_memory,
-            inputs=[process_form_memory, active_process_name_state, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-            outputs=[process_form_memory],
-            queue=False,
-            show_progress="hidden",
-        ).then(
-            fn=_get_process_dropdown_update,
-            inputs=[process_model_type],
-            outputs=[process_name],
+            fn=_change_process_model_type,
+            inputs=[process_form_memory, active_process_name_state, process_model_type, self.state, self.lset_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            outputs=[process_form_memory, active_process_name_state, process_name, process_user_settings_hint_row, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
             queue=False,
             show_progress="hidden",
         )
         process_name.change(
-            fn=_switch_process_form_memory,
-            inputs=[process_form_memory, active_process_name_state, process_name, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
-            outputs=[process_form_memory, active_process_name_state],
+            fn=_change_process_name,
+            inputs=[process_form_memory, active_process_name_state, process_name, process_model_type, self.state, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            outputs=[process_form_memory, active_process_name_state, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
             queue=False,
             show_progress="hidden",
-        ).then(
-            fn=_restore_process_form_state,
-            inputs=[process_form_memory, active_process_name_state, source_path],
-            outputs=[source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+        )
+        add_user_settings_btn.click(
+            fn=_add_user_process_link,
+            inputs=[process_name, self.state, self.lset_name, user_process_refs],
+            outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder],
+            show_progress="hidden",
+        )
+        delete_user_settings_btn.click(
+            fn=_delete_user_process_link,
+            inputs=[process_form_memory, process_name, self.state, user_process_refs, source_path],
+            outputs=[user_process_refs, process_model_type, process_name, process_user_settings_hint_row, active_process_name_state, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            show_progress="hidden",
+        )
+        self.refresh_form_trigger.change(
+            fn=_refresh_process_form_from_main,
+            inputs=[self.refresh_form_trigger, process_form_memory, active_process_name_state, process_model_type, self.state, self.lset_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            outputs=[process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            queue=False,
+            show_progress="hidden",
+        )
+        tab_refresh_trigger.change(
+            fn=_refresh_process_form_from_main,
+            inputs=[tab_refresh_trigger, process_form_memory, active_process_name_state, process_model_type, self.state, self.lset_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            outputs=[process_model_type, process_name, process_user_settings_hint_row, process_form_memory, active_process_name_state, add_user_settings_btn, delete_user_settings_btn, settings_actions_placeholder, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
             queue=False,
             show_progress="hidden",
         )
         start_btn.click(
             fn=start_process,
-            inputs=[self.state, process_name, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
+            inputs=[self.state, process_name, user_process_refs, source_path, process_strength, output_path, prompt_text, continue_enabled, source_audio_track, output_resolution, target_ratio, chunk_size_seconds, sliding_window_overlap, start_seconds, end_seconds],
             outputs=[status_html, output_file, preview_refresh, start_btn, abort_btn],
             queue=False,
             show_progress="hidden",
